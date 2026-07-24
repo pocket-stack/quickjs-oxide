@@ -605,6 +605,8 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
         "class C { async(){} static async(){} }",
         "class C { async #private(){} }",
         "class C { static async #private(){} }",
+        "class C { async *#private(){ yield 1; } }",
+        "class C { static async *#private(){ yield 1; } }",
         "class C { async\nmethod(){} }",
         "class C { async/*\n*/method(){} }",
         "class C { async\u{2028}method(){} }",
@@ -634,12 +636,6 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
             "{source:?}"
         );
     }
-    let private = compile_unlinked_script("class C { async *#generator(){} }").unwrap_err();
-    assert_eq!(private.kind(), ErrorKind::Unsupported);
-    assert_eq!(
-        private.message(),
-        "private async generator class methods are not implemented yet"
-    );
     for source in [
         "class C { async *constructor(value = await 1) { yield* source; } }",
         "class C { static async *prototype(value = yield 1) { super(); } }",
@@ -1325,7 +1321,7 @@ fn generator_for_of_head_inner_close_throw_pending_closes_outer() {
 }
 
 #[test]
-fn generator_method_frontiers_keep_private_async_generators_and_delegation_explicit() {
+fn generator_method_frontiers_keep_async_delegation_explicit() {
     for source in [
         "class C { *constructor(){} }",
         "class C { static *prototype(){} }",
@@ -1349,12 +1345,8 @@ fn generator_method_frontiers_keep_private_async_generators_and_delegation_expli
 
     compile_unlinked_script("class C { async *method(){ yield 1; } }")
         .expect("public class async-generator method should use the independent async driver");
-    assert_eq!(
-        compile_unlinked_script("class C { async *#method(){} }")
-            .unwrap_err()
-            .kind(),
-        ErrorKind::Unsupported,
-    );
+    compile_unlinked_script("class C { async *#method(){ yield 1; } }")
+        .expect("private class async-generator method should use the independent async driver");
     compile_unlinked_script("({ async *method(){ yield 1; } })")
         .expect("object async-generator method should use the independent async driver");
     for source in [

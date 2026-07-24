@@ -649,7 +649,7 @@ impl Runtime {
             ClosureVariableKind::PrivateMethod => matches!(
                 (metadata.function_kind, metadata.has_prototype),
                 (FunctionKind::Normal | FunctionKind::Async, false)
-                    | (FunctionKind::Generator, true)
+                    | (FunctionKind::Generator | FunctionKind::AsyncGenerator, true)
             ),
             ClosureVariableKind::PrivateGetter
             | ClosureVariableKind::PrivateSetter
@@ -779,7 +779,10 @@ mod tests {
         function_kind: FunctionKind,
     ) -> (CallableRef, ObjectRef) {
         let context = runtime.new_context();
-        let code = if function_kind == FunctionKind::Generator {
+        let code = if matches!(
+            function_kind,
+            FunctionKind::Generator | FunctionKind::AsyncGenerator
+        ) {
             vec![
                 Instruction::InitialYield,
                 Instruction::Undefined,
@@ -799,7 +802,10 @@ mod tests {
                         strict: true,
                         needs_home_object: true,
                         function_kind,
-                        has_prototype: function_kind == FunctionKind::Generator,
+                        has_prototype: matches!(
+                            function_kind,
+                            FunctionKind::Generator | FunctionKind::AsyncGenerator
+                        ),
                         ..FunctionMetadata::default()
                     },
                 ),
@@ -1083,7 +1089,11 @@ mod tests {
     #[test]
     fn private_callable_var_refs_admit_async_and_generators_as_methods() {
         let runtime = Runtime::new();
-        for function_kind in [FunctionKind::Async, FunctionKind::Generator] {
+        for function_kind in [
+            FunctionKind::Async,
+            FunctionKind::Generator,
+            FunctionKind::AsyncGenerator,
+        ] {
             let (callable, _) = private_callable(&runtime, function_kind);
 
             let method = runtime

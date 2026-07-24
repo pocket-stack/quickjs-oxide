@@ -683,6 +683,126 @@ mod tests {
     }
 
     #[test]
+    fn private_async_generator_methods_reuse_typed_method_cells_and_async_driver_shape() {
+        let source = r#"
+            class C {
+                async *#instance(value) { yield await value }
+                exposeInstance() { return this.#instance }
+                callInstance(value) { return this.#instance(value) }
+                hasInstance(value) { return #instance in value }
+                static async *#static(value) { yield await value }
+                static exposeStatic() { return this.#static }
+                static callStatic(value) { return this.#static(value) }
+                static hasStatic(value) { return #static in value }
+            }
+        "#;
+        let tree = Parser::parse(
+            source,
+            JsString::from_static("<private-async-generator-method-scope-test>"),
+        )
+        .unwrap();
+        let root = &tree.functions[0];
+        let scope = root
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == ScopeKind::ClassPrivate)
+            .expect("class-private scope");
+        let bindings = scope
+            .bindings
+            .iter()
+            .map(|binding| &root.bindings[binding.0])
+            .collect::<Vec<_>>();
+        assert!(bindings.iter().any(|binding| {
+            binding.name == "#instance"
+                && binding.kind == BindingKind::PrivateMethod { is_static: false }
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.name == "#static"
+                && binding.kind == BindingKind::PrivateMethod { is_static: true }
+        }));
+        assert_eq!(
+            root.ops
+                .iter()
+                .filter(|operation| matches!(
+                    operation.op,
+                    IrOp::Bytecode(Instruction::InitializePrivateMethod(_))
+                ))
+                .count(),
+            2
+        );
+
+        let private_methods = tree
+            .functions
+            .iter()
+            .filter(|function| {
+                function.kind == FunctionKind::Method
+                    && function.execution_kind == BytecodeFunctionKind::AsyncGenerator
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(private_methods.len(), 2);
+        assert!(
+            private_methods
+                .iter()
+                .all(|function| function.needs_home_object)
+        );
+
+        let branded_initializers = tree
+            .functions
+            .iter()
+            .filter(|function| function.class_private_brand)
+            .collect::<Vec<_>>();
+        assert_eq!(branded_initializers.len(), 2);
+        assert!(branded_initializers.iter().any(|function| {
+            function.class_initializer_kind == Some(ClassInitializerKind::InstanceFields)
+        }));
+        assert!(branded_initializers.iter().any(|function| {
+            function.class_initializer_kind == Some(ClassInitializerKind::StaticElements)
+        }));
+
+        let published = compile_unlinked_script(source).unwrap();
+        let private_definitions = published
+            .local_definitions()
+            .iter()
+            .filter(|definition| definition.kind == ClosureVariableKind::PrivateMethod)
+            .collect::<Vec<_>>();
+        assert_eq!(private_definitions.len(), 2);
+        assert!(
+            private_definitions
+                .iter()
+                .all(|definition| definition.is_lexical && definition.is_const)
+        );
+
+        let mut functions = Vec::new();
+        collect_functions(&published, &mut functions);
+        let published_methods = functions
+            .iter()
+            .copied()
+            .filter(|function| {
+                function.metadata().function_kind == BytecodeFunctionKind::AsyncGenerator
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(published_methods.len(), 2);
+        assert!(published_methods.iter().all(|function| {
+            function.metadata().needs_home_object
+                && function.metadata().has_prototype
+                && function.metadata().constructor_kind == ConstructorKind::None
+                && function
+                    .code()
+                    .iter()
+                    .filter(|instruction| matches!(instruction, Instruction::InitialYield))
+                    .count()
+                    == 1
+        }));
+        let mut accesses = (false, false, false);
+        for instruction in functions.iter().flat_map(|function| function.code()) {
+            accesses.0 |= matches!(instruction, Instruction::GetPrivateField(_));
+            accesses.1 |= matches!(instruction, Instruction::GetPrivateField2(_));
+            accesses.2 |= matches!(instruction, Instruction::PrivateIn(_));
+        }
+        assert_eq!(accesses, (true, true, true));
+    }
+
+    #[test]
     fn private_async_method_early_errors_and_line_terminators_match_quickjs() {
         for source in [
             "class C { async #same(){} static async #same(){} }",

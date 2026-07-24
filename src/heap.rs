@@ -3841,7 +3841,8 @@ fn validate_published_private_callable_initializer(
     let callable_shape_valid = match kind {
         PrivateCallableInitializerKind::Method => matches!(
             (child.metadata.function_kind, child.metadata.has_prototype),
-            (FunctionKind::Normal | FunctionKind::Async, false) | (FunctionKind::Generator, true)
+            (FunctionKind::Normal | FunctionKind::Async, false)
+                | (FunctionKind::Generator | FunctionKind::AsyncGenerator, true)
         ),
         PrivateCallableInitializerKind::Accessor => {
             child.metadata.function_kind == FunctionKind::Normal && !child.metadata.has_prototype
@@ -17685,6 +17686,7 @@ mod tests {
             (FunctionKind::Normal, false),
             (FunctionKind::Async, false),
             (FunctionKind::Generator, true),
+            (FunctionKind::AsyncGenerator, true),
         ] {
             let mut heap = Heap::new();
             let realm = bytecode_test_realm(&mut heap);
@@ -17699,46 +17701,46 @@ mod tests {
 
     #[test]
     fn linked_private_callables_reject_cross_role_execution_shapes() {
-        for (function_kind, has_prototype) in [
-            (FunctionKind::Normal, true),
-            (FunctionKind::AsyncGenerator, true),
-        ] {
-            let mut heap = Heap::new();
-            let realm = bytecode_test_realm(&mut heap);
-            let candidate =
-                linked_private_method_bytecode(&mut heap, realm, function_kind, has_prototype);
-            assert_eq!(
-                heap.allocate_function_bytecode(candidate),
-                Err(HeapError::Invariant(
-                    "private-method child has invalid HomeObject metadata"
-                )),
-                "{function_kind:?}/{has_prototype}"
-            );
-        }
-
         let mut heap = Heap::new();
         let realm = bytecode_test_realm(&mut heap);
-        let generator = allocate_private_callable_child(
-            &mut heap,
-            realm,
-            0,
-            true,
-            None,
-            FunctionKind::Generator,
-            true,
-        );
-        let mut getter =
-            linked_private_accessor_bytecode(&mut heap, realm, LinkedPrivateAccessorShape::Getter);
-        getter.constants = Rc::from([
-            BytecodeConstant::Function(generator),
-            getter.constants[1].clone(),
-        ]);
+        let candidate =
+            linked_private_method_bytecode(&mut heap, realm, FunctionKind::Normal, true);
         assert_eq!(
-            heap.allocate_function_bytecode(getter),
+            heap.allocate_function_bytecode(candidate),
             Err(HeapError::Invariant(
-                "private-accessor child has invalid HomeObject metadata"
+                "private-method child has invalid HomeObject metadata"
             ))
         );
+
+        for function_kind in [FunctionKind::Generator, FunctionKind::AsyncGenerator] {
+            let mut heap = Heap::new();
+            let realm = bytecode_test_realm(&mut heap);
+            let callable = allocate_private_callable_child(
+                &mut heap,
+                realm,
+                0,
+                true,
+                None,
+                function_kind,
+                true,
+            );
+            let mut getter = linked_private_accessor_bytecode(
+                &mut heap,
+                realm,
+                LinkedPrivateAccessorShape::Getter,
+            );
+            getter.constants = Rc::from([
+                BytecodeConstant::Function(callable),
+                getter.constants[1].clone(),
+            ]);
+            assert_eq!(
+                heap.allocate_function_bytecode(getter),
+                Err(HeapError::Invariant(
+                    "private-accessor child has invalid HomeObject metadata"
+                )),
+                "{function_kind:?}"
+            );
+        }
     }
 
     #[test]

@@ -224,47 +224,6 @@ fn ordinary_private_async_class_method_semantics_match_pinned_quickjs() {
     compare_success_cases("private async class method", SEMANTIC_CASES);
 }
 
-#[test]
-fn private_async_generators_remain_an_explicit_frontier() {
-    let source = r##"
-class C {
-    async *#method() { yield 42; }
-    read() { return this.#method(); }
-    static async *#staticMethod() { yield 42; }
-    static read() { return this.#staticMethod(); }
-}
-new C().read().next().then(function (result) {
-    C.read().next().then(function (staticResult) {
-        print(result.value + staticResult.value);
-    });
-});
-"##;
-    let oxide = run(env!("CARGO_BIN_EXE_qjs").as_ref(), source);
-    assert!(
-        !oxide.status.success(),
-        "quickjs-oxide accidentally accepted private async generators"
-    );
-
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!(
-            "SKIP private async-generator frontier oracle check: \
-             set QJS_ORACLE to pinned upstream qjs"
-        );
-        return;
-    };
-    let quickjs = run(&oracle, source);
-    assert!(
-        quickjs.status.success(),
-        "pinned QuickJS rejected private async generators: {}",
-        String::from_utf8_lossy(&quickjs.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&quickjs.stdout), "84\n");
-    assert!(
-        String::from_utf8_lossy(&oxide.stderr)
-            .contains("private async generator class methods are not implemented yet")
-    );
-}
-
 fn compare_success_cases(group: &str, cases: &[SuccessCase]) {
     let oracle = std::env::var_os("QJS_ORACLE");
     if oracle.is_none() {

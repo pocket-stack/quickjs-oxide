@@ -191,7 +191,8 @@ impl<'source> Parser<'source> {
         self.consume_statement_terminator()
     }
 
-    /// Parse and publish an ordinary, async, or generator private method.
+    /// Parse and publish an ordinary, async, generator, or async-generator
+    /// private method.
     /// The body is parsed before the namespace binding is registered, matching
     /// QuickJS's diagnostic priority when a malformed body and a duplicate
     /// private spelling coexist.
@@ -216,6 +217,9 @@ impl<'source> Parser<'source> {
                 self.parse_generator_method_definition(function_span)?
             }
             ClassMethodFlavor::Async => self.parse_async_method_definition(function_span)?,
+            ClassMethodFlavor::AsyncGenerator => {
+                self.parse_async_generator_method_definition(function_span)?
+            }
         };
         // A private method needs HomeObject even when its authored body never
         // mentions `super`: the runtime derives its unforgeable brand from the

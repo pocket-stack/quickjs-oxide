@@ -3,16 +3,16 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. The current R3ah milestone
-adds public instance/static class async-generator methods by composing
-QuickJS's Method grammar, class publication path, and existing async-generator
-driver. Pinned QuickJS passes all 573 focused candidate paths; 256 explicit
-frontier exclusions leave 317 paths and 606/606 passing Oxide variants.
-Private async-generator methods, `yield*`, `for await`, async iterator closing,
-modules, Proxy, and broad built-in coverage remain incomplete. The conservative
-full vector gains six passes to 43,686/102,037 with no previous-pass
-regression. Pinned QuickJS is the test oracle, never a product dependency. See
-the status documents for detailed bookkeeping.
+The `unsafe`-free engine is runnable but incomplete. The current R3ai milestone
+adds private instance/static class async-generator methods by composing
+QuickJS's Method+AsyncGenerator shape with the existing private HomeObject,
+brand, and async-generator driver paths. Pinned QuickJS passes all 433 focused
+candidate paths; 308 delegation/for-await exclusions leave 125 paths and
+242/242 passing Oxide variants. The complete 102,037-variant vector remains at
+43,686 passes with no transition. `yield*`, then `for await` and async iterator
+closing, are the next async-generator frontiers; modules, Proxy, and broad
+built-in coverage also remain incomplete. Pinned QuickJS is the test oracle,
+never a product dependency. See the status documents for detailed bookkeeping.
 
 ## Try it
 
@@ -51,6 +51,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-async-{function,arrow,object-method,class-method,private-class-method,generator}-core.sh
 ./scripts/test-test262-async-generator-object-method-core.sh
 ./scripts/test-test262-async-generator-class-method-core.sh
+./scripts/test-test262-async-generator-private-class-method-core.sh
 ./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ```
 

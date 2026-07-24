@@ -33,16 +33,17 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, private async-generator methods, delegation, async
-iteration-close, most `$262` host hooks, advanced RegExp pattern grammar,
-TypedArrays, and many other broad layers remain absent.
+surfaces. Modules, delegation, async iteration-close, most `$262` host hooks,
+advanced RegExp pattern grammar, TypedArrays, and many other broad layers
+remain absent.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
 ordinary private async class methods by R3ae; ordinary async-generator
 functions are measured by R3af and ordinary object-literal async-generator
 methods by R3ag; public instance/static class async-generator methods are
-measured by R3ah. Public fields, static blocks, private elements, and
+measured by R3ah and private instance/static class async-generator methods by
+R3ai. Public fields, static blocks, private elements, and
 public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
@@ -4568,6 +4569,72 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --locked --test oracle_async_generator_class_method -- --nocapture
 ```
 
+## R3ai private class async-generator methods
+
+R3ai adds private instance/static class `async *#method(){}` syntax by
+composing paths already used by pinned QuickJS. The parser retains the Method
+grammar role with AsyncGenerator execution; private publication keeps the
+existing typed method cell, HomeObject, side brand, and
+`InitializePrivateMethod` path. The callable's own generator prototype and
+Promise-backed FIFO request driver are the R3af implementation. No
+class-specific branch is added to `runtime.rs`.
+
+The semantic differential covers private instance/static names and extraction;
+function length, exact authored source, intrinsic and own-prototype shape,
+nonconstructibility, synchronous parameters and parameter failures, delayed
+body entry, queued `next` settlement, private-name `in`, access-time and
+resume-time brand checks, borrowed receivers, `await`, and `yield`. The
+publication verifier independently authenticates Method+AsyncGenerator
+metadata, the required own prototype and initial-yield shape, HomeObject, and
+instance/static brand initializers. `yield*`, `for await`, and `.return()`
+while a nested iterator is active remain fail-closed.
+
+The frozen focused core candidate universe contains 433 paths / 858
+metadata-selected variants: 322 direct private-method paths (162 instance and
+160 static), 68 class-element composition paths, 40 syntax paths, two
+object-literal negative paths, and one staging path. Pinned QuickJS 2026-06-04
+passes all 433. The explicit 308-path / 616-variant ledger excludes 300
+`yield*` paths and eight `for await` paths. Sixty-eight generated
+class-element composition filenames do not advertise delegation, but their
+private async-generator bodies use `yield * await value`; they therefore
+belong to the delegation ledger rather than this milestone. The resulting
+manifest contains 125 paths / 242 variants: 29 positive and 96 audited
+parse-negative paths, 22 async-harness and 103 synchronous paths, with 117
+dual-mode and eight strict-only paths. Oxide passes 242/242 with no non-pass
+outcome.
+
+The scoped-profile, candidate, exclusion-ledger, manifest, variant-key,
+canonical TSV, and JSONL SHA-256 values are
+`1b9d03b352d8e221cae6d0cc6c6c685776f16e0ca39c97c5fafc7b8bdca00f38`,
+`3b54cf73426d746a18563c75b4b827b7c4d25d3ee98e8908ca312b7db43dd909`,
+`3508dcaff42bb06de45f8b6678170a290fdf52bc932a7a6b8c4d5bd662e7839c`,
+`82bae49d063b9691d245f1a08d0e37583fc27282ceb878cca7c4e1129e6fcad6`,
+`e0f31c9d25a89ec4b6d8ca5b2a7ba13ab223d219d65c56e84f478a34f50b9bbb`,
+`d4b22c03825eeb1d0a6e6214a69eec9dbea3c81f2571b4f0d6aa7dd84c55c0ec`,
+and
+`c3ebc03b435d2ca8f534cd48970da8d703c4edd6dc8b02a4600a514030ae0d6f`.
+
+The exact R3ah/R3ai complete-vector join retains all 102,037 unique keys and
+all 45,140 runnable variants, with no outcome transition, same-outcome detail
+change, duplicate, missing, extra, or previous-pass regression. Passes remain
+43,686 and every summary count is unchanged; the full TSV/JSONL SHA-256 values
+therefore remain
+`2932f9d54df006def9ac2e9b01a8f9b7a5228bb58a42309d2f27b5fb26d81c18`
+and
+`7e7121200f385829a3676514ad091d26c39ee9780c46ed5f54c41dadff1ad193`.
+This zero-delta result is expected from a scoped private-method admission rather
+than a global async-profile widening. The next implementation priority is
+async-generator `yield*`, followed by `for await` and its iterator-close
+semantics.
+
+Reproduce the focused gate and semantic differential with:
+
+```sh
+./scripts/test-test262-async-generator-private-class-method-core.sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --locked --test oracle_async_generator_private_class_method -- --nocapture
+```
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -4952,6 +5019,13 @@ exclusions, Oxide passes all 606 variants across 317 admitted paths. Six
 already-admitted consumers advance from `unsupported-parser` to `pass` with no
 other summary change or previous-pass regression, bringing the conservative
 full vector to 43,686/102,037.
+R3ai composes private instance/static class async-generator methods from the
+same Method+AsyncGenerator execution with typed private callable cells,
+HomeObject, side brands, and the shared driver. Pinned QuickJS passes all 433
+focused candidates; after 300 `yield*` and eight `for await` exclusions, the
+scoped manifest passes all 242 variants across 125 paths. The exact complete
+vector remains byte-identical at 43,686/102,037. Delegation is now the next
+async-generator frontier, followed by `for await` and iterator closing.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -72,6 +72,10 @@ const TEST262_ASYNC_GENERATOR_CLASS_METHOD_CORE_PROFILE_SHA256: &str =
     "4c088b7e15be3bc1de099abf6560917c5677aa229fdc1799d0ff31367166ca63";
 const TEST262_ASYNC_GENERATOR_CLASS_METHOD_CORE_MANIFEST_SHA256: &str =
     "f7620c23730693b2b8b46ef85b2f373d9c5d0fd5c7da19b4af356ede77bcdc43";
+const TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256: &str =
+    "1b9d03b352d8e221cae6d0cc6c6c685776f16e0ca39c97c5fafc7b8bdca00f38";
+const TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_MANIFEST_SHA256: &str =
+    "82bae49d063b9691d245f1a08d0e37583fc27282ceb878cca7c4e1129e6fcad6";
 const TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256: &str =
     "f6634c6298e3d3fb740c0f55e8932ddc402ca8e120d8f0d2d9326f552186af2c";
 const TEST262_ASYNC_ARROW_CORE_MANIFEST_SHA256: &str =
@@ -758,6 +762,7 @@ enum OxideProfileKind {
     AsyncGeneratorCore,
     AsyncGeneratorObjectMethodCore,
     AsyncGeneratorClassMethodCore,
+    AsyncGeneratorPrivateClassMethodCore,
     AsyncArrowCore,
     AsyncObjectMethodCore,
     AsyncClassMethodCore,
@@ -836,6 +841,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-async-generator-class-method-core.conf"),
             OxideProfileKind::AsyncGeneratorClassMethodCore,
+        ),
+        (
+            root.join("tests/test262-async-generator-private-class-method-core.conf"),
+            OxideProfileKind::AsyncGeneratorPrivateClassMethodCore,
         ),
         (
             root.join("tests/test262-async-arrow-core.conf"),
@@ -1148,6 +1157,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             TEST262_ASYNC_GENERATOR_CLASS_METHOD_CORE_PROFILE_SHA256,
             "tests/test262-async-generator-class-method-core.txt",
             TEST262_ASYNC_GENERATOR_CLASS_METHOD_CORE_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::AsyncGeneratorPrivateClassMethodCore => verify_scoped_pinned_profile(
+            options,
+            "private async-generator class method core",
+            TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
+            "tests/test262-async-generator-private-class-method-core.txt",
+            TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_MANIFEST_SHA256,
         ),
         OxideProfileKind::AsyncArrowCore => verify_scoped_pinned_profile(
             options,
@@ -2031,6 +2047,7 @@ mod cli_tests {
         TEST262_ASYNC_GENERATOR_CLASS_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_OBJECT_METHOD_CORE_PROFILE_SHA256,
+        TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_OBJECT_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
         TEST262_CATCH_BINDING_PROFILE_SHA256, TEST262_CLASS_BASE_PROFILE_SHA256,
@@ -2208,6 +2225,13 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::AsyncGeneratorClassMethodCore
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-async-generator-private-class-method-core.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AsyncGeneratorPrivateClassMethodCore
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-async-arrow-core.conf")).unwrap(),
@@ -2681,6 +2705,65 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-async-generator-class-method-core.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_async_generator_private_class_method_profile_is_bound_to_its_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-async-generator-private-class-method-core.conf",
+            "--manifest",
+            "tests/test262-async-generator-private-class-method-core.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256
+        );
+
+        let tamper_error = verify_scoped_pinned_profile(
+            &options,
+            "private async-generator class method core",
+            TEST262_ASYNC_GENERATOR_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
+            "tests/test262-async-generator-private-class-method-core.txt",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(
+            tamper_error.contains("manifest checksum mismatch"),
+            "unexpected manifest tamper error: {tamper_error}"
+        );
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/expressions/class/elements/async-gen-private-method-static/await-as-binding-identifier.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-async-generator-private-class-method-core.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

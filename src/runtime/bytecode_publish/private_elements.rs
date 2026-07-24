@@ -404,7 +404,8 @@ fn verify_private_callable_initializer(
                 child.metadata().function_kind,
                 child.metadata().has_prototype
             ),
-            (FunctionKind::Normal | FunctionKind::Async, false) | (FunctionKind::Generator, true)
+            (FunctionKind::Normal | FunctionKind::Async, false)
+                | (FunctionKind::Generator | FunctionKind::AsyncGenerator, true)
         ),
         Some(_) => {
             child.metadata().function_kind == FunctionKind::Normal
@@ -832,7 +833,10 @@ mod tests {
         function_kind: FunctionKind,
         has_prototype: bool,
     ) -> UnlinkedFunction {
-        let code = if function_kind == FunctionKind::Generator {
+        let code = if matches!(
+            function_kind,
+            FunctionKind::Generator | FunctionKind::AsyncGenerator
+        ) {
             vec![
                 Instruction::InitialYield,
                 Instruction::Undefined,
@@ -1126,7 +1130,9 @@ mod tests {
             (FunctionKind::Normal, true, false),
             (FunctionKind::Generator, false, false),
             (FunctionKind::Async, false, true),
-            (FunctionKind::AsyncGenerator, true, false),
+            (FunctionKind::Async, true, false),
+            (FunctionKind::AsyncGenerator, true, true),
+            (FunctionKind::AsyncGenerator, false, false),
         ] {
             let function = private_method_function_with_shape(
                 code.clone(),
@@ -1149,20 +1155,23 @@ mod tests {
             );
         }
 
-        let generator =
-            private_method_function_with_shape(code, true, FunctionKind::Generator, true);
-        assert!(
-            verify_private_callable_initializer(
-                &generator,
-                2,
-                0,
-                Some(PrivateBindingRole::Primary),
-                &HashSet::new(),
-                "private-accessor",
-            )
-            .is_err()
-        );
-        assert!(verify_unlinked(&generator).is_ok());
+        for function_kind in [FunctionKind::Generator, FunctionKind::AsyncGenerator] {
+            let callable =
+                private_method_function_with_shape(code.clone(), true, function_kind, true);
+            assert!(
+                verify_private_callable_initializer(
+                    &callable,
+                    2,
+                    0,
+                    Some(PrivateBindingRole::Primary),
+                    &HashSet::new(),
+                    "private-accessor",
+                )
+                .is_err(),
+                "{function_kind:?}"
+            );
+            assert!(verify_unlinked(&callable).is_ok(), "{function_kind:?}");
+        }
     }
 
     #[test]
