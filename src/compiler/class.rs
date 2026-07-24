@@ -4,11 +4,13 @@
 //! scopes, heritage, base/derived constructors, `super()` and synchronous
 //! methods/accessors, fields, private methods/accessors, and static blocks.
 //! Public and private synchronous generator methods are supported; async
-//! forms remain explicit typed frontiers.
+//! public methods reuse the ordinary async method path. Private async methods
+//! and async generators remain explicit typed frontiers.
 
 use super::function::ParsedFunctionDefinition;
 use super::*;
 use crate::bytecode::DefineMethodKind;
+use crate::lexer::quickjs_simple_lookahead_has_line_terminator;
 
 mod fields;
 mod private;
@@ -230,12 +232,20 @@ impl<'source> Parser<'source> {
         if generator {
             self.advance()?;
         }
-        if !generator && self.contextual_class_async_method_ahead()? {
-            return Err(self.unsupported_here("async class methods are not implemented yet"));
+        let asynchronous = !generator && self.contextual_class_async_method_ahead()?;
+        if asynchronous {
+            self.advance()?;
+            if self.is_punctuator(Punctuator::Multiply) {
+                return Err(Error::unsupported(
+                    "async generator class methods are not implemented yet",
+                    source_span(function_span),
+                ));
+            }
         }
 
         let mut method_kind = DefineMethodKind::Method;
         if !generator
+            && !asynchronous
             && let TokenKind::Identifier(identifier) = &self.current().kind
             && !identifier.has_escape
             && matches!(identifier.value.as_str(), "get" | "set")
@@ -256,7 +266,7 @@ impl<'source> Parser<'source> {
         }
         let key = self.parse_class_property_key()?;
         if !self.is_punctuator(Punctuator::LeftParen) {
-            if generator {
+            if generator || asynchronous {
                 return Err(self.syntax_here("invalid property name"));
             }
             if method_kind != DefineMethodKind::Method {
@@ -275,6 +285,12 @@ impl<'source> Parser<'source> {
         }
 
         if let ClassPropertyKey::Private { name, span } = &key {
+            if asynchronous {
+                return Err(Error::unsupported(
+                    "private async class methods are not implemented yet",
+                    source_span(function_span),
+                ));
+            }
             if method_kind == DefineMethodKind::Method {
                 self.parse_private_class_method(
                     elements,
@@ -309,7 +325,7 @@ impl<'source> Parser<'source> {
             fixed.is_some_and(|name| *name == JsString::from_static("constructor"));
         if !is_static
             && is_constructor_name
-            && (method_kind != DefineMethodKind::Method || generator)
+            && (method_kind != DefineMethodKind::Method || generator || asynchronous)
         {
             return Err(Error::syntax(
                 "invalid method name",
@@ -325,6 +341,7 @@ impl<'source> Parser<'source> {
 
         if !is_static
             && !generator
+            && !asynchronous
             && method_kind == DefineMethodKind::Method
             && is_constructor_name
         {
@@ -340,6 +357,8 @@ impl<'source> Parser<'source> {
         } else {
             if generator {
                 self.parse_generator_method_definition(function_span)?;
+            } else if asynchronous {
+                self.parse_async_method_definition(function_span)?;
             } else {
                 self.parse_object_method_definition(function_span, method_kind)?;
             }
@@ -436,9 +455,15 @@ impl<'source> Parser<'source> {
             return Ok(false);
         }
         let next = self.class_token_after_current()?;
-        Ok(!next.line_terminator_before
+        let has_line_terminator = quickjs_simple_lookahead_has_line_terminator(
+            &self.lexer.source()[self.current().span.end.byte_offset..],
+        );
+        Ok(!has_line_terminator
             && (Self::class_property_name_starts(&next.kind)
-                || matches!(next.kind, TokenKind::Punctuator(Punctuator::Multiply))))
+                || matches!(
+                    next.kind,
+                    TokenKind::Punctuator(Punctuator::Multiply | Punctuator::Semicolon)
+                )))
     }
 
     fn class_property_name_starts(kind: &TokenKind<'_>) -> bool {

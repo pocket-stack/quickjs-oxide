@@ -291,6 +291,138 @@ fn async_object_methods_publish_method_grammar_async_execution_and_full_source_r
 }
 
 #[test]
+fn async_class_methods_reuse_method_publication_and_preserve_full_source_ranges() {
+    let source = concat!(
+        "class Base { value() { return this.seed; } static value() { return this.seed; } }\n",
+        "class Class extends Base {\n",
+        "  async fixed(value = super.value()) { return await value; }\n",
+        "  static async ['computed'](value = super.value()) { return await value; }\n",
+        "}",
+    );
+    let tree = Parser::parse(
+        source,
+        JsString::from_static("<async-class-method-kind-test>"),
+    )
+    .unwrap();
+    let methods = tree
+        .functions
+        .iter()
+        .filter(|function| {
+            function.kind == FunctionKind::Method
+                && function.execution_kind == BytecodeFunctionKind::Async
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(methods.len(), 2);
+    assert!(methods.iter().all(|function| {
+        function.in_function_body
+            && function.super_allowed
+            && !function.super_call_allowed
+            && function
+                .ops
+                .iter()
+                .filter(|operation| {
+                    matches!(operation.op, super::IrOp::Bytecode(Instruction::Await))
+                })
+                .count()
+                == 1
+    }));
+    for (function, authored) in methods.iter().zip([
+        "async fixed(value = super.value()) { return await value; }",
+        "async ['computed'](value = super.value()) { return await value; }",
+    ]) {
+        let start = source.find(authored).expect("authored async class method");
+        let range = function
+            .source
+            .range
+            .as_ref()
+            .expect("async class method source range");
+        assert_eq!(
+            &source[function.source.span.start.byte_offset..function.source.span.end.byte_offset],
+            "async"
+        );
+        assert_eq!(function.source.definition.as_usize(), start);
+        assert_eq!(range.start.as_usize(), start);
+        assert_eq!(range.end.as_usize(), start + authored.len());
+    }
+
+    let script = compile_unlinked_script(source).unwrap();
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethod {
+            kind: DefineMethodKind::Method,
+            enumerable: false,
+            ..
+        }
+    )));
+    assert!(script.code().iter().any(|instruction| matches!(
+        instruction,
+        Instruction::DefineMethodComputed {
+            kind: DefineMethodKind::Method,
+            enumerable: false,
+        }
+    )));
+    let published = script
+        .constants()
+        .iter()
+        .filter_map(|constant| constant.as_child())
+        .filter(|function| function.metadata().function_kind == BytecodeFunctionKind::Async)
+        .collect::<Vec<_>>();
+    assert_eq!(published.len(), 2);
+    assert!(published.iter().all(|function| {
+        function.metadata().needs_home_object
+            && !function.metadata().has_prototype
+            && function.metadata().constructor_kind == ConstructorKind::None
+    }));
+}
+
+#[test]
+fn async_class_method_contextual_boundaries_match_quickjs() {
+    for source in [
+        "class C { async method(){ return await 1; } }",
+        "class C { static async ['computed'](){ return await 1; } }",
+        "class C { async await(){ return 1; } static async constructor(){ return 2; } }",
+        "class C { async/*\u{2028}*/method(){ return 1; } }",
+        "class C { async/*\u{2029}*/method(){ return 1; } }",
+        "class C { async(){} static async(){} }",
+        "class C { async\nmethod(){} }",
+        "class C { async/*\n*/method(){} }",
+        "class C { async\u{2028}method(){} }",
+        "class C { async\u{2029}method(){} }",
+    ] {
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("async class source rejected {source:?}: {error}"));
+    }
+
+    for source in [
+        "class C { async constructor(){} }",
+        "class C { static async prototype(){} }",
+        "class C { async get method(){} }",
+        "class C { async method(value = await 1){} }",
+        r"class C { async method(\u0061wait){} }",
+        r"class C { \u0061sync method(){} }",
+        "class C { async; }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Syntax,
+            "{source:?}"
+        );
+    }
+    for source in [
+        "class C { async #private(){} }",
+        "class C { static async #private(){} }",
+        "class C { async *generator(){} }",
+        "class C { static async *generator(){} }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Unsupported,
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
 fn async_object_method_contextual_boundaries_match_quickjs() {
     for source in [
         "({ async method(){ return await 1; } });",
@@ -323,16 +455,12 @@ fn async_object_method_contextual_boundaries_match_quickjs() {
             "{source:?}"
         );
     }
-    for source in [
-        "({ async *generator(){} });",
-        "class C { async method(){} }",
-    ] {
-        assert_eq!(
-            compile_unlinked_script(source).unwrap_err().kind(),
-            ErrorKind::Unsupported,
-            "{source:?}"
-        );
-    }
+    let source = "({ async *generator(){} });";
+    assert_eq!(
+        compile_unlinked_script(source).unwrap_err().kind(),
+        ErrorKind::Unsupported,
+        "{source:?}"
+    );
 }
 
 #[test]
@@ -516,7 +644,7 @@ fn async_function_lexical_context_and_fail_closed_neighbors_match_quickjs() {
     for source in [
         "async function* generator(){}",
         "(async function*(){})",
-        "class C { async method(){} }",
+        "class C { async *method(){} }",
     ] {
         assert_eq!(
             compile_unlinked_script(source).unwrap_err().kind(),

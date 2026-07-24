@@ -195,11 +195,21 @@ fn base_class_observation_matches_pinned_quickjs() {
 }
 
 #[test]
-fn remaining_async_class_family_stays_a_typed_frontier() {
-    let source = "class C { async method() {} }";
-    let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert!(error.message().contains("async class methods"), "{error}");
+fn remaining_private_async_and_async_generator_class_families_stay_typed_frontiers() {
+    for (source, expected) in [
+        (
+            "class C { async #method() {} }",
+            "private async class methods",
+        ),
+        (
+            "class C { async *method() {} }",
+            "async generator class methods",
+        ),
+    ] {
+        let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+        assert!(error.message().contains(expected), "{source}: {error}");
+    }
 }
 
 #[test]
