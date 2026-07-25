@@ -316,11 +316,9 @@ const CASES: &[Case] = &[
 ];
 
 // These vectors allocate the largest temporary argument Arrays accepted by
-// QuickJS. Keep them out of the ordinary expectation/differential loops: the
-// immutable-shape representation currently makes growing a 65K dense Array
-// quadratic. The shared `build_arg_list` limit remains a fast mandatory oracle
-// in `oracle_function_apply`; this end-to-end stress test stays available for
-// manual runs until dense bulk growth lands.
+// QuickJS. R3am makes unique-shape growth amortized linear, but they remain
+// explicit manual stress coverage; the shared `build_arg_list` limit stays a
+// fast mandatory oracle in `oracle_function_apply`.
 const BOUNDARY_CASES: &[Case] = &[
     Case {
         group: "argument limit",
@@ -456,7 +454,7 @@ fn argument_spread_matches_pinned_quickjs() {
 }
 
 #[test]
-#[ignore = "65K temporary Array growth is quadratic; run manually after dense bulk growth lands"]
+#[ignore = "65K temporary Array stress vector; run manually for milestone validation"]
 fn argument_spread_runtime_argument_limit_matches_pinned_quickjs() {
     let oracle = std::env::var_os("QJS_ORACLE");
     let mut failures = Vec::new();

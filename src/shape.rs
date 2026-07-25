@@ -1,12 +1,13 @@
-//! Immutable ordinary-object shape metadata.
+//! Ordinary-object shape metadata with shared-shape copy-on-write.
 //!
 //! QuickJS stores an object's prototype and its ordered property keys/flags in
 //! a `JSShape`, while the object owns a parallel array of property payloads.
-//! This module keeps the same semantic split.  Shapes are immutable after
-//! construction: adding, replacing, or deleting a property derives a new
-//! shape.  That is a deliberate safe-Rust rewrite strategy for QuickJS's
-//! shared-shape and shape-transition machinery.  It preserves observable
-//! property order while avoiding mutation through aliases.
+//! This module keeps the same semantic split. Shared shapes are immutable:
+//! adding, replacing, or deleting a property derives a new shape. A shape
+//! proven to have exactly one object owner may append a new property in place,
+//! after its weak interner signature is removed. This copy-on-write strategy
+//! preserves observable property order without mutation through aliases and
+//! keeps long unique-object construction amortized linear.
 //!
 //! Atom reference-count ownership is intentionally outside this metadata
 //! type.  The runtime's shape interner/heap must retain atoms admitted to a
@@ -107,14 +108,14 @@ impl fmt::Display for ShapeError {
 
 impl Error for ShapeError {}
 
-/// Immutable prototype and property-layout metadata shared by objects.
+/// Prototype and property-layout metadata shared copy-on-write by objects.
 ///
 /// `entries` is insertion ordered.  `lookup` is derived exclusively by the
 /// validated constructor and maps each key to its parallel payload-slot index.
 #[derive(Clone, Debug)]
 pub struct Shape {
     prototype: Option<ObjectId>,
-    entries: Box<[ShapeEntry]>,
+    entries: Vec<ShapeEntry>,
     lookup: HashMap<Atom, u32>,
 }
 
@@ -147,7 +148,7 @@ impl Shape {
 
         Ok(Self {
             prototype,
-            entries: ordered.into_boxed_slice(),
+            entries: ordered,
             lookup,
         })
     }
@@ -193,9 +194,33 @@ impl Shape {
         lookup.insert(atom, index);
         Ok(Self {
             prototype: self.prototype,
-            entries: entries.into_boxed_slice(),
+            entries,
             lookup,
         })
+    }
+
+    /// Append one property to a shape which is exclusively owned by a single
+    /// object.
+    ///
+    /// The runtime authenticates exclusive ownership and atom liveness before
+    /// reaching this mutation boundary. Keeping spare `Vec` capacity makes a
+    /// long sequence of unique-object additions amortized linear while shared
+    /// shapes continue to use immutable transitions.
+    pub(crate) fn unique_append_index(&self, atom: Atom) -> Result<u32, ShapeError> {
+        if atom.is_null() {
+            return Err(ShapeError::NullAtom);
+        }
+        if self.lookup.contains_key(&atom) {
+            return Err(ShapeError::DuplicateAtom(atom));
+        }
+        u32::try_from(self.entries.len()).map_err(|_| ShapeError::PropertyIndexOverflow)
+    }
+
+    pub(crate) fn append_unique_property(&mut self, atom: Atom, flags: PropertyFlags, index: u32) {
+        debug_assert_eq!(usize::try_from(index), Ok(self.entries.len()));
+        debug_assert!(!atom.is_null() && !self.lookup.contains_key(&atom));
+        self.entries.push(ShapeEntry { atom, flags });
+        self.lookup.insert(atom, index);
     }
 
     /// Derive a shape with updated flags for an existing property.
@@ -211,7 +236,7 @@ impl Shape {
         entries[index].flags = flags;
         Ok(Self {
             prototype: self.prototype,
-            entries: entries.into_boxed_slice(),
+            entries,
             lookup: self.lookup.clone(),
         })
     }

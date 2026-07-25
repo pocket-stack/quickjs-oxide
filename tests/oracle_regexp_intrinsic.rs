@@ -386,6 +386,24 @@ const EXEC_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const CALLABLE_PROXY_EXEC_SOURCE: &str = r#"(function(){
+    var log=[];
+    var exec=new Proxy(function(value){
+        log.push("body:"+value);
+        return null;
+    },{
+        apply:function(target,receiver,argumentsList){
+            log.push("apply:"+(receiver.exec===exec));
+            return Reflect.apply(target,receiver,argumentsList);
+        }
+    });
+    var receiver={exec:exec};
+    return [
+        RegExp.prototype.test.call(receiver,"x"),
+        log.join(",")
+    ].join("|");
+})()"#;
+
 const TEST_CASES: &[(&str, &str)] = &[
     (
         "RegExp test uses custom exec and treats only null as failure",
@@ -400,6 +418,10 @@ const TEST_CASES: &[(&str, &str)] = &[
             var second=RegExp.prototype.test.call(receiver,input);
             return [first,second,log].join("|");
         })()"#,
+    ),
+    (
+        "RegExp test calls a callable Proxy exec through its apply trap",
+        CALLABLE_PROXY_EXEC_SOURCE,
     ),
     (
         "RegExp test rejects primitive custom exec results noncallable exec and nullish receivers",
@@ -520,6 +542,21 @@ fn regexp_exec_results_last_index_and_order_match_pinned_quickjs() {
 #[test]
 fn regexp_test_and_abstract_exec_match_pinned_quickjs() {
     compare_cases("RegExp test", TEST_CASES);
+}
+
+#[test]
+fn regexp_test_calls_callable_proxy_exec_without_an_oracle() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_eq!(
+        observe_rust_eval(
+            &runtime,
+            &mut context,
+            CALLABLE_PROXY_EXEC_SOURCE,
+            "callable Proxy exec regression",
+        ),
+        "return|string|false|apply:true,body:x",
+    );
 }
 
 #[test]

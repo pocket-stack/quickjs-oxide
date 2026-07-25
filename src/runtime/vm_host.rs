@@ -794,7 +794,8 @@ impl RuntimeVmHost {
             } if bytecode.bytecode_id() == data.bytecode => closure_slots,
             CallableExecution::Bytecode { .. }
             | CallableExecution::Native { .. }
-            | CallableExecution::Bound { .. } => {
+            | CallableExecution::Bound { .. }
+            | CallableExecution::Proxy => {
                 return Err(RuntimeError::Invariant(
                     "resumable activation current function changed bytecode identity",
                 ));
@@ -1596,37 +1597,32 @@ impl RuntimeVmHost {
         }
     }
 
-    fn finish_property_get_action(
-        &mut self,
-        action: PropertyGetAction,
-    ) -> Result<Completion, Error> {
-        match action {
-            PropertyGetAction::Complete(value) => Ok(Completion::Return(value)),
-            PropertyGetAction::Call { getter, receiver } => self
-                .runtime
-                .call_internal(self.current_realm, &getter, receiver, &[])
-                .map_err(runtime_error_to_vm_error),
-        }
-    }
-
-    fn finish_property_set_action(
-        &mut self,
-        action: PropertySetAction,
+    fn finish_internal_set(
+        &self,
+        result: NativeConversion<InternalSetResult>,
         key: &PropertyKey,
         strict: bool,
     ) -> Result<Completion, Error> {
-        match action {
-            PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Throw(value) => Ok(Completion::Throw(value)),
-            PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
+        match result {
+            NativeConversion::Value(InternalSetResult::Accepted) => {
+                Ok(Completion::Return(Value::Undefined))
+            }
+            NativeConversion::Value(_) if !strict => Ok(Completion::Return(Value::Undefined)),
+            NativeConversion::Value(InternalSetResult::RejectedProxyTrap) => {
+                Err(Error::new(ErrorKind::Type, "proxy: cannot set property"))
+            }
+            NativeConversion::Value(InternalSetResult::Rejected(
+                PropertySetRejection::ReadOnly,
+            )) => {
                 let error = self
                     .runtime
                     .native_atom_error(ErrorKind::Type, "'", key, "' is read-only")
                     .map_err(runtime_error_to_vm_error)?;
                 Err(error)
             }
-            PropertySetAction::Rejected(PropertySetRejection::ArrayLengthReadOnly) => {
+            NativeConversion::Value(InternalSetResult::Rejected(
+                PropertySetRejection::ArrayLengthReadOnly,
+            )) => {
                 let length = self
                     .runtime
                     .intern_property_key("length")
@@ -1637,26 +1633,19 @@ impl RuntimeVmHost {
                     .map_err(runtime_error_to_vm_error)?;
                 Err(error)
             }
-            PropertySetAction::Rejected(PropertySetRejection::NotConfigurable) => {
-                Err(Error::new(ErrorKind::Type, "not configurable"))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NoSetter) => {
-                Err(Error::new(ErrorKind::Type, "no setter for property"))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NotExtensible) => {
-                Err(Error::new(ErrorKind::Type, "object is not extensible"))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NotObject) => {
-                Err(Error::new(ErrorKind::Type, "not an object"))
-            }
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => self
-                .runtime
-                .call_internal(self.current_realm, &setter, receiver, &[argument])
-                .map_err(runtime_error_to_vm_error),
+            NativeConversion::Value(InternalSetResult::Rejected(
+                PropertySetRejection::NotConfigurable,
+            )) => Err(Error::new(ErrorKind::Type, "not configurable")),
+            NativeConversion::Value(InternalSetResult::Rejected(
+                PropertySetRejection::NoSetter,
+            )) => Err(Error::new(ErrorKind::Type, "no setter for property")),
+            NativeConversion::Value(InternalSetResult::Rejected(
+                PropertySetRejection::NotExtensible,
+            )) => Err(Error::new(ErrorKind::Type, "object is not extensible")),
+            NativeConversion::Value(InternalSetResult::Rejected(
+                PropertySetRejection::NotObject,
+            )) => Err(Error::new(ErrorKind::Type, "not an object")),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
         }
     }
 
@@ -1691,68 +1680,10 @@ impl RuntimeVmHost {
                     ))
                 }
             }
-            Value::Object(object) => {
-                let action = self
-                    .runtime
-                    .prepare_get_property_with_receiver(object, key, base.clone())
-                    .map_err(runtime_error_to_vm_error)?;
-                self.finish_property_get_action(action)
-            }
-            Value::Bool(_)
-            | Value::Int(_)
-            | Value::Float(_)
-            | Value::BigInt(_)
-            | Value::Symbol(_) => {
-                let kind = match &base {
-                    Value::Bool(_) => PrimitiveKind::Boolean,
-                    Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
-                    Value::BigInt(_) => PrimitiveKind::BigInt,
-                    Value::Symbol(_) => PrimitiveKind::Symbol,
-                    _ => unreachable!(),
-                };
-                let prototype = self
-                    .runtime
-                    .primitive_prototype_for_realm(self.current_realm, kind)
-                    .map_err(runtime_error_to_vm_error)?;
-                let action = self
-                    .runtime
-                    .prepare_get_property_with_receiver(&prototype, key, base.clone())
-                    .map_err(runtime_error_to_vm_error)?;
-                self.finish_property_get_action(action)
-            }
-            Value::String(string) => {
-                let action = self
-                    .runtime
-                    .prepare_get_string_property_with_receiver(
-                        self.current_realm,
-                        string,
-                        key,
-                        base.clone(),
-                    )
-                    .map_err(runtime_error_to_vm_error)?;
-                self.finish_property_get_action(action)
-            }
-        }
-    }
-
-    fn set_property_with_key(
-        &mut self,
-        base: Value,
-        key: &PropertyKey,
-        value: Value,
-        strict: bool,
-    ) -> Result<Completion, Error> {
-        let action = match &base {
             Value::Object(object) => self
                 .runtime
-                .prepare_set_property_with_receiver_in_realm(
-                    Some(self.current_realm),
-                    object,
-                    key,
-                    value,
-                    base.clone(),
-                )
-                .map_err(runtime_error_to_vm_error)?,
+                .internal_get(self.current_realm, object, key, base.clone())
+                .map_err(runtime_error_to_vm_error),
             Value::Bool(_)
             | Value::Int(_)
             | Value::Float(_)
@@ -1770,14 +1701,52 @@ impl RuntimeVmHost {
                     .primitive_prototype_for_realm(self.current_realm, kind)
                     .map_err(runtime_error_to_vm_error)?;
                 self.runtime
-                    .prepare_set_property_with_receiver_in_realm(
-                        Some(self.current_realm),
-                        &prototype,
-                        key,
-                        value,
-                        base.clone(),
-                    )
-                    .map_err(runtime_error_to_vm_error)?
+                    .internal_get(self.current_realm, &prototype, key, base.clone())
+                    .map_err(runtime_error_to_vm_error)
+            }
+            Value::String(string) => self
+                .runtime
+                .get_string_property_with_receiver(self.current_realm, string, key, base.clone())
+                .map_err(runtime_error_to_vm_error),
+        }
+    }
+
+    fn set_property_with_key(
+        &mut self,
+        base: Value,
+        key: &PropertyKey,
+        value: Value,
+        strict: bool,
+    ) -> Result<Completion, Error> {
+        if let Value::Object(object) = &base {
+            let result = self
+                .runtime
+                .internal_set(self.current_realm, object, key, value, base.clone())
+                .map_err(runtime_error_to_vm_error)?;
+            return self.finish_internal_set(result, key, strict);
+        }
+        match &base {
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::BigInt(_)
+            | Value::Symbol(_) => {
+                let kind = match &base {
+                    Value::Bool(_) => PrimitiveKind::Boolean,
+                    Value::Int(_) | Value::Float(_) => PrimitiveKind::Number,
+                    Value::BigInt(_) => PrimitiveKind::BigInt,
+                    Value::Symbol(_) => PrimitiveKind::Symbol,
+                    _ => unreachable!(),
+                };
+                let prototype = self
+                    .runtime
+                    .primitive_prototype_for_realm(self.current_realm, kind)
+                    .map_err(runtime_error_to_vm_error)?;
+                let result = self
+                    .runtime
+                    .internal_set(self.current_realm, &prototype, key, value, base.clone())
+                    .map_err(runtime_error_to_vm_error)?;
+                self.finish_internal_set(result, key, strict)
             }
             Value::Null | Value::Undefined => {
                 let suffix = if matches!(base, Value::Null) {
@@ -1789,7 +1758,7 @@ impl RuntimeVmHost {
                     .runtime
                     .native_atom_error(ErrorKind::Type, "cannot set property '", key, suffix)
                     .map_err(runtime_error_to_vm_error)?;
-                return Err(error);
+                Err(error)
             }
             Value::String(_) => {
                 // Primitive String [[Set]] walks the realm's class prototype
@@ -1801,18 +1770,14 @@ impl RuntimeVmHost {
                     .runtime
                     .primitive_prototype_for_realm(self.current_realm, PrimitiveKind::String)
                     .map_err(runtime_error_to_vm_error)?;
-                self.runtime
-                    .prepare_set_property_with_receiver_in_realm(
-                        Some(self.current_realm),
-                        &prototype,
-                        key,
-                        value,
-                        base.clone(),
-                    )
-                    .map_err(runtime_error_to_vm_error)?
+                let result = self
+                    .runtime
+                    .internal_set(self.current_realm, &prototype, key, value, base.clone())
+                    .map_err(runtime_error_to_vm_error)?;
+                self.finish_internal_set(result, key, strict)
             }
-        };
-        self.finish_property_set_action(action, key, strict)
+            Value::Object(_) => unreachable!("object Set returned above"),
+        }
     }
 
     fn delete_property_with_key(
@@ -1825,10 +1790,16 @@ impl RuntimeVmHost {
             Value::Null | Value::Undefined => {
                 return Err(Error::new(ErrorKind::Type, "cannot convert to object"));
             }
-            Value::Object(object) => self
-                .runtime
-                .delete_property(object, key)
-                .map_err(runtime_error_to_vm_error)?,
+            Value::Object(object) => {
+                match self
+                    .runtime
+                    .internal_delete_property(self.current_realm, object, key)
+                    .map_err(runtime_error_to_vm_error)?
+                {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+            }
             Value::String(string) => {
                 let index = self
                     .runtime
@@ -2187,7 +2158,7 @@ impl VmHost for RuntimeVmHost {
                 done: true,
             });
         }
-        match self.runtime.next_for_in(&iterator) {
+        match self.runtime.next_for_in(self.current_realm, &iterator) {
             Ok((value, done)) => Ok(ForInNextOutcome::Result { value, done }),
             Err(RuntimeError::Exception) => {
                 Ok(ForInNextOutcome::Throw(self.take_for_in_exception()?))
@@ -2520,6 +2491,8 @@ impl VmHost for RuntimeVmHost {
             ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
+            ObjectPayload::Proxy(proxy) if proxy.is_callable => "function",
+            ObjectPayload::Proxy(_) => "object",
             ObjectPayload::Ordinary
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
@@ -3411,13 +3384,18 @@ impl VmHost for RuntimeVmHost {
             .runtime
             .global_object_for_realm(self.current_realm)
             .map_err(runtime_error_to_vm_error)?;
-        // QuickJS `JS_DeleteGlobalVar` performs HasProperty first. Ordinary
-        // objects reach the same Boolean result without it, but the step is
-        // observable through the future Proxy/exotic prototype path.
-        let exists = self
+        // QuickJS `JS_DeleteGlobalVar` performs completion-aware HasProperty
+        // first. The actual Delete still targets the ordinary global object,
+        // but a Proxy in its prototype chain can observe or abruptly complete
+        // this probe.
+        let exists = match self
             .runtime
-            .has_property(&global_object, &key)
-            .map_err(runtime_error_to_vm_error)?;
+            .internal_has_property(self.current_realm, &global_object, &key)
+            .map_err(runtime_error_to_vm_error)?
+        {
+            NativeConversion::Value(exists) => exists,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
         let deleted = if exists {
             self.runtime
                 .delete_property(&global_object, &key)
@@ -3509,10 +3487,14 @@ impl VmHost for RuntimeVmHost {
             .runtime
             .global_object_for_realm(self.current_realm)
             .map_err(runtime_error_to_vm_error)?;
-        let exists = self
+        let exists = match self
             .runtime
-            .has_property(&global_object, &key)
-            .map_err(runtime_error_to_vm_error)?;
+            .internal_has_property(self.current_realm, &global_object, &key)
+            .map_err(runtime_error_to_vm_error)?
+        {
+            NativeConversion::Value(exists) => exists,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
         if strict && !exists {
             let error = self
                 .runtime
@@ -3520,53 +3502,17 @@ impl VmHost for RuntimeVmHost {
                 .map_err(runtime_error_to_vm_error)?;
             return Err(error);
         }
-        match self
+        let result = self
             .runtime
-            .prepare_set_property_in_realm(self.current_realm, &global_object, &key, value)
-            .map_err(runtime_error_to_vm_error)?
-        {
-            PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Throw(value) => Ok(Completion::Throw(value)),
-            PropertySetAction::Rejected(_) if !strict => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
-                let error = self
-                    .runtime
-                    .native_atom_error(ErrorKind::Type, "'", &key, "' is read-only")
-                    .map_err(runtime_error_to_vm_error)?;
-                Err(error)
-            }
-            PropertySetAction::Rejected(PropertySetRejection::ArrayLengthReadOnly) => {
-                let length = self
-                    .runtime
-                    .intern_property_key("length")
-                    .map_err(|error| Error::internal(error.to_string()))?;
-                let error = self
-                    .runtime
-                    .native_atom_error(ErrorKind::Type, "'", &length, "' is read-only")
-                    .map_err(runtime_error_to_vm_error)?;
-                Err(error)
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NotConfigurable) => {
-                Err(Error::new(ErrorKind::Type, "not configurable"))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NoSetter) => {
-                Err(Error::new(ErrorKind::Type, "no setter for property"))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NotExtensible) => {
-                Err(Error::new(ErrorKind::Type, "object is not extensible"))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NotObject) => Err(Error::internal(
-                "global object assignment produced a primitive receiver rejection",
-            )),
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => self
-                .runtime
-                .call_internal(self.current_realm, &setter, receiver, &[argument])
-                .map_err(runtime_error_to_vm_error),
-        }
+            .internal_set(
+                self.current_realm,
+                &global_object,
+                &key,
+                value,
+                Value::Object(global_object.clone()),
+            )
+            .map_err(runtime_error_to_vm_error)?;
+        self.finish_internal_set(result, &key, strict)
     }
 
     fn initialize_private_name(&mut self, index: u16) -> Result<(), Error> {
@@ -3776,12 +3722,8 @@ impl VmHost for RuntimeVmHost {
         this_value: Value,
         arguments: Vec<Value>,
     ) -> Result<Completion, Error> {
-        let callable = self
-            .runtime
-            .callable_from_value(function)
-            .map_err(runtime_error_to_vm_error)?;
         self.runtime
-            .call_internal(self.current_realm, &callable, this_value, &arguments)
+            .call_value_internal(self.current_realm, function, this_value, &arguments)
             .map_err(runtime_error_to_vm_error)
     }
 

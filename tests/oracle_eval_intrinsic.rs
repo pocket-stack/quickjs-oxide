@@ -1042,6 +1042,160 @@ const EXPECTED_R1Z_NESTED_DIRECT_EVAL: &[&str] = &[
     "relay=42|42|42|42",
 ];
 
+const GLOBAL_PROXY_BINDING_PROBE: &str = r#"
+(function () {
+    var originalPrototype = Object.getPrototypeOf(globalThis);
+    var observations = [];
+    var log;
+    var proxy;
+    var target;
+    var value;
+
+    function restore() {
+        Object.setPrototypeOf(globalThis, originalPrototype);
+    }
+    function thrownValue(thunk) {
+        try {
+            thunk();
+            return "none";
+        } catch (error) {
+            if (error !== null && typeof error === "object")
+                return error.name + ":" + error.message;
+            return typeof error + ":" + String(error);
+        }
+    }
+
+    log = [];
+    proxy = new Proxy({ proxyEvalRead: 42 }, {
+        get: function (target, key, receiver) {
+            log.push("get:" + String(key));
+            return Reflect.get(target, key, receiver);
+        }
+    });
+    Object.setPrototypeOf(globalThis, proxy);
+    value = eval("proxyEvalRead");
+    restore();
+    observations.push("read=" + value + ":" + log.join(","));
+
+    log = [];
+    proxy = new Proxy({ proxyFunctionRead: 84 }, {
+        get: function (target, key, receiver) {
+            log.push("get:" + String(key));
+            return Reflect.get(target, key, receiver);
+        }
+    });
+    Object.setPrototypeOf(globalThis, proxy);
+    value = Function("return proxyFunctionRead")();
+    restore();
+    observations.push("functionRead=" + value + ":" + log.join(","));
+
+    proxy = new Proxy({}, {});
+    Object.setPrototypeOf(globalThis, proxy);
+    value = eval("proxyEvalMissing");
+    restore();
+    observations.push("missing=" + String(value));
+
+    proxy = new Proxy({}, {
+        get: function () {
+            throw 19;
+        }
+    });
+    Object.setPrototypeOf(globalThis, proxy);
+    value = thrownValue(function () {
+        eval("proxyEvalThrowingRead");
+    });
+    restore();
+    observations.push("getThrow=" + value);
+
+    log = [];
+    target = { proxyEvalWrite: 1 };
+    proxy = new Proxy(target, {
+        has: function (target, key) {
+            log.push("has:" + String(key));
+            return Reflect.has(target, key);
+        },
+        set: function (target, key, next, receiver) {
+            log.push("set:" + String(key) + ":" + next);
+            return Reflect.set(target, key, next, receiver);
+        }
+    });
+    Object.setPrototypeOf(globalThis, proxy);
+    eval("proxyEvalWrite = 43");
+    value = Object.prototype.hasOwnProperty.call(globalThis, "proxyEvalWrite");
+    delete globalThis.proxyEvalWrite;
+    restore();
+    observations.push("write=" + log.join(",") + ":" + value + ":" + target.proxyEvalWrite);
+
+    proxy = new Proxy({ proxyEvalHasThrow: 1 }, {
+        has: function () {
+            throw 17;
+        }
+    });
+    Object.setPrototypeOf(globalThis, proxy);
+    value = thrownValue(function () {
+        eval("proxyEvalHasThrow = 2");
+    });
+    delete globalThis.proxyEvalHasThrow;
+    restore();
+    observations.push("hasThrow=" + value);
+
+    log = [];
+    proxy = new Proxy({ proxyEvalDelete: 1 }, {
+        has: function (target, key) {
+            log.push("has:" + String(key));
+            return Reflect.has(target, key);
+        }
+    });
+    Object.setPrototypeOf(globalThis, proxy);
+    value = eval("delete proxyEvalDelete");
+    restore();
+    observations.push("delete=" + value + ":" + log.join(","));
+
+    target = {};
+    Object.defineProperty(target, "proxyEvalReadonly", {
+        value: 1,
+        writable: false,
+        configurable: true
+    });
+    proxy = new Proxy(target, {});
+    Object.setPrototypeOf(globalThis, proxy);
+    value = thrownValue(function () {
+        eval("'use strict'; proxyEvalReadonly = 2");
+    });
+    restore();
+    observations.push("fallbackReject=" + value);
+
+    proxy = new Proxy({ proxyEvalTrapReject: 1 }, {
+        has: function () {
+            return true;
+        },
+        set: function () {
+            return false;
+        }
+    });
+    Object.setPrototypeOf(globalThis, proxy);
+    value = thrownValue(function () {
+        eval("'use strict'; proxyEvalTrapReject = 2");
+    });
+    restore();
+    observations.push("trapReject=" + value);
+
+    return observations.join("|");
+})()
+"#;
+
+const EXPECTED_GLOBAL_PROXY_BINDINGS: &str = concat!(
+    "read=42:get:proxyEvalRead|",
+    "functionRead=84:get:proxyFunctionRead|",
+    "missing=undefined|",
+    "getThrow=number:19|",
+    "write=has:proxyEvalWrite,set:proxyEvalWrite:43:true:1|",
+    "hasThrow=number:17|",
+    "delete=true:has:proxyEvalDelete|",
+    "fallbackReject=TypeError:'proxyEvalReadonly' is read-only|",
+    "trapReject=TypeError:proxy: cannot set property",
+);
+
 #[test]
 fn eval_shell_matches_pinned_quickjs() {
     let rust = rust_observations();
@@ -1055,6 +1209,24 @@ fn eval_shell_matches_pinned_quickjs() {
         rust,
         oracle_observations(&oracle),
         "eval intrinsic shell differed from pinned QuickJS"
+    );
+}
+
+#[test]
+fn eval_global_proxy_internal_methods_match_pinned_quickjs() {
+    let rust = rust_value(GLOBAL_PROXY_BINDING_PROBE);
+    assert_eq!(
+        rust, EXPECTED_GLOBAL_PROXY_BINDINGS,
+        "eval global Proxy binding contract drifted",
+    );
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP eval global Proxy differential: set QJS_ORACLE to pinned upstream qjs");
+        return;
+    };
+    assert_eq!(
+        rust,
+        oracle_value(&oracle, GLOBAL_PROXY_BINDING_PROBE),
+        "eval global binding operations bypassed Proxy internal methods",
     );
 }
 

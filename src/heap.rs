@@ -31,7 +31,7 @@ use crate::bytecode::{Instruction, MAX_LOCAL_SLOTS, PrivateNameSource};
 use crate::debug::Pc2LineTable;
 use crate::error::NativeErrorKind;
 use crate::regexp::CompiledRegExp;
-use crate::shape::{PropertyFlags, PropertyStorageKind, Shape};
+use crate::shape::{PropertyFlags, PropertyStorageKind, Shape, ShapeError};
 use crate::value::JsString;
 
 /// Stable identity of an object slot until that slot is reclaimed.
@@ -4609,6 +4609,20 @@ pub struct PromiseCapabilityExecutorData {
     pub reject: Option<RawValue>,
 }
 
+/// Hidden state of one genuine `JS_CLASS_PROXY` object.
+///
+/// QuickJS retains both edges after revocation because either value may still
+/// be referenced by an active native call. `is_callable` is fixed at creation
+/// time, while the object's constructor bit independently mirrors the target's
+/// initial `[[Construct]]` capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProxyData {
+    pub target: ObjectId,
+    pub handler: ObjectId,
+    pub is_callable: bool,
+    pub is_revoked: bool,
+}
+
 /// Typed hidden payload carried only by runtime-created native functions.
 ///
 /// The shared `already_resolved` cell is intentionally a non-arena leaf: the
@@ -4617,6 +4631,11 @@ pub struct PromiseCapabilityExecutorData {
 /// this enum is still an ordinary traced and reference-counted heap edge.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InternalCallableData {
+    /// `Proxy.revocable`'s one-shot revocation closure. The edge is released
+    /// after the first call, matching QuickJS's `func_data[0] = JS_NULL`.
+    ProxyRevoke {
+        proxy: Option<ObjectId>,
+    },
     AsyncFunctionResume {
         state: ObjectId,
         kind: AsyncFunctionResumeKind,
@@ -4782,6 +4801,9 @@ pub enum ObjectPayload {
     /// `JS_CLASS_ITERATOR_CONCAT`: remaining iterable/method pairs plus the
     /// lazily created current iterator and cached `next` method.
     IteratorConcat(IteratorConcatData),
+    /// QuickJS `JS_CLASS_PROXY`. A Proxy has no ordinary prototype of its own;
+    /// every observable internal method dispatches through this payload.
+    Proxy(ProxyData),
     NativeFunction {
         data: NativeFunctionData,
         internal: Option<InternalCallableData>,
@@ -4851,6 +4873,7 @@ pub enum ObjectKind {
     IteratorWrap,
     AsyncFromSyncIterator,
     IteratorConcat,
+    Proxy,
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
@@ -5669,6 +5692,9 @@ pub enum NativeFunctionId {
     ObjectPrototypeProtoSetter,
     ObjectPrototypeDefineAccessor(ObjectAccessorKind),
     ObjectPrototypeLookupAccessor(ObjectAccessorKind),
+    ProxyConstructor,
+    ProxyRevocable,
+    ProxyRevoke,
     Json(JsonNativeKind),
     Reflect(ReflectKind),
     Date(DateNativeKind),
@@ -6065,6 +6091,7 @@ impl NativeFunctionId {
                 | Self::PromiseAnyRejectElement
                 | Self::AsyncFromSyncIteratorUnwrap
                 | Self::AsyncFromSyncIteratorClose
+                | Self::ProxyRevoke
                 | Self::IteratorConstructorAccessor
         )
     }
@@ -6094,6 +6121,8 @@ impl NativeFunctionId {
             | Self::ObjectPrototypeHasOwnProperty
             | Self::ObjectPrototypeIsPrototypeOf
             | Self::ObjectPrototypePropertyIsEnumerable
+            | Self::ProxyRevocable
+            | Self::ProxyRevoke
             | Self::Json(_)
             | Self::Date(
                 DateNativeKind::Now
@@ -6308,7 +6337,8 @@ impl NativeFunctionId {
             },
             Self::Map(MapNativeKind::Constructor)
             | Self::Set(SetNativeKind::Constructor)
-            | Self::Promise(PromiseNativeKind::Constructor) => NativeFunctionDescriptor {
+            | Self::Promise(PromiseNativeKind::Constructor)
+            | Self::ProxyConstructor => NativeFunctionDescriptor {
                 cproto: NativeCProto::Constructor,
             },
             Self::FunctionPrototypeFileName
@@ -6865,6 +6895,37 @@ impl ObjectData {
                 iterator: None,
                 next: RawValue::Undefined,
                 running: false,
+            }),
+        }
+    }
+
+    /// Construct one genuine Proxy with a null ordinary prototype.
+    ///
+    /// `is_constructor` is copied from the target at creation time, just as
+    /// QuickJS sets the Proxy object's constructor bit independently from its
+    /// callable class hook.
+    #[must_use]
+    pub const fn proxy(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        target: ObjectId,
+        handler: ObjectId,
+        is_callable: bool,
+        is_constructor: bool,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor,
+            kind: ObjectKind::Proxy,
+            payload: ObjectPayload::Proxy(ProxyData {
+                target,
+                handler,
+                is_callable,
+                is_revoked: false,
             }),
         }
     }
@@ -7504,6 +7565,7 @@ impl Heap {
             | ObjectPayload::IteratorWrap(_)
             | ObjectPayload::AsyncFromSyncIterator(_)
             | ObjectPayload::IteratorConcat(_)
+            | ObjectPayload::Proxy(_)
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
@@ -9370,6 +9432,18 @@ impl Heap {
         }
     }
 
+    fn shape_mut(&mut self, id: ShapeId) -> Result<&mut Shape, HeapError> {
+        match self.live_node_mut(RawId::Shape(id))?.data {
+            NodeData::Shape(ref mut shape) => Ok(shape),
+            NodeData::Object(_)
+            | NodeData::VarRef(_)
+            | NodeData::Context(_)
+            | NodeData::FunctionBytecode(_) => Err(HeapError::Invariant(
+                "typed mutable shape lookup reached another node payload",
+            )),
+        }
+    }
+
     /// Read one captured-variable cell. All functions holding the same
     /// `VarRefId` observe this shared value.
     pub fn var_ref(&self, id: VarRefId) -> Result<&VarRefData, HeapError> {
@@ -9452,6 +9526,74 @@ impl Heap {
             ));
         };
         Ok(internal.clone())
+    }
+
+    /// Borrow a complete snapshot of one genuine Proxy's hidden state.
+    ///
+    /// The target and handler identities in the result are borrowed: callers
+    /// that keep them across a heap mutation must promote them to owned roots.
+    pub(crate) fn proxy_snapshot(&self, id: ObjectId) -> Result<ProxyData, HeapError> {
+        let ObjectPayload::Proxy(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "Proxy snapshot reached an object with the wrong class",
+            ));
+        };
+        Ok(*data)
+    }
+
+    /// Consume a `Proxy.revocable` closure's one owned Proxy capture and revoke
+    /// that Proxy as one heap mutation.
+    ///
+    /// A second call is a no-op and returns `false`. On the first call this
+    /// clears only the closure edge, matching QuickJS's one-shot
+    /// `func_data[0] = JS_NULL`; the Proxy continues to retain both its target
+    /// and handler after `is_revoked` is set. Keeping the mutation atomic also
+    /// prevents the captured Proxy from being finalized between clearing the
+    /// closure and marking its payload revoked.
+    pub(crate) fn revoke_proxy_from_callable(
+        &mut self,
+        callable: ObjectId,
+    ) -> Result<(bool, HeapCleanup), HeapError> {
+        let proxy = match &self.object(callable)?.payload {
+            ObjectPayload::NativeFunction {
+                data:
+                    NativeFunctionData {
+                        target: NativeFunctionId::ProxyRevoke,
+                        ..
+                    },
+                internal: Some(InternalCallableData::ProxyRevoke { proxy }),
+            } => *proxy,
+            _ => {
+                return Err(HeapError::Invariant(
+                    "Proxy revocation reached the wrong native function",
+                ));
+            }
+        };
+        let Some(proxy) = proxy else {
+            return Ok((false, HeapCleanup::default()));
+        };
+        if !matches!(&self.object(proxy)?.payload, ObjectPayload::Proxy(_)) {
+            return Err(HeapError::Invariant(
+                "Proxy revocation closure retained an object with the wrong class",
+            ));
+        }
+
+        let ObjectPayload::Proxy(data) = &mut self.object_mut(proxy)?.payload else {
+            unreachable!("Proxy revocation capture was validated before mutation")
+        };
+        data.is_revoked = true;
+
+        let ObjectPayload::NativeFunction {
+            internal: Some(InternalCallableData::ProxyRevoke { proxy: capture }),
+            ..
+        } = &mut self.object_mut(callable)?.payload
+        else {
+            unreachable!("Proxy revocation callable was validated before mutation")
+        };
+        *capture = None;
+
+        self.release_raw_no_drain(RawId::Object(proxy))?;
+        Ok((true, self.drain_zero_queue()?))
     }
 
     /// Store the two arbitrary arguments supplied to a NewPromiseCapability
@@ -11562,6 +11704,80 @@ impl Heap {
         Ok(cleanup)
     }
 
+    /// Append one property to an object whose shape has exactly one owner.
+    ///
+    /// New slot edges are retained before the parallel shape and slot vectors
+    /// are mutated. Atom ownership is managed by the enclosing runtime: one
+    /// live reference for `atom` and any Symbol slot has to be transferred
+    /// before this call succeeds.
+    pub fn append_unique_object_property(
+        &mut self,
+        id: ObjectId,
+        atom: Atom,
+        flags: PropertyFlags,
+        replacement: PropertySlot,
+    ) -> Result<(), HeapError> {
+        let (shape_id, slot_count) = {
+            let object = self.object(id)?;
+            (object.shape, object.slots.len())
+        };
+        if self.shape_strong_count(shape_id)? != 1 {
+            return Err(HeapError::Invariant(
+                "in-place property append reached a shared shape",
+            ));
+        }
+        let index =
+            self.shape(shape_id)?
+                .unique_append_index(atom)
+                .map_err(|error| match error {
+                    ShapeError::NullAtom => {
+                        HeapError::Invariant("in-place property append used a null atom")
+                    }
+                    ShapeError::DuplicateAtom(_) => {
+                        HeapError::Invariant("in-place property append duplicated a shape atom")
+                    }
+                    ShapeError::MissingAtom(_) => HeapError::Invariant(
+                        "in-place property append reported an impossible missing atom",
+                    ),
+                    ShapeError::PropertyIndexOverflow => HeapError::Overflow {
+                        operation: "appending an in-place shape property",
+                    },
+                })?;
+        if usize::try_from(index) != Ok(slot_count) {
+            return Err(HeapError::Invariant(
+                "in-place property append found mismatched shape and slot lengths",
+            ));
+        }
+        if !slot_matches_storage(&replacement, flags.storage) {
+            return Err(HeapError::Invariant(
+                "appended property storage does not match its shape flags",
+            ));
+        }
+        if matches!(replacement, PropertySlot::Data(RawValue::Private(_))) {
+            return Err(HeapError::Invariant(
+                "private-name identity escaped into an appended object value slot",
+            ));
+        }
+
+        self.retain_edges_transactionally(&property_slot_edges(&replacement))?;
+        let shape = match self.shape_mut(shape_id) {
+            Ok(shape) => shape,
+            Err(_) => unreachable!("authenticated unique shape disappeared before append"),
+        };
+        shape.append_unique_property(atom, flags, index);
+        let object = match self.object_mut(id) {
+            Ok(object) => object,
+            Err(_) => unreachable!("authenticated object disappeared before slot append"),
+        };
+        object.slots.push(replacement);
+        debug_assert!(
+            self.object(id)
+                .and_then(|object| self.validate_object_layout(object))
+                .is_ok()
+        );
+        Ok(())
+    }
+
     /// Transactionally replace a bytecode function's optional HomeObject.
     ///
     /// The replacement is retained before the previous edge is detached, so
@@ -12090,6 +12306,7 @@ impl Heap {
                     ObjectPayload::AsyncFromSyncIterator(_)
                 )
                 | (ObjectKind::IteratorConcat, ObjectPayload::IteratorConcat(_))
+                | (ObjectKind::Proxy, ObjectPayload::Proxy(_))
                 | (
                     ObjectKind::NativeFunction,
                     ObjectPayload::NativeFunction { .. }
@@ -12132,8 +12349,44 @@ impl Heap {
                 ));
             }
         }
+        if let ObjectPayload::Proxy(data) = &object.payload {
+            let target = self.object(data.target)?;
+            self.object(data.handler)?;
+            let target_is_callable = object_data_is_callable(target);
+            // The ordinary prototype is always null and public operations are
+            // exotic, but class initialization may attach private elements to
+            // the Proxy object itself. Those private slots therefore remain
+            // valid physical shape entries.
+            if shape.prototype().is_some()
+                || !object.extensible
+                || object.immutable_prototype
+                || data.is_callable != target_is_callable
+                || object.is_constructor != target.is_constructor
+            {
+                return Err(HeapError::Invariant(
+                    "Proxy has invalid null-prototype layout or cached target capabilities",
+                ));
+            }
+        }
         if let ObjectPayload::NativeFunction { data, internal } = &object.payload {
             match (data.target, internal) {
+                (
+                    NativeFunctionId::ProxyRevoke,
+                    Some(InternalCallableData::ProxyRevoke { proxy }),
+                ) => {
+                    let proxy_is_valid = proxy
+                        .map(|proxy| {
+                            self.object(proxy)
+                                .map(|proxy| matches!(&proxy.payload, ObjectPayload::Proxy(_)))
+                        })
+                        .transpose()?
+                        .unwrap_or(true);
+                    if object.is_constructor || !proxy_is_valid {
+                        return Err(HeapError::Invariant(
+                            "Proxy revoke callable has invalid hidden state",
+                        ));
+                    }
+                }
                 (
                     NativeFunctionId::AsyncFunctionResume(target_kind),
                     Some(InternalCallableData::AsyncFunctionResume { state, kind }),
@@ -12209,14 +12462,7 @@ impl Heap {
                         .transpose()?
                         .unwrap_or(true);
                     let on_finally = self.object(*on_finally)?;
-                    let on_finally_is_callable = {
-                        matches!(
-                            on_finally.kind,
-                            ObjectKind::NativeFunction
-                                | ObjectKind::BoundFunction
-                                | ObjectKind::BytecodeFunction
-                        )
-                    };
+                    let on_finally_is_callable = object_data_is_callable(on_finally);
                     if object.is_constructor || !constructor_is_valid || !on_finally_is_callable {
                         return Err(HeapError::Invariant(
                             "Promise finally handler has invalid hidden state",
@@ -12244,12 +12490,7 @@ impl Heap {
                 ) => {
                     let values = self.object(*values)?;
                     let resolve = self.object(*resolve)?;
-                    let resolve_is_callable = matches!(
-                        resolve.kind,
-                        ObjectKind::NativeFunction
-                            | ObjectKind::BoundFunction
-                            | ObjectKind::BytecodeFunction
-                    );
+                    let resolve_is_callable = object_data_is_callable(resolve);
                     if object.is_constructor
                         || !matches!(values.payload, ObjectPayload::Array { .. })
                         || !resolve_is_callable
@@ -12272,12 +12513,7 @@ impl Heap {
                 ) if target_outcome == *outcome => {
                     let values = self.object(*values)?;
                     let resolve = self.object(*resolve)?;
-                    let resolve_is_callable = matches!(
-                        resolve.kind,
-                        ObjectKind::NativeFunction
-                            | ObjectKind::BoundFunction
-                            | ObjectKind::BytecodeFunction
-                    );
+                    let resolve_is_callable = object_data_is_callable(resolve);
                     if object.is_constructor
                         || !matches!(values.payload, ObjectPayload::Array { .. })
                         || !resolve_is_callable
@@ -12299,12 +12535,7 @@ impl Heap {
                 ) => {
                     let errors = self.object(*errors)?;
                     let reject = self.object(*reject)?;
-                    let reject_is_callable = matches!(
-                        reject.kind,
-                        ObjectKind::NativeFunction
-                            | ObjectKind::BoundFunction
-                            | ObjectKind::BytecodeFunction
-                    );
+                    let reject_is_callable = object_data_is_callable(reject);
                     if object.is_constructor
                         || !matches!(errors.payload, ObjectPayload::Array { .. })
                         || !reject_is_callable
@@ -12336,7 +12567,8 @@ impl Heap {
                         ));
                     }
                 }
-                (NativeFunctionId::AsyncFunctionResume(_), _)
+                (NativeFunctionId::ProxyRevoke, _)
+                | (NativeFunctionId::AsyncFunctionResume(_), _)
                 | (NativeFunctionId::AsyncGeneratorResume(_), _)
                 | (NativeFunctionId::PromiseResolving(_), _)
                 | (NativeFunctionId::PromiseCapabilityExecutor, _)
@@ -12514,12 +12746,7 @@ impl Heap {
                         }
                         GeneratorFrameBinding::PrivateCallable(callable) => {
                             let callable = self.object(*callable)?;
-                            if !matches!(
-                                callable.payload,
-                                ObjectPayload::NativeFunction { .. }
-                                    | ObjectPayload::BoundFunction { .. }
-                                    | ObjectPayload::BytecodeFunction { .. }
-                            ) {
+                            if !object_data_is_callable(callable) {
                                 return Err(HeapError::Invariant(
                                     "generator private callable binding is not callable",
                                 ));
@@ -12617,12 +12844,7 @@ impl Heap {
         } = &object.payload
         {
             let target = self.object(*target)?;
-            if !matches!(
-                target.payload,
-                ObjectPayload::NativeFunction { .. }
-                    | ObjectPayload::BoundFunction { .. }
-                    | ObjectPayload::BytecodeFunction { .. }
-            ) {
+            if !object_data_is_callable(target) {
                 return Err(HeapError::Invariant(
                     "bound function target is not callable",
                 ));
@@ -13103,6 +13325,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::Generator { .. } => 0,
+        ObjectPayload::Proxy(_) => 2,
         ObjectPayload::AsyncGenerator(data) => data
             .activation
             .as_deref()
@@ -13219,6 +13442,13 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
                 edges.push(RawId::Object(item.iterable));
                 edges.extend(raw_value_edges(&item.method));
             }
+        }
+        ObjectPayload::Proxy(data) => {
+            // Revocation deliberately leaves both edges intact. This mirrors
+            // QuickJS, where JSProxyData continues to own target and handler
+            // until the Proxy itself is finalized.
+            edges.push(RawId::Object(data.target));
+            edges.push(RawId::Object(data.handler));
         }
         ObjectPayload::RegExpStringIterator { regexp, .. } => {
             edges.push(RawId::Object(*regexp));
@@ -13352,6 +13582,9 @@ fn promise_reaction_edges(reaction: &PromiseReaction) -> Vec<RawId> {
 
 fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
     match internal {
+        InternalCallableData::ProxyRevoke { proxy } => {
+            proxy.map(RawId::Object).into_iter().collect()
+        }
         InternalCallableData::AsyncFunctionResume { state, .. } => {
             vec![RawId::Object(*state)]
         }
@@ -13619,7 +13852,8 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
         InternalCallableData::PromiseFinallyThunk { value } => {
             raw_value_atom(value).into_iter().collect()
         }
-        InternalCallableData::AsyncFunctionResume { .. }
+        InternalCallableData::ProxyRevoke { .. }
+        | InternalCallableData::AsyncFunctionResume { .. }
         | InternalCallableData::AsyncGeneratorResume { .. }
         | InternalCallableData::PromiseResolving { .. }
         | InternalCallableData::PromiseFinallyHandler { .. }
@@ -13705,6 +13939,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
                     .filter_map(|item| raw_value_atom(&item.method)),
             )
             .collect(),
+        ObjectPayload::Proxy(_) => Vec::new(),
         ObjectPayload::NativeFunction {
             internal: Some(internal),
             ..
@@ -13785,6 +14020,19 @@ const fn is_promise_storable_value(value: &RawValue) -> bool {
     )
 }
 
+fn object_data_is_callable(object: &ObjectData) -> bool {
+    matches!(
+        &object.payload,
+        ObjectPayload::NativeFunction { .. }
+            | ObjectPayload::BoundFunction { .. }
+            | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::Proxy(ProxyData {
+                is_callable: true,
+                ..
+            })
+    )
+}
+
 fn validate_async_function_state(
     heap: &Heap,
     object: &ObjectData,
@@ -13799,12 +14047,7 @@ fn validate_async_function_state(
     }
     heap.context(data.driver_realm)?;
     for resolving_function in [data.outer_resolve, data.outer_reject] {
-        if !matches!(
-            heap.object(resolving_function)?.payload,
-            ObjectPayload::NativeFunction { .. }
-                | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. }
-        ) {
+        if !object_data_is_callable(heap.object(resolving_function)?) {
             return Err(HeapError::Invariant(
                 "AsyncFunction state retains a non-callable resolving function",
             ));
@@ -13876,12 +14119,7 @@ fn validate_async_function_state(
                 ));
             }
             GeneratorFrameBinding::PrivateCallable(callable) => {
-                if !matches!(
-                    heap.object(*callable)?.payload,
-                    ObjectPayload::NativeFunction { .. }
-                        | ObjectPayload::BoundFunction { .. }
-                        | ObjectPayload::BytecodeFunction { .. }
-                ) {
+                if !object_data_is_callable(heap.object(*callable)?) {
                     return Err(HeapError::Invariant(
                         "AsyncFunction private callable binding is not callable",
                     ));
@@ -14124,12 +14362,7 @@ fn validate_async_generator_state(
                 ));
             }
             GeneratorFrameBinding::PrivateCallable(callable) => {
-                if !matches!(
-                    heap.object(*callable)?.payload,
-                    ObjectPayload::NativeFunction { .. }
-                        | ObjectPayload::BoundFunction { .. }
-                        | ObjectPayload::BytecodeFunction { .. }
-                ) {
+                if !object_data_is_callable(heap.object(*callable)?) {
                     return Err(HeapError::Invariant(
                         "AsyncGenerator private callable binding is not callable",
                     ));
@@ -14223,12 +14456,7 @@ fn validate_iterator_helper_data(heap: &Heap, data: &IteratorHelperData) -> Resu
                     "callback Iterator Helper does not retain a callable",
                 ));
             };
-            if !matches!(
-                heap.object(callback)?.payload,
-                ObjectPayload::NativeFunction { .. }
-                    | ObjectPayload::BoundFunction { .. }
-                    | ObjectPayload::BytecodeFunction { .. }
-            ) {
+            if !object_data_is_callable(heap.object(callback)?) {
                 return Err(HeapError::Invariant(
                     "callback Iterator Helper does not retain a callable",
                 ));
@@ -14296,12 +14524,7 @@ fn validate_iterator_concat_data(heap: &Heap, data: &IteratorConcatData) -> Resu
                 "Iterator Concat input method is not callable",
             ));
         };
-        if !matches!(
-            heap.object(method)?.payload,
-            ObjectPayload::NativeFunction { .. }
-                | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. }
-        ) {
+        if !object_data_is_callable(heap.object(method)?) {
             return Err(HeapError::Invariant(
                 "Iterator Concat input method is not callable",
             ));
@@ -14432,6 +14655,103 @@ mod tests {
 
     fn empty_shape(heap: &mut Heap) -> ShapeId {
         heap.allocate_shape(Shape::new(None, []).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn proxy_revocation_releases_only_the_one_shot_closure_capture() {
+        let mut heap = Heap::new();
+        let null_shape = empty_shape(&mut heap);
+        let root = heap
+            .allocate_object(ObjectData::ordinary(null_shape, Vec::new()))
+            .unwrap();
+        let function_shape = heap
+            .allocate_shape(Shape::new(Some(root), []).unwrap())
+            .unwrap();
+        let function_prototype = heap
+            .allocate_bootstrap_native_function(ObjectData::native_function(
+                function_shape,
+                Vec::new(),
+                NativeFunctionId::FunctionPrototype,
+                0,
+            ))
+            .unwrap();
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root,
+                function_prototype,
+                root,
+                root,
+                root,
+                root,
+                root,
+                root,
+            ))
+            .unwrap();
+        heap.attach_native_function_realm(function_prototype, realm)
+            .unwrap();
+
+        let target = heap
+            .allocate_object(ObjectData::ordinary(null_shape, Vec::new()))
+            .unwrap();
+        let handler = heap
+            .allocate_object(ObjectData::ordinary(null_shape, Vec::new()))
+            .unwrap();
+        let proxy = heap
+            .allocate_object(ObjectData::proxy(
+                null_shape,
+                Vec::new(),
+                target,
+                handler,
+                false,
+                false,
+            ))
+            .unwrap();
+        assert_eq!(heap.object_strong_count(target), Ok(2));
+        assert_eq!(heap.object_strong_count(handler), Ok(2));
+        assert_eq!(
+            heap.proxy_snapshot(proxy),
+            Ok(ProxyData {
+                target,
+                handler,
+                is_callable: false,
+                is_revoked: false,
+            })
+        );
+
+        let revoker = heap
+            .allocate_object(ObjectData::bound_internal_native_function(
+                function_shape,
+                Vec::new(),
+                NativeFunctionId::ProxyRevoke,
+                realm,
+                0,
+                InternalCallableData::ProxyRevoke { proxy: Some(proxy) },
+            ))
+            .unwrap();
+        assert_eq!(heap.object_strong_count(proxy), Ok(2));
+
+        let (revoked, cleanup) = heap.revoke_proxy_from_callable(revoker).unwrap();
+        assert!(revoked);
+        assert_eq!(cleanup, HeapCleanup::default());
+        assert_eq!(heap.object_strong_count(proxy), Ok(1));
+        assert!(heap.proxy_snapshot(proxy).unwrap().is_revoked);
+        assert_eq!(heap.object_strong_count(target), Ok(2));
+        assert_eq!(heap.object_strong_count(handler), Ok(2));
+        assert_eq!(
+            heap.native_internal_callable(revoker),
+            Ok(Some(InternalCallableData::ProxyRevoke { proxy: None }))
+        );
+
+        let (revoked_again, cleanup) = heap.revoke_proxy_from_callable(revoker).unwrap();
+        assert!(!revoked_again);
+        assert_eq!(cleanup, HeapCleanup::default());
+        assert_eq!(heap.object_strong_count(target), Ok(2));
+        assert_eq!(heap.object_strong_count(handler), Ok(2));
+
+        let cleanup = heap.release_object(proxy).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(heap.object_strong_count(target), Ok(1));
+        assert_eq!(heap.object_strong_count(handler), Ok(1));
     }
 
     #[test]

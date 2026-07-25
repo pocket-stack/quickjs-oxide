@@ -269,19 +269,22 @@ impl Runtime {
         new_target: &CallableRef,
     ) -> Result<Completion, RuntimeError> {
         let prototype_key = self.intern_property_key("prototype")?;
-        let prototype = match self.prepare_get_property(new_target.as_object(), &prototype_key)? {
-            PropertyGetAction::Complete(value) => value,
-            PropertyGetAction::Call { getter, receiver } => {
-                match self.call_internal(caller_realm, &getter, receiver, &[])? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
+        let prototype = match self.internal_get(
+            caller_realm,
+            new_target.as_object(),
+            &prototype_key,
+            Value::Object(new_target.as_object().clone()),
+        )? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let prototype = if let Value::Object(prototype) = prototype {
             prototype
         } else {
-            let realm = self.callable_realm(new_target)?;
+            let realm = match self.function_realm(caller_realm, new_target)? {
+                NativeConversion::Value(realm) => realm,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
             let array_prototype = self.0.state.borrow().heap.context(realm)?.array_prototype;
             ObjectRef::from_borrowed_handle(self.clone(), array_prototype)?
         };
@@ -856,8 +859,8 @@ impl Runtime {
         value: Value,
     ) -> Result<Option<Value>, RuntimeError> {
         match self.define_indexed_data_property(realm, object, u64::from(index), value)? {
-            PropertyDefineOutcome::Defined(_) => Ok(None),
-            PropertyDefineOutcome::Throw(value) => Ok(Some(value)),
+            NativeConversion::Value(_) => Ok(None),
+            NativeConversion::Throw(value) => Ok(Some(value)),
         }
     }
 
@@ -883,12 +886,20 @@ impl Runtime {
         value: Value,
     ) -> Result<Option<Value>, RuntimeError> {
         match self.define_indexed_data_property(realm, object, index, value)? {
-            PropertyDefineOutcome::Defined(true) => Ok(None),
-            PropertyDefineOutcome::Defined(false) => {
+            NativeConversion::Value(InternalDefineResult::Defined) => Ok(None),
+            NativeConversion::Value(InternalDefineResult::RejectedProxyTrap) => {
+                let error = Error::new(ErrorKind::Type, "proxy: defineProperty exception");
+                Ok(Some(self.new_native_error_from_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &error,
+                )?))
+            }
+            NativeConversion::Value(InternalDefineResult::RejectedOrdinary(target)) => {
                 let key = self.intern_property_key(&index.to_string())?;
                 let array_length_read_only =
-                    if let ArrayOwnKey::Index(index) = self.array_own_key(object, &key)? {
-                        let (length, writable) = self.array_length_state(object)?;
+                    if let ArrayOwnKey::Index(index) = self.array_own_key(&target, &key)? {
+                        let (length, writable) = self.array_length_state(&target)?;
                         index >= length && !writable
                     } else {
                         false
@@ -896,7 +907,7 @@ impl Runtime {
                 let error = if array_length_read_only {
                     let length = self.intern_property_key("length")?;
                     self.native_atom_error(ErrorKind::Type, "'", &length, "' is read-only")?
-                } else if !self.has_own_property(object, &key)? && !self.is_extensible(object)? {
+                } else if !self.has_own_property(&target, &key)? && !self.is_extensible(&target)? {
                     Error::new(ErrorKind::Type, "object is not extensible")
                 } else {
                     Error::new(ErrorKind::Type, "property is not configurable")
@@ -907,7 +918,7 @@ impl Runtime {
                     &error,
                 )?))
             }
-            PropertyDefineOutcome::Throw(value) => Ok(Some(value)),
+            NativeConversion::Throw(value) => Ok(Some(value)),
         }
     }
 
@@ -917,24 +928,21 @@ impl Runtime {
         object: &ObjectRef,
         index: u64,
         value: Value,
-    ) -> Result<PropertyDefineOutcome, RuntimeError> {
+    ) -> Result<NativeConversion<InternalDefineResult>, RuntimeError> {
         let key = self.intern_property_key(&index.to_string())?;
-        self.define_own_property_in_realm(
-            Some(realm),
-            object,
-            &key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
-            },
-        )
+        let descriptor = OrdinaryPropertyDescriptor {
+            value: DescriptorField::Present(value),
+            writable: DescriptorField::Present(true),
+            enumerable: DescriptorField::Present(true),
+            configurable: DescriptorField::Present(true),
+            ..OrdinaryPropertyDescriptor::new()
+        };
+        self.internal_define_own_property(realm, object, &key, &descriptor)
     }
 
     pub(in crate::runtime) fn call_array_is_array(
         &self,
+        realm: ContextId,
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
@@ -944,8 +952,11 @@ impl Runtime {
             ));
         };
         let result = match arguments.readable.first() {
-            Some(Value::Object(object)) => self.is_array_object(object)?,
-            Some(_) | None => false,
+            Some(value) => match self.internal_is_array(realm, value)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            },
+            None => false,
         };
         Ok(Completion::Return(Value::Bool(result)))
     }
@@ -1487,9 +1498,7 @@ impl Runtime {
         };
         let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::IsConcatSpreadable));
         match self.get_property_in_realm(realm, object, &key)? {
-            Completion::Return(Value::Undefined) => {
-                Ok(NativeConversion::Value(self.is_array_object(object)?))
-            }
+            Completion::Return(Value::Undefined) => self.internal_is_array(realm, value),
             Completion::Return(value) => Ok(NativeConversion::Value(value.to_boolean())),
             Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
         }
@@ -1823,7 +1832,11 @@ impl Runtime {
         source: &ObjectRef,
         length: u64,
     ) -> Result<Completion, RuntimeError> {
-        if !self.is_array_object(source)? {
+        let is_array = match self.internal_is_array(realm, &Value::Object(source.clone()))? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if !is_array {
             return self.array_from_result(
                 realm,
                 Value::Undefined,
@@ -1843,7 +1856,10 @@ impl Runtime {
             let callable = self.as_callable(object)?.ok_or(RuntimeError::Invariant(
                 "constructable Array constructor value was not callable",
             ))?;
-            let constructor_realm = self.callable_realm(&callable)?;
+            let constructor_realm = match self.function_realm(realm, &callable)? {
+                NativeConversion::Value(realm) => realm,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
             let is_cross_realm_default = if constructor_realm != realm {
                 self.0
                     .state
@@ -2315,10 +2331,22 @@ impl Runtime {
                 };
             }
 
-            if depth > 0
-                && let Value::Object(element_object) = &element
-                && self.is_array_object(element_object)?
-            {
+            let should_flatten = if depth > 0 {
+                match self.internal_is_array(realm, &element)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
+                }
+            } else {
+                false
+            };
+            if should_flatten {
+                let Value::Object(element_object) = &element else {
+                    return Err(RuntimeError::Invariant(
+                        "IsArray accepted a primitive flatten element",
+                    ));
+                };
                 let (nested_source, nested_length) = match self
                     .native_array_like_object_and_length(
                         realm,
@@ -2705,12 +2733,18 @@ impl Runtime {
                 if let Some(value) = self.set_property_or_throw(realm, object, &to_key, value)? {
                     return Ok(Some(value));
                 }
-            } else if !self.delete_property(object, &to_key)? {
-                return Ok(Some(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "could not delete property",
-                )?));
+            } else {
+                match self.internal_delete_property(realm, object, &to_key)? {
+                    NativeConversion::Value(true) => {}
+                    NativeConversion::Value(false) => {
+                        return Ok(Some(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Type,
+                            "could not delete property",
+                        )?));
+                    }
+                    NativeConversion::Throw(value) => return Ok(Some(value)),
+                }
             }
         }
         Ok(None)
@@ -2723,14 +2757,14 @@ impl Runtime {
         index: u64,
     ) -> Result<Option<Value>, RuntimeError> {
         let key = self.intern_property_key(&index.to_string())?;
-        if self.delete_property(object, &key)? {
-            Ok(None)
-        } else {
-            Ok(Some(self.new_native_error(
+        match self.internal_delete_property(realm, object, &key)? {
+            NativeConversion::Value(true) => Ok(None),
+            NativeConversion::Value(false) => Ok(Some(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
                 "could not delete property",
-            )?))
+            )?)),
+            NativeConversion::Throw(value) => Ok(Some(value)),
         }
     }
 

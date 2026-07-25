@@ -116,6 +116,7 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Proxy(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Array { .. }
@@ -186,6 +187,7 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Proxy(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Array { .. }

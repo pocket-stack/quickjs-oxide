@@ -1,0 +1,30 @@
+# Initial checksum-bound active Proxy vector. This is a progress baseline, not
+# a completion claim: adjacent TypedArray intrinsics and unavailable host,
+# module, and parser capabilities remain explicit until later milestones move
+# their exact path/variant keys.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+oxide_profile_sha256=0c151608ed8cd580238e27188f5e63382ee11e1dc91f7c480db2c366e1232d12
+schema=test262-canonical-classified-v2
+mode=both
+timeout_ms=30000
+paths=464
+variants=904
+runnable=829
+passes=811
+failures=12
+unsupported=81
+skipped=0
+features=36
+features_sha256=1b66e14dbaac042968a446e9765cc144e54e6e027c6b1665186173a130699df3
+manifest_sha256=ef2395cd3bd268d7ba1010773651408826452feaed121f8f2d4c0e6afeed66f3
+manifest_file_sha256=ef2395cd3bd268d7ba1010773651408826452feaed121f8f2d4c0e6afeed66f3
+keys_sha256=0ec3bfa0ffaec0ddf6e20512be35ab866d3e07658cddaf3e88f29f7d64b97bfd
+nonpass_sha256=323c76b74e94c0f585d92e371ee69aa753c505ca683dd6a0ae42afaa53a76fda
+tsv_sha256=2e6f22c51fa30db9a3507aa60371c71afb3669840b624d09382119415962662c
+jsonl_sha256=83e064472fdfd7154be4d1b57a21ec7628ee4b6d785f9b0f6c9af8e82848d1cf
+summary=harness-error=12 pass=811 unsupported-host-create-realm=74 unsupported-module=1 unsupported-parser=6
+quickjs_variants=904

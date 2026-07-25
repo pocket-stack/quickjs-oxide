@@ -13,20 +13,17 @@ impl Runtime {
         realm: ContextId,
         this_value: Value,
         arguments: &[Value],
-    ) -> Result<NativeConversion<(CallableRef, Value)>, RuntimeError> {
-        let Value::Object(target) = this_value else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
-        };
-        let Some(target) = self.as_callable(&target)? else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a function",
-            )?));
+    ) -> Result<NativeConversion<(DirectCallTarget, Value)>, RuntimeError> {
+        let target = match self.direct_call_target_from_value(this_value) {
+            Ok(target) => target,
+            Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Type => {
+                return Ok(NativeConversion::Throw(self.new_native_error_from_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &error,
+                )?));
+            }
+            Err(error) => return Err(error),
         };
         let this_argument = arguments.first().cloned().unwrap_or(Value::Undefined);
         Ok(NativeConversion::Value((target, this_argument)))
@@ -123,12 +120,24 @@ impl Runtime {
                         )? {
                             NativeConversion::Value((target, next_this)) => {
                                 caller_realm = realm;
-                                callable = target;
                                 this_value = next_this;
                                 if argument_start < arguments.len() {
                                     argument_start += 1;
                                 }
-                                continue;
+                                match target {
+                                    DirectCallTarget::Callable(target) => {
+                                        callable = target;
+                                        continue;
+                                    }
+                                    DirectCallTarget::NonCallableProxy(proxy) => {
+                                        return self.call_proxy(
+                                            caller_realm,
+                                            &proxy,
+                                            this_value,
+                                            &arguments[argument_start..],
+                                        );
+                                    }
+                                }
                             }
                             NativeConversion::Throw(value) => {
                                 return Ok(Completion::Throw(value));
@@ -173,6 +182,14 @@ impl Runtime {
                     callable = target;
                     this_value = bound_this;
                 }
+                CallableExecution::Proxy => {
+                    return self.call_proxy(
+                        caller_realm,
+                        callable.as_object(),
+                        this_value,
+                        &arguments[argument_start..],
+                    );
+                }
             }
         })();
         let mut frame_error = None;
@@ -205,7 +222,14 @@ impl Runtime {
                 } else {
                     &actual_arguments[1..]
                 };
-                self.call_internal(realm, &target, this_argument, forwarded)
+                match target {
+                    DirectCallTarget::Callable(target) => {
+                        self.call_internal(realm, &target, this_argument, forwarded)
+                    }
+                    DirectCallTarget::NonCallableProxy(proxy) => {
+                        self.call_proxy(realm, &proxy, this_argument, forwarded)
+                    }
+                }
             }
             NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
         }
@@ -404,7 +428,9 @@ impl Runtime {
             NativeFunctionId::ArrayConstructor => {
                 self.call_array_constructor(realm, invocation, arguments)
             }
-            NativeFunctionId::ArrayIsArray => self.call_array_is_array(invocation, arguments),
+            NativeFunctionId::ArrayIsArray => {
+                self.call_array_is_array(realm, invocation, arguments)
+            }
             NativeFunctionId::ArrayFrom => self.call_array_from(realm, invocation, arguments),
             NativeFunctionId::ArrayOf => self.call_array_of(realm, invocation, arguments),
             NativeFunctionId::ArraySpeciesGetter => self.call_array_species_getter(invocation),
@@ -565,7 +591,7 @@ impl Runtime {
                 self.call_object_keys(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ObjectExtensibility(kind) => {
-                self.call_object_extensibility(kind, invocation, arguments)
+                self.call_object_extensibility(realm, kind, invocation, arguments)
             }
             NativeFunctionId::ObjectGetOwnPropertyDescriptor => {
                 self.call_object_get_own_property_descriptor(realm, invocation, arguments)
@@ -796,6 +822,13 @@ impl Runtime {
                 self.call_error_prototype_to_string(realm, invocation)
             }
             NativeFunctionId::ErrorIsError => self.call_error_is_error(arguments),
+            NativeFunctionId::ProxyConstructor => {
+                self.call_proxy_constructor(realm, invocation, arguments)
+            }
+            NativeFunctionId::ProxyRevocable => {
+                self.call_proxy_revocable(realm, invocation, arguments)
+            }
+            NativeFunctionId::ProxyRevoke => self.call_proxy_revoke(invocation),
             #[cfg(test)]
             NativeFunctionId::ActiveFrameProbe => self.call_active_frame_probe(realm, arguments),
             #[cfg(test)]

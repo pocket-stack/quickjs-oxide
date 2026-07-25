@@ -233,6 +233,7 @@ impl Runtime {
                 ));
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
             | ObjectPayload::Array { .. }
@@ -280,7 +281,12 @@ impl Runtime {
                     // GetFunctionRealm is intentionally delayed until after the
                     // observable prototype Get returned a non-object.
                     let callable = self.callable_from_value(Value::Object(new_target_object))?;
-                    let fallback_realm = self.callable_realm(&callable)?;
+                    let fallback_realm = match self.function_realm(caller_realm, &callable)? {
+                        NativeConversion::Value(realm) => realm,
+                        NativeConversion::Throw(value) => {
+                            return Ok(NativeConversion::Throw(value));
+                        }
+                    };
                     let prototype = self.regexp_realm_data(fallback_realm)?.prototype;
                     ObjectRef::from_borrowed_handle(self.clone(), prototype)?
                 }

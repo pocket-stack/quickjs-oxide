@@ -71,8 +71,8 @@ enum JsonSerializeTask {
     },
     ArrayElement {
         array: ObjectRef,
-        index: u32,
-        length: u32,
+        index: u64,
+        length: u64,
         indent: JsString,
         next_indent: JsString,
     },
@@ -175,10 +175,16 @@ impl Runtime {
         let Value::Object(object) = replacer else {
             return Ok(None);
         };
-        if !self.is_array_object(object)? {
+        let is_array = match self.internal_is_array(realm, replacer)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => {
+                return Err(JsonStringifyFailure::Throw(value));
+            }
+        };
+        if !is_array {
             return Ok(None);
         }
-        let (length, _) = self.array_length_state(object)?;
+        let length = self.json_stringify_array_length(realm, object)?;
         let mut property_list = Vec::new();
         for index in 0..length {
             let key = self.intern_property_key(&index.to_string())?;
@@ -211,6 +217,22 @@ impl Runtime {
             }
         }
         Ok(Some(property_list))
+    }
+
+    fn json_stringify_array_length(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+    ) -> JsonStringifyResult<u64> {
+        let key = self.intern_property_key("length")?;
+        let value = match self.get_property_in_realm(realm, object, &key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Err(JsonStringifyFailure::Throw(value)),
+        };
+        match self.native_to_length(realm, &value)? {
+            NativeConversion::Value(value) => Ok(value),
+            NativeConversion::Throw(value) => Err(JsonStringifyFailure::Throw(value)),
+        }
     }
 
     fn json_stringify_gap(&self, realm: ContextId, space: &Value) -> JsonStringifyResult<JsString> {
@@ -295,6 +317,7 @@ impl Runtime {
                 JsonWrapperKind::BigInt(value.clone())
             }
             ObjectPayload::Ordinary
+            | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
             | ObjectPayload::Array { .. }
@@ -509,8 +532,19 @@ impl JsonStringifier<'_> {
         }
         let next_indent = indent.try_concat(&self.gap)?;
         self.stack.push(object.clone());
-        if self.runtime.is_array_object(&object)? {
-            let (length, _) = self.runtime.array_length_state(&object)?;
+        let is_array = match self
+            .runtime
+            .internal_is_array(self.realm, &Value::Object(object.clone()))?
+        {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => {
+                return Err(JsonStringifyFailure::Throw(value));
+            }
+        };
+        if is_array {
+            let length = self
+                .runtime
+                .json_stringify_array_length(self.realm, &object)?;
             self.output.push_utf8("[")?;
             tasks.push(JsonSerializeTask::ArrayElement {
                 array: object,
@@ -556,8 +590,8 @@ impl JsonStringifier<'_> {
     fn serialize_array_element(
         &mut self,
         array: ObjectRef,
-        index: u32,
-        length: u32,
+        index: u64,
+        length: u64,
         indent: JsString,
         next_indent: JsString,
         tasks: &mut Vec<JsonSerializeTask>,
@@ -669,7 +703,16 @@ impl JsonStringifier<'_> {
             return Ok(property_list.clone());
         }
         let mut result = Vec::new();
-        for key in self.runtime.own_property_keys(object)? {
+        let keys = match self
+            .runtime
+            .internal_own_property_keys(self.realm, object)?
+        {
+            NativeConversion::Value(keys) => keys,
+            NativeConversion::Throw(value) => {
+                return Err(JsonStringifyFailure::Throw(value));
+            }
+        };
+        for key in keys {
             if self
                 .runtime
                 .0
@@ -681,12 +724,14 @@ impl JsonStringifier<'_> {
             {
                 continue;
             }
-            let Some(descriptor) = self.runtime.get_own_property(object, &key)? else {
-                continue;
-            };
-            let enumerable = match descriptor {
-                CompleteOrdinaryPropertyDescriptor::Data { enumerable, .. }
-                | CompleteOrdinaryPropertyDescriptor::Accessor { enumerable, .. } => enumerable,
+            let enumerable = match self
+                .runtime
+                .internal_own_property_is_enumerable(self.realm, object, &key)?
+            {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => {
+                    return Err(JsonStringifyFailure::Throw(value));
+                }
             };
             if enumerable {
                 result.push(

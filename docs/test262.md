@@ -33,8 +33,9 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, Proxy, most `$262` host hooks, advanced RegExp pattern
-grammar, TypedArrays, and many other broad layers remain absent.
+surfaces. Modules, most `$262` host hooks, advanced RegExp pattern grammar,
+TypedArrays, and many other broad layers remain absent. Proxy is measured
+separately by the checksum-bound R3am scoped gate below.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -61,12 +62,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 50,765 pass;
+- 50,977 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 31,395 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 18 fail to parse, 1,281 fail at runtime, 97 fail in the harness, and six
+- 18 fail to parse, 1,073 fail at runtime, 97 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 52,216 variants to execution. That count includes variants
@@ -75,14 +76,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 49.75% (`50,765 / 102,037`);
-- conservative target-scope lower bound: 60.75%
-  (`50,765 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 97.31%
-  (`50,765 / 52,167`).
+- raw suite pass rate: 49.96% (`50,977 / 102,037`);
+- conservative target-scope lower bound: 61.01%
+  (`50,977 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 97.72%
+  (`50,977 / 52,167`).
 
-The 60.75% figure is the useful whole-project progress floor, not a claim that
-the engine is 60.75% conformant. The 97.31% conditional rate measures quality
+The 61.01% figure is the useful whole-project progress floor, not a claim that
+the engine is 61.01% conformant. The 97.72% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -129,17 +130,18 @@ committed (together they are tens of megabytes). Their complete hashes and
 outcome summary are pinned in `tests/test262-full-baseline.txt`. Runner ordering
 was cross-checked at five and eight workers through the scoped RegExp modifier
 milestone. The canonical full gate now uses two workers because its 30-second
-budget is wall-clock based and the untagged `Proxy/ownkeys-linear.js` performs
-15,000 precondition property insertions before reaching the missing `Proxy`
-frontier; higher worker contention can make those two already-failing variants
-scheduler-dependent. Focused gates and the generic runner retain their existing
-parallel defaults. The current byte expectations use a fixed
+budget is wall-clock based and CPU-heavy generated cases become
+scheduler-sensitive under higher worker contention. R3am makes the untagged
+15,000-key `Proxy/ownkeys-linear.js` path linear enough to pass in both modes;
+only the two `JSON/parse-mega-huge-array.js` modes still time out. Focused gates
+and the generic runner retain their existing parallel defaults. The current
+byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`93456e63a780ac6b02253853a5711464d01944f6df30a22d8b1a6fcde6a66366`
+`19209666492462edb063b24af6fd1278abcffa10178da0d1da1218fb49140b43`
 and
-`40417ac19f60988a3257e4d577ea1f485ef61637f1c444820ebe5662638fa13e`.
+`f4ee2c790693817bfe122127db7612ab7df5c2daf73b40514bce7b574f32061c`.
 
 ## Milestone policy
 
@@ -2653,11 +2655,13 @@ without advancing or brand-checking that second iterator.
 
 The dependency-audited focused gate freezes 67 paths / 134 variants. It records
 122 passes and an exact adjacent-feature frontier of twelve runtime failures.
-Fifteen automated Oxide/QuickJS semantic differentials all
-pass. Three dense 65K Oxide stress vectors remain ignored for routine
-automation and are run manually because immutable shape growth is currently
-O(n²); their pinned QuickJS expectations are self-checked, while the shared
-65,534/65,535 argument limit is checked quickly by `oracle_function_apply`.
+Fifteen automated Oxide/QuickJS semantic differentials all pass. At the R3d
+checkpoint, three dense 65K Oxide stress vectors were kept manual because the
+then-current immutable shape growth was O(n²); their pinned QuickJS
+expectations were self-checked, while the shared 65,534/65,535 argument limit
+was checked quickly by `oracle_function_apply`. R3am removes that shape-growth
+bottleneck; the three cases remain explicitly marked as stress tests rather
+than routine unit coverage.
 
 The exact R3c/R3d full join retains all 102,037 unique keys and every prior
 pass. It records 122 `fail-parse -> pass`, ten `fail-parse -> fail-runtime`,
@@ -4844,6 +4848,52 @@ The remaining async-tagged tests stay behind their actual independent class,
 default-parameter, module, Promise-method, host, or negative-provenance
 dependencies.
 
+## R3am Proxy internal-method gate
+
+R3am freezes 464 Proxy and Proxy-consumer paths / 904 canonical variants in a
+scoped profile. Pinned QuickJS passes all 904 variants. Oxide records 811
+passes, 81 explicit unsupported outcomes, and 12 harness failures among 829
+runnable variants:
+
+- 74 variants require the unavailable `$262.createRealm` host hook;
+- one is a module variant and six stop at independent parser frontiers;
+- the 12 harness failures are six TypedArray-adjacent paths in both modes,
+  where `testTypedArray.js` requires the still-unimplemented `Float64Array`.
+
+There is no Proxy runtime failure, timeout, crash, or engine/runner fault in
+the scoped vector. The profile, manifest, key-set, non-pass, TSV, and JSONL
+SHA-256 values are
+`0c151608ed8cd580238e27188f5e63382ee11e1dc91f7c480db2c366e1232d12`,
+`ef2395cd3bd268d7ba1010773651408826452feaed121f8f2d4c0e6afeed66f3`,
+`0ec3bfa0ffaec0ddf6e20512be35ab866d3e07658cddaf3e88f29f7d64b97bfd`,
+`323c76b74e94c0f585d92e371ee69aa753c505ca683dd6a0ae42afaa53a76fda`,
+`2e6f22c51fa30db9a3507aa60371c71afb3669840b624d09382119415962662c`,
+and
+`83e064472fdfd7154be4d1b57a21ec7628ee4b6d785f9b0f6c9af8e82848d1cf`.
+
+Reproduce the scoped gate with:
+
+```sh
+./scripts/test-test262-proxy.sh
+```
+
+Proxy remains scoped in the global capability profile, so R3am does not
+silently admit every feature-tagged combination. The exact R3al/R3am full
+join nevertheless retains all 102,037 keys and every previous pass. It records
+208 `fail-runtime -> pass` transitions from untagged or already-admitted Proxy
+consumers and four `timeout -> pass` transitions after large unique-shape
+property growth became amortized linear. The latter are both modes of
+`String/fromCodePoint.js` and `String/string-upper-lower-mapping.js`;
+`Proxy/ownkeys-linear.js` is included among the 208 runtime transitions because
+its old run stopped at the missing global before R3am.
+
+The complete vector reaches 50,977 passes with the same 52,216 runnable
+variants. It has zero previous-pass regression, missing key, extra key, or
+duplicate key. The full TSV and JSONL SHA-256 values are
+`19209666492462edb063b24af6fd1278abcffa10178da0d1da1218fb49140b43`
+and
+`f4ee2c790693817bfe122127db7612ab7df5c2daf73b40514bce7b574f32061c`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -4956,6 +5006,7 @@ canonical progress report.
 ./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
 ./scripts/test-test262-async-generator-yield-star.sh
 ./scripts/test-test262-global-async.sh
+./scripts/test-test262-proxy.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -5258,6 +5309,12 @@ into the global profile. Its 3,589-path / 7,076-variant newly executable
 cohort passes in full. The exact 102,037-key join retains every previous pass,
 raises the complete vector to 50,765 passes and 52,216 runnable variants, and
 leaves adjacent feature, module, host, and negative-provenance dependencies
+fail-closed.
+R3am adds the QuickJS-shaped Proxy internal-method seam and a
+464-path/904-variant scoped gate. Oxide passes 811 variants; the remaining 93
+are exact host/module/parser or TypedArray-harness frontiers, with no Proxy
+runtime failure. The complete join adds 212 passes with zero previous-pass
+regression and reaches 50,977/102,037 while global Proxy admission remains
 fail-closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.

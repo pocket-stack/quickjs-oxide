@@ -14,6 +14,7 @@ mod class_fields;
 mod for_in;
 mod generator;
 mod home_object;
+mod internal_methods;
 mod intrinsics;
 mod jobs;
 mod native_dispatch;
@@ -93,6 +94,7 @@ struct RuntimeInner {
     /// Nested call guards compare against it using QuickJS's one-MiB host-stack
     /// budget; no pointer is dereferenced after the marker's lifetime ends.
     host_stack_top: Cell<Option<usize>>,
+    proxy_method_depth: Cell<usize>,
     next_context_id: Cell<u64>,
     domain_id: u64,
 }
@@ -340,6 +342,7 @@ enum PropertySnapshot {
     AutoInit,
 }
 
+#[cfg(test)]
 enum PropertyGetAction {
     Complete(Value),
     Call {
@@ -421,6 +424,32 @@ enum CallableExecution {
         this_value: Value,
         arguments: Vec<Value>,
     },
+    Proxy,
+}
+
+/// Target selected by the bytecode `Call` path.
+///
+/// Pinned QuickJS deliberately enters a Proxy's call hook before checking the
+/// cached callable bit, so a direct call of a non-callable Proxy can still
+/// observe the handler's `apply` getter. Keep that narrow quirk out of
+/// `CallableRef`, whose public invariant remains a genuine `[[Call]]`.
+enum DirectCallTarget {
+    Callable(CallableRef),
+    NonCallableProxy(ObjectRef),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InternalSetResult {
+    Accepted,
+    Rejected(PropertySetRejection),
+    RejectedProxyTrap,
+}
+
+#[derive(Clone, Debug)]
+enum InternalDefineResult {
+    Defined,
+    RejectedOrdinary(ObjectRef),
+    RejectedProxyTrap,
 }
 
 struct VarRefRoot {
@@ -708,6 +737,7 @@ impl Runtime {
             date_host,
             promise_rejection_tracker: RefCell::new(None),
             host_stack_top: Cell::new(None),
+            proxy_method_depth: Cell::new(0),
             next_context_id: Cell::new(0),
             domain_id,
         }))
@@ -1006,9 +1036,10 @@ impl Runtime {
         .expect("RegExp intrinsic initialization must succeed");
         self.initialize_json_intrinsic(realm, &global_object)
             .expect("JSON intrinsic initialization must succeed");
+        self.initialize_proxy_intrinsic(realm, &function_prototype, &global_object)
+            .expect("Proxy intrinsic initialization must succeed");
         // Pinned QuickJS installs strong/weak collection intrinsics after
-        // Proxy. Proxy is not linked yet, so Map follows JSON here while
-        // retaining the implemented intrinsic order and its own realm roots.
+        // Proxy.
         self.initialize_map_intrinsic(
             realm,
             &function_prototype,
@@ -2730,6 +2761,10 @@ impl Runtime {
             ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. }
+                | ObjectPayload::Proxy(crate::heap::ProxyData {
+                    is_callable: true,
+                    ..
+                })
         );
         if !callable {
             return Ok(None);
@@ -4857,6 +4892,15 @@ impl Runtime {
                     closure_slots,
                     ..
                 } => (*bytecode, closure_slots.clone()),
+                ObjectPayload::Proxy(data) if data.is_callable => {
+                    return Ok(CallableExecution::Proxy);
+                }
+                ObjectPayload::Proxy(_) => {
+                    return Err(RuntimeError::Engine(Error::new(
+                        ErrorKind::Type,
+                        "not a function",
+                    )));
+                }
                 ObjectPayload::Ordinary
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
@@ -4922,9 +4966,9 @@ impl Runtime {
                 state.heap.context(realm)?;
                 Ok(Some((data.target, realm, data.min_readable_args)))
             }
-            ObjectPayload::BoundFunction { .. } | ObjectPayload::BytecodeFunction { .. } => {
-                Ok(None)
-            }
+            ObjectPayload::BoundFunction { .. }
+            | ObjectPayload::BytecodeFunction { .. }
+            | ObjectPayload::Proxy(_) => Ok(None),
             ObjectPayload::Ordinary
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
@@ -5010,6 +5054,10 @@ impl Runtime {
             ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. }
+                | ObjectPayload::Proxy(crate::heap::ProxyData {
+                    is_callable: true,
+                    ..
+                })
         );
         if !is_callable {
             return Err(RuntimeError::Engine(Error::new(
@@ -5086,6 +5134,10 @@ impl Runtime {
                 ObjectPayload::NativeFunction { .. }
                     | ObjectPayload::BoundFunction { .. }
                     | ObjectPayload::BytecodeFunction { .. }
+                    | ObjectPayload::Proxy(crate::heap::ProxyData {
+                        is_callable: true,
+                        ..
+                    })
             );
             (callable, object_data.is_constructor)
         };
@@ -5230,6 +5282,14 @@ impl Runtime {
                         Completion::Return(_) => Completion::Return(this_value),
                     });
                 }
+                CallableExecution::Proxy => {
+                    return self.construct_proxy(
+                        caller_realm,
+                        &constructor,
+                        &new_target,
+                        &arguments,
+                    );
+                }
             }
         }
     }
@@ -5240,91 +5300,28 @@ impl Runtime {
         new_target: &CallableRef,
     ) -> Result<Completion, RuntimeError> {
         let prototype_key = self.intern_property_key("prototype")?;
-        let prototype = match self.prepare_get_property(new_target.as_object(), &prototype_key)? {
-            PropertyGetAction::Complete(value) => value,
-            PropertyGetAction::Call { getter, receiver } => {
-                match self.call_internal(caller_realm, &getter, receiver, &[])? {
-                    Completion::Return(value) => value,
-                    Completion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
+        let prototype = match self.internal_get(
+            caller_realm,
+            new_target.as_object(),
+            &prototype_key,
+            Value::Object(new_target.as_object().clone()),
+        )? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let prototype = if let Value::Object(prototype) = prototype {
             prototype
         } else {
-            let realm = self.callable_realm(new_target)?;
+            let realm = match self.function_realm(caller_realm, new_target)? {
+                NativeConversion::Value(realm) => realm,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
             let object_prototype = self.0.state.borrow().heap.context(realm)?.object_prototype;
             ObjectRef::from_borrowed_handle(self.clone(), object_prototype)?
         };
         Ok(Completion::Return(Value::Object(
             self.new_object(Some(&prototype))?,
         )))
-    }
-
-    fn callable_realm(&self, callable: &CallableRef) -> Result<ContextId, RuntimeError> {
-        if !callable.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("callable"));
-        }
-        let mut callable = callable.clone();
-        loop {
-            let state = self.0.state.borrow();
-            let object = state.heap.object(callable.as_object().object_id())?;
-            match &object.payload {
-                ObjectPayload::NativeFunction { data, .. } if data.realm.is_some() => {
-                    let realm = data
-                        .realm
-                        .expect("guard proved native function has a defining realm");
-                    state.heap.context(realm)?;
-                    return Ok(realm);
-                }
-                ObjectPayload::BytecodeFunction { bytecode, .. } => {
-                    let realm = state.heap.function_bytecode(*bytecode)?.realm;
-                    state.heap.context(realm)?;
-                    return Ok(realm);
-                }
-                ObjectPayload::BoundFunction { target, .. } => {
-                    let target = *target;
-                    drop(state);
-                    let target = ObjectRef::from_borrowed_handle(self.clone(), target)?;
-                    callable = CallableRef::from_validated_object(target);
-                }
-                ObjectPayload::NativeFunction { .. } => {
-                    return Err(RuntimeError::Invariant(
-                        "native function has no defining realm",
-                    ));
-                }
-                ObjectPayload::Ordinary
-                | ObjectPayload::AsyncFunctionState(_)
-                | ObjectPayload::RawJson
-                | ObjectPayload::Promise(_)
-                | ObjectPayload::Date(_)
-                | ObjectPayload::RegExp(_)
-                | ObjectPayload::Array { .. }
-                | ObjectPayload::Arguments { .. }
-                | ObjectPayload::ArrayIterator { .. }
-                | ObjectPayload::IteratorHelper(_)
-                | ObjectPayload::IteratorWrap(_)
-                | ObjectPayload::AsyncFromSyncIterator(_)
-                | ObjectPayload::IteratorConcat(_)
-                | ObjectPayload::Map { .. }
-                | ObjectPayload::MapIterator { .. }
-                | ObjectPayload::Set { .. }
-                | ObjectPayload::SetIterator { .. }
-                | ObjectPayload::ForInIterator(_)
-                | ObjectPayload::Primitive(_)
-                | ObjectPayload::GlobalObject { .. }
-                | ObjectPayload::Error
-                | ObjectPayload::StringIterator { .. }
-                | ObjectPayload::RegExpStringIterator { .. }
-                | ObjectPayload::Generator { .. }
-                | ObjectPayload::AsyncGenerator(_) => {
-                    return Err(RuntimeError::Engine(Error::new(
-                        ErrorKind::Type,
-                        "not a function",
-                    )));
-                }
-            }
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5701,36 +5698,34 @@ impl Runtime {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<Completion, RuntimeError> {
-        Ok(self
-            .get_property_or_missing_in_realm(realm, object, key)?
-            .unwrap_or(Completion::Return(Value::Undefined)))
+        self.internal_get(realm, object, key, Value::Object(object.clone()))
     }
 
-    fn prepare_get_string_property_with_receiver(
+    fn get_string_property_with_receiver(
         &self,
         realm: ContextId,
         string: &JsString,
         key: &PropertyKey,
         receiver: Value,
-    ) -> Result<PropertyGetAction, RuntimeError> {
+    ) -> Result<Completion, RuntimeError> {
         let index = self.0.state.borrow().atoms.array_index(key.atom())?;
         if let Some(index) = index
             && let Ok(index) = usize::try_from(index)
             && let Some(unit) = string.code_unit_at(index)
         {
-            return Ok(PropertyGetAction::Complete(Value::String(
-                JsString::from_code_unit(unit),
-            )));
+            return Ok(Completion::Return(Value::String(JsString::from_code_unit(
+                unit,
+            ))));
         }
         let length = self.intern_property_key("length")?;
         if key == &length {
             let length = i32::try_from(string.len())
                 .map(Value::Int)
                 .unwrap_or_else(|_| Value::number(string.len() as f64));
-            return Ok(PropertyGetAction::Complete(length));
+            return Ok(Completion::Return(length));
         }
         let prototype = self.primitive_prototype_for_realm(realm, PrimitiveKind::String)?;
-        self.prepare_get_property_with_receiver(&prototype, key, receiver)
+        self.internal_get(realm, &prototype, key, receiver)
     }
 
     fn get_value_property_in_realm(
@@ -5739,16 +5734,11 @@ impl Runtime {
         receiver: Value,
         key: &PropertyKey,
     ) -> Result<Completion, RuntimeError> {
-        let action = match &receiver {
-            Value::Object(object) => {
-                self.prepare_get_property_with_receiver(object, key, receiver.clone())?
+        match &receiver {
+            Value::Object(object) => self.internal_get(realm, object, key, receiver.clone()),
+            Value::String(string) => {
+                self.get_string_property_with_receiver(realm, string, key, receiver.clone())
             }
-            Value::String(string) => self.prepare_get_string_property_with_receiver(
-                realm,
-                string,
-                key,
-                receiver.clone(),
-            )?,
             Value::Bool(_)
             | Value::Int(_)
             | Value::Float(_)
@@ -5762,7 +5752,7 @@ impl Runtime {
                     _ => unreachable!(),
                 };
                 let prototype = self.primitive_prototype_for_realm(realm, kind)?;
-                self.prepare_get_property_with_receiver(&prototype, key, receiver.clone())?
+                self.internal_get(realm, &prototype, key, receiver.clone())
             }
             Value::Undefined | Value::Null => {
                 let suffix = if matches!(receiver, Value::Null) {
@@ -5772,17 +5762,11 @@ impl Runtime {
                 };
                 let error =
                     self.native_atom_error(ErrorKind::Type, "cannot read property '", key, suffix)?;
-                return Ok(Completion::Throw(self.new_native_error_from_error(
+                Ok(Completion::Throw(self.new_native_error_from_error(
                     realm,
                     NativeErrorKind::Type,
                     &error,
-                )?));
-            }
-        };
-        match action {
-            PropertyGetAction::Complete(value) => Ok(Completion::Return(value)),
-            PropertyGetAction::Call { getter, receiver } => {
-                self.call_internal(realm, &getter, receiver, &[])
+                )?))
             }
         }
     }
@@ -5793,12 +5777,10 @@ impl Runtime {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<Option<Completion>, RuntimeError> {
-        match self.prepare_get_property_or_missing(object, key)? {
-            None => Ok(None),
-            Some(PropertyGetAction::Complete(value)) => Ok(Some(Completion::Return(value))),
-            Some(PropertyGetAction::Call { getter, receiver }) => {
-                self.call_internal(realm, &getter, receiver, &[]).map(Some)
-            }
+        match self.internal_get_or_missing(realm, object, key, Value::Object(object.clone()))? {
+            NativeConversion::Value(Some(value)) => Ok(Some(Completion::Return(value))),
+            NativeConversion::Value(None) => Ok(None),
+            NativeConversion::Throw(value) => Ok(Some(Completion::Throw(value))),
         }
     }
 
@@ -5814,16 +5796,18 @@ impl Runtime {
     }
 
     /// Completion-aware `[[HasProperty]]` boundary used by source `in`.
-    /// Ordinary objects are synchronous today; a future Proxy/exotic path can
-    /// return its trap throw here without changing the VM opcode contract.
+    /// Proxy trap throws cross this boundary without changing the VM opcode
+    /// contract.
     fn has_property_in_realm(
         &self,
-        _realm: ContextId,
+        realm: ContextId,
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<Completion, RuntimeError> {
-        self.has_property(object, key)
-            .map(|present| Completion::Return(Value::Bool(present)))
+        Ok(match self.internal_has_property(realm, object, key)? {
+            NativeConversion::Value(present) => Completion::Return(Value::Bool(present)),
+            NativeConversion::Throw(value) => Completion::Throw(value),
+        })
     }
 
     /// Completion-aware `ToPropertyKey` used by native Object APIs. Symbols
@@ -5874,8 +5858,13 @@ impl Runtime {
         name: &str,
     ) -> Result<NativeConversion<Option<Value>>, RuntimeError> {
         let key = self.intern_property_key(name)?;
-        if !self.has_property(object, &key)? {
-            return Ok(NativeConversion::Value(None));
+        match self.internal_has_property(realm, object, &key)? {
+            NativeConversion::Value(true) => {}
+            NativeConversion::Value(false) => return Ok(NativeConversion::Value(None)),
+            // Pinned `js_obj_to_desc` uses the tri-state C result directly as
+            // a Boolean. `-1` therefore takes the present branch and a
+            // following successful Get replaces the HasProperty throw.
+            NativeConversion::Throw(_) => {}
         }
         match self.get_property_in_realm(realm, object, &key)? {
             Completion::Return(value) => Ok(NativeConversion::Value(Some(value))),
@@ -6393,6 +6382,7 @@ impl Runtime {
                                 && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
@@ -6531,7 +6521,10 @@ impl Runtime {
             Completion::Return(Value::Object(prototype)) => prototype,
             Completion::Return(_) => {
                 let new_target = self.callable_from_value(Value::Object(new_target))?;
-                let fallback_realm = self.callable_realm(&new_target)?;
+                let fallback_realm = match self.function_realm(realm, &new_target)? {
+                    NativeConversion::Value(realm) => realm,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
                 let prototype = match kind {
                     DynamicFunctionKind::Normal => {
                         self.0
@@ -6672,7 +6665,12 @@ impl Runtime {
             self.new_bound_function(realm, &target, &arguments.readable[0], bound_arguments)?;
 
         let length_key = self.intern_property_key("length")?;
-        let length = if self.has_own_property(&target_object, &length_key)? {
+        let has_own_length =
+            match self.internal_has_own_property(realm, &target_object, &length_key)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+        let length = if has_own_length {
             let value = match self.get_property_in_realm(realm, &target_object, &length_key)? {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -6736,6 +6734,7 @@ impl Runtime {
                 ObjectPayload::NativeFunction { .. } | ObjectPayload::BoundFunction { .. } => {
                     (true, None, FunctionKind::Normal)
                 }
+                ObjectPayload::Proxy(data) => (data.is_callable, None, FunctionKind::Normal),
                 ObjectPayload::Ordinary
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
@@ -6960,7 +6959,8 @@ impl Runtime {
                     match &object.payload {
                         ObjectPayload::BoundFunction { target, .. } => Some(*target),
                         ObjectPayload::NativeFunction { .. }
-                        | ObjectPayload::BytecodeFunction { .. } => None,
+                        | ObjectPayload::BytecodeFunction { .. }
+                        | ObjectPayload::Proxy(_) => None,
                         ObjectPayload::Ordinary
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
@@ -7014,12 +7014,20 @@ impl Runtime {
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     };
 
-                    let mut cursor = self.get_prototype_of(candidate)?;
+                    let mut cursor = match self.internal_get_prototype_of(realm, candidate)? {
+                        NativeConversion::Value(prototype) => prototype,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
                     while let Some(current) = cursor {
                         if current == prototype {
                             return Ok(Completion::Return(Value::Bool(true)));
                         }
-                        cursor = self.get_prototype_of(&current)?;
+                        cursor = match self.internal_get_prototype_of(realm, &current)? {
+                            NativeConversion::Value(prototype) => prototype,
+                            NativeConversion::Throw(value) => {
+                                return Ok(Completion::Throw(value));
+                            }
+                        };
                     }
                     return Ok(Completion::Return(Value::Bool(false)));
                 };
@@ -7076,6 +7084,7 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
@@ -7275,7 +7284,10 @@ impl Runtime {
             match self.get_property_in_realm(realm, new_target.as_object(), &prototype_key)? {
                 Completion::Return(Value::Object(prototype)) => prototype,
                 Completion::Return(_) => {
-                    let fallback_realm = self.callable_realm(&new_target)?;
+                    let fallback_realm = match self.function_realm(realm, &new_target)? {
+                        NativeConversion::Value(realm) => realm,
+                        NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                    };
                     self.primitive_prototype_for_realm(fallback_realm, kind)?
                 }
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -7457,6 +7469,7 @@ impl Runtime {
                         Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
+                    | ObjectPayload::Proxy(_)
                     | ObjectPayload::AsyncFunctionState(_)
                     | ObjectPayload::RawJson
                     | ObjectPayload::Promise(_)
@@ -7618,70 +7631,56 @@ impl Runtime {
         }
 
         let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
-        if !self.has_own_property(&receiver, &key)? {
-            let defined = self.define_own_property(
-                &receiver,
-                &key,
-                &OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(value),
-                    writable: DescriptorField::Present(true),
-                    enumerable: DescriptorField::Present(true),
-                    configurable: DescriptorField::Present(true),
-                    ..OrdinaryPropertyDescriptor::new()
+        let own_property = match self.internal_has_own_property(realm, &receiver, &key)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if !own_property {
+            let descriptor = OrdinaryPropertyDescriptor {
+                value: DescriptorField::Present(value),
+                writable: DescriptorField::Present(true),
+                enumerable: DescriptorField::Present(true),
+                configurable: DescriptorField::Present(true),
+                ..OrdinaryPropertyDescriptor::new()
+            };
+            return Ok(
+                match self.internal_define_own_property(realm, &receiver, &key, &descriptor)? {
+                    NativeConversion::Value(InternalDefineResult::Defined) => {
+                        Completion::Return(Value::Undefined)
+                    }
+                    NativeConversion::Value(InternalDefineResult::RejectedProxyTrap) => {
+                        Completion::Throw(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Type,
+                            "proxy: defineProperty exception",
+                        )?)
+                    }
+                    NativeConversion::Value(InternalDefineResult::RejectedOrdinary(target)) => {
+                        let message = if !self.has_own_property(&target, &key)?
+                            && !self.is_extensible(&target)?
+                        {
+                            "object is not extensible"
+                        } else {
+                            "property is not configurable"
+                        };
+                        Completion::Throw(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Type,
+                            message,
+                        )?)
+                    }
+                    NativeConversion::Throw(value) => Completion::Throw(value),
                 },
-            )?;
-            if !defined {
-                return Err(RuntimeError::Engine(Error::new(
-                    ErrorKind::Type,
-                    "object is not extensible",
-                )));
-            }
-            return Ok(Completion::Return(Value::Undefined));
+            );
         }
 
-        match self.prepare_set_property_in_realm(realm, &receiver, &key, value)? {
-            PropertySetAction::Complete => Ok(Completion::Return(Value::Undefined)),
-            PropertySetAction::Throw(value) => Ok(Completion::Throw(value)),
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => match self.call_internal(realm, &setter, receiver, &[argument])? {
-                Completion::Return(_) => Ok(Completion::Return(Value::Undefined)),
-                Completion::Throw(value) => Ok(Completion::Throw(value)),
+        Ok(
+            if let Some(value) = self.set_property_or_throw(realm, &receiver, &key, value)? {
+                Completion::Throw(value)
+            } else {
+                Completion::Return(Value::Undefined)
             },
-            PropertySetAction::Rejected(PropertySetRejection::ReadOnly) => {
-                Err(RuntimeError::Engine(self.native_atom_error(
-                    ErrorKind::Type,
-                    "'",
-                    &key,
-                    "' is read-only",
-                )?))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::ArrayLengthReadOnly) => {
-                let length = self.intern_property_key("length")?;
-                Err(RuntimeError::Engine(self.native_atom_error(
-                    ErrorKind::Type,
-                    "'",
-                    &length,
-                    "' is read-only",
-                )?))
-            }
-            PropertySetAction::Rejected(PropertySetRejection::NotConfigurable) => Err(
-                RuntimeError::Engine(Error::new(ErrorKind::Type, "not configurable")),
-            ),
-            PropertySetAction::Rejected(PropertySetRejection::NoSetter) => Err(
-                RuntimeError::Engine(Error::new(ErrorKind::Type, "no setter for property")),
-            ),
-            PropertySetAction::Rejected(PropertySetRejection::NotExtensible) => Err(
-                RuntimeError::Engine(Error::new(ErrorKind::Type, "object is not extensible")),
-            ),
-            PropertySetAction::Rejected(PropertySetRejection::NotObject) => {
-                Err(RuntimeError::Invariant(
-                    "Iterator.prototype tag setter rejected its object receiver",
-                ))
-            }
-        }
+        )
     }
 
     fn call_string_prototype_iterator(
@@ -8386,6 +8385,7 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
+                | ObjectPayload::Proxy(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -8569,6 +8569,21 @@ impl Runtime {
     ) -> Result<(), RuntimeError> {
         let mut state = self.0.state.borrow_mut();
         let object_id = object.object_id();
+        let (shape_id, shape_len, existing) = {
+            let object_data = state.heap.object(object_id)?;
+            let shape = state.heap.shape(object_data.shape)?;
+            (
+                object_data.shape,
+                shape.entries().len(),
+                shape.find(key.atom()).map(|index| index as usize),
+            )
+        };
+        if existing.is_none()
+            && shape_len >= properties::MIN_UNIQUE_SHAPE_APPEND_ENTRIES
+            && state.heap.shape_strong_count(shape_id)? == 1
+        {
+            return state.append_unique_layout(object_id, key.atom(), flags, replacement);
+        }
         let (prototype, mut entries, mut slots, existing) = {
             let object_data = state.heap.object(object_id)?;
             let shape = state.heap.shape(object_data.shape)?;
@@ -9584,7 +9599,16 @@ impl Context {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
-        self.runtime.get_own_property(object, key)
+        match self
+            .runtime
+            .internal_get_own_property(self.realm, object, key)?
+        {
+            NativeConversion::Value(value) => Ok(value),
+            NativeConversion::Throw(value) => {
+                self.runtime.set_pending_exception(value)?;
+                Err(RuntimeError::Exception)
+            }
+        }
     }
 
     pub fn define_own_property(
@@ -9593,14 +9617,15 @@ impl Context {
         key: &PropertyKey,
         descriptor: &OrdinaryPropertyDescriptor,
     ) -> Result<bool, RuntimeError> {
-        match self.runtime.define_own_property_in_realm(
-            Some(self.realm),
-            object,
-            key,
-            descriptor,
-        )? {
-            PropertyDefineOutcome::Defined(defined) => Ok(defined),
-            PropertyDefineOutcome::Throw(value) => {
+        match self
+            .runtime
+            .internal_define_own_property(self.realm, object, key, descriptor)?
+        {
+            NativeConversion::Value(InternalDefineResult::Defined) => Ok(true),
+            NativeConversion::Value(
+                InternalDefineResult::RejectedOrdinary(_) | InternalDefineResult::RejectedProxyTrap,
+            ) => Ok(false),
+            NativeConversion::Throw(value) => {
                 self.runtime.set_pending_exception(value)?;
                 Err(RuntimeError::Exception)
             }
@@ -9612,15 +9637,10 @@ impl Context {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<Value, RuntimeError> {
-        match self.runtime.prepare_get_property(object, key)? {
-            PropertyGetAction::Complete(value) => Ok(value),
-            PropertyGetAction::Call { getter, receiver } => {
-                let completion = self
-                    .runtime
-                    .call_internal(self.realm, &getter, receiver, &[])?;
-                self.finish_completion(completion)
-            }
-        }
+        let completion =
+            self.runtime
+                .internal_get(self.realm, object, key, Value::Object(object.clone()))?;
+        self.finish_completion(completion)
     }
 
     pub fn get_property_with_receiver(
@@ -9629,18 +9649,10 @@ impl Context {
         key: &PropertyKey,
         receiver: Value,
     ) -> Result<Value, RuntimeError> {
-        match self
+        let completion = self
             .runtime
-            .prepare_get_property_with_receiver(object, key, receiver)?
-        {
-            PropertyGetAction::Complete(value) => Ok(value),
-            PropertyGetAction::Call { getter, receiver } => {
-                let completion = self
-                    .runtime
-                    .call_internal(self.realm, &getter, receiver, &[])?;
-                self.finish_completion(completion)
-            }
-        }
+            .internal_get(self.realm, object, key, receiver)?;
+        self.finish_completion(completion)
     }
 
     pub fn set_property(
@@ -9649,27 +9661,20 @@ impl Context {
         key: &PropertyKey,
         value: Value,
     ) -> Result<bool, RuntimeError> {
-        match self
-            .runtime
-            .prepare_set_property_in_realm(self.realm, object, key, value)?
-        {
-            PropertySetAction::Complete => Ok(true),
-            PropertySetAction::Throw(value) => {
+        match self.runtime.internal_set(
+            self.realm,
+            object,
+            key,
+            value,
+            Value::Object(object.clone()),
+        )? {
+            NativeConversion::Value(InternalSetResult::Accepted) => Ok(true),
+            NativeConversion::Value(
+                InternalSetResult::Rejected(_) | InternalSetResult::RejectedProxyTrap,
+            ) => Ok(false),
+            NativeConversion::Throw(value) => {
                 self.runtime.set_pending_exception(value)?;
                 Err(RuntimeError::Exception)
-            }
-            PropertySetAction::Rejected(_) => Ok(false),
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => {
-                let completion =
-                    self.runtime
-                        .call_internal(self.realm, &setter, receiver, &[argument])?;
-                let returned = self.finish_completion(completion)?;
-                drop(returned);
-                Ok(true)
             }
         }
     }
@@ -9681,30 +9686,17 @@ impl Context {
         value: Value,
         receiver: Value,
     ) -> Result<bool, RuntimeError> {
-        match self.runtime.prepare_set_property_with_receiver_in_realm(
-            Some(self.realm),
-            object,
-            key,
-            value,
-            receiver,
-        )? {
-            PropertySetAction::Complete => Ok(true),
-            PropertySetAction::Throw(value) => {
+        match self
+            .runtime
+            .internal_set(self.realm, object, key, value, receiver)?
+        {
+            NativeConversion::Value(InternalSetResult::Accepted) => Ok(true),
+            NativeConversion::Value(
+                InternalSetResult::Rejected(_) | InternalSetResult::RejectedProxyTrap,
+            ) => Ok(false),
+            NativeConversion::Throw(value) => {
                 self.runtime.set_pending_exception(value)?;
                 Err(RuntimeError::Exception)
-            }
-            PropertySetAction::Rejected(_) => Ok(false),
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => {
-                let completion =
-                    self.runtime
-                        .call_internal(self.realm, &setter, receiver, &[argument])?;
-                let returned = self.finish_completion(completion)?;
-                drop(returned);
-                Ok(true)
             }
         }
     }

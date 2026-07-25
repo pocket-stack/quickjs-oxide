@@ -42,7 +42,9 @@ impl Runtime {
         let function_id = function.as_object().object_id();
         let bytecode = match &state.heap.object(function_id)?.payload {
             ObjectPayload::BytecodeFunction { bytecode, .. } => Some(*bytecode),
-            ObjectPayload::NativeFunction { .. } | ObjectPayload::BoundFunction { .. } => None,
+            ObjectPayload::NativeFunction { .. }
+            | ObjectPayload::BoundFunction { .. }
+            | ObjectPayload::Proxy(_) => None,
             ObjectPayload::Ordinary
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)

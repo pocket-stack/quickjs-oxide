@@ -342,9 +342,14 @@ impl Runtime {
                 NativeConversion::Value(descriptor) => descriptor,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-        match self.define_own_property_in_realm(Some(realm), &object, &key, &descriptor)? {
-            PropertyDefineOutcome::Defined(defined) => Ok(Completion::Return(Value::Bool(defined))),
-            PropertyDefineOutcome::Throw(value) => Ok(Completion::Throw(value)),
+        match self.internal_define_own_property(realm, &object, &key, &descriptor)? {
+            NativeConversion::Value(InternalDefineResult::Defined) => {
+                Ok(Completion::Return(Value::Bool(true)))
+            }
+            NativeConversion::Value(
+                InternalDefineResult::RejectedOrdinary(_) | InternalDefineResult::RejectedProxyTrap,
+            ) => Ok(Completion::Return(Value::Bool(false))),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
         }
     }
 
@@ -361,9 +366,10 @@ impl Runtime {
             NativeConversion::Value(key) => key,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(Value::Bool(
-            self.delete_property(&object, &key)?,
-        )))
+        Ok(match self.internal_delete_property(realm, &object, &key)? {
+            NativeConversion::Value(deleted) => Completion::Return(Value::Bool(deleted)),
+            NativeConversion::Throw(value) => Completion::Throw(value),
+        })
     }
 
     fn call_reflect_get(
@@ -384,12 +390,7 @@ impl Runtime {
             NativeConversion::Value(key) => key,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        match self.prepare_get_property_with_receiver(&object, &key, receiver)? {
-            PropertyGetAction::Complete(value) => Ok(Completion::Return(value)),
-            PropertyGetAction::Call { getter, receiver } => {
-                self.call_internal(realm, &getter, receiver, &[])
-            }
-        }
+        self.internal_get(realm, &object, &key, receiver)
     }
 
     fn call_reflect_get_own_property_descriptor(
@@ -405,9 +406,12 @@ impl Runtime {
             NativeConversion::Value(key) => key,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(
-            self.object_get_own_property_descriptor_value(realm, &object, &key)?,
-        ))
+        Ok(
+            match self.object_get_own_property_descriptor_value(realm, &object, &key)? {
+                NativeConversion::Value(value) => Completion::Return(value),
+                NativeConversion::Throw(value) => Completion::Throw(value),
+            },
+        )
     }
 
     fn call_reflect_get_prototype_of(
@@ -419,10 +423,12 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(
-            self.get_prototype_of(&object)?
-                .map_or(Value::Null, Value::Object),
-        ))
+        Ok(match self.internal_get_prototype_of(realm, &object)? {
+            NativeConversion::Value(prototype) => {
+                Completion::Return(prototype.map_or(Value::Null, Value::Object))
+            }
+            NativeConversion::Throw(value) => Completion::Throw(value),
+        })
     }
 
     fn call_reflect_has(
@@ -450,9 +456,10 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(Value::Bool(
-            self.is_extensible(&object)?,
-        )))
+        Ok(match self.internal_is_extensible(realm, &object)? {
+            NativeConversion::Value(extensible) => Completion::Return(Value::Bool(extensible)),
+            NativeConversion::Throw(value) => Completion::Throw(value),
+        })
     }
 
     fn call_reflect_own_keys(
@@ -464,8 +471,11 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let values = self
-            .own_property_keys(&object)?
+        let keys = match self.internal_own_property_keys(realm, &object)? {
+            NativeConversion::Value(keys) => keys,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let values = keys
             .iter()
             .map(|key| self.object_property_key_value(key))
             .collect::<Result<Vec<_>, _>>()?;
@@ -483,8 +493,10 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        self.prevent_extensions(&object)?;
-        Ok(Completion::Return(Value::Bool(true)))
+        Ok(match self.internal_prevent_extensions(realm, &object)? {
+            NativeConversion::Value(accepted) => Completion::Return(Value::Bool(accepted)),
+            NativeConversion::Throw(value) => Completion::Throw(value),
+        })
     }
 
     fn call_reflect_set(
@@ -506,24 +518,14 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let value = arguments.readable[2].clone();
-        match self.prepare_set_property_with_receiver_in_realm(
-            Some(realm),
-            &object,
-            &key,
-            value,
-            receiver,
-        )? {
-            PropertySetAction::Complete => Ok(Completion::Return(Value::Bool(true))),
-            PropertySetAction::Rejected(_) => Ok(Completion::Return(Value::Bool(false))),
-            PropertySetAction::Throw(value) => Ok(Completion::Throw(value)),
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => match self.call_internal(realm, &setter, receiver, &[argument])? {
-                Completion::Return(_) => Ok(Completion::Return(Value::Bool(true))),
-                Completion::Throw(value) => Ok(Completion::Throw(value)),
-            },
+        match self.internal_set(realm, &object, &key, value, receiver)? {
+            NativeConversion::Value(InternalSetResult::Accepted) => {
+                Ok(Completion::Return(Value::Bool(true)))
+            }
+            NativeConversion::Value(
+                InternalSetResult::Rejected(_) | InternalSetResult::RejectedProxyTrap,
+            ) => Ok(Completion::Return(Value::Bool(false))),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
         }
     }
 
@@ -547,8 +549,11 @@ impl Runtime {
                 )?));
             }
         };
-        Ok(Completion::Return(Value::Bool(
-            self.set_prototype_of(&object, prototype)?,
-        )))
+        Ok(
+            match self.internal_set_prototype_of(realm, &object, prototype)? {
+                NativeConversion::Value(accepted) => Completion::Return(Value::Bool(accepted)),
+                NativeConversion::Throw(value) => Completion::Throw(value),
+            },
+        )
     }
 }

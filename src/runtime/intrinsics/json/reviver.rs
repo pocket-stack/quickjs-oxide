@@ -86,8 +86,15 @@ impl Runtime {
         let context = self.new_ordinary_object_in_realm(realm)?;
 
         if let Value::Object(object) = &value {
-            if self.is_array_object(object)? {
-                let (length, _) = self.array_length_state(object)?;
+            let is_array = match self.internal_is_array(realm, &value)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if is_array {
+                let length = match self.json_reviver_array_length(realm, object)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
                 for index in 0..length {
                     let key = self.intern_property_key(&index.to_string())?;
                     let child_record = record.and_then(|record| {
@@ -108,7 +115,11 @@ impl Runtime {
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     };
                     if matches!(replacement, Value::Undefined) {
-                        let _ = self.delete_property(object, &key)?;
+                        if let NativeConversion::Throw(value) =
+                            self.internal_delete_property(realm, object, &key)?
+                        {
+                            return Ok(Completion::Throw(value));
+                        }
                     } else if let PropertyDefineOutcome::Throw(value) =
                         self.define_json_reviver_property(realm, object, &key, replacement)?
                     {
@@ -120,19 +131,22 @@ impl Runtime {
                 // first child reviver. Later mutations neither add new keys to
                 // the walk nor remove already snapshotted names.
                 let mut keys = Vec::new();
-                for key in self.own_property_keys(object)? {
+                let own_keys = match self.internal_own_property_keys(realm, object)? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                for key in own_keys {
                     if self.0.state.borrow().atoms.property_key_kind(key.atom())?
                         != PropertyKeyKind::String
                     {
                         continue;
                     }
-                    let Some(descriptor) = self.get_own_property(object, &key)? else {
-                        continue;
-                    };
-                    let enumerable = match descriptor {
-                        CompleteOrdinaryPropertyDescriptor::Data { enumerable, .. }
-                        | CompleteOrdinaryPropertyDescriptor::Accessor { enumerable, .. } => {
-                            enumerable
+                    let enumerable = match self
+                        .internal_snapshot_own_property_is_enumerable(realm, object, &key)?
+                    {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
                         }
                     };
                     if enumerable {
@@ -154,7 +168,11 @@ impl Runtime {
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     };
                     if matches!(replacement, Value::Undefined) {
-                        let _ = self.delete_property(object, &key)?;
+                        if let NativeConversion::Throw(value) =
+                            self.internal_delete_property(realm, object, &key)?
+                        {
+                            return Ok(Completion::Throw(value));
+                        }
                     } else if let PropertyDefineOutcome::Throw(value) =
                         self.define_json_reviver_property(realm, object, &key, replacement)?
                     {
@@ -185,6 +203,24 @@ impl Runtime {
         )
     }
 
+    fn json_reviver_array_length(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+    ) -> Result<NativeConversion<u32>, RuntimeError> {
+        let key = self.intern_property_key("length")?;
+        let value = match self.get_property_in_realm(realm, object, &key)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        match self.native_to_number(realm, &value)? {
+            NativeConversion::Value(value) => {
+                Ok(NativeConversion::Value(Self::to_uint32_number(value)))
+            }
+            NativeConversion::Throw(value) => Ok(NativeConversion::Throw(value)),
+        }
+    }
+
     fn define_json_reviver_property(
         &self,
         realm: ContextId,
@@ -192,16 +228,23 @@ impl Runtime {
         key: &PropertyKey,
         value: Value,
     ) -> Result<PropertyDefineOutcome, RuntimeError> {
-        self.define_own_property_in_realm(
-            Some(realm),
-            object,
-            key,
-            &OrdinaryPropertyDescriptor {
-                value: DescriptorField::Present(value),
-                writable: DescriptorField::Present(true),
-                enumerable: DescriptorField::Present(true),
-                configurable: DescriptorField::Present(true),
-                ..OrdinaryPropertyDescriptor::new()
+        let descriptor = OrdinaryPropertyDescriptor {
+            value: DescriptorField::Present(value),
+            writable: DescriptorField::Present(true),
+            enumerable: DescriptorField::Present(true),
+            configurable: DescriptorField::Present(true),
+            ..OrdinaryPropertyDescriptor::new()
+        };
+        Ok(
+            match self.internal_define_own_property(realm, object, key, &descriptor)? {
+                NativeConversion::Value(InternalDefineResult::Defined) => {
+                    PropertyDefineOutcome::Defined(true)
+                }
+                NativeConversion::Value(
+                    InternalDefineResult::RejectedOrdinary(_)
+                    | InternalDefineResult::RejectedProxyTrap,
+                ) => PropertyDefineOutcome::Defined(false),
+                NativeConversion::Throw(value) => PropertyDefineOutcome::Throw(value),
             },
         )
     }

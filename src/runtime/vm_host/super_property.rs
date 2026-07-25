@@ -56,11 +56,9 @@ impl RuntimeVmHost {
                 .native_atom_error(ErrorKind::Type, "cannot read property '", &key, suffix)
                 .map_err(runtime_error_to_vm_error)?);
         };
-        let action = self
-            .runtime
-            .prepare_get_property_with_receiver(&base, &key, receiver)
-            .map_err(runtime_error_to_vm_error)?;
-        self.finish_property_get_action(action)
+        self.runtime
+            .internal_get(self.current_realm, &base, &key, receiver)
+            .map_err(runtime_error_to_vm_error)
     }
 
     pub(super) fn write_super_property(
@@ -82,16 +80,10 @@ impl RuntimeVmHost {
             VmPropertyKeyConversion::Key(key) => key,
             VmPropertyKeyConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let action = self
+        let result = self
             .runtime
-            .prepare_set_property_with_receiver_in_realm(
-                Some(self.current_realm),
-                &base,
-                &key,
-                value,
-                receiver,
-            )
+            .internal_set(self.current_realm, &base, &key, value, receiver)
             .map_err(runtime_error_to_vm_error)?;
-        self.finish_property_set_action(action, &key, strict)
+        self.finish_internal_set(result, &key, strict)
     }
 }

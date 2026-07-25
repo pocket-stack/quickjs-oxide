@@ -240,6 +240,10 @@ const TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256: &str =
     "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a";
 const TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256: &str =
     "74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2";
+const TEST262_PROXY_PROFILE_SHA256: &str =
+    "0c151608ed8cd580238e27188f5e63382ee11e1dc91f7c480db2c366e1232d12";
+const TEST262_PROXY_MANIFEST_SHA256: &str =
+    "ef2395cd3bd268d7ba1010773651408826452feaed121f8f2d4c0e6afeed66f3";
 const TEST262_REGEXP_BUILTINS_PROFILE_SHA256: &str =
     "0214f6789a3276c4755fadde19477b70620184a6137d29eefef0975cfb379c15";
 const TEST262_REGEXP_BUILTINS_MANIFEST_SHA256: &str =
@@ -812,6 +816,7 @@ enum OxideProfileKind {
     GeneratorDestructuring,
     IteratorHelpers,
     IteratorSequencing,
+    Proxy,
     RegExpBuiltins,
 }
 
@@ -1013,6 +1018,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-iterator-sequencing.conf"),
             OxideProfileKind::IteratorSequencing,
+        ),
+        (
+            root.join("tests/test262-proxy.conf"),
+            OxideProfileKind::Proxy,
         ),
         (
             root.join("tests/test262-regexp-builtins.conf"),
@@ -1830,6 +1839,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-iterator-sequencing.txt",
             TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256,
         ),
+        OxideProfileKind::Proxy => verify_scoped_pinned_profile(
+            options,
+            "Proxy",
+            TEST262_PROXY_PROFILE_SHA256,
+            "tests/test262-proxy.txt",
+            TEST262_PROXY_MANIFEST_SHA256,
+        ),
     }
 }
 
@@ -2127,7 +2143,7 @@ mod cli_tests {
         TEST262_PARAMETER_EXPRESSION_BINDING_PATTERNS_PROFILE_SHA256,
         TEST262_PROMISE_ALL_PROFILE_SHA256, TEST262_PROMISE_ALL_SETTLED_PROFILE_SHA256,
         TEST262_PROMISE_ANY_PROFILE_SHA256, TEST262_PROMISE_FINALLY_PROFILE_SHA256,
-        TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256,
+        TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
         TEST262_REGEXP_BUILTINS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
@@ -2476,6 +2492,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-iterator-sequencing.conf")).unwrap(),
             OxideProfileKind::IteratorSequencing
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-proxy.conf")).unwrap(),
+            OxideProfileKind::Proxy
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-regexp-builtins.conf")).unwrap(),
@@ -5013,6 +5033,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-iterator-sequencing.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_proxy_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-proxy.conf",
+            "--manifest",
+            "tests/test262-proxy.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_PROXY_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Proxy/constructor.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-proxy.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

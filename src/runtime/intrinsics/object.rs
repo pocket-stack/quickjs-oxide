@@ -444,9 +444,12 @@ impl Runtime {
             NativeConversion::Value(key) => key,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(Value::Bool(
-            self.has_own_property(&object, &key)?,
-        )))
+        Ok(
+            match self.internal_has_own_property(realm, &object, &key)? {
+                NativeConversion::Value(value) => Completion::Return(Value::Bool(value)),
+                NativeConversion::Throw(value) => Completion::Throw(value),
+            },
+        )
     }
 
     pub(in crate::runtime) fn object_iterator_next(
@@ -795,13 +798,27 @@ impl Runtime {
         realm: ContextId,
         object: &ObjectRef,
     ) -> Result<NativeConversion<JsString>, RuntimeError> {
-        let default_tag = {
+        // Pinned QuickJS performs JS_IsArray before its class/callability
+        // fallback and before reading @@toStringTag. That unwraps every Proxy
+        // layer and makes revocation observable even when the handler would
+        // otherwise provide a custom tag.
+        let is_array = match self.internal_is_array(realm, &Value::Object(object.clone()))? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let default_tag = if is_array {
+            JsString::from_static("Array")
+        } else {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
             match &object_data.payload {
                 ObjectPayload::NativeFunction { .. }
                 | ObjectPayload::BoundFunction { .. }
                 | ObjectPayload::BytecodeFunction { .. } => JsString::from_static("Function"),
+                ObjectPayload::Proxy(proxy) if proxy.is_callable => {
+                    JsString::from_static("Function")
+                }
+                ObjectPayload::Proxy(_) => JsString::from_static("Object"),
                 ObjectPayload::Error => JsString::from_static("Error"),
                 ObjectPayload::Primitive(PrimitiveObjectData::Number(_)) => {
                     JsString::from_static("Number")
@@ -1121,10 +1138,12 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(
-            self.get_prototype_of(&object)?
-                .map_or(Value::Null, Value::Object),
-        ))
+        Ok(match self.internal_get_prototype_of(realm, &object)? {
+            NativeConversion::Value(prototype) => {
+                Completion::Return(prototype.map_or(Value::Null, Value::Object))
+            }
+            NativeConversion::Throw(value) => Completion::Throw(value),
+        })
     }
 
     fn set_prototype_or_throw(
@@ -1133,8 +1152,17 @@ impl Runtime {
         object: &ObjectRef,
         prototype: Option<&ObjectRef>,
     ) -> Result<Option<Value>, RuntimeError> {
-        if self.set_prototype_of(object, prototype)? {
-            return Ok(None);
+        match self.internal_set_prototype_of(realm, object, prototype)? {
+            NativeConversion::Value(true) => return Ok(None),
+            NativeConversion::Throw(value) => return Ok(Some(value)),
+            NativeConversion::Value(false) => {}
+        }
+        if self.is_proxy_object(object)? {
+            return Ok(Some(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "proxy: bad prototype",
+            )?));
         }
         let (immutable, extensible) = {
             let state = self.0.state.borrow();
@@ -1229,12 +1257,19 @@ impl Runtime {
         key: &PropertyKey,
         descriptor: &OrdinaryPropertyDescriptor,
     ) -> Result<Option<Value>, RuntimeError> {
-        match self.define_own_property_in_realm(Some(realm), object, key, descriptor)? {
-            PropertyDefineOutcome::Defined(true) => Ok(None),
-            PropertyDefineOutcome::Defined(false) => {
-                self.property_define_rejection(realm, object, key).map(Some)
-            }
-            PropertyDefineOutcome::Throw(value) => Ok(Some(value)),
+        match self.internal_define_own_property(realm, object, key, descriptor)? {
+            NativeConversion::Value(InternalDefineResult::Defined) => Ok(None),
+            NativeConversion::Value(InternalDefineResult::RejectedProxyTrap) => self
+                .new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "proxy: defineProperty exception",
+                )
+                .map(Some),
+            NativeConversion::Value(InternalDefineResult::RejectedOrdinary(target)) => self
+                .property_define_rejection(realm, &target, key)
+                .map(Some),
+            NativeConversion::Throw(value) => Ok(Some(value)),
         }
     }
 
@@ -1302,8 +1337,20 @@ impl Runtime {
         // converts and defines each descriptor instead of using the spec's
         // two-phase descriptor list.
         let mut keys = Vec::new();
-        for key in self.own_property_keys(&properties)? {
-            if self.own_property_is_enumerable(&properties, &key)? {
+        let own_keys = match self.internal_own_property_keys(realm, &properties)? {
+            NativeConversion::Value(keys) => keys,
+            NativeConversion::Throw(value) => return Ok(Some(value)),
+        };
+        for key in own_keys {
+            let enumerable = match self.internal_snapshot_own_property_is_enumerable(
+                realm,
+                &properties,
+                &key,
+            )? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Some(value)),
+            };
+            if enumerable {
                 keys.push(key);
             }
         }
@@ -1374,7 +1421,11 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let mut values = Vec::new();
-        for key in self.own_property_keys(&object)? {
+        let keys = match self.internal_own_property_keys(realm, &object)? {
+            NativeConversion::Value(keys) => keys,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        for key in keys {
             let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
             match (kind, key_kind) {
                 (ObjectOwnPropertyKeysKind::Names, PropertyKeyKind::String) => {
@@ -1429,7 +1480,11 @@ impl Runtime {
         // getter may therefore delete or make a later snapshotted key
         // non-enumerable, while newly added keys remain absent.
         let mut keys = Vec::new();
-        for key in self.own_property_keys(&object)? {
+        let own_keys = match self.internal_own_property_keys(realm, &object)? {
+            NativeConversion::Value(keys) => keys,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        for key in own_keys {
             if self.0.state.borrow().atoms.property_key_kind(key.atom())? == PropertyKeyKind::String
             {
                 keys.push(key);
@@ -1438,12 +1493,9 @@ impl Runtime {
         let result = self.new_array(realm)?;
         let mut result_index = 0_u32;
         for key in keys {
-            let Some(descriptor) = self.get_own_property(&object, &key)? else {
-                continue;
-            };
-            let enumerable = match descriptor {
-                CompleteOrdinaryPropertyDescriptor::Data { enumerable, .. }
-                | CompleteOrdinaryPropertyDescriptor::Accessor { enumerable, .. } => enumerable,
+            let enumerable = match self.internal_own_property_is_enumerable(realm, &object, &key)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             if !enumerable {
                 continue;
@@ -1521,6 +1573,7 @@ impl Runtime {
 
     pub(in crate::runtime) fn call_object_extensibility(
         &self,
+        realm: ContextId,
         kind: ObjectExtensibilityKind,
         invocation: NativeInvocation,
         arguments: &NativeArguments,
@@ -1549,11 +1602,25 @@ impl Runtime {
         };
         match kind {
             ObjectExtensibilityKind::IsExtensible => {
-                Ok(Completion::Return(Value::Bool(self.is_extensible(object)?)))
+                Ok(match self.internal_is_extensible(realm, object)? {
+                    NativeConversion::Value(extensible) => {
+                        Completion::Return(Value::Bool(extensible))
+                    }
+                    NativeConversion::Throw(value) => Completion::Throw(value),
+                })
             }
             ObjectExtensibilityKind::PreventExtensions => {
-                self.prevent_extensions(object)?;
-                Ok(Completion::Return(value))
+                match self.internal_prevent_extensions(realm, object)? {
+                    NativeConversion::Value(true) => Ok(Completion::Return(value)),
+                    NativeConversion::Value(false) => {
+                        Ok(Completion::Throw(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Type,
+                            "proxy preventExtensions handler returned false",
+                        )?))
+                    }
+                    NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+                }
             }
         }
     }
@@ -1647,13 +1714,17 @@ impl Runtime {
         realm: ContextId,
         object: &ObjectRef,
         key: &PropertyKey,
-    ) -> Result<Value, RuntimeError> {
-        let Some(descriptor) = self.get_own_property(object, key)? else {
-            return Ok(Value::Undefined);
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
+        let descriptor = match self.internal_get_own_property(realm, object, key)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
-        Ok(Value::Object(
+        let Some(descriptor) = descriptor else {
+            return Ok(NativeConversion::Value(Value::Undefined));
+        };
+        Ok(NativeConversion::Value(Value::Object(
             self.complete_descriptor_to_object(realm, descriptor)?,
-        ))
+        )))
     }
 
     pub(in crate::runtime) fn call_object_get_own_property_descriptor(
@@ -1691,9 +1762,12 @@ impl Runtime {
             NativeConversion::Value(key) => key,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(
-            self.object_get_own_property_descriptor_value(realm, &object, &key)?,
-        ))
+        Ok(
+            match self.object_get_own_property_descriptor_value(realm, &object, &key)? {
+                NativeConversion::Value(value) => Completion::Return(value),
+                NativeConversion::Throw(value) => Completion::Throw(value),
+            },
+        )
     }
 
     pub(super) fn object_property_key_value(
@@ -1737,7 +1811,10 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let keys = self.own_property_keys(&object)?;
+        let keys = match self.internal_own_property_keys(realm, &object)? {
+            NativeConversion::Value(keys) => keys,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
         let result = self.new_ordinary_object_in_realm(realm)?;
         for key in keys {
             // QuickJS routes every snapshotted atom back through the singular
@@ -1751,8 +1828,14 @@ impl Runtime {
                     ));
                 }
             };
-            let descriptor =
-                self.object_get_own_property_descriptor_value(realm, &object, &descriptor_key)?;
+            let descriptor = match self.object_get_own_property_descriptor_value(
+                realm,
+                &object,
+                &descriptor_key,
+            )? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
             if matches!(descriptor, Value::Undefined) {
                 continue;
             }
@@ -1803,13 +1886,17 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("CopyDataProperties object"));
         }
 
+        let enumerable_at_snapshot = enumerable_at_snapshot && !self.is_proxy_object(source)?;
         // Both QuickJS paths begin with one OwnPropertyKeys snapshot. Its
         // ordinary-object path applies the ENUM_ONLY optimization during this
-        // pass. A future Proxy/exotic caller must select the live mode because
-        // QuickJS cannot use that optimization across observable descriptor
-        // traps.
+        // pass. Proxy sources select the live mode because QuickJS cannot use
+        // that optimization across observable descriptor traps.
         let mut keys = Vec::new();
-        for key in self.own_property_keys(source)? {
+        let own_keys = match self.internal_own_property_keys(realm, source)? {
+            NativeConversion::Value(keys) => keys,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        for key in own_keys {
             let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
             if !matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
                 continue;
@@ -1830,8 +1917,17 @@ impl Runtime {
                     continue;
                 }
             }
-            if !enumerable_at_snapshot && !self.own_property_is_enumerable(source, &key)? {
-                continue;
+            if !enumerable_at_snapshot {
+                let enumerable =
+                    match self.internal_own_property_is_enumerable(realm, source, &key)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    };
+                if !enumerable {
+                    continue;
+                }
             }
             let value = match self.get_property_in_realm(realm, source, &key)? {
                 Completion::Return(value) => value,
@@ -1873,9 +1969,8 @@ impl Runtime {
     /// rest. The caller has already performed the binding pattern's leading
     /// `ToObject`, and `excluded` is the private fresh Object populated with
     /// every String/Symbol key consumed by an earlier binding property. The
-    /// currently implemented source families follow QuickJS's ordinary
-    /// enumerable-at-snapshot path; future Proxy support must select the live
-    /// descriptor path in the shared helper above.
+    /// Ordinary sources follow QuickJS's enumerable-at-snapshot path; Proxy
+    /// sources select the live descriptor path in the shared helper above.
     pub(in crate::runtime) fn copy_object_rest_data_properties(
         &self,
         realm: ContextId,
@@ -1939,11 +2034,21 @@ impl Runtime {
             // cannot add initially hidden keys or remove an initially visible
             // key from this source's copy list.
             let mut keys = Vec::new();
-            for key in self.own_property_keys(&source)? {
+            let own_keys = match self.internal_own_property_keys(realm, &source)? {
+                NativeConversion::Value(keys) => keys,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            for key in own_keys {
                 let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-                if matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol)
-                    && self.own_property_is_enumerable(&source, &key)?
+                let enumerable = match self
+                    .internal_snapshot_own_property_is_enumerable(realm, &source, &key)?
                 {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => {
+                        return Ok(Completion::Throw(value));
+                    }
+                };
+                if matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) && enumerable {
                     keys.push(key);
                 }
             }
@@ -1990,8 +2095,22 @@ impl Runtime {
         match kind {
             ObjectIntegrityKind::Seal | ObjectIntegrityKind::Freeze => {
                 // QuickJS prevents extensions before it snapshots any key.
-                self.prevent_extensions(object)?;
-                for key in self.own_property_keys(object)? {
+                match self.internal_prevent_extensions(realm, object)? {
+                    NativeConversion::Value(true) => {}
+                    NativeConversion::Value(false) => {
+                        return Ok(Completion::Throw(self.new_native_error(
+                            realm,
+                            NativeErrorKind::Type,
+                            "proxy preventExtensions handler returned false",
+                        )?));
+                    }
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                }
+                let own_keys = match self.internal_own_property_keys(realm, object)? {
+                    NativeConversion::Value(keys) => keys,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                for key in own_keys {
                     let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
                     if matches!(key_kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
                         keys.push(key);
@@ -2002,9 +2121,15 @@ impl Runtime {
                         configurable: DescriptorField::Present(false),
                         ..OrdinaryPropertyDescriptor::new()
                     };
+                    let current = match self.internal_get_own_property(realm, object, &key)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    };
                     if kind == ObjectIntegrityKind::Freeze
                         && matches!(
-                            self.get_own_property(object, &key)?,
+                            current,
                             Some(CompleteOrdinaryPropertyDescriptor::Data { writable: true, .. })
                         )
                     {
@@ -2019,14 +2144,24 @@ impl Runtime {
                 Ok(Completion::Return(value))
             }
             ObjectIntegrityKind::IsSealed | ObjectIntegrityKind::IsFrozen => {
-                for key in self.own_property_keys(object)? {
+                let own_keys = match self.internal_own_property_keys(realm, object)? {
+                    NativeConversion::Value(keys) => keys,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                for key in own_keys {
                     let key_kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
                     if matches!(key_kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
                         keys.push(key);
                     }
                 }
                 for key in keys {
-                    let Some(descriptor) = self.get_own_property(object, &key)? else {
+                    let descriptor = match self.internal_get_own_property(realm, object, &key)? {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    };
+                    let Some(descriptor) = descriptor else {
                         continue;
                     };
                     let violates = match descriptor {
@@ -2043,9 +2178,12 @@ impl Runtime {
                         return Ok(Completion::Return(Value::Bool(false)));
                     }
                 }
-                Ok(Completion::Return(Value::Bool(
-                    !self.is_extensible(object)?,
-                )))
+                Ok(match self.internal_is_extensible(realm, object)? {
+                    NativeConversion::Value(extensible) => {
+                        Completion::Return(Value::Bool(!extensible))
+                    }
+                    NativeConversion::Throw(value) => Completion::Throw(value),
+                })
             }
         }
     }
@@ -2079,9 +2217,12 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(Value::Bool(
-            self.has_own_property(&object, &key)?,
-        )))
+        Ok(
+            match self.internal_has_own_property(realm, &object, &key)? {
+                NativeConversion::Value(value) => Completion::Return(Value::Bool(value)),
+                NativeConversion::Throw(value) => Completion::Throw(value),
+            },
+        )
     }
 
     pub(in crate::runtime) fn call_object_prototype_property_is_enumerable(
@@ -2112,13 +2253,12 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let enumerable = self
-            .get_own_property(&object, &key)?
-            .is_some_and(|descriptor| match descriptor {
-                CompleteOrdinaryPropertyDescriptor::Data { enumerable, .. }
-                | CompleteOrdinaryPropertyDescriptor::Accessor { enumerable, .. } => enumerable,
-            });
-        Ok(Completion::Return(Value::Bool(enumerable)))
+        Ok(
+            match self.internal_own_property_is_enumerable(realm, &object, &key)? {
+                NativeConversion::Value(enumerable) => Completion::Return(Value::Bool(enumerable)),
+                NativeConversion::Throw(value) => Completion::Throw(value),
+            },
+        )
     }
 
     pub(in crate::runtime) fn call_object_prototype_is_prototype_of(
@@ -2139,12 +2279,18 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let mut cursor = self.get_prototype_of(candidate)?;
+        let mut cursor = match self.internal_get_prototype_of(realm, candidate)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
         while let Some(current) = cursor {
             if current == prototype {
                 return Ok(Completion::Return(Value::Bool(true)));
             }
-            cursor = self.get_prototype_of(&current)?;
+            cursor = match self.internal_get_prototype_of(realm, &current)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
         }
         Ok(Completion::Return(Value::Bool(false)))
     }
@@ -2163,10 +2309,12 @@ impl Runtime {
             NativeConversion::Value(object) => object,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        Ok(Completion::Return(
-            self.get_prototype_of(&object)?
-                .map_or(Value::Null, Value::Object),
-        ))
+        Ok(match self.internal_get_prototype_of(realm, &object)? {
+            NativeConversion::Value(prototype) => {
+                Completion::Return(prototype.map_or(Value::Null, Value::Object))
+            }
+            NativeConversion::Throw(value) => Completion::Throw(value),
+        })
     }
 
     pub(in crate::runtime) fn call_object_prototype_proto_setter(
@@ -2300,7 +2448,11 @@ impl Runtime {
         };
         let mut cursor = Some(object);
         while let Some(current) = cursor {
-            if let Some(descriptor) = self.get_own_property(&current, &key)? {
+            let descriptor = match self.internal_get_own_property(realm, &current, &key)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if let Some(descriptor) = descriptor {
                 let value = match descriptor {
                     CompleteOrdinaryPropertyDescriptor::Accessor { get, set, .. } => match kind {
                         ObjectAccessorKind::Getter => get,
@@ -2313,7 +2465,10 @@ impl Runtime {
                 };
                 return Ok(Completion::Return(value));
             }
-            cursor = self.get_prototype_of(&current)?;
+            cursor = match self.internal_get_prototype_of(realm, &current)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
         }
         Ok(Completion::Return(Value::Undefined))
     }

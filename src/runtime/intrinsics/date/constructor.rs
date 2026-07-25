@@ -250,7 +250,12 @@ impl Runtime {
                 // observable `.prototype` Get returned a non-object.
                 let new_target_callable =
                     self.callable_from_value(Value::Object(new_target_object))?;
-                let fallback_realm = self.callable_realm(&new_target_callable)?;
+                let fallback_realm = match self.function_realm(realm, &new_target_callable)? {
+                    NativeConversion::Value(realm) => realm,
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
+                };
                 let prototype = self
                     .0
                     .state

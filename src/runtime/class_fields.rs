@@ -15,8 +15,8 @@ impl Runtime {
         key: &PropertyKey,
         value: Value,
     ) -> Result<PropertyDefineOutcome, RuntimeError> {
-        let outcome = self.define_own_property_in_realm(
-            Some(realm),
+        let outcome = self.internal_define_own_property(
+            realm,
             object,
             key,
             &OrdinaryPropertyDescriptor {
@@ -28,11 +28,19 @@ impl Runtime {
             },
         )?;
         match outcome {
-            PropertyDefineOutcome::Defined(true) | PropertyDefineOutcome::Throw(_) => Ok(outcome),
-            PropertyDefineOutcome::Defined(false) => Err(RuntimeError::Engine(Error::new(
-                ErrorKind::Type,
-                "property is not configurable",
-            ))),
+            NativeConversion::Value(InternalDefineResult::Defined) => {
+                Ok(PropertyDefineOutcome::Defined(true))
+            }
+            NativeConversion::Throw(value) => Ok(PropertyDefineOutcome::Throw(value)),
+            NativeConversion::Value(InternalDefineResult::RejectedProxyTrap) => {
+                Err(RuntimeError::Engine(Error::new(
+                    ErrorKind::Type,
+                    "proxy: defineProperty exception",
+                )))
+            }
+            NativeConversion::Value(InternalDefineResult::RejectedOrdinary(_)) => Err(
+                RuntimeError::Engine(Error::new(ErrorKind::Type, "property is not configurable")),
+            ),
         }
     }
 

@@ -2,6 +2,60 @@
 
 use super::*;
 
+/// Keep common small layouts canonical so separately constructed objects can
+/// converge through the weak shape cache before large unique objects switch
+/// to amortized-linear append storage.
+pub(super) const MIN_UNIQUE_SHAPE_APPEND_ENTRIES: usize = 8;
+
+impl RuntimeState {
+    pub(super) fn append_unique_layout(
+        &mut self,
+        object: ObjectId,
+        atom: Atom,
+        flags: PropertyFlags,
+        replacement: PropertySlot,
+    ) -> Result<(), RuntimeError> {
+        let shape = self.heap.object(object)?.shape;
+        if self.heap.shape_strong_count(shape)? != 1 {
+            return Err(RuntimeError::Invariant(
+                "unique layout append reached a shared shape",
+            ));
+        }
+        self.atoms.resolve(atom)?;
+        self.atoms.retain(atom)?;
+        let retained_slot_atoms = match self.retain_slot_atoms(std::slice::from_ref(&replacement)) {
+            Ok(atoms) => atoms,
+            Err(error) => {
+                self.atoms.release(atom)?;
+                return Err(error);
+            }
+        };
+
+        let unlinked = self.shape_fingerprints.remove(&shape).map(|fingerprint| {
+            let owned_cache_entry = self.shape_cache.get(&fingerprint) == Some(&shape);
+            if owned_cache_entry {
+                self.shape_cache.remove(&fingerprint);
+            }
+            (fingerprint, owned_cache_entry)
+        });
+        if let Err(error) =
+            self.heap
+                .append_unique_object_property(object, atom, flags, replacement)
+        {
+            if let Some((fingerprint, owned_cache_entry)) = unlinked {
+                if owned_cache_entry {
+                    self.shape_cache.insert(fingerprint.clone(), shape);
+                }
+                self.shape_fingerprints.insert(shape, fingerprint);
+            }
+            self.release_atoms(retained_slot_atoms)?;
+            self.atoms.release(atom)?;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+}
+
 impl Runtime {
     fn string_exotic_index_value(
         &self,
@@ -28,6 +82,7 @@ impl Runtime {
         Ok(match &object.payload {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
+            | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
             | ObjectPayload::Date(_)
@@ -315,6 +370,7 @@ impl Runtime {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(in crate::runtime) fn prepare_get_property(
         &self,
         object: &ObjectRef,
@@ -323,18 +379,7 @@ impl Runtime {
         self.prepare_get_property_with_receiver(object, key, Value::Object(object.clone()))
     }
 
-    pub(in crate::runtime) fn prepare_get_property_or_missing(
-        &self,
-        object: &ObjectRef,
-        key: &PropertyKey,
-    ) -> Result<Option<PropertyGetAction>, RuntimeError> {
-        self.prepare_get_property_with_receiver_or_missing(
-            object,
-            key,
-            Value::Object(object.clone()),
-        )
-    }
-
+    #[cfg(test)]
     pub(in crate::runtime) fn prepare_get_property_with_receiver(
         &self,
         object: &ObjectRef,
@@ -346,6 +391,7 @@ impl Runtime {
             .unwrap_or(PropertyGetAction::Complete(Value::Undefined)))
     }
 
+    #[cfg(test)]
     fn prepare_get_property_with_receiver_or_missing(
         &self,
         object: &ObjectRef,
@@ -385,22 +431,6 @@ impl Runtime {
         let _operation = self.operation();
         self.prepare_set_property_with_receiver_in_realm(
             None,
-            object,
-            key,
-            value,
-            Value::Object(object.clone()),
-        )
-    }
-
-    pub(in crate::runtime) fn prepare_set_property_in_realm(
-        &self,
-        realm: ContextId,
-        object: &ObjectRef,
-        key: &PropertyKey,
-        value: Value,
-    ) -> Result<PropertySetAction, RuntimeError> {
-        self.prepare_set_property_with_receiver_in_realm(
-            Some(realm),
             object,
             key,
             value,
@@ -1190,6 +1220,7 @@ impl Runtime {
                     }
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Proxy(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)

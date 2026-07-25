@@ -221,7 +221,10 @@ impl Runtime {
         if let Value::Object(prototype) = prototype {
             return Ok(NativeConversion::Value(prototype));
         }
-        let realm = self.callable_realm(callable)?;
+        let realm = match self.function_realm(caller_realm, callable)? {
+            NativeConversion::Value(realm) => realm,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
         let prototype = self
             .0
             .state

@@ -16,14 +16,16 @@ claim full parity.
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. R3al promotes the
   fully authenticated async-function and async-iteration stack into that
-  global profile. The vector has 50,765 passes and 52,216 runnable variants:
-  49.75% raw, a 60.75% lower bound after the 18,475 pinned QuickJS target
-  exclusions, or 97.31% among the 52,167 variants with a non-unsupported
-  observed outcome. It records 18 parse failures and 1,281 runtime failures;
+  global profile. R3am then adds the scoped Proxy internal-method gate without
+  globally admitting the feature tag. The vector has 50,977 passes and 52,216
+  runnable variants: 49.96% raw, a 61.01% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 97.72% among the 52,167 variants with a
+  non-unsupported observed outcome. It records 18 parse failures and 1,073
+  runtime failures;
   current full TSV/JSONL SHA-256 values are
-  `93456e63a780ac6b02253853a5711464d01944f6df30a22d8b1a6fcde6a66366`
+  `19209666492462edb063b24af6fd1278abcffa10178da0d1da1218fb49140b43`
   and
-  `40417ac19f60988a3257e4d577ea1f485ef61637f1c444820ebe5662638fa13e`.
+  `f4ee2c790693817bfe122127db7612ab7df5c2daf73b40514bce7b574f32061c`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -1404,11 +1406,13 @@ claim full parity.
 
   The focused gate freezes 67 paths / 134 variants: 122 pass, while twelve
   runtime failures form the exact adjacent-feature frontier. Fifteen
-  automated Oxide/QuickJS semantic differentials all pass. Three dense 65K
-  Oxide stress vectors are ignored in routine automation and run manually
-  because the current immutable-shape model makes construction O(n²); their
-  pinned QuickJS expectations are self-checked, while the shared 65,534/65,535
-  argument limit is checked quickly by `oracle_function_apply`.
+  automated Oxide/QuickJS semantic differentials all pass. At the R3d
+  checkpoint, three dense 65K Oxide stress vectors were ignored in routine
+  automation because the then-current immutable-shape model made construction
+  O(n²); their pinned QuickJS expectations were self-checked, while the shared
+  65,534/65,535 argument limit was checked quickly by
+  `oracle_function_apply`. R3am removes that shape-growth bottleneck; the cases
+  remain explicitly marked as stress tests.
 
   The exact R3c/R3d full join retains all 102,037 unique keys and every prior
   pass. It records 122 `fail-parse -> pass`, ten `fail-parse -> fail-runtime`,
@@ -2992,10 +2996,38 @@ claim full parity.
   claim that the remaining async-tagged tests are complete: adjacent class,
   default-parameter, module, Promise-method, host, and negative-provenance
   dependencies remain fail-closed.
-  The next structural parity milestone is a separate internal-method/exotic
-  dispatch layer modeled on QuickJS's generic object-operation seams, followed
-  by complete Proxy lifecycle, traps, invariants, and call/construct behavior.
-  That work belongs in new runtime modules rather than growing `runtime.rs`.
+  R3am delivers the completion-aware internal-method seam modeled on QuickJS's
+  generic object-operation dispatch. Heap-backed Proxy objects retain target
+  and handler edges, preserve callable/constructable identity, publish `Proxy`
+  and `Proxy.revocable`, and implement revocation plus all 13 traps:
+  `getPrototypeOf`, `setPrototypeOf`, `isExtensible`, `preventExtensions`,
+  `getOwnPropertyDescriptor`, `defineProperty`, `has`, `get`, `set`,
+  `deleteProperty`, `ownKeys`, `apply`, and `construct`.
+
+  Object/Reflect operations, `for-in`, class fields, Array and JSON consumers,
+  callable RegExp checks, dynamic-eval/global-binding lookup, and new-target
+  realm selection now use the same completion-aware seam. The pinned QuickJS
+  differential locks fallback order, invariants, nested proxies, revocation,
+  reentrancy, error realms, GC edges, and target-specific quirks. The
+  checksum-bound 464-path / 904-variant Test262 gate records 811 passes, 81
+  explicit unsupported outcomes, and 12 TypedArray-adjacent harness failures;
+  pinned QuickJS passes 904/904. The exact full-vector join adds 208
+  `fail-runtime -> pass` and four `timeout -> pass` transitions with no
+  previous-pass or key-set regression, bringing the complete vector to 50,977
+  passes.
+
+  `ownKeys` duplicate and invariant checks use an atom-identity set rather than
+  repeated linear scans. Large uniquely owned shapes append in place after
+  eight canonical entries, while shared and common small shapes retain the
+  weak-cache immutable-transition path. The 15,000-key SpiderMonkey
+  `ownkeys-linear` test now passes both modes in under five seconds together.
+  This keeps the main `runtime.rs` facade at 9,904 lines, below R3al's 9,912;
+  the 1,706-line completion-aware dispatcher and 226-line Proxy intrinsic live
+  in `runtime/internal_methods.rs` and `runtime/intrinsics/proxy.rs`. QuickJS's
+  hashed-successor reuse for two independently built large equal layouts
+  remains a non-observable memory/performance optimization opportunity, not a
+  semantic deviation. Complete hashes and frontier breakdowns are recorded in
+  `docs/test262.md`.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -4431,9 +4463,11 @@ claim full parity.
   set before prototype traversal, while descriptor or sparse-index conversion
   remains irreversibly slow. Differential regressions lock both mutation modes,
   ordinary shadowing, ordering, lexical cells, labels and finally cleanup. The
-  VM host outcomes
-  already preserve arbitrary JavaScript throws; Proxy enumeration and its
-  duplicate prototype pre-scan/trap order still require Proxy internal methods.
+  VM host outcomes preserve arbitrary JavaScript throws. Proxy enumeration now
+  follows the pinned duplicate prototype pre-scan and per-level
+  `getPrototypeOf`, `ownKeys`, `getOwnPropertyDescriptor`, and live-`has` trap
+  order, including revocation and prototype mutation. `oracle_proxy` locks this
+  path against QuickJS 2026-06-04.
   Anchors are `quickjs.c` 16282-16509 and 28546-28769, plus
   `quickjs-opcode.h` 201-204.
 
@@ -4500,8 +4534,8 @@ claim full parity.
   through heritage, derived construction, and `super()`. R3ad extends that
   HomeObject path through public instance/static async class methods, and R3ae
   composes it with the authenticated private-method callable cell and
-  HomeObject-derived brand. Async-generator methods/delegation and
-  Proxy/exotic-source spread remain explicit frontiers. The pinned
+  HomeObject-derived brand. Other exotic-source spread variants remain
+  explicit frontiers. The pinned
   anchors are
   `quickjs.c` 24485-24621 and
   24850-24965 plus the matching object/define/name/proto/copy opcodes in
@@ -4702,8 +4736,8 @@ claim full parity.
   `(2 -> 1)` bytecode. `in` validates its RHS Object before converting the LHS
   with the String `ToPropertyKey` hint, then tests ordinary own and prototype
   presence without materializing autoinit properties or invoking accessors.
-  Its runtime entry returns a Completion so the later Proxy/exotic `has` path
-  can preserve trap throws without changing the opcode. `instanceof` performs
+  Its runtime entry returns a Completion so Proxy `has` trap throws cross the
+  same VM opcode boundary. `instanceof` performs
   the full `JS_IsInstanceOf` sequence: RHS Object validation, observable
   `@@hasInstance` lookup, callable method invocation and ToBoolean, followed by
   the callable OrdinaryHasInstance fallback only for a nullish method. The
@@ -4712,9 +4746,9 @@ claim full parity.
   Rust host stack. Pinned differentials lock precedence, classic-for NoIn,
   evaluation and key-conversion order, custom/inherited/accessor methods,
   arbitrary throws, exact errors and source sites; host tests additionally
-  lock deep bound chains and cross-realm error ownership. Proxy/exotic
-  `[[HasProperty]]` and
-  `[[GetPrototypeOf]]` remain wider object-model gaps.
+  lock deep bound chains and cross-realm error ownership. Proxy
+  `[[HasProperty]]` and `[[GetPrototypeOf]]` are routed through the shared
+  completion-aware internal-method seam.
 - The runtime owns a generational Object/Shape arena. Public Object, Symbol and
   property-key roots implement Dup/Free through explicit reference counts;
   heap edges remain raw handles, zero-count teardown is iterative, and
@@ -4832,10 +4866,10 @@ claim full parity.
   preallocates a complete dense result buffer, reads source indices in descending
   order, leaves an own `undefined` slot for every hole, and returns a
   defining-realm base Array. It does not observe `constructor` or `@@species`.
-  The pinned implementation deliberately uses
-  HasProperty followed by a conditional Get rather than the specification's
-  unconditional Get; the eventual Proxy path must preserve that visible `has`
-  trap. It also inherits `js_allocate_fast_array`'s signed 31-bit length ceiling,
+  The pinned implementation deliberately uses HasProperty followed by a
+  conditional Get rather than the specification's unconditional Get; Proxy
+  receivers preserve that visible `has` trap. It also inherits
+  `js_allocate_fast_array`'s signed 31-bit length ceiling,
   throwing defining-realm `RangeError: invalid array length` before any indexed
   read above that boundary. As with `with`, Rust reserves and initializes the
   equivalent dense value buffer before source access, but allocates the actual
@@ -4870,8 +4904,8 @@ claim full parity.
   and ToString calls use a deterministic 16-sort-frame safety ceiling and throw
   catchable `InternalError: stack overflow`; pinned QuickJS permits more frames,
   so an iterative native-call trampoline is still required for exact threshold
-  and side-effect parity. The pinned conditional-Get Proxy behavior remains
-  attached to the wider pending Proxy/object-model slice.
+  and side-effect parity. The pinned conditional-Get Proxy behavior is covered
+  by the shared internal-method seam.
   `slice` and `splice` retain QuickJS's shared magic-selected kernel. Both
   snapshot ToLength, apply saturating Int64 relative-index clamps, distinguish
   omitted arguments from explicit `undefined` where `argc` requires it, and
@@ -4901,7 +4935,7 @@ claim full parity.
   change-by-copy methods, Rust reserves the complete value buffer before
   source access but creates indexed Array storage afterward; exact recoverable
   allocator ordering and bulk-storage complexity remain pending. Proxy trap
-  behavior remains attached to the wider pending Proxy/object-model slice.
+  behavior uses the shared internal-method seam.
   `copyWithin`
   snapshots and clamps all three bounds in QuickJS order, selects a backward
   traversal only for overlapping ranges, and performs source HasProperty/Get
@@ -4996,18 +5030,16 @@ claim full parity.
   `values`/`entries` recursion into a catchable `InternalError: stack overflow`.
   Pinned QuickJS permits a much deeper platform-dependent chain, so exact
   threshold parity and byte-accurate interleaved-frame accounting still require
-  the native-call trampoline. Proxy trap order and invariants remain part of the
-  explicit global Proxy boundary because the runtime does not yet publish
-  Proxy objects.
+  the native-call trampoline. Proxy trap order and invariants are covered by
+  the R3am internal-method gate.
   `isExtensible` and `preventExtensions` preserve QuickJS's deliberate
   non-boxing branch: every primitive, including nullish, Symbol and BigInt,
   reports non-extensible, while `preventExtensions` returns that exact
   primitive unchanged. Ordinary objects use their existing extensibility bit;
   prevention is irreversible and idempotent, returns the original object, and
   leaves existing property descriptors untouched. Proxy trap forwarding and
-  invariants, plus the resizable TypedArray rejection branch, remain explicit
-  boundaries until those object kinds exist; the ordinary API is not presented
-  as their completion-aware internal method.
+  invariants use the shared completion-aware methods; the resizable TypedArray
+  rejection branch remains an explicit boundary until that object kind exists.
   Descriptor reads preserve `ToObject` before property-key conversion, never
   call a stored getter, and publish fresh defining-realm ordinary objects. Data
   fields are created in `value`, `writable`, `enumerable`, `configurable` order;
@@ -5021,11 +5053,12 @@ claim full parity.
   Rust exhausts the host stack. The weights preserve the previously measured
   deeper join, sort, slice and flatten ceilings, but pinned QuickJS still
   permits platform-dependent chains, so exact byte-threshold parity requires
-  the native-call trampoline. Proxy descriptor traps/invariants, integer-indexed
-  TypedArray details and module-namespace exotic descriptors remain
-  explicit object-model boundaries. Future Proxy work must preserve two pinned
-  deviations: incomplete identity checks for some frozen descriptors, and the
-  nested-Proxy undefined-trap path which bypasses target `[[IsExtensible]]`.
+  the native-call trampoline. Proxy descriptor traps/invariants are active;
+  integer-indexed TypedArray details and module-namespace exotic descriptors
+  remain explicit object-model boundaries. The differential preserves two
+  pinned QuickJS target quirks: incomplete identity checks for some frozen
+  descriptors, and the nested-Proxy undefined-trap path which bypasses target
+  `[[IsExtensible]]`.
   `Object.is` directly applies SameValue without coercion: all NaN payloads
   compare equal, positive and negative zero remain distinct, primitive values
   compare by value, and objects and Symbols compare by identity.
@@ -5039,9 +5072,9 @@ claim full parity.
   remove a retained key, while newly enumerable or newly added keys stay
   absent. Shape-time filtering leaves non-enumerable AutoInit slots lazy.
   Direct getter/setter recursion has a nine-call family guard and interleaved
-  recursion is covered by the shared weighted budget. Proxy descriptor recheck
-  and invariant quirks, stale TypedArray index snapshots, and module namespace
-  sources remain explicit object-model boundaries.
+  recursion is covered by the shared weighted budget. Proxy descriptor
+  rechecks and invariant quirks are active; stale TypedArray index snapshots
+  and module namespace sources remain explicit object-model boundaries.
   `seal` and `freeze` preserve every primitive without boxing. For objects they
   first prevent extensions and then snapshot every own string and Symbol key.
   `seal` clears configurability while preserving data writability;
@@ -5053,9 +5086,9 @@ claim full parity.
   read and short-circuit on current descriptors, and query extensibility only
   after every descriptor passes. Ordinary, Array and String-wrapper descriptor
   transitions are covered, including mapped and unmapped Arguments objects;
-  Proxy trap order/partial failures, non-empty TypedArray rejection, and module
-  namespace behavior remain explicit object-model boundaries until those
-  exotic kinds exist.
+  Proxy trap order and partial failures are active, while non-empty TypedArray
+  rejection and module namespace behavior remain explicit object-model
+  boundaries.
   `fromEntries` allocates a fresh ordinary result in the builtin's defining
   realm before reading its input, obtains and caches a synchronous iterator's
   `next`, and requires every yielded entry itself to be an object. It reads
@@ -5069,9 +5102,9 @@ claim full parity.
   does not close. A four-active-call guard plus the shared weighted budget keeps
   direct and interleaved getter/key-coercion recursion catchable. Strong Map
   entry iteration, Set values which are themselves entry objects, and generator
-  `finally` during IteratorClose now run in the pinned differential. Proxy entry
-  traps, TypedArrays and module namespace entries remain explicit boundaries
-  until those object kinds exist.
+  `finally` during IteratorClose now run in the pinned differential. Proxy
+  entry traps are active; TypedArrays and module namespace entries remain
+  explicit boundaries.
   `hasOwn` converts and boxes its target in the defining realm before converting
   its property key, deliberately reversing the legacy prototype method's
   observable conversion order. It probes only the resulting object's own
@@ -5081,9 +5114,9 @@ claim full parity.
   nine-active-call family guard turns recursive `@@toPrimitive` reentry into a
   catchable `InternalError` before the Rust host stack is exhausted; exact
   QuickJS platform-stack depth still awaits the general native-call trampoline.
-  Proxy `getOwnPropertyDescriptor` traps and invariants, integer-indexed
-  TypedArrays, and module namespaces remain the corresponding explicit
-  object-model boundaries.
+  Proxy `getOwnPropertyDescriptor` traps and invariants are active;
+  integer-indexed TypedArrays and module namespaces remain the corresponding
+  explicit object-model boundaries.
   Anchors: `quickjs.c` 8905-8950, 10680-10702, 15840-15927, 16639-16675,
   16923-16996, 39796-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.
@@ -5884,7 +5917,7 @@ including active outer-iterator close across `.return()`. Other general
 assignment targets, module resolution, remaining non-simple parameter
 combinations, non-simple
 ObjectLiteral accessor forms outside the covered synchronous setter slice, and
-callable Proxy classes are not yet implemented.
+remaining exotic-source combinations are not yet implemented.
 Unsupported declaration contexts are rejected instead of being
 faked as Program functions or ordinary vars. Source `let`/`const` supports
 simple identifiers and recursive array/object/rest patterns in direct Program
@@ -5912,11 +5945,10 @@ two-phase bytecode-function reservation plus failure-injection coverage, rather
 than attempting to roll back migrated VarRefs after the fact.
 
 The dynamic AsyncFunction and AsyncGeneratorFunction constructors are
-implemented; other native builtin constructor families and Proxy construct
-dispatch remain. The hidden dynamic GeneratorFunction constructor and
-base/derived class construction,
+implemented; other native builtin constructor families remain. The hidden
+dynamic GeneratorFunction constructor, base/derived class construction,
 construct-only guards, constructor return validation, `super()`, `new.target`,
-and `Reflect.construct` are active. Typed
+`Reflect.construct`, and Proxy call/construct dispatch are active. Typed
 target/cproto, data-bearing Error selector, realm, arity padding, production
 BoundFunction allocation and frame foundations exist. Generic setter and raw
 iterator-next cproto adapters are active; specialized F64 adapters and the
@@ -5957,7 +5989,6 @@ expressions and the same Parameter Environment semantics as authored ordinary
 functions. Bodies remain limited to the current statement, expression, and
 simple body/block/switch/classic-for and for-in/of-head lexical-declaration
 grammar.
-Proxy new-target realms remain pending.
 Compiler input is still UTF-8,
 so dynamic source containing an unpaired UTF-16 surrogate throws an explicit
 implementation-gap `InternalError` instead of being silently rewritten. The
@@ -5977,9 +6008,10 @@ stack, but exact QuickJS runtime-stack accounting and its deep-bound-chain
 overflow threshold are not yet reproduced. VM object coercion is wired through
 the implemented unary, arithmetic, exponentiation, bitwise, shift, relational,
 addition and abstract-equality operators and now reaches the implemented
-callable classes through `Function.prototype.toString`. Proxy hooks, Date's
-special default hint behavior, OOM/interrupt edges and operators outside the
-current bytecode slice also remain pending.
+callable classes through `Function.prototype.toString`. Proxy hooks share the
+completion-aware internal-method seam; Date's special default hint behavior,
+OOM/interrupt edges and operators outside the current bytecode slice remain
+pending.
 
 Accessors are executable through the Rust Context property API, and
 strict/sloppy global identifier assignment is implemented. Source property
@@ -6054,7 +6086,7 @@ direct-eval object-environment lookup/deletion is implemented for the current
 synchronous script/function and Parameter-Environment surfaces;
 `with`-introduced dynamic object environments, the remaining two entries of
 String's 53-key prototype surface, Unicode-sets RegExp grammar,
-Proxy/exotic internal methods, and the full `function_accessors.js` fixture are
+the full `function_accessors.js` fixture, and other exotic internal methods are
 still pending. Uncatchable termination state is also pending. Other iterator
 classes and helpers, the remaining RegExp
 grammar and cross-realm host surface, Unicode-backed String methods, non-simple
@@ -6374,6 +6406,11 @@ because the hidden async state, GC edge/atom ownership, transactional
 phase checks, and adversarial lifecycle tests live at the arena trust
 boundary. That file remains extraction debt, but async behavior does not
 return to the runtime facade.
+R3am moves completion-aware object dispatch into the new 1,706-line
+`runtime/internal_methods.rs` owner and Proxy lifecycle into the 226-line
+`runtime/intrinsics/proxy.rs` owner. The main facade is 9,904 lines, eight
+below its 9,912-line R3al baseline; the arena trust boundary grows to 21,034
+lines for Proxy edges, validation, and unique-shape mutation.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -6707,6 +6744,9 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_async_generator_yield_star -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_await_of -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_proxy -- --nocapture
+./scripts/test-test262-proxy.sh
 ./scripts/test-test262-full.sh
 ```
 

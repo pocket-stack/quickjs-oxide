@@ -64,8 +64,3 @@ initial snapshot. Both paths are pinned in `tests/oracle_for_in.rs`.
   multi-billion-element RangeError boundary instead of QuickJS's C `int`
   environment behavior. These are unresolved hardening frontiers, not
   approved deviations.
-- `for-in` over Proxy is not implemented because Proxy itself is absent. The VM
-  host outcome already carries arbitrary JavaScript throws; before Proxy is
-  admitted, differential tests must lock the two prototype passes, `ownKeys`,
-  descriptor, live-presence, and `getPrototypeOf` trap order. This is an
-  unsupported frontier, not an approved deviation.

@@ -10,6 +10,7 @@ mod map;
 mod math;
 mod object;
 pub(super) mod promise;
+mod proxy;
 mod reflect;
 mod regexp;
 mod replacement;
@@ -26,36 +27,34 @@ impl Runtime {
         key: &PropertyKey,
         value: Value,
     ) -> Result<Option<Value>, RuntimeError> {
-        match self.prepare_set_property_in_realm(realm, object, key, value)? {
-            PropertySetAction::Complete => Ok(None),
-            PropertySetAction::Throw(value) => Ok(Some(value)),
-            PropertySetAction::Call {
-                setter,
-                receiver,
-                argument,
-            } => match self.call_internal(realm, &setter, receiver, &[argument])? {
-                Completion::Return(_) => Ok(None),
-                Completion::Throw(value) => Ok(Some(value)),
-            },
-            PropertySetAction::Rejected(rejection) => {
-                let error = match rejection {
-                    PropertySetRejection::ReadOnly => {
+        match self.internal_set(realm, object, key, value, Value::Object(object.clone()))? {
+            NativeConversion::Value(InternalSetResult::Accepted) => Ok(None),
+            NativeConversion::Throw(value) => Ok(Some(value)),
+            NativeConversion::Value(result) => {
+                let error = match result {
+                    InternalSetResult::RejectedProxyTrap => {
+                        Error::new(ErrorKind::Type, "proxy: cannot set property")
+                    }
+                    InternalSetResult::Rejected(PropertySetRejection::ReadOnly) => {
                         self.native_atom_error(ErrorKind::Type, "'", key, "' is read-only")?
                     }
-                    PropertySetRejection::ArrayLengthReadOnly => {
+                    InternalSetResult::Rejected(PropertySetRejection::ArrayLengthReadOnly) => {
                         let length = self.intern_property_key("length")?;
                         self.native_atom_error(ErrorKind::Type, "'", &length, "' is read-only")?
                     }
-                    PropertySetRejection::NotConfigurable => {
+                    InternalSetResult::Rejected(PropertySetRejection::NotConfigurable) => {
                         Error::new(ErrorKind::Type, "not configurable")
                     }
-                    PropertySetRejection::NoSetter => {
+                    InternalSetResult::Rejected(PropertySetRejection::NoSetter) => {
                         Error::new(ErrorKind::Type, "no setter for property")
                     }
-                    PropertySetRejection::NotExtensible => {
+                    InternalSetResult::Rejected(PropertySetRejection::NotExtensible) => {
                         Error::new(ErrorKind::Type, "object is not extensible")
                     }
-                    PropertySetRejection::NotObject => Error::new(ErrorKind::Type, "not an object"),
+                    InternalSetResult::Rejected(PropertySetRejection::NotObject) => {
+                        Error::new(ErrorKind::Type, "not an object")
+                    }
+                    InternalSetResult::Accepted => unreachable!("accepted Set returned above"),
                 };
                 Ok(Some(self.new_native_error_from_error(
                     realm,

@@ -503,7 +503,12 @@ impl Runtime {
             Completion::Return(Value::Object(prototype)) => Ok(NativeConversion::Value(prototype)),
             Completion::Return(_) => {
                 let new_target = self.callable_from_value(Value::Object(new_target))?;
-                let fallback_realm = self.callable_realm(&new_target)?;
+                let fallback_realm = match self.function_realm(realm, &new_target)? {
+                    NativeConversion::Value(realm) => realm,
+                    NativeConversion::Throw(value) => {
+                        return Ok(NativeConversion::Throw(value));
+                    }
+                };
                 let prototype = self.promise_realm_data(fallback_realm)?.prototype;
                 Ok(NativeConversion::Value(ObjectRef::from_borrowed_handle(
                     self.clone(),

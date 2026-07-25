@@ -116,7 +116,12 @@ impl Runtime {
             match self.get_property_in_realm(realm, &new_target_object, &prototype_key)? {
                 Completion::Return(Value::Object(prototype)) => prototype,
                 Completion::Return(_) => {
-                    let fallback_realm = self.callable_realm(&new_target_callable)?;
+                    let fallback_realm = match self.function_realm(realm, &new_target_callable)? {
+                        NativeConversion::Value(realm) => realm,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    };
                     let prototype = {
                         let state = self.0.state.borrow();
                         let context = state.heap.context(fallback_realm)?;

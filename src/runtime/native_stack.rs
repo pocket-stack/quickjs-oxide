@@ -45,6 +45,38 @@ impl Runtime {
         top.abs_diff(current) >= HOST_STACK_BUDGET_BYTES
     }
 
+    pub(in crate::runtime) fn proxy_method_stack_would_overflow(&self) -> bool {
+        if !self.0.state.borrow().active_frames.is_empty() {
+            return self.host_stack_would_overflow();
+        }
+        let current = current_host_stack_address();
+        if self.0.proxy_method_depth.get() == 0 {
+            self.0.host_stack_top.set(Some(current));
+            return false;
+        }
+        let Some(top) = self.0.host_stack_top.get() else {
+            self.0.host_stack_top.set(Some(current));
+            return false;
+        };
+        top.abs_diff(current) >= HOST_STACK_BUDGET_BYTES
+    }
+
+    /// Return the unchecked portion of QuickJS's one-MiB runtime stack budget.
+    ///
+    /// Empty-handler Proxy forwarding is iterative in Rust, so it does not
+    /// consume the native stack that the equivalent QuickJS C calls consume.
+    /// The caller charges a coarse logical frame cost for non-tail fallback
+    /// shapes against this remaining budget. Real trap re-entry is still
+    /// guarded by [`Self::proxy_method_stack_would_overflow`].
+    pub(in crate::runtime) fn proxy_method_logical_stack_budget(&self) -> usize {
+        let current = current_host_stack_address();
+        let top = self.0.host_stack_top.get().unwrap_or_else(|| {
+            self.0.host_stack_top.set(Some(current));
+            current
+        });
+        (1024_usize * 1024).saturating_sub(top.abs_diff(current))
+    }
+
     pub(super) fn bytecode_call_would_overflow(&self) -> bool {
         self.host_stack_would_overflow()
     }

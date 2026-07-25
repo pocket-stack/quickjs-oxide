@@ -123,6 +123,7 @@ impl Runtime {
                     ));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::Proxy(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Array { .. }
@@ -274,12 +275,6 @@ impl Runtime {
         let Value::Object(object) = value else {
             return Ok(false);
         };
-        let state = self.0.state.borrow();
-        Ok(matches!(
-            state.heap.object(object.object_id())?.payload,
-            ObjectPayload::NativeFunction { .. }
-                | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. }
-        ))
+        Ok(self.as_callable(object)?.is_some())
     }
 }
