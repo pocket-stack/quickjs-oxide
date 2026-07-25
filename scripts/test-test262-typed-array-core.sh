@@ -22,7 +22,7 @@ expected_test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 expected_patch=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 expected_config=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 expected_metadata=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-expected_profile=663ac07f1fe379125eec29aec0c7b8b8215c08f40b93e9c39056ff40c6331036
+expected_profile=c5d1a75871d567f892a982a1c549390c0f79aa3cefbd057dd88f713e98aafed7
 expected_schema=test262-canonical-classified-v2
 expected_mode=both
 expected_timeout_ms=30000
@@ -44,18 +44,30 @@ expected_mutation_paths=251
 expected_mutation_manifest=d85c80e335b4ba886501d9b126d444a2516995b356d4375f741e2d14313d3375
 expected_mutation_variants=502
 expected_mutation_keys=33a298d9b5901e318ba5662e6fddc8c4ed0bdbbe1284805d0d283d6e4478cbf2
-expected_excluded_paths=1375
-expected_exclusions=389eedb4125a4dbe2e30a797f60adbafc12279cca04387b09ee9035d00794421
-expected_exclusions_file=fe441699f63debd30e3c5e2ed66d2c9b21732280afc03807be8a2268dbe56c3a
-expected_paths=986
-expected_variants=1949
-expected_quickjs_variants=1949
-expected_features=21
-expected_features_hash=114b22411f94406423103ca7429cdc2009162c9ff55b41a06b3532e73536a2d0
+expected_index_search_candidate_paths=152
+expected_index_search_candidate=8e68d86281c54b4b2a6a35422a55b348969d43fa11622c142cc31507aaae371f
+expected_index_search_candidate_variants=304
+expected_index_search_candidate_keys=934945e7ae5feef7de11c400da0ea7cdb72350027e4b803e2747d6afe9033d00
+expected_index_search_deferred_paths=1
+expected_index_search_deferred=de7e9738d5d1934ea4d23809c52acc9c11598d51f7f8dc321cae940d054a0d46
+expected_index_search_deferred_variants=2
+expected_index_search_deferred_keys=0011f9e461db721dc942bb2025209c994a710862fd6bc9add662133e238934c3
+expected_index_search_paths=151
+expected_index_search_manifest=061efff451e31693b84f61bf8072651ef366c1feb5ac880b2a47bba24203aeab
+expected_index_search_variants=302
+expected_index_search_keys=a63a1a8f7103e49cbd70c614beaf7f68d09b1019b217fce1f6f38fed8c877f15
+expected_excluded_paths=1224
+expected_exclusions=9b553e985aada3b162fd95f3a2d7980dff7f7fb96414b2bd56df5c6f7f790b23
+expected_exclusions_file=6eb2500c8befaaee380d1bed1e94f03450592f5d3da86c2cd523b6f7c2f9da62
+expected_paths=1137
+expected_variants=2251
+expected_quickjs_variants=2251
+expected_features=23
+expected_features_hash=7a566ca2c001797f6d37543e7775ddf729e49db29389387ea779e922a1bde454
 expected_includes=11
 expected_includes_hash=b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012
-expected_manifest=8542757a466917d9841cdc25317b78abad5db64aceda07ab78c8f38ced08bd3f
-expected_keys=1b983b9b5c97314449c54ec0da387f393964a758db02836e6bd2b9aa0af39f7b
+expected_manifest=85f8c692cdd7ae1715f19006da3b11f6f34e4b598f18f701ebc9fd911c9e9714
+expected_keys=8489275bb065e249286a3f113f26a90b9483b5030f2809e8575ec3148f419067
 expected_test_typed_array_harness=4c0e237804f39a4aa670f72c05b4520730c03c2d2e9f2f41e6b380bd6749ec61
 expected_sm_typed_array_harness=3798d277ac8f105b65ad26602b500b497af7f3361fd14a169c58a601c605bb2e
 expected_sm_math_harness=79dea1172236685567e09da8c9e868e0f84686bf40cff728785223c5b43f5e7b
@@ -64,9 +76,9 @@ usage() {
     cat <<'EOF'
 usage: scripts/test-test262-typed-array-core.sh [--check]
 
-With --check, rebuild and audit the frozen TypedArray candidate, mutation
-promotion, manifest, and exclusion ledger and verify all 4,669 candidate
-variants plus the 1,949 admitted variants against pinned QuickJS. With no
+With --check, rebuild and audit the frozen TypedArray candidate, mutation and
+index/search promotions, manifest, and exclusion ledger and verify all 4,669
+candidate variants plus the 2,251 admitted variants against pinned QuickJS. With no
 option, also run the checksum-bound quickjs-oxide gate; that mode requires a
 measured all-green baseline file.
 EOF
@@ -470,6 +482,40 @@ mutation_dependency_reason() {
     esac
 }
 
+index_search_candidate_path() {
+    local test_path=$1
+    case "$test_path" in
+        test/built-ins/TypedArray/prototype/at/*|\
+        test/built-ins/TypedArray/prototype/includes/*|\
+        test/built-ins/TypedArray/prototype/indexOf/*|\
+        test/built-ins/TypedArray/prototype/lastIndexOf/*|\
+        test/built-ins/TypedArrayConstructors/prototype/indexOf/*|\
+        test/built-ins/TypedArrayConstructors/prototype/lastIndexOf/*|\
+        test/staging/sm/TypedArray/indexOf-and-lastIndexOf.js|\
+        test/staging/sm/TypedArray/indexOf-never-returns-negative-zero.js|\
+        test/staging/sm/TypedArray/lastIndexOf-never-returns-negative-zero.js)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+index_search_dependency_reason() {
+    local test_path=$1 includes_file=$2
+    case "$test_path" in
+        test/staging/sm/TypedArray/indexOf-and-lastIndexOf.js)
+            if ! grep -Fxq sm/non262-TypedArray-shell.js "$includes_file"; then
+                echo "error: TypedArray index/search WeakMap dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'external:WeakMap\n'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 direct_core_dependency_reason() {
     local test_path=$1 includes_file=$2
     case "$test_path" in
@@ -646,6 +692,18 @@ if [[ "$check_only" == false ]]; then
     expect_value mutation_manifest_sha256 "$expected_mutation_manifest"
     expect_value mutation_variants "$expected_mutation_variants"
     expect_value mutation_keys_sha256 "$expected_mutation_keys"
+    expect_value index_search_candidate_paths "$expected_index_search_candidate_paths"
+    expect_value index_search_candidate_sha256 "$expected_index_search_candidate"
+    expect_value index_search_candidate_variants "$expected_index_search_candidate_variants"
+    expect_value index_search_candidate_keys_sha256 "$expected_index_search_candidate_keys"
+    expect_value index_search_deferred_paths "$expected_index_search_deferred_paths"
+    expect_value index_search_deferred_sha256 "$expected_index_search_deferred"
+    expect_value index_search_deferred_variants "$expected_index_search_deferred_variants"
+    expect_value index_search_deferred_keys_sha256 "$expected_index_search_deferred_keys"
+    expect_value index_search_paths "$expected_index_search_paths"
+    expect_value index_search_manifest_sha256 "$expected_index_search_manifest"
+    expect_value index_search_variants "$expected_index_search_variants"
+    expect_value index_search_keys_sha256 "$expected_index_search_keys"
     expect_value excluded_paths "$expected_excluded_paths"
     expect_value exclusions_sha256 "$expected_exclusions"
     expect_value exclusions_file_sha256 "$expected_exclusions_file"
@@ -718,6 +776,12 @@ mutation_candidate_keys=$tmp_dir/mutation-candidate-keys.txt
 mutation_deferred=$tmp_dir/mutation-deferred.txt
 mutation_manifest=$tmp_dir/mutation-manifest.txt
 mutation_keys=$tmp_dir/mutation-keys.txt
+index_search_candidate=$tmp_dir/index-search-candidate.txt
+index_search_candidate_keys=$tmp_dir/index-search-candidate-keys.txt
+index_search_deferred=$tmp_dir/index-search-deferred.txt
+index_search_deferred_keys=$tmp_dir/index-search-deferred-keys.txt
+index_search_manifest=$tmp_dir/index-search-manifest.txt
+index_search_keys=$tmp_dir/index-search-keys.txt
 candidate_features=$tmp_dir/candidate-features.txt
 candidate_includes=$tmp_dir/candidate-includes.txt
 candidate_flags=$tmp_dir/candidate-flags.txt
@@ -791,18 +855,18 @@ if ! awk -F'\t' '
         counts[$2]++
     }
     END {
-        if (NR != 1376 ||
+        if (NR != 1225 ||
             counts["dependency:join"] != 2 ||
             counts["external:cross-realm"] != 54 ||
             counts["external:SharedArrayBuffer"] != 71 ||
-            counts["external:WeakMap"] != 3 ||
+            counts["external:WeakMap"] != 4 ||
             counts["external:Math"] != 1 ||
             counts["external:IsHTMLDDA"] != 1 ||
             counts["static:from"] != 88 ||
             counts["static:of"] != 34 ||
             counts["method:iterator-entries-keys"] != 42 ||
             counts["method:mutation-copy-set"] != 0 ||
-            counts["method:search-predicate"] != 402 ||
+            counts["method:search-predicate"] != 250 ||
             counts["method:species-copy-transform"] != 388 ||
             counts["method:callback-reduce"] != 148 ||
             counts["method:sort"] != 47 ||
@@ -840,6 +904,9 @@ diff -u "$candidate_inventory" "$combined_inventory"
 : >"$mutation_candidate"
 : >"$mutation_deferred"
 : >"$mutation_manifest"
+: >"$index_search_candidate"
+: >"$index_search_deferred"
+: >"$index_search_manifest"
 : >"$candidate_keys"
 while IFS= read -r test_path; do
     if [[ ! -f "$suite/$test_path" ]]; then
@@ -908,6 +975,21 @@ while IFS= read -r test_path; do
             printf '%s\n' "$test_path" >>"$mutation_manifest"
             continue
         fi
+    elif [[ "$reason" == "method:search-predicate" ]] \
+        && index_search_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$index_search_candidate"
+        if reason=$(index_search_dependency_reason \
+            "$test_path" "$candidate_includes"); then
+            printf '%s\n' "$test_path" >>"$index_search_deferred"
+        else
+            dependency_status=$?
+            if [[ "$dependency_status" != "1" ]]; then
+                exit 1
+            fi
+            printf '%s\n' "$test_path" >>"$derived_manifest"
+            printf '%s\n' "$test_path" >>"$index_search_manifest"
+            continue
+        fi
     fi
     printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
 done <"$direct_candidate"
@@ -952,6 +1034,62 @@ if [[ "$(wc -l <"$mutation_candidate" | tr -d '[:space:]')" \
         != "$expected_mutation_variants" \
     || "$(sha256_file "$mutation_keys")" != "$expected_mutation_keys" ]]; then
     echo "error: TypedArray mutation promotion inventory drifted" >&2
+    exit 1
+fi
+
+LC_ALL=C sort -o "$index_search_candidate" "$index_search_candidate"
+LC_ALL=C sort -o "$index_search_deferred" "$index_search_deferred"
+LC_ALL=C sort -o "$index_search_manifest" "$index_search_manifest"
+diff -u \
+    "$index_search_candidate" \
+    <(LC_ALL=C sort -u "$index_search_manifest" "$index_search_deferred")
+if [[ -n "$(LC_ALL=C comm -12 "$index_search_manifest" "$index_search_deferred")" ]]; then
+    echo "error: TypedArray index/search manifest overlaps its deferred ledger" >&2
+    exit 1
+fi
+
+: >"$index_search_candidate_keys"
+: >"$index_search_deferred_keys"
+: >"$index_search_keys"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$index_search_candidate_keys"
+done <"$index_search_candidate"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$index_search_deferred_keys"
+done <"$index_search_deferred"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$index_search_keys"
+done <"$index_search_manifest"
+LC_ALL=C sort -o "$index_search_candidate_keys" "$index_search_candidate_keys"
+LC_ALL=C sort -o "$index_search_deferred_keys" "$index_search_deferred_keys"
+LC_ALL=C sort -o "$index_search_keys" "$index_search_keys"
+if [[ "$(wc -l <"$index_search_candidate" | tr -d '[:space:]')" \
+        != "$expected_index_search_candidate_paths" \
+    || "$(sha256_file "$index_search_candidate")" \
+        != "$expected_index_search_candidate" \
+    || "$(wc -l <"$index_search_candidate_keys" | tr -d '[:space:]')" \
+        != "$expected_index_search_candidate_variants" \
+    || "$(sha256_file "$index_search_candidate_keys")" \
+        != "$expected_index_search_candidate_keys" \
+    || "$(wc -l <"$index_search_deferred" | tr -d '[:space:]')" \
+        != "$expected_index_search_deferred_paths" \
+    || "$(sha256_file "$index_search_deferred")" \
+        != "$expected_index_search_deferred" \
+    || "$(wc -l <"$index_search_deferred_keys" | tr -d '[:space:]')" \
+        != "$expected_index_search_deferred_variants" \
+    || "$(sha256_file "$index_search_deferred_keys")" \
+        != "$expected_index_search_deferred_keys" \
+    || "$(wc -l <"$index_search_manifest" | tr -d '[:space:]')" \
+        != "$expected_index_search_paths" \
+    || "$(sha256_file "$index_search_manifest")" \
+        != "$expected_index_search_manifest" \
+    || "$(wc -l <"$index_search_keys" | tr -d '[:space:]')" \
+        != "$expected_index_search_variants" \
+    || "$(sha256_file "$index_search_keys")" != "$expected_index_search_keys" ]]; then
+    echo "error: TypedArray index/search promotion inventory drifted" >&2
     exit 1
 fi
 

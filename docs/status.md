@@ -21,15 +21,17 @@ claim full parity.
   backing-store/intrinsic milestone, R3ao adds the independently owned DataView
   intrinsic, and R3ap adds the shared kernel for all 12 concrete TypedArray
   classes. R3aq promotes the in-place mutation cohort without globally
-  admitting the still-incomplete broad TypedArray feature tag. The vector has
-  51,904 passes and 52,468 runnable variants: 50.87% raw, a 62.11%
-  lower bound after the 18,475 pinned QuickJS target exclusions, or 99.02%
+  admitting the still-incomplete broad TypedArray feature tag. R3ar adds the
+  dedicated indexed lookup/search kernel and promotes `at`, `includes`,
+  `indexOf`, and `lastIndexOf` under the same conservative boundary. The
+  vector has 51,908 passes and 52,468 runnable variants: 50.87% raw, a 62.12%
+  lower bound after the 18,475 pinned QuickJS target exclusions, or 99.03%
   among the 52,419 variants with a non-unsupported observed outcome. It records
-  18 parse failures, 438 runtime failures, and 57 harness failures;
+  18 parse failures, 434 runtime failures, and 57 harness failures;
   current full TSV/JSONL SHA-256 values are
-  `ab641b72ef2c2bc4615d493e03cf1538c308daa2edd4c8b7e752c0da3416e586`
+  `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
   and
-  `7eae1d679bfe748a6ea7123c534e60c0ba8d8fe5edfa29ff6a0a16ffb3e15e5f`.
+  `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3209,6 +3211,47 @@ claim full parity.
   `ab641b72ef2c2bc4615d493e03cf1538c308daa2edd4c8b7e752c0da3416e586`
   and
   `7eae1d679bfe748a6ea7123c534e60c0ba8d8fe5edfa29ff6a0a16ffb3e15e5f`.
+
+  R3ar publishes `%TypedArray%.prototype.at`, `includes`, `indexOf`, and
+  `lastIndexOf` through a dedicated indexed lookup/search kernel. It mirrors
+  pinned QuickJS's initial brand/out-of-bounds validation, length snapshot,
+  observable index coercion, live resizable-buffer length cap, direct
+  integer-index reads, Strict Equality versus SameValueZero split, and the
+  target-specific `includes(undefined)` rule for a tail that disappears during
+  `fromIndex` coercion. Directed tests cover Number/BigInt separation, NaN,
+  signed zero, positive grow, negative indexing against the old length,
+  shrink, detach, fixed-view OOB, descriptor identity, and the filtered
+  QuickJS own-key order.
+
+  The independently audited atomic inventory has 152 paths / 304 variants.
+  One SpiderMonkey staging path loads a harness with an unavailable WeakMap
+  dependency and remains attributed as such; the other 151 paths / 302
+  variants join the cumulative 1,137-path / 2,251-variant gate. Oxide and
+  pinned QuickJS both pass 2,251/2,251, while the expanded 2,361-path /
+  4,669-variant candidate also remains all-green in the oracle. The scoped
+  profile, manifest, exclusion-ledger file, and key-stream SHA-256 values are
+  `c5d1a75871d567f892a982a1c549390c0f79aa3cefbd057dd88f713e98aafed7`,
+  `85f8c692cdd7ae1715f19006da3b11f6f34e4b598f18f701ebc9fd911c9e9714`,
+  `6eb2500c8befaaee380d1bed1e94f03450592f5d3da86c2cd523b6f7c2f9da62`,
+  and
+  `8489275bb065e249286a3f113f26a90b9483b5030f2809e8575ec3148f419067`.
+  Its canonical TSV/JSONL report hashes are
+  `cd4e54e8444178f8828b26615b983d90e3791346def1eec0e3d570e1c3204197`
+  and
+  `8a8d3f884bc2b22a2112a8d44ecb2cbf6091866235692239252b4352cedb4c28`.
+
+  The broad global TypedArray tag stays withheld. Exactly four untagged
+  staging modes move from runtime failure to pass; the other newly
+  authenticated variants remain fail-closed globally. The exact 102,037-key
+  join has four `fail-runtime -> pass` transitions and zero previous-pass
+  regression, missing, extra, or duplicate rows. Its transition stream
+  SHA-256 is
+  `2b87010242ba56dcf9ca6bf1b49c733db36b3b4e558cd945b12ce22aa4acb2f7`;
+  the complete summary reaches 51,908 passes and 434 runtime failures. Full
+  TSV/JSONL hashes are
+  `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+  and
+  `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -6621,6 +6664,13 @@ Directed tests are split between the 1,246-line owner test module and the
 273-line mutation test module. `heap.rs` reaches 23,026 lines after adding the
 raw-word fill/reverse mutation boundary and direct invariant coverage; it
 remains explicit extraction debt rather than hidden runtime-facade growth.
+R3ar again keeps `runtime.rs` unchanged at 9,950 lines and `heap.rs` unchanged
+at 23,026 lines. Prototype installation and typed dispatch add only the
+filtered QuickJS surface seam to the 1,914-line shared owner; the observable
+algorithms live in the adjacent 196-line `typed_array/search.rs`, with a
+246-line directed test module. This milestone therefore expands semantics
+without growing either monolith or mixing indexed-search rules into generic
+Array property traversal.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -7022,9 +7072,9 @@ resizable-buffer shrink/grow behavior against the same pinned oracle.
 The TypedArray shared-kernel target locks the 12-class graph and backing
 payload, constructor/coercion order, integer-indexed exotic internal methods,
 live resizable-buffer bounds, detach, iteration, in-place mutation, `for-in`,
-overlap, raw words, realm, host-property, and GC seams against the same pinned
-oracle. Its exclusion ledger keeps later method families and external
-dependencies visible.
+overlap, raw words, indexed lookup/search, realm, host-property, and GC seams
+against the same pinned oracle. Its exclusion ledger keeps later method
+families and external dependencies visible.
 The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching

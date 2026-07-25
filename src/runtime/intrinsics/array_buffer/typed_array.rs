@@ -7,13 +7,14 @@
 
 use crate::atom::PropertyKeyKind;
 use crate::heap::{
-    ArrayBufferViewData, ArrayIteratorKind, ObjectData, ObjectPayload, TypedArrayData,
-    TypedArrayElementKind, TypedArrayNativeKind, TypedArrayRealmData,
+    ArrayBufferViewData, ArrayIteratorKind, ArraySearchKind, ObjectData, ObjectPayload,
+    TypedArrayData, TypedArrayElementKind, TypedArrayNativeKind, TypedArrayRealmData,
 };
 
 use super::*;
 
 mod mutation;
+mod search;
 #[cfg(test)]
 mod tests;
 
@@ -66,6 +67,14 @@ impl Runtime {
             "length",
             "get length",
         )?;
+        self.define_native_builtin_auto_init(
+            &base_prototype,
+            realm,
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::At),
+            "at",
+            1,
+            1,
+        )?;
         for (kind, name) in [
             (TypedArrayNativeKind::Buffer, "buffer"),
             (TypedArrayNativeKind::ByteLength, "byteLength"),
@@ -114,6 +123,20 @@ impl Runtime {
                 name,
                 length,
                 min_readable_args,
+            )?;
+        }
+        for (kind, name) in [
+            (ArraySearchKind::IndexOf, "indexOf"),
+            (ArraySearchKind::LastIndexOf, "lastIndexOf"),
+            (ArraySearchKind::Includes, "includes"),
+        ] {
+            self.define_native_builtin_auto_init(
+                &base_prototype,
+                realm,
+                NativeFunctionId::TypedArray(TypedArrayNativeKind::Search(kind)),
+                name,
+                1,
+                1,
             )?;
         }
 
@@ -344,8 +367,11 @@ impl Runtime {
             }
             TypedArrayNativeKind::Fill => self.call_typed_array_fill(realm, invocation, arguments),
             TypedArrayNativeKind::Reverse => self.call_typed_array_reverse(realm, invocation),
-            TypedArrayNativeKind::At
-            | TypedArrayNativeKind::With
+            TypedArrayNativeKind::At => self.call_typed_array_at(realm, invocation, arguments),
+            TypedArrayNativeKind::Search(kind) => {
+                self.call_typed_array_search(realm, kind, invocation, arguments)
+            }
+            TypedArrayNativeKind::With
             | TypedArrayNativeKind::Iteration(_)
             | TypedArrayNativeKind::Reduce(_)
             | TypedArrayNativeKind::Find(_)
@@ -354,8 +380,7 @@ impl Runtime {
             | TypedArrayNativeKind::Subarray
             | TypedArrayNativeKind::Sort
             | TypedArrayNativeKind::ToSorted
-            | TypedArrayNativeKind::Join(_)
-            | TypedArrayNativeKind::Search(_) => Err(RuntimeError::Invariant(
+            | TypedArrayNativeKind::Join(_) => Err(RuntimeError::Invariant(
                 "unpublished TypedArray native reached dispatch",
             )),
         }
