@@ -10274,6 +10274,82 @@ impl Heap {
         Ok(())
     }
 
+    /// Fill a live ArrayBuffer range with repeated fixed-width machine words.
+    pub(crate) fn fill_array_buffer_words(
+        &mut self,
+        buffer: ObjectId,
+        start: usize,
+        word: &[u8],
+        count: usize,
+    ) -> Result<(), HeapError> {
+        if !matches!(word.len(), 1 | 2 | 4 | 8) {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer fill word has an invalid width",
+            ));
+        }
+        let byte_count = word.len().checked_mul(count).ok_or(HeapError::Invariant(
+            "ArrayBuffer fill byte count overflowed usize",
+        ))?;
+        let end = start.checked_add(byte_count).ok_or(HeapError::Invariant(
+            "ArrayBuffer fill range overflowed usize",
+        ))?;
+        let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(buffer)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer fill reached another object class",
+            ));
+        };
+        if data.detached || end > data.bytes.len() {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer fill exceeded a live backing store",
+            ));
+        }
+        for target in data.bytes[start..end].chunks_exact_mut(word.len()) {
+            target.copy_from_slice(word);
+        }
+        Ok(())
+    }
+
+    /// Reverse fixed-width words in one live ArrayBuffer range in place.
+    pub(crate) fn reverse_array_buffer_words(
+        &mut self,
+        buffer: ObjectId,
+        start: usize,
+        word_width: usize,
+        count: usize,
+    ) -> Result<(), HeapError> {
+        if !matches!(word_width, 1 | 2 | 4 | 8) {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer reverse word has an invalid width",
+            ));
+        }
+        let byte_count = word_width.checked_mul(count).ok_or(HeapError::Invariant(
+            "ArrayBuffer reverse byte count overflowed usize",
+        ))?;
+        let end = start.checked_add(byte_count).ok_or(HeapError::Invariant(
+            "ArrayBuffer reverse range overflowed usize",
+        ))?;
+        let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(buffer)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer reverse reached another object class",
+            ));
+        };
+        if data.detached || end > data.bytes.len() {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer reverse exceeded a live backing store",
+            ));
+        }
+        let words = &mut data.bytes[start..end];
+        for left in 0..count / 2 {
+            let right = count - left - 1;
+            let left_start = left * word_width;
+            let right_start = right * word_width;
+            for byte in 0..word_width {
+                words.swap(left_start + byte, right_start + byte);
+            }
+        }
+        Ok(())
+    }
+
     /// Resize and move one owned backing allocation into an already-created
     /// empty ArrayBuffer. Allocation failure leaves the source attached and
     /// byte-for-byte unchanged.
@@ -19532,6 +19608,72 @@ mod tests {
             heap.write_array_buffer_word(buffer, 0, &[1]),
             Err(HeapError::Invariant(
                 "ArrayBuffer word write exceeded the live backing store",
+            )),
+        );
+
+        let cleanup = heap.release_object(buffer).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn array_buffer_word_mutation_preserves_width_and_rejects_stale_ranges() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let buffer = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                shape,
+                Vec::new(),
+                vec![0, 1, 2, 3, 4, 5, 6, 7],
+                Some(12),
+            ))
+            .unwrap();
+        heap.release_shape(shape).unwrap();
+
+        heap.fill_array_buffer_words(buffer, 2, &[0xaa, 0xbb], 2)
+            .unwrap();
+        heap.reverse_array_buffer_words(buffer, 0, 2, 4).unwrap();
+        assert_eq!(
+            heap.read_array_buffer_word(buffer, 0, 8).unwrap(),
+            [6, 7, 0xaa, 0xbb, 0xaa, 0xbb, 0, 1],
+        );
+        assert_eq!(
+            heap.fill_array_buffer_words(buffer, 0, &[1, 2, 3], 1),
+            Err(HeapError::Invariant(
+                "ArrayBuffer fill word has an invalid width",
+            )),
+        );
+        assert_eq!(
+            heap.reverse_array_buffer_words(buffer, 0, 3, 1),
+            Err(HeapError::Invariant(
+                "ArrayBuffer reverse word has an invalid width",
+            )),
+        );
+        assert_eq!(
+            heap.fill_array_buffer_words(buffer, 7, &[1, 2], 1),
+            Err(HeapError::Invariant(
+                "ArrayBuffer fill exceeded a live backing store",
+            )),
+        );
+        assert_eq!(
+            heap.reverse_array_buffer_words(buffer, 2, 2, 4),
+            Err(HeapError::Invariant(
+                "ArrayBuffer reverse exceeded a live backing store",
+            )),
+        );
+
+        heap.detach_array_buffer(buffer).unwrap();
+        assert_eq!(
+            heap.fill_array_buffer_words(buffer, 0, &[1], 1),
+            Err(HeapError::Invariant(
+                "ArrayBuffer fill exceeded a live backing store",
+            )),
+        );
+        assert_eq!(
+            heap.reverse_array_buffer_words(buffer, 0, 1, 1),
+            Err(HeapError::Invariant(
+                "ArrayBuffer reverse exceeded a live backing store",
             )),
         );
 

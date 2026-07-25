@@ -22,7 +22,7 @@ expected_test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 expected_patch=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 expected_config=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 expected_metadata=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-expected_profile=046200aa1abd9afa11a63602d5a8ea073ba6dd1ccee2e910775731c175378402
+expected_profile=663ac07f1fe379125eec29aec0c7b8b8215c08f40b93e9c39056ff40c6331036
 expected_schema=test262-canonical-classified-v2
 expected_mode=both
 expected_timeout_ms=30000
@@ -34,18 +34,28 @@ expected_candidate_paths=2361
 expected_candidate=81b1e9fa4104cf51f16a0e3cca8e9600ba1e3390c41f0b8ebb0b9618c12b533f
 expected_candidate_variants=4669
 expected_candidate_keys=fd98267b85136c844a3c83a238b4194a1c1447b22c370f1344bae51e49517320
-expected_excluded_paths=1626
-expected_exclusions=935f73c912cc4736f09300b92a18593250a48d10edd6ccf4d1ba152b36968791
-expected_exclusions_file=2b18c745fe886709f578ba9cd927cea21c98dca9c02a6664c94f6fce3385e400
-expected_paths=735
-expected_variants=1447
-expected_quickjs_variants=1447
+expected_mutation_candidate_paths=254
+expected_mutation_candidate=040d1a0cc4c9068b230fd681a544a1c3b0351616363c4fa0a70ebf94b7c5e429
+expected_mutation_candidate_variants=508
+expected_mutation_candidate_keys=abdaa1350701a1604e30850d1ee5de87ef7afb806b539d090d9fbd75326bc051
+expected_mutation_deferred_paths=3
+expected_mutation_deferred=3edd4f483e4a5ca8ba020a95a41f1bfc29035a457d0cd091c2294b80bce8673f
+expected_mutation_paths=251
+expected_mutation_manifest=d85c80e335b4ba886501d9b126d444a2516995b356d4375f741e2d14313d3375
+expected_mutation_variants=502
+expected_mutation_keys=33a298d9b5901e318ba5662e6fddc8c4ed0bdbbe1284805d0d283d6e4478cbf2
+expected_excluded_paths=1375
+expected_exclusions=389eedb4125a4dbe2e30a797f60adbafc12279cca04387b09ee9035d00794421
+expected_exclusions_file=fe441699f63debd30e3c5e2ed66d2c9b21732280afc03807be8a2268dbe56c3a
+expected_paths=986
+expected_variants=1949
+expected_quickjs_variants=1949
 expected_features=21
 expected_features_hash=114b22411f94406423103ca7429cdc2009162c9ff55b41a06b3532e73536a2d0
 expected_includes=11
 expected_includes_hash=b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012
-expected_manifest=9ebae7adb9e1c033a71c0abf42aa003e0e03121da24ef98ca939e1f360a03777
-expected_keys=2d1e474a52971496b669d5f3d650dece8c21069944a463356954442dbbf75362
+expected_manifest=8542757a466917d9841cdc25317b78abad5db64aceda07ab78c8f38ced08bd3f
+expected_keys=1b983b9b5c97314449c54ec0da387f393964a758db02836e6bd2b9aa0af39f7b
 expected_test_typed_array_harness=4c0e237804f39a4aa670f72c05b4520730c03c2d2e9f2f41e6b380bd6749ec61
 expected_sm_typed_array_harness=3798d277ac8f105b65ad26602b500b497af7f3361fd14a169c58a601c605bb2e
 expected_sm_math_harness=79dea1172236685567e09da8c9e868e0f84686bf40cff728785223c5b43f5e7b
@@ -54,10 +64,11 @@ usage() {
     cat <<'EOF'
 usage: scripts/test-test262-typed-array-core.sh [--check]
 
-With --check, rebuild and audit the frozen TypedArray candidate, manifest, and
-exclusion ledger and verify all 4,669 candidate variants plus the 1,447 core
-variants against pinned QuickJS. With no option, also run the checksum-bound
-quickjs-oxide gate; that mode requires a measured all-green baseline file.
+With --check, rebuild and audit the frozen TypedArray candidate, mutation
+promotion, manifest, and exclusion ledger and verify all 4,669 candidate
+variants plus the 1,949 admitted variants against pinned QuickJS. With no
+option, also run the checksum-bound quickjs-oxide gate; that mode requires a
+measured all-green baseline file.
 EOF
 }
 
@@ -435,6 +446,30 @@ followup_reason() {
     return 1
 }
 
+mutation_dependency_reason() {
+    local test_path=$1 includes_file=$2 source_file=$3
+    case "$test_path" in
+        test/built-ins/TypedArray/prototype/set/BigInt/array-arg-set-values-in-order.js|\
+        test/built-ins/TypedArray/prototype/set/array-arg-set-values-in-order.js)
+            if ! grep -Fq 'sample.join()' "$source_file"; then
+                echo "error: TypedArray mutation join dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'dependency:join\n'
+            ;;
+        test/staging/sm/TypedArray/set.js)
+            if ! grep -Fxq sm/non262-TypedArray-shell.js "$includes_file"; then
+                echo "error: TypedArray mutation WeakMap harness dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'external:WeakMap\n'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 direct_core_dependency_reason() {
     local test_path=$1 includes_file=$2
     case "$test_path" in
@@ -601,6 +636,16 @@ if [[ "$check_only" == false ]]; then
     expect_value candidate_sha256 "$expected_candidate"
     expect_value candidate_variants "$expected_candidate_variants"
     expect_value candidate_keys_sha256 "$expected_candidate_keys"
+    expect_value mutation_candidate_paths "$expected_mutation_candidate_paths"
+    expect_value mutation_candidate_sha256 "$expected_mutation_candidate"
+    expect_value mutation_candidate_variants "$expected_mutation_candidate_variants"
+    expect_value mutation_candidate_keys_sha256 "$expected_mutation_candidate_keys"
+    expect_value mutation_deferred_paths "$expected_mutation_deferred_paths"
+    expect_value mutation_deferred_sha256 "$expected_mutation_deferred"
+    expect_value mutation_paths "$expected_mutation_paths"
+    expect_value mutation_manifest_sha256 "$expected_mutation_manifest"
+    expect_value mutation_variants "$expected_mutation_variants"
+    expect_value mutation_keys_sha256 "$expected_mutation_keys"
     expect_value excluded_paths "$expected_excluded_paths"
     expect_value exclusions_sha256 "$expected_exclusions"
     expect_value exclusions_file_sha256 "$expected_exclusions_file"
@@ -668,6 +713,11 @@ combined_inventory=$tmp_dir/combined.txt
 derived_manifest=$tmp_dir/derived-manifest.txt
 derived_exclusions=$tmp_dir/derived-exclusions.tsv
 derived_exclusion_rows=$tmp_dir/derived-exclusion-rows.tsv
+mutation_candidate=$tmp_dir/mutation-candidate.txt
+mutation_candidate_keys=$tmp_dir/mutation-candidate-keys.txt
+mutation_deferred=$tmp_dir/mutation-deferred.txt
+mutation_manifest=$tmp_dir/mutation-manifest.txt
+mutation_keys=$tmp_dir/mutation-keys.txt
 candidate_features=$tmp_dir/candidate-features.txt
 candidate_includes=$tmp_dir/candidate-includes.txt
 candidate_flags=$tmp_dir/candidate-flags.txt
@@ -726,7 +776,7 @@ if [[ "$direct_candidate_count" != "$expected_direct_candidate_paths" ||
     echo "error: TypedArray candidate inventory drifted" >&2
     exit 1
 fi
-if [[ -n "$(comm -12 "$direct_candidate" "$spillover_inventory")" ]]; then
+if [[ -n "$(LC_ALL=C comm -12 "$direct_candidate" "$spillover_inventory")" ]]; then
     echo "error: TypedArray latent spillover overlaps the direct candidate" >&2
     exit 1
 fi
@@ -741,16 +791,17 @@ if ! awk -F'\t' '
         counts[$2]++
     }
     END {
-        if (NR != 1627 ||
+        if (NR != 1376 ||
+            counts["dependency:join"] != 2 ||
             counts["external:cross-realm"] != 54 ||
             counts["external:SharedArrayBuffer"] != 71 ||
-            counts["external:WeakMap"] != 2 ||
+            counts["external:WeakMap"] != 3 ||
             counts["external:Math"] != 1 ||
             counts["external:IsHTMLDDA"] != 1 ||
             counts["static:from"] != 88 ||
             counts["static:of"] != 34 ||
             counts["method:iterator-entries-keys"] != 42 ||
-            counts["method:mutation-copy-set"] != 254 ||
+            counts["method:mutation-copy-set"] != 0 ||
             counts["method:search-predicate"] != 402 ||
             counts["method:species-copy-transform"] != 388 ||
             counts["method:callback-reduce"] != 148 ||
@@ -777,7 +828,7 @@ if [[ "$(wc -l <"$manifest_inventory" | tr -d '[:space:]')" != "$expected_paths"
     echo "error: TypedArray manifest or exclusion path inventory drifted" >&2
     exit 1
 fi
-if [[ -n "$(comm -12 "$manifest_inventory" "$excluded_inventory")" ]]; then
+if [[ -n "$(LC_ALL=C comm -12 "$manifest_inventory" "$excluded_inventory")" ]]; then
     echo "error: TypedArray manifest overlaps its exclusion ledger" >&2
     exit 1
 fi
@@ -786,6 +837,9 @@ diff -u "$candidate_inventory" "$combined_inventory"
 
 : >"$derived_exclusion_rows"
 : >"$derived_manifest"
+: >"$mutation_candidate"
+: >"$mutation_deferred"
+: >"$mutation_manifest"
 : >"$candidate_keys"
 while IFS= read -r test_path; do
     if [[ ! -f "$suite/$test_path" ]]; then
@@ -840,9 +894,66 @@ while IFS= read -r test_path; do
     elif ! reason=$(followup_reason "$test_path"); then
         echo "error: unclassified TypedArray follow-up path: $test_path" >&2
         exit 1
+    elif [[ "$reason" == "method:mutation-copy-set" ]]; then
+        printf '%s\n' "$test_path" >>"$mutation_candidate"
+        if reason=$(mutation_dependency_reason \
+            "$test_path" "$candidate_includes" "$source_file"); then
+            printf '%s\n' "$test_path" >>"$mutation_deferred"
+        else
+            dependency_status=$?
+            if [[ "$dependency_status" != "1" ]]; then
+                exit 1
+            fi
+            printf '%s\n' "$test_path" >>"$derived_manifest"
+            printf '%s\n' "$test_path" >>"$mutation_manifest"
+            continue
+        fi
     fi
     printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
 done <"$direct_candidate"
+
+LC_ALL=C sort -o "$mutation_candidate" "$mutation_candidate"
+LC_ALL=C sort -o "$mutation_deferred" "$mutation_deferred"
+LC_ALL=C sort -o "$mutation_manifest" "$mutation_manifest"
+diff -u \
+    "$mutation_candidate" \
+    <(LC_ALL=C sort -u "$mutation_manifest" "$mutation_deferred")
+if [[ -n "$(LC_ALL=C comm -12 "$mutation_manifest" "$mutation_deferred")" ]]; then
+    echo "error: TypedArray mutation manifest overlaps its deferred ledger" >&2
+    exit 1
+fi
+
+: >"$mutation_candidate_keys"
+: >"$mutation_keys"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$mutation_candidate_keys"
+done <"$mutation_candidate"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$mutation_keys"
+done <"$mutation_manifest"
+LC_ALL=C sort -o "$mutation_candidate_keys" "$mutation_candidate_keys"
+LC_ALL=C sort -o "$mutation_keys" "$mutation_keys"
+if [[ "$(wc -l <"$mutation_candidate" | tr -d '[:space:]')" \
+        != "$expected_mutation_candidate_paths" \
+    || "$(sha256_file "$mutation_candidate")" != "$expected_mutation_candidate" \
+    || "$(wc -l <"$mutation_candidate_keys" | tr -d '[:space:]')" \
+        != "$expected_mutation_candidate_variants" \
+    || "$(sha256_file "$mutation_candidate_keys")" \
+        != "$expected_mutation_candidate_keys" \
+    || "$(wc -l <"$mutation_deferred" | tr -d '[:space:]')" \
+        != "$expected_mutation_deferred_paths" \
+    || "$(sha256_file "$mutation_deferred")" != "$expected_mutation_deferred" \
+    || "$(wc -l <"$mutation_manifest" | tr -d '[:space:]')" \
+        != "$expected_mutation_paths" \
+    || "$(sha256_file "$mutation_manifest")" != "$expected_mutation_manifest" \
+    || "$(wc -l <"$mutation_keys" | tr -d '[:space:]')" \
+        != "$expected_mutation_variants" \
+    || "$(sha256_file "$mutation_keys")" != "$expected_mutation_keys" ]]; then
+    echo "error: TypedArray mutation promotion inventory drifted" >&2
+    exit 1
+fi
 
 while IFS= read -r test_path; do
     metadata_list "$test_path" features >"$candidate_features"

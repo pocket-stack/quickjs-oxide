@@ -20,15 +20,16 @@ claim full parity.
   globally admitting the feature tag. R3an adds the branded ArrayBuffer
   backing-store/intrinsic milestone, R3ao adds the independently owned DataView
   intrinsic, and R3ap adds the shared kernel for all 12 concrete TypedArray
-  classes without globally admitting the broad TypedArray feature tag. The
-  vector has 51,902 passes and 52,468 runnable variants: 50.87% raw, a 62.11%
-  lower bound after the 18,475 pinned QuickJS target exclusions, or 99.01%
+  classes. R3aq promotes the in-place mutation cohort without globally
+  admitting the still-incomplete broad TypedArray feature tag. The vector has
+  51,904 passes and 52,468 runnable variants: 50.87% raw, a 62.11%
+  lower bound after the 18,475 pinned QuickJS target exclusions, or 99.02%
   among the 52,419 variants with a non-unsupported observed outcome. It records
-  18 parse failures, 440 runtime failures, and 57 harness failures;
+  18 parse failures, 438 runtime failures, and 57 harness failures;
   current full TSV/JSONL SHA-256 values are
-  `8a1b83df5e28641fb57d5d4a6fe29ed8c5b1f962e82c98f6acbce0cf595e85e5`
+  `ab641b72ef2c2bc4615d493e03cf1538c308daa2edd4c8b7e752c0da3416e586`
   and
-  `a3f7a5952f67ab7e1c8055d8ef29f2645700c8aa6124411644c8cb6058684052`.
+  `7eae1d679bfe748a6ea7123c534e60c0ba8d8fe5edfa29ff6a0a16ffb3e15e5f`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3171,6 +3172,44 @@ claim full parity.
   and
   `a3f7a5952f67ab7e1c8055d8ef29f2645700c8aa6124411644c8cb6058684052`.
 
+  R3aq publishes the in-place TypedArray mutation family on that shared
+  kernel: `set`, `copyWithin`, `fill`, and `reverse`. The new algorithms mirror
+  pinned QuickJS's initial length snapshot, target/start/end or value/start/end
+  coercion order, final detach/out-of-bounds revalidation, and live
+  resizable-buffer clipping. Backing-store mutation remains allocation-free:
+  same-buffer copies use memmove semantics, while fill and reverse operate on
+  raw 1/2/4/8-byte words so NaN payloads and negative zero survive. Directed
+  tests cover overlap, BigInt, byte-offset views, shrink/detach, temporary
+  fixed-view out-of-bounds recovery, partial tracking elements, heap bounds,
+  and raw-word invariants.
+
+  The unchanged 2,361-path / 4,669-variant TypedArray candidate contains a
+  254-path / 508-variant mutation cohort. Two `set` paths depend on the
+  not-yet-published TypedArray `join`; one SpiderMonkey `set` path depends on
+  its unavailable WeakMap harness. Keeping those three paths / six variants in
+  the ledger leaves 251 paths / 502 variants to promote. The cumulative gate
+  is now 986 paths / 1,949 variants with 1,375 exclusions, and both Oxide and
+  pinned QuickJS pass 1,949/1,949. Profile, manifest, exclusion-ledger,
+  key-stream, TSV, and JSONL SHA-256 values are
+  `663ac07f1fe379125eec29aec0c7b8b8215c08f40b93e9c39056ff40c6331036`,
+  `8542757a466917d9841cdc25317b78abad5db64aceda07ab78c8f38ced08bd3f`,
+  `fe441699f63debd30e3c5e2ed66d2c9b21732280afc03807be8a2268dbe56c3a`,
+  `1b983b9b5c97314449c54ec0da387f393964a758db02836e6bd2b9aa0af39f7b`,
+  `159c4b02f25fe4430c970891141acda807336933382bd7363d4ed1d2a77dc618`,
+  and
+  `0d5d6917134fc7087a301e23be7d24c3544fc739af158a6eaa270dd0615ac25c`.
+
+  The global profile remains conservative until the rest of the broad
+  TypedArray family lands. It therefore keeps 284 newly authenticated variants
+  classified as `unsupported-feature`; only the two untagged
+  `fill-detached.js` modes move from runtime failure to pass. The complete
+  summary reaches 51,904 passes and 438 runtime failures, with every other
+  outcome count and both runnable/observed denominators unchanged. Full
+  TSV/JSONL hashes are
+  `ab641b72ef2c2bc4615d493e03cf1538c308daa2edd4c8b7e752c0da3416e586`
+  and
+  `7eae1d679bfe748a6ea7123c534e60c0ba8d8fe5edfa29ff6a0a16ffb3e15e5f`.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -6239,7 +6278,8 @@ The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
 RegExp grammar, modules, remaining jobs/Promise/async and generator surfaces,
-TypedArrays/Atomics, WeakRef/finalization, bytecode version 5 and
+remaining TypedArray methods, SharedArrayBuffer/Atomics,
+WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
 
@@ -6574,6 +6614,13 @@ directed adversarial tests in its nested test module. `heap.rs` reaches 22,884
 lines because the branded payload, 12 realm prototype roots, traced backing
 edge, validation, and allocation-free backing-store memmove remain at the
 arena trust boundary; that file remains explicit extraction debt.
+R3aq keeps `runtime.rs` unchanged at 9,950 lines. The shared TypedArray owner is
+1,889 lines, while the new observable mutation algorithms live in the adjacent
+247-line `typed_array/mutation.rs` module rather than growing the facade.
+Directed tests are split between the 1,246-line owner test module and the
+273-line mutation test module. `heap.rs` reaches 23,026 lines after adding the
+raw-word fill/reverse mutation boundary and direct invariant coverage; it
+remains explicit extraction debt rather than hidden runtime-facade growth.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -6972,11 +7019,12 @@ The DataView target locks its complete constructor/prototype graph, all 11
 getter/setter families, endian and numeric conversion behavior,
 `ArrayBuffer.isView`, detach and error ordering, and fixed-versus-tracking
 resizable-buffer shrink/grow behavior against the same pinned oracle.
-The TypedArray core target locks the shared 12-class graph and backing payload,
-constructor/coercion order, integer-indexed exotic internal methods, live
-resizable-buffer bounds, detach, values iteration, `for-in`, overlap, realm,
-host-property, and GC seams against the same pinned oracle. Its exclusion
-ledger keeps later method families and external dependencies visible.
+The TypedArray shared-kernel target locks the 12-class graph and backing
+payload, constructor/coercion order, integer-indexed exotic internal methods,
+live resizable-buffer bounds, detach, iteration, in-place mutation, `for-in`,
+overlap, raw words, realm, host-property, and GC seams against the same pinned
+oracle. Its exclusion ledger keeps later method families and external
+dependencies visible.
 The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching

@@ -33,13 +33,13 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, most `$262` host hooks, advanced RegExp pattern grammar,
-TypedArrays, and many other broad layers remain absent. Proxy is measured
-separately by the checksum-bound R3am scoped gate below.
+surfaces. Modules, most `$262` host hooks, remaining TypedArray methods,
+SharedArrayBuffer/Atomics, and many other broad layers remain absent. Proxy is
+measured separately by the checksum-bound R3am scoped gate below.
 The pure ArrayBuffer core is measured by the checksum-bound R3an gate, its
 DataView layer by R3ao, and the shared 12-class TypedArray kernel by R3ap.
-Later TypedArray method families, SharedArrayBuffer, and their wider interop
-remain explicit frontiers.
+R3aq promotes the TypedArray mutation cohort; later method families,
+SharedArrayBuffer, and their wider interop remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -66,12 +66,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 51,902 pass;
+- 51,904 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 31,143 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 18 fail to parse, 440 fail at runtime, 57 fail in the harness, and two
+- 18 fail to parse, 438 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 52,468 variants to execution. That count includes variants
@@ -80,14 +80,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 50.87% (`51,902 / 102,037`);
+- raw suite pass rate: 50.87% (`51,904 / 102,037`);
 - conservative target-scope lower bound: 62.11%
-  (`51,902 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.01%
-  (`51,902 / 52,419`).
+  (`51,904 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.02%
+  (`51,904 / 52,419`).
 
 The 62.11% figure is the useful whole-project progress floor, not a claim that
-the engine is 62.11% conformant. The 99.01% conditional rate measures quality
+the engine is 62.11% conformant. The 99.02% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -143,9 +143,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`8a1b83df5e28641fb57d5d4a6fe29ed8c5b1f962e82c98f6acbce0cf595e85e5`
+`ab641b72ef2c2bc4615d493e03cf1538c308daa2edd4c8b7e752c0da3416e586`
 and
-`a3f7a5952f67ab7e1c8055d8ef29f2645700c8aa6124411644c8cb6058684052`.
+`7eae1d679bfe748a6ea7123c534e60c0ba8d8fe5edfa29ff6a0a16ffb3e15e5f`.
 
 ## Milestone policy
 
@@ -5073,6 +5073,50 @@ non-unsupported observed variants. Full TSV/JSONL SHA-256 values are
 and
 `a3f7a5952f67ab7e1c8055d8ef29f2645700c8aa6124411644c8cb6058684052`.
 
+## R3aq TypedArray mutation promotion
+
+R3aq publishes `%TypedArray%.prototype.copyWithin`, `fill`, and `reverse`,
+and promotes those methods together with the previously directed-only `set`
+cohort. The implementation follows pinned QuickJS's initial length snapshot,
+observable coercion order, final detach/out-of-bounds revalidation, and live
+resizable-buffer clipping. Same-buffer copy uses an allocation-free memmove;
+fill converts one raw machine word before the bound coercions; reverse swaps
+raw 1/2/4/8-byte words. Directed tests retain NaN payloads and negative zero
+and cover temporary fixed-view out-of-bounds recovery, partial tracking
+elements, detach, shrink, overlap, byte offsets, and BigInt conversion.
+
+The frozen 2,361-path / 4,669-variant candidate inventory contains 254 paths /
+508 variants classified as mutation. Two `set` paths use the not-yet-published
+TypedArray `join` as their observation helper, and
+`test/staging/sm/TypedArray/set.js` requires the unavailable WeakMap harness.
+Those three paths / six variants remain explicit `dependency:join` or
+`external:WeakMap` rows. The other 251 paths / 502 variants are promoted,
+expanding the admitted manifest to 986 paths / 1,949 variants and reducing the
+exclusion ledger to 1,375 paths. Oxide and pinned QuickJS both pass
+1,949/1,949.
+
+The focused profile, manifest, exclusion-ledger file, path/variant key stream,
+TSV, and JSONL SHA-256 values are:
+
+- `663ac07f1fe379125eec29aec0c7b8b8215c08f40b93e9c39056ff40c6331036`;
+- `8542757a466917d9841cdc25317b78abad5db64aceda07ab78c8f38ced08bd3f`;
+- `fe441699f63debd30e3c5e2ed66d2c9b21732280afc03807be8a2268dbe56c3a`;
+- `1b983b9b5c97314449c54ec0da387f393964a758db02836e6bd2b9aa0af39f7b`;
+- `159c4b02f25fe4430c970891141acda807336933382bd7363d4ed1d2a77dc618`;
+- `0d5d6917134fc7087a301e23be7d24c3544fc739af158a6eaa270dd0615ac25c`.
+
+The conservative global profile still does not declare the broad `TypedArray`
+feature while later method families are absent. Consequently, 284 variants
+from the three newly published methods remain honestly classified as
+`unsupported-feature` in the complete vector; the two untagged
+`staging/sm/TypedArray/fill-detached.js` modes move from runtime failure to
+pass. The complete summary therefore advances from 51,902 to 51,904 passes,
+with runtime failures falling from 440 to 438 and every other outcome count
+unchanged. Full TSV/JSONL SHA-256 values are
+`ab641b72ef2c2bc4615d493e03cf1538c308daa2edd4c8b7e752c0da3416e586`
+and
+`7eae1d679bfe748a6ea7123c534e60c0ba8d8fe5edfa29ff6a0a16ffb3e15e5f`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5513,6 +5557,13 @@ leaves a 735-path/1,447-variant core which Oxide and pinned QuickJS both pass
 completely. The full join adds 195 net passes, retains all 102,037 keys and
 every previous pass, and reaches 51,902/102,037; later method families and
 SharedArrayBuffer stay explicit.
+R3aq publishes the in-place TypedArray mutation family. Of its audited
+254-path/508-variant candidate, 251 paths/502 variants are dependency-clean and
+join the cumulative 986-path/1,949-variant gate; Oxide and pinned QuickJS both
+pass every admitted variant. Three paths remain attributed to `join` or
+WeakMap dependencies. Because the conservative global profile still withholds
+the broad TypedArray tag, only two untagged variants change there, bringing the
+complete vector to 51,904/102,037 without overstating whole-family support.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

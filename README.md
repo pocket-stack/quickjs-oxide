@@ -3,14 +3,14 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. R3ap adds one shared
-QuickJS-shaped kernel for all 12 TypedArray classes, including constructors,
-integer-indexed exotic properties, views, detach, and resizable-buffer
-behavior. Its scoped Test262 core is 1,447/1,447 in both Oxide and pinned
-QuickJS; the complete vector is 51,902/102,037 while later TypedArray method
-families, modules, SharedArrayBuffer, and broad built-in coverage remain
-incomplete. Pinned QuickJS is the test oracle, never a product dependency;
-detailed bookkeeping lives in the status documents.
+The `unsafe`-free engine is runnable but incomplete. R3ap established the
+shared 12-class TypedArray kernel; R3aq extends it with QuickJS-shaped `set`,
+`copyWithin`, `fill`, and `reverse` mutation behavior. The expanded scoped
+TypedArray gate is 1,949/1,949 in both Oxide and pinned QuickJS; the complete
+conservative vector is 51,904/102,037. Remaining TypedArray methods, modules,
+SharedArrayBuffer/Atomics, and broad built-in coverage remain incomplete.
+Pinned QuickJS is the test oracle, never a product dependency; detailed
+bookkeeping lives in the status documents.
 
 ## Try it
 

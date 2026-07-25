@@ -13,6 +13,7 @@ use crate::heap::{
 
 use super::*;
 
+mod mutation;
 #[cfg(test)]
 mod tests;
 
@@ -99,6 +100,20 @@ impl Runtime {
                 name,
                 0,
                 0,
+            )?;
+        }
+        for (kind, name, length, min_readable_args) in [
+            (TypedArrayNativeKind::CopyWithin, "copyWithin", 2, 2),
+            (TypedArrayNativeKind::Fill, "fill", 1, 1),
+            (TypedArrayNativeKind::Reverse, "reverse", 0, 0),
+        ] {
+            self.define_native_builtin_auto_init(
+                &base_prototype,
+                realm,
+                NativeFunctionId::TypedArray(kind),
+                name,
+                length,
+                min_readable_args,
             )?;
         }
 
@@ -324,14 +339,16 @@ impl Runtime {
             TypedArrayNativeKind::Iterator(kind) => {
                 self.call_typed_array_iterator(realm, kind, invocation)
             }
+            TypedArrayNativeKind::CopyWithin => {
+                self.call_typed_array_copy_within(realm, invocation, arguments)
+            }
+            TypedArrayNativeKind::Fill => self.call_typed_array_fill(realm, invocation, arguments),
+            TypedArrayNativeKind::Reverse => self.call_typed_array_reverse(realm, invocation),
             TypedArrayNativeKind::At
             | TypedArrayNativeKind::With
-            | TypedArrayNativeKind::CopyWithin
             | TypedArrayNativeKind::Iteration(_)
             | TypedArrayNativeKind::Reduce(_)
-            | TypedArrayNativeKind::Fill
             | TypedArrayNativeKind::Find(_)
-            | TypedArrayNativeKind::Reverse
             | TypedArrayNativeKind::ToReversed
             | TypedArrayNativeKind::Slice
             | TypedArrayNativeKind::Subarray

@@ -156,7 +156,10 @@ fn twelve_class_graph_and_descriptors_match_the_hidden_typed_array_family() {
                     errorName(function(){return accessor.get.call({})})==="TypeError");
             }
 
-            var methods=[["set",1],["values",0],["keys",0],["entries",0]];
+            var methods=[
+                ["set",1],["values",0],["keys",0],["entries",0],
+                ["copyWithin",2],["fill",1],["reverse",0]
+            ];
             for(var k=0;k<methods.length;k++){
                 var method=Object.getOwnPropertyDescriptor(
                     basePrototype,methods[k][0]
