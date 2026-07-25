@@ -220,6 +220,10 @@ const TEST262_ARRAY_BUFFER_PROFILE_SHA256: &str =
     "0803a027b2e9c238f80189993968816adfdda983ef3b23114a06f07b26c2d598";
 const TEST262_ARRAY_BUFFER_MANIFEST_SHA256: &str =
     "d5720cc22c785d3757eb4e30aa3de53a664d58133a2323c6afe6233788014d01";
+const TEST262_DATA_VIEW_PROFILE_SHA256: &str =
+    "485ea3baf6695767108fb9f7f346c3a82d5a3db000af4510d6d002b313990cc8";
+const TEST262_DATA_VIEW_MANIFEST_SHA256: &str =
+    "3475b4a32f0a5f0ab50d5cd4e4843a7c7a59365298ecabcc5986b3fdd3f697e2";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -816,6 +820,7 @@ enum OxideProfileKind {
     ObjectBinding,
     ObjectRestBinding,
     ArrayBuffer,
+    DataView,
     Map,
     Set,
     SymbolProtocols,
@@ -1010,6 +1015,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-array-buffer.conf"),
             OxideProfileKind::ArrayBuffer,
+        ),
+        (
+            root.join("tests/test262-data-view.conf"),
+            OxideProfileKind::DataView,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1711,6 +1720,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-array-buffer.txt",
             TEST262_ARRAY_BUFFER_MANIFEST_SHA256,
         ),
+        OxideProfileKind::DataView => verify_scoped_pinned_profile(
+            options,
+            "DataView",
+            TEST262_DATA_VIEW_PROFILE_SHA256,
+            "tests/test262-data-view.txt",
+            TEST262_DATA_VIEW_MANIFEST_SHA256,
+        ),
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2148,10 +2164,11 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
-        TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256, TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
-        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
-        TEST262_ITERATOR_HELPERS_PROFILE_SHA256, TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
-        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
+        TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
+        TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_ITERATOR_HELPERS_PROFILE_SHA256,
+        TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
+        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
@@ -2488,6 +2505,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-buffer.conf")).unwrap(),
             OxideProfileKind::ArrayBuffer
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-data-view.conf")).unwrap(),
+            OxideProfileKind::DataView
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -4777,6 +4798,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-array-buffer.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_data_view_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-data-view.conf",
+            "--manifest",
+            "tests/test262-data-view.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_DATA_VIEW_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/DataView/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-data-view.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

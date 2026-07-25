@@ -3,13 +3,13 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. R3an adds QuickJS-shaped
-ArrayBuffer backing stores, fixed/resizable and detached state, species-aware
-slice, resize, and transfer operations. The pure ArrayBuffer Test262 core is
-288/288; the complete vector is 51,193/102,037 while modules, TypedArrays,
-DataView, and broad built-in coverage remain incomplete. Pinned QuickJS is the
-test oracle, never a product dependency; detailed bookkeeping lives in the
-status documents.
+The `unsafe`-free engine is runnable but incomplete. R3ao adds a QuickJS-shaped
+DataView with all 11 getter/setter families and fixed or length-tracking views
+over resizable ArrayBuffers. Its scoped Test262 gate is 984/984 in both Oxide
+and pinned QuickJS; the complete vector is 51,707/102,037 while modules,
+TypedArrays, SharedArrayBuffer, and broad built-in coverage remain incomplete.
+Pinned QuickJS is the test oracle, never a product dependency; detailed
+bookkeeping lives in the status documents.
 
 ## Try it
 
@@ -35,6 +35,7 @@ cargo run --quiet --bin qjs -- --print-result -e \
 ```sh
 cargo test --locked --workspace --all-targets
 ./scripts/test-test262-array-buffer.sh
+./scripts/test-test262-data-view.sh
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-full.sh
 ```

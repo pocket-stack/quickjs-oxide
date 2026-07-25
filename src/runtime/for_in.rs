@@ -163,6 +163,7 @@ impl Runtime {
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::DataView(_)
             | ObjectPayload::Array { fast_len: None }
             | ObjectPayload::Arguments { fast_len: None, .. }
             | ObjectPayload::ArrayIterator { .. }

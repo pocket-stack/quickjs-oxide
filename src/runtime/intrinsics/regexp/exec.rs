@@ -141,6 +141,7 @@ impl Runtime {
                 | ObjectPayload::Primitive(_)
                 | ObjectPayload::Date(_)
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::DataView(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }

@@ -732,6 +732,7 @@ impl Runtime {
             ObjectPayload::RegExp(_) => true,
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::DataView(_)
             | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)

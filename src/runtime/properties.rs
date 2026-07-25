@@ -83,6 +83,7 @@ impl Runtime {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::DataView(_)
             | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
@@ -1222,6 +1223,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::DataView(_)
                 | ObjectPayload::Proxy(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)

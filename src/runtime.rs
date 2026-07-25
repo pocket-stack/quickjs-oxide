@@ -1063,6 +1063,13 @@ impl Runtime {
             &global_object,
         )
         .expect("ArrayBuffer intrinsic initialization must succeed");
+        self.initialize_data_view_intrinsic(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("DataView intrinsic initialization must succeed");
         self.initialize_promise_intrinsic(
             realm,
             &function_prototype,
@@ -4910,6 +4917,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::DataView(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -4979,6 +4987,7 @@ impl Runtime {
             | ObjectPayload::Proxy(_) => Ok(None),
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::DataView(_)
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
@@ -6392,6 +6401,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
+                        | ObjectPayload::DataView(_)
                         | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
@@ -6747,6 +6757,7 @@ impl Runtime {
                 ObjectPayload::Proxy(data) => (data.is_callable, None, FunctionKind::Normal),
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::DataView(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -6974,6 +6985,7 @@ impl Runtime {
                         | ObjectPayload::Proxy(_) => None,
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
+                        | ObjectPayload::DataView(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
@@ -7097,6 +7109,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
+                        | ObjectPayload::DataView(_)
                         | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
@@ -7483,6 +7496,7 @@ impl Runtime {
                     }
                     ObjectPayload::Ordinary
                     | ObjectPayload::ArrayBuffer(_)
+                    | ObjectPayload::DataView(_)
                     | ObjectPayload::Proxy(_)
                     | ObjectPayload::AsyncFunctionState(_)
                     | ObjectPayload::RawJson
@@ -8400,6 +8414,7 @@ impl Runtime {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::DataView(_)
                 | ObjectPayload::Proxy(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson

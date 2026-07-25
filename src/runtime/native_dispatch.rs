@@ -505,6 +505,9 @@ impl Runtime {
             NativeFunctionId::ArrayBuffer(kind) => {
                 self.call_array_buffer_native(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::DataView(kind) => {
+                self.call_data_view_native(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::AsyncFunctionResume(kind) => {
                 self.call_async_function_resume(realm, kind, invocation, arguments)
             }

@@ -13,6 +13,7 @@ use crate::heap::{
 use super::super::*;
 use super::quickjs_to_int64_free;
 
+mod data_view;
 #[cfg(test)]
 mod tests;
 
@@ -320,14 +321,23 @@ impl Runtime {
                 "ArrayBuffer.isView received a constructor invocation",
             ));
         };
-        let Some(_value) = arguments.readable.first() else {
+        let Some(value) = arguments.readable.first() else {
             return Err(RuntimeError::Invariant(
                 "ArrayBuffer.isView argument was not padded",
             ));
         };
-        // ArrayBuffer itself is not a view. Integer-indexed TypedArray and
-        // DataView kinds will extend this exact class-brand predicate.
-        Ok(Completion::Return(Value::Bool(false)))
+        let is_view = if let Value::Object(object) = value {
+            let state = self.0.state.borrow();
+            matches!(
+                state.heap.object(object.object_id())?.payload,
+                ObjectPayload::DataView(_)
+            )
+        } else {
+            false
+        };
+        // Proxies intentionally do not forward this internal-slot brand test.
+        // Concrete TypedArray payloads will extend the predicate here.
+        Ok(Completion::Return(Value::Bool(is_view)))
     }
 
     fn call_array_buffer_species(

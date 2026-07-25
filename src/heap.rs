@@ -472,6 +472,15 @@ pub struct ArrayBufferRealmData {
     pub prototype: ObjectId,
 }
 
+/// Realm-local `%DataView.prototype%` class root.
+///
+/// DataView instances retain their backing ArrayBuffer directly. The realm
+/// keeps only the original prototype identity used by constructor fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DataViewRealmData {
+    pub prototype: ObjectId,
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -525,6 +534,9 @@ pub struct ContextData {
     /// Realm-local `%ArrayBuffer.prototype%` class root, attached after the
     /// public constructor/prototype cycle has been initialized and validated.
     pub array_buffer: Option<ArrayBufferRealmData>,
+    /// Realm-local `%DataView.prototype%` class root, attached after the
+    /// public constructor/prototype cycle has been initialized and validated.
+    pub data_view: Option<DataViewRealmData>,
     /// Realm-local `%GeneratorPrototype%` and
     /// `%GeneratorFunction.prototype%`, attached after their reciprocal
     /// constructor/prototype graph has been initialized.
@@ -597,6 +609,7 @@ impl ContextData {
             map: None,
             set: None,
             array_buffer: None,
+            data_view: None,
             generator: None,
             async_function: None,
             async_generator: None,
@@ -4650,6 +4663,29 @@ pub struct ArrayBufferData {
     pub detached: bool,
 }
 
+/// Borrow-free snapshot of one ArrayBuffer backing-store state.
+///
+/// Runtime DataView operations use this value to finish observable validation
+/// without retaining a heap borrow across coercions or subsequent mutations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArrayBufferState {
+    pub byte_length: u32,
+    pub max_byte_length: Option<u32>,
+    pub detached: bool,
+}
+
+/// Shared ArrayBuffer-view layout carried by a genuine DataView.
+///
+/// `fixed_byte_length == None` denotes a length-tracking view over a resizable
+/// ArrayBuffer. Detach and resize may make this structurally valid view
+/// temporarily out of bounds; that observable state is checked at access time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArrayBufferViewData {
+    pub buffer: ObjectId,
+    pub byte_offset: u32,
+    pub fixed_byte_length: Option<u32>,
+}
+
 /// Typed hidden payload carried only by runtime-created native functions.
 ///
 /// The shared `already_resolved` cell is intentionally a non-arena leaf: the
@@ -4833,8 +4869,12 @@ pub enum ObjectPayload {
     Proxy(ProxyData),
     /// `JS_CLASS_ARRAY_BUFFER`. Backing bytes are non-GC memory, so this
     /// payload introduces no arena edge. TypedArray/DataView objects retain
-    /// the owning ArrayBuffer object in their own payloads in later slices.
+    /// the owning ArrayBuffer object in their own payloads.
     ArrayBuffer(ArrayBufferData),
+    /// `JS_CLASS_DATAVIEW`. The backing ArrayBuffer is a strong arena edge;
+    /// detached and currently out-of-bounds views retain this structural
+    /// payload and become observable errors only when accessed.
+    DataView(ArrayBufferViewData),
     NativeFunction {
         data: NativeFunctionData,
         internal: Option<InternalCallableData>,
@@ -4906,6 +4946,7 @@ pub enum ObjectKind {
     IteratorConcat,
     Proxy,
     ArrayBuffer,
+    DataView,
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
@@ -5664,6 +5705,50 @@ pub enum ArrayBufferNativeKind {
     TransferToFixedLength,
 }
 
+/// Element format selected by one DataView get/set native.
+///
+/// The discriminants stay typed instead of relying on QuickJS's integer
+/// `magic` values, while preserving the same eleven dispatch variants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DataViewElementKind {
+    Int8,
+    Uint8,
+    Int16,
+    Uint16,
+    Int32,
+    Uint32,
+    BigInt64,
+    BigUint64,
+    Float16,
+    Float32,
+    Float64,
+}
+
+impl DataViewElementKind {
+    /// Width of this element representation in backing-store bytes.
+    #[must_use]
+    pub const fn byte_length(self) -> u8 {
+        match self {
+            Self::Int8 | Self::Uint8 => 1,
+            Self::Int16 | Self::Uint16 | Self::Float16 => 2,
+            Self::Int32 | Self::Uint32 | Self::Float32 => 4,
+            Self::BigInt64 | Self::BigUint64 | Self::Float64 => 8,
+        }
+    }
+}
+
+/// Typed handler family for the DataView constructor, accessors, and element
+/// readers/writers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DataViewNativeKind {
+    Constructor,
+    Buffer,
+    ByteLength,
+    ByteOffset,
+    Get(DataViewElementKind),
+    Set(DataViewElementKind),
+}
+
 /// Selector shared by the paired internal Promise resolving functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PromiseResolvingKind {
@@ -5753,6 +5838,7 @@ pub enum NativeFunctionId {
     Set(SetNativeKind),
     SetIteratorNext,
     ArrayBuffer(ArrayBufferNativeKind),
+    DataView(DataViewNativeKind),
     Promise(PromiseNativeKind),
     AsyncFunctionResume(AsyncFunctionResumeKind),
     AsyncGeneratorResume(AsyncGeneratorResumeKind),
@@ -6364,9 +6450,12 @@ impl NativeFunctionId {
                 | ArrayBufferNativeKind::Slice
                 | ArrayBufferNativeKind::Transfer
                 | ArrayBufferNativeKind::TransferToFixedLength,
-            ) => NativeFunctionDescriptor {
-                cproto: NativeCProto::GenericMagic,
-            },
+            )
+            | Self::DataView(DataViewNativeKind::Get(_) | DataViewNativeKind::Set(_)) => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::GenericMagic,
+                }
+            }
             Self::GlobalUriCodec(
                 GlobalUriCodecKind::DecodeUri
                 | GlobalUriCodecKind::DecodeUriComponent
@@ -6398,6 +6487,7 @@ impl NativeFunctionId {
             Self::Map(MapNativeKind::Constructor)
             | Self::Set(SetNativeKind::Constructor)
             | Self::ArrayBuffer(ArrayBufferNativeKind::Constructor)
+            | Self::DataView(DataViewNativeKind::Constructor)
             | Self::Promise(PromiseNativeKind::Constructor)
             | Self::ProxyConstructor => NativeFunctionDescriptor {
                 cproto: NativeCProto::Constructor,
@@ -6410,6 +6500,11 @@ impl NativeFunctionId {
             | Self::Map(MapNativeKind::Species | MapNativeKind::Size)
             | Self::Set(SetNativeKind::Species | SetNativeKind::Size)
             | Self::ArrayBuffer(ArrayBufferNativeKind::Species | ArrayBufferNativeKind::Detached)
+            | Self::DataView(
+                DataViewNativeKind::Buffer
+                | DataViewNativeKind::ByteLength
+                | DataViewNativeKind::ByteOffset,
+            )
             | Self::Promise(PromiseNativeKind::Species) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
             },
@@ -7019,6 +7114,29 @@ impl ObjectData {
                 max_byte_length,
                 detached: false,
             }),
+        }
+    }
+
+    /// Construct one genuine DataView over an ArrayBuffer.
+    ///
+    /// The heap validates only the durable structural layout here. Detached
+    /// and currently out-of-bounds states remain valid so later resize/detach
+    /// operations never corrupt the object graph.
+    #[must_use]
+    pub const fn data_view(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        data: ArrayBufferViewData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::DataView,
+            payload: ObjectPayload::DataView(data),
         }
     }
 
@@ -7659,6 +7777,7 @@ impl Heap {
             | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Proxy(_)
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::DataView(_)
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
@@ -8141,6 +8260,62 @@ impl Heap {
             unreachable!("context identity was validated before retaining ArrayBuffer roots")
         };
         context.array_buffer = Some(array_buffer);
+        Ok(())
+    }
+
+    /// Atomically publish the realm's `%DataView.prototype%` class root after
+    /// validating the public constructor relationship.
+    pub(crate) fn attach_data_view_intrinsics(
+        &mut self,
+        realm: ContextId,
+        constructor: ObjectId,
+        data_view: DataViewRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.data_view.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has DataView intrinsic roots",
+            ));
+        }
+        let object_prototype = context.object_prototype;
+
+        let constructor = self.object(constructor)?;
+        if !constructor.is_constructor
+            || !matches!(
+                constructor.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::DataView(DataViewNativeKind::Constructor),
+                        realm: Some(target_realm),
+                        ..
+                    },
+                    internal: None,
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "DataView constructor root is not the realm's DataView native",
+            ));
+        }
+
+        let prototype = self.object(data_view.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+            || self.shape(prototype.shape)?.prototype() != Some(object_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "DataView prototype is not an ordinary child of Object.prototype",
+            ));
+        }
+
+        let edges = [RawId::Object(data_view.prototype)];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining DataView roots")
+        };
+        context.data_view = Some(data_view);
         Ok(())
     }
 
@@ -9507,6 +9682,90 @@ impl Heap {
                 "typed object lookup reached another node payload",
             )),
         }
+    }
+
+    /// Snapshot one genuine ArrayBuffer's backing-store state without
+    /// exposing a borrow of its byte vector.
+    pub(crate) fn array_buffer_state(&self, id: ObjectId) -> Result<ArrayBufferState, HeapError> {
+        let ObjectPayload::ArrayBuffer(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer state reached another object class",
+            ));
+        };
+        let byte_length = u32::try_from(data.bytes.len()).map_err(|_| {
+            HeapError::Invariant("ArrayBuffer byte length exceeds the supported range")
+        })?;
+        Ok(ArrayBufferState {
+            byte_length,
+            max_byte_length: data.max_byte_length,
+            detached: data.detached,
+        })
+    }
+
+    /// Copy one 1-, 2-, 4-, or 8-byte ArrayBuffer word into owned storage.
+    ///
+    /// This API deliberately returns a fixed-size value so runtime numeric
+    /// conversion cannot retain a heap borrow across subsequent coercions.
+    pub(crate) fn read_array_buffer_word(
+        &self,
+        id: ObjectId,
+        byte_offset: usize,
+        byte_length: usize,
+    ) -> Result<[u8; 8], HeapError> {
+        if !matches!(byte_length, 1 | 2 | 4 | 8) {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer word read has an unsupported byte length",
+            ));
+        }
+        let ObjectPayload::ArrayBuffer(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer word read reached another object class",
+            ));
+        };
+        let byte_end = byte_offset
+            .checked_add(byte_length)
+            .ok_or(HeapError::Invariant(
+                "ArrayBuffer word read range overflowed usize",
+            ))?;
+        if data.detached || byte_end > data.bytes.len() {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer word read exceeded the live backing store",
+            ));
+        }
+        let mut word = [0_u8; 8];
+        word[..byte_length].copy_from_slice(&data.bytes[byte_offset..byte_end]);
+        Ok(word)
+    }
+
+    /// Copy one owned 1-, 2-, 4-, or 8-byte word into an ArrayBuffer.
+    pub(crate) fn write_array_buffer_word(
+        &mut self,
+        id: ObjectId,
+        byte_offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), HeapError> {
+        if !matches!(bytes.len(), 1 | 2 | 4 | 8) {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer word write has an unsupported byte length",
+            ));
+        }
+        let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer word write reached another object class",
+            ));
+        };
+        let byte_end = byte_offset
+            .checked_add(bytes.len())
+            .ok_or(HeapError::Invariant(
+                "ArrayBuffer word write range overflowed usize",
+            ))?;
+        if data.detached || byte_end > data.bytes.len() {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer word write exceeded the live backing store",
+            ));
+        }
+        data.bytes[byte_offset..byte_end].copy_from_slice(bytes);
+        Ok(())
     }
 
     /// Resize the owned bytes of one attached ArrayBuffer after the runtime
@@ -12711,6 +12970,7 @@ impl Heap {
                 | (ObjectKind::IteratorConcat, ObjectPayload::IteratorConcat(_))
                 | (ObjectKind::Proxy, ObjectPayload::Proxy(_))
                 | (ObjectKind::ArrayBuffer, ObjectPayload::ArrayBuffer(_))
+                | (ObjectKind::DataView, ObjectPayload::DataView(_))
                 | (
                     ObjectKind::NativeFunction,
                     ObjectPayload::NativeFunction { .. }
@@ -12772,6 +13032,32 @@ impl Heap {
             {
                 return Err(HeapError::Invariant(
                     "ArrayBuffer has invalid backing-store state",
+                ));
+            }
+        }
+        if let ObjectPayload::DataView(data) = &object.payload {
+            let ObjectPayload::ArrayBuffer(buffer) = &self.object(data.buffer)?.payload else {
+                return Err(HeapError::Invariant(
+                    "DataView backing object is not an ArrayBuffer",
+                ));
+            };
+            let structural_end = data
+                .fixed_byte_length
+                .map(|byte_length| u64::from(data.byte_offset) + u64::from(byte_length));
+            if object.is_constructor
+                || data.byte_offset > i32::MAX as u32
+                || data
+                    .fixed_byte_length
+                    .is_some_and(|byte_length| byte_length > i32::MAX as u32)
+                || structural_end.is_some_and(|byte_end| byte_end > i32::MAX as u64)
+                || (data.fixed_byte_length.is_none() && buffer.max_byte_length.is_none())
+                || buffer.max_byte_length.is_some_and(|maximum| {
+                    data.byte_offset > maximum
+                        || structural_end.is_some_and(|byte_end| byte_end > u64::from(maximum))
+                })
+            {
+                return Err(HeapError::Invariant(
+                    "DataView has an invalid structural view layout",
                 ));
             }
         }
@@ -13757,6 +14043,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::Generator { .. } => 0,
+        ObjectPayload::DataView(_) => 1,
         ObjectPayload::Proxy(_) => 2,
         ObjectPayload::AsyncGenerator(data) => data
             .activation
@@ -13852,6 +14139,9 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::ArrayBuffer(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
+        ObjectPayload::DataView(data) => {
+            edges.push(RawId::Object(data.buffer));
+        }
         ObjectPayload::IteratorHelper(data) => {
             edges.push(RawId::Object(data.source));
             edges.extend(raw_value_edges(&data.next));
@@ -14158,6 +14448,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.map.map_or(0, |_| 2))
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.array_buffer.map_or(0, |_| 1))
+            .saturating_add(context.data_view.map_or(0, |_| 1))
             .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.async_function.map_or(0, |_| 1))
             .saturating_add(context.async_generator.map_or(0, |_| 4))
@@ -14198,6 +14489,9 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     }
     if let Some(array_buffer) = context.array_buffer {
         edges.push(RawId::Object(array_buffer.prototype));
+    }
+    if let Some(data_view) = context.data_view {
+        edges.push(RawId::Object(data_view.prototype));
     }
     if let Some(generator) = context.generator {
         edges.push(RawId::Object(generator.prototype));
@@ -14390,6 +14684,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
         | ObjectPayload::ArrayBuffer(_)
+        | ObjectPayload::DataView(_)
         | ObjectPayload::RegExpStringIterator { .. }
         | ObjectPayload::MapIterator { .. }
         | ObjectPayload::SetIterator { .. }
@@ -18588,6 +18883,363 @@ mod tests {
         let cleanup = heap.release_object(target).unwrap();
         assert_eq!(cleanup.finalized_objects, 1);
         assert_eq!(cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn data_view_retains_its_buffer_and_survives_oob_detach_and_cycle_collection() {
+        let mut heap = Heap::new();
+        let base_shape = empty_shape(&mut heap);
+        let buffer = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                base_shape,
+                Vec::new(),
+                vec![0; 8],
+                Some(16),
+            ))
+            .unwrap();
+        let ordinary = leaf(&mut heap, base_shape);
+        let ordinary_strong = heap.object_strong_count(ordinary).unwrap();
+        assert_eq!(
+            heap.allocate_object(ObjectData::data_view(
+                base_shape,
+                Vec::new(),
+                ArrayBufferViewData {
+                    buffer: ordinary,
+                    byte_offset: 0,
+                    fixed_byte_length: Some(0),
+                },
+            )),
+            Err(HeapError::Invariant(
+                "DataView backing object is not an ArrayBuffer",
+            )),
+        );
+        assert_eq!(heap.object_strong_count(ordinary), Ok(ordinary_strong));
+        assert_eq!(heap.release_object(ordinary).unwrap().finalized_objects, 1);
+        let fixed_buffer = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                base_shape,
+                Vec::new(),
+                vec![0; 4],
+                None,
+            ))
+            .unwrap();
+        assert_eq!(
+            heap.allocate_object(ObjectData::data_view(
+                base_shape,
+                Vec::new(),
+                ArrayBufferViewData {
+                    buffer: fixed_buffer,
+                    byte_offset: 0,
+                    fixed_byte_length: None,
+                },
+            )),
+            Err(HeapError::Invariant(
+                "DataView has an invalid structural view layout",
+            )),
+        );
+        assert_eq!(
+            heap.release_object(fixed_buffer).unwrap().finalized_objects,
+            1,
+        );
+        assert_eq!(
+            heap.allocate_object(ObjectData::data_view(
+                base_shape,
+                Vec::new(),
+                ArrayBufferViewData {
+                    buffer,
+                    byte_offset: i32::MAX as u32,
+                    fixed_byte_length: Some(1),
+                },
+            )),
+            Err(HeapError::Invariant(
+                "DataView has an invalid structural view layout",
+            )),
+        );
+        assert_eq!(heap.object_strong_count(buffer), Ok(1));
+        let view = heap
+            .allocate_object(ObjectData::data_view(
+                base_shape,
+                Vec::new(),
+                ArrayBufferViewData {
+                    buffer,
+                    byte_offset: 4,
+                    fixed_byte_length: Some(4),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(
+            object_edges(heap.object(view).unwrap()),
+            vec![RawId::Shape(base_shape), RawId::Object(buffer)],
+        );
+        assert_eq!(heap.object_strong_count(buffer), Ok(2));
+        assert_eq!(heap.release_object(buffer).unwrap(), HeapCleanup::default(),);
+        assert_eq!(heap.object_strong_count(buffer), Ok(1));
+
+        assert!(heap.resize_array_buffer_bytes(buffer, 2).unwrap());
+        assert_eq!(
+            heap.validate_object_layout(heap.object(view).unwrap()),
+            Ok(()),
+        );
+        assert_eq!(
+            heap.replace_object_layout(view, base_shape, Vec::new())
+                .unwrap(),
+            HeapCleanup::default(),
+        );
+        let ObjectPayload::DataView(out_of_bounds) = &heap.object(view).unwrap().payload else {
+            panic!("out-of-bounds transition removed the DataView payload");
+        };
+        assert_eq!(
+            *out_of_bounds,
+            ArrayBufferViewData {
+                buffer,
+                byte_offset: 4,
+                fixed_byte_length: Some(4),
+            },
+        );
+
+        heap.detach_array_buffer(buffer).unwrap();
+        assert_eq!(
+            heap.validate_object_layout(heap.object(view).unwrap()),
+            Ok(()),
+        );
+        assert_eq!(
+            heap.replace_object_layout(view, base_shape, Vec::new())
+                .unwrap(),
+            HeapCleanup::default(),
+        );
+        assert_eq!(
+            heap.array_buffer_state(buffer),
+            Ok(ArrayBufferState {
+                byte_length: 0,
+                max_byte_length: Some(16),
+                detached: true,
+            }),
+        );
+
+        let buffer_cycle_shape = heap
+            .allocate_shape(Shape::new(Some(view), []).unwrap())
+            .unwrap();
+        heap.replace_object_layout(buffer, buffer_cycle_shape, Vec::new())
+            .unwrap();
+        assert_eq!(
+            heap.release_shape(base_shape).unwrap(),
+            HeapCleanup::default(),
+        );
+        assert_eq!(
+            heap.release_shape(buffer_cycle_shape).unwrap(),
+            HeapCleanup::default(),
+        );
+        assert_eq!(heap.release_object(view).unwrap(), HeapCleanup::default(),);
+
+        let stats = heap.run_gc().unwrap();
+        assert_eq!(stats.cleanup.finalized_objects, 2);
+        assert_eq!(stats.cleanup.finalized_shapes, 2);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn array_buffer_word_access_is_borrow_contained_and_bounds_checked() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let buffer = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                shape,
+                Vec::new(),
+                vec![0; 12],
+                Some(20),
+            ))
+            .unwrap();
+        heap.release_shape(shape).unwrap();
+
+        assert_eq!(
+            heap.array_buffer_state(buffer),
+            Ok(ArrayBufferState {
+                byte_length: 12,
+                max_byte_length: Some(20),
+                detached: false,
+            }),
+        );
+        heap.write_array_buffer_word(buffer, 3, &[0xaa, 0xbb, 0xcc, 0xdd])
+            .unwrap();
+        assert_eq!(
+            heap.read_array_buffer_word(buffer, 3, 4).unwrap(),
+            [0xaa, 0xbb, 0xcc, 0xdd, 0, 0, 0, 0],
+        );
+        assert_eq!(
+            heap.read_array_buffer_word(buffer, 0, 3),
+            Err(HeapError::Invariant(
+                "ArrayBuffer word read has an unsupported byte length",
+            )),
+        );
+        assert_eq!(
+            heap.write_array_buffer_word(buffer, 0, &[1, 2, 3]),
+            Err(HeapError::Invariant(
+                "ArrayBuffer word write has an unsupported byte length",
+            )),
+        );
+        assert_eq!(
+            heap.read_array_buffer_word(buffer, 9, 4),
+            Err(HeapError::Invariant(
+                "ArrayBuffer word read exceeded the live backing store",
+            )),
+        );
+        assert_eq!(
+            heap.write_array_buffer_word(buffer, 11, &[1, 2]),
+            Err(HeapError::Invariant(
+                "ArrayBuffer word write exceeded the live backing store",
+            )),
+        );
+        assert_eq!(
+            heap.read_array_buffer_word(buffer, usize::MAX, 1),
+            Err(HeapError::Invariant(
+                "ArrayBuffer word read range overflowed usize",
+            )),
+        );
+
+        heap.detach_array_buffer(buffer).unwrap();
+        assert_eq!(
+            heap.read_array_buffer_word(buffer, 0, 1),
+            Err(HeapError::Invariant(
+                "ArrayBuffer word read exceeded the live backing store",
+            )),
+        );
+        assert_eq!(
+            heap.write_array_buffer_word(buffer, 0, &[1]),
+            Err(HeapError::Invariant(
+                "ArrayBuffer word write exceeded the live backing store",
+            )),
+        );
+
+        let cleanup = heap.release_object(buffer).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn data_view_native_descriptors_cover_all_element_formats() {
+        assert_eq!(
+            NativeFunctionId::DataView(DataViewNativeKind::Constructor)
+                .descriptor()
+                .cproto,
+            NativeCProto::Constructor,
+        );
+        for getter in [
+            DataViewNativeKind::Buffer,
+            DataViewNativeKind::ByteLength,
+            DataViewNativeKind::ByteOffset,
+        ] {
+            assert_eq!(
+                NativeFunctionId::DataView(getter).descriptor().cproto,
+                NativeCProto::Getter,
+            );
+        }
+        for (element, byte_length) in [
+            (DataViewElementKind::Int8, 1),
+            (DataViewElementKind::Uint8, 1),
+            (DataViewElementKind::Int16, 2),
+            (DataViewElementKind::Uint16, 2),
+            (DataViewElementKind::Int32, 4),
+            (DataViewElementKind::Uint32, 4),
+            (DataViewElementKind::BigInt64, 8),
+            (DataViewElementKind::BigUint64, 8),
+            (DataViewElementKind::Float16, 2),
+            (DataViewElementKind::Float32, 4),
+            (DataViewElementKind::Float64, 8),
+        ] {
+            assert_eq!(element.byte_length(), byte_length);
+            assert_eq!(
+                NativeFunctionId::DataView(DataViewNativeKind::Get(element))
+                    .descriptor()
+                    .cproto,
+                NativeCProto::GenericMagic,
+            );
+            assert_eq!(
+                NativeFunctionId::DataView(DataViewNativeKind::Set(element))
+                    .descriptor()
+                    .cproto,
+                NativeCProto::GenericMagic,
+            );
+        }
+    }
+
+    #[test]
+    fn data_view_intrinsics_attach_transactionally_once() {
+        let mut heap = Heap::new();
+        let null_shape = empty_shape(&mut heap);
+        let object_prototype = leaf(&mut heap, null_shape);
+        let child_shape = heap
+            .allocate_shape(Shape::new(Some(object_prototype), []).unwrap())
+            .unwrap();
+        let prototype = leaf(&mut heap, child_shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                object_prototype,
+                object_prototype,
+                object_prototype,
+                object_prototype,
+                object_prototype,
+                object_prototype,
+                object_prototype,
+                object_prototype,
+            ))
+            .unwrap();
+        let constructor = heap
+            .allocate_object(ObjectData::bound_native_function(
+                child_shape,
+                Vec::new(),
+                NativeFunctionId::DataView(DataViewNativeKind::Constructor),
+                realm,
+                1,
+            ))
+            .unwrap();
+
+        let root_strong = heap.object_strong_count(object_prototype).unwrap();
+        assert_eq!(
+            heap.attach_data_view_intrinsics(
+                realm,
+                constructor,
+                DataViewRealmData {
+                    prototype: object_prototype,
+                },
+            ),
+            Err(HeapError::Invariant(
+                "DataView prototype is not an ordinary child of Object.prototype",
+            )),
+        );
+        assert_eq!(heap.object_strong_count(object_prototype), Ok(root_strong),);
+        assert_eq!(heap.context(realm).unwrap().data_view, None);
+
+        let prototype_strong = heap.object_strong_count(prototype).unwrap();
+        heap.attach_data_view_intrinsics(realm, constructor, DataViewRealmData { prototype })
+            .unwrap();
+        assert_eq!(
+            heap.context(realm).unwrap().data_view,
+            Some(DataViewRealmData { prototype }),
+        );
+        assert_eq!(
+            heap.object_strong_count(prototype),
+            Ok(prototype_strong + 1),
+        );
+        assert_eq!(
+            heap.attach_data_view_intrinsics(realm, constructor, DataViewRealmData { prototype },),
+            Err(HeapError::Invariant(
+                "context already has DataView intrinsic roots",
+            )),
+        );
+        assert_eq!(
+            heap.object_strong_count(prototype),
+            Ok(prototype_strong + 1),
+        );
+
+        heap.release_object(constructor).unwrap();
+        heap.release_context(realm).unwrap();
+        heap.release_object(prototype).unwrap();
+        heap.release_object(object_prototype).unwrap();
+        heap.release_shape(child_shape).unwrap();
+        heap.release_shape(null_shape).unwrap();
         assert_eq!(heap.counts().live, 0);
     }
 

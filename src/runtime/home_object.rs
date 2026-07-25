@@ -64,6 +64,7 @@ impl Runtime {
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::DataView(_)
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error

@@ -36,8 +36,9 @@ estimate. The sample was selected from already implemented synchronous
 surfaces. Modules, most `$262` host hooks, advanced RegExp pattern grammar,
 TypedArrays, and many other broad layers remain absent. Proxy is measured
 separately by the checksum-bound R3am scoped gate below.
-The pure ArrayBuffer core is measured by the checksum-bound R3an gate; its
-TypedArray/DataView interop remains an explicit later frontier.
+The pure ArrayBuffer core is measured by the checksum-bound R3an gate, and its
+DataView layer by the checksum-bound R3ao gate. TypedArray,
+SharedArrayBuffer, and their interop remain explicit later frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -64,12 +65,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 51,193 pass;
+- 51,707 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 31,143 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 18 fail to parse, 1,101 fail at runtime, 105 fail in the harness, and two
+- 18 fail to parse, 587 fail at runtime, 105 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 52,468 variants to execution. That count includes variants
@@ -78,14 +79,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 50.17% (`51,193 / 102,037`);
-- conservative target-scope lower bound: 61.26%
-  (`51,193 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 97.66%
-  (`51,193 / 52,419`).
+- raw suite pass rate: 50.67% (`51,707 / 102,037`);
+- conservative target-scope lower bound: 61.88%
+  (`51,707 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 98.64%
+  (`51,707 / 52,419`).
 
-The 61.26% figure is the useful whole-project progress floor, not a claim that
-the engine is 61.26% conformant. The 97.66% conditional rate measures quality
+The 61.88% figure is the useful whole-project progress floor, not a claim that
+the engine is 61.88% conformant. The 98.64% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -141,9 +142,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`12a60e9d1cd3e30b8b33e095ef226f50f56706bed942cdc465c15cc3463d45fe`
+`3d79ecd1349488f03e8288a9a0f41b4bc5e8b70573e8d41121438aa893940990`
 and
-`814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
+`b233a6fe08dc14d0bd428f537cd9693f37a3d1d2a4f5d2b49881f9607ca60996`.
 
 ## Milestone policy
 
@@ -4961,6 +4962,63 @@ conditional observed rate is 97.66%. The full TSV and JSONL SHA-256 values are
 and
 `814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
 
+## R3ao DataView gate
+
+R3ao adds the pure DataView layer on the R3an ArrayBuffer backing store. The
+constructor and three prototype accessors, `ArrayBuffer.isView` integration,
+and all 11 getter/setter families are implemented: `Int8`, `Uint8`, `Int16`,
+`Uint16`, `Int32`, `Uint32`, `BigInt64`, `BigUint64`, `Float16`, `Float32`,
+and `Float64`. The gate covers big- and little-endian access, pinned QuickJS
+numeric conversion, detach, range and coercion order, constructor and method
+reentrancy, and fixed-versus-length-tracking views across resizable-buffer
+shrink and grow. TypedArray, SharedArrayBuffer, immutable-buffer, and
+cross-realm dependencies are not claimed by this slice.
+
+The audited candidate contains 578 paths. A checksum-bound 86-path exclusion
+ledger leaves 492 paths / 984 canonical sloppy/strict variants. Oxide passes
+984/984, and pinned QuickJS passes the same 984/984 variants. The cohort
+fingerprints are:
+
+- candidate stream SHA-256:
+  `1df8f075f57cbcc2cf72f88835bbd08449fe2093bf8f5d33badc0148249db3ed`;
+- exclusion path stream SHA-256:
+  `feade99c881ad6763b2241d988ab4c95ff3a8b79ae51f6c3ddf0501b62fd9354`;
+- exclusion ledger file SHA-256:
+  `9cdc8a031c926dd59dc152b0cfb76bd97758d63d79703df86d162b3a7eec4f44`;
+- manifest SHA-256:
+  `3475b4a32f0a5f0ab50d5cd4e4843a7c7a59365298ecabcc5986b3fdd3f697e2`;
+- scoped profile SHA-256:
+  `485ea3baf6695767108fb9f7f346c3a82d5a3db000af4510d6d002b313990cc8`;
+- path/variant key-stream SHA-256:
+  `07d60a25d9dcb8316d4602456931cedff7668df634a92ab11c6efe4798c3f90c`;
+- TSV SHA-256:
+  `6a73330ca5a7114d60946cf276d7b2601fdd023b260789cea1b5c911380d1206`;
+- JSONL SHA-256:
+  `3a4b68f28084b0dc76773fe7255e090da73981afbab5388766fe6a149beb542b`.
+
+The independent `oracle_data_view` target passes 3/3. Reproduce the Rust,
+frozen-vector, pinned-QuickJS, and scoped Test262 evidence with:
+
+```sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_data_view -- --nocapture
+./scripts/test-test262-data-view.sh
+```
+
+The exact R3an/R3ao join matches all 102,037 unique `(path, variant)` keys,
+with zero missing, extra, duplicate, or previous-pass-regression rows. Its
+only transition is 514 `fail-runtime -> pass` outcomes across 257 paths: 502
+variants under `built-ins/DataView` and 12 under `staging/sm/DataView`. The
+changed-key stream has SHA-256
+`e3483d6bfb005a92ad9f5515d2fe8e7745c3e8a003be6f7291fa376ff8b9487c`.
+The classified vector now has 51,707 passes, 52,468 runnable variants, 587
+runtime failures, and 52,419 variants with a non-unsupported observed outcome.
+The raw rate is 50.67%, the conservative pinned-target lower bound is 61.88%,
+and the conditional observed rate is 98.64%. Full TSV and JSONL SHA-256 values are
+`3d79ecd1349488f03e8288a9a0f41b4bc5e8b70573e8d41121438aa893940990`
+and
+`b233a6fe08dc14d0bd428f537cd9693f37a3d1d2a4f5d2b49881f9607ca60996`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5390,6 +5448,12 @@ gate. The exact full join retains every previous pass and reaches
 51,193/102,037; installing the real detach host also exposes the still-missing
 DataView/TypedArray stack and 16 latent transfer variants as deeper failures
 rather than overstating binary-data feature parity.
+R3ao adds the branded DataView layer with all 11 getter/setter families and
+fixed-versus-tracking resizable-buffer views. After 86 adjacent-dependency
+exclusions, Oxide and pinned QuickJS both pass the authenticated
+492-path/984-variant gate. The complete vector reaches 51,707/102,037; its
+exact join records only 514 `fail-runtime -> pass` transitions, with zero
+missing, extra, duplicate, or previous-pass-regression rows.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

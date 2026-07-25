@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-25. The completion definition remains
+Last audited: 2026-07-26. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -18,16 +18,17 @@ claim full parity.
   fully authenticated async-function and async-iteration stack into that
   global profile. R3am then adds the scoped Proxy internal-method gate without
   globally admitting the feature tag. R3an adds the branded ArrayBuffer
-  backing-store/intrinsic milestone and promotes only its independently
-  authenticated global feature subset. The vector has 51,193 passes and 52,468
-  runnable variants: 50.17% raw, a 61.26% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 97.66% among the 52,419 variants with a
-  non-unsupported observed outcome. It records 18 parse failures and 1,101
+  backing-store/intrinsic milestone, and R3ao adds the independently owned
+  DataView intrinsic with all 11 getter/setter families plus fixed and
+  length-tracking resizable-buffer views. The vector has 51,707 passes and
+  52,468 runnable variants: 50.67% raw, a 61.88% lower bound after the 18,475
+  pinned QuickJS target exclusions, or 98.64% among the 52,419 variants with a
+  non-unsupported observed outcome. It records 18 parse failures and 587
   runtime failures;
   current full TSV/JSONL SHA-256 values are
-  `12a60e9d1cd3e30b8b33e095ef226f50f56706bed942cdc465c15cc3463d45fe`
+  `3d79ecd1349488f03e8288a9a0f41b4bc5e8b70573e8d41121438aa893940990`
   and
-  `814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
+  `b233a6fe08dc14d0bd428f537cd9693f37a3d1d2a4f5d2b49881f9607ca60996`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3075,6 +3076,53 @@ claim full parity.
   `12a60e9d1cd3e30b8b33e095ef226f50f56706bed942cdc465c15cc3463d45fe`
   and
   `814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
+
+  R3ao builds a branded DataView on that backing store as an ordinary object
+  with a traced ArrayBuffer edge, byte offset, and fixed-versus-tracking length
+  metadata. Its dedicated intrinsic owns the constructor, `buffer`,
+  `byteLength`, `byteOffset`, `ArrayBuffer.isView` integration, and all 11
+  signed, unsigned, BigInt, Float16, Float32, and Float64 getter/setter pairs:
+  `Int8`, `Uint8`, `Int16`, `Uint16`, `Int32`, `Uint32`, `BigInt64`,
+  `BigUint64`, `Float16`, `Float32`, and `Float64`. Pinned QuickJS conversion,
+  endian, detach, range, coercion, reentrancy, and error-ordering behavior are
+  locked without introducing a TypedArray or SharedArrayBuffer dependency.
+  Fixed and length-tracking views derive their bounds from the current
+  resizable ArrayBuffer state, including shrink-induced out-of-bounds state
+  and recovery after a later grow.
+
+  The checksum-bound DataView cohort starts with 578 candidate paths. Its
+  86-path exclusion ledger keeps TypedArray, SharedArrayBuffer,
+  immutable-buffer, and cross-realm dependencies outside this milestone,
+  leaving 492 paths / 984 sloppy-strict variants. Oxide and pinned QuickJS both
+  pass 984/984. The candidate stream, exclusion path stream, and exclusion
+  ledger file SHA-256 values are
+  `1df8f075f57cbcc2cf72f88835bbd08449fe2093bf8f5d33badc0148249db3ed`,
+  `feade99c881ad6763b2241d988ab4c95ff3a8b79ae51f6c3ddf0501b62fd9354`,
+  and
+  `9cdc8a031c926dd59dc152b0cfb76bd97758d63d79703df86d162b3a7eec4f44`.
+  The manifest, scoped profile, key stream, TSV, and JSONL SHA-256 values are
+  `3475b4a32f0a5f0ab50d5cd4e4843a7c7a59365298ecabcc5986b3fdd3f697e2`,
+  `485ea3baf6695767108fb9f7f346c3a82d5a3db000af4510d6d002b313990cc8`,
+  `07d60a25d9dcb8316d4602456931cedff7668df634a92ab11c6efe4798c3f90c`,
+  `6a73330ca5a7114d60946cf276d7b2601fdd023b260789cea1b5c911380d1206`,
+  and
+  `3a4b68f28084b0dc76773fe7255e090da73981afbab5388766fe6a149beb542b`.
+  The independent `oracle_data_view` target passes all 3/3 Rust, frozen-vector,
+  and pinned-QuickJS checks.
+
+  The exact R3an/R3ao full-vector join retains all 102,037 unique keys, with
+  zero missing, extra, duplicate, or previous-pass-regression rows. Its only
+  transition is 514 `fail-runtime -> pass` outcomes across 257 paths: 502
+  variants under `built-ins/DataView` and 12 under `staging/sm/DataView`.
+  The changed-key stream has SHA-256
+  `e3483d6bfb005a92ad9f5515d2fe8e7745c3e8a003be6f7291fa376ff8b9487c`.
+  The resulting classified vector has 51,707 passes, 52,468 runnable variants,
+  587 runtime failures, and 52,419 non-unsupported observed outcomes: 50.67%
+  raw, 61.88% against the QuickJS-exclusion lower-bound denominator, and
+  98.64% observed. Full TSV/JSONL SHA-256 values are
+  `3d79ecd1349488f03e8288a9a0f41b4bc5e8b70573e8d41121438aa893940990`
+  and
+  `b233a6fe08dc14d0bd428f537cd9693f37a3d1d2a4f5d2b49881f9607ca60996`.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -6464,6 +6512,14 @@ remains below 10,000 lines rather than absorbing that intrinsic family. The
 branded `Vec<u8>` payload, realm roots, mutation boundary, and backing-store
 validation still make `heap.rs` explicit extraction debt, but that arena debt
 does not obscure or replace the dedicated intrinsic owner.
+R3ao keeps the facade bounded at 9,934 lines in `runtime.rs`. The complete
+DataView constructor, accessor, conversion, bounds, and read/write behavior
+lives in the independent 894-line
+`runtime/intrinsics/array_buffer/data_view.rs` module rather than returning to
+the facade. `heap.rs` reaches 22,334 lines because the branded view payload,
+realm roots, traced ArrayBuffer edge, mutation validation, and adversarial
+lifecycle coverage remain at the arena trust boundary; that file is still
+explicit extraction debt.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -6801,8 +6857,11 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_proxy -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_buffer -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_data_view -- --nocapture
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-array-buffer.sh
+./scripts/test-test262-data-view.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -6854,6 +6913,10 @@ The ArrayBuffer target locks its branded backing store, fixed/resizable and
 detached metadata, constructor/species/accessor graph, resize/slice/transfer
 semantics, host detachment, allocation failure, realm ownership, and GC
 lifetime against pinned QuickJS.
+The DataView target locks its complete constructor/prototype graph, all 11
+getter/setter families, endian and numeric conversion behavior,
+`ArrayBuffer.isView`, detach and error ordering, and fixed-versus-tracking
+resizable-buffer shrink/grow behavior against the same pinned oracle.
 The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching
