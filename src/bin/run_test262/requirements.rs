@@ -3,6 +3,24 @@ use std::path::Path;
 
 use super::metadata::Metadata;
 
+/// Host hooks which the concrete worker installs for every test process.
+///
+/// Requirement discovery remains conservative and independent of execution;
+/// the coordinator subtracts this typed capability set only after the worker
+/// implementation has actually published the corresponding hook.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct HostCapabilities {
+    pub detach_array_buffer: bool,
+}
+
+impl HostCapabilities {
+    pub(super) fn retain_missing(self, capabilities: &mut Vec<String>) {
+        capabilities.retain(|capability| {
+            !(self.detach_array_buffer && capability == "detach-array-buffer")
+        });
+    }
+}
+
 /// Return conservative, stable IDs for Test262 execution capabilities which
 /// the current runner cannot provide.
 ///
@@ -545,7 +563,10 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
-    use super::{generator_destructuring_source_needs_async_guard, missing_host_capability_hints};
+    use super::{
+        HostCapabilities, generator_destructuring_source_needs_async_guard,
+        missing_host_capability_hints,
+    };
     use crate::metadata::Metadata;
 
     fn metadata(flags: &[&str], features: &[&str], includes: &[&str]) -> Metadata {
@@ -792,6 +813,22 @@ mod tests {
             missing_host_capability_hints(Path::new("test/ordinary.js"), source, &metadata, false,),
             ["detach-array-buffer"]
         );
+    }
+
+    #[test]
+    fn installed_detach_host_removes_only_its_discovered_gap() {
+        let metadata = metadata(&[], &[], &["detachArrayBuffer.js"]);
+        let mut missing = missing_host_capability_hints(
+            Path::new("test/example.js"),
+            "$262.detachArrayBuffer(buffer); $262.gc();",
+            &metadata,
+            false,
+        );
+        HostCapabilities {
+            detach_array_buffer: true,
+        }
+        .retain_missing(&mut missing);
+        assert_eq!(missing, ["gc"]);
     }
 
     #[test]

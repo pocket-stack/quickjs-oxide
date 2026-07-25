@@ -2494,6 +2494,7 @@ impl VmHost for RuntimeVmHost {
             ObjectPayload::Proxy(proxy) if proxy.is_callable => "function",
             ObjectPayload::Proxy(_) => "object",
             ObjectPayload::Ordinary
+            | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)

@@ -731,6 +731,7 @@ impl Runtime {
         Ok(match &object.payload {
             ObjectPayload::RegExp(_) => true,
             ObjectPayload::Ordinary
+            | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)

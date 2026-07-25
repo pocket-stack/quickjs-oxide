@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23";
+    "9b155f41c9c7541423c45b57da1bb805d6e7cf350ec7d6442d6700424afdbafc";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -216,6 +216,10 @@ const TEST262_OBJECT_REST_BINDING_PROFILE_SHA256: &str =
     "122a2b055aaf40672a0540441861ecd1e6c09b65e88d45b947bc27a691afc45e";
 const TEST262_OBJECT_REST_BINDING_MANIFEST_SHA256: &str =
     "fc75564488d2ae45a015fa8b07989f3a178f08978221d87ffdeeca0a9359fe57";
+const TEST262_ARRAY_BUFFER_PROFILE_SHA256: &str =
+    "0803a027b2e9c238f80189993968816adfdda983ef3b23114a06f07b26c2d598";
+const TEST262_ARRAY_BUFFER_MANIFEST_SHA256: &str =
+    "d5720cc22c785d3757eb4e30aa3de53a664d58133a2323c6afe6233788014d01";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -642,12 +646,13 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             .map_err(|error| format!("parse metadata for {}: {error}", relative.display()))?;
         let variants = metadata.variants(options.mode);
         let skip = skip_reason(&relative, &metadata, &config);
-        let missing_host = missing_host_capability_hints(
+        let mut missing_host = missing_host_capability_hints(
             &relative,
             &source,
             &metadata,
             oxide_profile.allows_async_execution(),
         );
+        execution::WORKER_HOST_CAPABILITIES.retain_missing(&mut missing_host);
         let capability =
             oxide_profile.classify(&relative, &metadata.features, metadata.negative.is_some());
         let selection_result = if let Some((outcome, detail)) = &skip {
@@ -810,6 +815,7 @@ enum OxideProfileKind {
     ObjectAssignmentRest,
     ObjectBinding,
     ObjectRestBinding,
+    ArrayBuffer,
     Map,
     Set,
     SymbolProtocols,
@@ -1000,6 +1006,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-object-rest-binding.conf"),
             OxideProfileKind::ObjectRestBinding,
+        ),
+        (
+            root.join("tests/test262-array-buffer.conf"),
+            OxideProfileKind::ArrayBuffer,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1694,6 +1704,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             )?;
             Ok(TEST262_OBJECT_REST_BINDING_PROFILE_SHA256)
         }
+        OxideProfileKind::ArrayBuffer => verify_scoped_pinned_profile(
+            options,
+            "ArrayBuffer",
+            TEST262_ARRAY_BUFFER_PROFILE_SHA256,
+            "tests/test262-array-buffer.txt",
+            TEST262_ARRAY_BUFFER_MANIFEST_SHA256,
+        ),
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2116,8 +2133,8 @@ mod cli_tests {
         Invocation, OxideProfileKind, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
         TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
-        TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256, TEST262_ASYNC_CLASS_METHOD_CORE_PROFILE_SHA256,
-        TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256,
+        TEST262_ARRAY_BUFFER_PROFILE_SHA256, TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256,
+        TEST262_ASYNC_CLASS_METHOD_CORE_PROFILE_SHA256, TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_CLASS_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_OBJECT_METHOD_CORE_PROFILE_SHA256,
@@ -2467,6 +2484,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-object-rest-binding.conf")).unwrap(),
             OxideProfileKind::ObjectRestBinding
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-array-buffer.conf")).unwrap(),
+            OxideProfileKind::ArrayBuffer
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -4712,6 +4733,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-object-rest-binding.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_array_buffer_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-array-buffer.conf",
+            "--manifest",
+            "tests/test262-array-buffer.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ARRAY_BUFFER_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/ArrayBuffer/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-array-buffer.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

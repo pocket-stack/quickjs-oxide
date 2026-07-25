@@ -12,7 +12,12 @@ use quickjs_oxide::{
 
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
+use super::requirements::HostCapabilities;
 use super::{Variant, WorkerOptions, validate_relative_test_path};
+
+pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
+    detach_array_buffer: true,
+};
 
 const WORKER_HOST_FILENAME: &str = "<test262-worker-host>";
 const WORKER_PRINT_LOG_PROPERTY: &str = "__quickjs_oxide_test262_print_log__";
@@ -442,14 +447,47 @@ fn install_worker_host(
     context
         .execute(&function)
         .map_err(|error| worker_host_error(runtime, context, "execute", error))?;
-    install_code_point_range_host(runtime, context)
+    install_test262_hosts(runtime, context)
 }
 
-fn install_code_point_range_host(runtime: &Runtime, context: &mut Context) -> Result<(), String> {
+fn install_test262_hosts(runtime: &Runtime, context: &mut Context) -> Result<(), String> {
     let object_262 = match context.new_object() {
         Ok(object) => object,
         Err(error) => return Err(worker_host_error(runtime, context, "create $262", error)),
     };
+    let detach_array_buffer = match context.new_detach_array_buffer_function() {
+        Ok(function) => function,
+        Err(error) => {
+            return Err(worker_host_error(
+                runtime,
+                context,
+                "create $262.detachArrayBuffer",
+                error,
+            ));
+        }
+    };
+    let detach_array_buffer_key = runtime
+        .intern_property_key("detachArrayBuffer")
+        .map_err(|error| format!("intern Test262 host detachArrayBuffer key: {error}"))?;
+    let defined = match context.define_own_property(
+        &object_262,
+        &detach_array_buffer_key,
+        &worker_host_data_property(Value::Object(detach_array_buffer.as_object().clone())),
+    ) {
+        Ok(defined) => defined,
+        Err(error) => {
+            return Err(worker_host_error(
+                runtime,
+                context,
+                "define $262.detachArrayBuffer",
+                error,
+            ));
+        }
+    };
+    if !defined {
+        return Err("Test262 worker host rejected $262.detachArrayBuffer".to_owned());
+    }
+
     let code_point_range = match context.new_code_point_range_function() {
         Ok(function) => function,
         Err(error) => {
@@ -937,7 +975,7 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
     }
 
     #[test]
-    fn raw_worker_installs_quickjs_code_point_range_host() {
+    fn raw_worker_installs_quickjs_test262_hosts() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -954,15 +992,25 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
             r#"/*---
 flags: [raw]
 ---*/
-if (typeof $262 !== "object" || typeof $262.codePointRange !== "function") {
-    throw new Error("QuickJS codePointRange host surface is missing");
+if (typeof $262 !== "object" ||
+    typeof $262.detachArrayBuffer !== "function" ||
+    typeof $262.codePointRange !== "function") {
+    throw new Error("QuickJS Test262 host surface is missing");
 }
 var globalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "$262");
+var detachDescriptor = Object.getOwnPropertyDescriptor($262, "detachArrayBuffer");
 var helperDescriptor = Object.getOwnPropertyDescriptor($262, "codePointRange");
 if (!globalDescriptor.writable || !globalDescriptor.enumerable ||
-    !globalDescriptor.configurable || !helperDescriptor.writable ||
+    !globalDescriptor.configurable || !detachDescriptor.writable ||
+    !detachDescriptor.enumerable || !detachDescriptor.configurable ||
+    !helperDescriptor.writable ||
     !helperDescriptor.enumerable || !helperDescriptor.configurable) {
     throw new Error("QuickJS host property flags changed");
+}
+if ($262.detachArrayBuffer.name !== "detachArrayBuffer" ||
+    $262.detachArrayBuffer.length !== 1 ||
+    Object.getPrototypeOf($262.detachArrayBuffer) !== Function.prototype) {
+    throw new Error("QuickJS detachArrayBuffer function metadata changed");
 }
 if ($262.codePointRange.name !== "codePointRange" ||
     $262.codePointRange.length !== 2 ||
@@ -977,6 +1025,35 @@ try {
 }
 if (!constructorThrew) {
     throw new Error("QuickJS codePointRange became constructible");
+}
+constructorThrew = false;
+try {
+    new $262.detachArrayBuffer(null);
+} catch (error) {
+    constructorThrew = error instanceof TypeError;
+}
+if (!constructorThrew) {
+    throw new Error("QuickJS detachArrayBuffer became constructible");
+}
+
+var ordinary = {};
+if ($262.detachArrayBuffer() !== undefined ||
+    $262.detachArrayBuffer(ordinary, "ignored") !== undefined ||
+    ordinary.detached !== undefined) {
+    throw new Error("QuickJS detachArrayBuffer non-buffer behavior changed");
+}
+var buffer = new ArrayBuffer(4, { maxByteLength: 8 });
+if (buffer.byteLength !== 4 || buffer.maxByteLength !== 8 ||
+    !buffer.resizable || buffer.detached) {
+    throw new Error("ArrayBuffer pre-detach state changed");
+}
+if ($262.detachArrayBuffer.call(ordinary, buffer) !== undefined ||
+    buffer.byteLength !== 0 || buffer.maxByteLength !== 8 ||
+    !buffer.resizable || !buffer.detached) {
+    throw new Error("QuickJS detachArrayBuffer state transition changed");
+}
+if ($262.detachArrayBuffer(buffer) !== undefined || !buffer.detached) {
+    throw new Error("QuickJS detachArrayBuffer is no longer idempotent");
 }
 
 var conversionLog = "";

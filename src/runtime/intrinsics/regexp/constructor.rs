@@ -250,6 +250,7 @@ impl Runtime {
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
             | ObjectPayload::Date(_)
+            | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }

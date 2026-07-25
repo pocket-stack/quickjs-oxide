@@ -840,6 +840,7 @@ impl Runtime {
                 ObjectPayload::Date(_) => JsString::from_static("Date"),
                 ObjectPayload::RegExp(_) => JsString::from_static("RegExp"),
                 ObjectPayload::Ordinary
+                | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::IteratorHelper(_)

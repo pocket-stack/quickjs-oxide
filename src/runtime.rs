@@ -1056,6 +1056,13 @@ impl Runtime {
             &global_object,
         )
         .expect("Set intrinsic initialization must succeed");
+        self.initialize_array_buffer_intrinsic(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("ArrayBuffer intrinsic initialization must succeed");
         self.initialize_promise_intrinsic(
             realm,
             &function_prototype,
@@ -4902,6 +4909,7 @@ impl Runtime {
                     )));
                 }
                 ObjectPayload::Ordinary
+                | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -4970,6 +4978,7 @@ impl Runtime {
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Proxy(_) => Ok(None),
             ObjectPayload::Ordinary
+            | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
@@ -6382,6 +6391,7 @@ impl Runtime {
                                 && metadata.has_prototype
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::ArrayBuffer(_)
                         | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
@@ -6736,6 +6746,7 @@ impl Runtime {
                 }
                 ObjectPayload::Proxy(data) => (data.is_callable, None, FunctionKind::Normal),
                 ObjectPayload::Ordinary
+                | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -6962,6 +6973,7 @@ impl Runtime {
                         | ObjectPayload::BytecodeFunction { .. }
                         | ObjectPayload::Proxy(_) => None,
                         ObjectPayload::Ordinary
+                        | ObjectPayload::ArrayBuffer(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
@@ -7084,6 +7096,7 @@ impl Runtime {
                             ))
                         }
                         ObjectPayload::Ordinary
+                        | ObjectPayload::ArrayBuffer(_)
                         | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
@@ -7469,6 +7482,7 @@ impl Runtime {
                         Some(Ok(Value::BigInt(value.clone())))
                     }
                     ObjectPayload::Ordinary
+                    | ObjectPayload::ArrayBuffer(_)
                     | ObjectPayload::Proxy(_)
                     | ObjectPayload::AsyncFunctionState(_)
                     | ObjectPayload::RawJson
@@ -8385,6 +8399,7 @@ impl Runtime {
             match state.heap.object(object.object_id())?.payload {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
+                | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::Proxy(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson

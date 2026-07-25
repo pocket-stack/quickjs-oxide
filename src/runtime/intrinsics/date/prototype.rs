@@ -104,6 +104,7 @@ impl Runtime {
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::RegExp(_)
+                | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }

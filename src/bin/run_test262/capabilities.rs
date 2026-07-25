@@ -254,10 +254,11 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 76] = [
+    const EXPECTED_FEATURES: [&str; 79] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
+        "ArrayBuffer",
         "BigInt",
         "Map",
         "Math.sumPrecise",
@@ -296,8 +297,10 @@ mod tests {
         "__getter__",
         "__proto__",
         "__setter__",
+        "align-detached-buffer-semantics-with-web-reality",
         "array-find-from-last",
         "array-grouping",
+        "arraybuffer-transfer",
         "arrow-function",
         "async-functions",
         "async-iteration",

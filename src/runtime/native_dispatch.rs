@@ -502,6 +502,9 @@ impl Runtime {
             NativeFunctionId::MapIteratorNext => self.call_map_iterator_next(realm, invocation),
             NativeFunctionId::Set(kind) => self.call_set_native(realm, kind, invocation, arguments),
             NativeFunctionId::SetIteratorNext => self.call_set_iterator_next(realm, invocation),
+            NativeFunctionId::ArrayBuffer(kind) => {
+                self.call_array_buffer_native(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::AsyncFunctionResume(kind) => {
                 self.call_async_function_resume(realm, kind, invocation, arguments)
             }
@@ -660,6 +663,9 @@ impl Runtime {
             }
             NativeFunctionId::StringCodePointRange => {
                 self.call_string_code_point_range(realm, invocation, arguments)
+            }
+            NativeFunctionId::Test262DetachArrayBuffer => {
+                self.call_test262_detach_array_buffer(invocation, arguments)
             }
             NativeFunctionId::QjsPrint => self.call_qjs_print(realm, invocation, arguments),
             NativeFunctionId::PrimitivePrototypeToString(kind) => {

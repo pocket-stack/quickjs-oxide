@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23`
+  `9b155f41c9c7541423c45b57da1bb805d6e7cf350ec7d6442d6700424afdbafc`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -36,6 +36,8 @@ estimate. The sample was selected from already implemented synchronous
 surfaces. Modules, most `$262` host hooks, advanced RegExp pattern grammar,
 TypedArrays, and many other broad layers remain absent. Proxy is measured
 separately by the checksum-bound R3am scoped gate below.
+The pure ArrayBuffer core is measured by the checksum-bound R3an gate; its
+TypedArray/DataView interop remains an explicit later frontier.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -62,28 +64,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 50,977 pass;
+- 51,193 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 31,395 are classified as unsupported because of a feature, mode, host
+- 31,143 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 18 fail to parse, 1,073 fail at runtime, 97 fail in the harness, and two
+- 18 fail to parse, 1,101 fail at runtime, 105 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 52,216 variants to execution. That count includes variants
+The runner admitted 52,468 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 49.96% (`50,977 / 102,037`);
-- conservative target-scope lower bound: 61.01%
-  (`50,977 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 97.72%
-  (`50,977 / 52,167`).
+- raw suite pass rate: 50.17% (`51,193 / 102,037`);
+- conservative target-scope lower bound: 61.26%
+  (`51,193 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 97.66%
+  (`51,193 / 52,419`).
 
-The 61.01% figure is the useful whole-project progress floor, not a claim that
-the engine is 61.01% conformant. The 97.72% conditional rate measures quality
+The 61.26% figure is the useful whole-project progress floor, not a claim that
+the engine is 61.26% conformant. The 97.66% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -111,7 +113,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 76
+or pinned-target-error outcomes. The capability profile currently admits 79
 reviewed Test262 feature tags and 802 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -139,9 +141,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`19209666492462edb063b24af6fd1278abcffa10178da0d1da1218fb49140b43`
+`12a60e9d1cd3e30b8b33e095ef226f50f56706bed942cdc465c15cc3463d45fe`
 and
-`f4ee2c790693817bfe122127db7612ab7df5c2daf73b40514bce7b574f32061c`.
+`814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
 
 ## Milestone policy
 
@@ -4894,6 +4896,71 @@ duplicate key. The full TSV and JSONL SHA-256 values are
 and
 `f4ee2c790693817bfe122127db7612ab7df5c2daf73b40514bce7b574f32061c`.
 
+## R3an ArrayBuffer core gate
+
+R3an freezes the pure ArrayBuffer core before the TypedArray/DataView view
+kernel. Its audited pre-view candidate contains 168 paths. Twenty-four
+transfer paths are held in a checksum-bound exclusion ledger because their
+sources directly instantiate `Uint8Array` without declaring `TypedArray`
+metadata. The resulting scoped manifest contains 144 paths / 288 canonical
+sloppy/strict variants. Oxide passes 288/288, and pinned QuickJS passes the
+same 288/288 variants.
+
+The scoped profile, manifest, path/variant key stream, TSV, and JSONL SHA-256
+values are
+`0803a027b2e9c238f80189993968816adfdda983ef3b23114a06f07b26c2d598`,
+`d5720cc22c785d3757eb4e30aa3de53a664d58133a2323c6afe6233788014d01`,
+`bb2d3b0e3728e4aae955569ba0ffefc54ad215a02cfe5204fc3d483daf6e3bad`,
+`254ae11ac69e0d2b13f9949f498224af8770cdf16c120c8a24fe5faaa9d97716`,
+and
+`43bb5e266e7558dd0b425831caefe7fb11d8fa8601194dac7c3f4042ec1ee642`.
+
+Reproduce the scoped gate and its pinned QuickJS oracle with:
+
+```sh
+./scripts/test-test262-array-buffer.sh
+```
+
+The global profile admits only the authenticated `ArrayBuffer`,
+`arraybuffer-transfer`, and
+`align-detached-buffer-semantics-with-web-reality` tags from this slice.
+`resizable-arraybuffer` remains scoped because that metadata tag also admits
+large TypedArray/DataView-adjacent cohorts which are not implemented yet. The
+global profile now has SHA-256
+`9b155f41c9c7541423c45b57da1bb805d6e7cf350ec7d6442d6700424afdbafc`.
+
+The exact R3am/R3an full-vector join retains all 102,037 keys and every
+previous pass. Its pass-producing transitions are:
+
+- 150 `fail-runtime -> pass`;
+- 58 `unsupported-feature -> pass`;
+- eight `unsupported-host-detach-array-buffer -> pass`.
+
+Installing the real `$262.detachArrayBuffer` host hook also removes an old
+selection barrier and therefore exposes deeper, still-open frontiers rather
+than hiding them:
+
+- 162 `unsupported-host-detach-array-buffer -> fail-runtime`;
+- eight `unsupported-host-detach-array-buffer -> harness-error`;
+- eight `unsupported-host-detach-array-buffer -> unsupported-host-gc`;
+- 430 `unsupported-host-detach-array-buffer -> unsupported-feature`;
+- 16 `unsupported-feature -> fail-runtime`.
+
+The new runtime and harness failures are chiefly the still-unimplemented
+DataView/TypedArray stack; the final 16 transitions are the latent transfer
+variants which now reach their direct `Uint8Array` dependency. They are
+recorded as honest frontier exposure, not as ArrayBuffer passes. This milestone
+therefore establishes the pure backing-store/constructor/detach/transfer core,
+not complete binary-data feature parity.
+
+The complete vector reaches 51,193 passes, 52,468 runnable variants, and
+52,419 variants with a non-unsupported observed outcome. Its raw pass rate is
+50.17%, the conservative pinned-target lower bound is 61.26%, and the
+conditional observed rate is 97.66%. The full TSV and JSONL SHA-256 values are
+`12a60e9d1cd3e30b8b33e095ef226f50f56706bed942cdc465c15cc3463d45fe`
+and
+`814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5316,6 +5383,13 @@ are exact host/module/parser or TypedArray-harness frontiers, with no Proxy
 runtime failure. The complete join adds 212 passes with zero previous-pass
 regression and reaches 50,977/102,037 while global Proxy admission remains
 fail-closed.
+R3an adds the pure ArrayBuffer backing-store, constructor, detach, resize,
+slice/species, and transfer core. After 24 latent `Uint8Array` exclusions,
+Oxide and pinned QuickJS both pass the authenticated 144-path/288-variant
+gate. The exact full join retains every previous pass and reaches
+51,193/102,037; installing the real detach host also exposes the still-missing
+DataView/TypedArray stack and 16 latent transfer variants as deeper failures
+rather than overstating binary-data feature parity.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

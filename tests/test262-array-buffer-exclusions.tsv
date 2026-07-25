@@ -1,0 +1,25 @@
+# path	reason
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-larger-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-larger.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-same-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-same.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-smaller-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-smaller.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-zero-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-fixed-to-zero.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-resizable-to-larger.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-resizable-to-same.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-resizable-to-smaller.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transfer/from-resizable-to-zero.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-larger-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-larger.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-same-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-same.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-smaller-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-smaller.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-zero-no-resizable.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-fixed-to-zero.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-resizable-to-larger.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-resizable-to-same.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-resizable-to-smaller.js	source directly uses Uint8Array without declaring TypedArray metadata
+test/built-ins/ArrayBuffer/prototype/transferToFixedLength/from-resizable-to-zero.js	source directly uses Uint8Array without declaring TypedArray metadata

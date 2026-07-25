@@ -462,6 +462,16 @@ pub struct IteratorRealmData {
     pub wrap_prototype: ObjectId,
 }
 
+/// Realm-local `%ArrayBuffer.prototype%` class root.
+///
+/// The backing bytes live on each branded object, but constructor-realm
+/// fallback must retain the original prototype even after authored code
+/// replaces or deletes the writable global `ArrayBuffer` binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArrayBufferRealmData {
+    pub prototype: ObjectId,
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -512,6 +522,9 @@ pub struct ContextData {
     /// Realm-local Set ordinary prototype and Set Iterator prototype,
     /// attached atomically after the cyclic Context is published.
     pub set: Option<SetRealmData>,
+    /// Realm-local `%ArrayBuffer.prototype%` class root, attached after the
+    /// public constructor/prototype cycle has been initialized and validated.
+    pub array_buffer: Option<ArrayBufferRealmData>,
     /// Realm-local `%GeneratorPrototype%` and
     /// `%GeneratorFunction.prototype%`, attached after their reciprocal
     /// constructor/prototype graph has been initialized.
@@ -583,6 +596,7 @@ impl ContextData {
             regexp: None,
             map: None,
             set: None,
+            array_buffer: None,
             generator: None,
             async_function: None,
             async_generator: None,
@@ -4623,6 +4637,19 @@ pub struct ProxyData {
     pub is_revoked: bool,
 }
 
+/// QuickJS `JSArrayBuffer` storage owned directly by one branded object.
+///
+/// `max_byte_length == None` denotes a fixed-length buffer. A detached buffer
+/// keeps its resizable/fixed identity and maximum while releasing all bytes;
+/// its observable byte length is therefore zero without conflating an
+/// attached empty buffer with a detached one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArrayBufferData {
+    pub bytes: Vec<u8>,
+    pub max_byte_length: Option<u32>,
+    pub detached: bool,
+}
+
 /// Typed hidden payload carried only by runtime-created native functions.
 ///
 /// The shared `already_resolved` cell is intentionally a non-arena leaf: the
@@ -4804,6 +4831,10 @@ pub enum ObjectPayload {
     /// QuickJS `JS_CLASS_PROXY`. A Proxy has no ordinary prototype of its own;
     /// every observable internal method dispatches through this payload.
     Proxy(ProxyData),
+    /// `JS_CLASS_ARRAY_BUFFER`. Backing bytes are non-GC memory, so this
+    /// payload introduces no arena edge. TypedArray/DataView objects retain
+    /// the owning ArrayBuffer object in their own payloads in later slices.
+    ArrayBuffer(ArrayBufferData),
     NativeFunction {
         data: NativeFunctionData,
         internal: Option<InternalCallableData>,
@@ -4874,6 +4905,7 @@ pub enum ObjectKind {
     AsyncFromSyncIterator,
     IteratorConcat,
     Proxy,
+    ArrayBuffer,
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
@@ -5615,6 +5647,23 @@ pub enum PromiseNativeKind {
     WithResolvers,
 }
 
+/// Typed handler family for pinned QuickJS's ArrayBuffer constructor,
+/// prototype, resizable-buffer, transfer, and species surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrayBufferNativeKind {
+    Constructor,
+    IsView,
+    Species,
+    ByteLength,
+    MaxByteLength,
+    Resizable,
+    Detached,
+    Resize,
+    Slice,
+    Transfer,
+    TransferToFixedLength,
+}
+
 /// Selector shared by the paired internal Promise resolving functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PromiseResolvingKind {
@@ -5703,6 +5752,7 @@ pub enum NativeFunctionId {
     MapIteratorNext,
     Set(SetNativeKind),
     SetIteratorNext,
+    ArrayBuffer(ArrayBufferNativeKind),
     Promise(PromiseNativeKind),
     AsyncFunctionResume(AsyncFunctionResumeKind),
     AsyncGeneratorResume(AsyncGeneratorResumeKind),
@@ -5720,6 +5770,8 @@ pub enum NativeFunctionId {
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
     StringCodePointRange,
+    /// QuickJS's test262-only `$262.detachArrayBuffer` host hook.
+    Test262DetachArrayBuffer,
     /// qjs-host `print`, installed explicitly by the CLI rather than as an
     /// ECMAScript intrinsic in every Context.
     QjsPrint,
@@ -6175,6 +6227,7 @@ impl NativeFunctionId {
                 | SetNativeKind::Union
                 | SetNativeKind::Iterator(_),
             )
+            | Self::ArrayBuffer(ArrayBufferNativeKind::IsView)
             | Self::Promise(
                 PromiseNativeKind::Then
                 | PromiseNativeKind::Catch
@@ -6213,6 +6266,7 @@ impl NativeFunctionId {
             | Self::PrimitivePrototypeValueOf(_)
             | Self::StringStatic(_)
             | Self::StringCodePointRange
+            | Self::Test262DetachArrayBuffer
             | Self::QjsPrint
             | Self::StringPrototypeCharCodeAt
             | Self::StringPrototypeConcat
@@ -6304,7 +6358,13 @@ impl NativeFunctionId {
             | Self::ArrayPrototypeJoin(_)
             | Self::ArrayPrototypePop(_)
             | Self::ArrayPrototypePush(_)
-            | Self::ArrayPrototypeSlice(_) => NativeFunctionDescriptor {
+            | Self::ArrayPrototypeSlice(_)
+            | Self::ArrayBuffer(
+                ArrayBufferNativeKind::Resize
+                | ArrayBufferNativeKind::Slice
+                | ArrayBufferNativeKind::Transfer
+                | ArrayBufferNativeKind::TransferToFixedLength,
+            ) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GenericMagic,
             },
             Self::GlobalUriCodec(
@@ -6337,6 +6397,7 @@ impl NativeFunctionId {
             },
             Self::Map(MapNativeKind::Constructor)
             | Self::Set(SetNativeKind::Constructor)
+            | Self::ArrayBuffer(ArrayBufferNativeKind::Constructor)
             | Self::Promise(PromiseNativeKind::Constructor)
             | Self::ProxyConstructor => NativeFunctionDescriptor {
                 cproto: NativeCProto::Constructor,
@@ -6348,6 +6409,7 @@ impl NativeFunctionId {
             )
             | Self::Map(MapNativeKind::Species | MapNativeKind::Size)
             | Self::Set(SetNativeKind::Species | SetNativeKind::Size)
+            | Self::ArrayBuffer(ArrayBufferNativeKind::Species | ArrayBufferNativeKind::Detached)
             | Self::Promise(PromiseNativeKind::Species) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
             },
@@ -6374,11 +6436,15 @@ impl NativeFunctionId {
             | Self::GeneratorPrototypeResume(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::IteratorNext,
             },
-            Self::FunctionPrototypePosition(_) | Self::RegExp(RegExpNativeKind::Flag(_)) => {
-                NativeFunctionDescriptor {
-                    cproto: NativeCProto::GetterMagic,
-                }
-            }
+            Self::FunctionPrototypePosition(_)
+            | Self::RegExp(RegExpNativeKind::Flag(_))
+            | Self::ArrayBuffer(
+                ArrayBufferNativeKind::ByteLength
+                | ArrayBufferNativeKind::MaxByteLength
+                | ArrayBufferNativeKind::Resizable,
+            ) => NativeFunctionDescriptor {
+                cproto: NativeCProto::GetterMagic,
+            },
             Self::ErrorConstructor(_) => NativeFunctionDescriptor {
                 cproto: NativeCProto::ConstructorOrFunctionMagic,
             },
@@ -6926,6 +6992,32 @@ impl ObjectData {
                 handler,
                 is_callable,
                 is_revoked: false,
+            }),
+        }
+    }
+
+    /// Construct one attached ArrayBuffer by transferring an existing byte
+    /// vector. The runtime validates the vector length and maximum before
+    /// entering this allocation boundary.
+    #[must_use]
+    pub fn array_buffer_from_bytes(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        bytes: Vec<u8>,
+        max_byte_length: Option<u32>,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::ArrayBuffer,
+            payload: ObjectPayload::ArrayBuffer(ArrayBufferData {
+                bytes,
+                max_byte_length,
+                detached: false,
             }),
         }
     }
@@ -7566,6 +7658,7 @@ impl Heap {
             | ObjectPayload::AsyncFromSyncIterator(_)
             | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Proxy(_)
+            | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
@@ -7990,6 +8083,64 @@ impl Heap {
             unreachable!("context identity was validated before retaining Set roots")
         };
         context.set = Some(set);
+        Ok(())
+    }
+
+    /// Atomically publish the realm's `%ArrayBuffer.prototype%` class root
+    /// after validating the public constructor relationship.
+    pub(crate) fn attach_array_buffer_intrinsics(
+        &mut self,
+        realm: ContextId,
+        constructor: ObjectId,
+        array_buffer: ArrayBufferRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.array_buffer.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has ArrayBuffer intrinsic roots",
+            ));
+        }
+        let object_prototype = context.object_prototype;
+
+        let constructor = self.object(constructor)?;
+        if !constructor.is_constructor
+            || !matches!(
+                constructor.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::ArrayBuffer(
+                            ArrayBufferNativeKind::Constructor
+                        ),
+                        realm: Some(target_realm),
+                        ..
+                    },
+                    internal: None,
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer constructor root is not the realm's ArrayBuffer native",
+            ));
+        }
+
+        let prototype = self.object(array_buffer.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+            || self.shape(prototype.shape)?.prototype() != Some(object_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer prototype is not an ordinary child of Object.prototype",
+            ));
+        }
+
+        let edges = [RawId::Object(array_buffer.prototype)];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining ArrayBuffer roots")
+        };
+        context.array_buffer = Some(array_buffer);
         Ok(())
     }
 
@@ -9356,6 +9507,236 @@ impl Heap {
                 "typed object lookup reached another node payload",
             )),
         }
+    }
+
+    /// Resize the owned bytes of one attached ArrayBuffer after the runtime
+    /// has performed all observable coercions and range checks.
+    pub(crate) fn resize_array_buffer_bytes(
+        &mut self,
+        id: ObjectId,
+        new_length: usize,
+    ) -> Result<bool, HeapError> {
+        let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer resize reached another object class",
+            ));
+        };
+        if data.detached {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer resize reached a detached backing store",
+            ));
+        }
+        if new_length < data.bytes.len() {
+            let Some(replacement) = try_shrink_array_buffer_allocation(&data.bytes, new_length)
+            else {
+                return Ok(false);
+            };
+            data.bytes = replacement;
+        } else if new_length > data.bytes.len() {
+            if data
+                .bytes
+                .try_reserve_exact(new_length - data.bytes.len())
+                .is_err()
+            {
+                return Ok(false);
+            }
+            data.bytes.resize(new_length, 0);
+        }
+        Ok(true)
+    }
+
+    /// Copy bytes into the prefix of one attached ArrayBuffer. Bounds and
+    /// class checks remain inside the heap mutation boundary.
+    #[cfg(test)]
+    pub(crate) fn write_array_buffer_prefix(
+        &mut self,
+        id: ObjectId,
+        bytes: &[u8],
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer write reached another object class",
+            ));
+        };
+        if data.detached || bytes.len() > data.bytes.len() {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer write exceeded the live backing store",
+            ));
+        }
+        data.bytes[..bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Copy one live ArrayBuffer range into another buffer's prefix without
+    /// allocating a second range-sized temporary backing store.
+    pub(crate) fn copy_array_buffer_range(
+        &mut self,
+        source: ObjectId,
+        target: ObjectId,
+        source_start: usize,
+        byte_count: usize,
+    ) -> Result<(), HeapError> {
+        if source == target {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer range copy source and target are identical",
+            ));
+        }
+        {
+            let ObjectPayload::ArrayBuffer(source_data) = &self.object(source)?.payload else {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer range copy source has another object class",
+                ));
+            };
+            let ObjectPayload::ArrayBuffer(target_data) = &self.object(target)?.payload else {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer range copy target has another object class",
+                ));
+            };
+            let source_end = source_start
+                .checked_add(byte_count)
+                .ok_or(HeapError::Invariant(
+                    "ArrayBuffer range copy overflowed usize",
+                ))?;
+            if source_data.detached
+                || target_data.detached
+                || source_end > source_data.bytes.len()
+                || byte_count > target_data.bytes.len()
+            {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer range copy exceeded a live backing store",
+                ));
+            }
+        }
+
+        const COPY_CHUNK_BYTES: usize = 8 * 1024;
+        let mut scratch = [0_u8; COPY_CHUNK_BYTES];
+        let mut copied = 0usize;
+        while copied < byte_count {
+            let chunk_length = (byte_count - copied).min(COPY_CHUNK_BYTES);
+            {
+                let ObjectPayload::ArrayBuffer(source_data) = &self.object(source)?.payload else {
+                    unreachable!("ArrayBuffer range copy source was validated");
+                };
+                let chunk_start = source_start + copied;
+                scratch[..chunk_length]
+                    .copy_from_slice(&source_data.bytes[chunk_start..chunk_start + chunk_length]);
+            }
+            {
+                let ObjectPayload::ArrayBuffer(target_data) = &mut self.object_mut(target)?.payload
+                else {
+                    unreachable!("ArrayBuffer range copy target was validated");
+                };
+                target_data.bytes[copied..copied + chunk_length]
+                    .copy_from_slice(&scratch[..chunk_length]);
+            }
+            copied += chunk_length;
+        }
+        Ok(())
+    }
+
+    /// Resize and move one owned backing allocation into an already-created
+    /// empty ArrayBuffer. Allocation failure leaves the source attached and
+    /// byte-for-byte unchanged.
+    pub(crate) fn transfer_array_buffer_bytes(
+        &mut self,
+        source: ObjectId,
+        target: ObjectId,
+        new_length: usize,
+    ) -> Result<bool, HeapError> {
+        if source == target {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer transfer source and target are identical",
+            ));
+        }
+        {
+            let ObjectPayload::ArrayBuffer(source_data) = &self.object(source)?.payload else {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer transfer source has another object class",
+                ));
+            };
+            let ObjectPayload::ArrayBuffer(target_data) = &self.object(target)?.payload else {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer transfer target has another object class",
+                ));
+            };
+            if source_data.detached
+                || target_data.detached
+                || !target_data.bytes.is_empty()
+                || target_data
+                    .max_byte_length
+                    .is_some_and(|maximum| new_length > maximum as usize)
+            {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer transfer reached invalid backing-store state",
+                ));
+            }
+        }
+
+        if new_length == 0 {
+            let ObjectPayload::ArrayBuffer(source_data) = &mut self.object_mut(source)?.payload
+            else {
+                unreachable!("ArrayBuffer transfer source was validated");
+            };
+            source_data.bytes = Vec::new();
+            source_data.detached = true;
+            return Ok(true);
+        }
+
+        {
+            let ObjectPayload::ArrayBuffer(source_data) = &mut self.object_mut(source)?.payload
+            else {
+                unreachable!("ArrayBuffer transfer source was validated");
+            };
+            if new_length < source_data.bytes.len() {
+                let Some(replacement) =
+                    try_shrink_array_buffer_allocation(&source_data.bytes, new_length)
+                else {
+                    return Ok(false);
+                };
+                source_data.bytes = replacement;
+            } else if new_length > source_data.bytes.len() {
+                if source_data
+                    .bytes
+                    .try_reserve_exact(new_length - source_data.bytes.len())
+                    .is_err()
+                {
+                    return Ok(false);
+                }
+                source_data.bytes.resize(new_length, 0);
+            }
+        }
+        let bytes = {
+            let ObjectPayload::ArrayBuffer(source_data) = &mut self.object_mut(source)?.payload
+            else {
+                unreachable!("ArrayBuffer transfer source was validated");
+            };
+            source_data.detached = true;
+            std::mem::take(&mut source_data.bytes)
+        };
+        let ObjectPayload::ArrayBuffer(target_data) = &mut self
+            .object_mut(target)
+            .expect("validated ArrayBuffer transfer target disappeared")
+            .payload
+        else {
+            unreachable!("ArrayBuffer transfer target was validated");
+        };
+        target_data.bytes = bytes;
+        Ok(true)
+    }
+
+    /// Release one ordinary ArrayBuffer backing store and retain its
+    /// fixed/resizable metadata. Repeated detach is an idempotent no-op.
+    pub(crate) fn detach_array_buffer(&mut self, id: ObjectId) -> Result<(), HeapError> {
+        let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer detach reached another object class",
+            ));
+        };
+        if !data.detached {
+            data.bytes = Vec::new();
+            data.detached = true;
+        }
+        Ok(())
     }
 
     /// Read the private-method brand owned by an object's HomeObject slot.
@@ -11961,42 +12342,38 @@ impl Heap {
         shape: ShapeId,
         slots: Vec<PropertySlot>,
     ) -> Result<HeapCleanup, HeapError> {
-        let (private_brand_home, extensible, immutable_prototype, is_constructor, kind, payload) = {
-            let object = self.object(id)?;
-            (
-                object.private_brand_home,
-                object.extensible,
-                object.immutable_prototype,
-                object.is_constructor,
-                object.kind,
-                object.payload.clone(),
-            )
-        };
-        let replacement = ObjectData {
-            shape,
-            slots,
-            private_brand_home,
-            extensible,
-            immutable_prototype,
-            is_constructor,
-            kind,
-            payload,
-        };
-        self.validate_object_layout(&replacement)?;
-        let new_edges = object_edges(&replacement);
+        self.validate_property_layout(shape, &slots)?;
+        let replacement_prototype = self.shape(shape)?.prototype();
+        if matches!(self.object(id)?.payload, ObjectPayload::Proxy(_))
+            && replacement_prototype.is_some()
+        {
+            return Err(HeapError::Invariant(
+                "Proxy has invalid null-prototype layout or cached target capabilities",
+            ));
+        }
+
+        // The class payload, private brand, and capability bits are unchanged.
+        // Retaining and releasing only the replacement layout edges keeps that
+        // payload in place instead of cloning potentially large non-GC state
+        // such as an ArrayBuffer backing store.
+        let new_edges = object_layout_edges(shape, &slots);
         self.retain_edges_transactionally(&new_edges)?;
 
-        let previous = {
-            let object = self.object_mut(id)?;
-            std::mem::replace(object, replacement)
+        let (previous_shape, previous_slots) = {
+            let object = self
+                .object_mut(id)
+                .expect("authenticated object disappeared during layout replacement");
+            (
+                std::mem::replace(&mut object.shape, shape),
+                std::mem::replace(&mut object.slots, slots),
+            )
         };
 
         let mut cleanup = HeapCleanup::default();
-        // The class payload and private HomeObject brand are cloned unchanged
-        // into `replacement`, so their non-GC atom ownership transfers in
-        // place. Only detached property slots relinquish atom references here.
-        cleanup.atoms.extend(object_slot_atoms(&previous));
-        for edge in object_edges(&previous) {
+        cleanup
+            .atoms
+            .extend(previous_slots.iter().flat_map(property_slot_atoms));
+        for edge in object_layout_edges(previous_shape, &previous_slots) {
             self.release_raw_no_drain(edge)?;
         }
         cleanup.merge(self.drain_zero_queue()?);
@@ -12269,6 +12646,32 @@ impl Heap {
         Ok(())
     }
 
+    fn validate_property_layout(
+        &self,
+        shape: ShapeId,
+        slots: &[PropertySlot],
+    ) -> Result<(), HeapError> {
+        let shape = self.shape(shape)?;
+        if shape.entries().len() != slots.len() {
+            return Err(HeapError::Invariant(
+                "object slot count does not match its shape",
+            ));
+        }
+        for (entry, slot) in shape.entries().iter().zip(slots) {
+            if !slot_matches_storage(slot, entry.flags.storage) {
+                return Err(HeapError::Invariant(
+                    "object property storage does not match its shape flags",
+                ));
+            }
+            if matches!(slot, PropertySlot::Data(RawValue::Private(_))) {
+                return Err(HeapError::Invariant(
+                    "private-name identity escaped into an object value slot",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_object_layout(&self, object: &ObjectData) -> Result<(), HeapError> {
         if !matches!(
             (object.kind, &object.payload),
@@ -12307,6 +12710,7 @@ impl Heap {
                 )
                 | (ObjectKind::IteratorConcat, ObjectPayload::IteratorConcat(_))
                 | (ObjectKind::Proxy, ObjectPayload::Proxy(_))
+                | (ObjectKind::ArrayBuffer, ObjectPayload::ArrayBuffer(_))
                 | (
                     ObjectKind::NativeFunction,
                     ObjectPayload::NativeFunction { .. }
@@ -12331,24 +12735,8 @@ impl Heap {
                 "object kind does not match its class payload",
             ));
         }
+        self.validate_property_layout(object.shape, &object.slots)?;
         let shape = self.shape(object.shape)?;
-        if shape.entries().len() != object.slots.len() {
-            return Err(HeapError::Invariant(
-                "object slot count does not match its shape",
-            ));
-        }
-        for (entry, slot) in shape.entries().iter().zip(&object.slots) {
-            if !slot_matches_storage(slot, entry.flags.storage) {
-                return Err(HeapError::Invariant(
-                    "object property storage does not match its shape flags",
-                ));
-            }
-            if matches!(slot, PropertySlot::Data(RawValue::Private(_))) {
-                return Err(HeapError::Invariant(
-                    "private-name identity escaped into an object value slot",
-                ));
-            }
-        }
         if let ObjectPayload::Proxy(data) = &object.payload {
             let target = self.object(data.target)?;
             self.object(data.handler)?;
@@ -12365,6 +12753,25 @@ impl Heap {
             {
                 return Err(HeapError::Invariant(
                     "Proxy has invalid null-prototype layout or cached target capabilities",
+                ));
+            }
+        }
+        if let ObjectPayload::ArrayBuffer(data) = &object.payload {
+            let byte_length = u32::try_from(data.bytes.len()).map_err(|_| {
+                HeapError::Invariant("ArrayBuffer byte length exceeds the supported range")
+            })?;
+            if object.is_constructor
+                || (data.detached && byte_length != 0)
+                || data
+                    .max_byte_length
+                    .is_some_and(|maximum| maximum < byte_length)
+                || byte_length > i32::MAX as u32
+                || data
+                    .max_byte_length
+                    .is_some_and(|maximum| maximum > i32::MAX as u32)
+            {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer has invalid backing-store state",
                 ));
             }
         }
@@ -13310,6 +13717,30 @@ impl Heap {
     }
 }
 
+fn object_layout_edges(shape: ShapeId, slots: &[PropertySlot]) -> Vec<RawId> {
+    let mut edges = Vec::with_capacity(slots.len().saturating_add(1));
+    for slot in slots {
+        edges.extend(property_slot_edges(slot));
+    }
+    edges.push(RawId::Shape(shape));
+    edges
+}
+
+/// Build a smaller ArrayBuffer allocation without mutating the live source.
+///
+/// QuickJS uses `realloc` for this transition. Constructing the replacement
+/// first gives the same failure atomicity: allocation failure leaves the
+/// original bytes and capacity untouched, while success drops the oversized
+/// allocation only after its preserved prefix has been copied.
+fn try_shrink_array_buffer_allocation(bytes: &[u8], new_length: usize) -> Option<Vec<u8>> {
+    debug_assert!(new_length < bytes.len());
+    let mut replacement = Vec::new();
+    replacement.try_reserve_exact(new_length).ok()?;
+    replacement.resize(new_length, 0);
+    replacement.copy_from_slice(&bytes[..new_length]);
+    Some(replacement)
+}
+
 fn object_edges(object: &ObjectData) -> Vec<RawId> {
     let closure_count = match &object.payload {
         ObjectPayload::Ordinary
@@ -13321,6 +13752,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Primitive(_)
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
+        | ObjectPayload::ArrayBuffer(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -13417,6 +13849,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Primitive(_)
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
+        | ObjectPayload::ArrayBuffer(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. } => {}
         ObjectPayload::IteratorHelper(data) => {
@@ -13724,6 +14157,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.regexp.map_or(0, |_| 4))
             .saturating_add(context.map.map_or(0, |_| 2))
             .saturating_add(context.set.map_or(0, |_| 2))
+            .saturating_add(context.array_buffer.map_or(0, |_| 1))
             .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.async_function.map_or(0, |_| 1))
             .saturating_add(context.async_generator.map_or(0, |_| 4))
@@ -13761,6 +14195,9 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     if let Some(set) = context.set {
         edges.push(RawId::Object(set.prototype));
         edges.push(RawId::Object(set.iterator_prototype));
+    }
+    if let Some(array_buffer) = context.array_buffer {
+        edges.push(RawId::Object(array_buffer.prototype));
     }
     if let Some(generator) = context.generator {
         edges.push(RawId::Object(generator.prototype));
@@ -13952,6 +14389,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::ForInIterator(_)
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
+        | ObjectPayload::ArrayBuffer(_)
         | ObjectPayload::RegExpStringIterator { .. }
         | ObjectPayload::MapIterator { .. }
         | ObjectPayload::SetIterator { .. }
@@ -17940,6 +18378,216 @@ mod tests {
         assert_eq!(stats.candidate_nodes, 2);
         assert_eq!(stats.cleanup.finalized_objects, 1);
         assert_eq!(stats.cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn layout_replacement_preserves_array_buffer_payload_and_rolls_back_failures() {
+        let mut heap = Heap::new();
+        let original_shape = empty_shape(&mut heap);
+        let bytes = (0..4096)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect::<Vec<_>>();
+        let pointer = bytes.as_ptr();
+        let object = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                original_shape,
+                Vec::new(),
+                bytes,
+                Some(8192),
+            ))
+            .unwrap();
+        let property_shape = one_slot_shape(&mut heap);
+
+        assert_eq!(
+            heap.replace_object_layout(object, property_shape, Vec::new()),
+            Err(HeapError::Invariant(
+                "object slot count does not match its shape",
+            )),
+        );
+        let current = heap.object(object).unwrap();
+        assert_eq!(current.shape, original_shape);
+        let ObjectPayload::ArrayBuffer(data) = &current.payload else {
+            panic!("failed layout replacement removed the ArrayBuffer brand");
+        };
+        assert_eq!(data.bytes.as_ptr(), pointer);
+        assert_eq!(data.max_byte_length, Some(8192));
+        assert!(!data.detached);
+
+        assert_eq!(
+            heap.replace_object_layout(
+                object,
+                property_shape,
+                vec![PropertySlot::Data(RawValue::Int(42))],
+            )
+            .unwrap(),
+            HeapCleanup::default(),
+        );
+        let current = heap.object(object).unwrap();
+        assert_eq!(current.shape, property_shape);
+        let ObjectPayload::ArrayBuffer(data) = &current.payload else {
+            panic!("successful layout replacement removed the ArrayBuffer brand");
+        };
+        assert_eq!(data.bytes.as_ptr(), pointer);
+        assert_eq!(data.bytes.len(), 4096);
+        assert_eq!(data.max_byte_length, Some(8192));
+        assert!(!data.detached);
+
+        assert_eq!(
+            heap.release_shape(original_shape).unwrap().finalized_shapes,
+            1,
+        );
+        assert_eq!(
+            heap.release_shape(property_shape).unwrap(),
+            HeapCleanup::default(),
+        );
+        let cleanup = heap.release_object(object).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn array_buffer_resize_failure_is_atomic_and_shrink_releases_capacity() {
+        const INITIAL_LENGTH: usize = 64 * 1024;
+        const SHRUNK_LENGTH: usize = 43;
+
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let bytes = (0..INITIAL_LENGTH)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect::<Vec<_>>();
+        let object = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                shape,
+                Vec::new(),
+                bytes.clone(),
+                Some(128 * 1024),
+            ))
+            .unwrap();
+        heap.release_shape(shape).unwrap();
+
+        let before_failure = heap.object(object).unwrap();
+        let ObjectPayload::ArrayBuffer(before_failure) = &before_failure.payload else {
+            panic!("test object lost its ArrayBuffer payload");
+        };
+        let allocated_pointer = before_failure.bytes.as_ptr();
+        let allocated_capacity = before_failure.bytes.capacity();
+        assert!(allocated_capacity >= INITIAL_LENGTH);
+
+        assert!(!heap.resize_array_buffer_bytes(object, usize::MAX).unwrap());
+        let after_failure = heap.object(object).unwrap();
+        let ObjectPayload::ArrayBuffer(after_failure) = &after_failure.payload else {
+            panic!("failed resize removed the ArrayBuffer payload");
+        };
+        assert_eq!(after_failure.bytes.as_ptr(), allocated_pointer);
+        assert_eq!(after_failure.bytes.capacity(), allocated_capacity);
+        assert_eq!(after_failure.bytes, bytes);
+        assert!(!after_failure.detached);
+
+        assert!(
+            heap.resize_array_buffer_bytes(object, SHRUNK_LENGTH)
+                .unwrap()
+        );
+        let shrunk = heap.object(object).unwrap();
+        let ObjectPayload::ArrayBuffer(shrunk) = &shrunk.payload else {
+            panic!("successful resize removed the ArrayBuffer payload");
+        };
+        assert_ne!(shrunk.bytes.as_ptr(), allocated_pointer);
+        assert!(shrunk.bytes.capacity() < allocated_capacity);
+        assert_eq!(shrunk.bytes, bytes[..SHRUNK_LENGTH]);
+        assert!(!shrunk.detached);
+
+        let cleanup = heap.release_object(object).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn array_buffer_transfer_failure_is_atomic_and_shrink_releases_capacity() {
+        const INITIAL_LENGTH: usize = 64 * 1024;
+        const TRANSFERRED_LENGTH: usize = 47;
+
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let bytes = (0..INITIAL_LENGTH)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect::<Vec<_>>();
+        let source = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                shape,
+                Vec::new(),
+                bytes.clone(),
+                None,
+            ))
+            .unwrap();
+        let target = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                shape,
+                Vec::new(),
+                Vec::new(),
+                None,
+            ))
+            .unwrap();
+        heap.release_shape(shape).unwrap();
+        let source_pointer = match &heap.object(source).unwrap().payload {
+            ObjectPayload::ArrayBuffer(data) => data.bytes.as_ptr(),
+            _ => panic!("source object lost its ArrayBuffer payload"),
+        };
+        let source_capacity = match &heap.object(source).unwrap().payload {
+            ObjectPayload::ArrayBuffer(data) => data.bytes.capacity(),
+            _ => panic!("source object lost its ArrayBuffer payload"),
+        };
+
+        assert!(
+            !heap
+                .transfer_array_buffer_bytes(source, target, usize::MAX)
+                .unwrap()
+        );
+        let ObjectPayload::ArrayBuffer(source_after_failure) =
+            &heap.object(source).unwrap().payload
+        else {
+            panic!("failed transfer removed the source ArrayBuffer payload");
+        };
+        assert_eq!(source_after_failure.bytes.as_ptr(), source_pointer);
+        assert_eq!(source_after_failure.bytes.capacity(), source_capacity);
+        assert_eq!(source_after_failure.bytes, bytes);
+        assert!(!source_after_failure.detached);
+        let ObjectPayload::ArrayBuffer(target_after_failure) =
+            &heap.object(target).unwrap().payload
+        else {
+            panic!("failed transfer removed the target ArrayBuffer payload");
+        };
+        assert!(target_after_failure.bytes.is_empty());
+        assert!(!target_after_failure.detached);
+
+        assert!(
+            heap.transfer_array_buffer_bytes(source, target, TRANSFERRED_LENGTH)
+                .unwrap()
+        );
+        let ObjectPayload::ArrayBuffer(source_after_transfer) =
+            &heap.object(source).unwrap().payload
+        else {
+            panic!("successful transfer removed the source ArrayBuffer payload");
+        };
+        assert!(source_after_transfer.bytes.is_empty());
+        assert_eq!(source_after_transfer.bytes.capacity(), 0);
+        assert!(source_after_transfer.detached);
+        let ObjectPayload::ArrayBuffer(target_after_transfer) =
+            &heap.object(target).unwrap().payload
+        else {
+            panic!("successful transfer removed the target ArrayBuffer payload");
+        };
+        assert_ne!(target_after_transfer.bytes.as_ptr(), source_pointer);
+        assert!(target_after_transfer.bytes.capacity() < source_capacity);
+        assert_eq!(target_after_transfer.bytes, bytes[..TRANSFERRED_LENGTH],);
+        assert!(!target_after_transfer.detached);
+
+        assert_eq!(heap.release_object(source).unwrap().finalized_objects, 1,);
+        let cleanup = heap.release_object(target).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_shapes, 1);
         assert_eq!(heap.counts().live, 0);
     }
 

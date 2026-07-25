@@ -198,6 +198,7 @@ impl Runtime {
                 | ObjectPayload::Promise(_)
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
+                | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }

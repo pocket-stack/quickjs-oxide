@@ -10,22 +10,24 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 76 reviewed feature tags and 802 exact audited
+  capability profile now admits 79 reviewed feature tags and 802 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. R3al promotes the
   fully authenticated async-function and async-iteration stack into that
   global profile. R3am then adds the scoped Proxy internal-method gate without
-  globally admitting the feature tag. The vector has 50,977 passes and 52,216
-  runnable variants: 49.96% raw, a 61.01% lower bound after the 18,475 pinned
-  QuickJS target exclusions, or 97.72% among the 52,167 variants with a
-  non-unsupported observed outcome. It records 18 parse failures and 1,073
+  globally admitting the feature tag. R3an adds the branded ArrayBuffer
+  backing-store/intrinsic milestone and promotes only its independently
+  authenticated global feature subset. The vector has 51,193 passes and 52,468
+  runnable variants: 50.17% raw, a 61.26% lower bound after the 18,475 pinned
+  QuickJS target exclusions, or 97.66% among the 52,419 variants with a
+  non-unsupported observed outcome. It records 18 parse failures and 1,101
   runtime failures;
   current full TSV/JSONL SHA-256 values are
-  `19209666492462edb063b24af6fd1278abcffa10178da0d1da1218fb49140b43`
+  `12a60e9d1cd3e30b8b33e095ef226f50f56706bed942cdc465c15cc3463d45fe`
   and
-  `f4ee2c790693817bfe122127db7612ab7df5c2daf73b40514bce7b574f32061c`.
+  `814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3028,6 +3030,51 @@ claim full parity.
   remains a non-observable memory/performance optimization opportunity, not a
   semantic deviation. Complete hashes and frontier breakdowns are recorded in
   `docs/test262.md`.
+
+  R3an adds a genuinely branded `ObjectKind::ArrayBuffer` /
+  `ObjectPayload::ArrayBuffer` whose backing store is an owned `Vec<u8>`,
+  rather than an emulated property bag. The payload keeps fixed-versus-
+  resizable identity, `maxByteLength`, and detached state independently, so an
+  attached empty store remains distinct from a detached buffer and detachment
+  releases the bytes without erasing the surviving metadata. The independent
+  `runtime/intrinsics/array_buffer.rs` owner installs and dispatches the
+  constructor, species, accessors, `slice`, `resize`, `transfer`, and
+  `transferToFixedLength`; the same backing-store boundary implements the
+  Test262 host detach operation. Allocation, conversion, subclass/species,
+  reentrancy, error ordering, and detach/transfer behavior are locked against
+  the pinned QuickJS 2026-06-04 source and executable oracle.
+
+  The checksum-bound pure-core gate starts from 168 ArrayBuffer paths. It
+  freezes 24 latent transfer paths whose sources directly instantiate
+  `Uint8Array` without declaring TypedArray metadata; those paths stay
+  fail-closed until a coherent DataView/TypedArray view kernel lands instead
+  of growing a test-only partial view. The resulting 144-path / 288-variant
+  manifest passes 288/288 in both Oxide and pinned QuickJS. Its scoped profile,
+  manifest, key-set, TSV, and JSONL SHA-256 values are
+  `0803a027b2e9c238f80189993968816adfdda983ef3b23114a06f07b26c2d598`,
+  `d5720cc22c785d3757eb4e30aa3de53a664d58133a2323c6afe6233788014d01`,
+  `bb2d3b0e3728e4aae955569ba0ffefc54ad215a02cfe5204fc3d483daf6e3bad`,
+  `254ae11ac69e0d2b13f9949f498224af8770cdf16c120c8a24fe5faaa9d97716`,
+  and
+  `43bb5e266e7558dd0b425831caefe7fb11d8fa8601194dac7c3f4042ec1ee642`;
+  the 24-path exclusion stream is pinned at
+  `5118e3de12f8d432856c99112ff9ec093da3e83f40c52a8c19c3b39b3d05b610`.
+
+  The global profile promotes only `ArrayBuffer`, `arraybuffer-transfer`, and
+  `align-detached-buffer-semantics-with-web-reality`;
+  `resizable-arraybuffer` remains deliberately unpromoted until its wider view
+  dependencies are coherent. The profile now has 79 reviewed features and 802
+  audited negative paths, with SHA-256
+  `9b155f41c9c7541423c45b57da1bb805d6e7cf350ec7d6442d6700424afdbafc`.
+  The exact R3am/R3an full-vector join retains all 102,037 keys, adds 216
+  passes and 252 runnable variants, and has zero previous-pass regression.
+  The resulting vector has 51,193 passes, 52,468 runnable variants, and 52,419
+  non-unsupported observed outcomes: 50.17% raw, 61.26% against the
+  QuickJS-exclusion lower-bound denominator, and 97.66% observed. Full
+  TSV/JSONL SHA-256 values are
+  `12a60e9d1cd3e30b8b33e095ef226f50f56706bed942cdc465c15cc3463d45fe`
+  and
+  `814f8e1e6e99dba7778c3ba8bc4b26f4015ebe0130c1e5cc5f1e1c55653a8fb2`.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -6411,6 +6458,12 @@ R3am moves completion-aware object dispatch into the new 1,706-line
 `runtime/intrinsics/proxy.rs` owner. The main facade is 9,904 lines, eight
 below its 9,912-line R3al baseline; the arena trust boundary grows to 21,034
 lines for Proxy edges, validation, and unique-shape mutation.
+R3an keeps ArrayBuffer installation, dispatch, and all observable algorithms
+in the independent `runtime/intrinsics/array_buffer.rs` owner; `runtime.rs`
+remains below 10,000 lines rather than absorbing that intrinsic family. The
+branded `Vec<u8>` payload, realm roots, mutation boundary, and backing-store
+validation still make `heap.rs` explicit extraction debt, but that arena debt
+does not obscure or replace the dedicated intrinsic owner.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -6746,7 +6799,10 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_for_await_of -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_proxy -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_array_buffer -- --nocapture
 ./scripts/test-test262-proxy.sh
+./scripts/test-test262-array-buffer.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -6794,6 +6850,10 @@ constructor closing order, ordered `SameValueZero` records, live iteration,
 callback mutation, realm ownership, and GC/atom edges. The Set target separately
 locks its independent brands, exact aliases, set-like protocol and all seven
 composition methods under the same mutation, realm, and lifetime boundaries.
+The ArrayBuffer target locks its branded backing store, fixed/resizable and
+detached metadata, constructor/species/accessor graph, resize/slice/transfer
+semantics, host detachment, allocation failure, realm ownership, and GC
+lifetime against pinned QuickJS.
 The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching

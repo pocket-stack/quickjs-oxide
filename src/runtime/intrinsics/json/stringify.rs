@@ -335,6 +335,7 @@ impl Runtime {
             | ObjectPayload::Primitive(PrimitiveObjectData::Symbol(_))
             | ObjectPayload::Date(_)
             | ObjectPayload::RegExp(_)
+            | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
