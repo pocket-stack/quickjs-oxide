@@ -2496,6 +2496,7 @@ impl VmHost for RuntimeVmHost {
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::DataView(_)
+            | ObjectPayload::TypedArray(_)
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)

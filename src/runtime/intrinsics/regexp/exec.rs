@@ -142,6 +142,7 @@ impl Runtime {
                 | ObjectPayload::Date(_)
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::DataView(_)
+                | ObjectPayload::TypedArray(_)
                 | ObjectPayload::GlobalObject { .. }
                 | ObjectPayload::Error
                 | ObjectPayload::StringIterator { .. }

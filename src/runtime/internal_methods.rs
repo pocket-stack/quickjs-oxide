@@ -200,6 +200,7 @@ impl Runtime {
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::DataView(_)
+                | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }
@@ -671,6 +672,9 @@ impl Runtime {
         object: &ObjectRef,
     ) -> Result<NativeConversion<bool>, RuntimeError> {
         let Some(_) = self.proxy_snapshot_if_any(object)? else {
+            if self.typed_array_is_object(object)? && self.typed_array_has_rab_backing(object)? {
+                return Ok(NativeConversion::Value(false));
+            }
             self.prevent_extensions(object)?;
             return Ok(NativeConversion::Value(true));
         };
@@ -710,6 +714,16 @@ impl Runtime {
     ) -> Result<NativeConversion<bool>, RuntimeError> {
         if self.proxy_snapshot_if_any(object)?.is_some() {
             return self.proxy_has_property(realm, object, key);
+        }
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            return Ok(NativeConversion::Value(match numeric {
+                CanonicalNumericIndex::Valid(index) => self
+                    .typed_array_get_index_descriptor(object, index)?
+                    .is_some(),
+                CanonicalNumericIndex::Invalid => false,
+            }));
         }
         if self.has_own_property(object, key)? {
             return Ok(NativeConversion::Value(true));
@@ -772,6 +786,17 @@ impl Runtime {
         if self.proxy_snapshot_if_any(object)?.is_some() {
             return self.proxy_get(realm, object, key, receiver);
         }
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            let value = match numeric {
+                CanonicalNumericIndex::Valid(index) => self
+                    .typed_array_read_index(object, index)?
+                    .unwrap_or(Value::Undefined),
+                CanonicalNumericIndex::Invalid => Value::Undefined,
+            };
+            return Ok(Completion::Return(value));
+        }
         let own = match self.internal_get_own_property(realm, object, key)? {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -820,6 +845,17 @@ impl Runtime {
                 Completion::Return(value) => NativeConversion::Value(Some(value)),
                 Completion::Throw(value) => NativeConversion::Throw(value),
             });
+        }
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            let value = match numeric {
+                CanonicalNumericIndex::Valid(index) => self
+                    .typed_array_read_index(object, index)?
+                    .unwrap_or(Value::Undefined),
+                CanonicalNumericIndex::Invalid => Value::Undefined,
+            };
+            return Ok(NativeConversion::Value(Some(value)));
         }
         let own = match self.internal_get_own_property(realm, object, key)? {
             NativeConversion::Value(value) => value,
@@ -916,13 +952,16 @@ impl Runtime {
         receiver: &Value,
     ) -> Result<bool, RuntimeError> {
         if let Value::Object(receiver) = receiver
-            && self.proxy_snapshot_if_any(receiver)?.is_some()
+            && (self.proxy_snapshot_if_any(receiver)?.is_some()
+                || self.typed_array_is_object(receiver)?)
         {
             return Ok(false);
         }
         let mut current = Some(object.clone());
         while let Some(object) = current {
-            if self.proxy_snapshot_if_any(&object)?.is_some() {
+            if self.proxy_snapshot_if_any(&object)?.is_some()
+                || self.typed_array_is_object(&object)?
+            {
                 return Ok(false);
             }
             current = self.get_prototype_of(&object)?;
@@ -940,6 +979,46 @@ impl Runtime {
     ) -> Result<NativeConversion<InternalSetResult>, RuntimeError> {
         if self.proxy_snapshot_if_any(object)?.is_some() {
             return self.proxy_set(realm, object, key, value, receiver);
+        }
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            let receiver_is_target =
+                matches!(&receiver, Value::Object(receiver) if receiver == object);
+            match numeric {
+                CanonicalNumericIndex::Valid(index) if receiver_is_target => {
+                    return Ok(
+                        match self.typed_array_set_index(realm, object, index, &value)? {
+                            NativeConversion::Value(()) => {
+                                NativeConversion::Value(InternalSetResult::Accepted)
+                            }
+                            NativeConversion::Throw(value) => NativeConversion::Throw(value),
+                        },
+                    );
+                }
+                CanonicalNumericIndex::Valid(index) => {
+                    if self
+                        .typed_array_get_index_descriptor(object, index)?
+                        .is_none()
+                    {
+                        return Ok(NativeConversion::Value(InternalSetResult::Accepted));
+                    }
+                }
+                CanonicalNumericIndex::Invalid if receiver_is_target => {
+                    let element = self.typed_array_snapshot(object)?.element;
+                    return Ok(
+                        match self.typed_array_convert_element(realm, element, &value)? {
+                            NativeConversion::Value(_) => {
+                                NativeConversion::Value(InternalSetResult::Accepted)
+                            }
+                            NativeConversion::Throw(value) => NativeConversion::Throw(value),
+                        },
+                    );
+                }
+                CanonicalNumericIndex::Invalid => {
+                    return Ok(NativeConversion::Value(InternalSetResult::Accepted));
+                }
+            }
         }
         if self.ordinary_set_fast_path_available(object, &receiver)? {
             return match self.prepare_set_property_with_receiver_in_realm(

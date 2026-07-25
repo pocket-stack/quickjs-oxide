@@ -141,10 +141,11 @@ impl Runtime {
     }
 
     /// Mirror the representation-sensitive branch in
-    /// `build_for_in_iterator`: a QuickJS fast Array or Arguments object stays
-    /// count-only only when its ordinary shape has no other enumerable field.
-    /// Rust stores dense elements in that shape too, so the tracked prefix is
-    /// excluded from this check.
+    /// `build_for_in_iterator`: a QuickJS fast Array, Arguments, or TypedArray
+    /// stays count-only only when its ordinary shape has no other enumerable
+    /// field. Rust stores Array/Arguments dense elements in that shape too, so
+    /// their tracked prefix is excluded from this check. TypedArray integer
+    /// indices are virtual and therefore never occur in the ordinary shape.
     fn for_in_fast_array_count(&self, object: &ObjectRef) -> Result<Option<u32>, RuntimeError> {
         let state = self.0.state.borrow();
         let object_data = state.heap.object(object.object_id())?;
@@ -156,6 +157,27 @@ impl Runtime {
                 fast_len: Some(fast_len),
                 ..
             } => *fast_len,
+            ObjectPayload::TypedArray(data) => {
+                let buffer = state.heap.array_buffer_state(data.view.buffer)?;
+                let byte_length = if buffer.detached || data.view.byte_offset > buffer.byte_length {
+                    0
+                } else {
+                    match data.view.fixed_byte_length {
+                        Some(length)
+                            if data
+                                .view
+                                .byte_offset
+                                .checked_add(length)
+                                .is_none_or(|end| end > buffer.byte_length) =>
+                        {
+                            0
+                        }
+                        Some(length) => length,
+                        None => buffer.byte_length - data.view.byte_offset,
+                    }
+                };
+                byte_length / u32::from(data.element.byte_length())
+            }
             ObjectPayload::Ordinary
             | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson

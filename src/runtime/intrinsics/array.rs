@@ -3744,17 +3744,26 @@ impl Runtime {
             });
         };
         let source = ObjectRef::from_borrowed_handle(self.clone(), source)?;
-        let length_key = self.intern_property_key("length")?;
-        let length_value = match self.get_property_in_realm(realm, &source, &length_key)? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => {
-                return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+        let length = if self.typed_array_is_object(&source)? {
+            match self.typed_array_validated_length(realm, &source)? {
+                NativeConversion::Value(length) => length,
+                NativeConversion::Throw(value) => {
+                    return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+                }
             }
-        };
-        let length = match self.native_to_number(realm, &length_value)? {
-            NativeConversion::Value(value) => Self::to_uint32_number(value),
-            NativeConversion::Throw(value) => {
-                return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+        } else {
+            let length_key = self.intern_property_key("length")?;
+            let length_value = match self.get_property_in_realm(realm, &source, &length_key)? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => {
+                    return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+                }
+            };
+            match self.native_to_number(realm, &length_value)? {
+                NativeConversion::Value(value) => Self::to_uint32_number(value),
+                NativeConversion::Throw(value) => {
+                    return Ok(NativeInvokeOutcome::Completion(Completion::Throw(value)));
+                }
             }
         };
         if index >= length {

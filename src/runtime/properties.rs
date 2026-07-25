@@ -84,6 +84,7 @@ impl Runtime {
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::DataView(_)
+            | ObjectPayload::TypedArray(_)
             | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
@@ -139,6 +140,16 @@ impl Runtime {
     ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            return match numeric {
+                CanonicalNumericIndex::Valid(index) => {
+                    self.typed_array_get_index_descriptor(object, index)
+                }
+                CanonicalNumericIndex::Invalid => Ok(None),
+            };
+        }
         if let Some(property) = self.string_exotic_own_property(object, key)? {
             return Ok(Some(property));
         }
@@ -628,6 +639,36 @@ impl Runtime {
         self.validate_descriptor_domains(descriptor)?;
         if descriptor.is_mixed_descriptor() {
             return Err(PropertyDefinitionError::InvalidDescriptor.into());
+        }
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            let CanonicalNumericIndex::Valid(index) = numeric else {
+                return Ok(PropertyDefineOutcome::Defined(false));
+            };
+            if let Some(realm) = realm {
+                return Ok(
+                    match self.typed_array_define_index(realm, object, index, descriptor)? {
+                        NativeConversion::Value(defined) => PropertyDefineOutcome::Defined(defined),
+                        NativeConversion::Throw(value) => PropertyDefineOutcome::Throw(value),
+                    },
+                );
+            }
+            if descriptor.is_accessor_descriptor()
+                || matches!(descriptor.writable, DescriptorField::Present(false))
+                || matches!(descriptor.enumerable, DescriptorField::Present(false))
+                || matches!(descriptor.configurable, DescriptorField::Present(false))
+            {
+                return Ok(PropertyDefineOutcome::Defined(false));
+            }
+            if let DescriptorField::Present(value) = &descriptor.value {
+                let element = self.typed_array_snapshot(object)?.element;
+                let bytes = self.typed_array_convert_primitive_element(element, value)?;
+                let _ = self.typed_array_write_converted_index(object, index, &bytes)?;
+            }
+            return self
+                .typed_array_get_index_descriptor(object, index)
+                .map(|descriptor| PropertyDefineOutcome::Defined(descriptor.is_some()));
         }
         if let Some(defined) = self.define_arguments_index(object, key, descriptor)? {
             return Ok(PropertyDefineOutcome::Defined(defined));
@@ -1145,6 +1186,16 @@ impl Runtime {
     ) -> Result<bool, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            return match numeric {
+                CanonicalNumericIndex::Valid(index) => self
+                    .typed_array_get_index_descriptor(object, index)
+                    .map(|descriptor| descriptor.is_some()),
+                CanonicalNumericIndex::Invalid => Ok(false),
+            };
+        }
         if self.string_exotic_index_value(object, key)?.is_some() {
             return Ok(true);
         }
@@ -1162,6 +1213,16 @@ impl Runtime {
         key: &PropertyKey,
     ) -> Result<bool, RuntimeError> {
         self.validate_object_and_key(object, key)?;
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            return match numeric {
+                CanonicalNumericIndex::Valid(index) => self
+                    .typed_array_get_index_descriptor(object, index)
+                    .map(|descriptor| descriptor.is_some()),
+                CanonicalNumericIndex::Invalid => Ok(false),
+            };
+        }
         if self.string_exotic_index_value(object, key)?.is_some() {
             return Ok(true);
         }
@@ -1184,6 +1245,14 @@ impl Runtime {
     ) -> Result<bool, RuntimeError> {
         let _operation = self.operation();
         self.validate_object_and_key(object, key)?;
+        if self.typed_array_is_object(object)?
+            && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
+        {
+            return match numeric {
+                CanonicalNumericIndex::Valid(index) => self.typed_array_delete_index(object, index),
+                CanonicalNumericIndex::Invalid => Ok(true),
+            };
+        }
         if self.string_exotic_index_value(object, key)?.is_some() {
             return Ok(false);
         }
@@ -1224,6 +1293,7 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::DataView(_)
+                | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Proxy(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -1350,6 +1420,10 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("object"));
         }
         let string_length = self.string_exotic_length(object)?;
+        let typed_array_length = self
+            .typed_array_is_object(object)?
+            .then(|| self.typed_array_current_length(object))
+            .transpose()?;
         let atoms = {
             let state = self.0.state.borrow();
             let object = state.heap.object(object.object_id())?;
@@ -1375,6 +1449,11 @@ impl Runtime {
             let length = u32::try_from(length).map_err(|_| {
                 RuntimeError::Invariant("String wrapper length exceeded QuickJS index space")
             })?;
+            for index in 0..length {
+                keys.push(self.intern_property_key(&index.to_string())?);
+            }
+        }
+        if let Some(length) = typed_array_length {
             for index in 0..length {
                 keys.push(self.intern_property_key(&index.to_string())?);
             }

@@ -14,8 +14,8 @@ timeout_ms=30000
 paths=464
 variants=904
 runnable=829
-passes=811
-failures=12
+passes=823
+failures=0
 unsupported=81
 skipped=0
 features=36
@@ -23,8 +23,8 @@ features_sha256=1b66e14dbaac042968a446e9765cc144e54e6e027c6b1665186173a130699df3
 manifest_sha256=ef2395cd3bd268d7ba1010773651408826452feaed121f8f2d4c0e6afeed66f3
 manifest_file_sha256=ef2395cd3bd268d7ba1010773651408826452feaed121f8f2d4c0e6afeed66f3
 keys_sha256=0ec3bfa0ffaec0ddf6e20512be35ab866d3e07658cddaf3e88f29f7d64b97bfd
-nonpass_sha256=323c76b74e94c0f585d92e371ee69aa753c505ca683dd6a0ae42afaa53a76fda
-tsv_sha256=2e6f22c51fa30db9a3507aa60371c71afb3669840b624d09382119415962662c
-jsonl_sha256=83e064472fdfd7154be4d1b57a21ec7628ee4b6d785f9b0f6c9af8e82848d1cf
-summary=harness-error=12 pass=811 unsupported-host-create-realm=74 unsupported-module=1 unsupported-parser=6
+nonpass_sha256=e7334c23b1988aefe2d5a18a1ae277d6b25db39b72a9d0e01c64c8dab2552599
+tsv_sha256=45975febdc9b840572918c737fc17ece6924ca2ddad98303c5c56eeb3d0e69a7
+jsonl_sha256=bccb04435e9e03d23eb161f341e9376bf0820e6838fac10254a9cb4eb401ca4f
+summary=pass=823 unsupported-host-create-realm=74 unsupported-module=1 unsupported-parser=6
 quickjs_variants=904

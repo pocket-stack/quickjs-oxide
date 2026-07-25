@@ -2,6 +2,7 @@ use super::*;
 
 mod array;
 mod array_buffer;
+pub(in crate::runtime) use array_buffer::typed_array::CanonicalNumericIndex;
 pub(super) mod date;
 mod error;
 mod eval;

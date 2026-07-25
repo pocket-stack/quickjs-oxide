@@ -733,6 +733,7 @@ impl Runtime {
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::DataView(_)
+            | ObjectPayload::TypedArray(_)
             | ObjectPayload::Proxy(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)

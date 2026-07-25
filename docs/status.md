@@ -18,17 +18,17 @@ claim full parity.
   fully authenticated async-function and async-iteration stack into that
   global profile. R3am then adds the scoped Proxy internal-method gate without
   globally admitting the feature tag. R3an adds the branded ArrayBuffer
-  backing-store/intrinsic milestone, and R3ao adds the independently owned
-  DataView intrinsic with all 11 getter/setter families plus fixed and
-  length-tracking resizable-buffer views. The vector has 51,707 passes and
-  52,468 runnable variants: 50.67% raw, a 61.88% lower bound after the 18,475
-  pinned QuickJS target exclusions, or 98.64% among the 52,419 variants with a
-  non-unsupported observed outcome. It records 18 parse failures and 587
-  runtime failures;
+  backing-store/intrinsic milestone, R3ao adds the independently owned DataView
+  intrinsic, and R3ap adds the shared kernel for all 12 concrete TypedArray
+  classes without globally admitting the broad TypedArray feature tag. The
+  vector has 51,902 passes and 52,468 runnable variants: 50.87% raw, a 62.11%
+  lower bound after the 18,475 pinned QuickJS target exclusions, or 99.01%
+  among the 52,419 variants with a non-unsupported observed outcome. It records
+  18 parse failures, 440 runtime failures, and 57 harness failures;
   current full TSV/JSONL SHA-256 values are
-  `3d79ecd1349488f03e8288a9a0f41b4bc5e8b70573e8d41121438aa893940990`
+  `8a1b83df5e28641fb57d5d4a6fe29ed8c5b1f962e82c98f6acbce0cf595e85e5`
   and
-  `b233a6fe08dc14d0bd428f537cd9693f37a3d1d2a4f5d2b49881f9607ca60996`.
+  `a3f7a5952f67ab7e1c8055d8ef29f2645700c8aa6124411644c8cb6058684052`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3123,6 +3123,53 @@ claim full parity.
   `3d79ecd1349488f03e8288a9a0f41b4bc5e8b70573e8d41121438aa893940990`
   and
   `b233a6fe08dc14d0bd428f537cd9693f37a3d1d2a4f5d2b49881f9607ca60996`.
+
+  R3ap adds one branded payload and one behavioral kernel for all 12 concrete
+  TypedArray classes in pinned QuickJS class-id order: Uint8Clamped, signed and
+  unsigned integer widths, BigInt64/BigUint64, and Float16/32/64. Concrete
+  constructors and prototypes share the hidden `%TypedArray%` graph. Length,
+  buffer, byte length, byte offset, tag, values iteration, integer-indexed
+  internal methods, ArrayBuffer view detection, detach, and fixed or
+  length-tracking resizable-buffer state all derive from the live backing
+  store. Constructor and `set` coercion/reentrancy order, same-kind memmove,
+  receiver-aware assignment, dynamic own keys, `for-in` refresh, GC edges, and
+  host property definition are locked by Rust tests. The different-kind
+  overlapping `set` path deliberately reproduces pinned QuickJS's observable
+  `[2, 2]` result rather than substituting the specification's temporary-copy
+  result.
+
+  The audited candidate contains 2,361 paths / 4,669 variants. Its
+  checksum-bound exclusion ledger assigns 1,626 paths to later prototype
+  method families or explicit cross-realm, SharedArrayBuffer, WeakMap, Math,
+  and IsHTMLDDA dependencies. The resulting shared-core manifest contains 735
+  paths / 1,447 variants; Oxide and pinned QuickJS both pass 1,447/1,447 with
+  zero failure, unsupported, skip, or timeout. Profile, manifest, exclusion
+  ledger, key-stream, TSV, and JSONL SHA-256 values are
+  `046200aa1abd9afa11a63602d5a8ea073ba6dd1ccee2e910775731c175378402`,
+  `9ebae7adb9e1c033a71c0abf42aa003e0e03121da24ef98ca939e1f360a03777`,
+  `2b18c745fe886709f578ba9cd927cea21c98dca9c02a6664c94f6fce3385e400`,
+  `2d1e474a52971496b669d5f3d650dece8c21069944a463356954442dbbf75362`,
+  `816005701f3d6d5273860454dcde466bd7bfe64d24c44834ffea5d5363af71d2`,
+  and
+  `fb86a625a7bc9eddf043db9be4b736d65e4d023972219d7569ce082826cfd92c`.
+  Static `from`/`of`, `set`, and iterator entries/keys are present and have
+  directed coverage, but remain outside this all-green claim until their
+  complete method-family cohorts land.
+
+  The exact R3ao/R3ap full-vector join retains all 102,037 unique keys with no
+  missing, extra, duplicate, or previous-pass-regression row. It records 149
+  `fail-runtime -> pass`, 46 `harness-error -> pass`, and two
+  `harness-error -> fail-runtime` transitions; the latter are both modes of
+  `staging/sm/Math/atanh-approx.js`, which now pass the TypedArray harness and
+  expose the independent Math-accuracy frontier. Another 44 rows retain their
+  outcome while advancing from missing constructors to honest later-method or
+  external-dependency details. The 197-transition stream has SHA-256
+  `2b94d55d59acaf0daa969cbd7c3af8d0ada968f70713c304dbbbe83f48620304`.
+  The classified vector reaches 51,902 passes with unchanged runnable and
+  observed denominators; full TSV/JSONL hashes are
+  `8a1b83df5e28641fb57d5d4a6fe29ed8c5b1f962e82c98f6acbce0cf595e85e5`
+  and
+  `a3f7a5952f67ab7e1c8055d8ef29f2645700c8aa6124411644c8cb6058684052`.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -6520,6 +6567,13 @@ the facade. `heap.rs` reaches 22,334 lines because the branded view payload,
 realm roots, traced ArrayBuffer edge, mutation validation, and adversarial
 lifecycle coverage remain at the arena trust boundary; that file is still
 explicit extraction debt.
+R3ap keeps `runtime.rs` bounded at 9,950 lines. The complete shared TypedArray
+kernel lives in the independent 1,872-line
+`runtime/intrinsics/array_buffer/typed_array.rs` module, with 1,243 lines of
+directed adversarial tests in its nested test module. `heap.rs` reaches 22,884
+lines because the branded payload, 12 realm prototype roots, traced backing
+edge, validation, and allocation-free backing-store memmove remain at the
+arena trust boundary; that file remains explicit extraction debt.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -6862,6 +6916,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-array-buffer.sh
 ./scripts/test-test262-data-view.sh
+./scripts/test-test262-typed-array-core.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -6917,6 +6972,11 @@ The DataView target locks its complete constructor/prototype graph, all 11
 getter/setter families, endian and numeric conversion behavior,
 `ArrayBuffer.isView`, detach and error ordering, and fixed-versus-tracking
 resizable-buffer shrink/grow behavior against the same pinned oracle.
+The TypedArray core target locks the shared 12-class graph and backing payload,
+constructor/coercion order, integer-indexed exotic internal methods, live
+resizable-buffer bounds, detach, values iteration, `for-in`, overlap, realm,
+host-property, and GC seams against the same pinned oracle. Its exclusion
+ledger keeps later method families and external dependencies visible.
 The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching

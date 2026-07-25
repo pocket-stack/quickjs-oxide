@@ -106,6 +106,7 @@ impl Runtime {
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::DataView(_)
+                | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Array { .. }
                 | ObjectPayload::Arguments { .. }
                 | ObjectPayload::ArrayIterator { .. }

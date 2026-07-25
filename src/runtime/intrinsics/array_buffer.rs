@@ -16,6 +16,7 @@ use super::quickjs_to_int64_free;
 mod data_view;
 #[cfg(test)]
 mod tests;
+pub(in crate::runtime) mod typed_array;
 
 const MAX_ARRAY_BUFFER_LENGTH: u64 = i32::MAX as u64;
 const MAX_SAFE_INTEGER_I64: i64 = (1_i64 << 53) - 1;
@@ -330,13 +331,12 @@ impl Runtime {
             let state = self.0.state.borrow();
             matches!(
                 state.heap.object(object.object_id())?.payload,
-                ObjectPayload::DataView(_)
+                ObjectPayload::DataView(_) | ObjectPayload::TypedArray(_)
             )
         } else {
             false
         };
         // Proxies intentionally do not forward this internal-slot brand test.
-        // Concrete TypedArray payloads will extend the predicate here.
         Ok(Completion::Return(Value::Bool(is_view)))
     }
 

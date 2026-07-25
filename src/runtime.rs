@@ -26,6 +26,7 @@ mod qjs_host;
 mod template_object;
 mod vm_host;
 
+use self::intrinsics::CanonicalNumericIndex;
 use self::intrinsics::date::{DateHost, SystemDateHost};
 use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::PromiseRejectionEvent;
@@ -1063,6 +1064,13 @@ impl Runtime {
             &global_object,
         )
         .expect("ArrayBuffer intrinsic initialization must succeed");
+        self.initialize_typed_array_intrinsics(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("TypedArray intrinsic initialization must succeed");
         self.initialize_data_view_intrinsic(
             realm,
             &function_prototype,
@@ -4918,6 +4926,7 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::DataView(_)
+                | ObjectPayload::TypedArray(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -4988,6 +4997,7 @@ impl Runtime {
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::DataView(_)
+            | ObjectPayload::TypedArray(_)
             | ObjectPayload::AsyncFunctionState(_)
             | ObjectPayload::RawJson
             | ObjectPayload::Promise(_)
@@ -6402,6 +6412,7 @@ impl Runtime {
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
                         | ObjectPayload::DataView(_)
+                        | ObjectPayload::TypedArray(_)
                         | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
@@ -6758,6 +6769,7 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::DataView(_)
+                | ObjectPayload::TypedArray(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson
                 | ObjectPayload::Promise(_)
@@ -6986,6 +6998,7 @@ impl Runtime {
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
                         | ObjectPayload::DataView(_)
+                        | ObjectPayload::TypedArray(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
                         | ObjectPayload::Promise(_)
@@ -7110,6 +7123,7 @@ impl Runtime {
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
                         | ObjectPayload::DataView(_)
+                        | ObjectPayload::TypedArray(_)
                         | ObjectPayload::Proxy(_)
                         | ObjectPayload::AsyncFunctionState(_)
                         | ObjectPayload::RawJson
@@ -7497,6 +7511,7 @@ impl Runtime {
                     ObjectPayload::Ordinary
                     | ObjectPayload::ArrayBuffer(_)
                     | ObjectPayload::DataView(_)
+                    | ObjectPayload::TypedArray(_)
                     | ObjectPayload::Proxy(_)
                     | ObjectPayload::AsyncFunctionState(_)
                     | ObjectPayload::RawJson
@@ -8415,6 +8430,7 @@ impl Runtime {
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::DataView(_)
+                | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Proxy(_)
                 | ObjectPayload::AsyncFunctionState(_)
                 | ObjectPayload::RawJson

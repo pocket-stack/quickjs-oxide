@@ -481,6 +481,16 @@ pub struct DataViewRealmData {
     pub prototype: ObjectId,
 }
 
+/// Realm-local concrete TypedArray class prototypes.
+///
+/// QuickJS roots these twelve identities in `ctx->class_proto`. The hidden
+/// abstract prototype stays reachable through their `[[Prototype]]` edges;
+/// retaining it separately here would add an arena root that upstream lacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypedArrayRealmData {
+    pub prototypes: [ObjectId; TypedArrayElementKind::COUNT],
+}
+
 /// Realm-owned roots which participate in QuickJS's cycle graph.
 ///
 /// The bootstrap roots needed by ordinary script evaluation are explicit;
@@ -537,6 +547,9 @@ pub struct ContextData {
     /// Realm-local `%DataView.prototype%` class root, attached after the
     /// public constructor/prototype cycle has been initialized and validated.
     pub data_view: Option<DataViewRealmData>,
+    /// Realm-local concrete TypedArray prototype roots. The hidden abstract
+    /// prototype stays reachable through the concrete prototype graph.
+    pub typed_array: Option<TypedArrayRealmData>,
     /// Realm-local `%GeneratorPrototype%` and
     /// `%GeneratorFunction.prototype%`, attached after their reciprocal
     /// constructor/prototype graph has been initialized.
@@ -610,6 +623,7 @@ impl ContextData {
             set: None,
             array_buffer: None,
             data_view: None,
+            typed_array: None,
             generator: None,
             async_function: None,
             async_generator: None,
@@ -4686,6 +4700,18 @@ pub struct ArrayBufferViewData {
     pub fixed_byte_length: Option<u32>,
 }
 
+/// Shared integer-indexed view layout carried by all twelve TypedArray classes.
+///
+/// The nested byte-oriented view is deliberately the same substrate used by
+/// DataView and mirrors QuickJS's `JSTypedArray.length`. `None` denotes a
+/// length-tracking view over a resizable ArrayBuffer; fixed byte lengths are
+/// validated to be divisible by the selected element width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypedArrayData {
+    pub view: ArrayBufferViewData,
+    pub element: TypedArrayElementKind,
+}
+
 /// Typed hidden payload carried only by runtime-created native functions.
 ///
 /// The shared `already_resolved` cell is intentionally a non-arena leaf: the
@@ -4875,6 +4901,12 @@ pub enum ObjectPayload {
     /// detached and currently out-of-bounds views retain this structural
     /// payload and become observable errors only when accessed.
     DataView(ArrayBufferViewData),
+    /// One of QuickJS's twelve fast integer-indexed TypedArray classes.
+    ///
+    /// Element bytes remain owned by the branded ArrayBuffer. The durable view
+    /// metadata survives detach and resizable-buffer OOB transitions so a view
+    /// can recover when its backing store grows into range again.
+    TypedArray(TypedArrayData),
     NativeFunction {
         data: NativeFunctionData,
         internal: Option<InternalCallableData>,
@@ -4947,6 +4979,7 @@ pub enum ObjectKind {
     Proxy,
     ArrayBuffer,
     DataView,
+    TypedArray,
     NativeFunction,
     BoundFunction,
     BytecodeFunction,
@@ -5749,6 +5782,115 @@ pub enum DataViewNativeKind {
     Set(DataViewElementKind),
 }
 
+/// Concrete element representation selected by a TypedArray constructor.
+///
+/// The order deliberately matches QuickJS's contiguous class-id range:
+/// Uint8Clamped, signed/unsigned integer widths, BigInt widths, then floating
+/// point widths. It is also the stable index into realm prototype roots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum TypedArrayElementKind {
+    Uint8Clamped,
+    Int8,
+    Uint8,
+    Int16,
+    Uint16,
+    Int32,
+    Uint32,
+    BigInt64,
+    BigUint64,
+    Float16,
+    Float32,
+    Float64,
+}
+
+impl TypedArrayElementKind {
+    pub const COUNT: usize = 12;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Uint8Clamped,
+        Self::Int8,
+        Self::Uint8,
+        Self::Int16,
+        Self::Uint16,
+        Self::Int32,
+        Self::Uint32,
+        Self::BigInt64,
+        Self::BigUint64,
+        Self::Float16,
+        Self::Float32,
+        Self::Float64,
+    ];
+
+    /// Width of one element in backing-store bytes.
+    #[must_use]
+    pub const fn byte_length(self) -> u8 {
+        match self {
+            Self::Uint8Clamped | Self::Int8 | Self::Uint8 => 1,
+            Self::Int16 | Self::Uint16 | Self::Float16 => 2,
+            Self::Int32 | Self::Uint32 | Self::Float32 => 4,
+            Self::BigInt64 | Self::BigUint64 | Self::Float64 => 8,
+        }
+    }
+
+    /// Whether indexed writes require `ToBigInt` rather than `ToNumber`.
+    #[must_use]
+    pub const fn is_bigint(self) -> bool {
+        matches!(self, Self::BigInt64 | Self::BigUint64)
+    }
+
+    /// Pinned QuickJS class/global spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Uint8Clamped => "Uint8ClampedArray",
+            Self::Int8 => "Int8Array",
+            Self::Uint8 => "Uint8Array",
+            Self::Int16 => "Int16Array",
+            Self::Uint16 => "Uint16Array",
+            Self::Int32 => "Int32Array",
+            Self::Uint32 => "Uint32Array",
+            Self::BigInt64 => "BigInt64Array",
+            Self::BigUint64 => "BigUint64Array",
+            Self::Float16 => "Float16Array",
+            Self::Float32 => "Float32Array",
+            Self::Float64 => "Float64Array",
+        }
+    }
+}
+
+/// Typed handler family for the abstract `%TypedArray%` graph, all concrete
+/// constructors, and the shared prototype method table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TypedArrayNativeKind {
+    BaseConstructor,
+    Constructor(TypedArrayElementKind),
+    From,
+    Of,
+    Species,
+    Length,
+    At,
+    With,
+    Buffer,
+    ByteLength,
+    ByteOffset,
+    Set,
+    Iterator(ArrayIteratorKind),
+    ToStringTag,
+    CopyWithin,
+    Iteration(ArrayIterationKind),
+    Reduce(ArrayReduceKind),
+    Fill,
+    Find(ArrayFindKind),
+    Reverse,
+    ToReversed,
+    Slice,
+    Subarray,
+    Sort,
+    ToSorted,
+    Join(ArrayJoinKind),
+    Search(ArraySearchKind),
+}
+
 /// Selector shared by the paired internal Promise resolving functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PromiseResolvingKind {
@@ -5839,6 +5981,7 @@ pub enum NativeFunctionId {
     SetIteratorNext,
     ArrayBuffer(ArrayBufferNativeKind),
     DataView(DataViewNativeKind),
+    TypedArray(TypedArrayNativeKind),
     Promise(PromiseNativeKind),
     AsyncFunctionResume(AsyncFunctionResumeKind),
     AsyncGeneratorResume(AsyncGeneratorResumeKind),
@@ -6314,6 +6457,21 @@ impl NativeFunctionId {
                 | SetNativeKind::Iterator(_),
             )
             | Self::ArrayBuffer(ArrayBufferNativeKind::IsView)
+            | Self::TypedArray(
+                TypedArrayNativeKind::From
+                | TypedArrayNativeKind::Of
+                | TypedArrayNativeKind::At
+                | TypedArrayNativeKind::With
+                | TypedArrayNativeKind::Set
+                | TypedArrayNativeKind::CopyWithin
+                | TypedArrayNativeKind::Fill
+                | TypedArrayNativeKind::Reverse
+                | TypedArrayNativeKind::ToReversed
+                | TypedArrayNativeKind::Slice
+                | TypedArrayNativeKind::Subarray
+                | TypedArrayNativeKind::Sort
+                | TypedArrayNativeKind::ToSorted,
+            )
             | Self::Promise(
                 PromiseNativeKind::Then
                 | PromiseNativeKind::Catch
@@ -6456,6 +6614,16 @@ impl NativeFunctionId {
                     cproto: NativeCProto::GenericMagic,
                 }
             }
+            Self::TypedArray(
+                TypedArrayNativeKind::Iterator(_)
+                | TypedArrayNativeKind::Iteration(_)
+                | TypedArrayNativeKind::Reduce(_)
+                | TypedArrayNativeKind::Find(_)
+                | TypedArrayNativeKind::Join(_)
+                | TypedArrayNativeKind::Search(_),
+            ) => NativeFunctionDescriptor {
+                cproto: NativeCProto::GenericMagic,
+            },
             Self::GlobalUriCodec(
                 GlobalUriCodecKind::DecodeUri
                 | GlobalUriCodecKind::DecodeUriComponent
@@ -6477,6 +6645,12 @@ impl NativeFunctionId {
                     cproto: NativeCProto::ConstructorOrFunctionMagic,
                 }
             }
+            Self::TypedArray(TypedArrayNativeKind::BaseConstructor) => NativeFunctionDescriptor {
+                cproto: NativeCProto::ConstructorOrFunction,
+            },
+            Self::TypedArray(TypedArrayNativeKind::Constructor(_)) => NativeFunctionDescriptor {
+                cproto: NativeCProto::ConstructorMagic,
+            },
             Self::ArrayConstructor
             | Self::ObjectConstructor
             | Self::IteratorConstructor
@@ -6504,6 +6678,14 @@ impl NativeFunctionId {
                 DataViewNativeKind::Buffer
                 | DataViewNativeKind::ByteLength
                 | DataViewNativeKind::ByteOffset,
+            )
+            | Self::TypedArray(
+                TypedArrayNativeKind::Species
+                | TypedArrayNativeKind::Length
+                | TypedArrayNativeKind::Buffer
+                | TypedArrayNativeKind::ByteLength
+                | TypedArrayNativeKind::ByteOffset
+                | TypedArrayNativeKind::ToStringTag,
             )
             | Self::Promise(PromiseNativeKind::Species) => NativeFunctionDescriptor {
                 cproto: NativeCProto::Getter,
@@ -7137,6 +7319,25 @@ impl ObjectData {
             is_constructor: false,
             kind: ObjectKind::DataView,
             payload: ObjectPayload::DataView(data),
+        }
+    }
+
+    /// Construct one genuine integer-indexed TypedArray over an ArrayBuffer.
+    #[must_use]
+    pub const fn typed_array(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        data: TypedArrayData,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::TypedArray,
+            payload: ObjectPayload::TypedArray(data),
         }
     }
 
@@ -7778,6 +7979,7 @@ impl Heap {
             | ObjectPayload::Proxy(_)
             | ObjectPayload::ArrayBuffer(_)
             | ObjectPayload::DataView(_)
+            | ObjectPayload::TypedArray(_)
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. }
             | ObjectPayload::Generator { .. }
@@ -8260,6 +8462,105 @@ impl Heap {
             unreachable!("context identity was validated before retaining ArrayBuffer roots")
         };
         context.array_buffer = Some(array_buffer);
+        Ok(())
+    }
+
+    /// Atomically publish the twelve concrete TypedArray class prototypes.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn attach_typed_array_intrinsics(
+        &mut self,
+        realm: ContextId,
+        base_constructor: ObjectId,
+        base_prototype: ObjectId,
+        constructors: [ObjectId; TypedArrayElementKind::COUNT],
+        typed_array: TypedArrayRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.typed_array.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has TypedArray intrinsic roots",
+            ));
+        }
+        let object_prototype = context.object_prototype;
+        let function_prototype = context.function_prototype;
+
+        let base_constructor_data = self.object(base_constructor)?;
+        if !base_constructor_data.is_constructor
+            || self.shape(base_constructor_data.shape)?.prototype() != Some(function_prototype)
+            || !matches!(
+                base_constructor_data.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::TypedArray(
+                            TypedArrayNativeKind::BaseConstructor
+                        ),
+                        realm: Some(target_realm),
+                        ..
+                    },
+                    internal: None,
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "TypedArray base constructor has an invalid realm or prototype",
+            ));
+        }
+
+        let base_prototype_data = self.object(base_prototype)?;
+        if base_prototype_data.kind != ObjectKind::Ordinary
+            || !matches!(base_prototype_data.payload, ObjectPayload::Ordinary)
+            || self.shape(base_prototype_data.shape)?.prototype() != Some(object_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "TypedArray base prototype is not an ordinary child of Object.prototype",
+            ));
+        }
+
+        for (index, element) in TypedArrayElementKind::ALL.into_iter().enumerate() {
+            let constructor = self.object(constructors[index])?;
+            if !constructor.is_constructor
+                || self.shape(constructor.shape)?.prototype() != Some(base_constructor)
+                || !matches!(
+                    constructor.payload,
+                    ObjectPayload::NativeFunction {
+                        data: NativeFunctionData {
+                            target: NativeFunctionId::TypedArray(
+                                TypedArrayNativeKind::Constructor(target_element)
+                            ),
+                            realm: Some(target_realm),
+                            ..
+                        },
+                        internal: None,
+                    } if target_realm == realm && target_element == element
+                )
+            {
+                return Err(HeapError::Invariant(
+                    "concrete TypedArray constructor has an invalid class graph",
+                ));
+            }
+            let prototype = self.object(typed_array.prototypes[index])?;
+            if prototype.kind != ObjectKind::Ordinary
+                || !matches!(prototype.payload, ObjectPayload::Ordinary)
+                || self.shape(prototype.shape)?.prototype() != Some(base_prototype)
+            {
+                return Err(HeapError::Invariant(
+                    "concrete TypedArray prototype has an invalid class graph",
+                ));
+            }
+        }
+
+        let edges = typed_array
+            .prototypes
+            .into_iter()
+            .map(RawId::Object)
+            .collect::<Vec<_>>();
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining TypedArray roots")
+        };
+        context.typed_array = Some(typed_array);
         Ok(())
     }
 
@@ -9886,6 +10187,86 @@ impl Heap {
                     unreachable!("ArrayBuffer range copy target was validated");
                 };
                 target_data.bytes[copied..copied + chunk_length]
+                    .copy_from_slice(&scratch[..chunk_length]);
+            }
+            copied += chunk_length;
+        }
+        Ok(())
+    }
+
+    /// Memmove one live byte range between ArrayBuffer backing stores.
+    ///
+    /// Unlike constructor/slice copying, TypedArray `set` may name overlapping
+    /// ranges in the same store and may start at a non-zero target offset.
+    /// `copy_within` supplies the allocation-free memmove path for that case.
+    pub(crate) fn move_array_buffer_range(
+        &mut self,
+        source: ObjectId,
+        target: ObjectId,
+        source_start: usize,
+        target_start: usize,
+        byte_count: usize,
+    ) -> Result<(), HeapError> {
+        let source_end = source_start
+            .checked_add(byte_count)
+            .ok_or(HeapError::Invariant(
+                "ArrayBuffer range move source overflowed usize",
+            ))?;
+        let target_end = target_start
+            .checked_add(byte_count)
+            .ok_or(HeapError::Invariant(
+                "ArrayBuffer range move target overflowed usize",
+            ))?;
+        {
+            let ObjectPayload::ArrayBuffer(source_data) = &self.object(source)?.payload else {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer range move source has another object class",
+                ));
+            };
+            let ObjectPayload::ArrayBuffer(target_data) = &self.object(target)?.payload else {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer range move target has another object class",
+                ));
+            };
+            if source_data.detached
+                || target_data.detached
+                || source_end > source_data.bytes.len()
+                || target_end > target_data.bytes.len()
+            {
+                return Err(HeapError::Invariant(
+                    "ArrayBuffer range move exceeded a live backing store",
+                ));
+            }
+        }
+        if source == target {
+            let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(source)?.payload else {
+                unreachable!("ArrayBuffer range move source was validated");
+            };
+            data.bytes
+                .copy_within(source_start..source_end, target_start);
+            return Ok(());
+        }
+
+        const COPY_CHUNK_BYTES: usize = 8 * 1024;
+        let mut scratch = [0_u8; COPY_CHUNK_BYTES];
+        let mut copied = 0usize;
+        while copied < byte_count {
+            let chunk_length = (byte_count - copied).min(COPY_CHUNK_BYTES);
+            {
+                let ObjectPayload::ArrayBuffer(source_data) = &self.object(source)?.payload else {
+                    unreachable!("ArrayBuffer range move source was validated");
+                };
+                let chunk_start = source_start + copied;
+                scratch[..chunk_length]
+                    .copy_from_slice(&source_data.bytes[chunk_start..chunk_start + chunk_length]);
+            }
+            {
+                let ObjectPayload::ArrayBuffer(target_data) = &mut self.object_mut(target)?.payload
+                else {
+                    unreachable!("ArrayBuffer range move target was validated");
+                };
+                let chunk_start = target_start + copied;
+                target_data.bytes[chunk_start..chunk_start + chunk_length]
                     .copy_from_slice(&scratch[..chunk_length]);
             }
             copied += chunk_length;
@@ -12971,6 +13352,7 @@ impl Heap {
                 | (ObjectKind::Proxy, ObjectPayload::Proxy(_))
                 | (ObjectKind::ArrayBuffer, ObjectPayload::ArrayBuffer(_))
                 | (ObjectKind::DataView, ObjectPayload::DataView(_))
+                | (ObjectKind::TypedArray, ObjectPayload::TypedArray(_))
                 | (
                     ObjectKind::NativeFunction,
                     ObjectPayload::NativeFunction { .. }
@@ -13058,6 +13440,35 @@ impl Heap {
             {
                 return Err(HeapError::Invariant(
                     "DataView has an invalid structural view layout",
+                ));
+            }
+        }
+        if let ObjectPayload::TypedArray(data) = &object.payload {
+            let view = data.view;
+            let ObjectPayload::ArrayBuffer(buffer) = &self.object(view.buffer)?.payload else {
+                return Err(HeapError::Invariant(
+                    "TypedArray backing object is not an ArrayBuffer",
+                ));
+            };
+            let width = u32::from(data.element.byte_length());
+            let structural_end = view
+                .fixed_byte_length
+                .map(|byte_length| u64::from(view.byte_offset) + u64::from(byte_length));
+            if object.is_constructor
+                || view.byte_offset > i32::MAX as u32
+                || view.byte_offset % width != 0
+                || view.fixed_byte_length.is_some_and(|byte_length| {
+                    byte_length > i32::MAX as u32 || byte_length % width != 0
+                })
+                || structural_end.is_some_and(|byte_end| byte_end > i32::MAX as u64)
+                || (view.fixed_byte_length.is_none() && buffer.max_byte_length.is_none())
+                || buffer.max_byte_length.is_some_and(|maximum| {
+                    view.byte_offset > maximum
+                        || structural_end.is_some_and(|byte_end| byte_end > u64::from(maximum))
+                })
+            {
+                return Err(HeapError::Invariant(
+                    "TypedArray has an invalid structural view layout",
                 ));
             }
         }
@@ -14043,7 +14454,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::Generator { .. } => 0,
-        ObjectPayload::DataView(_) => 1,
+        ObjectPayload::DataView(_) | ObjectPayload::TypedArray(_) => 1,
         ObjectPayload::Proxy(_) => 2,
         ObjectPayload::AsyncGenerator(data) => data
             .activation
@@ -14141,6 +14552,9 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::StringIterator { .. } => {}
         ObjectPayload::DataView(data) => {
             edges.push(RawId::Object(data.buffer));
+        }
+        ObjectPayload::TypedArray(data) => {
+            edges.push(RawId::Object(data.view.buffer));
         }
         ObjectPayload::IteratorHelper(data) => {
             edges.push(RawId::Object(data.source));
@@ -14449,6 +14863,11 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.array_buffer.map_or(0, |_| 1))
             .saturating_add(context.data_view.map_or(0, |_| 1))
+            .saturating_add(
+                context
+                    .typed_array
+                    .map_or(0, |_| TypedArrayElementKind::COUNT),
+            )
             .saturating_add(context.generator.map_or(0, |_| 2))
             .saturating_add(context.async_function.map_or(0, |_| 1))
             .saturating_add(context.async_generator.map_or(0, |_| 4))
@@ -14492,6 +14911,9 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     }
     if let Some(data_view) = context.data_view {
         edges.push(RawId::Object(data_view.prototype));
+    }
+    if let Some(typed_array) = context.typed_array {
+        edges.extend(typed_array.prototypes.into_iter().map(RawId::Object));
     }
     if let Some(generator) = context.generator {
         edges.push(RawId::Object(generator.prototype));
@@ -14685,6 +15107,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::RegExp(_)
         | ObjectPayload::ArrayBuffer(_)
         | ObjectPayload::DataView(_)
+        | ObjectPayload::TypedArray(_)
         | ObjectPayload::RegExpStringIterator { .. }
         | ObjectPayload::MapIterator { .. }
         | ObjectPayload::SetIterator { .. }
@@ -19161,6 +19584,133 @@ mod tests {
                     .descriptor()
                     .cproto,
                 NativeCProto::GenericMagic,
+            );
+        }
+    }
+
+    #[test]
+    fn typed_array_payloads_share_one_structural_view_kernel() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let resizable = heap
+            .allocate_object(ObjectData::array_buffer_from_bytes(
+                shape,
+                Vec::new(),
+                vec![0; 16],
+                Some(32),
+            ))
+            .unwrap();
+        let ordinary = leaf(&mut heap, shape);
+
+        assert_eq!(
+            heap.allocate_object(ObjectData::typed_array(
+                shape,
+                Vec::new(),
+                TypedArrayData {
+                    view: ArrayBufferViewData {
+                        buffer: ordinary,
+                        byte_offset: 0,
+                        fixed_byte_length: Some(0),
+                    },
+                    element: TypedArrayElementKind::Uint8,
+                },
+            )),
+            Err(HeapError::Invariant(
+                "TypedArray backing object is not an ArrayBuffer",
+            )),
+        );
+        assert_eq!(
+            heap.allocate_object(ObjectData::typed_array(
+                shape,
+                Vec::new(),
+                TypedArrayData {
+                    view: ArrayBufferViewData {
+                        buffer: resizable,
+                        byte_offset: 1,
+                        fixed_byte_length: Some(4),
+                    },
+                    element: TypedArrayElementKind::Uint16,
+                },
+            )),
+            Err(HeapError::Invariant(
+                "TypedArray has an invalid structural view layout",
+            )),
+        );
+
+        let tracking = heap
+            .allocate_object(ObjectData::typed_array(
+                shape,
+                Vec::new(),
+                TypedArrayData {
+                    view: ArrayBufferViewData {
+                        buffer: resizable,
+                        byte_offset: 4,
+                        fixed_byte_length: None,
+                    },
+                    element: TypedArrayElementKind::Uint32,
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            object_edges(heap.object(tracking).unwrap()),
+            vec![RawId::Shape(shape), RawId::Object(resizable)],
+        );
+        assert_eq!(heap.object_strong_count(resizable), Ok(2));
+
+        assert!(heap.resize_array_buffer_bytes(resizable, 2).unwrap());
+        assert_eq!(
+            heap.validate_object_layout(heap.object(tracking).unwrap()),
+            Ok(()),
+        );
+        heap.detach_array_buffer(resizable).unwrap();
+        assert_eq!(
+            heap.validate_object_layout(heap.object(tracking).unwrap()),
+            Ok(()),
+        );
+
+        assert_eq!(
+            heap.release_object(resizable).unwrap(),
+            HeapCleanup::default()
+        );
+        let cleanup = heap.release_object(tracking).unwrap();
+        assert_eq!(cleanup.finalized_objects, 2);
+        assert_eq!(heap.release_object(ordinary).unwrap().finalized_objects, 1);
+        assert_eq!(heap.release_shape(shape).unwrap().finalized_shapes, 1);
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn typed_array_native_descriptors_cover_all_concrete_classes() {
+        assert_eq!(
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::BaseConstructor)
+                .descriptor()
+                .cproto,
+            NativeCProto::ConstructorOrFunction,
+        );
+        let expected = [
+            (TypedArrayElementKind::Uint8Clamped, 1, false),
+            (TypedArrayElementKind::Int8, 1, false),
+            (TypedArrayElementKind::Uint8, 1, false),
+            (TypedArrayElementKind::Int16, 2, false),
+            (TypedArrayElementKind::Uint16, 2, false),
+            (TypedArrayElementKind::Int32, 4, false),
+            (TypedArrayElementKind::Uint32, 4, false),
+            (TypedArrayElementKind::BigInt64, 8, true),
+            (TypedArrayElementKind::BigUint64, 8, true),
+            (TypedArrayElementKind::Float16, 2, false),
+            (TypedArrayElementKind::Float32, 4, false),
+            (TypedArrayElementKind::Float64, 8, false),
+        ];
+        assert_eq!(TypedArrayElementKind::ALL.len(), expected.len());
+        for (index, (element, byte_length, is_bigint)) in expected.into_iter().enumerate() {
+            assert_eq!(TypedArrayElementKind::ALL[index], element);
+            assert_eq!(element.byte_length(), byte_length);
+            assert_eq!(element.is_bigint(), is_bigint);
+            assert_eq!(
+                NativeFunctionId::TypedArray(TypedArrayNativeKind::Constructor(element))
+                    .descriptor()
+                    .cproto,
+                NativeCProto::ConstructorMagic,
             );
         }
     }

@@ -224,6 +224,10 @@ const TEST262_DATA_VIEW_PROFILE_SHA256: &str =
     "485ea3baf6695767108fb9f7f346c3a82d5a3db000af4510d6d002b313990cc8";
 const TEST262_DATA_VIEW_MANIFEST_SHA256: &str =
     "3475b4a32f0a5f0ab50d5cd4e4843a7c7a59365298ecabcc5986b3fdd3f697e2";
+const TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256: &str =
+    "046200aa1abd9afa11a63602d5a8ea073ba6dd1ccee2e910775731c175378402";
+const TEST262_TYPED_ARRAY_CORE_MANIFEST_SHA256: &str =
+    "9ebae7adb9e1c033a71c0abf42aa003e0e03121da24ef98ca939e1f360a03777";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -821,6 +825,7 @@ enum OxideProfileKind {
     ObjectRestBinding,
     ArrayBuffer,
     DataView,
+    TypedArrayCore,
     Map,
     Set,
     SymbolProtocols,
@@ -1019,6 +1024,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-data-view.conf"),
             OxideProfileKind::DataView,
+        ),
+        (
+            root.join("tests/test262-typed-array-core.conf"),
+            OxideProfileKind::TypedArrayCore,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1727,6 +1736,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-data-view.txt",
             TEST262_DATA_VIEW_MANIFEST_SHA256,
         ),
+        OxideProfileKind::TypedArrayCore => verify_scoped_pinned_profile(
+            options,
+            "TypedArray core",
+            TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
+            "tests/test262-typed-array-core.txt",
+            TEST262_TYPED_ARRAY_CORE_MANIFEST_SHA256,
+        ),
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2179,8 +2195,9 @@ mod cli_tests {
         TEST262_PROMISE_ANY_PROFILE_SHA256, TEST262_PROMISE_FINALLY_PROFILE_SHA256,
         TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
         TEST262_REGEXP_BUILTINS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
-        TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
-        parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
+        TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
+        default_worker_count, identify_oxide_profile, parse_args, verify_oxide_profile,
+        verify_scoped_pinned_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -2509,6 +2526,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-data-view.conf")).unwrap(),
             OxideProfileKind::DataView
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-typed-array-core.conf")).unwrap(),
+            OxideProfileKind::TypedArrayCore
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -4842,6 +4863,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-data-view.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_typed_array_core_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-typed-array-core.conf",
+            "--manifest",
+            "tests/test262-typed-array-core.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/TypedArray/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-typed-array-core.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {
