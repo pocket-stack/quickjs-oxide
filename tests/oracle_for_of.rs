@@ -627,22 +627,19 @@ fn for_of_full_strip_source_and_strip_debug_stacks_match_pinned_quickjs() {
 }
 
 #[test]
-fn remaining_for_await_boundary_remains_explicit() {
+fn top_level_for_await_uses_pinned_quickjs_syntax_diagnostic() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    let (source, expected) = (
-        "for await(var value of 'a')value",
-        "for-await-of loops are not implemented yet",
-    );
+    let (source, expected) = ("for await(var value of 'a')value", "expecting '('");
     let Err(RuntimeError::Exception) = context.compile(source) else {
-        panic!("for-of boundary was not rejected explicitly: {source}");
+        panic!("top-level for-await was not rejected: {source}");
     };
     let Value::Object(error) = context
         .take_exception()
-        .expect("take for-of boundary exception")
-        .expect("for-of boundary exception is present")
+        .expect("take top-level for-await exception")
+        .expect("top-level for-await exception is present")
     else {
-        panic!("for-of boundary did not materialize an Error object: {source}");
+        panic!("top-level for-await did not materialize an Error object: {source}");
     };
     assert_eq!(
         error_string_property(&runtime, &mut context, &error, "message", source),

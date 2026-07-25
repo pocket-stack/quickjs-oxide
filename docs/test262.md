@@ -10,7 +10,7 @@ differentials still decide exact behavior inside each implemented slice.
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
 - quickjs-oxide capability profile SHA-256:
-  `6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908`
+  `fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -61,28 +61,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 43,689 pass;
+- 50,765 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 38,471 are classified as unsupported because of a feature, mode, host
+- 31,395 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
 - 18 fail to parse, 1,281 fail at runtime, 97 fail in the harness, and six
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 45,140 variants to execution. That count includes variants
+The runner admitted 52,216 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 42.82% (`43,689 / 102,037`);
-- conservative target-scope lower bound: 52.28%
-  (`43,689 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 96.89%
-  (`43,689 / 45,091`).
+- raw suite pass rate: 49.75% (`50,765 / 102,037`);
+- conservative target-scope lower bound: 60.75%
+  (`50,765 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 97.31%
+  (`50,765 / 52,167`).
 
-The 52.28% figure is the useful whole-project progress floor, not a claim that
-the engine is 52.28% conformant. The 96.89% conditional rate measures quality
+The 60.75% figure is the useful whole-project progress floor, not a claim that
+the engine is 60.75% conformant. The 97.31% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -110,7 +110,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 74
+or pinned-target-error outcomes. The capability profile currently admits 76
 reviewed Test262 feature tags and 802 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -137,9 +137,9 @@ parallel defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
+`93456e63a780ac6b02253853a5711464d01944f6df30a22d8b1a6fcde6a66366`
 and
-`1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
+`40417ac19f60988a3257e4d577ea1f485ef61637f1c444820ebe5662638fa13e`.
 
 ## Milestone policy
 
@@ -183,18 +183,20 @@ outside-manifest drift. The transitions are 294 `unsupported-feature -> pass`,
 fail-parse`, six `unsupported-feature -> harness-error`, six
 `unsupported-feature -> unsupported-parser`, and 17 `fail-runtime -> pass`.
 
-The current 427-variant focused Reflect vector admits 405 variants: 377 pass,
-28 fail at runtime, and 22 remain gated by adjacent features. R2f moved four
+The current 427-variant focused Reflect vector admits 405 variants: 387 pass,
+18 fail at runtime, and 22 remain gated by adjacent features. R2f moved four
 concise-method parser frontiers to runtime assertions; R2g then made four
 independent getter consumers pass. Later aggregate refreshes exposed the
 already-landed downstream fixes, including both variants of the Reflect.apply
-rest-parameter case. The other non-pass results continue to expose
+rest-parameter case. R3al reconciles ten more such passes that were already
+present in the R3ak complete vector, so this focused-baseline catch-up is not a
+new whole-suite transition. The other non-pass results continue to expose
 ArrayBuffer, async/generator, JSON, TypedArray, parser, or adjacent-feature
 frontiers rather than being hidden from the scoreboard. Current focused
 TSV/JSONL SHA-256 values are
-`186ee55e1981e8ca036c7e828dd74749d0ec0c6bf4a93a11a352f8c5500abc21`
+`a7f21f90b63f4067b217d3730676b6ddb6797f9b13af30fadc166630c854398e`
 and
-`e382d2f60ce5146949ad3850330672bc03a37e13cd344cf66e32eed38c3d5f48`.
+`a408f81f5910ac44d23fe62fd54bef4c7bfaeb5c6f7f308c9b254ef0081b0a3b`.
 
 The observable Date milestone moves the complete vector from 21,740 to 23,016
 passes without changing its 32,227 admitted jobs. An exact keyed join across
@@ -4681,9 +4683,9 @@ values remain
 `2932f9d54df006def9ac2e9b01a8f9b7a5228bb58a42309d2f27b5fb26d81c18`
 and
 `7e7121200f385829a3676514ad091d26c39ee9780c46ed5f54c41dadff1ad193`.
-`for await` is the next async-iteration frontier. Closing an independently
-active outer iterator when `.return()` crosses delegation remains a separate
-semantic slice.
+At R3aj, `for await` was the next async-iteration frontier, and closing an
+independently active outer iterator when `.return()` crossed delegation was a
+separate semantic slice. R3ak closes both boundaries.
 
 Reproduce the focused gate and semantic differential with:
 
@@ -4758,11 +4760,12 @@ JSONL reports. The empty non-pass, TSV, and JSONL SHA-256 values are
 `7eafa4725fbb6f70954c5bdb52a823caeaa89497eb01d6c80d446925d01361d0`,
 and
 `ecba171afdc2272de5b0e40b824f28159bfad04c9f485527b64ad6b533dd00fd`.
-The global profile remains fail-closed for `async-iteration`, so this scoped
-admission does not silently widen the complete-vector denominator. A dedicated
-pinned-QuickJS transcript covers active async-generator `.return()` crossing
-the outer iterator, including the suspension and close-Promise ordering which
-is not represented by this Test262 cohort.
+At the R3ak checkpoint the global profile remained fail-closed for
+`async-iteration`, so that scoped admission did not silently widen the
+complete-vector denominator. A dedicated pinned-QuickJS transcript covers
+active async-generator `.return()` crossing the outer iterator, including the
+suspension and close-Promise ordering which is not represented by this Test262
+cohort.
 
 The exact R3aj/R3ak full-vector join matches all 102,037 keys. Exactly three
 already-admitted SpiderMonkey staging variants move from
@@ -4774,6 +4777,72 @@ variants and reaches 43,689 passes. Its TSV and JSONL SHA-256 values are
 `36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
 and
 `1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
+
+## R3al global async admission
+
+R3al promotes `async-functions`, `async-iteration`, and the async execution
+host into the global capability profile. This is the combination gate for the
+R3z-R3ak implementation stack: ordinary async functions and arrows, ordinary
+and private object/class methods, all four async-generator shapes, `yield*`,
+and `for await ... of`.
+
+The frozen newly executable cohort contains 3,589 paths / 7,076 canonical
+variants. Pinned QuickJS passes all 3,589 paths. Oxide passes all 7,076
+variants, and independent 8/8/5-worker reports are byte-identical. The
+manifest, metadata selection, key-set, TSV, and JSONL SHA-256 values are
+`7e83bef89f3deaf151275877fd3baeab1891ed66cdc423af8e52c45a858acd97`,
+`b94d52b85bc1faa296bada8b0dd7f09e70e3fe3e2575c6cfcdccbd66138f3a29`,
+`8029a961f158f0b649532cd13ff18d85a07a133ed1e3b37a0494fd3e624908db`,
+`136b179ed6ab8d4b17c56e0ed6e214753c5700fcbc448a4d10d5d95bf648be40`,
+and
+`14ec16dd95ff9953b58d2be537f71b21611d5419f0f904af73e8ae0e7960997f`.
+
+The gate also proves that this manifest is exhaustive rather than merely
+self-consistent. A checked-in provenance table extracts all 12,647 R3ak
+variants whose old selection result mentioned the async host,
+`async-functions`, or `async-iteration`, across 6,496 paths, from the
+checksum-pinned R3ak full vector. Reclassifying that whole candidate universe
+under R3al produces exactly 7,076 runnable passes and 5,571 still-unsupported
+variants; the runnable key set is byte-for-byte identical to the focused
+manifest key set. The before-table and its key-set SHA-256 values are
+`173d61580131172206cb476a4239395a5a258d539723587d924d161eb12d461f`
+and
+`6d888787cb21790babb173d93d3a73df58ebaf323b87dcc8ec35cb4041e84bfc`.
+The exact 12,647-row before/after transition vector has SHA-256
+`eae7dd348199be707bdd914e1d8be2eb5bf63a17ee7c93ef96548e915e57b1d8`.
+
+Reproduce that focused combination gate with:
+
+```sh
+./scripts/test-test262-global-async.sh
+```
+
+The exact R3ak/R3al full-vector join retains all 102,037 keys and every
+previous pass:
+
+- 6,122 variants move from `unsupported-async` to `pass`;
+- 954 move from `unsupported-feature` to `pass`;
+- 3,866 move from `unsupported-async` to another explicit feature frontier;
+- 952 move from an async feature frontier to unaudited negative provenance;
+- 75 move from `unsupported-module-async` to `unsupported-module`;
+- two each move from the async frontier to `createRealm` and `IsHTMLDDA`;
+- 674 remain `unsupported-feature` while their detail drops the newly admitted
+  async tags.
+
+No newly executed variant fails to parse or run, fails the harness, times out,
+crashes, or produces an engine/runner fault. The global profile now contains
+76 feature tags and 802 audited negative paths with async execution enabled.
+Its SHA-256 is
+`fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23`.
+
+The complete vector reaches 50,765 passes and 52,216 runnable variants. Its
+TSV and JSONL SHA-256 values are
+`93456e63a780ac6b02253853a5711464d01944f6df30a22d8b1a6fcde6a66366`
+and
+`40417ac19f60988a3257e4d577ea1f485ef61637f1c444820ebe5662638fa13e`.
+The remaining async-tagged tests stay behind their actual independent class,
+default-parameter, module, Promise-method, host, or negative-provenance
+dependencies.
 
 ## Runner contract
 
@@ -4790,14 +4859,15 @@ and
   `$DONOTEVALUATE` cannot turn a missing parse error into a pass;
 - unsupported features and unaudited negative tests fail closed through the
   checksum-pinned quickjs-oxide capability profile;
-- metadata and source requirements classify module, async, `CanBlockIsFalse`,
-  and the `$262` host hooks used by the pinned suite before execution; async
-  execution requires an authenticated scoped-profile opt-in;
+- metadata and source requirements classify module, `CanBlockIsFalse`, and the
+  `$262` host hooks used by the pinned suite before execution; async execution
+  requires an authenticated profile opt-in and is now enabled globally;
 - bounded parallel workers with deterministic result ordering and full child
   cleanup after errors;
 - deterministic TSV outcome vector plus a JSONL sidecar;
-- module variants and non-opted-in async variants reported as unsupported and
-  treated as failures unless a caller is explicitly recording a baseline.
+- module variants and profile-rejected feature/host variants are reported as
+  unsupported and treated as failures unless a caller is explicitly recording
+  a baseline.
 
 The host scan is deliberately conservative and the pinned inventory has no
 unknown `$262` hook. Native `$262` objects and an out-of-band host sentinel are
@@ -4885,6 +4955,7 @@ canonical progress report.
 ./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-r3r-generator-destructuring-return-oracle.sh --oxide target/debug/qjs
 ./scripts/test-test262-async-generator-yield-star.sh
+./scripts/test-test262-global-async.sh
 ./scripts/test-test262-full.sh
 ```
 
@@ -5092,7 +5163,7 @@ moving only those 64 variants to pass and bringing the full vector to
 global scoreboard unchanged. R3z adds ordinary async functions and `await`
 through a separately authenticated 142-path/259-variant profile; Oxide passes
 259/259 and pinned QuickJS passes every path, while async arrows/methods,
-async generators, for-await, modules, and broad async execution remain
+async generators, for-await, modules, and broad async execution remained
 fail-closed. Untagged and intrinsic consumers add 58 conservative full-vector
 passes without regressing a previous pass, bringing the R3z landing score to
 43,643/102,037.
@@ -5182,6 +5253,12 @@ repeated-GC test cover active async-generator `.return()` while `next` is
 pending. The exact complete-vector join changes only three already-admitted
 SpiderMonkey staging variants from `unsupported-runtime` to `pass`, with no
 previous-pass or other drift; the vector reaches 43,689/102,037.
+R3al then promotes the authenticated async-function and async-iteration stack
+into the global profile. Its 3,589-path / 7,076-variant newly executable
+cohort passes in full. The exact 102,037-key join retains every previous pass,
+raises the complete vector to 50,765 passes and 52,216 runnable variants, and
+leaves adjacent feature, module, host, and negative-provenance dependencies
+fail-closed.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

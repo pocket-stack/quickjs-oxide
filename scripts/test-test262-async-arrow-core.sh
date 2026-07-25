@@ -180,7 +180,7 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value test262_patch_sha256)" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$(read_value test262_config_sha256)" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$(read_value test262_metadata_sha256)" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$(read_value global_oxide_profile_sha256)" != "6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908" \
+    || "$(read_value global_oxide_profile_sha256)" != "fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23" \
     || "$(read_value schema)" != "test262-canonical-classified-v2" \
     || "$(read_value mode)" != "both" \
     || "$(read_value timeout_ms)" != "30000" \
@@ -227,8 +227,8 @@ fi
     && "$(sha256_file "$admission_profile")" == "$(read_value oxide_profile_sha256)" \
     && "$(sha256_file "$exclusions")" == "$(read_value exclusions_file_sha256)" ]] \
     || { echo "error: async-arrow core pinned profile or exclusions drifted" >&2; exit 1; }
-if grep -Fq '[execution]' "$global_profile"; then
-    echo "error: global Test262 profile must remain fail-closed for async execution" >&2
+if [[ "$(profile_section execution "$global_profile")" != "async=true" ]]; then
+    echo "error: global Test262 profile must admit only async execution" >&2
     exit 1
 fi
 

@@ -390,19 +390,20 @@ async_variants=$(awk -F'\t' '
     END { print count + 0 }
 ' "$async_report")
 async_misclassified=$(awk -F'\t' '
-    !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "unsupported-async" {
+    !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
         print $1 "\t" $2 "\t" $7
     }
 ' "$async_report")
 if [[ "$async_variants" != "$(read_value async_excluded_variants)" \
     || -n "$async_misclassified" \
-    || "$async_output" != *"execution: runnable=0 "* ]]; then
-    echo "error: async-adjacent generator/destructuring variants must fail closed as unsupported-async" >&2
+    || "$async_output" != *"Test262: total=6 pass=6 fail=0 unsupported=0 skipped=0"* \
+    || "$async_output" != *"execution: runnable=6 "* ]]; then
+    echo "error: globally admitted async-adjacent generator/destructuring variants must pass" >&2
     [[ -z "$async_misclassified" ]] || printf '%s\n' "$async_misclassified" >&2
     exit 1
 fi
 if "$check_only"; then
-    printf 'generator/destructuring inputs verified: %s raw - %s modules - %s async = %s paths; QuickJS %s passes all %s synchronous variants; Oxide classifies all %s async variants unsupported-async\n' \
+    printf 'generator/destructuring inputs verified: %s raw - %s modules - %s async = %s paths; QuickJS %s passes all %s synchronous variants; Oxide passes all %s globally admitted async variants\n' \
         "$(read_value metadata_universe_paths)" \
         "$(read_value module_excluded_paths)" \
         "$(read_value async_excluded_paths)" \

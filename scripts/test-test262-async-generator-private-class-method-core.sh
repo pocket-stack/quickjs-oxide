@@ -70,12 +70,12 @@ inventory_count() {
 }
 
 profile_section() {
-    local section=$1
+    local section=$1 profile=${2:-$admission_profile}
     awk -v section="[$section]" '
         $0 == section { inside=1; next }
         /^\[/ { inside=0 }
         inside && NF && $1 !~ /^#/ { print }
-    ' "$admission_profile"
+    ' "$profile"
 }
 
 expect_value() {
@@ -216,7 +216,7 @@ expect_value test262 5c8206929d81b2d3d727ca6aac56c18358c8d790
 expect_value test262_patch_sha256 f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 expect_value test262_config_sha256 79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 expect_value test262_metadata_sha256 a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-expect_value global_oxide_profile_sha256 6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908
+expect_value global_oxide_profile_sha256 fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23
 expect_value schema test262-canonical-classified-v2
 expect_value mode both
 expect_value timeout_ms 30000
@@ -266,8 +266,8 @@ if [[ "$(sha256_file "$global_profile")" != "$(read_value global_oxide_profile_s
     echo "error: private async-generator class-method pinned profile or exclusions drifted" >&2
     exit 1
 fi
-if grep -Fq '[execution]' "$global_profile"; then
-    echo "error: global Test262 profile must remain fail-closed for async execution" >&2
+if [[ "$(profile_section execution "$global_profile")" != "async=true" ]]; then
+    echo "error: global Test262 profile must admit only async execution" >&2
     exit 1
 fi
 

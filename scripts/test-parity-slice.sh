@@ -130,6 +130,8 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-async-generator-class-method-core.sh
 ./scripts/test-test262-async-generator-private-class-method-core.sh
 ./scripts/test-test262-async-generator-yield-star.sh
+./scripts/test-test262-for-await-of.sh
+./scripts/test-test262-global-async.sh
 ./scripts/test-test262-full.sh
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ./scripts/check-rust-only.sh

@@ -164,7 +164,7 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value test262_patch_sha256)" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$(read_value test262_config_sha256)" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$(read_value test262_metadata_sha256)" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$(read_value global_oxide_profile_sha256)" != "6a4d3dc37da05f6e63d7b8564483159c383ed66c665a2b5530624e628f73b908" \
+    || "$(read_value global_oxide_profile_sha256)" != "fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23" \
     || "$(read_value oxide_profile_sha256)" != "a6ce2d6be97d7826cf20aeba7ab8946ad28ce134b0ad7165a8e591a986e6d22e" \
     || "$(read_value schema)" != "test262-canonical-classified-v2" \
     || "$(read_value mode)" != "both" \
@@ -330,16 +330,17 @@ global_features=$(profile_section "$global_profile" features | LC_ALL=C sort)
 admission_features=$(profile_section "$admission_profile" features | LC_ALL=C sort)
 profile_section "$global_profile" features | LC_ALL=C sort -c
 profile_section "$admission_profile" features | LC_ALL=C sort -c
-[[ -z "$(comm -23 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))" ]] \
-    || { echo "error: Iterator helpers profile removed a global capability" >&2; exit 1; }
+diff -u \
+    <(printf '%s\n' async-functions async-iteration) \
+    <(comm -23 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))
 diff -u \
     <(printf '%s\n' globalThis iterator-helpers) \
     <(comm -13 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))
 [[ -z "$(comm -23 <(printf '%s\n' "$feature_inventory") <(printf '%s\n' "$admission_features"))" ]] \
     || { echo "error: Iterator helpers metadata exceeds the scoped profile" >&2; exit 1; }
 diff -u \
-    <(awk '$0 == "[audited-negative-tests]" { inside=1 } inside { print }' "$global_profile") \
-    <(awk '$0 == "[audited-negative-tests]" { inside=1 } inside { print }' "$admission_profile")
+    <(profile_section "$global_profile" audited-negative-tests) \
+    <(profile_section "$admission_profile" audited-negative-tests)
 [[ -z "$(profile_section "$admission_profile" execution)" ]] \
     || { echo "error: synchronous Iterator helpers profile admitted an execution capability" >&2; exit 1; }
 [[ "$(sha256_file "$global_profile")" == "$(read_value global_oxide_profile_sha256)" \

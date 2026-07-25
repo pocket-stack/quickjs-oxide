@@ -2,7 +2,16 @@
 
 use super::*;
 
-const HOST_STACK_BUDGET_BYTES: usize = 1024 * 1024;
+// QuickJS's optimized C runtime uses a one-MiB default stack budget. Rust
+// debug frames are materially larger than release frames, so preserve the
+// same finite-recursion semantic floor with a small debug-only allowance.
+// The two-MiB regression below proves that this still leaves enough stack to
+// materialize and catch a real recursive overflow.
+const HOST_STACK_BUDGET_BYTES: usize = if cfg!(debug_assertions) {
+    1280 * 1024
+} else {
+    1024 * 1024
+};
 
 /// Return a comparable address near the current host stack pointer without
 /// dereferencing it or relying on platform-specific APIs.
@@ -15,12 +24,13 @@ fn current_host_stack_address() -> usize {
 impl Runtime {
     /// Approximate QuickJS's host-stack check with safe pointer-address
     /// arithmetic. The outermost guarded call captures a top marker; nested
-    /// native and bytecode entries share the upstream one-MiB byte budget.
+    /// native and bytecode entries share the release one-MiB byte budget or
+    /// the calibrated debug budget above.
     ///
     /// This tracks actual debug/release frame sizes instead of treating every
     /// JavaScript frame as equally expensive. Recursive execution is proven on
-    /// a two-MiB host thread stack, leaving another MiB for the caller and for
-    /// materializing a catchable overflow error.
+    /// a two-MiB host thread stack, including enough margin to materialize and
+    /// catch the overflow error.
     fn host_stack_would_overflow(&self) -> bool {
         let current = current_host_stack_address();
         let active_frame_count = self.0.state.borrow().active_frames.len();
@@ -388,6 +398,40 @@ mod tests {
                 )),
             );
             assert_eq!(context.eval("1+1").unwrap(), Value::Int(2));
+        });
+    }
+
+    #[test]
+    fn finite_array_stringification_and_recursive_cycle_fit_on_two_mib_stack() {
+        on_two_mib_stack(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value="x";
+                            for(var i=0;i<20;i++)value=[value];
+                            return value.join()
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("x")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=[];
+                            value[0]=value;
+                            try{value.join();return "missing"}
+                            catch(error){return error.name+":"+error.message}
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+            );
+            assert_eq!(context.eval("6*7").unwrap(), Value::Int(42));
         });
     }
 }

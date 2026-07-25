@@ -1,8 +1,8 @@
 schema=test262-canonical-classified-v2
 timeout_ms=30000
 variants=102037
-runnable=45140
-passes=43689
-tsv_sha256=36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3
-jsonl_sha256=1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af
-summary=fail-parse=18 fail-runtime=1281 harness-error=97 pass=43689 skipped-config-exclude=6700 skipped-feature=11775 timeout=6 unsupported-async=9992 unsupported-feature=23860 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=488 unsupported-host-detach-array-buffer=616 unsupported-host-eval-script=44 unsupported-host-gc=18 unsupported-host-is-html-dda=82 unsupported-module=604 unsupported-module-async=75 unsupported-negative-provenance=2521 unsupported-parser=26 unsupported-runtime=23
+runnable=52216
+passes=50765
+tsv_sha256=93456e63a780ac6b02253853a5711464d01944f6df30a22d8b1a6fcde6a66366
+jsonl_sha256=40417ac19f60988a3257e4d577ea1f485ef61637f1c444820ebe5662638fa13e
+summary=fail-parse=18 fail-runtime=1281 harness-error=97 pass=50765 skipped-config-exclude=6700 skipped-feature=11775 timeout=6 unsupported-feature=25820 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-detach-array-buffer=616 unsupported-host-eval-script=44 unsupported-host-gc=18 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3473 unsupported-parser=26 unsupported-runtime=23

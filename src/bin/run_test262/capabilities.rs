@@ -254,7 +254,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 74] = [
+    const EXPECTED_FEATURES: [&str; 76] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -299,6 +299,8 @@ mod tests {
         "array-find-from-last",
         "array-grouping",
         "arrow-function",
+        "async-functions",
+        "async-iteration",
         "change-array-by-copy",
         "coalesce-expression",
         "const",
@@ -623,7 +625,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(profile, loaded);
-        assert!(!profile.allows_async_execution());
+        assert!(profile.allows_async_execution());
         assert!(
             profile
                 .features
