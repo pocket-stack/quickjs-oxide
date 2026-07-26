@@ -92,7 +92,7 @@ fn at_and_search_methods_match_typed_numeric_comparison_rules() {
                 "length|at|buffer|byteLength|byteOffset|set|values|keys|"+
                 "entries|copyWithin|every|some|forEach|map|filter|reduce|"+
                 "reduceRight|fill|find|findIndex|findLast|findLastIndex|"+
-                "reverse|indexOf|lastIndexOf|includes|"+
+                "reverse|slice|subarray|indexOf|lastIndexOf|includes|"+
                 "constructor|toString|Symbol(Symbol.iterator)|"+
                 "Symbol(Symbol.toStringTag)");
             for(var name of ["at","indexOf","lastIndexOf","includes"]){

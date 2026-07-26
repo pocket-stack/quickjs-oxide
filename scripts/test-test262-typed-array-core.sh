@@ -116,18 +116,30 @@ expected_map_filter_paths=174
 expected_map_filter_manifest=57a0d825fa96ae56a44dd64be290d6368838d90fcd5cdd739c9735573b8d2a02
 expected_map_filter_variants=348
 expected_map_filter_keys=b92f4b302934a05ca68f39bde019ef71f2353a664f3e304f2092ccf1eb8cf78b
-expected_excluded_paths=654
-expected_exclusions=b2406a45aab98366342205bf4fb5149091b802500dc09b5a6afb8a1ef784c774
-expected_exclusions_file=1c3d6f79c99f423c77c11256d65993143b4fced944f700f64b16975ffb730298
-expected_paths=1707
-expected_variants=3375
-expected_quickjs_variants=3375
+expected_slice_subarray_candidate_paths=178
+expected_slice_subarray_candidate=b47079faf02e6e29ab9b1d1da45d35d79f30f1498fff96ea47c3d0fdf4057417
+expected_slice_subarray_candidate_variants=356
+expected_slice_subarray_candidate_keys=d149931f862e672317077644ffae6ccc6e319442a97dbb2a951bb1cdaeed8769
+expected_slice_subarray_deferred_paths=5
+expected_slice_subarray_deferred=9f1d0a737704df4c1503cecd69ec953faae2496fa6da4bff07d36b35b377c328
+expected_slice_subarray_deferred_variants=10
+expected_slice_subarray_deferred_keys=c991213141a15cd3e647dd9b1c40553c5dc0a709f5ebfbd10e30769683e7eb37
+expected_slice_subarray_paths=173
+expected_slice_subarray_manifest=a6f25c6d1af227a6f656284a2f3c833e4320caea80e7029fc376eb066e01584e
+expected_slice_subarray_variants=346
+expected_slice_subarray_keys=103222ebda62afb2a76d6b9efc6fefa0c086707509607f58a24b6a73a5f1cb1b
+expected_excluded_paths=481
+expected_exclusions=16ccf5fac0c47daa0626d26e25aa3d49e305e193f80e8148448d9d444addcf27
+expected_exclusions_file=11616f23d68983bb517dff1d4563f060d0ae3955941e66a681d0a9ab4be5b565
+expected_paths=1880
+expected_variants=3721
+expected_quickjs_variants=3721
 expected_features=24
 expected_features_hash=1615b6491b5ce6759bb700f60052458442b3c0e1eaf275e157d094bb4ab411d4
 expected_includes=11
 expected_includes_hash=b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012
-expected_manifest=e6a3af181bf643b70558661802544681ac92356f06c4c27c9b1504b31379b42f
-expected_keys=6bf48fc08165d42f32ff8ed7cf08ad94249b23daaf111cc3700df248c667b075
+expected_manifest=3894d40cf21ca00f0b641b729c7562c65c5cb41d31bb4616b6d1ca8c3871b092
+expected_keys=ba80d9ddfb13f4c8ff20098b267b592a4c0682a806f0b9ce3633f7f61a8c05d4
 expected_test_typed_array_harness=4c0e237804f39a4aa670f72c05b4520730c03c2d2e9f2f41e6b380bd6749ec61
 expected_sm_typed_array_harness=3798d277ac8f105b65ad26602b500b497af7f3361fd14a169c58a601c605bb2e
 expected_sm_math_harness=79dea1172236685567e09da8c9e868e0f84686bf40cff728785223c5b43f5e7b
@@ -138,8 +150,9 @@ usage: scripts/test-test262-typed-array-core.sh [--check]
 
 With --check, rebuild and audit the frozen TypedArray candidate, mutation,
 index/search, callback-find, every/some, forEach, reduce/reduceRight, and
-map/filter promotions, manifest, and exclusion ledger. Verify all 4,669
-candidate variants plus the 3,375 admitted variants against pinned QuickJS.
+map/filter and slice/subarray promotions, manifest, and exclusion ledger.
+Verify all 4,669 candidate variants plus the 3,721 admitted variants against
+pinned QuickJS.
 With no option, also run the checksum-bound quickjs-oxide gate; that mode
 requires a measured all-green baseline file.
 EOF
@@ -743,6 +756,66 @@ map_filter_dependency_reason() {
     esac
 }
 
+slice_subarray_candidate_path() {
+    local test_path=$1
+    case "$test_path" in
+        test/built-ins/TypedArray/prototype/slice/*|\
+        test/built-ins/TypedArray/prototype/subarray/*|\
+        test/built-ins/TypedArrayConstructors/prototype/slice/*|\
+        test/built-ins/TypedArrayConstructors/prototype/subarray/*|\
+        test/built-ins/TypedArrayConstructors/internals/HasProperty/BigInt/inherited-property.js|\
+        test/built-ins/TypedArrayConstructors/internals/HasProperty/inherited-property.js|\
+        test/built-ins/TypedArrayConstructors/internals/OwnPropertyKeys/BigInt/integer-indexes-and-string-and-symbol-keys-.js|\
+        test/built-ins/TypedArrayConstructors/internals/OwnPropertyKeys/BigInt/integer-indexes-and-string-keys.js|\
+        test/built-ins/TypedArrayConstructors/internals/OwnPropertyKeys/BigInt/integer-indexes.js|\
+        test/built-ins/TypedArrayConstructors/internals/OwnPropertyKeys/integer-indexes-and-string-and-symbol-keys-.js|\
+        test/built-ins/TypedArrayConstructors/internals/OwnPropertyKeys/integer-indexes-and-string-keys.js|\
+        test/built-ins/TypedArrayConstructors/internals/OwnPropertyKeys/integer-indexes.js|\
+        test/staging/sm/TypedArray/slice-bitwise-same.js|\
+        test/staging/sm/TypedArray/slice-conversion.js|\
+        test/staging/sm/TypedArray/slice-detached.js|\
+        test/staging/sm/TypedArray/slice-memcpy.js|\
+        test/staging/sm/TypedArray/slice-species.js|\
+        test/staging/sm/TypedArray/slice.js|\
+        test/staging/sm/TypedArray/subarray-species.js|\
+        test/staging/sm/TypedArray/subarray.js)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+slice_subarray_dependency_reason() {
+    local test_path=$1 includes_file=$2 source_file=$3
+    case "$test_path" in
+        test/staging/sm/TypedArray/slice-bitwise-same.js|\
+        test/staging/sm/TypedArray/slice-memcpy.js|\
+        test/staging/sm/TypedArray/slice.js)
+            if ! grep -Fxq sm/non262-TypedArray-shell.js "$includes_file" \
+                || ! grep -Fq '$262.createRealm' "$source_file" \
+                || ! grep -Fq 'const sharedConstructors = new WeakMap();' \
+                    "$suite/harness/sm/non262-TypedArray-shell.js"; then
+                echo "error: TypedArray slice realm or WeakMap dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'external:cross-realm\n'
+            ;;
+        test/staging/sm/TypedArray/slice-species.js|\
+        test/staging/sm/TypedArray/subarray.js)
+            if ! grep -Fxq sm/non262-TypedArray-shell.js "$includes_file" \
+                || ! grep -Fq 'const sharedConstructors = new WeakMap();' \
+                    "$suite/harness/sm/non262-TypedArray-shell.js"; then
+                echo "error: TypedArray slice/subarray WeakMap dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'external:WeakMap\n'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 direct_core_dependency_reason() {
     local test_path=$1 includes_file=$2
     case "$test_path" in
@@ -991,6 +1064,18 @@ if [[ "$check_only" == false ]]; then
     expect_value map_filter_manifest_sha256 "$expected_map_filter_manifest"
     expect_value map_filter_variants "$expected_map_filter_variants"
     expect_value map_filter_keys_sha256 "$expected_map_filter_keys"
+    expect_value slice_subarray_candidate_paths "$expected_slice_subarray_candidate_paths"
+    expect_value slice_subarray_candidate_sha256 "$expected_slice_subarray_candidate"
+    expect_value slice_subarray_candidate_variants "$expected_slice_subarray_candidate_variants"
+    expect_value slice_subarray_candidate_keys_sha256 "$expected_slice_subarray_candidate_keys"
+    expect_value slice_subarray_deferred_paths "$expected_slice_subarray_deferred_paths"
+    expect_value slice_subarray_deferred_sha256 "$expected_slice_subarray_deferred"
+    expect_value slice_subarray_deferred_variants "$expected_slice_subarray_deferred_variants"
+    expect_value slice_subarray_deferred_keys_sha256 "$expected_slice_subarray_deferred_keys"
+    expect_value slice_subarray_paths "$expected_slice_subarray_paths"
+    expect_value slice_subarray_manifest_sha256 "$expected_slice_subarray_manifest"
+    expect_value slice_subarray_variants "$expected_slice_subarray_variants"
+    expect_value slice_subarray_keys_sha256 "$expected_slice_subarray_keys"
     expect_value excluded_paths "$expected_excluded_paths"
     expect_value exclusions_sha256 "$expected_exclusions"
     expect_value exclusions_file_sha256 "$expected_exclusions_file"
@@ -1099,6 +1184,12 @@ map_filter_deferred=$tmp_dir/map-filter-deferred.txt
 map_filter_deferred_keys=$tmp_dir/map-filter-deferred-keys.txt
 map_filter_manifest=$tmp_dir/map-filter-manifest.txt
 map_filter_keys=$tmp_dir/map-filter-keys.txt
+slice_subarray_candidate=$tmp_dir/slice-subarray-candidate.txt
+slice_subarray_candidate_keys=$tmp_dir/slice-subarray-candidate-keys.txt
+slice_subarray_deferred=$tmp_dir/slice-subarray-deferred.txt
+slice_subarray_deferred_keys=$tmp_dir/slice-subarray-deferred-keys.txt
+slice_subarray_manifest=$tmp_dir/slice-subarray-manifest.txt
+slice_subarray_keys=$tmp_dir/slice-subarray-keys.txt
 candidate_features=$tmp_dir/candidate-features.txt
 candidate_includes=$tmp_dir/candidate-includes.txt
 candidate_flags=$tmp_dir/candidate-flags.txt
@@ -1172,11 +1263,11 @@ if ! awk -F'\t' '
         counts[$2]++
     }
     END {
-        if (NR != 655 ||
+        if (NR != 482 ||
             counts["dependency:join"] != 2 ||
             counts["external:cross-realm"] != 54 ||
             counts["external:SharedArrayBuffer"] != 71 ||
-            counts["external:WeakMap"] != 6 ||
+            counts["external:WeakMap"] != 8 ||
             counts["external:Math"] != 1 ||
             counts["external:IsHTMLDDA"] != 1 ||
             counts["static:from"] != 88 ||
@@ -1184,11 +1275,11 @@ if ! awk -F'\t' '
             counts["method:iterator-entries-keys"] != 42 ||
             counts["method:mutation-copy-set"] != 0 ||
             counts["method:search-predicate"] != 0 ||
-            counts["method:species-copy-transform"] != 214 ||
+            counts["method:species-copy-transform"] != 47 ||
             counts["method:callback-reduce"] != 0 ||
             counts["method:sort"] != 47 ||
             counts["method:stringification"] != 84 ||
-            counts["method:subarray"] != 8 ||
+            counts["method:subarray"] != 0 ||
             counts["method:full-prototype-contract"] != 2) {
             exit 1
         }
@@ -1239,6 +1330,9 @@ diff -u "$candidate_inventory" "$combined_inventory"
 : >"$map_filter_candidate"
 : >"$map_filter_deferred"
 : >"$map_filter_manifest"
+: >"$slice_subarray_candidate"
+: >"$slice_subarray_deferred"
+: >"$slice_subarray_manifest"
 : >"$candidate_keys"
 while IFS= read -r test_path; do
     if [[ ! -f "$suite/$test_path" ]]; then
@@ -1328,6 +1422,20 @@ while IFS= read -r test_path; do
             fi
         fi
     fi
+    if slice_subarray_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$slice_subarray_candidate"
+        if reason=$(slice_subarray_dependency_reason \
+            "$test_path" "$candidate_includes" "$source_file"); then
+            printf '%s\n' "$test_path" >>"$slice_subarray_deferred"
+            printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
+            continue
+        else
+            dependency_status=$?
+            if [[ "$dependency_status" != "1" ]]; then
+                exit 1
+            fi
+        fi
+    fi
     if grep -Fxq cross-realm "$candidate_features" \
         || grep -Fq '$262.createRealm' "$source_file"; then
         reason=external:cross-realm
@@ -1342,7 +1450,12 @@ while IFS= read -r test_path; do
     elif is_direct_core_path "$test_path" \
         && reason=$(direct_core_dependency_reason \
             "$test_path" "$candidate_includes"); then
-        :
+        if [[ "$reason" == "method:subarray" ]] \
+            && slice_subarray_candidate_path "$test_path"; then
+            printf '%s\n' "$test_path" >>"$derived_manifest"
+            printf '%s\n' "$test_path" >>"$slice_subarray_manifest"
+            continue
+        fi
     elif is_direct_core_path "$test_path"; then
         printf '%s\n' "$test_path" >>"$derived_manifest"
         continue
@@ -1412,6 +1525,11 @@ while IFS= read -r test_path; do
         && map_filter_candidate_path "$test_path"; then
         printf '%s\n' "$test_path" >>"$derived_manifest"
         printf '%s\n' "$test_path" >>"$map_filter_manifest"
+        continue
+    elif [[ "$reason" == "method:species-copy-transform" ]] \
+        && slice_subarray_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$derived_manifest"
+        printf '%s\n' "$test_path" >>"$slice_subarray_manifest"
         continue
     fi
     printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
@@ -1809,6 +1927,68 @@ if [[ "$(wc -l <"$map_filter_candidate" | tr -d '[:space:]')" \
     exit 1
 fi
 
+LC_ALL=C sort -o "$slice_subarray_candidate" "$slice_subarray_candidate"
+LC_ALL=C sort -o "$slice_subarray_deferred" "$slice_subarray_deferred"
+LC_ALL=C sort -o "$slice_subarray_manifest" "$slice_subarray_manifest"
+diff -u \
+    "$slice_subarray_candidate" \
+    <(LC_ALL=C sort -u "$slice_subarray_manifest" "$slice_subarray_deferred")
+if [[ -n "$(LC_ALL=C comm -12 \
+    "$slice_subarray_manifest" "$slice_subarray_deferred")" ]]; then
+    echo "error: TypedArray slice/subarray manifest overlaps its deferred ledger" >&2
+    exit 1
+fi
+
+: >"$slice_subarray_candidate_keys"
+: >"$slice_subarray_deferred_keys"
+: >"$slice_subarray_keys"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$slice_subarray_candidate_keys"
+done <"$slice_subarray_candidate"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$slice_subarray_deferred_keys"
+done <"$slice_subarray_deferred"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$slice_subarray_keys"
+done <"$slice_subarray_manifest"
+LC_ALL=C sort -o "$slice_subarray_candidate_keys" \
+    "$slice_subarray_candidate_keys"
+LC_ALL=C sort -o "$slice_subarray_deferred_keys" \
+    "$slice_subarray_deferred_keys"
+LC_ALL=C sort -o "$slice_subarray_keys" "$slice_subarray_keys"
+if [[ "$(wc -l <"$slice_subarray_candidate" | tr -d '[:space:]')" \
+        != "$expected_slice_subarray_candidate_paths" \
+    || "$(sha256_file "$slice_subarray_candidate")" \
+        != "$expected_slice_subarray_candidate" \
+    || "$(wc -l <"$slice_subarray_candidate_keys" | tr -d '[:space:]')" \
+        != "$expected_slice_subarray_candidate_variants" \
+    || "$(sha256_file "$slice_subarray_candidate_keys")" \
+        != "$expected_slice_subarray_candidate_keys" \
+    || "$(wc -l <"$slice_subarray_deferred" | tr -d '[:space:]')" \
+        != "$expected_slice_subarray_deferred_paths" \
+    || "$(sha256_file "$slice_subarray_deferred")" \
+        != "$expected_slice_subarray_deferred" \
+    || "$(wc -l <"$slice_subarray_deferred_keys" | tr -d '[:space:]')" \
+        != "$expected_slice_subarray_deferred_variants" \
+    || "$(sha256_file "$slice_subarray_deferred_keys")" \
+        != "$expected_slice_subarray_deferred_keys" \
+    || "$(wc -l <"$slice_subarray_manifest" | tr -d '[:space:]')" \
+        != "$expected_slice_subarray_paths" \
+    || "$(sha256_file "$slice_subarray_manifest")" \
+        != "$expected_slice_subarray_manifest" \
+    || "$(wc -l <"$slice_subarray_keys" | tr -d '[:space:]')" \
+        != "$expected_slice_subarray_variants" \
+    || "$(sha256_file "$slice_subarray_keys")" \
+        != "$expected_slice_subarray_keys" ]]; then
+    echo "error: TypedArray slice/subarray promotion inventory drifted" >&2
+    exit 1
+fi
+
 while IFS= read -r test_path; do
     metadata_list "$test_path" features >"$candidate_features"
     metadata_list "$test_path" includes >"$candidate_includes"
@@ -1882,7 +2062,7 @@ verify_quickjs_oracle \
     "$oracle_log"
 
 if [[ "$check_only" == true ]]; then
-    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, %s reduce/reduceRight paths/%s variants, and %s map/filter paths/%s variants; %s every/some, %s forEach, %s reduce/reduceRight, and %s map/filter staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
+    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, %s reduce/reduceRight paths/%s variants, %s map/filter paths/%s variants, and %s slice/subarray paths/%s variants; %s every/some, %s forEach, %s reduce/reduceRight, %s map/filter, and %s slice/subarray staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
         "$expected_candidate_paths" \
         "$expected_candidate_variants" \
         "$expected_paths" \
@@ -1897,10 +2077,13 @@ if [[ "$check_only" == true ]]; then
         "$expected_reduce_variants" \
         "$expected_map_filter_paths" \
         "$expected_map_filter_variants" \
+        "$expected_slice_subarray_paths" \
+        "$expected_slice_subarray_variants" \
         "$expected_every_some_deferred_paths" \
         "$expected_for_each_deferred_paths" \
         "$expected_reduce_deferred_paths" \
         "$expected_map_filter_deferred_paths" \
+        "$expected_slice_subarray_deferred_paths" \
         "$expected_excluded_paths"
     exit 0
 fi

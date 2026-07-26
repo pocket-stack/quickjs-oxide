@@ -7,11 +7,11 @@ The `unsafe`-free engine is runnable but incomplete. The current TypedArray
 stack includes the shared 12-class kernel, in-place mutation, indexed search,
 QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 `every`/`some`, `forEach`, `reduce`/`reduceRight`, and species-aware
-`map`/`filter`. Its scoped gate reaches 3,375/3,375 in both engines; the
-complete conservative vector is 51,912/102,037. Remaining TypedArray
-methods, modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
-incomplete. Pinned QuickJS is the test oracle, never a product dependency;
-detailed bookkeeping lives in the status documents.
+`map`/`filter`, `slice`, and `subarray`. Its scoped gate reaches 3,721/3,721
+in both engines; the complete conservative vector is 51,922/102,037.
+Remaining TypedArray methods, modules, SharedArrayBuffer/Atomics, and broad
+built-in coverage remain incomplete. Pinned QuickJS is the test oracle, never
+a product dependency; detailed bookkeeping lives in the status documents.
 
 ## Try it
 

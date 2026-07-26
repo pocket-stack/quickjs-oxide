@@ -190,7 +190,7 @@ fn reduce_family_matches_quickjs_accumulator_and_descriptor_contracts() {
                 "length|at|buffer|byteLength|byteOffset|set|values|keys|"+
                 "entries|copyWithin|every|some|forEach|map|filter|reduce|"+
                 "reduceRight|fill|find|findIndex|findLast|findLastIndex|"+
-                "reverse|indexOf|lastIndexOf|includes|constructor|toString|"+
+                "reverse|slice|subarray|indexOf|lastIndexOf|includes|constructor|toString|"+
                 "Symbol(Symbol.iterator)|Symbol(Symbol.toStringTag)");
             for(var name of ["reduce","reduceRight"]){
                 var descriptor=Object.getOwnPropertyDescriptor(base,name);

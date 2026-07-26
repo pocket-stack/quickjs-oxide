@@ -42,7 +42,8 @@ R3aq promotes the TypedArray mutation cohort, and R3ar promotes the indexed
 `at`/search cohort. R3as promotes the callback-driven
 `find`/`findIndex`/`findLast`/`findLastIndex` cohort, and R3at promotes
 `every`/`some`; R3au promotes `forEach`, and R3av promotes
-`reduce`/`reduceRight`; R3aw promotes species-aware `map`/`filter`. Copying,
+`reduce`/`reduceRight`; R3aw promotes species-aware `map`/`filter`, and R3ax
+promotes `slice`/`subarray` copying and view creation. Change-by-copy,
 stringification, sorting, SharedArrayBuffer, and wider interop surfaces remain
 explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
@@ -71,12 +72,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 51,912 pass;
+- 51,922 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 31,143 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 18 fail to parse, 430 fail at runtime, 57 fail in the harness, and two
+- 18 fail to parse, 420 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 52,468 variants to execution. That count includes variants
@@ -85,14 +86,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 50.88% (`51,912 / 102,037`);
-- conservative target-scope lower bound: 62.12%
-  (`51,912 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.03%
-  (`51,912 / 52,419`).
+- raw suite pass rate: 50.89% (`51,922 / 102,037`);
+- conservative target-scope lower bound: 62.14%
+  (`51,922 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.05%
+  (`51,922 / 52,419`).
 
-The 62.12% figure is the useful whole-project progress floor, not a claim that
-the engine is 62.12% conformant. The 99.03% conditional rate measures quality
+The 62.14% figure is the useful whole-project progress floor, not a claim that
+the engine is 62.14% conformant. The 99.05% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -148,9 +149,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`432394a9db53afd584a532b969382af167f0b17e42f77c8effd930a50389dfeb`
+`796783147bae745b1cbb21eb2cf211feefcb98e80008f760eed8f18eb84f7641`
 and
-`d4a7540e05ba0cbcea9b7d94a8c2a6c7c7dea51613b7dcafd90c71e0983ba356`.
+`e912ed7dc3f9a9f0141f9c96168fb8bb5e4be4661d6d47030295427a21baf4aa`.
 
 ## Milestone policy
 
@@ -5508,6 +5509,82 @@ TSV/JSONL hashes are
 and
 `d4a7540e05ba0cbcea9b7d94a8c2a6c7c7dea51613b7dcafd90c71e0983ba356`.
 
+## R3ax TypedArray slice/subarray promotion
+
+R3ax publishes `%TypedArray%.prototype.slice` and `subarray` from a dedicated
+copy/view module. The implementation follows the pinned QuickJS algorithms
+rather than generic Array copying:
+
+- `slice` validates and snapshots before bound coercion, creates the species
+  result with one length argument, and performs its post-species source/target
+  validations only when the original count is nonzero;
+- a length-tracking source that shrinks during species construction clips only
+  the live copy count, leaving the originally sized result tail untouched;
+- same-class copying preserves raw NaN payloads and negative zero, including
+  QuickJS's forward byte-copy behavior for overlapping same-buffer species
+  views; cross-class copying reads and converts each element live;
+- `subarray` performs an initial brand check without rejecting an OOB/detached
+  source, retains its durable raw byte offset, and passes two constructor
+  arguments for an automatic length-tracking view or three for a fixed view;
+- default species allocates the source element class with the method defining
+  realm's intrinsic prototype, while custom subarray species may return any
+  live TypedArray without a minimum-length or content-type check.
+
+The exact atomic candidate is 178 paths / 356 variants, all passing in pinned
+QuickJS. Five raw SpiderMonkey staging paths / ten variants remain deferred:
+three are `external:cross-realm` and also depend on the shell WeakMap, while
+two are `external:WeakMap`. The promoted set is therefore 173 paths / 346
+variants. The cumulative gate expands to 1,880 paths / 3,721 variants, the
+exclusion ledger falls to 481 paths, and Oxide and pinned QuickJS both pass
+3,721/3,721.
+
+The candidate path/key hashes are:
+
+- path:
+  `b47079faf02e6e29ab9b1d1da45d35d79f30f1498fff96ea47c3d0fdf4057417`;
+- keys:
+  `d149931f862e672317077644ffae6ccc6e319442a97dbb2a951bb1cdaeed8769`.
+
+The deferred path/key hashes are:
+
+- path:
+  `9f1d0a737704df4c1503cecd69ec953faae2496fa6da4bff07d36b35b377c328`;
+- keys:
+  `c991213141a15cd3e647dd9b1c40553c5dc0a709f5ebfbd10e30769683e7eb37`.
+
+The promoted path/key hashes are:
+
+- path:
+  `a6f25c6d1af227a6f656284a2f3c833e4320caea80e7029fc376eb066e01584e`;
+- keys:
+  `103222ebda62afb2a76d6b9efc6fefa0c086707509607f58a24b6a73a5f1cb1b`.
+
+The scoped profile, cumulative manifest, cumulative variant-key stream,
+exclusion path stream, and exclusion-ledger file SHA-256 values are:
+
+- `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`;
+- `3894d40cf21ca00f0b641b729c7562c65c5cb41d31bb4616b6d1ca8c3871b092`;
+- `ba80d9ddfb13f4c8ff20098b267b592a4c0682a806f0b9ce3633f7f61a8c05d4`;
+- `16ccf5fac0c47daa0626d26e25aa3d49e305e193f80e8148448d9d444addcf27`;
+- `11616f23d68983bb517dff1d4563f060d0ae3955941e66a681d0a9ab4be5b565`.
+
+The canonical scoped TSV/JSONL hashes are
+`88d9061e2d31b2869f7d71b0cda7a0cd059c8d7cf346de967eeabc572fe24aff`
+and
+`e36ef63eac28058534553577595b947a044ebd61d177e4a1704eab415bcb3ba0`.
+
+Broad TypedArray admission remains withheld. Two independent canonical
+two-worker full runs are byte-identical, retain all 102,037 keys, and preserve
+every previous pass. Ten sloppy/strict staging rows move from `fail-runtime`
+to pass: `slice-conversion.js`, `slice-detached.js`,
+`subarray-species.js`, `TypedArray-subarray-arguments-detaching.js`, and
+`typedarray-subarray-of-subarray.js`. No other outcome or detail changes. The
+complete vector reaches 51,922 passes and 420 runtime failures; its full
+TSV/JSONL hashes are
+`796783147bae745b1cbb21eb2cf211feefcb98e80008f760eed8f18eb84f7641`
+and
+`e912ed7dc3f9a9f0141f9c96168fb8bb5e4be4661d6d47030295427a21baf4aa`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5992,6 +6069,12 @@ pinned QuickJS both pass completely. The exact full join changes only the
 sloppy/strict `filter-species.js` and `map-species.js` rows from runtime failure
 to pass, advancing the complete vector to 51,912/102,037 with no other row
 drift.
+R3ax publishes QuickJS-shaped TypedArray `slice` and `subarray`. Five raw
+cross-realm/WeakMap staging paths remain deferred; the other 173 paths / 346
+variants join the cumulative 1,880-path / 3,721-variant gate, which Oxide and
+pinned QuickJS both pass completely. Two byte-identical full runs change only
+ten staging rows from runtime failure to pass, advancing the complete vector
+to 51,922/102,037 with no previous-pass regression or other row drift.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

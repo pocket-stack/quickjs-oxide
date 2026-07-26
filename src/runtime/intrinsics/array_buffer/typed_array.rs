@@ -19,6 +19,7 @@ mod iteration;
 mod mutation;
 mod reduce;
 mod search;
+mod slice;
 mod species;
 #[cfg(test)]
 mod tests;
@@ -184,6 +185,19 @@ impl Runtime {
             0,
             0,
         )?;
+        for (kind, name) in [
+            (TypedArrayNativeKind::Slice, "slice"),
+            (TypedArrayNativeKind::Subarray, "subarray"),
+        ] {
+            self.define_native_builtin_auto_init(
+                &base_prototype,
+                realm,
+                NativeFunctionId::TypedArray(kind),
+                name,
+                2,
+                2,
+            )?;
+        }
         for (kind, name) in [
             (ArraySearchKind::IndexOf, "indexOf"),
             (ArraySearchKind::LastIndexOf, "lastIndexOf"),
@@ -439,10 +453,14 @@ impl Runtime {
             TypedArrayNativeKind::Find(kind) => {
                 self.call_typed_array_find(realm, kind, invocation, arguments)
             }
+            TypedArrayNativeKind::Slice => {
+                self.call_typed_array_slice(realm, invocation, arguments)
+            }
+            TypedArrayNativeKind::Subarray => {
+                self.call_typed_array_subarray(realm, invocation, arguments)
+            }
             TypedArrayNativeKind::With
             | TypedArrayNativeKind::ToReversed
-            | TypedArrayNativeKind::Slice
-            | TypedArrayNativeKind::Subarray
             | TypedArrayNativeKind::Sort
             | TypedArrayNativeKind::ToSorted
             | TypedArrayNativeKind::Join(_) => Err(RuntimeError::Invariant(
@@ -539,16 +557,15 @@ impl Runtime {
         } else {
             0
         };
-        let width = u64::from(element.byte_length());
-        // Alignment precedes the detached-buffer check in pinned QuickJS.
-        if byte_offset % width != 0 {
+        // Pinned QuickJS rejects a misaligned offset before touching the
+        // explicit length argument.
+        if byte_offset % u64::from(element.byte_length()) != 0 {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Range,
-                "invalid byteOffset",
+                "invalid offset",
             )?));
         }
-
         let explicit_length = arguments.actual_arg_count > 2
             && !matches!(arguments.readable.get(2), Some(Value::Undefined));
         let requested_length = if explicit_length {
@@ -566,62 +583,17 @@ impl Runtime {
             None
         };
 
-        let backing = self.array_buffer_snapshot(buffer)?;
-        if backing.detached {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "ArrayBuffer is detached",
-            )?));
-        }
-        let (byte_offset, fixed_byte_length) = if let Some(length) = requested_length {
-            let bytes = length.checked_mul(width).ok_or(RuntimeError::Invariant(
-                "ToIndex TypedArray byte length overflowed u64",
-            ))?;
-            let end = byte_offset
-                .checked_add(bytes)
-                .ok_or(RuntimeError::Invariant(
-                    "ToIndex TypedArray end offset overflowed u64",
-                ))?;
-            if end > u64::from(backing.byte_length) {
-                return Ok(Completion::Throw(self.typed_array_invalid_length(realm)?));
-            }
-            (
-                u32::try_from(byte_offset)
-                    .map_err(|_| RuntimeError::Invariant("validated byteOffset overflowed u32"))?,
-                Some(u32::try_from(bytes).map_err(|_| {
-                    RuntimeError::Invariant("validated TypedArray byte length overflowed u32")
-                })?),
-            )
-        } else {
-            if byte_offset > u64::from(backing.byte_length) {
-                return Ok(Completion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Range,
-                    "invalid byteOffset",
-                )?));
-            }
-            let byte_offset = u32::try_from(byte_offset)
-                .map_err(|_| RuntimeError::Invariant("validated byteOffset overflowed u32"))?;
-            let available = backing.byte_length - byte_offset;
-            let fixed_byte_length = if backing.max_byte_length.is_some() {
-                None
-            } else {
-                if u64::from(available) % width != 0 {
-                    return Ok(Completion::Throw(self.typed_array_invalid_length(realm)?));
-                }
-                Some(available)
-            };
-            (byte_offset, fixed_byte_length)
-        };
-        let target = self.new_typed_array_object(
+        match self.new_typed_array_view_from_coerced(
+            realm,
             &prototype,
+            element,
             buffer,
             byte_offset,
-            fixed_byte_length,
-            element,
-        )?;
-        Ok(Completion::Return(Value::Object(target)))
+            requested_length,
+        )? {
+            NativeConversion::Value(target) => Ok(Completion::Return(Value::Object(target))),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+        }
     }
 
     fn construct_typed_array_from_typed_array(
@@ -1024,62 +996,6 @@ impl Runtime {
         Ok(Completion::Return(Value::Object(target)))
     }
 
-    fn typed_array_create_from_constructor(
-        &self,
-        realm: ContextId,
-        constructor: Value,
-        length: u64,
-    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let Value::Object(object) = constructor else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a constructor",
-            )?));
-        };
-        if !self.is_constructor(&object)? {
-            return Ok(NativeConversion::Throw(
-                self.new_not_constructor_error(realm, &Value::Object(object))?,
-            ));
-        }
-        let constructor = self.callable_from_value(Value::Object(object))?;
-        let target = match self.construct_internal(
-            realm,
-            &constructor,
-            &constructor,
-            &[Value::number(length as f64)],
-        )? {
-            Completion::Return(Value::Object(value)) => value,
-            Completion::Return(_) => {
-                return Ok(NativeConversion::Throw(self.new_native_error(
-                    realm,
-                    NativeErrorKind::Type,
-                    "not a TypedArray",
-                )?));
-            }
-            Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let Some(_) = self.typed_array_snapshot_if_branded(&target)? else {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "not a TypedArray",
-            )?));
-        };
-        let target_length = match self.typed_array_validated_length(realm, &target)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        if u64::from(target_length) < length {
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "TypedArray length is too small",
-            )?));
-        }
-        Ok(NativeConversion::Value(target))
-    }
-
     fn call_typed_array_set(
         &self,
         realm: ContextId,
@@ -1395,7 +1311,7 @@ impl Runtime {
     }
 
     fn typed_array_invalid_length(&self, realm: ContextId) -> Result<Value, RuntimeError> {
-        self.new_native_error(realm, NativeErrorKind::Range, "invalid typed array length")
+        self.new_native_error(realm, NativeErrorKind::Range, "invalid array buffer length")
     }
 
     fn typed_array_iterator_method(
