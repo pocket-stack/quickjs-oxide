@@ -728,6 +728,56 @@ fn static_from_and_of_construct_validate_map_and_convert_results() {
                 errorName(function(){
                     return Uint8Array.of.call(TooShort,1);
                 })==="TypeError");
+            function errorCompletion(operation){
+                try{operation();return "return"}
+                catch(error){return error.name+":"+error.message}
+            }
+            var typedArrayOf=Object.getPrototypeOf(Uint8Array).of;
+            var primitiveReceivers=[
+                undefined,null,false,1,"x",1n,Symbol("receiver")
+            ];
+            for(var primitiveIndex=0;
+                primitiveIndex<primitiveReceivers.length;
+                primitiveIndex++){
+                check(
+                    "of primitive receiver "+primitiveIndex,
+                    errorCompletion(function(){
+                        return typedArrayOf.call(
+                            primitiveReceivers[primitiveIndex]
+                        );
+                    })==="TypeError:not a function"
+                );
+            }
+            check(
+                "of object receiver diagnostic",
+                errorCompletion(function(){
+                    return typedArrayOf.call({});
+                })==="TypeError:not a constructor"
+            );
+            var typedArrayFrom=Object.getPrototypeOf(Uint8Array).from;
+            var fromLog="";
+            var arrayLike={};
+            Object.defineProperty(arrayLike,Symbol.iterator,{
+                get:function(){fromLog+="I";return undefined}
+            });
+            Object.defineProperty(arrayLike,"length",{
+                get:function(){fromLog+="L";return 0}
+            });
+            check(
+                "from primitive receiver diagnostic",
+                errorCompletion(function(){
+                    return typedArrayFrom.call(1,arrayLike);
+                })==="TypeError:not a function"
+            );
+            check("from validates receiver at create point",fromLog==="IL");
+            fromLog="";
+            check(
+                "from mapfn remains first",
+                errorCompletion(function(){
+                    return typedArrayFrom.call({},arrayLike,1);
+                })==="TypeError:not a function"
+            );
+            check("from mapfn precedes source",fromLog==="");
 
             return failures.length===0 ? "ok" : failures.join(",");
         })()"#,

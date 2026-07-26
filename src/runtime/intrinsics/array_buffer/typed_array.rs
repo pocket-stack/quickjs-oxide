@@ -895,7 +895,7 @@ impl Runtime {
                 NativeConversion::Value(value) => value,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-            let target = match self.typed_array_create_from_constructor(
+            let target = match self.typed_array_create_from_static_constructor(
                 realm,
                 this_value,
                 values.len() as u64,
@@ -936,10 +936,11 @@ impl Runtime {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let target = match self.typed_array_create_from_constructor(realm, this_value, length)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        let target =
+            match self.typed_array_create_from_static_constructor(realm, this_value, length)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
         for index in 0..length {
             let key = self.intern_property_key(&index.to_string())?;
             let mut value = match self.get_property_in_realm(realm, &source, &key)? {
@@ -978,10 +979,11 @@ impl Runtime {
         };
         let length = u64::try_from(arguments.actual_arg_count)
             .map_err(|_| RuntimeError::Invariant("TypedArray.of argc overflowed u64"))?;
-        let target = match self.typed_array_create_from_constructor(realm, this_value, length)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        let target =
+            match self.typed_array_create_from_static_constructor(realm, this_value, length)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
         for (index, value) in arguments.readable[..arguments.actual_arg_count]
             .iter()
             .enumerate()

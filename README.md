@@ -9,8 +9,10 @@ QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 `every`/`some`, `forEach`, `reduce`/`reduceRight`, species-aware
 `map`/`filter` and `slice`/`subarray`, plus non-species `with` and
 `toReversed`, dedicated `join`/`toLocaleString`, inherited `toString`, and
-QuickJS-shaped `sort`/`toSorted`, with certified `entries`/`keys` iterators; its
-scoped gate reaches 4,157/4,157 in both engines; the complete conservative vector is 51,940/102,037.
+QuickJS-shaped `sort`/`toSorted`, certified `entries`/`keys` iterators, and
+pinned-QuickJS-certified static `of`. Its scoped gate reaches 4,225/4,225
+variants across 2,132 paths in both engines; the complete conservative vector
+is 51,940/102,037.
 TypedArray audit/admission, Uint8Array codecs, modules, SharedArrayBuffer/Atomics,
 and broad built-in coverage remain incomplete. Pinned QuickJS is the test oracle,
 never a product dependency; bookkeeping lives in the status documents.

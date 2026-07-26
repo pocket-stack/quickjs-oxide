@@ -47,7 +47,9 @@ promotes `slice`/`subarray` copying and view creation. R3ay promotes
 change-by-copy `with`/`toReversed`, and R3az promotes dedicated
 `join`/`toLocaleString` stringification plus inherited `toString`. R3ba
 promotes QuickJS-shaped `sort`/`toSorted`, and R3bb authenticates the existing
-shared `entries`/`keys` iterators; residual TypedArray methods,
+shared `entries`/`keys` iterators. R3bc authenticates static `TypedArray.of`
+and its shared static-`from`/`of` constructor diagnostic seam; residual
+TypedArray methods,
 SharedArrayBuffer, and wider interop surfaces remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
@@ -5859,8 +5861,97 @@ canonical full TSV/JSONL hashes therefore remain
 `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
 and
 `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
-The next audited slice is static TypedArray `of`, with a 34-path / 68-variant
-candidate.
+At the R3bb landing, the next audited slice was static TypedArray `of`.
+
+## R3bc TypedArray static of authentication
+
+R3bc authenticates the inherited `%TypedArray%.of` surface against pinned
+QuickJS. The implementation constructs through its receiver with exactly one
+length argument and the receiver as `newTarget`, validates the live TypedArray
+result and minimum length, then performs left-to-right element conversion and
+integer-indexed writes. The focused matrix covers all 12 concrete classes,
+Number and BigInt conversion, custom/bound/Proxy constructors, returned class
+mismatches, partial mutation before abrupt conversion, RAB shrink/grow,
+detach, zero arguments, and a safe 512-argument call.
+
+This milestone includes a production semantic fix rather than bookkeeping
+alone. Primitive receivers (`undefined`, null, Boolean, Number, String, BigInt,
+and Symbol) now take the direct static-constructor seam and produce pinned
+QuickJS's defining-realm `TypeError: not a function`. Object receivers still
+take the ordinary constructor check and produce `not a constructor` when
+appropriate. Static `TypedArray.from` shares this seam in both its iterable and
+array-like branches while retaining its earlier observable work: map-function
+validation precedes source access, and receiver validation occurs only after
+iterator materialization or the array-like length read. Species construction
+remains intentionally separate, preserving `not a constructor` for a primitive
+`@@species`.
+
+The oracle boundary is explicit. `tests/oracle_typed_array_of.rs` contains
+seven frozen vectors and four Rust test entry points:
+
+- the first freezes Oxide against observations taken from QuickJS;
+- the second self-checks those observations by executing pinned QuickJS;
+- the third directly differentials Oxide against pinned QuickJS;
+- the fourth is a Rust-only cross-realm structural test covering result
+  prototype ownership, defining-realm native errors, and caller-thrown value
+  identity.
+
+Only the first three entries belong to the QuickJS observation/oracle/
+differential layer. The fourth does not execute QuickJS and is not counted as
+a QuickJS differential.
+
+The exact atomic candidate contains 35 paths / 70 variants. The sole deferred
+path is `test/staging/sm/TypedArray/of.js`, whose two variants require both
+`$262.createRealm` and the SpiderMonkey TypedArray-shell WeakMap. Pinned
+QuickJS passes all 70 candidate variants. The remaining 34 paths / 68 variants
+are promoted, expanding the cumulative scoped gate to 2,132 paths / 4,225
+variants and reducing the exclusion ledger to 229 paths. Oxide and pinned
+QuickJS both pass 4,225/4,225 admitted variants.
+
+Candidate, deferred, and promoted path/key SHA-256 pairs are respectively:
+
+- candidate path:
+  `6fdec16ab63ca0b1081a90f7a5f12fa6c87b6c73fdb209079d24bf793d2787b8`;
+- candidate keys:
+  `3bfcf9a16f2c28c819d121a819f7c52882e34fb3a3443ebb6c66db0bdbcc25a7`;
+- deferred path:
+  `2b66ebd26cc79b9df0d5e5771e665d164311633010ea66eb33a22e85d6d62a0e`;
+- deferred keys:
+  `07a640bcebe1fc380bde8bd0ab1a3b80779d4e45b085a744018a50858c016140`;
+- promoted path:
+  `01095b2e0348fb1328026684c7422975cf8396a08fa73719955c9350ee15f13f`;
+- promoted keys:
+  `8318904a86586b2bc771200348972ffd59c6f84b61219d84b262668517c363df`.
+
+The scoped profile, cumulative manifest, cumulative variant-key stream,
+exclusion path stream, and exclusion-ledger file SHA-256 values are:
+
+- `c7118e34b64929bd57678ac490fb5793a3e6974fb4272e09633614d424fe4ef7`;
+- `3334625f2df7a60c7541884f14f5b001e2f0eadbafdb85529eb5018b9eb0f4d8`;
+- `1fb72c0d146a365b8ff7eee5eeca291d0aa1af97b786f02f05011a89cd694ec7`;
+- `db842baa3b677f2e2312540bfb279e72fb56e6acaa390bd5ee602e0fc40bd371`;
+- `be473162b0c73865415bf26bcfab36041139bb0f1684b8ecea5fe2065b995267`.
+
+Canonical scoped TSV/JSONL hashes are
+`a0f5531d24e57b3da8af70ba865b2aa9764f64973489da07d812a80d92dbecab`
+and
+`3f4f16ca175e057f063cfb4d917bdadd31c66e421edb60c97e7900cbca41cf50`.
+
+The conservative full vector remains 51,940/102,037. The global profile is
+unchanged, and an exact current-row audit shows that all 68 promoted variants
+remain `unsupported-feature`, so the checked-in full TSV/JSONL hashes remain
+`f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+and
+`8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+
+Resource parity remains a declared caveat. Oxide keeps an extra O(argc) cloned
+native argument vector where QuickJS reuses VM `argv`; direct TypedArray
+allocation topology and the BigInt write path also differ internally. The
+focused safe-large case stops at 512 arguments and does not inject allocator
+failure, so this slice does not certify identical OOM ordering or thresholds.
+
+The next planned static `from` slice contains 81 candidate paths / 158
+variants. Nine paths / 17 variants remain deferred in the audited inventory.
 
 ## Runner contract
 
@@ -6382,8 +6473,16 @@ iterators without a production-code change. After deferring two
 path, 43 paths / 86 variants join the cumulative 2,098-path /
 4,157-variant gate, which Oxide and pinned QuickJS both pass completely. The
 global profile remains unchanged, so the canonical complete vector remains
-51,940/102,037. Static TypedArray `of` is the next audited
-34-path / 68-variant slice.
+51,940/102,037. At that landing, static TypedArray `of` was the next audited
+slice.
+R3bc authenticates static TypedArray `of` and fixes the shared static
+`from`/`of` primitive-receiver diagnostic seam. Its 35-path / 70-variant
+candidate defers only the two cross-realm/WeakMap staging variants; the other
+34 paths / 68 variants join the cumulative 2,132-path / 4,225-variant gate,
+which Oxide and pinned QuickJS both pass completely. All 68 promoted full rows
+remain `unsupported-feature`, so the conservative vector stays
+51,940/102,037. The next planned static `from` audit contains 81 paths / 158
+variants, with nine paths / 17 variants deferred.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

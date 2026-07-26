@@ -33,7 +33,9 @@ claim full parity.
   `join`/`toLocaleString` stringification and the inherited `toString` surface,
   R3ba adds QuickJS-shaped `sort`/`toSorted`, and R3bb authenticates the
   existing shared `entries`/`keys` iterator path without a production-code
-  change. Neither milestone widens the global TypedArray claim. The current
+  change. R3bc authenticates static `TypedArray.of` and fixes the shared
+  static-`from`/`of` primitive-receiver constructor diagnostic seam. These
+  milestones do not widen the global TypedArray claim. The current
   canonical measurement has 51,940 passes and 52,468 runnable variants:
   50.90% raw,
   a 62.16% lower bound after the 18,475 pinned QuickJS target exclusions, or
@@ -3773,8 +3775,81 @@ claim full parity.
   One non-blocking resource-parity caveat remains: Rust and QuickJS allocator
   bookkeeping have different OOM topology, and the weighted native-stack
   budget is still an approximation, so this admission does not claim identical
-  injected-OOM or extreme native-interleave failure thresholds. The next
-  audited slice is static TypedArray `of`, with a 34-path / 68-variant candidate.
+  injected-OOM or extreme native-interleave failure thresholds. At the R3bb
+  landing, the next audited slice was static TypedArray `of`.
+
+  R3bc authenticates the inherited static `%TypedArray%.of` implementation.
+  The existing algorithm constructs through the receiver with one length
+  argument and the same `newTarget`, validates the returned live TypedArray and
+  minimum length, then converts and writes source arguments from left to right.
+  The focused vectors cover descriptors and call-only behavior, all 12 concrete
+  classes, Number/BigInt conversion, custom/bound/Proxy constructors, returned
+  class mismatches, abrupt conversion and partial writes, RAB shrink/grow,
+  detach, and zero/512-argument calls.
+
+  One real diagnostic mismatch was fixed. Static `from` and `of` now share a
+  narrow direct-constructor seam: a primitive receiver reaches QuickJS's
+  defining-realm `TypeError: not a function`, while an object that is not a
+  constructor continues through the ordinary constructor check and reports
+  `not a constructor`. Static `from` retains its observable order—map-function
+  validation first, then iterator collection or array-like length access, and
+  receiver validation only when creating the target. TypedArray species
+  construction deliberately does not use this seam, so a primitive
+  `@@species` value keeps its distinct `not a constructor` diagnostic.
+
+  `tests/oracle_typed_array_of.rs` has four test entry points. Only the first
+  three form the pinned-QuickJS observation layer: frozen observations, oracle
+  self-check, and direct Oxide/QuickJS differential. The fourth entry is a
+  Rust-only cross-realm structural test for result prototypes, defining-realm
+  native errors, and caller-thrown identity; it does not execute QuickJS and is
+  not claimed as a differential.
+
+  The atomic candidate is 35 paths / 70 variants. Only
+  `test/staging/sm/TypedArray/of.js` remains deferred—one path / two variants—
+  because it requires both `$262.createRealm` and the SpiderMonkey
+  TypedArray-shell WeakMap. The other 34 paths / 68 variants join the cumulative
+  2,132-path / 4,225-variant scoped gate. Oxide and pinned QuickJS both pass all
+  4,225 admitted variants, and the exclusion ledger falls to 229 paths.
+
+  Candidate path/key, deferred path/key, and promoted path/key SHA-256 pairs
+  are respectively
+  `6fdec16ab63ca0b1081a90f7a5f12fa6c87b6c73fdb209079d24bf793d2787b8` /
+  `3bfcf9a16f2c28c819d121a819f7c52882e34fb3a3443ebb6c66db0bdbcc25a7`,
+  `2b66ebd26cc79b9df0d5e5771e665d164311633010ea66eb33a22e85d6d62a0e` /
+  `07a640bcebe1fc380bde8bd0ab1a3b80779d4e45b085a744018a50858c016140`,
+  and
+  `01095b2e0348fb1328026684c7422975cf8396a08fa73719955c9350ee15f13f` /
+  `8318904a86586b2bc771200348972ffd59c6f84b61219d84b262668517c363df`.
+  The scoped profile, cumulative manifest, cumulative variant-key stream,
+  exclusion path stream, and exclusion-ledger file hashes are
+  `c7118e34b64929bd57678ac490fb5793a3e6974fb4272e09633614d424fe4ef7`,
+  `3334625f2df7a60c7541884f14f5b001e2f0eadbafdb85529eb5018b9eb0f4d8`,
+  `1fb72c0d146a365b8ff7eee5eeca291d0aa1af97b786f02f05011a89cd694ec7`,
+  `db842baa3b677f2e2312540bfb279e72fb56e6acaa390bd5ee602e0fc40bd371`,
+  and
+  `be473162b0c73865415bf26bcfab36041139bb0f1684b8ecea5fe2065b995267`.
+  Canonical scoped TSV/JSONL hashes are
+  `a0f5531d24e57b3da8af70ba865b2aa9764f64973489da07d812a80d92dbecab`
+  and
+  `3f4f16ca175e057f063cfb4d917bdadd31c66e421edb60c97e7900cbca41cf50`.
+
+  Broad TypedArray admission remains withheld. The global profile is unchanged,
+  and an exact full-row audit shows that all 68 newly authenticated rows remain
+  `unsupported-feature`; the canonical complete vector therefore stays at
+  51,940/102,037 with TSV/JSONL hashes
+  `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+  and
+  `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+  Resource parity remains deliberately narrower. The Oxide native bridge keeps
+  an extra O(argc) cloned argument vector where QuickJS reuses VM `argv`;
+  extreme Rust allocation failure can abort instead of becoming QuickJS's
+  catchable `InternalError`. Direct TypedArray allocation also has a different
+  object/backing-store topology, and BigInt writes currently use
+  `as_int_n(64)` temporaries where QuickJS reads the low limb directly. The
+  safe-large oracle stops at 512 arguments, so this milestone does not claim
+  identical injected-OOM ordering or thresholds.
+  The next planned static `from` slice contains 81 candidate paths / 158
+  variants, with nine paths / 17 variants deferred.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -7264,6 +7339,14 @@ fixed. Three QuickJS observation tests authenticate the existing shared
 Array-iterator path across all 12 TypedArray classes, resizable-buffer
 behavior, detach, and transient-OOB recovery. A fourth Rust structural test
 locks the source-audited manual-next/outer-operation realm split.
+R3bc again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+Routing static `from` and `of` through their diagnostic-specific constructor
+seam brings the shared TypedArray owner to 1,895 lines and
+`typed_array/species.rs` to 321 lines; species construction itself remains on
+the distinct generic constructor path. The owner test module reaches 1,296
+lines, and the separate 685-line `oracle_typed_array_of.rs` keeps its three
+QuickJS-observation entry points distinct from the Rust-only cross-realm
+structural test.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -7603,6 +7686,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_array_buffer -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_data_view -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_typed_array_of -- --nocapture
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-array-buffer.sh
 ./scripts/test-test262-data-view.sh

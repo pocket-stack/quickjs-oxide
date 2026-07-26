@@ -121,6 +121,28 @@ impl Runtime {
         )
     }
 
+    /// Construct the result of the static `from` / `of` builtins.
+    ///
+    /// QuickJS reaches these call sites through `JS_CallConstructor`: a
+    /// primitive receiver fails its callable check as "not a function".
+    /// Species construction deliberately bypasses this seam because a
+    /// primitive `@@species` value instead reports "not a constructor".
+    pub(super) fn typed_array_create_from_static_constructor(
+        &self,
+        realm: ContextId,
+        constructor: Value,
+        length: u64,
+    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
+        if !matches!(&constructor, Value::Object(_)) {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "not a function",
+            )?));
+        }
+        self.typed_array_create_from_constructor(realm, constructor, length)
+    }
+
     /// Construct and validate a species result with the exact authored
     /// argument vector. QuickJS only enforces a minimum result length for its
     /// one-argument create form; `subarray` deliberately uses two or three
