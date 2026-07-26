@@ -23,7 +23,9 @@ claim full parity.
   classes. R3aq promotes the in-place mutation cohort without globally
   admitting the still-incomplete broad TypedArray feature tag. R3ar adds the
   dedicated indexed lookup/search kernel and promotes `at`, `includes`,
-  `indexOf`, and `lastIndexOf` under the same conservative boundary. The
+  `indexOf`, and `lastIndexOf` under the same conservative boundary. R3as adds
+  the callback-driven `find`, `findIndex`, `findLast`, and `findLastIndex`
+  kernel without widening the global TypedArray claim. The
   vector has 51,908 passes and 52,468 runnable variants: 50.87% raw, a 62.12%
   lower bound after the 18,475 pinned QuickJS target exclusions, or 99.03%
   among the 52,419 variants with a non-unsupported observed outcome. It records
@@ -3249,6 +3251,42 @@ claim full parity.
   `2b87010242ba56dcf9ca6bf1b49c733db36b3b4e558cd945b12ce22aa4acb2f7`;
   the complete summary reaches 51,908 passes and 434 runtime failures. Full
   TSV/JSONL hashes are
+  `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+  and
+  `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+
+  R3as publishes `%TypedArray%.prototype.find`, `findIndex`, `findLast`, and
+  `findLastIndex` through a dedicated callback traversal kernel. It follows
+  pinned QuickJS's initial brand/out-of-bounds validation and one-time length
+  snapshot, then performs live integer-index reads across that original range.
+  Callback shrink or detach therefore supplies `undefined` for disappeared
+  slots without skipping them, growth does not extend traversal, callback
+  writes are visible to later iterations, and a truthy callback returns the
+  value captured before the callback. Forward and reverse methods share the
+  same kernel without falling through generic Array property traversal.
+
+  The atomic inventory contains 158 paths / 300 variants. Two SpiderMonkey
+  staging paths require `sm/non262-TypedArray-shell.js` and its unavailable
+  WeakMap dependency; the remaining 156 paths / 296 variants join the
+  cumulative 1,293-path / 2,547-variant gate. Oxide and pinned QuickJS both
+  pass 2,547/2,547, and pinned QuickJS also passes the unchanged expanded
+  2,361-path / 4,669-variant candidate. The scoped profile, manifest,
+  exclusion-ledger file, and variant-key SHA-256 values are
+  `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`,
+  `38fe4dd01e098bee2c646865039c49e989b079f66c88913fbf644b438279b8ac`,
+  `a8e2e74492138119133cabf6dd7d5fd1133cb06ce259f88f8c777d857154c2ef`,
+  and
+  `f689489da433d110e4fe32be1940d141751d4112341a0319a43a0df5a815eeca`.
+  Its canonical TSV/JSONL hashes are
+  `7b0d8183176cdc53a1e5502dba684e80fe40549758e0e44bd875a0258253a4ae`
+  and
+  `1ec975c7f5b60a81a9363dffea10faaa993ade9f385b14621062cb06d78e2538`.
+
+  Broad global TypedArray admission remains withheld, so all 296 promoted
+  variants were already fail-closed as `unsupported-feature`; the two
+  deferred staging paths remain harness failures. The complete 102,037-key
+  vector is therefore byte-identical to R3ar at 51,908 passes, with zero
+  previous-pass regression. Its TSV/JSONL hashes remain
   `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
   and
   `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
@@ -6671,6 +6709,11 @@ algorithms live in the adjacent 196-line `typed_array/search.rs`, with a
 246-line directed test module. This milestone therefore expands semantics
 without growing either monolith or mixing indexed-search rules into generic
 Array property traversal.
+R3as keeps both monoliths unchanged again. The shared owner is 1,940 lines
+after publishing and dispatching the four methods; their complete observable
+algorithm lives in the adjacent 92-line `typed_array/find.rs`, with a
+308-line directed test module. Callback mutation, resizable-buffer and detach
+semantics stay isolated from both the facade and generic Array traversal.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -7072,9 +7115,9 @@ resizable-buffer shrink/grow behavior against the same pinned oracle.
 The TypedArray shared-kernel target locks the 12-class graph and backing
 payload, constructor/coercion order, integer-indexed exotic internal methods,
 live resizable-buffer bounds, detach, iteration, in-place mutation, `for-in`,
-overlap, raw words, indexed lookup/search, realm, host-property, and GC seams
-against the same pinned oracle. Its exclusion ledger keeps later method
-families and external dependencies visible.
+overlap, raw words, indexed lookup/search, callback find traversal, realm,
+host-property, and GC seams against the same pinned oracle. Its exclusion
+ledger keeps later method families and external dependencies visible.
 The full gate discovers every `tests/oracle_*.rs`
 integration target, reuses an executable `QJS_ORACLE` or checksum-verifies and
 builds the pinned test-only oracle, obtains and checksum-verifies the matching

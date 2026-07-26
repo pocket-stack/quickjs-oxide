@@ -7,12 +7,14 @@
 
 use crate::atom::PropertyKeyKind;
 use crate::heap::{
-    ArrayBufferViewData, ArrayIteratorKind, ArraySearchKind, ObjectData, ObjectPayload,
-    TypedArrayData, TypedArrayElementKind, TypedArrayNativeKind, TypedArrayRealmData,
+    ArrayBufferViewData, ArrayFindKind, ArrayIteratorKind, ArraySearchKind, ObjectData,
+    ObjectPayload, TypedArrayData, TypedArrayElementKind, TypedArrayNativeKind,
+    TypedArrayRealmData,
 };
 
 use super::*;
 
+mod find;
 mod mutation;
 mod search;
 #[cfg(test)]
@@ -114,7 +116,6 @@ impl Runtime {
         for (kind, name, length, min_readable_args) in [
             (TypedArrayNativeKind::CopyWithin, "copyWithin", 2, 2),
             (TypedArrayNativeKind::Fill, "fill", 1, 1),
-            (TypedArrayNativeKind::Reverse, "reverse", 0, 0),
         ] {
             self.define_native_builtin_auto_init(
                 &base_prototype,
@@ -125,6 +126,29 @@ impl Runtime {
                 min_readable_args,
             )?;
         }
+        for (kind, name) in [
+            (ArrayFindKind::Find, "find"),
+            (ArrayFindKind::FindIndex, "findIndex"),
+            (ArrayFindKind::FindLast, "findLast"),
+            (ArrayFindKind::FindLastIndex, "findLastIndex"),
+        ] {
+            self.define_native_builtin_auto_init(
+                &base_prototype,
+                realm,
+                NativeFunctionId::TypedArray(TypedArrayNativeKind::Find(kind)),
+                name,
+                1,
+                1,
+            )?;
+        }
+        self.define_native_builtin_auto_init(
+            &base_prototype,
+            realm,
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::Reverse),
+            "reverse",
+            0,
+            0,
+        )?;
         for (kind, name) in [
             (ArraySearchKind::IndexOf, "indexOf"),
             (ArraySearchKind::LastIndexOf, "lastIndexOf"),
@@ -371,10 +395,12 @@ impl Runtime {
             TypedArrayNativeKind::Search(kind) => {
                 self.call_typed_array_search(realm, kind, invocation, arguments)
             }
+            TypedArrayNativeKind::Find(kind) => {
+                self.call_typed_array_find(realm, kind, invocation, arguments)
+            }
             TypedArrayNativeKind::With
             | TypedArrayNativeKind::Iteration(_)
             | TypedArrayNativeKind::Reduce(_)
-            | TypedArrayNativeKind::Find(_)
             | TypedArrayNativeKind::ToReversed
             | TypedArrayNativeKind::Slice
             | TypedArrayNativeKind::Subarray
