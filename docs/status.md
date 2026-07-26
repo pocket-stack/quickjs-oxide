@@ -29,15 +29,17 @@ claim full parity.
   R3au adds QuickJS-shaped `forEach`, and R3av adds QuickJS-shaped
   `reduce`/`reduceRight` accumulation. R3aw adds species-aware `map`/`filter`,
   R3ax adds QuickJS-shaped `slice`/`subarray`, and R3ay adds non-species
-  change-by-copy `with`/`toReversed`, without widening the global TypedArray
-  claim. The vector has 51,924 passes and 52,468 runnable variants: 50.89% raw,
+  change-by-copy `with`/`toReversed`. R3az adds dedicated
+  `join`/`toLocaleString` stringification and the inherited `toString` surface,
+  without widening the global TypedArray claim. The vector has 51,926 passes
+  and 52,468 runnable variants: 50.89% raw,
   a 62.14% lower bound after the 18,475 pinned QuickJS target exclusions, or
   99.06% among the 52,419 variants with a non-unsupported observed outcome. It
-  records 18 parse failures, 418 runtime failures, and 57 harness failures;
+  records 18 parse failures, 416 runtime failures, and 57 harness failures;
   current full TSV/JSONL SHA-256 values are
-  `73141c5f26f9e3f132b0046c1066a7d5965497c27754e1b4ec89b5649e8ba7a9`
+  `bd1119fe3ea8e4eaaad2e21bf3d0991b58200bacef91e695c2c2a4c11e6538c3`
   and
-  `b69db1a2c29dfdb7e0196fc2e452591a1d25316fd9ec449ef24cdbdd7d2f5481`.
+  `d78dfbd84ebab70441362d6bd535fab9fcfc433419b09fe8668309a749e7c759`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3622,9 +3624,60 @@ claim full parity.
   and
   `b69db1a2c29dfdb7e0196fc2e452591a1d25316fd9ec449ef24cdbdd7d2f5481`.
 
-  The next dependency-clean payoff is the 86-path / 172-variant
-  `join` + `toLocaleString` cohort, whose risk is lower than sorting. The
-  following sort/comparator milestone can combine `sort` with `toSorted`; its
+  R3az publishes `%TypedArray%.prototype.join` and `toLocaleString` through a
+  dedicated stringification kernel while retaining the inherited `toString`
+  alias. Both methods brand-check and validate the source before snapshotting
+  its old length. An explicit `join` separator is converted before the live
+  length is re-read; shrink or detach clips element reads but preserves the
+  old-length separator shape, growth is ignored, and string-limit overflow
+  stops before another element conversion. `toLocaleString` ignores its
+  arguments, uses a comma separator, and invokes each live primitive
+  element's builtin defining-realm `toLocaleString` with zero arguments before
+  stringifying the result. These paths follow the pinned QuickJS TypedArray
+  kernel rather than routing through generic Array traversal.
+
+  The exact atomic candidate is 88 paths / 175 variants. Five paths / nine
+  variants stay deferred: two cross-realm paths / three variants require
+  `$262.createRealm` plus the SpiderMonkey WeakMap shell, and three paths / six
+  variants require that WeakMap shell alone. The remaining 83 paths / 166
+  variants join the cumulative 1,997-path / 3,955-variant gate, which Oxide and
+  pinned QuickJS both pass completely; the exclusion ledger falls to 364
+  paths.
+
+  Candidate path/key, deferred path/key, and promoted path/key SHA-256 pairs
+  are respectively
+  `d968b61ff553acb2654f2904a9afff46660f43d6848ad7496ff28f18a81b8d4b` /
+  `81131955a7d4ef4b2358965cd0691498bb78abfac7c48d0f60b8aafcdbbe81f1`,
+  `0254c5edb9969e43038d03dd42f9d43fd29c10c647673cd63cb4230bc8c53151` /
+  `092d6f18a34c2dd23f7add4d9a73a5c1c14e63f99c6fd91f70c8a2c050edc44c`,
+  and
+  `ae64162fb7742828d9dc45d5f54e4666887c4ac95499bbfbe8622ae6fc875b89` /
+  `0fe599bb568d384f84657000208d47df7b7ffa1d3133b6d2795abafa06bf00f6`.
+  The scoped profile, cumulative manifest, cumulative variant-key stream,
+  exclusion path stream, and exclusion-ledger file hashes are
+  `173f0f6f33966a97c8ef65d55f261e5cf1b9c2ee68d1acf2adca92a48d16eb4b`,
+  `00f63843eda645f8701e678663f505ae3004574110f3ccb5fb78e12a94ee98cb`,
+  `b6b16404066ac2e03815b38fd55bbc62d70066ee50e5696687e15a3e8d4a0bfe`,
+  `e11790d0921680b55ba8f5c47a1bd4d7f1254107ea2c05c5f75f51319b578c17`,
+  and
+  `432e55cc4bccbdad68f90b7556f89aaf704141e0f4b64242964fcd0ad2853575`.
+  Canonical scoped TSV/JSONL hashes are
+  `623401f1ee46bb26a6313d26dd71a408e19f58a64bef95bb537428ad19f018bd`
+  and
+  `4983527238f6d436e8c01d40ca707514f3847a879b4c2fcda64aedaa1f986552`.
+
+  Broad TypedArray admission remains withheld. Two independent canonical full
+  runs are byte-identical and retain all 102,037 keys and every previous pass.
+  Only the sloppy and strict
+  `test/staging/sm/TypedArray/detached-array-buffer-checks.js` rows move from
+  `fail-runtime` to pass; there is no other outcome or detail movement. The
+  vector reaches 51,926 passes and 416 runtime failures while runnable remains
+  52,468; full TSV/JSONL hashes are
+  `bd1119fe3ea8e4eaaad2e21bf3d0991b58200bacef91e695c2c2a4c11e6538c3`
+  and
+  `d78dfbd84ebab70441362d6bd535fab9fcfc433419b09fe8668309a749e7c759`.
+
+  The next sort/comparator milestone can combine `sort` with `toSorted`; its
   audit identifies 58 promotable paths / 116 variants and six deferred paths.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
@@ -7092,6 +7145,13 @@ complete change-by-copy algorithms live in the adjacent 224-line
 indexing, coercion order, RAB shrink tails, raw-word reversal, defining-realm
 allocation, and canonical QuickJS errors. No new heap primitive or facade seam
 is required.
+R3az again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+Publishing the two stringification entries brings the shared TypedArray owner
+from 1,863 to 1,878 lines. The complete dedicated algorithm lives in the
+adjacent 120-line `typed_array/stringification.rs`; its 563-line directed test
+module covers surface metadata, primitive locale dispatch, error ordering,
+string limits, RAB growth/shrink, detach, fixed-view OOB behavior, and
+defining-realm selection. Generic Array traversal remains independently owned.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

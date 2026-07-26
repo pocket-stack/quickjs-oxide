@@ -1,6 +1,7 @@
 //! Deterministic native-call stack budgeting.
 
 use super::*;
+use crate::heap::TypedArrayNativeKind;
 
 // QuickJS's optimized C runtime uses a one-MiB default stack budget. Rust
 // debug frames are materially larger than release frames, so preserve the
@@ -129,9 +130,12 @@ impl Runtime {
             // Keep their diagnostic frames without double-charging the target
             // family's proven stack budget.
             NativeFunctionId::FunctionPrototypeCall => 0,
-            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
-                1_usize
-            }
+            // Array.prototype.toString dynamically enters either Array.join or
+            // TypedArray.join, and user coercions can alternate both kernels.
+            // They therefore share one physical stringification budget.
+            NativeFunctionId::ArrayPrototypeJoin(_)
+            | NativeFunctionId::ArrayPrototypeToString
+            | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 1_usize,
             NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 4,
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => 16,
@@ -203,9 +207,9 @@ impl Runtime {
             return true;
         }
         let limit = match target {
-            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
-                64
-            }
+            NativeFunctionId::ArrayPrototypeJoin(_)
+            | NativeFunctionId::ArrayPrototypeToString
+            | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 64,
             NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 16,
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => 4,
@@ -256,13 +260,14 @@ impl Runtime {
         };
 
         let in_family = |candidate| match target {
-            NativeFunctionId::ArrayPrototypeJoin(_) | NativeFunctionId::ArrayPrototypeToString => {
-                matches!(
-                    candidate,
-                    NativeFunctionId::ArrayPrototypeJoin(_)
-                        | NativeFunctionId::ArrayPrototypeToString
-                )
-            }
+            NativeFunctionId::ArrayPrototypeJoin(_)
+            | NativeFunctionId::ArrayPrototypeToString
+            | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => matches!(
+                candidate,
+                NativeFunctionId::ArrayPrototypeJoin(_)
+                    | NativeFunctionId::ArrayPrototypeToString
+                    | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_))
+            ),
             NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => {
                 matches!(
                     candidate,
@@ -458,6 +463,89 @@ mod tests {
                             value[0]=value;
                             try{value.join();return "missing"}
                             catch(error){return error.name+":"+error.message}
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=new Uint8Array(0),separator;
+                            var holder={toString:function(){
+                                return value.join(separator)
+                            }};
+                            var array=[holder];
+                            separator={toString:function(){return array.join()}};
+                            try{
+                                value.join(separator);
+                                return "missing"
+                            }catch(error){
+                                return error.name+":"+error.message
+                            }
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+            );
+            assert_eq!(context.eval("6*7").unwrap(), Value::Int(42));
+        });
+    }
+
+    #[test]
+    fn finite_typed_array_stringification_and_recursive_cycle_fit_on_two_mib_stack() {
+        on_two_mib_stack(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=new Uint8Array(0),depth=18;
+                            var separator={toString:function(){
+                                if(--depth!==0)value.join(separator);
+                                return "|"
+                            }};
+                            return value.join(separator)
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=new Uint8Array([1]),depth=20;
+                            var original=Number.prototype.toLocaleString;
+                            Number.prototype.toLocaleString=function(){
+                                return --depth===0 ? "1" : value.toLocaleString()
+                            };
+                            try{return value.toLocaleString()}
+                            finally{Number.prototype.toLocaleString=original}
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("1")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=new Uint8Array([1]);
+                            var original=Number.prototype.toLocaleString;
+                            Number.prototype.toLocaleString=function(){
+                                return value.toLocaleString()
+                            };
+                            try{
+                                value.toLocaleString();
+                                return "missing"
+                            }catch(error){
+                                return error.name+":"+error.message
+                            }finally{
+                                Number.prototype.toLocaleString=original
+                            }
                         })()"#,
                     )
                     .unwrap(),

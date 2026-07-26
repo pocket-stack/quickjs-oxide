@@ -8,8 +8,9 @@ stack includes the shared 12-class kernel, in-place mutation, indexed search,
 QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 `every`/`some`, `forEach`, `reduce`/`reduceRight`, species-aware
 `map`/`filter` and `slice`/`subarray`, plus non-species `with` and
-`toReversed`. Its scoped gate reaches 3,789/3,789 in both engines; the complete
-conservative vector is 51,924/102,037.
+`toReversed`, dedicated `join`/`toLocaleString`, and inherited `toString`.
+Its scoped gate reaches 3,955/3,955 in both engines; the complete conservative
+vector is 51,926/102,037.
 Remaining TypedArray methods, modules, SharedArrayBuffer/Atomics, and broad
 built-in coverage remain incomplete. Pinned QuickJS is the test oracle, never
 a product dependency; detailed bookkeeping lives in the status documents.

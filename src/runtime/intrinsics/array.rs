@@ -2501,7 +2501,7 @@ impl Runtime {
         Ok(Completion::Return(not_found()))
     }
 
-    fn native_array_element_locale_value(
+    pub(in crate::runtime::intrinsics) fn native_element_locale_value(
         &self,
         realm: ContextId,
         value: Value,
@@ -2614,7 +2614,7 @@ impl Runtime {
                     }
                 }
                 ArrayJoinKind::ToLocaleString => {
-                    let value = match self.native_array_element_locale_value(realm, element)? {
+                    let value = match self.native_element_locale_value(realm, element)? {
                         NativeConversion::Value(value) => value,
                         NativeConversion::Throw(value) => {
                             return Ok(Completion::Throw(value));

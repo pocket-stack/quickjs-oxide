@@ -7,9 +7,9 @@
 
 use crate::atom::PropertyKeyKind;
 use crate::heap::{
-    ArrayBufferViewData, ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayReduceKind,
-    ArraySearchKind, ObjectData, ObjectPayload, TypedArrayData, TypedArrayElementKind,
-    TypedArrayNativeKind, TypedArrayRealmData,
+    ArrayBufferViewData, ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind,
+    ArrayReduceKind, ArraySearchKind, ObjectData, ObjectPayload, TypedArrayData,
+    TypedArrayElementKind, TypedArrayNativeKind, TypedArrayRealmData,
 };
 
 use super::*;
@@ -22,6 +22,7 @@ mod reduce;
 mod search;
 mod slice;
 mod species;
+mod stringification;
 #[cfg(test)]
 mod tests;
 
@@ -213,6 +214,19 @@ impl Runtime {
                 name,
                 2,
                 2,
+            )?;
+        }
+        for (kind, name, length) in [
+            (ArrayJoinKind::Join, "join", 1),
+            (ArrayJoinKind::ToLocaleString, "toLocaleString", 0),
+        ] {
+            self.define_native_builtin_auto_init(
+                &base_prototype,
+                realm,
+                NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(kind)),
+                name,
+                length,
+                length,
             )?;
         }
         for (kind, name) in [
@@ -480,11 +494,12 @@ impl Runtime {
             TypedArrayNativeKind::Subarray => {
                 self.call_typed_array_subarray(realm, invocation, arguments)
             }
-            TypedArrayNativeKind::Sort
-            | TypedArrayNativeKind::ToSorted
-            | TypedArrayNativeKind::Join(_) => Err(RuntimeError::Invariant(
-                "unpublished TypedArray native reached dispatch",
-            )),
+            TypedArrayNativeKind::Join(kind) => {
+                self.call_typed_array_join(realm, kind, invocation, arguments)
+            }
+            TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted => Err(
+                RuntimeError::Invariant("unpublished TypedArray native reached dispatch"),
+            ),
         }
     }
 
