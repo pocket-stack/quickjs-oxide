@@ -218,8 +218,9 @@ fn callback_iteration_matches_quickjs_callback_and_descriptor_contracts() {
                     return typeof key==="symbol" ? key.toString() : key;
                 }).join("|")===
                 "length|at|buffer|byteLength|byteOffset|set|values|keys|"+
-                "entries|copyWithin|every|some|forEach|fill|find|findIndex|"+
-                "findLast|findLastIndex|reverse|indexOf|lastIndexOf|includes|"+
+                "entries|copyWithin|every|some|forEach|reduce|reduceRight|"+
+                "fill|find|findIndex|findLast|findLastIndex|reverse|indexOf|"+
+                "lastIndexOf|includes|"+
                 "constructor|toString|Symbol(Symbol.iterator)|"+
                 "Symbol(Symbol.toStringTag)");
             for(var name of ["every","some","forEach"]){

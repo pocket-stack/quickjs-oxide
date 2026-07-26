@@ -26,8 +26,9 @@ claim full parity.
   `indexOf`, and `lastIndexOf` under the same conservative boundary. R3as adds
   the callback-driven `find`, `findIndex`, `findLast`, and `findLastIndex`
   kernel, and R3at adds QuickJS-shaped `every`/`some` short-circuit traversal,
-  while R3au adds QuickJS-shaped `forEach`, without widening the global
-  TypedArray claim. The
+  R3au adds QuickJS-shaped `forEach`, and R3av adds QuickJS-shaped
+  `reduce`/`reduceRight` accumulation, without widening the global TypedArray
+  claim. The
   vector has 51,908 passes and 52,468 runnable variants: 50.87% raw, a 62.12%
   lower bound after the 18,475 pinned QuickJS target exclusions, or 99.03%
   among the 52,419 variants with a non-unsupported observed outcome. It records
@@ -3399,6 +3400,65 @@ claim full parity.
   and
   `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
   This is the confirmed no-transition join.
+
+  R3av publishes `%TypedArray%.prototype.reduce` and `reduceRight` through a
+  TypedArray-specific accumulator kernel corresponding to the TypedArray
+  branch of pinned QuickJS's shared `js_array_reduce`. Receiver branding and
+  initial detached/out-of-bounds validation precede callback-callability
+  checking; callback validation in turn precedes the explicit-initial-value
+  decision and the `empty array` error. An explicitly supplied `undefined`
+  therefore remains a real accumulator, while an omitted accumulator seeds
+  `reduce` from the first element and `reduceRight` from the last without
+  calling the callback for that seed.
+
+  Both directions snapshot the internal length once, bypass `HasProperty` and
+  numeric prototype lookup, and read every remaining original-range index
+  live. Callback shrink or detach supplies `undefined` for disappeared slots,
+  growth does not extend traversal, and later writes are observed. Each call
+  receives `(accumulator, value, index, receiver)` with `this = undefined`;
+  normal callback results become the next accumulator, and arbitrary
+  accumulator values, callback throws, and cross-realm object/error identity
+  are preserved.
+
+  The independently audited atomic candidate contains 105 paths / 209
+  variants, all of which pass in pinned QuickJS. The single
+  `test/staging/sm/TypedArray/reduce-and-reduceRight.js` path is deferred as
+  `external:cross-realm`, leaving one path / one variant explicit. The other
+  104 paths / 208 variants join the cumulative 1,533-path / 3,027-variant
+  gate. Oxide and pinned QuickJS both pass 3,027/3,027, and the exclusion
+  ledger falls to 828 paths.
+
+  The candidate path and variant-key SHA-256 values are
+  `f40c52a2edb4635d7ca1ec1a2b0abfa4c978c51a73ae567b8efffd8ab5d87ad5`
+  and
+  `6cc0b62d9fe01cdaacf629a3152ca09b975ada81b4169bad7ffb05714662fe72`.
+  The deferred path/key hashes are
+  `b99151319be2a66b2d78111bff0ea5e73a308313670a1b4e9488a3afefd6f909`
+  and
+  `97e3f4dbb189808dc1dd6cb9f8be100c74edbbb333e4c890c165cb7409fdf6cb`;
+  the promoted path/key hashes are
+  `79f2ce5172ba5afc48a87a3417ce99010762ba9de2cc3c49dd4db7696d6ba7b6`
+  and
+  `79522bed3692d0c21ac44370796b6c37861dca2fab511d38d8872605e78d9fff`.
+  The unchanged scoped profile, cumulative manifest, cumulative variant-key
+  stream, exclusion path stream, and exclusion-ledger file SHA-256 values are
+  `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`,
+  `b12b213d5b0d279bf3fdb328cba831a404fd0f4bc2bc105b1da6aa077c5508c7`,
+  `06eceaa517e89f94217d85698d1618f1f297f9e8789f8bc42d7034753dff1e95`,
+  `b5f0caf421df10d9958b1d6de4e8d10462a6e89d51b3492a707c0f5a5a83a2a0`,
+  and
+  `4c6158d8cdb8fbde441e30f9820403912cbbb6f7b57f2af27b5f6c99bfaecca2`.
+  Its canonical scoped TSV/JSONL hashes are
+  `089be9fab5e932b0003c99df8d70064591e35abe2f184ce0a01a575f7ee2c5e8`
+  and
+  `5ff2a426b2df285afa4eda8e9abb62dc192b52621a89f2234de475a242f99392`.
+
+  Broad TypedArray admission remains withheld, and a fresh canonical
+  two-worker rerun confirms that the complete vector is byte-identical to
+  R3au at 51,908/102,037 with no transition. Its full TSV/JSONL hashes remain
+  `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+  and
+  `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -6836,6 +6896,12 @@ brings the shared owner to 1,960 lines, `typed_array/iteration.rs` to 105
 lines, and its directed test module to 382 lines. Callback-result disposal,
 non-short-circuit traversal, and the final `undefined` result therefore add no
 new facade or heap seam.
+R3av again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+Publishing and dispatching `reduce`/`reduceRight` brings the shared TypedArray
+owner to 1,976 lines; the complete accumulator algorithm lives in the adjacent
+94-line `typed_array/reduce.rs`, with a 470-line directed test module.
+Direction, accumulator identity, live RAB/detach reads, and cross-realm
+behavior therefore remain outside both monoliths and generic Array traversal.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

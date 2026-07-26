@@ -41,7 +41,8 @@ DataView layer by R3ao, and the shared 12-class TypedArray kernel by R3ap.
 R3aq promotes the TypedArray mutation cohort, and R3ar promotes the indexed
 `at`/search cohort. R3as promotes the callback-driven
 `find`/`findIndex`/`findLast`/`findLastIndex` cohort, and R3at promotes
-`every`/`some`; R3au promotes `forEach`. Later callback transforms/reduce,
+`every`/`some`; R3au promotes `forEach`, and R3av promotes
+`reduce`/`reduceRight`. Later callback transforms such as `map`/`filter`,
 copying, stringification, sorting, SharedArrayBuffer, and wider interop
 surfaces remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
@@ -5362,6 +5363,76 @@ and
 `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
 This is the confirmed no-transition join.
 
+## R3av TypedArray reduce/reduceRight promotion
+
+R3av publishes `%TypedArray%.prototype.reduce` and `reduceRight` through a
+TypedArray-specific accumulator kernel corresponding to the TypedArray branch
+of pinned QuickJS's shared `js_array_reduce`. Receiver branding and initial
+detached/out-of-bounds validation happen before callback-callability
+checking; callback validation happens before distinguishing an explicit
+initial value from an omitted one and before the omitted-empty `empty array`
+error. Explicit `undefined` is therefore retained as an accumulator. Without
+an initial value, `reduce` seeds from the first element and `reduceRight` from
+the last, then traverses in their respective directions.
+
+The internal length is snapshotted once, but each remaining original-range
+index is read live without `HasProperty` or numeric prototype lookup. Shrink
+or detach therefore supplies `undefined` without skipping an index, growth
+does not extend the range, and callback writes are visible later. The callback
+receives `(accumulator, value, index, receiver)` with `this = undefined`;
+normal results become the next accumulator, while arbitrary accumulator
+values, callback throws, and cross-realm object/error identity are preserved.
+
+The exact atomic candidate is 105 paths / 209 variants, all passing in pinned
+QuickJS. The single
+`test/staging/sm/TypedArray/reduce-and-reduceRight.js` path is deferred as
+`external:cross-realm`. That leaves one path / one variant explicit and
+promotes 104 paths / 208 variants. The cumulative scoped gate expands to
+1,533 paths / 3,027 variants, the exclusion ledger falls to 828 paths, and
+Oxide and pinned QuickJS both pass 3,027/3,027.
+
+The candidate path-stream and variant-key SHA-256 values are:
+
+- path:
+  `f40c52a2edb4635d7ca1ec1a2b0abfa4c978c51a73ae567b8efffd8ab5d87ad5`;
+- keys:
+  `6cc0b62d9fe01cdaacf629a3152ca09b975ada81b4169bad7ffb05714662fe72`.
+
+The deferred path/key hashes are:
+
+- path:
+  `b99151319be2a66b2d78111bff0ea5e73a308313670a1b4e9488a3afefd6f909`;
+- keys:
+  `97e3f4dbb189808dc1dd6cb9f8be100c74edbbb333e4c890c165cb7409fdf6cb`.
+
+The promoted path/key hashes are:
+
+- path:
+  `79f2ce5172ba5afc48a87a3417ce99010762ba9de2cc3c49dd4db7696d6ba7b6`;
+- keys:
+  `79522bed3692d0c21ac44370796b6c37861dca2fab511d38d8872605e78d9fff`.
+
+The scoped profile, cumulative manifest, cumulative variant-key stream,
+exclusion path stream, and exclusion-ledger file SHA-256 values are:
+
+- `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`;
+- `b12b213d5b0d279bf3fdb328cba831a404fd0f4bc2bc105b1da6aa077c5508c7`;
+- `06eceaa517e89f94217d85698d1618f1f297f9e8789f8bc42d7034753dff1e95`;
+- `b5f0caf421df10d9958b1d6de4e8d10462a6e89d51b3492a707c0f5a5a83a2a0`;
+- `4c6158d8cdb8fbde441e30f9820403912cbbb6f7b57f2af27b5f6c99bfaecca2`.
+
+The canonical scoped TSV/JSONL SHA-256 values are
+`089be9fab5e932b0003c99df8d70064591e35abe2f184ce0a01a575f7ee2c5e8`
+and
+`5ff2a426b2df285afa4eda8e9abb62dc192b52621a89f2234de475a242f99392`.
+
+Broad TypedArray admission remains withheld, and a fresh canonical two-worker
+rerun confirms that the complete vector is byte-identical to R3au at
+51,908/102,037. Its full TSV/JSONL hashes remain
+`3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+and
+`f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5832,6 +5903,12 @@ WeakMap harness dependency remains deferred; the other 44 paths / 88 variants
 join the cumulative 1,429-path / 2,819-variant gate, which Oxide and pinned
 QuickJS both pass completely. Broad TypedArray admission remains withheld, so
 a fresh canonical full rerun confirms that the vector stays byte-identical at
+51,908/102,037.
+R3av publishes TypedArray `reduce` and `reduceRight`. One cross-realm staging
+path remains deferred; the other 104 paths / 208 variants join the cumulative
+1,533-path / 3,027-variant gate, which Oxide and pinned QuickJS both pass
+completely. Broad TypedArray admission remains withheld; a fresh canonical
+full rerun confirms that the vector stays byte-identical to R3au at
 51,908/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.

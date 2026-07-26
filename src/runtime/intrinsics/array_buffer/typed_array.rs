@@ -7,9 +7,9 @@
 
 use crate::atom::PropertyKeyKind;
 use crate::heap::{
-    ArrayBufferViewData, ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArraySearchKind,
-    ObjectData, ObjectPayload, TypedArrayData, TypedArrayElementKind, TypedArrayNativeKind,
-    TypedArrayRealmData,
+    ArrayBufferViewData, ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayReduceKind,
+    ArraySearchKind, ObjectData, ObjectPayload, TypedArrayData, TypedArrayElementKind,
+    TypedArrayNativeKind, TypedArrayRealmData,
 };
 
 use super::*;
@@ -17,6 +17,7 @@ use super::*;
 mod find;
 mod iteration;
 mod mutation;
+mod reduce;
 mod search;
 #[cfg(test)]
 mod tests;
@@ -131,6 +132,19 @@ impl Runtime {
                 &base_prototype,
                 realm,
                 NativeFunctionId::TypedArray(TypedArrayNativeKind::Iteration(kind)),
+                name,
+                1,
+                1,
+            )?;
+        }
+        for (kind, name) in [
+            (ArrayReduceKind::Reduce, "reduce"),
+            (ArrayReduceKind::ReduceRight, "reduceRight"),
+        ] {
+            self.define_native_builtin_auto_init(
+                &base_prototype,
+                realm,
+                NativeFunctionId::TypedArray(TypedArrayNativeKind::Reduce(kind)),
                 name,
                 1,
                 1,
@@ -410,6 +424,9 @@ impl Runtime {
             TypedArrayNativeKind::Iteration(kind) => {
                 self.call_typed_array_iteration(realm, kind, invocation, arguments)
             }
+            TypedArrayNativeKind::Reduce(kind) => {
+                self.call_typed_array_reduce(realm, kind, invocation, arguments)
+            }
             TypedArrayNativeKind::Fill => self.call_typed_array_fill(realm, invocation, arguments),
             TypedArrayNativeKind::Reverse => self.call_typed_array_reverse(realm, invocation),
             TypedArrayNativeKind::At => self.call_typed_array_at(realm, invocation, arguments),
@@ -420,7 +437,6 @@ impl Runtime {
                 self.call_typed_array_find(realm, kind, invocation, arguments)
             }
             TypedArrayNativeKind::With
-            | TypedArrayNativeKind::Reduce(_)
             | TypedArrayNativeKind::ToReversed
             | TypedArrayNativeKind::Slice
             | TypedArrayNativeKind::Subarray
