@@ -125,6 +125,7 @@ impl Runtime {
         for (kind, name) in [
             (ArrayIterationKind::Every, "every"),
             (ArrayIterationKind::Some, "some"),
+            (ArrayIterationKind::ForEach, "forEach"),
         ] {
             self.define_native_builtin_auto_init(
                 &base_prototype,

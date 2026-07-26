@@ -1,7 +1,7 @@
-//! Predicate-based `%TypedArray%.prototype` iteration algorithms.
+//! Callback-based `%TypedArray%.prototype` iteration algorithms.
 //!
 //! Pinned QuickJS validates and snapshots the branded view before checking the
-//! callback. `every` and `some` then visit that original range without a
+//! callback. The callback methods then visit that original range without a
 //! `HasProperty` check while keeping each element read live.
 
 use super::*;
@@ -17,7 +17,10 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        if !matches!(kind, ArrayIterationKind::Every | ArrayIterationKind::Some) {
+        if !matches!(
+            kind,
+            ArrayIterationKind::Every | ArrayIterationKind::Some | ArrayIterationKind::ForEach
+        ) {
             return Err(RuntimeError::Invariant(
                 "unpublished TypedArray iteration native reached dispatch",
             ));
@@ -61,26 +64,26 @@ impl Runtime {
             let value = self
                 .typed_array_read_index(&target, index)?
                 .unwrap_or(Value::Undefined);
-            let matches = match self.call_internal(
+            let callback_result = match self.call_internal(
                 realm,
                 &callback,
                 this_arg.clone(),
                 &[value, Value::number(index as f64), receiver.clone()],
             )? {
-                Completion::Return(value) => value.to_boolean(),
+                Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             match kind {
-                ArrayIterationKind::Every if !matches => {
+                ArrayIterationKind::Every if !callback_result.to_boolean() => {
                     return Ok(Completion::Return(Value::Bool(false)));
                 }
-                ArrayIterationKind::Some if matches => {
+                ArrayIterationKind::Some if callback_result.to_boolean() => {
                     return Ok(Completion::Return(Value::Bool(true)));
                 }
-                ArrayIterationKind::Every | ArrayIterationKind::Some => {}
-                ArrayIterationKind::ForEach
-                | ArrayIterationKind::Map
-                | ArrayIterationKind::Filter => {
+                ArrayIterationKind::Every
+                | ArrayIterationKind::Some
+                | ArrayIterationKind::ForEach => {}
+                ArrayIterationKind::Map | ArrayIterationKind::Filter => {
                     return Err(RuntimeError::Invariant(
                         "unpublished TypedArray iteration kind escaped validation",
                     ));
@@ -88,9 +91,15 @@ impl Runtime {
             }
         }
 
-        Ok(Completion::Return(Value::Bool(matches!(
-            kind,
-            ArrayIterationKind::Every
-        ))))
+        Ok(Completion::Return(match kind {
+            ArrayIterationKind::Every => Value::Bool(true),
+            ArrayIterationKind::Some => Value::Bool(false),
+            ArrayIterationKind::ForEach => Value::Undefined,
+            ArrayIterationKind::Map | ArrayIterationKind::Filter => {
+                return Err(RuntimeError::Invariant(
+                    "unpublished TypedArray iteration kind escaped final result",
+                ));
+            }
+        }))
     }
 }

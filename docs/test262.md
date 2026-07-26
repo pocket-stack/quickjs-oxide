@@ -41,8 +41,9 @@ DataView layer by R3ao, and the shared 12-class TypedArray kernel by R3ap.
 R3aq promotes the TypedArray mutation cohort, and R3ar promotes the indexed
 `at`/search cohort. R3as promotes the callback-driven
 `find`/`findIndex`/`findLast`/`findLastIndex` cohort, and R3at promotes
-`every`/`some`. Later callback-reduce, copying, stringification, sorting,
-SharedArrayBuffer, and wider interop surfaces remain explicit frontiers.
+`every`/`some`; R3au promotes `forEach`. Later callback transforms/reduce,
+copying, stringification, sorting, SharedArrayBuffer, and wider interop
+surfaces remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -5295,6 +5296,72 @@ confirms that its full TSV/JSONL hashes remain
 and
 `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
 
+## R3au TypedArray forEach promotion
+
+R3au publishes `%TypedArray%.prototype.forEach` through the same
+TypedArray-specific forward callback kernel corresponding to pinned
+QuickJS's `js_array_every` TypedArray branch. Receiver branding and initial
+detached/out-of-bounds validation still precede callback-callability
+checking, the internal length is snapshotted once, and each original-range
+integer index is read live without `HasProperty` or numeric prototype lookup.
+Callback arguments, `thisArg`, and abrupt completion retain the shared
+behavior. The `forEach` specialization instead discards each normal callback
+result without `ToBoolean`, never short-circuits, and returns `undefined` only
+after visiting the entire snapshotted range. Focused differentials lock the
+exact `not a TypedArray`, `not a function`, and
+`ArrayBuffer is detached or resized` diagnostics and their priority.
+
+The exact atomic candidate is 45 paths / 89 variants. The single
+`test/staging/sm/TypedArray/forEach.js` path is deferred as
+`external:cross-realm`; its harness also has a hard WeakMap dependency. That
+leaves one path / one variant explicitly deferred and promotes 44 paths / 88
+variants. The cumulative scoped gate expands to 1,429 paths / 2,819 variants,
+the exclusion ledger falls to 932 paths, and Oxide and pinned QuickJS both
+pass 2,819/2,819. Pinned QuickJS also passes all 4,669 variants across the
+unchanged 2,361-path expanded candidate.
+
+The candidate path-stream and variant-key SHA-256 values are:
+
+- path:
+  `ee8af85d761e4da707fc72afc992e8c0e0b314782d0f879cff69845e66cc2bf6`;
+- keys:
+  `67f42550bd10879a86d2401c4048e30a833a6ccda375b0d41ed44287b575c2a5`.
+
+The deferred path/key hashes are:
+
+- path:
+  `26efea2e4065acf3a5bf1d8dab6ed0a78df866e1d956f9e08c44644635a5239f`;
+- keys:
+  `e3ce2a05f163af4827c1fdad2c7535a2dfe7f46bbe27c3c0ed76a803650bf661`.
+
+The promoted path/key hashes are:
+
+- path:
+  `dba18b09bd2a2bc35a9f716e9a371547757d6225d2433c524a45cd5b92ba7177`;
+- keys:
+  `e3c038e152bb843d9dd55e9d16f89ca6227ac690a1e6d378c78d26757a211c4f`.
+
+The scoped profile, cumulative manifest, exclusion-ledger file, and
+cumulative variant-key SHA-256 values are:
+
+- `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`;
+- `cb837c070ca771c4c9b29a60a7dab0f3d83866f2b7508a82b57a846a9253d1f9`;
+- `58c132e168bbaea25271c4d3dd7c6161b031d5fd883054e4aaf720eab999810d`;
+- `446625e6284b989b8a18fb54064778ebbf471172cb0ed6caf0c3950f4e2f19a5`.
+
+The canonical scoped TSV/JSONL SHA-256 values are
+`50765aa252be5e634181d870dadafe8a7971f812a492f2c58d7878d1425ca3c8`
+and
+`8ded861e362fe5cc5b276d843aee0c4d8cc93e47db657593da0008e9289afb0d`.
+
+Because broad TypedArray admission remains withheld, a fresh canonical
+two-worker rerun confirms that the complete vector remains byte-identical to
+R3at at 51,908/102,037, with full TSV/JSONL hashes
+`3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+and
+`f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+This is the confirmed no-transition join.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5760,6 +5827,12 @@ with a hard WeakMap harness dependency remains deferred; the other 92 paths /
 and pinned QuickJS both pass completely. Broad TypedArray admission remains
 withheld, so a fresh complete run confirms that the full vector stays
 byte-identical at 51,908/102,037.
+R3au publishes TypedArray `forEach`. One cross-realm staging path with a hard
+WeakMap harness dependency remains deferred; the other 44 paths / 88 variants
+join the cumulative 1,429-path / 2,819-variant gate, which Oxide and pinned
+QuickJS both pass completely. Broad TypedArray admission remains withheld, so
+a fresh canonical full rerun confirms that the vector stays byte-identical at
+51,908/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

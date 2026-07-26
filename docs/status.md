@@ -26,7 +26,8 @@ claim full parity.
   `indexOf`, and `lastIndexOf` under the same conservative boundary. R3as adds
   the callback-driven `find`, `findIndex`, `findLast`, and `findLastIndex`
   kernel, and R3at adds QuickJS-shaped `every`/`some` short-circuit traversal,
-  without widening the global TypedArray claim. The
+  while R3au adds QuickJS-shaped `forEach`, without widening the global
+  TypedArray claim. The
   vector has 51,908 passes and 52,468 runnable variants: 50.87% raw, a 62.12%
   lower bound after the 18,475 pinned QuickJS target exclusions, or 99.03%
   among the 52,419 variants with a non-unsupported observed outcome. It records
@@ -3345,6 +3346,59 @@ claim full parity.
   `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
   and
   `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+
+  R3au publishes `%TypedArray%.prototype.forEach` through the same
+  TypedArray-specific forward callback kernel corresponding to pinned
+  QuickJS's `js_array_every` TypedArray branch. It preserves the existing
+  receiver branding, initial detached/out-of-bounds validation, one-time
+  internal-length snapshot, live indexed reads, numeric-prototype suppression,
+  callback arguments, `thisArg`, and abrupt-completion behavior. Unlike
+  `every` and `some`, `forEach` discards every normal callback result without
+  `ToBoolean`, never short-circuits, and returns `undefined` after the entire
+  snapshotted range. Focused differentials lock the exact `not a TypedArray`,
+  `not a function`, and `ArrayBuffer is detached or resized` diagnostics and
+  their priority.
+
+  The independently audited atomic candidate contains 45 paths / 89 variants.
+  The single `test/staging/sm/TypedArray/forEach.js` path is deferred as
+  `external:cross-realm`; its harness also has a hard WeakMap dependency, so
+  that one path / one variant remains explicit. The other 44 paths / 88
+  variants join the cumulative 1,429-path / 2,819-variant gate. Oxide and
+  pinned QuickJS both pass 2,819/2,819, pinned QuickJS passes all 4,669
+  variants in the unchanged 2,361-path expanded candidate, and the exclusion
+  ledger falls to 932 paths.
+
+  The candidate path and variant-key SHA-256 values are
+  `ee8af85d761e4da707fc72afc992e8c0e0b314782d0f879cff69845e66cc2bf6`
+  and
+  `67f42550bd10879a86d2401c4048e30a833a6ccda375b0d41ed44287b575c2a5`.
+  The deferred path/key hashes are
+  `26efea2e4065acf3a5bf1d8dab6ed0a78df866e1d956f9e08c44644635a5239f`
+  and
+  `e3ce2a05f163af4827c1fdad2c7535a2dfe7f46bbe27c3c0ed76a803650bf661`;
+  the promoted path/key hashes are
+  `dba18b09bd2a2bc35a9f716e9a371547757d6225d2433c524a45cd5b92ba7177`
+  and
+  `e3c038e152bb843d9dd55e9d16f89ca6227ac690a1e6d378c78d26757a211c4f`.
+  The scoped profile, cumulative manifest, exclusion-ledger file, and
+  cumulative key-stream hashes are
+  `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`,
+  `cb837c070ca771c4c9b29a60a7dab0f3d83866f2b7508a82b57a846a9253d1f9`,
+  `58c132e168bbaea25271c4d3dd7c6161b031d5fd883054e4aaf720eab999810d`,
+  and
+  `446625e6284b989b8a18fb54064778ebbf471172cb0ed6caf0c3950f4e2f19a5`.
+  Its canonical scoped TSV/JSONL hashes are
+  `50765aa252be5e634181d870dadafe8a7971f812a492f2c58d7878d1425ca3c8`
+  and
+  `8ded861e362fe5cc5b276d843aee0c4d8cc93e47db657593da0008e9289afb0d`.
+
+  Because broad TypedArray admission remains withheld, a fresh canonical
+  two-worker rerun confirms that the complete vector remains byte-identical to
+  R3at at 51,908/102,037, with the same full TSV/JSONL hashes
+  `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+  and
+  `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+  This is the confirmed no-transition join.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -6776,6 +6830,12 @@ dispatching `every`/`some`; their complete algorithm stays in the adjacent
 Predicate short-circuit, error ordering, live RAB/detach reads, and numeric
 prototype suppression therefore remain outside both monoliths and generic
 Array traversal.
+R3au likewise leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026
+lines. Extending the same isolated owner and callback kernel for `forEach`
+brings the shared owner to 1,960 lines, `typed_array/iteration.rs` to 105
+lines, and its directed test module to 382 lines. Callback-result disposal,
+non-short-circuit traversal, and the final `undefined` result therefore add no
+new facade or heap seam.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

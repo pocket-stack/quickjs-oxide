@@ -12,7 +12,7 @@ fn assert_script(context: &mut Context, source: &str) {
 }
 
 #[test]
-fn every_and_some_match_quickjs_callback_and_descriptor_contracts() {
+fn callback_iteration_matches_quickjs_callback_and_descriptor_contracts() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
 
@@ -50,6 +50,24 @@ fn every_and_some_match_quickjs_callback_and_descriptor_contracts() {
                 new Uint8Array([1,3,5]).some(function(value){
                     return value%2===0;
                 })===false);
+            var sentinel={sentinel:true};
+            var forEachOrder=[];
+            check("forEach undefined",bytes.forEach(function(value,index){
+                forEachOrder.push(value+":"+index);
+                return index===0;
+            })===undefined);
+            check("forEach never short circuits",
+                forEachOrder.join(",")==="2:0,4:1,7:2,8:3");
+            var forEachThis=true;
+            var forEachReceiver=true;
+            bytes.forEach(function(value,index,receiver){
+                "use strict";
+                forEachThis=forEachThis && this===sentinel;
+                forEachReceiver=forEachReceiver &&
+                    receiver===bytes && receiver[index]===value;
+            },sentinel);
+            check("forEach thisArg",forEachThis);
+            check("forEach receiver",forEachReceiver);
             check("bigint every",
                 new BigInt64Array([1n,2n,3n]).every(function(value){
                     return value>0n;
@@ -58,8 +76,12 @@ fn every_and_some_match_quickjs_callback_and_descriptor_contracts() {
                 new BigInt64Array([1n,-2n,3n]).some(function(value){
                     return value<0n;
                 })===true);
+            var bigintTotal=0n;
+            new BigInt64Array([1n,2n,3n]).forEach(function(value){
+                bigintTotal+=value;
+            });
+            check("bigint forEach",bigintTotal===6n);
 
-            var sentinel={sentinel:true};
             var seenValues=[];
             var seenIndices=[];
             var receiverMatches=true;
@@ -133,6 +155,26 @@ fn every_and_some_match_quickjs_callback_and_descriptor_contracts() {
                 caught=error;
             }
             check("callback abrupt identity",caught===marker);
+            var forEachAbrupt=[];
+            caught=undefined;
+            try{
+                bytes.forEach(function(value,index){
+                    forEachAbrupt.push(index);
+                    if(index===1) throw marker;
+                });
+            }catch(error){
+                caught=error;
+            }
+            check("forEach abrupt identity",caught===marker);
+            check("forEach abrupt stops",forEachAbrupt.join(",")==="0,1");
+
+            var generatorBody=false;
+            function* generatorCallback(){
+                generatorBody=true;
+            }
+            check("forEach ignores generator result",
+                bytes.forEach(generatorCallback)===undefined);
+            check("generator body not entered",generatorBody===false);
 
             check("brand validation",
                 completion(function(){
@@ -145,12 +187,30 @@ fn every_and_some_match_quickjs_callback_and_descriptor_contracts() {
                         function(){return true}
                     );
                 })==="TypeError");
+            var forEachError;
+            try{
+                Uint8Array.prototype.forEach.call({},function(){});
+            }catch(error){
+                forEachError=error.name+":"+error.message;
+            }
+            check("forEach exact brand error",
+                forEachError==="TypeError:not a TypedArray");
             check("every not constructor",
                 completion(function(){
                     new (Object.getPrototypeOf(Uint8Array.prototype).every)(
                         function(){return true}
                     );
                 })==="TypeError");
+            forEachError=undefined;
+            try{
+                new (Object.getPrototypeOf(Uint8Array.prototype).forEach)(
+                    function(){}
+                );
+            }catch(error){
+                forEachError=error.name+":"+error.message;
+            }
+            check("forEach exact constructor error",
+                forEachError==="TypeError:forEach is not a constructor");
 
             var base=Object.getPrototypeOf(Uint8Array.prototype);
             check("QuickJS own-key order",
@@ -158,11 +218,11 @@ fn every_and_some_match_quickjs_callback_and_descriptor_contracts() {
                     return typeof key==="symbol" ? key.toString() : key;
                 }).join("|")===
                 "length|at|buffer|byteLength|byteOffset|set|values|keys|"+
-                "entries|copyWithin|every|some|fill|find|findIndex|findLast|"+
-                "findLastIndex|reverse|indexOf|lastIndexOf|includes|"+
+                "entries|copyWithin|every|some|forEach|fill|find|findIndex|"+
+                "findLast|findLastIndex|reverse|indexOf|lastIndexOf|includes|"+
                 "constructor|toString|Symbol(Symbol.iterator)|"+
                 "Symbol(Symbol.toStringTag)");
-            for(var name of ["every","some"]){
+            for(var name of ["every","some","forEach"]){
                 var descriptor=Object.getOwnPropertyDescriptor(base,name);
                 check(name+" value",typeof descriptor.value==="function");
                 check(name+" name",descriptor.value.name===name);
@@ -178,7 +238,7 @@ fn every_and_some_match_quickjs_callback_and_descriptor_contracts() {
 }
 
 #[test]
-fn every_and_some_keep_snapshot_range_but_read_each_value_live() {
+fn callback_iteration_keeps_snapshot_range_but_reads_each_value_live() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
 
@@ -201,11 +261,11 @@ fn every_and_some_keep_snapshot_range_but_read_each_value_live() {
             var tracking=new Uint8Array(buffer);
             tracking.set([1,2,3,4]);
             var seen=[];
-            check("shrink result",tracking.every(function(value,index){
+            check("forEach result",tracking.forEach(function(value,index){
                 seen.push(printable(value)+":"+index);
                 if(index===0) buffer.resize(1);
-                return true;
-            })===true);
+                return false;
+            })===undefined);
             check("shrink visits snapshot range",
                 seen.join(",")==="1:0,undefined:1,undefined:2,undefined:3");
 
@@ -247,10 +307,9 @@ fn every_and_some_keep_snapshot_range_but_read_each_value_live() {
             tracking=new Uint8Array(buffer);
             tracking.set([1,2,3,4]);
             seen=[];
-            tracking.every(function(value,index){
+            tracking.forEach(function(value,index){
                 seen.push(printable(value)+":"+index);
                 if(index===0) buffer.transfer();
-                return true;
             });
             check("detach visits snapshot range",
                 seen.join(",")==="1:0,undefined:1,undefined:2,undefined:3");
@@ -279,19 +338,19 @@ fn every_and_some_keep_snapshot_range_but_read_each_value_live() {
             check("initial fixed oob skips callback",called===false);
             var priority;
             try{
-                fixed.every(0);
+                fixed.forEach(0);
             }catch(error){
                 priority=error.name+":"+error.message;
             }
-            check("oob precedes callable validation",
+            check("forEach oob precedes callable validation",
                 priority==="TypeError:ArrayBuffer is detached or resized");
             var emptyPriority;
             try{
-                new Uint8Array(0).every(0);
+                new Uint8Array(0).forEach(0);
             }catch(error){
                 emptyPriority=error.name+":"+error.message;
             }
-            check("empty validates callable after receiver",
+            check("empty forEach validates callable after receiver",
                 emptyPriority==="TypeError:not a function");
 
             buffer=new ArrayBuffer(4,{maxByteLength:8});
