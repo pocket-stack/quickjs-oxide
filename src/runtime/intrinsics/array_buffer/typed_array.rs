@@ -879,6 +879,18 @@ impl Runtime {
         } else {
             Value::Undefined
         };
+        let nullish_iterator_error = match &source {
+            Value::Undefined => Some("cannot read property 'Symbol.iterator' of undefined"),
+            Value::Null => Some("cannot read property 'Symbol.iterator' of null"),
+            _ => None,
+        };
+        if let Some(message) = nullish_iterator_error {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                message,
+            )?));
+        }
         let iterator = match self.typed_array_iterator_method(realm, source.clone())? {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -903,7 +915,10 @@ impl Runtime {
                 NativeConversion::Value(value) => value,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-            for (index, mut value) in values.into_iter().enumerate() {
+            // QuickJS retains every materialized value in its hidden Array
+            // until the whole mapping/write phase completes. Iterate clones
+            // so already-processed object values have the same lifetime.
+            for (index, mut value) in values.iter().cloned().enumerate() {
                 if let Some(mapfn) = &mapfn {
                     value = match self.call_internal(
                         realm,

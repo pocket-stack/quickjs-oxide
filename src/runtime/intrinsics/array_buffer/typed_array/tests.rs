@@ -778,6 +778,26 @@ fn static_from_and_of_construct_validate_map_and_convert_results() {
                 })==="TypeError:not a function"
             );
             check("from mapfn precedes source",fromLog==="");
+            check(
+                "from undefined iterator diagnostic",
+                errorCompletion(function(){
+                    return typedArrayFrom.call(Uint8Array,undefined);
+                })===
+                    "TypeError:cannot read property 'Symbol.iterator' of undefined"
+            );
+            check(
+                "from null iterator diagnostic",
+                errorCompletion(function(){
+                    return typedArrayFrom.call(Uint8Array,null);
+                })===
+                    "TypeError:cannot read property 'Symbol.iterator' of null"
+            );
+            check(
+                "from mapfn validation precedes null diagnostic",
+                errorCompletion(function(){
+                    return typedArrayFrom.call(Uint8Array,null,1);
+                })==="TypeError:not a function"
+            );
 
             return failures.length===0 ? "ok" : failures.join(",");
         })()"#,

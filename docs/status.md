@@ -34,7 +34,11 @@ claim full parity.
   R3ba adds QuickJS-shaped `sort`/`toSorted`, and R3bb authenticates the
   existing shared `entries`/`keys` iterator path without a production-code
   change. R3bc authenticates static `TypedArray.of` and fixes the shared
-  static-`from`/`of` primitive-receiver constructor diagnostic seam. These
+  static-`from`/`of` primitive-receiver constructor diagnostic seam. R3bd
+  authenticates static `TypedArray.from`, including QuickJS's nullish-source
+  diagnostics, materialize-before-construct ordering, and hidden-list value
+  lifetime. The cumulative scoped gate now passes 2,213 paths / 4,383 variants
+  in both engines. These
   milestones do not widen the global TypedArray claim. The current
   canonical measurement has 51,940 passes and 52,468 runnable variants:
   50.90% raw,
@@ -3848,8 +3852,92 @@ claim full parity.
   `as_int_n(64)` temporaries where QuickJS reads the low limb directly. The
   safe-large oracle stops at 512 arguments, so this milestone does not claim
   identical injected-OOM ordering or thresholds.
-  The next planned static `from` slice contains 81 candidate paths / 158
-  variants, with nine paths / 17 variants deferred.
+  At the R3bc landing, the next static `from` inventory contained 90 paths /
+  175 variants in total: 81 paths / 158 variants were dependency-clean
+  promotion candidates and nine paths / 17 variants were already attributed
+  deferrals. This total/promoted/deferred terminology replaces the ambiguous
+  earlier shorthand that called only the 81 promoted paths the “candidate”.
+
+  R3bd authenticates inherited static `%TypedArray%.from` against pinned
+  QuickJS. The implementation validates a supplied map function before any
+  source access, selects and completely materializes an iterator before target
+  construction, or reads an array-like length before construction, then maps,
+  converts, and writes from left to right. The target is created directly from
+  the receiver rather than through species and is validated as a live,
+  sufficiently large TypedArray; conversion follows the actual returned
+  element class, including Number/BigInt mismatches, partial writes, detach,
+  and resizable-buffer shrink/grow behavior.
+
+  Two production details were tightened. `undefined` and null sources now
+  reproduce QuickJS's exact defining-realm
+  `cannot read property 'Symbol.iterator' of ...` TypeErrors, while an invalid
+  map function still wins before that source diagnostic. Iterable
+  materialization keeps its `Vec<Value>` alive and traverses
+  `iter().cloned()`, retaining every original yielded object through the whole
+  map/write phase just as QuickJS's hidden Array does.
+
+  `tests/oracle_typed_array_from.rs` is a 914-line focused oracle with eight
+  frozen vectors and four Rust test entry points. The first three are the
+  QuickJS observation, oracle self-check, and direct differential layers. The
+  fourth is deliberately Rust-only cross-realm structure: it locks result and
+  native-error realm ownership, sloppy versus strict mapper `this`, and abrupt
+  value identity without claiming to execute QuickJS.
+
+  The exact atomic universe is 90 paths / 175 variants. Pinned QuickJS passes
+  all of it. Eighty-one paths / 158 variants are promoted; nine paths / 17
+  variants remain deferred: seven SpiderMonkey staging paths depend on the
+  absent WeakMap shell, `from_realms.js` additionally requires
+  `$262.createRealm`, and the Annex B path requires IsHTMLDDA. Total candidate
+  path/key, promoted path/key, and deferred path/key SHA-256 pairs are
+  respectively
+  `87e7cfd69fbac9265f7e4a28ceaea8f21f053b7a587a95494becc7bbab61b20c` /
+  `041fc07db938e2bf21fd1135fdbb3be648e2e5f3bdbf5688dfdf78784ed505a4`,
+  `a75d6ebea395327340d498c6f4d5e2b2c4224c039f6c1a58e42b19d070e94e41` /
+  `5ea8a30f1578a6160441c068c91384ea635e179a90c6804af23730cfec7f6f34`,
+  and
+  `7e466133fdeb876268cf10e629701daa332922d484d16ad76b58679aee3e47b6` /
+  `df334b586f8ab8494ab8ec1d9a06d4492ae76b0fe0d73479637001f18ab3dd24`.
+
+  The cumulative scoped gate reaches 2,213 paths / 4,383 variants, all passing
+  in Oxide and pinned QuickJS. Its profile, manifest, and variant-key SHA-256
+  values are
+  `dd106c074751866ce667352d3449cc0ec7d9b9072034a4f0a97050da7b7bad13`,
+  `d71be16dfcd42b58e3371c47d35d8f6cc9fbe29a11135ebd39ea447cb84d0c56`,
+  and
+  `ac56a6047ecb71616e098b5cb6a0c449d11af21141f8f18af5ebe4dccefb9a84`.
+  It admits 27 feature tags with hash
+  `de5b9c5c6a66566a6b1481fc0b014a6ef00a95ebecc90c37da4508aa85a8d830`
+  and 11 includes with hash
+  `b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012`.
+  The remaining 148-path exclusion stream and complete ledger hash to
+  `0d425a326fc950257410849ada4c2435b410e84f4c9651f9393c39f6d5c3032a`
+  and
+  `4c79c3c86364a5c0aa6d2ea5bf3cba6da47261d0b4847fbfeaa5cd368749b783`;
+  their reasons are 71 SharedArrayBuffer, 54 cross-realm, 21 WeakMap, one
+  IsHTMLDDA, and one Math path. Canonical scoped TSV/JSONL hashes are
+  `de22c434d3ac28ed823a6c20c1bbc01a7e44e43e86e1a1b368696196b2399c1b`
+  and
+  `6f1904f5001deb1f96cd06d697def75999991350e582c3b69486246b1a68b460`.
+
+  Broad TypedArray admission remains withheld. An exact read-only join of the
+  158 promoted rows against the conservative full vector finds four existing
+  passes and 154 `unsupported-feature` rows: 142 need only TypedArray, six
+  additionally need `Array.prototype.values`, and six additionally need
+  resizable ArrayBuffer support. The normalized row stream hashes to
+  `fecefca50dcb3d97f321ba81fe8af1490bd74520b3d7327be142a882085023b7`.
+  The complete measurement and canonical artifacts therefore remain
+  51,940/102,037 with TSV/JSONL hashes
+  `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+  and
+  `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+
+  One resource-parity caveat remains explicit. Retained value lifetime now
+  matches, but QuickJS allocates a hidden realm-local Array while Oxide stores
+  the materialized values in a Rust Vec, so allocation, GC pressure, and
+  injected-OOM topology are not certified as identical. The next audit is
+  broad TypedArray global admission: enabling only `TypedArray` exposes 3,686
+  variants, 3,606 already covered by the scoped certification, leaving an
+  80-variant spillover across 41 paths for review.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -7347,6 +7435,13 @@ the distinct generic constructor path. The owner test module reaches 1,296
 lines, and the separate 685-line `oracle_typed_array_of.rs` keeps its three
 QuickJS-observation entry points distinct from the Rust-only cross-realm
 structural test.
+R3bd again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+The shared TypedArray owner reaches 1,910 lines after the exact nullish
+diagnostic and retained-materialization lifetime fix, while its directed test
+module reaches 1,316 lines. The separate 914-line
+`oracle_typed_array_from.rs` owns eight focused vectors and keeps its three
+QuickJS observation/self-check/differential entries distinct from the fourth
+Rust-only cross-realm structural entry.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
@@ -7688,6 +7783,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_data_view -- --nocapture
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_typed_array_of -- --nocapture
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_typed_array_from -- --nocapture
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-array-buffer.sh
 ./scripts/test-test262-data-view.sh

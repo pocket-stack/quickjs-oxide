@@ -48,8 +48,9 @@ change-by-copy `with`/`toReversed`, and R3az promotes dedicated
 `join`/`toLocaleString` stringification plus inherited `toString`. R3ba
 promotes QuickJS-shaped `sort`/`toSorted`, and R3bb authenticates the existing
 shared `entries`/`keys` iterators. R3bc authenticates static `TypedArray.of`
-and its shared static-`from`/`of` constructor diagnostic seam; residual
-TypedArray methods,
+and its shared static-`from`/`of` constructor diagnostic seam; R3bd
+authenticates static `TypedArray.from`. The cumulative scoped gate reaches
+2,213 paths / 4,383 variants, while residual TypedArray methods,
 SharedArrayBuffer, and wider interop surfaces remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
@@ -5950,8 +5951,112 @@ allocation topology and the BigInt write path also differ internally. The
 focused safe-large case stops at 512 arguments and does not inject allocator
 failure, so this slice does not certify identical OOM ordering or thresholds.
 
-The next planned static `from` slice contains 81 candidate paths / 158
-variants. Nine paths / 17 variants remain deferred in the audited inventory.
+At the R3bc landing, the next static `from` inventory contained 90 paths / 175
+variants in total: 81 paths / 158 variants were promotable and nine paths / 17
+variants were dependency deferrals. This wording corrects the earlier
+ambiguous “81 candidate” shorthand.
+
+## R3bd TypedArray static from authentication
+
+R3bd authenticates inherited `%TypedArray%.from` against pinned QuickJS's
+`js_typed_array_from`, `js_typed_array_create`, and
+`js_array_from_iterator` paths. Map-function callability is checked before
+source access. The iterable branch caches and drains the iterator before
+constructing the target; the array-like branch reads and converts length before
+construction and leaves indexed property reads live. Both then map, convert
+using the actual returned TypedArray element class, and write left to right.
+Static construction bypasses species and validates a live result with at least
+the requested length.
+
+This milestone fixes two real parity details. `undefined` and null sources now
+produce QuickJS's exact defining-realm
+`cannot read property 'Symbol.iterator' of ...` TypeErrors without moving the
+earlier invalid-map-function check. Oxide also traverses its fully materialized
+`Vec<Value>` with `iter().cloned()` so every original yielded object remains
+rooted throughout mapping and writing, matching the lifetime provided by
+QuickJS's hidden Array.
+
+`tests/oracle_typed_array_from.rs` is 914 lines and contains eight frozen
+vectors with four test entry points. The first three freeze QuickJS
+observations, self-check those observations against the pinned executable, and
+directly differential Oxide against QuickJS. The fourth is a Rust-only
+cross-realm structural test: it covers result and error realm ownership,
+sloppy/strict mapper `this`, and abrupt value identity, but does not count as a
+QuickJS differential.
+
+The exact atomic universe contains 90 paths / 175 variants. Pinned QuickJS
+passes all 175. The promoted partition contains 81 paths / 158 variants:
+all 79 standard built-in paths plus the independent SpiderMonkey
+`from_string.js` and `from_typedarray_fastpath_detached.js` paths. The deferred
+partition contains nine paths / 17 variants:
+
+- seven staging paths have a hard dependency on the SpiderMonkey shell's
+  missing WeakMap;
+- `from_realms.js` has that shell dependency and independently needs
+  `$262.createRealm`;
+- the Annex B `iterator-method-emulates-undefined.js` path requires IsHTMLDDA.
+
+SharedArrayBuffer in the shell is guarded by `typeof` and is not an additional
+blocker for this partition. Candidate, promoted, and deferred path/key SHA-256
+pairs are respectively:
+
+- total candidate path:
+  `87e7cfd69fbac9265f7e4a28ceaea8f21f053b7a587a95494becc7bbab61b20c`;
+- total candidate keys:
+  `041fc07db938e2bf21fd1135fdbb3be648e2e5f3bdbf5688dfdf78784ed505a4`;
+- promoted path:
+  `a75d6ebea395327340d498c6f4d5e2b2c4224c039f6c1a58e42b19d070e94e41`;
+- promoted keys:
+  `5ea8a30f1578a6160441c068c91384ea635e179a90c6804af23730cfec7f6f34`;
+- deferred path:
+  `7e466133fdeb876268cf10e629701daa332922d484d16ad76b58679aee3e47b6`;
+- deferred keys:
+  `df334b586f8ab8494ab8ec1d9a06d4492ae76b0fe0d73479637001f18ab3dd24`.
+
+Promotion expands the cumulative gate to 2,213 paths / 4,383 variants, all
+passing in Oxide and pinned QuickJS. The scoped profile, cumulative manifest,
+and cumulative key-stream hashes are:
+
+- `dd106c074751866ce667352d3449cc0ec7d9b9072034a4f0a97050da7b7bad13`;
+- `d71be16dfcd42b58e3371c47d35d8f6cc9fbe29a11135ebd39ea447cb84d0c56`;
+- `ac56a6047ecb71616e098b5cb6a0c449d11af21141f8f18af5ebe4dccefb9a84`.
+
+The profile admits 27 feature tags with SHA-256
+`de5b9c5c6a66566a6b1481fc0b014a6ef00a95ebecc90c37da4508aa85a8d830`
+and 11 includes with SHA-256
+`b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012`.
+The remaining exclusion ledger contains 148 paths: 71
+SharedArrayBuffer, 54 cross-realm, 21 WeakMap, one IsHTMLDDA, and one Math.
+Its path stream and complete file hashes are
+`0d425a326fc950257410849ada4c2435b410e84f4c9651f9393c39f6d5c3032a`
+and
+`4c79c3c86364a5c0aa6d2ea5bf3cba6da47261d0b4847fbfeaa5cd368749b783`.
+Canonical scoped TSV/JSONL hashes are
+`de22c434d3ac28ed823a6c20c1bbc01a7e44e43e86e1a1b368696196b2399c1b`
+and
+`6f1904f5001deb1f96cd06d697def75999991350e582c3b69486246b1a68b460`.
+
+Broad TypedArray admission remains withheld. A read-only exact join of the 158
+promoted variants against the canonical full report records four existing
+passes and 154 `unsupported-feature` outcomes: 142 are blocked only by
+TypedArray, six by `Array.prototype.values` plus TypedArray, and six by
+TypedArray plus resizable ArrayBuffer. The normalized full-row stream SHA-256
+is
+`fecefca50dcb3d97f321ba81fe8af1490bd74520b3d7327be142a882085023b7`.
+The complete vector therefore remains 51,940/102,037, and its canonical
+TSV/JSONL hashes remain
+`f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+and
+`8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+
+QuickJS's materialized values live in a hidden realm-local Array while Oxide
+uses a Rust Vec. Their ordinary value lifetime now agrees, but hidden-Array
+allocation, GC pressure, and injected-OOM topology remain an explicit
+uncertified resource seam.
+
+The next step is a broad TypedArray global-admission audit. Enabling only the
+`TypedArray` feature exposes 3,686 variants; 3,606 are already certified by the
+scoped manifest, leaving 80 spillover variants across 41 paths to review.
 
 ## Runner contract
 
@@ -6481,8 +6586,16 @@ candidate defers only the two cross-realm/WeakMap staging variants; the other
 34 paths / 68 variants join the cumulative 2,132-path / 4,225-variant gate,
 which Oxide and pinned QuickJS both pass completely. All 68 promoted full rows
 remain `unsupported-feature`, so the conservative vector stays
-51,940/102,037. The next planned static `from` audit contains 81 paths / 158
-variants, with nine paths / 17 variants deferred.
+51,940/102,037. Its next audited static `from` universe contained 90 paths /
+175 variants: 81 paths / 158 promotable and nine paths / 17 deferred.
+R3bd authenticates static TypedArray `from`, including exact nullish-source
+diagnostics, observable map/iterator/construction ordering, retained iterable
+value lifetime, Number/BigInt conversion, and RAB/detach behavior. The 81
+promoted paths expand the cumulative gate to 2,213 paths / 4,383 variants,
+which both engines pass completely; the nine external-dependency paths remain
+explicitly deferred. The broad feature tag remains withheld, so the
+conservative full vector stays 51,940/102,037. The next audit reviews 80
+spillover variants / 41 paths exposed by TypedArray-only global admission.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
