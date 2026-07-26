@@ -22,7 +22,7 @@ expected_test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 expected_patch=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 expected_config=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 expected_metadata=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-expected_profile=8261eff7f79ebc2b724cf42c0853d8f74336ac23eccfa862172bcbca2f918a3e
+expected_profile=67c4d0804fb606d052a9f62b10e069952538398f0f22ebc911083bc5bd5a8a5f
 expected_schema=test262-canonical-classified-v2
 expected_mode=both
 expected_timeout_ms=30000
@@ -164,18 +164,30 @@ expected_sort_paths=58
 expected_sort_manifest=1efa5ed5b57d0638963f183b0294e5dc90b711b754c63aa50b79cd34f3e0d3d4
 expected_sort_variants=116
 expected_sort_keys=b76f083344a23bdb330cdec16aa22f07175fb151f374858a77bbf3cc48e624c1
-expected_excluded_paths=306
-expected_exclusions=8bb730391734446ade26ae9835772a7bd4493d4cb6fa9f97a8b6a2e5dbd30000
-expected_exclusions_file=fad925fb491f4a1c5e55ab1ca54ce6dd46e189e655c5f2d7c145981d1d2d1178
-expected_paths=2055
-expected_variants=4071
-expected_quickjs_variants=4071
+expected_entries_keys_candidate_paths=46
+expected_entries_keys_candidate=45cfe102015cb7c25b3b2b064853c16c3e30d2f5c655bd3983a686689ca2540e
+expected_entries_keys_candidate_variants=92
+expected_entries_keys_candidate_keys=239f0a0f477d2d26f59b4247714e9dc2785bf5afac3adc8ea8a619067f299b4d
+expected_entries_keys_deferred_paths=3
+expected_entries_keys_deferred=bc0552a01cb1a8561461fe3bc6e82b3ed7a432599f16889a5c1e324552456a2d
+expected_entries_keys_deferred_variants=6
+expected_entries_keys_deferred_keys=4eb2eaecfec843385d2cb7562f278b17dae9d7cf20b61f8365f3fa734bc3b1c6
+expected_entries_keys_paths=43
+expected_entries_keys_manifest=029c249f88eb6a61f988495ea00e3455ca9878611e2c26e4c6b768faf0867d22
+expected_entries_keys_variants=86
+expected_entries_keys_keys=92e7b6ed05c315c3a6bc83e791e49a9880543247cf08bc5a329c6ffe0c2777ac
+expected_excluded_paths=263
+expected_exclusions=156725665a6c47fe5b0b85bd0cb0ba1a7bc380b7212689ca4497b5123cf40dd0
+expected_exclusions_file=107032e49012a49664cfef27730e5497e986b6090e150afc5d26fc1774b3a1aa
+expected_paths=2098
+expected_variants=4157
+expected_quickjs_variants=4157
 expected_features=26
 expected_features_hash=008a93b979449398b34670770af22d1aaec6683b1e1ec211eac4e0b7fbc053bd
 expected_includes=11
 expected_includes_hash=b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012
-expected_manifest=fa6f12f165793a00c4fc987ebaa043e9090c694dc2d77fc3b7ba670a3639e0cd
-expected_keys=6ecf7cb35ecb89cb831b43db6d778f4f2b8a4432c83c8d7a08d396c36fb7e65b
+expected_manifest=3fc805b6745d0bb464f0ad9831ee7e21e536eabe3d5a84006d458bb6ef30d85e
+expected_keys=c85de1ea3355fb3bc31fbc93e2ea862d7f2d0ce882f7e7a00c011519f51f4516
 expected_test_typed_array_harness=4c0e237804f39a4aa670f72c05b4520730c03c2d2e9f2f41e6b380bd6749ec61
 expected_sm_typed_array_harness=3798d277ac8f105b65ad26602b500b497af7f3361fd14a169c58a601c605bb2e
 expected_sm_math_harness=79dea1172236685567e09da8c9e868e0f84686bf40cff728785223c5b43f5e7b
@@ -187,8 +199,9 @@ usage: scripts/test-test262-typed-array-core.sh [--check]
 With --check, rebuild and audit the frozen TypedArray candidate, mutation,
 index/search, callback-find, every/some, forEach, reduce/reduceRight, and
 map/filter, slice/subarray, with/toReversed, join/toLocaleString/toString
-stringification, and sort/toSorted promotions, manifest, and exclusion ledger.
-Verify all 4,669 candidate variants plus the 4,071 admitted variants against
+stringification, sort/toSorted, and entries/keys iterator-contract promotions,
+manifest, and exclusion ledger.
+Verify all 4,669 candidate variants plus the 4,157 admitted variants against
 pinned QuickJS.
 With no option, also run the checksum-bound quickjs-oxide gate; that mode
 requires a measured all-green baseline file.
@@ -974,6 +987,55 @@ sort_dependency_reason() {
     esac
 }
 
+entries_keys_candidate_path() {
+    local test_path=$1
+    case "$test_path" in
+        test/built-ins/TypedArray/prototype/entries/*|\
+        test/built-ins/TypedArray/prototype/keys/*|\
+        test/built-ins/TypedArrayConstructors/prototype/entries/*|\
+        test/built-ins/TypedArrayConstructors/prototype/keys/*|\
+        test/staging/sm/TypedArray/detached-array-buffer-checks.js|\
+        test/staging/sm/TypedArray/entries.js|\
+        test/staging/sm/TypedArray/keys.js|\
+        test/staging/sm/TypedArray/prototype-constructor-identity.js)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+entries_keys_dependency_reason() {
+    local test_path=$1 includes_file=$2 source_file=$3
+    case "$test_path" in
+        test/staging/sm/TypedArray/entries.js|\
+        test/staging/sm/TypedArray/keys.js)
+            if ! grep -Fxq sm/non262-TypedArray-shell.js "$includes_file" \
+                || ! grep -Fq '$262.createRealm' "$source_file" \
+                || ! grep -Fq 'const sharedConstructors = new WeakMap();' \
+                    "$suite/harness/sm/non262-TypedArray-shell.js"; then
+                echo "error: TypedArray entries/keys realm or WeakMap dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'external:cross-realm\n'
+            ;;
+        test/staging/sm/TypedArray/prototype-constructor-identity.js)
+            if ! grep -Fxq sm/non262-TypedArray-shell.js "$includes_file" \
+                || ! grep -Fq 'const sharedConstructors = new WeakMap();' \
+                    "$suite/harness/sm/non262-TypedArray-shell.js" \
+                || ! grep -Fq 'if (ctor === Uint8Array)' "$source_file" \
+                || ! grep -Fq 'assert.sameValue(props.length, 6);' \
+                    "$source_file"; then
+                echo "error: TypedArray prototype identity WeakMap or Uint8 codec dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'external:WeakMap\n'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 direct_core_dependency_reason() {
     local test_path=$1 includes_file=$2
     case "$test_path" in
@@ -1270,6 +1332,18 @@ if [[ "$check_only" == false ]]; then
     expect_value sort_manifest_sha256 "$expected_sort_manifest"
     expect_value sort_variants "$expected_sort_variants"
     expect_value sort_keys_sha256 "$expected_sort_keys"
+    expect_value entries_keys_candidate_paths "$expected_entries_keys_candidate_paths"
+    expect_value entries_keys_candidate_sha256 "$expected_entries_keys_candidate"
+    expect_value entries_keys_candidate_variants "$expected_entries_keys_candidate_variants"
+    expect_value entries_keys_candidate_keys_sha256 "$expected_entries_keys_candidate_keys"
+    expect_value entries_keys_deferred_paths "$expected_entries_keys_deferred_paths"
+    expect_value entries_keys_deferred_sha256 "$expected_entries_keys_deferred"
+    expect_value entries_keys_deferred_variants "$expected_entries_keys_deferred_variants"
+    expect_value entries_keys_deferred_keys_sha256 "$expected_entries_keys_deferred_keys"
+    expect_value entries_keys_paths "$expected_entries_keys_paths"
+    expect_value entries_keys_manifest_sha256 "$expected_entries_keys_manifest"
+    expect_value entries_keys_variants "$expected_entries_keys_variants"
+    expect_value entries_keys_keys_sha256 "$expected_entries_keys_keys"
     expect_value excluded_paths "$expected_excluded_paths"
     expect_value exclusions_sha256 "$expected_exclusions"
     expect_value exclusions_file_sha256 "$expected_exclusions_file"
@@ -1402,6 +1476,12 @@ sort_deferred=$tmp_dir/sort-deferred.txt
 sort_deferred_keys=$tmp_dir/sort-deferred-keys.txt
 sort_manifest=$tmp_dir/sort-manifest.txt
 sort_keys=$tmp_dir/sort-keys.txt
+entries_keys_candidate=$tmp_dir/entries-keys-candidate.txt
+entries_keys_candidate_keys=$tmp_dir/entries-keys-candidate-keys.txt
+entries_keys_deferred=$tmp_dir/entries-keys-deferred.txt
+entries_keys_deferred_keys=$tmp_dir/entries-keys-deferred-keys.txt
+entries_keys_manifest=$tmp_dir/entries-keys-manifest.txt
+entries_keys_keys=$tmp_dir/entries-keys-keys.txt
 candidate_features=$tmp_dir/candidate-features.txt
 candidate_includes=$tmp_dir/candidate-includes.txt
 candidate_flags=$tmp_dir/candidate-flags.txt
@@ -1475,16 +1555,16 @@ if ! awk -F'\t' '
         counts[$2]++
     }
     END {
-        if (NR != 307 ||
+        if (NR != 264 ||
             counts["dependency:join"] != 0 ||
             counts["external:cross-realm"] != 54 ||
             counts["external:SharedArrayBuffer"] != 71 ||
-            counts["external:WeakMap"] != 13 ||
+            counts["external:WeakMap"] != 14 ||
             counts["external:Math"] != 1 ||
             counts["external:IsHTMLDDA"] != 1 ||
             counts["static:from"] != 88 ||
             counts["static:of"] != 34 ||
-            counts["method:iterator-entries-keys"] != 42 ||
+            counts["method:iterator-entries-keys"] != 0 ||
             counts["method:mutation-copy-set"] != 0 ||
             counts["method:search-predicate"] != 0 ||
             counts["method:species-copy-transform"] != 0 ||
@@ -1492,7 +1572,7 @@ if ! awk -F'\t' '
             counts["method:sort"] != 0 ||
             counts["method:stringification"] != 0 ||
             counts["method:subarray"] != 0 ||
-            counts["method:full-prototype-contract"] != 2) {
+            counts["method:full-prototype-contract"] != 0) {
             exit 1
         }
     }
@@ -1554,6 +1634,9 @@ diff -u "$candidate_inventory" "$combined_inventory"
 : >"$sort_candidate"
 : >"$sort_deferred"
 : >"$sort_manifest"
+: >"$entries_keys_candidate"
+: >"$entries_keys_deferred"
+: >"$entries_keys_manifest"
 : >"$candidate_keys"
 while IFS= read -r test_path; do
     if [[ ! -f "$suite/$test_path" ]]; then
@@ -1699,6 +1782,23 @@ while IFS= read -r test_path; do
         fi
         printf '%s\n' "$test_path" >>"$derived_manifest"
         printf '%s\n' "$test_path" >>"$sort_manifest"
+        continue
+    fi
+    if entries_keys_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$entries_keys_candidate"
+        if reason=$(entries_keys_dependency_reason \
+            "$test_path" "$candidate_includes" "$source_file"); then
+            printf '%s\n' "$test_path" >>"$entries_keys_deferred"
+            printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
+            continue
+        else
+            dependency_status=$?
+            if [[ "$dependency_status" != "1" ]]; then
+                exit 1
+            fi
+        fi
+        printf '%s\n' "$test_path" >>"$derived_manifest"
+        printf '%s\n' "$test_path" >>"$entries_keys_manifest"
         continue
     fi
     if grep -Fxq cross-realm "$candidate_features" \
@@ -2446,6 +2546,66 @@ if [[ "$(wc -l <"$sort_candidate" | tr -d '[:space:]')" \
     exit 1
 fi
 
+LC_ALL=C sort -o "$entries_keys_candidate" "$entries_keys_candidate"
+LC_ALL=C sort -o "$entries_keys_deferred" "$entries_keys_deferred"
+LC_ALL=C sort -o "$entries_keys_manifest" "$entries_keys_manifest"
+diff -u \
+    "$entries_keys_candidate" \
+    <(LC_ALL=C sort -u "$entries_keys_manifest" "$entries_keys_deferred")
+if [[ -n "$(LC_ALL=C comm -12 \
+    "$entries_keys_manifest" "$entries_keys_deferred")" ]]; then
+    echo "error: TypedArray entries/keys manifest overlaps its deferred ledger" >&2
+    exit 1
+fi
+
+: >"$entries_keys_candidate_keys"
+: >"$entries_keys_deferred_keys"
+: >"$entries_keys_keys"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$entries_keys_candidate_keys"
+done <"$entries_keys_candidate"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$entries_keys_deferred_keys"
+done <"$entries_keys_deferred"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$entries_keys_keys"
+done <"$entries_keys_manifest"
+LC_ALL=C sort -o "$entries_keys_candidate_keys" "$entries_keys_candidate_keys"
+LC_ALL=C sort -o "$entries_keys_deferred_keys" "$entries_keys_deferred_keys"
+LC_ALL=C sort -o "$entries_keys_keys" "$entries_keys_keys"
+if [[ "$(wc -l <"$entries_keys_candidate" | tr -d '[:space:]')" \
+        != "$expected_entries_keys_candidate_paths" \
+    || "$(sha256_file "$entries_keys_candidate")" \
+        != "$expected_entries_keys_candidate" \
+    || "$(wc -l <"$entries_keys_candidate_keys" | tr -d '[:space:]')" \
+        != "$expected_entries_keys_candidate_variants" \
+    || "$(sha256_file "$entries_keys_candidate_keys")" \
+        != "$expected_entries_keys_candidate_keys" \
+    || "$(wc -l <"$entries_keys_deferred" | tr -d '[:space:]')" \
+        != "$expected_entries_keys_deferred_paths" \
+    || "$(sha256_file "$entries_keys_deferred")" \
+        != "$expected_entries_keys_deferred" \
+    || "$(wc -l <"$entries_keys_deferred_keys" | tr -d '[:space:]')" \
+        != "$expected_entries_keys_deferred_variants" \
+    || "$(sha256_file "$entries_keys_deferred_keys")" \
+        != "$expected_entries_keys_deferred_keys" \
+    || "$(wc -l <"$entries_keys_manifest" | tr -d '[:space:]')" \
+        != "$expected_entries_keys_paths" \
+    || "$(sha256_file "$entries_keys_manifest")" \
+        != "$expected_entries_keys_manifest" \
+    || "$(wc -l <"$entries_keys_keys" | tr -d '[:space:]')" \
+        != "$expected_entries_keys_variants" \
+    || "$(sha256_file "$entries_keys_keys")" \
+        != "$expected_entries_keys_keys" ]]; then
+    echo "error: TypedArray entries/keys promotion inventory drifted" >&2
+    exit 1
+fi
+
 while IFS= read -r test_path; do
     metadata_list "$test_path" features >"$candidate_features"
     metadata_list "$test_path" includes >"$candidate_includes"
@@ -2519,7 +2679,7 @@ verify_quickjs_oracle \
     "$oracle_log"
 
 if [[ "$check_only" == true ]]; then
-    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, %s reduce/reduceRight paths/%s variants, %s map/filter paths/%s variants, %s slice/subarray paths/%s variants, %s with/toReversed paths/%s variants, %s stringification paths/%s variants, and %s sort/toSorted paths/%s variants; %s every/some, %s forEach, %s reduce/reduceRight, %s map/filter, %s slice/subarray, %s with/toReversed, %s stringification, and %s sort/toSorted staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
+    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, %s reduce/reduceRight paths/%s variants, %s map/filter paths/%s variants, %s slice/subarray paths/%s variants, %s with/toReversed paths/%s variants, %s stringification paths/%s variants, %s sort/toSorted paths/%s variants, and %s entries/keys paths/%s variants; %s every/some, %s forEach, %s reduce/reduceRight, %s map/filter, %s slice/subarray, %s with/toReversed, %s stringification, %s sort/toSorted, and %s entries/keys staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
         "$expected_candidate_paths" \
         "$expected_candidate_variants" \
         "$expected_paths" \
@@ -2542,6 +2702,8 @@ if [[ "$check_only" == true ]]; then
         "$expected_stringification_variants" \
         "$expected_sort_paths" \
         "$expected_sort_variants" \
+        "$expected_entries_keys_paths" \
+        "$expected_entries_keys_variants" \
         "$expected_every_some_deferred_paths" \
         "$expected_for_each_deferred_paths" \
         "$expected_reduce_deferred_paths" \
@@ -2550,6 +2712,7 @@ if [[ "$check_only" == true ]]; then
         "$expected_with_to_reversed_deferred_paths" \
         "$expected_stringification_deferred_paths" \
         "$expected_sort_deferred_paths" \
+        "$expected_entries_keys_deferred_paths" \
         "$expected_excluded_paths"
     exit 0
 fi

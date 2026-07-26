@@ -31,9 +31,11 @@ claim full parity.
   R3ax adds QuickJS-shaped `slice`/`subarray`, and R3ay adds non-species
   change-by-copy `with`/`toReversed`. R3az adds dedicated
   `join`/`toLocaleString` stringification and the inherited `toString` surface,
-  and R3ba adds QuickJS-shaped `sort`/`toSorted`, without widening the global
-  TypedArray claim. The current canonical measurement has 51,940 passes and
-  52,468 runnable variants: 50.90% raw,
+  R3ba adds QuickJS-shaped `sort`/`toSorted`, and R3bb authenticates the
+  existing shared `entries`/`keys` iterator path without a production-code
+  change. Neither milestone widens the global TypedArray claim. The current
+  canonical measurement has 51,940 passes and 52,468 runnable variants:
+  50.90% raw,
   a 62.16% lower bound after the 18,475 pinned QuickJS target exclusions, or
   99.09% among the 52,419 variants with a non-unsupported observed outcome. It
   records 18 parse failures, 402 runtime failures, and 57 harness failures.
@@ -3735,8 +3737,44 @@ claim full parity.
   `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
   and
   `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
-  The next milestone remains pending a residual TypedArray audit rather than
-  being inferred from this landing.
+  At the R3ba landing, the next milestone was a residual TypedArray audit
+  rather than one inferred from the sorting result.
+
+  R3bb authenticates `%TypedArray%.prototype.entries` and `keys` through the
+  existing shared Array-iterator implementation. No production code changes:
+  its per-`next` length recheck, integer-indexed element read, detach/OOB
+  behavior, and iterator completion match differential observations; the
+  manual-next/outer-operation realm split is separately source-audited against
+  pinned QuickJS. Three frozen/self-check/differential observation tests cover
+  all 12 concrete TypedArray classes, resizable-buffer shrink/grow, detach, and
+  transient-OOB recovery. A fourth Rust cross-realm structural regression
+  locks the audited realm split.
+
+  The exact candidate is 46 paths / 92 variants. Three paths / six variants
+  remain deferred: the SpiderMonkey staging `entries.js` and `keys.js` paths
+  require both the unavailable `createRealm` and WeakMap shell, while
+  `prototype-constructor-identity.js` requires WeakMap and the still-missing
+  Uint8Array codec surface. The other 43 paths / 86 variants—42
+  `entries`/`keys` paths / 84 variants plus the two-variant
+  `detached-array-buffer-checks.js` canary—join the cumulative 2,098-path /
+  4,157-variant gate. Oxide and pinned QuickJS both pass all 4,157 variants,
+  and the exclusion ledger falls to 263 paths. The checksum-bound candidate,
+  deferral, promotion, and cumulative evidence is recorded in
+  `docs/test262.md`.
+
+  The complete vector is unchanged by construction: the global capability
+  profile does not change, all 84 newly authenticated `entries`/`keys` rows
+  remain classified `unsupported-feature`, and the two detached-buffer rows
+  already pass in the R3ba baseline. It therefore remains at 51,940/102,037
+  with canonical TSV/JSONL hashes
+  `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+  and
+  `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+  One non-blocking resource-parity caveat remains: Rust and QuickJS allocator
+  bookkeeping have different OOM topology, and the weighted native-stack
+  budget is still an approximation, so this admission does not claim identical
+  injected-OOM or extreme native-interleave failure thresholds. The next
+  audited slice is static TypedArray `of`, with a 34-path / 68-variant candidate.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -7221,6 +7259,11 @@ shared QuickJS `rqsort` storage-accessor seam leaves
 previous owner, while TypedArray realm, RAB, raw-bit, error-ordering and
 writeback rules remain outside generic Array code. No new heap primitive or
 runtime facade seam is required.
+R3bb makes no production-code change, so those owner and facade sizes remain
+fixed. Three QuickJS observation tests authenticate the existing shared
+Array-iterator path across all 12 TypedArray classes, resizable-buffer
+behavior, detach, and transient-OOB recovery. A fourth Rust structural test
+locks the source-audited manual-next/outer-operation realm split.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

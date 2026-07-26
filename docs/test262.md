@@ -46,7 +46,8 @@ R3aq promotes the TypedArray mutation cohort, and R3ar promotes the indexed
 promotes `slice`/`subarray` copying and view creation. R3ay promotes
 change-by-copy `with`/`toReversed`, and R3az promotes dedicated
 `join`/`toLocaleString` stringification plus inherited `toString`. R3ba
-promotes QuickJS-shaped `sort`/`toSorted`; residual TypedArray methods,
+promotes QuickJS-shaped `sort`/`toSorted`, and R3bb authenticates the existing
+shared `entries`/`keys` iterators; residual TypedArray methods,
 SharedArrayBuffer, and wider interop surfaces remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
@@ -5792,7 +5793,74 @@ two-worker runs reproduce the measured full TSV/JSONL hashes:
 `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
 and
 `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
-The next milestone remains pending a residual TypedArray audit.
+At the R3ba landing, the next milestone was a residual TypedArray audit.
+
+## R3bb TypedArray entries/keys authentication
+
+R3bb authenticates `%TypedArray%.prototype.entries` and `keys` without a
+production-code change. Both entry points already use the shared Array
+iterator, whose per-`next` length recheck and integer-indexed read match pinned
+QuickJS. Three frozen/self-check/differential observation tests cover all 12
+concrete TypedArray classes, resizable-buffer shrink/grow, detach,
+transient-OOB recovery, and iterator completion. A fourth Rust cross-realm
+structural regression locks the separately source-audited
+manual-next/outer-operation realm split.
+
+The exact candidate contains 46 paths / 92 variants. Three paths / six
+variants remain deferred:
+
+- `test/staging/sm/TypedArray/entries.js` and
+  `test/staging/sm/TypedArray/keys.js` require both the unavailable
+  `createRealm` and WeakMap shell;
+- `test/staging/sm/TypedArray/prototype-constructor-identity.js`
+  requires WeakMap and the still-missing Uint8Array codec surface.
+
+The remaining 43 paths / 86 variants are promoted: 42 `entries`/`keys` paths /
+84 variants plus the two-variant
+`test/staging/sm/TypedArray/detached-array-buffer-checks.js` canary. The
+cumulative scoped gate therefore expands to 2,098 paths / 4,157 variants, the
+exclusion ledger falls to 263 paths, and Oxide and pinned QuickJS both pass
+4,157/4,157.
+
+Candidate, deferred, and promoted path/key SHA-256 pairs are respectively:
+
+- candidate path:
+  `45cfe102015cb7c25b3b2b064853c16c3e30d2f5c655bd3983a686689ca2540e`;
+- candidate keys:
+  `239f0a0f477d2d26f59b4247714e9dc2785bf5afac3adc8ea8a619067f299b4d`;
+- deferred path:
+  `bc0552a01cb1a8561461fe3bc6e82b3ed7a432599f16889a5c1e324552456a2d`;
+- deferred keys:
+  `4eb2eaecfec843385d2cb7562f278b17dae9d7cf20b61f8365f3fa734bc3b1c6`;
+- promoted path:
+  `029c249f88eb6a61f988495ea00e3455ca9878611e2c26e4c6b768faf0867d22`;
+- promoted keys:
+  `92e7b6ed05c315c3a6bc83e791e49a9880543247cf08bc5a329c6ffe0c2777ac`.
+
+The scoped profile, cumulative manifest, cumulative variant-key stream,
+exclusion path stream, and exclusion-ledger file SHA-256 values are:
+
+- `67c4d0804fb606d052a9f62b10e069952538398f0f22ebc911083bc5bd5a8a5f`;
+- `3fc805b6745d0bb464f0ad9831ee7e21e536eabe3d5a84006d458bb6ef30d85e`;
+- `c85de1ea3355fb3bc31fbc93e2ea862d7f2d0ce882f7e7a00c011519f51f4516`;
+- `156725665a6c47fe5b0b85bd0cb0ba1a7bc380b7212689ca4497b5123cf40dd0`;
+- `107032e49012a49664cfef27730e5497e986b6090e150afc5d26fc1774b3a1aa`.
+
+Canonical scoped TSV/JSONL hashes are
+`60ab18160baec6cdb57fecb56e6900685ea66de54610cab339008d1a1b562d5d`
+and
+`b00eba7643be86cf1ca0bb7ccfa94feed1f860d4db8d8756d0551c91ae07a8aa`.
+
+The complete vector is unchanged by construction. The global capability
+profile does not change, all 84 newly authenticated `entries`/`keys` rows
+remain `unsupported-feature`, and the two
+`detached-array-buffer-checks.js` rows already pass in the R3ba baseline. The
+canonical full TSV/JSONL hashes therefore remain
+`f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+and
+`8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+The next audited slice is static TypedArray `of`, with a 34-path / 68-variant
+candidate.
 
 ## Runner contract
 
@@ -6307,7 +6375,15 @@ QuickJS both pass completely. The current complete measurement moves 14
 runtime failures to pass and advances the vector to 51,940/102,037 while
 runnable and every other summary category remain unchanged. Two independent
 formal two-worker repeats reproduce the canonical report; the next milestone
-awaits a residual TypedArray audit.
+at that landing was a residual TypedArray audit.
+R3bb authenticates the existing shared TypedArray `entries` and `keys`
+iterators without a production-code change. After deferring two
+`createRealm`/WeakMap staging paths and one WeakMap/Uint8Array-codec identity
+path, 43 paths / 86 variants join the cumulative 2,098-path /
+4,157-variant gate, which Oxide and pinned QuickJS both pass completely. The
+global profile remains unchanged, so the canonical complete vector remains
+51,940/102,037. Static TypedArray `of` is the next audited
+34-path / 68-variant slice.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
