@@ -31,15 +31,17 @@ claim full parity.
   R3ax adds QuickJS-shaped `slice`/`subarray`, and R3ay adds non-species
   change-by-copy `with`/`toReversed`. R3az adds dedicated
   `join`/`toLocaleString` stringification and the inherited `toString` surface,
-  without widening the global TypedArray claim. The vector has 51,926 passes
-  and 52,468 runnable variants: 50.89% raw,
-  a 62.14% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.06% among the 52,419 variants with a non-unsupported observed outcome. It
-  records 18 parse failures, 416 runtime failures, and 57 harness failures;
-  current full TSV/JSONL SHA-256 values are
-  `bd1119fe3ea8e4eaaad2e21bf3d0991b58200bacef91e695c2c2a4c11e6538c3`
+  and R3ba adds QuickJS-shaped `sort`/`toSorted`, without widening the global
+  TypedArray claim. The current canonical measurement has 51,940 passes and
+  52,468 runnable variants: 50.90% raw,
+  a 62.16% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.09% among the 52,419 variants with a non-unsupported observed outcome. It
+  records 18 parse failures, 402 runtime failures, and 57 harness failures.
+  Two independent formal two-worker full runs reproduce the same canonical
+  vector. Current full TSV/JSONL SHA-256 values are
+  `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
   and
-  `d78dfbd84ebab70441362d6bd535fab9fcfc433419b09fe8668309a749e7c759`.
+  `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3677,8 +3679,64 @@ claim full parity.
   and
   `d78dfbd84ebab70441362d6bd535fab9fcfc433419b09fe8668309a749e7c759`.
 
-  The next sort/comparator milestone can combine `sort` with `toSorted`; its
-  audit identifies 58 promotable paths / 116 variants and six deferred paths.
+  R3ba publishes `%TypedArray%.prototype.sort` and `toSorted` through the
+  pinned QuickJS `rqsort` choreography shared with Array, while keeping
+  TypedArray storage and comparison rules in a dedicated kernel. Default
+  comparison sorts raw backing words in place with O(1) auxiliary storage,
+  preserving numeric order, NaN placement and signed-zero order without
+  converting elements. A custom comparator instead snapshots exact raw bytes
+  plus a `u32` original-index vector, decodes callback arguments from that
+  immutable snapshot, uses original position as the stable tie-break, and
+  writes raw words back only after successful comparison.
+
+  `sort` validates its comparator before branding and validating the receiver;
+  `toSorted` brands and copies first, then validates the comparator. The latter
+  allocates a fixed same-class result in the builtin's defining realm without
+  consulting `constructor` or `@@species`. Comparator-driven detach or final
+  out-of-bounds state suppresses writeback, shrink clips the old snapshot,
+  growth does not add elements, and callback throws preserve identity. Array
+  and TypedArray sorting share one catchable 16-entry native recursion family
+  so alternating comparator reentry cannot bypass the host-stack budget.
+
+  The exact atomic candidate is 64 paths / 128 variants. Six staging paths /
+  12 variants remain deferred: four cross-realm paths and two SpiderMonkey
+  WeakMap-shell paths. The remaining 58 paths / 116 variants join the
+  cumulative 2,055-path / 4,071-variant gate; Oxide and pinned QuickJS both
+  pass all 4,071 variants, and the exclusion ledger falls to 306 paths.
+
+  Candidate path/key, deferred path/key, and promoted path/key SHA-256 pairs
+  are respectively
+  `d06f1655781895a7f77a5ae378e25920e4cf62c87134a1cabaaa0418bfb8a0b8` /
+  `53e35176074fdfdd0c414d30b9365995b0d420f43a2e45c420955cc0fc1d6de9`,
+  `0067268a56e709b6be94b51b1a7472b961a27f9a99e623a6cce6d04ed4cf1b96` /
+  `f242add5304bef7ba11b82181cc1646b5a1ea970f06ee38d857d4c65f144ecfd`,
+  and
+  `1efa5ed5b57d0638963f183b0294e5dc90b711b754c63aa50b79cd34f3e0d3d4` /
+  `b76f083344a23bdb330cdec16aa22f07175fb151f374858a77bbf3cc48e624c1`.
+  The scoped profile, cumulative manifest, cumulative variant-key stream,
+  exclusion path stream, and exclusion-ledger file hashes are
+  `8261eff7f79ebc2b724cf42c0853d8f74336ac23eccfa862172bcbca2f918a3e`,
+  `fa6f12f165793a00c4fc987ebaa043e9090c694dc2d77fc3b7ba670a3639e0cd`,
+  `6ecf7cb35ecb89cb831b43db6d778f4f2b8a4432c83c8d7a08d396c36fb7e65b`,
+  `8bb730391734446ade26ae9835772a7bd4493d4cb6fa9f97a8b6a2e5dbd30000`,
+  and
+  `fad925fb491f4a1c5e55ab1ca54ce6dd46e189e655c5f2d7c145981d1d2d1178`.
+  Canonical scoped TSV/JSONL hashes are
+  `5db3782454d4556687a918c946a676b8708b5e4f0be7e9edd84e25700a258629`
+  and
+  `8948ee41244d744c6099868b86bbca8dfc88d7cea9865d5e58b6eb86492cb8f9`.
+
+  Broad TypedArray admission remains withheld. The current canonical full
+  measurement retains all 102,037 keys and the 52,468 runnable count while
+  moving 14 runtime failures to pass; every other summary category is
+  unchanged. The vector reaches 51,940 passes and 402 runtime failures. Two
+  independent formal two-worker repeats reproduce the measured full
+  TSV/JSONL hashes:
+  `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+  and
+  `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+  The next milestone remains pending a residual TypedArray audit rather than
+  being inferred from this landing.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -7152,6 +7210,17 @@ adjacent 120-line `typed_array/stringification.rs`; its 563-line directed test
 module covers surface metadata, primitive locale dispatch, error ordering,
 string limits, RAB growth/shrink, detach, fixed-view OOB behavior, and
 defining-realm selection. Generic Array traversal remains independently owned.
+R3ba again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+Publishing and dispatching `sort`/`toSorted` brings the shared TypedArray owner
+to 1,893 lines. The complete TypedArray algorithm lives in the adjacent
+504-line `typed_array/sort.rs`, with a separate 791-line directed test module.
+Default sorting uses an O(1)-auxiliary raw-word backing-store accessor; custom
+sorting owns only its exact raw-byte snapshot and `u32` index vector. The
+shared QuickJS `rqsort` storage-accessor seam leaves
+`runtime/intrinsics/array.rs` at 3,851 lines, roughly 45 net lines above the
+previous owner, while TypedArray realm, RAB, raw-bit, error-ordering and
+writeback rules remain outside generic Array code. No new heap primitive or
+runtime facade seam is required.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

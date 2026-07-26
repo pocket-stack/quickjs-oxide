@@ -31,16 +31,60 @@ const ARRAY_FLATTEN_FRAME_LIMIT: usize = 3_833;
 /// Port of QuickJS's `rqsort` index choreography. The comparator receives
 /// mutable access to the backing slice because Array's default comparison
 /// caches each element's ToString result inside its moving sort slot.
-fn quickjs_rqsort_by<T, E>(
+pub(in crate::runtime::intrinsics) fn quickjs_rqsort_by<T, E>(
     values: &mut [T],
-    mut compare: impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
+    compare: impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
 ) -> Result<(), E> {
-    if values.len() < 2 {
+    let length = values.len();
+    let mut accessor = SliceSortAccessor { values, compare };
+    quickjs_rqsort_with(length, &mut accessor)
+}
+
+/// Storage adapter for the shared `rqsort` choreography. Array sorts moving
+/// value slots, while TypedArray's default path compares and swaps raw backing
+/// words in place without allocating a second element buffer.
+pub(in crate::runtime::intrinsics) trait QuickJsSortAccessor {
+    type Error;
+
+    fn compare(&mut self, left: usize, right: usize) -> Result<ComparisonOrdering, Self::Error>;
+
+    fn swap(&mut self, left: usize, right: usize) -> Result<(), Self::Error>;
+}
+
+struct SliceSortAccessor<'a, T, F> {
+    values: &'a mut [T],
+    compare: F,
+}
+
+impl<T, E, F> QuickJsSortAccessor for SliceSortAccessor<'_, T, F>
+where
+    F: FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
+{
+    type Error = E;
+
+    fn compare(&mut self, left: usize, right: usize) -> Result<ComparisonOrdering, E> {
+        (self.compare)(self.values, left, right)
+    }
+
+    fn swap(&mut self, left: usize, right: usize) -> Result<(), E> {
+        self.values.swap(left, right);
+        Ok(())
+    }
+}
+
+pub(in crate::runtime::intrinsics) fn quickjs_rqsort_with<A>(
+    length: usize,
+    accessor: &mut A,
+) -> Result<(), A::Error>
+where
+    A: QuickJsSortAccessor,
+{
+    if length < 2 {
         return Ok(());
     }
 
     let mut stack = [(0_usize, 0_usize, 0_usize); 50];
-    stack[0] = (0, values.len(), 0);
+    stack[0] = (0, length, 0);
     let mut stack_len = 1;
 
     while stack_len != 0 {
@@ -50,20 +94,19 @@ fn quickjs_rqsort_by<T, E>(
         while count > 6 {
             depth += 1;
             if depth > 50 {
-                quickjs_heapsort_by(values, base, count, &mut compare)?;
+                quickjs_heapsort_with(accessor, base, count)?;
                 count = 0;
                 break;
             }
 
             let quarter = count >> 2;
             let pivot = quickjs_sort_median_of_three(
-                values,
                 base + quarter,
                 base + 2 * quarter,
                 base + 3 * quarter,
-                &mut compare,
+                accessor,
             )?;
-            values.swap(base, pivot);
+            accessor.swap(base, pivot)?;
 
             let mut scanned = 1_usize;
             let mut lower_equal = 1_usize;
@@ -76,12 +119,12 @@ fn quickjs_rqsort_by<T, E>(
 
             loop {
                 while left < right {
-                    let ordering = compare(values, base, left)?;
+                    let ordering = accessor.compare(base, left)?;
                     if ordering.is_lt() {
                         break;
                     }
                     if ordering.is_eq() {
-                        values.swap(lower_equal_end, left);
+                        accessor.swap(lower_equal_end, left)?;
                         lower_equal += 1;
                         lower_equal_end += 1;
                     }
@@ -94,21 +137,21 @@ fn quickjs_rqsort_by<T, E>(
                     if left >= right {
                         break;
                     }
-                    let ordering = compare(values, base, right)?;
+                    let ordering = accessor.compare(base, right)?;
                     if ordering.is_gt() {
                         break;
                     }
                     if ordering.is_eq() {
                         upper_equal -= 1;
                         upper_equal_start -= 1;
-                        values.swap(upper_equal_start, right);
+                        accessor.swap(upper_equal_start, right)?;
                     }
                 }
 
                 if left >= right {
                     break;
                 }
-                values.swap(left, right);
+                accessor.swap(left, right)?;
                 scanned += 1;
                 left += 1;
             }
@@ -118,7 +161,7 @@ fn quickjs_rqsort_by<T, E>(
             let lower_count = scanned - lower_equal;
             span = span.min(lower_middle_span);
             for offset in 0..span {
-                values.swap(base + offset, left - span + offset);
+                accessor.swap(base + offset, left - span + offset)?;
             }
 
             span = top - upper_equal_start;
@@ -127,7 +170,7 @@ fn quickjs_rqsort_by<T, E>(
             let upper_start = count - (upper_equal - scanned);
             span = span.min(upper_middle_span);
             for offset in 0..span {
-                values.swap(left + offset, top - span + offset);
+                accessor.swap(left + offset, top - span + offset)?;
             }
 
             debug_assert!(stack_len < stack.len());
@@ -145,8 +188,8 @@ fn quickjs_rqsort_by<T, E>(
 
         for current in (base + 1)..(base + count) {
             let mut position = current;
-            while position > base && compare(values, position - 1, position)?.is_gt() {
-                values.swap(position, position - 1);
+            while position > base && accessor.compare(position - 1, position)?.is_gt() {
+                accessor.swap(position, position - 1)?;
                 position -= 1;
             }
         }
@@ -154,36 +197,36 @@ fn quickjs_rqsort_by<T, E>(
     Ok(())
 }
 
-fn quickjs_sort_median_of_three<T, E>(
-    values: &mut [T],
+fn quickjs_sort_median_of_three<A>(
     first: usize,
     second: usize,
     third: usize,
-    compare: &mut impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
-) -> Result<usize, E> {
-    if compare(values, first, second)?.is_lt() {
-        if compare(values, second, third)?.is_lt() {
+    accessor: &mut A,
+) -> Result<usize, A::Error>
+where
+    A: QuickJsSortAccessor,
+{
+    if accessor.compare(first, second)?.is_lt() {
+        if accessor.compare(second, third)?.is_lt() {
             Ok(second)
-        } else if compare(values, first, third)?.is_lt() {
+        } else if accessor.compare(first, third)?.is_lt() {
             Ok(third)
         } else {
             Ok(first)
         }
-    } else if compare(values, second, third)?.is_gt() {
+    } else if accessor.compare(second, third)?.is_gt() {
         Ok(second)
-    } else if compare(values, first, third)?.is_lt() {
+    } else if accessor.compare(first, third)?.is_lt() {
         Ok(first)
     } else {
         Ok(third)
     }
 }
 
-fn quickjs_heapsort_by<T, E>(
-    values: &mut [T],
-    base: usize,
-    count: usize,
-    compare: &mut impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
-) -> Result<(), E> {
+fn quickjs_heapsort_with<A>(accessor: &mut A, base: usize, count: usize) -> Result<(), A::Error>
+where
+    A: QuickJsSortAccessor,
+{
     if count < 2 {
         return Ok(());
     }
@@ -191,34 +234,36 @@ fn quickjs_heapsort_by<T, E>(
     let mut root = count / 2;
     while root != 0 {
         root -= 1;
-        quickjs_heap_sift(values, base, root, count, compare)?;
+        quickjs_heap_sift(accessor, base, root, count)?;
     }
     for end in (1..count).rev() {
-        values.swap(base, base + end);
-        quickjs_heap_sift(values, base, 0, end, compare)?;
+        accessor.swap(base, base + end)?;
+        quickjs_heap_sift(accessor, base, 0, end)?;
     }
     Ok(())
 }
 
-fn quickjs_heap_sift<T, E>(
-    values: &mut [T],
+fn quickjs_heap_sift<A>(
+    accessor: &mut A,
     base: usize,
     mut root: usize,
     end: usize,
-    compare: &mut impl FnMut(&mut [T], usize, usize) -> Result<ComparisonOrdering, E>,
-) -> Result<(), E> {
+) -> Result<(), A::Error>
+where
+    A: QuickJsSortAccessor,
+{
     loop {
         let mut child = root * 2 + 1;
         if child >= end {
             return Ok(());
         }
-        if child + 1 < end && !compare(values, base + child, base + child + 1)?.is_gt() {
+        if child + 1 < end && !accessor.compare(base + child, base + child + 1)?.is_gt() {
             child += 1;
         }
-        if compare(values, base + root, base + child)?.is_gt() {
+        if accessor.compare(base + root, base + child)?.is_gt() {
             return Ok(());
         }
-        values.swap(base + root, base + child);
+        accessor.swap(base + root, base + child)?;
         root = child;
     }
 }
@@ -2987,13 +3032,13 @@ impl Runtime {
         )))
     }
 
-    fn native_array_sort_comparator(
+    pub(in crate::runtime::intrinsics) fn native_sort_comparator(
         &self,
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<NativeConversion<Option<CallableRef>>, RuntimeError> {
         let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
-            "Array.prototype sort comparator argv was not padded",
+            "sort comparator argv was not padded",
         ))?;
         if matches!(argument, Value::Undefined) {
             return Ok(NativeConversion::Value(None));
@@ -3257,7 +3302,7 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let comparator = match self.native_array_sort_comparator(realm, arguments)? {
+        let comparator = match self.native_sort_comparator(realm, arguments)? {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
@@ -3294,7 +3339,7 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let comparator = match self.native_array_sort_comparator(realm, arguments)? {
+        let comparator = match self.native_sort_comparator(realm, arguments)? {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };

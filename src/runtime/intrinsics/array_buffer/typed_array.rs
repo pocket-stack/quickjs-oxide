@@ -21,6 +21,7 @@ mod mutation;
 mod reduce;
 mod search;
 mod slice;
+mod sort;
 mod species;
 mod stringification;
 #[cfg(test)]
@@ -214,6 +215,19 @@ impl Runtime {
                 name,
                 2,
                 2,
+            )?;
+        }
+        for (kind, name) in [
+            (TypedArrayNativeKind::Sort, "sort"),
+            (TypedArrayNativeKind::ToSorted, "toSorted"),
+        ] {
+            self.define_native_builtin_auto_init(
+                &base_prototype,
+                realm,
+                NativeFunctionId::TypedArray(kind),
+                name,
+                1,
+                1,
             )?;
         }
         for (kind, name, length) in [
@@ -494,12 +508,13 @@ impl Runtime {
             TypedArrayNativeKind::Subarray => {
                 self.call_typed_array_subarray(realm, invocation, arguments)
             }
+            TypedArrayNativeKind::Sort => self.call_typed_array_sort(realm, invocation, arguments),
+            TypedArrayNativeKind::ToSorted => {
+                self.call_typed_array_to_sorted(realm, invocation, arguments)
+            }
             TypedArrayNativeKind::Join(kind) => {
                 self.call_typed_array_join(realm, kind, invocation, arguments)
             }
-            TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted => Err(
-                RuntimeError::Invariant("unpublished TypedArray native reached dispatch"),
-            ),
         }
     }
 

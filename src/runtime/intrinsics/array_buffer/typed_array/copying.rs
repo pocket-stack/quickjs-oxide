@@ -141,7 +141,7 @@ impl Runtime {
 
     /// QuickJS's internal same-class TypedArray constructor used by copying
     /// methods. The target always has the builtin's defining-realm prototype.
-    fn typed_array_copy_to_default(
+    pub(super) fn typed_array_copy_to_default(
         &self,
         realm: ContextId,
         source: &ObjectRef,

@@ -140,7 +140,7 @@ fn find_family_matches_quickjs_callback_and_descriptor_contracts() {
                 "length|at|with|buffer|byteLength|byteOffset|set|values|keys|"+
                 "entries|copyWithin|every|some|forEach|map|filter|reduce|"+
                 "reduceRight|fill|find|findIndex|findLast|findLastIndex|"+
-                "reverse|toReversed|slice|subarray|join|toLocaleString|"+
+                "reverse|toReversed|slice|subarray|sort|toSorted|join|toLocaleString|"+
                 "indexOf|lastIndexOf|includes|"+
                 "constructor|toString|Symbol(Symbol.iterator)|"+
                 "Symbol(Symbol.toStringTag)");

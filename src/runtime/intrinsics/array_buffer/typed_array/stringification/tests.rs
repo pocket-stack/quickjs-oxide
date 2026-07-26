@@ -112,7 +112,7 @@ fn join_and_to_locale_string_publish_quickjs_surface() {
                 "length|at|with|buffer|byteLength|byteOffset|set|values|keys|"+
                 "entries|copyWithin|every|some|forEach|map|filter|reduce|"+
                 "reduceRight|fill|find|findIndex|findLast|findLastIndex|"+
-                "reverse|toReversed|slice|subarray|join|toLocaleString|"+
+                "reverse|toReversed|slice|subarray|sort|toSorted|join|toLocaleString|"+
                 "indexOf|lastIndexOf|includes|constructor|toString|"+
                 "Symbol(Symbol.iterator)|Symbol(Symbol.toStringTag)");
 

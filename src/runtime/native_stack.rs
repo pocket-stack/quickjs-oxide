@@ -136,7 +136,11 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeJoin(_)
             | NativeFunctionId::ArrayPrototypeToString
             | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 1_usize,
-            NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 4,
+            NativeFunctionId::ArrayPrototypeSort
+            | NativeFunctionId::ArrayPrototypeToSorted
+            | NativeFunctionId::TypedArray(
+                TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
+            ) => 4,
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => 16,
             NativeFunctionId::ArrayPrototypeFlatten(_) => 9,
@@ -210,7 +214,11 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeJoin(_)
             | NativeFunctionId::ArrayPrototypeToString
             | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 64,
-            NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => 16,
+            NativeFunctionId::ArrayPrototypeSort
+            | NativeFunctionId::ArrayPrototypeToSorted
+            | NativeFunctionId::TypedArray(
+                TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
+            ) => 16,
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => 4,
             NativeFunctionId::ArrayPrototypeFlatten(_) => 8,
@@ -268,12 +276,18 @@ impl Runtime {
                     | NativeFunctionId::ArrayPrototypeToString
                     | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_))
             ),
-            NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted => {
-                matches!(
-                    candidate,
-                    NativeFunctionId::ArrayPrototypeSort | NativeFunctionId::ArrayPrototypeToSorted
-                )
-            }
+            NativeFunctionId::ArrayPrototypeSort
+            | NativeFunctionId::ArrayPrototypeToSorted
+            | NativeFunctionId::TypedArray(
+                TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted,
+            ) => matches!(
+                candidate,
+                NativeFunctionId::ArrayPrototypeSort
+                    | NativeFunctionId::ArrayPrototypeToSorted
+                    | NativeFunctionId::TypedArray(
+                        TypedArrayNativeKind::Sort | TypedArrayNativeKind::ToSorted
+                    )
+            ),
             NativeFunctionId::ArrayPrototypeSlice(_)
             | NativeFunctionId::ArrayPrototypeToSpliced => {
                 matches!(
@@ -545,6 +559,91 @@ mod tests {
                                 return error.name+":"+error.message
                             }finally{
                                 Number.prototype.toLocaleString=original
+                            }
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+            );
+            assert_eq!(context.eval("6*7").unwrap(), Value::Int(42));
+        });
+    }
+
+    #[test]
+    fn typed_and_array_sort_share_a_catchable_two_mib_stack_budget() {
+        on_two_mib_stack(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=new Uint8Array([2,1]),depth=12;
+                            function compare(left,right){
+                                if(--depth!==0)value.sort(compare);
+                                return left-right
+                            }
+                            value.sort(compare);
+                            return value.join("|")
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("1|2")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=new Uint8Array([2,1]),depth=12;
+                            function compare(left,right){
+                                if(--depth!==0)value.toSorted(compare);
+                                return left-right
+                            }
+                            return value.toSorted(compare).join("|")
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("1|2")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var value=new Uint8Array([2,1]);
+                            function compare(left,right){
+                                value.sort(compare);
+                                return left-right
+                            }
+                            try{
+                                value.sort(compare);
+                                return "missing"
+                            }catch(error){
+                                return error.name+":"+error.message
+                            }
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var typed=new Uint8Array([2,1]);
+                            var array=[2,1];
+                            function typedCompare(left,right){
+                                array.sort(arrayCompare);
+                                return left-right
+                            }
+                            function arrayCompare(left,right){
+                                typed.sort(typedCompare);
+                                return left-right
+                            }
+                            try{
+                                typed.sort(typedCompare);
+                                return "missing"
+                            }catch(error){
+                                return error.name+":"+error.message
                             }
                         })()"#,
                     )
