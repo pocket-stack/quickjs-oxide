@@ -28,16 +28,16 @@ claim full parity.
   kernel, and R3at adds QuickJS-shaped `every`/`some` short-circuit traversal,
   R3au adds QuickJS-shaped `forEach`, and R3av adds QuickJS-shaped
   `reduce`/`reduceRight` accumulation. R3aw adds species-aware `map`/`filter`,
-  and R3ax adds QuickJS-shaped `slice`/`subarray`, without widening the global
-  TypedArray claim. The
-  vector has 51,922 passes and 52,468 runnable variants: 50.89% raw, a 62.14%
-  lower bound after the 18,475 pinned QuickJS target exclusions, or 99.05%
-  among the 52,419 variants with a non-unsupported observed outcome. It records
-  18 parse failures, 420 runtime failures, and 57 harness failures;
+  R3ax adds QuickJS-shaped `slice`/`subarray`, and R3ay adds non-species
+  change-by-copy `with`/`toReversed`, without widening the global TypedArray
+  claim. The vector has 51,924 passes and 52,468 runnable variants: 50.89% raw,
+  a 62.14% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.06% among the 52,419 variants with a non-unsupported observed outcome. It
+  records 18 parse failures, 418 runtime failures, and 57 harness failures;
   current full TSV/JSONL SHA-256 values are
-  `796783147bae745b1cbb21eb2cf211feefcb98e80008f760eed8f18eb84f7641`
+  `73141c5f26f9e3f132b0046c1066a7d5965497c27754e1b4ec89b5649e8ba7a9`
   and
-  `e912ed7dc3f9a9f0141f9c96168fb8bb5e4be4661d6d47030295427a21baf4aa`.
+  `b69db1a2c29dfdb7e0196fc2e452591a1d25316fd9ec449ef24cdbdd7d2f5481`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3570,6 +3570,63 @@ claim full parity.
   and
   `e912ed7dc3f9a9f0141f9c96168fb8bb5e4be4661d6d47030295427a21baf4aa`.
 
+  R3ay publishes `%TypedArray%.prototype.with` and `toReversed` as
+  non-species change-by-copy methods. `with` snapshots the old length, derives
+  a relative index from that snapshot, performs index conversion and then the
+  replacement's number-hint `ToPrimitive` before revalidating the live view. A
+  resizable-buffer shrink checks the index against the current length but
+  retains the old result length: missing numeric tail elements are converted
+  from `undefined`, while a BigInt tail throws. `toReversed` clones the
+  same-class raw element words before reversing word-sized slots, preserving
+  NaN payloads and negative zero. Both methods ignore the source's public
+  constructor and species and allocate with the builtin defining realm's
+  default TypedArray prototype.
+
+  The shared constructor-clone helper now owns the common QuickJS
+  `js_typed_array_constructor_ta` validation, allocation, raw-word copy, and
+  element-conversion path instead of duplicating it in each copying method.
+  Adjacent `at`, `reverse`, and same-class TypedArray-constructor OOB failures
+  also use the canonical pinned QuickJS error text, so the differential
+  contract covers message text as well as exception type and ordering.
+
+  The dependency-clean atomic candidate is 34 paths / 68 variants with no
+  deferred path; Oxide and pinned QuickJS pass every variant. The cumulative
+  gate therefore reaches 1,914 paths / 3,789 variants, and the exclusion ledger
+  falls to 447 paths. Candidate and promoted path/key SHA-256 pairs are both
+  `e212ba0d3d9c819403d3d226f23a735ff2bb9b746618fff779e2654a39f5fddb` /
+  `6d341ea9896a878f9beea36e477e96227642812a1cded595620a6de0f76e7723`;
+  the empty deferred path and key streams both hash to
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+  The scoped profile, cumulative manifest, cumulative variant-key stream,
+  exclusion path stream, and exclusion-ledger file hashes are
+  `07837fd2bdb1cf5f300163c483b611d0862955c7976de5f385faebe1b4dd7ac1`,
+  `1237074662d16674a5ea23f6a2bed26ee3126358f7fb80949846f2329f2ce318`,
+  `c6d46821eae8f1affec571a38c5dfd074aa1774ef36df2a78e47db554e151e02`,
+  `d8842f1aeedb8d42ce551c72c15a433c6d776c44f2abe39e789dfea82b24c348`,
+  and
+  `aaca7878d12694635eb5f65d9ae53f9000aafba5e647eb88365663683fdc07fc`.
+  Canonical scoped TSV/JSONL hashes are
+  `19ab4f7385457ea72e47c7e3b5ba7031d0a0cdffbbd2db8825d1685230b92ce1`
+  and
+  `09d1a226a84e10f39cc5228037eddb5a1af5c2eee64664b45bf9f2407e27dd96`.
+
+  Broad TypedArray admission remains withheld. Two independent canonical full
+  runs are byte-identical and retain all 102,037 keys and every previous pass.
+  Only the sloppy and strict `test/staging/sm/TypedArray/with.js` rows move from
+  `fail-runtime` to pass; there are no other outcome or detail changes.
+  Replacing those two rows with their R3ax records reconstructs the R3ax
+  canonical TSV/JSONL hashes exactly. The vector reaches 51,924 passes and 418
+  runtime failures while runnable remains 52,468; full TSV/JSONL hashes are
+  `73141c5f26f9e3f132b0046c1066a7d5965497c27754e1b4ec89b5649e8ba7a9`
+  and
+  `b69db1a2c29dfdb7e0196fc2e452591a1d25316fd9ec449ef24cdbdd7d2f5481`.
+
+  The next dependency-clean payoff is the 86-path / 172-variant
+  `join` + `toLocaleString` cohort, whose risk is lower than sorting. The
+  following sort/comparator milestone can combine `sort` with `toSorted`; its
+  audit identifies 58 promotable paths / 116 variants and six deferred paths.
+
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
   template/RegExp tokens, UTF-16 escapes, comments, and punctuator longest
@@ -7027,6 +7084,14 @@ copy/view algorithms live in the adjacent 263-line `typed_array/slice.rs`;
 the expanded species/construction seam is 299 lines, and 455 lines of directed
 tests cover descriptor, realm, raw-bit, overlap, RAB, detach, species, and
 constructor-error ordering. No new heap primitive is required.
+R3ay again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+Consolidating the same-class constructor clone and publishing
+`with`/`toReversed` reduces the shared TypedArray owner to 1,863 lines. The
+complete change-by-copy algorithms live in the adjacent 224-line
+`typed_array/copying.rs`; its 391-line directed test module covers old-length
+indexing, coercion order, RAB shrink tails, raw-word reversal, defining-realm
+allocation, and canonical QuickJS errors. No new heap primitive or facade seam
+is required.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

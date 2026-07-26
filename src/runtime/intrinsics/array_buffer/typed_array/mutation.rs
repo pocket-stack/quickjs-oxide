@@ -226,7 +226,7 @@ impl Runtime {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
-                "out of bound",
+                "ArrayBuffer is detached or resized",
             )?));
         }
         if current.length > 1 {

@@ -89,10 +89,10 @@ fn at_and_search_methods_match_typed_numeric_comparison_rules() {
                 Reflect.ownKeys(base).map(function(key){
                     return typeof key==="symbol" ? key.toString() : key;
                 }).join("|")===
-                "length|at|buffer|byteLength|byteOffset|set|values|keys|"+
+                "length|at|with|buffer|byteLength|byteOffset|set|values|keys|"+
                 "entries|copyWithin|every|some|forEach|map|filter|reduce|"+
                 "reduceRight|fill|find|findIndex|findLast|findLastIndex|"+
-                "reverse|slice|subarray|indexOf|lastIndexOf|includes|"+
+                "reverse|toReversed|slice|subarray|indexOf|lastIndexOf|includes|"+
                 "constructor|toString|Symbol(Symbol.iterator)|"+
                 "Symbol(Symbol.toStringTag)");
             for(var name of ["at","indexOf","lastIndexOf","includes"]){
@@ -125,6 +125,10 @@ fn index_coercion_observes_quickjs_resize_and_detach_boundaries() {
             function completion(operation){
                 try{operation();return "return"}
                 catch(error){return error.name}
+            }
+            function errorText(operation){
+                try{operation();return "return"}
+                catch(error){return error.name+":"+error.message}
             }
 
             var log="";
@@ -241,6 +245,9 @@ fn index_coercion_observes_quickjs_resize_and_detach_boundaries() {
                 completion(function(){fixed.includes(0,fromIndex)})
                     ==="TypeError");
             check("initial oob skipped coercion",log==="");
+            check("at initial oob exact text",
+                errorText(function(){fixed.at(0)})===
+                "TypeError:ArrayBuffer is detached");
 
             return failures.length===0 ? "ok" : failures.join(",");
         })()"#,

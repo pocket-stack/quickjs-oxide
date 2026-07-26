@@ -22,7 +22,7 @@ expected_test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 expected_patch=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 expected_config=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 expected_metadata=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-expected_profile=08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc
+expected_profile=07837fd2bdb1cf5f300163c483b611d0862955c7976de5f385faebe1b4dd7ac1
 expected_schema=test262-canonical-classified-v2
 expected_mode=both
 expected_timeout_ms=30000
@@ -128,18 +128,30 @@ expected_slice_subarray_paths=173
 expected_slice_subarray_manifest=a6f25c6d1af227a6f656284a2f3c833e4320caea80e7029fc376eb066e01584e
 expected_slice_subarray_variants=346
 expected_slice_subarray_keys=103222ebda62afb2a76d6b9efc6fefa0c086707509607f58a24b6a73a5f1cb1b
-expected_excluded_paths=481
-expected_exclusions=16ccf5fac0c47daa0626d26e25aa3d49e305e193f80e8148448d9d444addcf27
-expected_exclusions_file=11616f23d68983bb517dff1d4563f060d0ae3955941e66a681d0a9ab4be5b565
-expected_paths=1880
-expected_variants=3721
-expected_quickjs_variants=3721
-expected_features=24
-expected_features_hash=1615b6491b5ce6759bb700f60052458442b3c0e1eaf275e157d094bb4ab411d4
+expected_with_to_reversed_candidate_paths=34
+expected_with_to_reversed_candidate=e212ba0d3d9c819403d3d226f23a735ff2bb9b746618fff779e2654a39f5fddb
+expected_with_to_reversed_candidate_variants=68
+expected_with_to_reversed_candidate_keys=6d341ea9896a878f9beea36e477e96227642812a1cded595620a6de0f76e7723
+expected_with_to_reversed_deferred_paths=0
+expected_with_to_reversed_deferred=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+expected_with_to_reversed_deferred_variants=0
+expected_with_to_reversed_deferred_keys=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+expected_with_to_reversed_paths=34
+expected_with_to_reversed_manifest=e212ba0d3d9c819403d3d226f23a735ff2bb9b746618fff779e2654a39f5fddb
+expected_with_to_reversed_variants=68
+expected_with_to_reversed_keys=6d341ea9896a878f9beea36e477e96227642812a1cded595620a6de0f76e7723
+expected_excluded_paths=447
+expected_exclusions=d8842f1aeedb8d42ce551c72c15a433c6d776c44f2abe39e789dfea82b24c348
+expected_exclusions_file=aaca7878d12694635eb5f65d9ae53f9000aafba5e647eb88365663683fdc07fc
+expected_paths=1914
+expected_variants=3789
+expected_quickjs_variants=3789
+expected_features=25
+expected_features_hash=2770555b35ee25f00548bedc813142821c987ad1e5d7fd696b4dff375eff1b08
 expected_includes=11
 expected_includes_hash=b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012
-expected_manifest=3894d40cf21ca00f0b641b729c7562c65c5cb41d31bb4616b6d1ca8c3871b092
-expected_keys=ba80d9ddfb13f4c8ff20098b267b592a4c0682a806f0b9ce3633f7f61a8c05d4
+expected_manifest=1237074662d16674a5ea23f6a2bed26ee3126358f7fb80949846f2329f2ce318
+expected_keys=c6d46821eae8f1affec571a38c5dfd074aa1774ef36df2a78e47db554e151e02
 expected_test_typed_array_harness=4c0e237804f39a4aa670f72c05b4520730c03c2d2e9f2f41e6b380bd6749ec61
 expected_sm_typed_array_harness=3798d277ac8f105b65ad26602b500b497af7f3361fd14a169c58a601c605bb2e
 expected_sm_math_harness=79dea1172236685567e09da8c9e868e0f84686bf40cff728785223c5b43f5e7b
@@ -150,9 +162,9 @@ usage: scripts/test-test262-typed-array-core.sh [--check]
 
 With --check, rebuild and audit the frozen TypedArray candidate, mutation,
 index/search, callback-find, every/some, forEach, reduce/reduceRight, and
-map/filter and slice/subarray promotions, manifest, and exclusion ledger.
-Verify all 4,669 candidate variants plus the 3,721 admitted variants against
-pinned QuickJS.
+map/filter, slice/subarray, and with/toReversed promotions, manifest, and
+exclusion ledger. Verify all 4,669 candidate variants plus the 3,789 admitted
+variants against pinned QuickJS.
 With no option, also run the checksum-bound quickjs-oxide gate; that mode
 requires a measured all-green baseline file.
 EOF
@@ -816,6 +828,20 @@ slice_subarray_dependency_reason() {
     esac
 }
 
+with_to_reversed_candidate_path() {
+    local test_path=$1
+    case "$test_path" in
+        test/built-ins/TypedArray/prototype/toReversed/*|\
+        test/built-ins/TypedArray/prototype/with/*|\
+        test/staging/sm/TypedArray/toReversed-detached.js|\
+        test/staging/sm/TypedArray/with-detached.js|\
+        test/staging/sm/TypedArray/with.js)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 direct_core_dependency_reason() {
     local test_path=$1 includes_file=$2
     case "$test_path" in
@@ -1076,6 +1102,18 @@ if [[ "$check_only" == false ]]; then
     expect_value slice_subarray_manifest_sha256 "$expected_slice_subarray_manifest"
     expect_value slice_subarray_variants "$expected_slice_subarray_variants"
     expect_value slice_subarray_keys_sha256 "$expected_slice_subarray_keys"
+    expect_value with_to_reversed_candidate_paths "$expected_with_to_reversed_candidate_paths"
+    expect_value with_to_reversed_candidate_sha256 "$expected_with_to_reversed_candidate"
+    expect_value with_to_reversed_candidate_variants "$expected_with_to_reversed_candidate_variants"
+    expect_value with_to_reversed_candidate_keys_sha256 "$expected_with_to_reversed_candidate_keys"
+    expect_value with_to_reversed_deferred_paths "$expected_with_to_reversed_deferred_paths"
+    expect_value with_to_reversed_deferred_sha256 "$expected_with_to_reversed_deferred"
+    expect_value with_to_reversed_deferred_variants "$expected_with_to_reversed_deferred_variants"
+    expect_value with_to_reversed_deferred_keys_sha256 "$expected_with_to_reversed_deferred_keys"
+    expect_value with_to_reversed_paths "$expected_with_to_reversed_paths"
+    expect_value with_to_reversed_manifest_sha256 "$expected_with_to_reversed_manifest"
+    expect_value with_to_reversed_variants "$expected_with_to_reversed_variants"
+    expect_value with_to_reversed_keys_sha256 "$expected_with_to_reversed_keys"
     expect_value excluded_paths "$expected_excluded_paths"
     expect_value exclusions_sha256 "$expected_exclusions"
     expect_value exclusions_file_sha256 "$expected_exclusions_file"
@@ -1190,6 +1228,12 @@ slice_subarray_deferred=$tmp_dir/slice-subarray-deferred.txt
 slice_subarray_deferred_keys=$tmp_dir/slice-subarray-deferred-keys.txt
 slice_subarray_manifest=$tmp_dir/slice-subarray-manifest.txt
 slice_subarray_keys=$tmp_dir/slice-subarray-keys.txt
+with_to_reversed_candidate=$tmp_dir/with-to-reversed-candidate.txt
+with_to_reversed_candidate_keys=$tmp_dir/with-to-reversed-candidate-keys.txt
+with_to_reversed_deferred=$tmp_dir/with-to-reversed-deferred.txt
+with_to_reversed_deferred_keys=$tmp_dir/with-to-reversed-deferred-keys.txt
+with_to_reversed_manifest=$tmp_dir/with-to-reversed-manifest.txt
+with_to_reversed_keys=$tmp_dir/with-to-reversed-keys.txt
 candidate_features=$tmp_dir/candidate-features.txt
 candidate_includes=$tmp_dir/candidate-includes.txt
 candidate_flags=$tmp_dir/candidate-flags.txt
@@ -1263,7 +1307,7 @@ if ! awk -F'\t' '
         counts[$2]++
     }
     END {
-        if (NR != 482 ||
+        if (NR != 448 ||
             counts["dependency:join"] != 2 ||
             counts["external:cross-realm"] != 54 ||
             counts["external:SharedArrayBuffer"] != 71 ||
@@ -1275,7 +1319,7 @@ if ! awk -F'\t' '
             counts["method:iterator-entries-keys"] != 42 ||
             counts["method:mutation-copy-set"] != 0 ||
             counts["method:search-predicate"] != 0 ||
-            counts["method:species-copy-transform"] != 47 ||
+            counts["method:species-copy-transform"] != 13 ||
             counts["method:callback-reduce"] != 0 ||
             counts["method:sort"] != 47 ||
             counts["method:stringification"] != 84 ||
@@ -1333,6 +1377,9 @@ diff -u "$candidate_inventory" "$combined_inventory"
 : >"$slice_subarray_candidate"
 : >"$slice_subarray_deferred"
 : >"$slice_subarray_manifest"
+: >"$with_to_reversed_candidate"
+: >"$with_to_reversed_deferred"
+: >"$with_to_reversed_manifest"
 : >"$candidate_keys"
 while IFS= read -r test_path; do
     if [[ ! -f "$suite/$test_path" ]]; then
@@ -1436,6 +1483,9 @@ while IFS= read -r test_path; do
             fi
         fi
     fi
+    if with_to_reversed_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$with_to_reversed_candidate"
+    fi
     if grep -Fxq cross-realm "$candidate_features" \
         || grep -Fq '$262.createRealm' "$source_file"; then
         reason=external:cross-realm
@@ -1530,6 +1580,11 @@ while IFS= read -r test_path; do
         && slice_subarray_candidate_path "$test_path"; then
         printf '%s\n' "$test_path" >>"$derived_manifest"
         printf '%s\n' "$test_path" >>"$slice_subarray_manifest"
+        continue
+    elif [[ "$reason" == "method:species-copy-transform" ]] \
+        && with_to_reversed_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$derived_manifest"
+        printf '%s\n' "$test_path" >>"$with_to_reversed_manifest"
         continue
     fi
     printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
@@ -1989,6 +2044,70 @@ if [[ "$(wc -l <"$slice_subarray_candidate" | tr -d '[:space:]')" \
     exit 1
 fi
 
+LC_ALL=C sort -o "$with_to_reversed_candidate" "$with_to_reversed_candidate"
+LC_ALL=C sort -o "$with_to_reversed_deferred" "$with_to_reversed_deferred"
+LC_ALL=C sort -o "$with_to_reversed_manifest" "$with_to_reversed_manifest"
+diff -u \
+    "$with_to_reversed_candidate" \
+    <(LC_ALL=C sort -u \
+        "$with_to_reversed_manifest" "$with_to_reversed_deferred")
+if [[ -n "$(LC_ALL=C comm -12 \
+    "$with_to_reversed_manifest" "$with_to_reversed_deferred")" ]]; then
+    echo "error: TypedArray with/toReversed manifest overlaps its deferred ledger" >&2
+    exit 1
+fi
+
+: >"$with_to_reversed_candidate_keys"
+: >"$with_to_reversed_deferred_keys"
+: >"$with_to_reversed_keys"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$with_to_reversed_candidate_keys"
+done <"$with_to_reversed_candidate"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$with_to_reversed_deferred_keys"
+done <"$with_to_reversed_deferred"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$with_to_reversed_keys"
+done <"$with_to_reversed_manifest"
+LC_ALL=C sort -o "$with_to_reversed_candidate_keys" \
+    "$with_to_reversed_candidate_keys"
+LC_ALL=C sort -o "$with_to_reversed_deferred_keys" \
+    "$with_to_reversed_deferred_keys"
+LC_ALL=C sort -o "$with_to_reversed_keys" "$with_to_reversed_keys"
+if [[ "$(wc -l <"$with_to_reversed_candidate" | tr -d '[:space:]')" \
+        != "$expected_with_to_reversed_candidate_paths" \
+    || "$(sha256_file "$with_to_reversed_candidate")" \
+        != "$expected_with_to_reversed_candidate" \
+    || "$(wc -l <"$with_to_reversed_candidate_keys" | tr -d '[:space:]')" \
+        != "$expected_with_to_reversed_candidate_variants" \
+    || "$(sha256_file "$with_to_reversed_candidate_keys")" \
+        != "$expected_with_to_reversed_candidate_keys" \
+    || "$(wc -l <"$with_to_reversed_deferred" | tr -d '[:space:]')" \
+        != "$expected_with_to_reversed_deferred_paths" \
+    || "$(sha256_file "$with_to_reversed_deferred")" \
+        != "$expected_with_to_reversed_deferred" \
+    || "$(wc -l <"$with_to_reversed_deferred_keys" | tr -d '[:space:]')" \
+        != "$expected_with_to_reversed_deferred_variants" \
+    || "$(sha256_file "$with_to_reversed_deferred_keys")" \
+        != "$expected_with_to_reversed_deferred_keys" \
+    || "$(wc -l <"$with_to_reversed_manifest" | tr -d '[:space:]')" \
+        != "$expected_with_to_reversed_paths" \
+    || "$(sha256_file "$with_to_reversed_manifest")" \
+        != "$expected_with_to_reversed_manifest" \
+    || "$(wc -l <"$with_to_reversed_keys" | tr -d '[:space:]')" \
+        != "$expected_with_to_reversed_variants" \
+    || "$(sha256_file "$with_to_reversed_keys")" \
+        != "$expected_with_to_reversed_keys" ]]; then
+    echo "error: TypedArray with/toReversed promotion inventory drifted" >&2
+    exit 1
+fi
+
 while IFS= read -r test_path; do
     metadata_list "$test_path" features >"$candidate_features"
     metadata_list "$test_path" includes >"$candidate_includes"
@@ -2062,7 +2181,7 @@ verify_quickjs_oracle \
     "$oracle_log"
 
 if [[ "$check_only" == true ]]; then
-    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, %s reduce/reduceRight paths/%s variants, %s map/filter paths/%s variants, and %s slice/subarray paths/%s variants; %s every/some, %s forEach, %s reduce/reduceRight, %s map/filter, and %s slice/subarray staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
+    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, %s reduce/reduceRight paths/%s variants, %s map/filter paths/%s variants, %s slice/subarray paths/%s variants, and %s with/toReversed paths/%s variants; %s every/some, %s forEach, %s reduce/reduceRight, %s map/filter, %s slice/subarray, and %s with/toReversed staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
         "$expected_candidate_paths" \
         "$expected_candidate_variants" \
         "$expected_paths" \
@@ -2079,11 +2198,14 @@ if [[ "$check_only" == true ]]; then
         "$expected_map_filter_variants" \
         "$expected_slice_subarray_paths" \
         "$expected_slice_subarray_variants" \
+        "$expected_with_to_reversed_paths" \
+        "$expected_with_to_reversed_variants" \
         "$expected_every_some_deferred_paths" \
         "$expected_for_each_deferred_paths" \
         "$expected_reduce_deferred_paths" \
         "$expected_map_filter_deferred_paths" \
         "$expected_slice_subarray_deferred_paths" \
+        "$expected_with_to_reversed_deferred_paths" \
         "$expected_excluded_paths"
     exit 0
 fi

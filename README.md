@@ -6,9 +6,10 @@ the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 The `unsafe`-free engine is runnable but incomplete. The current TypedArray
 stack includes the shared 12-class kernel, in-place mutation, indexed search,
 QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
-`every`/`some`, `forEach`, `reduce`/`reduceRight`, and species-aware
-`map`/`filter`, `slice`, and `subarray`. Its scoped gate reaches 3,721/3,721
-in both engines; the complete conservative vector is 51,922/102,037.
+`every`/`some`, `forEach`, `reduce`/`reduceRight`, species-aware
+`map`/`filter` and `slice`/`subarray`, plus non-species `with` and
+`toReversed`. Its scoped gate reaches 3,789/3,789 in both engines; the complete
+conservative vector is 51,924/102,037.
 Remaining TypedArray methods, modules, SharedArrayBuffer/Atomics, and broad
 built-in coverage remain incomplete. Pinned QuickJS is the test oracle, never
 a product dependency; detailed bookkeeping lives in the status documents.

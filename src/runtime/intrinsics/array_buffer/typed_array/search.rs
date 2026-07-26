@@ -27,10 +27,15 @@ impl Runtime {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let initial_length = match self.typed_array_validated_length(realm, &target)? {
-            NativeConversion::Value(value) => i64::from(value),
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
+        let initial_state = self.typed_array_state(&target)?;
+        if initial_state.out_of_bounds {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "ArrayBuffer is detached",
+            )?));
+        }
+        let initial_length = i64::from(initial_state.length);
         let index = match self.native_to_int64_sat(
             realm,
             arguments.readable.first().ok_or(RuntimeError::Invariant(

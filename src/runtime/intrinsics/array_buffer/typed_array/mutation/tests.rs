@@ -27,7 +27,6 @@ fn copy_within_fill_and_reverse_mutate_live_words_in_place() {
                 try{operation();return "return"}
                 catch(error){return error.name}
             }
-
             var bytes=new Uint8Array([0,1,2,3,4]);
             check("copyWithin returns receiver",
                 bytes.copyWithin(1,0,4)===bytes);
@@ -114,6 +113,10 @@ fn mutation_coercion_revalidates_detach_and_resizable_bounds_like_quickjs() {
             function completion(operation){
                 try{operation();return "return"}
                 catch(error){return error.name}
+            }
+            function errorText(operation){
+                try{operation();return "return"}
+                catch(error){return error.name+":"+error.message}
             }
             function values(array){
                 return Array.prototype.join.call(array,",");
@@ -208,6 +211,9 @@ fn mutation_coercion_revalidates_detach_and_resizable_bounds_like_quickjs() {
             buffer.resize(2);
             check("reverse rejects oob fixed view",
                 completion(function(){fixed.reverse()})==="TypeError");
+            check("reverse oob exact text",
+                errorText(function(){fixed.reverse()})===
+                "TypeError:ArrayBuffer is detached or resized");
             var tracking=new Uint8Array(buffer);
             tracking.set([1,2]);
             tracking.reverse();

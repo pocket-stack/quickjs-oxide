@@ -14,6 +14,7 @@ use crate::heap::{
 
 use super::*;
 
+mod copying;
 mod find;
 mod iteration;
 mod mutation;
@@ -80,6 +81,14 @@ impl Runtime {
             "at",
             1,
             1,
+        )?;
+        self.define_native_builtin_auto_init(
+            &base_prototype,
+            realm,
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::With),
+            "with",
+            2,
+            2,
         )?;
         for (kind, name) in [
             (TypedArrayNativeKind::Buffer, "buffer"),
@@ -182,6 +191,14 @@ impl Runtime {
             realm,
             NativeFunctionId::TypedArray(TypedArrayNativeKind::Reverse),
             "reverse",
+            0,
+            0,
+        )?;
+        self.define_native_builtin_auto_init(
+            &base_prototype,
+            realm,
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::ToReversed),
+            "toReversed",
             0,
             0,
         )?;
@@ -447,6 +464,10 @@ impl Runtime {
             TypedArrayNativeKind::Fill => self.call_typed_array_fill(realm, invocation, arguments),
             TypedArrayNativeKind::Reverse => self.call_typed_array_reverse(realm, invocation),
             TypedArrayNativeKind::At => self.call_typed_array_at(realm, invocation, arguments),
+            TypedArrayNativeKind::With => self.call_typed_array_with(realm, invocation, arguments),
+            TypedArrayNativeKind::ToReversed => {
+                self.call_typed_array_to_reversed(realm, invocation)
+            }
             TypedArrayNativeKind::Search(kind) => {
                 self.call_typed_array_search(realm, kind, invocation, arguments)
             }
@@ -459,9 +480,7 @@ impl Runtime {
             TypedArrayNativeKind::Subarray => {
                 self.call_typed_array_subarray(realm, invocation, arguments)
             }
-            TypedArrayNativeKind::With
-            | TypedArrayNativeKind::ToReversed
-            | TypedArrayNativeKind::Sort
+            TypedArrayNativeKind::Sort
             | TypedArrayNativeKind::ToSorted
             | TypedArrayNativeKind::Join(_) => Err(RuntimeError::Invariant(
                 "unpublished TypedArray native reached dispatch",
@@ -615,68 +634,17 @@ impl Runtime {
                 NativeConversion::Value(value) => value,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-        let current = self.typed_array_state_from_snapshot(source_snapshot)?;
-        if current.out_of_bounds {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "out of bound",
-            )?));
-        }
-        let target = match self.new_typed_array_for_length(
+        match self.typed_array_copy_into_new(
             realm,
             &prototype,
             element,
+            source,
+            source_snapshot,
             u64::from(source_count),
         )? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let current = self.typed_array_state(source)?;
-        if current.out_of_bounds {
-            return Ok(Completion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "out of bound",
-            )?));
+            NativeConversion::Value(target) => Ok(Completion::Return(Value::Object(target))),
+            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
         }
-
-        if source_snapshot.element == element && current.length >= source_count {
-            // Same-class construction copies raw bytes, preserving NaN payloads
-            // and negative zero. QuickJS only takes this path when the complete
-            // snapshotted source range still exists after prototype lookup.
-            if source_count != 0 {
-                let target_snapshot = self.typed_array_snapshot(&target)?;
-                let byte_count =
-                    usize::try_from(u64::from(source_count) * u64::from(element.byte_length()))
-                        .map_err(|_| {
-                            RuntimeError::Invariant("TypedArray raw copy length overflowed")
-                        })?;
-                self.0.state.borrow_mut().heap.copy_array_buffer_range(
-                    source_snapshot.buffer,
-                    target_snapshot.buffer,
-                    usize::try_from(source_snapshot.byte_offset).map_err(|_| {
-                        RuntimeError::Invariant("TypedArray source byteOffset overflowed usize")
-                    })?,
-                    byte_count,
-                )?;
-            }
-        } else {
-            // A tracking source may shrink without becoming out of bounds while
-            // GetPrototypeFromConstructor runs. The missing tail is then read
-            // as undefined and converted element-by-element, just as it is for
-            // a different element kind.
-            for index in 0..u64::from(source_count) {
-                let value = self
-                    .typed_array_read_index(source, index)?
-                    .unwrap_or(Value::Undefined);
-                match self.typed_array_set_index(realm, &target, index, &value)? {
-                    NativeConversion::Value(()) => {}
-                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-                }
-            }
-        }
-        Ok(Completion::Return(Value::Object(target)))
     }
 
     fn construct_typed_array_from_object(
