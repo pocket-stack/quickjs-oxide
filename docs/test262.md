@@ -40,9 +40,9 @@ The pure ArrayBuffer core is measured by the checksum-bound R3an gate, its
 DataView layer by R3ao, and the shared 12-class TypedArray kernel by R3ap.
 R3aq promotes the TypedArray mutation cohort, and R3ar promotes the indexed
 `at`/search cohort. R3as promotes the callback-driven
-`find`/`findIndex`/`findLast`/`findLastIndex` cohort. Later callback-reduce,
-copying, stringification, sorting, SharedArrayBuffer, and wider interop
-surfaces remain explicit frontiers.
+`find`/`findIndex`/`findLast`/`findLastIndex` cohort, and R3at promotes
+`every`/`some`. Later callback-reduce, copying, stringification, sorting,
+SharedArrayBuffer, and wider interop surfaces remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -5230,6 +5230,71 @@ regression, and unchanged full TSV/JSONL hashes
 and
 `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
 
+## R3at TypedArray every/some promotion
+
+R3at publishes `%TypedArray%.prototype.every` and `some` through a
+TypedArray-specific forward callback kernel corresponding to pinned
+QuickJS's `js_array_every` TypedArray branch. Receiver branding and initial
+detached/out-of-bounds validation happen before callback-callability
+checking; the shared initial OOB diagnostic is now calibrated to QuickJS's
+`ArrayBuffer is detached or resized` message. The internal length is
+snapshotted once, but each original-range integer index is read live without
+`HasProperty` or numeric prototype lookup. Mid-callback shrink or detach
+therefore passes `undefined` for disappeared slots, growth cannot extend the
+range, and later writes or a fixed view that regrows are observed. Callback
+arguments, `thisArg`, abrupt completion, and `every`'s falsy versus `some`'s
+truthy short-circuit behavior follow the pinned implementation.
+
+The exact atomic candidate is 93 paths / 185 variants. The single
+`test/staging/sm/TypedArray/every-and-some.js` path is deferred as
+`external:cross-realm`; `sm/non262-TypedArray-shell.js` also carries a hard
+WeakMap dependency. That leaves one path / one variant explicitly deferred
+and promotes 92 paths / 184 variants. The cumulative scoped gate expands to
+1,385 paths / 2,731 variants, the exclusion ledger falls to 976 paths, and
+Oxide and pinned QuickJS both pass 2,731/2,731. Pinned QuickJS also passes all
+4,669 variants across the unchanged 2,361-path expanded candidate.
+
+The candidate path-stream and variant-key SHA-256 values are:
+
+- path:
+  `dbbd4a7e6f601888070c0f56de9771942e4d2354d75a29ab70439df3517d61cd`;
+- keys:
+  `213e8b79b6447d17e562139b268ab87d7394ee6edebc755f4c4bbb31b9fe3ec4`.
+
+The deferred path/key hashes are:
+
+- path:
+  `6189caae9a943a1fa5d65308b4bba02c25bba4af5d9e7e791da8820bd851b99f`;
+- keys:
+  `2b728d9962391b75d27de09d05010642a9919f826719497c55e40e3f03a3e2f2`.
+
+The promoted path/key hashes are:
+
+- path:
+  `8ad580d2a9cb33a091e714f7f309fd6c814503bfcb251ccdfd3bbbf5f87bae88`;
+- keys:
+  `9144eaf7e8b0c6664fd082d639aa35c176ee34d3d1947452fad6523dabe22604`.
+
+The scoped profile, cumulative manifest, exclusion-ledger file, and
+cumulative variant-key SHA-256 values are:
+
+- `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`;
+- `e96748da96cf70a08e0e678e46db24de4bf724d4d9b1bdd2012bc733596fb117`;
+- `14dbdcf4d3eda7f9f0c26dade127cfca2a7cea415c732770216bd7acb6d13939`;
+- `17b39adb34d9ed0502713acea7e1e75228043d7462de366ffd67747f8677ddff`.
+
+The canonical scoped TSV/JSONL SHA-256 values are
+`830cd524c30d68581aa7a22052f7d25ff8580c3cecf66723a9ebf031ebc36be2`
+and
+`f328ef2fcb4462ca5468cecaf1e5cfc3e170e347b483d360cf849f3073d35ea1`.
+
+Broad TypedArray admission remains withheld, so the complete vector is
+byte-identical to R3as at 51,908/102,037. A fresh canonical two-worker run
+confirms that its full TSV/JSONL hashes remain
+`3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+and
+`f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5689,6 +5754,12 @@ R3as publishes TypedArray `find`, `findIndex`, `findLast`, and
 Oxide and pinned QuickJS both pass it completely. The full vector stays
 byte-identical at 51,908/102,037 because broad TypedArray admission remains
 withheld.
+R3at publishes TypedArray `every` and `some`. One cross-realm staging path
+with a hard WeakMap harness dependency remains deferred; the other 92 paths /
+184 variants join the cumulative 1,385-path / 2,731-variant gate, which Oxide
+and pinned QuickJS both pass completely. Broad TypedArray admission remains
+withheld, so a fresh complete run confirms that the full vector stays
+byte-identical at 51,908/102,037.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

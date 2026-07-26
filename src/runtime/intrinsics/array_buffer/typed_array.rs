@@ -7,14 +7,15 @@
 
 use crate::atom::PropertyKeyKind;
 use crate::heap::{
-    ArrayBufferViewData, ArrayFindKind, ArrayIteratorKind, ArraySearchKind, ObjectData,
-    ObjectPayload, TypedArrayData, TypedArrayElementKind, TypedArrayNativeKind,
+    ArrayBufferViewData, ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArraySearchKind,
+    ObjectData, ObjectPayload, TypedArrayData, TypedArrayElementKind, TypedArrayNativeKind,
     TypedArrayRealmData,
 };
 
 use super::*;
 
 mod find;
+mod iteration;
 mod mutation;
 mod search;
 #[cfg(test)]
@@ -113,19 +114,35 @@ impl Runtime {
                 0,
             )?;
         }
-        for (kind, name, length, min_readable_args) in [
-            (TypedArrayNativeKind::CopyWithin, "copyWithin", 2, 2),
-            (TypedArrayNativeKind::Fill, "fill", 1, 1),
+        self.define_native_builtin_auto_init(
+            &base_prototype,
+            realm,
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::CopyWithin),
+            "copyWithin",
+            2,
+            2,
+        )?;
+        for (kind, name) in [
+            (ArrayIterationKind::Every, "every"),
+            (ArrayIterationKind::Some, "some"),
         ] {
             self.define_native_builtin_auto_init(
                 &base_prototype,
                 realm,
-                NativeFunctionId::TypedArray(kind),
+                NativeFunctionId::TypedArray(TypedArrayNativeKind::Iteration(kind)),
                 name,
-                length,
-                min_readable_args,
+                1,
+                1,
             )?;
         }
+        self.define_native_builtin_auto_init(
+            &base_prototype,
+            realm,
+            NativeFunctionId::TypedArray(TypedArrayNativeKind::Fill),
+            "fill",
+            1,
+            1,
+        )?;
         for (kind, name) in [
             (ArrayFindKind::Find, "find"),
             (ArrayFindKind::FindIndex, "findIndex"),
@@ -389,6 +406,9 @@ impl Runtime {
             TypedArrayNativeKind::CopyWithin => {
                 self.call_typed_array_copy_within(realm, invocation, arguments)
             }
+            TypedArrayNativeKind::Iteration(kind) => {
+                self.call_typed_array_iteration(realm, kind, invocation, arguments)
+            }
             TypedArrayNativeKind::Fill => self.call_typed_array_fill(realm, invocation, arguments),
             TypedArrayNativeKind::Reverse => self.call_typed_array_reverse(realm, invocation),
             TypedArrayNativeKind::At => self.call_typed_array_at(realm, invocation, arguments),
@@ -399,7 +419,6 @@ impl Runtime {
                 self.call_typed_array_find(realm, kind, invocation, arguments)
             }
             TypedArrayNativeKind::With
-            | TypedArrayNativeKind::Iteration(_)
             | TypedArrayNativeKind::Reduce(_)
             | TypedArrayNativeKind::ToReversed
             | TypedArrayNativeKind::Slice
@@ -1596,7 +1615,7 @@ impl Runtime {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
-                "out of bound",
+                "ArrayBuffer is detached or resized",
             )?));
         }
         Ok(NativeConversion::Value(state.length))

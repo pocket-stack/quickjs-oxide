@@ -1,0 +1,96 @@
+//! Predicate-based `%TypedArray%.prototype` iteration algorithms.
+//!
+//! Pinned QuickJS validates and snapshots the branded view before checking the
+//! callback. `every` and `some` then visit that original range without a
+//! `HasProperty` check while keeping each element read live.
+
+use super::*;
+
+#[cfg(test)]
+mod tests;
+
+impl Runtime {
+    pub(super) fn call_typed_array_iteration(
+        &self,
+        realm: ContextId,
+        kind: ArrayIterationKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        if !matches!(kind, ArrayIterationKind::Every | ArrayIterationKind::Some) {
+            return Err(RuntimeError::Invariant(
+                "unpublished TypedArray iteration native reached dispatch",
+            ));
+        }
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "TypedArray.prototype iteration received a constructor invocation",
+            ));
+        };
+        let target = match self.require_typed_array(realm, this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let length = match self.typed_array_validated_length(realm, &target)? {
+            NativeConversion::Value(value) => u64::from(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let callback = self.callable_from_value(
+            arguments
+                .readable
+                .first()
+                .ok_or(RuntimeError::Invariant(
+                    "TypedArray iteration callback argv was not padded",
+                ))?
+                .clone(),
+        )?;
+        let this_arg = if arguments.actual_arg_count > 1 {
+            arguments
+                .readable
+                .get(1)
+                .ok_or(RuntimeError::Invariant(
+                    "TypedArray iteration thisArg was missing",
+                ))?
+                .clone()
+        } else {
+            Value::Undefined
+        };
+        let receiver = Value::Object(target.clone());
+
+        for index in 0..length {
+            let value = self
+                .typed_array_read_index(&target, index)?
+                .unwrap_or(Value::Undefined);
+            let matches = match self.call_internal(
+                realm,
+                &callback,
+                this_arg.clone(),
+                &[value, Value::number(index as f64), receiver.clone()],
+            )? {
+                Completion::Return(value) => value.to_boolean(),
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            match kind {
+                ArrayIterationKind::Every if !matches => {
+                    return Ok(Completion::Return(Value::Bool(false)));
+                }
+                ArrayIterationKind::Some if matches => {
+                    return Ok(Completion::Return(Value::Bool(true)));
+                }
+                ArrayIterationKind::Every | ArrayIterationKind::Some => {}
+                ArrayIterationKind::ForEach
+                | ArrayIterationKind::Map
+                | ArrayIterationKind::Filter => {
+                    return Err(RuntimeError::Invariant(
+                        "unpublished TypedArray iteration kind escaped validation",
+                    ));
+                }
+            }
+        }
+
+        Ok(Completion::Return(Value::Bool(matches!(
+            kind,
+            ArrayIterationKind::Every
+        ))))
+    }
+}

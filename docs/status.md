@@ -25,7 +25,8 @@ claim full parity.
   dedicated indexed lookup/search kernel and promotes `at`, `includes`,
   `indexOf`, and `lastIndexOf` under the same conservative boundary. R3as adds
   the callback-driven `find`, `findIndex`, `findLast`, and `findLastIndex`
-  kernel without widening the global TypedArray claim. The
+  kernel, and R3at adds QuickJS-shaped `every`/`some` short-circuit traversal,
+  without widening the global TypedArray claim. The
   vector has 51,908 passes and 52,468 runnable variants: 50.87% raw, a 62.12%
   lower bound after the 18,475 pinned QuickJS target exclusions, or 99.03%
   among the 52,419 variants with a non-unsupported observed outcome. It records
@@ -3287,6 +3288,60 @@ claim full parity.
   deferred staging paths remain harness failures. The complete 102,037-key
   vector is therefore byte-identical to R3ar at 51,908 passes, with zero
   previous-pass regression. Its TSV/JSONL hashes remain
+  `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+  and
+  `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+
+  R3at publishes `%TypedArray%.prototype.every` and `some` through a
+  TypedArray-specific forward callback kernel corresponding to pinned
+  QuickJS's `js_array_every` TypedArray branch. Receiver branding and initial
+  detached/out-of-bounds validation precede callback-callability checking,
+  and the shared initial OOB diagnostic is calibrated to QuickJS's
+  `ArrayBuffer is detached or resized` message. The kernel snapshots the
+  internal length once, bypasses `HasProperty` and numeric prototype getters,
+  and reads each indexed value live. Shrink or detach therefore supplies
+  `undefined` across the remaining original range, growth does not extend the
+  range, and callback writes or a fixed view that regrows are observed by
+  later iterations. Both methods preserve `(value, index, receiver)`,
+  `thisArg`, abrupt completion, and their inverse Boolean short-circuit rules.
+
+  The independently audited atomic candidate contains 93 paths / 185
+  variants. The single
+  `test/staging/sm/TypedArray/every-and-some.js` path is deferred as
+  `external:cross-realm`; its harness also has a hard WeakMap dependency, so
+  that one path / one variant remains explicit. The other 92 paths / 184
+  variants join the cumulative 1,385-path / 2,731-variant gate. Oxide and
+  pinned QuickJS both pass 2,731/2,731, pinned QuickJS passes all 4,669
+  variants in the unchanged 2,361-path expanded candidate, and the exclusion
+  ledger falls to 976 paths.
+
+  The candidate path and variant-key SHA-256 values are
+  `dbbd4a7e6f601888070c0f56de9771942e4d2354d75a29ab70439df3517d61cd`
+  and
+  `213e8b79b6447d17e562139b268ab87d7394ee6edebc755f4c4bbb31b9fe3ec4`.
+  The deferred path/key hashes are
+  `6189caae9a943a1fa5d65308b4bba02c25bba4af5d9e7e791da8820bd851b99f`
+  and
+  `2b728d9962391b75d27de09d05010642a9919f826719497c55e40e3f03a3e2f2`;
+  the promoted path/key hashes are
+  `8ad580d2a9cb33a091e714f7f309fd6c814503bfcb251ccdfd3bbbf5f87bae88`
+  and
+  `9144eaf7e8b0c6664fd082d639aa35c176ee34d3d1947452fad6523dabe22604`.
+  The scoped profile, cumulative manifest, exclusion-ledger file, and
+  cumulative key-stream hashes are
+  `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`,
+  `e96748da96cf70a08e0e678e46db24de4bf724d4d9b1bdd2012bc733596fb117`,
+  `14dbdcf4d3eda7f9f0c26dade127cfca2a7cea415c732770216bd7acb6d13939`,
+  and
+  `17b39adb34d9ed0502713acea7e1e75228043d7462de366ffd67747f8677ddff`.
+  Its canonical scoped TSV/JSONL hashes are
+  `830cd524c30d68581aa7a22052f7d25ff8580c3cecf66723a9ebf031ebc36be2`
+  and
+  `f328ef2fcb4462ca5468cecaf1e5cfc3e170e347b483d360cf849f3073d35ea1`.
+
+  Broad TypedArray admission remains withheld, so the complete 102,037-key
+  vector is byte-identical to R3as at 51,908 passes. A fresh canonical
+  two-worker run confirms the same full TSV/JSONL hashes
   `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
   and
   `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
@@ -6714,6 +6769,13 @@ after publishing and dispatching the four methods; their complete observable
 algorithm lives in the adjacent 92-line `typed_array/find.rs`, with a
 308-line directed test module. Callback mutation, resizable-buffer and detach
 semantics stay isolated from both the facade and generic Array traversal.
+R3at again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+The shared TypedArray owner reaches 1,959 lines after publishing and
+dispatching `every`/`some`; their complete algorithm stays in the adjacent
+96-line `typed_array/iteration.rs`, with a 323-line directed test module.
+Predicate short-circuit, error ordering, live RAB/detach reads, and numeric
+prototype suppression therefore remain outside both monoliths and generic
+Array traversal.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.
