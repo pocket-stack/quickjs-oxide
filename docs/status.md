@@ -27,16 +27,16 @@ claim full parity.
   the callback-driven `find`, `findIndex`, `findLast`, and `findLastIndex`
   kernel, and R3at adds QuickJS-shaped `every`/`some` short-circuit traversal,
   R3au adds QuickJS-shaped `forEach`, and R3av adds QuickJS-shaped
-  `reduce`/`reduceRight` accumulation, without widening the global TypedArray
-  claim. The
-  vector has 51,908 passes and 52,468 runnable variants: 50.87% raw, a 62.12%
+  `reduce`/`reduceRight` accumulation. R3aw adds species-aware `map`/`filter`,
+  without widening the global TypedArray claim. The
+  vector has 51,912 passes and 52,468 runnable variants: 50.88% raw, a 62.12%
   lower bound after the 18,475 pinned QuickJS target exclusions, or 99.03%
   among the 52,419 variants with a non-unsupported observed outcome. It records
-  18 parse failures, 434 runtime failures, and 57 harness failures;
+  18 parse failures, 430 runtime failures, and 57 harness failures;
   current full TSV/JSONL SHA-256 values are
-  `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+  `432394a9db53afd584a532b969382af167f0b17e42f77c8effd930a50389dfeb`
   and
-  `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+  `d4a7540e05ba0cbcea9b7d94a8c2a6c7c7dea51613b7dcafd90c71e0983ba356`.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3459,6 +3459,61 @@ claim full parity.
   `3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
   and
   `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+
+  R3aw publishes `%TypedArray%.prototype.map` and `filter` through the
+  existing callback dispatch and a new isolated species-construction seam.
+  Both methods validate and snapshot the source range before traversal, then
+  keep per-index reads live without generic property lookup. `map` constructs
+  its species target before callbacks and converts/writes every callback
+  result immediately. `filter` creates a hidden ordinary Array in the method
+  realm before callbacks, defers constructor/`@@species` access until they
+  finish, and invokes the result's observable public `.set` even for an empty
+  selection. Cross-content custom species therefore follow pinned QuickJS's
+  write-time conversion behavior rather than an up-front type-family check.
+
+  The independently audited atomic candidate contains 175 paths / 349
+  variants, all passing in pinned QuickJS. The single raw
+  `test/staging/sm/TypedArray/map-and-filter.js` path remains deferred as
+  `external:cross-realm`; its SpiderMonkey shell also requires WeakMap. The
+  other 174 paths / 348 variants join the cumulative 1,707-path /
+  3,375-variant gate. Oxide and pinned QuickJS both pass 3,375/3,375, and the
+  exclusion ledger falls to 654 paths.
+
+  The candidate path/key hashes are
+  `2a4d0d92c7a4b3aec6e559770bd3baa5780b2c3780f408333526619dfbfef9fc`
+  and
+  `9e51d82281ea14f0568b2116054927aca5187708584e68b8cf551426f7529743`.
+  The deferred path/key hashes are
+  `198ede24f4c8a6e1dbb4135a14906c9f8a513178a42f23545711651eeaf26e31`
+  and
+  `c7140d02e8e9d00feedd33ff35c98afa0a1bf365db3dd6ede640f1a8b34c6bd3`;
+  the promoted path/key hashes are
+  `57a0d825fa96ae56a44dd64be290d6368838d90fcd5cdd739c9735573b8d2a02`
+  and
+  `b92f4b302934a05ca68f39bde019ef71f2353a664f3e304f2092ccf1eb8cf78b`.
+
+  The scoped profile remains unchanged. Its hash, followed by the current
+  cumulative manifest, cumulative variant-key stream, exclusion path stream,
+  and exclusion-ledger file hashes, is
+  `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`,
+  `e6a3af181bf643b70558661802544681ac92356f06c4c27c9b1504b31379b42f`,
+  `6bf48fc08165d42f32ff8ed7cf08ad94249b23daaf111cc3700df248c667b075`,
+  `b2406a45aab98366342205bf4fb5149091b802500dc09b5a6afb8a1ef784c774`,
+  and
+  `1c3d6f79c99f423c77c11256d65993143b4fced944f700f64b16975ffb730298`.
+  Its canonical scoped TSV/JSONL hashes are
+  `05080ac47b8b5be9cc0d8ab70ed7f2233c843c54e42bac54ea8eb7f92a7d206c`
+  and
+  `439fdf6994613b1f945e7bbd5a02ccd9326dd474c28fa54db45e82d5e208322d`.
+
+  Broad TypedArray admission remains withheld. The exact full join retains all
+  102,037 keys and every previous pass: only the sloppy/strict
+  `filter-species.js` and `map-species.js` rows move from `fail-runtime` to
+  pass, with zero other outcome or detail drift. The complete vector reaches
+  51,912 passes and 430 runtime failures; full TSV/JSONL hashes are
+  `432394a9db53afd584a532b969382af167f0b17e42f77c8effd930a50389dfeb`
+  and
+  `d4a7540e05ba0cbcea9b7d94a8c2a6c7c7dea51613b7dcafd90c71e0983ba356`.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -6902,6 +6957,13 @@ owner to 1,976 lines; the complete accumulator algorithm lives in the adjacent
 94-line `typed_array/reduce.rs`, with a 470-line directed test module.
 Direction, accumulator identity, live RAB/detach reads, and cross-realm
 behavior therefore remain outside both monoliths and generic Array traversal.
+R3aw again leaves `runtime.rs` at 9,950 lines and `heap.rs` at 23,026 lines.
+Publishing `map`/`filter` brings the shared TypedArray owner to 1,979 lines.
+Their callback flow stays in the adjacent 172-line
+`typed_array/iteration.rs`; the 79-line `typed_array/species.rs` owns species
+construction and the observable filter `.set` handoff. The transform-specific
+adversarial tests live in a separate 626-line module. This keeps construction,
+realm, conversion, RAB, and detach rules out of both monoliths.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

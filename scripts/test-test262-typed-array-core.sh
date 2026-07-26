@@ -104,18 +104,30 @@ expected_reduce_paths=104
 expected_reduce_manifest=79f2ce5172ba5afc48a87a3417ce99010762ba9de2cc3c49dd4db7696d6ba7b6
 expected_reduce_variants=208
 expected_reduce_keys=79522bed3692d0c21ac44370796b6c37861dca2fab511d38d8872605e78d9fff
-expected_excluded_paths=828
-expected_exclusions=b5f0caf421df10d9958b1d6de4e8d10462a6e89d51b3492a707c0f5a5a83a2a0
-expected_exclusions_file=4c6158d8cdb8fbde441e30f9820403912cbbb6f7b57f2af27b5f6c99bfaecca2
-expected_paths=1533
-expected_variants=3027
-expected_quickjs_variants=3027
+expected_map_filter_candidate_paths=175
+expected_map_filter_candidate=2a4d0d92c7a4b3aec6e559770bd3baa5780b2c3780f408333526619dfbfef9fc
+expected_map_filter_candidate_variants=349
+expected_map_filter_candidate_keys=9e51d82281ea14f0568b2116054927aca5187708584e68b8cf551426f7529743
+expected_map_filter_deferred_paths=1
+expected_map_filter_deferred=198ede24f4c8a6e1dbb4135a14906c9f8a513178a42f23545711651eeaf26e31
+expected_map_filter_deferred_variants=1
+expected_map_filter_deferred_keys=c7140d02e8e9d00feedd33ff35c98afa0a1bf365db3dd6ede640f1a8b34c6bd3
+expected_map_filter_paths=174
+expected_map_filter_manifest=57a0d825fa96ae56a44dd64be290d6368838d90fcd5cdd739c9735573b8d2a02
+expected_map_filter_variants=348
+expected_map_filter_keys=b92f4b302934a05ca68f39bde019ef71f2353a664f3e304f2092ccf1eb8cf78b
+expected_excluded_paths=654
+expected_exclusions=b2406a45aab98366342205bf4fb5149091b802500dc09b5a6afb8a1ef784c774
+expected_exclusions_file=1c3d6f79c99f423c77c11256d65993143b4fced944f700f64b16975ffb730298
+expected_paths=1707
+expected_variants=3375
+expected_quickjs_variants=3375
 expected_features=24
 expected_features_hash=1615b6491b5ce6759bb700f60052458442b3c0e1eaf275e157d094bb4ab411d4
 expected_includes=11
 expected_includes_hash=b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012
-expected_manifest=b12b213d5b0d279bf3fdb328cba831a404fd0f4bc2bc105b1da6aa077c5508c7
-expected_keys=06eceaa517e89f94217d85698d1618f1f297f9e8789f8bc42d7034753dff1e95
+expected_manifest=e6a3af181bf643b70558661802544681ac92356f06c4c27c9b1504b31379b42f
+expected_keys=6bf48fc08165d42f32ff8ed7cf08ad94249b23daaf111cc3700df248c667b075
 expected_test_typed_array_harness=4c0e237804f39a4aa670f72c05b4520730c03c2d2e9f2f41e6b380bd6749ec61
 expected_sm_typed_array_harness=3798d277ac8f105b65ad26602b500b497af7f3361fd14a169c58a601c605bb2e
 expected_sm_math_harness=79dea1172236685567e09da8c9e868e0f84686bf40cff728785223c5b43f5e7b
@@ -125,11 +137,11 @@ usage() {
 usage: scripts/test-test262-typed-array-core.sh [--check]
 
 With --check, rebuild and audit the frozen TypedArray candidate, mutation,
-index/search, callback-find, every/some, forEach, and reduce/reduceRight
-promotions, manifest, and exclusion ledger. Verify all 4,669 candidate variants
-plus the 3,027 admitted variants against pinned QuickJS. With no option, also
-run the checksum-bound quickjs-oxide gate; that mode requires a measured
-all-green baseline file.
+index/search, callback-find, every/some, forEach, reduce/reduceRight, and
+map/filter promotions, manifest, and exclusion ledger. Verify all 4,669
+candidate variants plus the 3,375 admitted variants against pinned QuickJS.
+With no option, also run the checksum-bound quickjs-oxide gate; that mode
+requires a measured all-green baseline file.
 EOF
 }
 
@@ -696,6 +708,41 @@ reduce_dependency_reason() {
     esac
 }
 
+map_filter_candidate_path() {
+    local test_path=$1
+    case "$test_path" in
+        test/built-ins/TypedArray/prototype/filter/*|\
+        test/built-ins/TypedArray/prototype/map/*|\
+        test/built-ins/TypedArrayConstructors/prototype/filter/*|\
+        test/built-ins/TypedArrayConstructors/prototype/map/*|\
+        test/staging/sm/TypedArray/filter-species.js|\
+        test/staging/sm/TypedArray/map-and-filter.js|\
+        test/staging/sm/TypedArray/map-species.js)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+map_filter_dependency_reason() {
+    local test_path=$1 includes_file=$2 source_file=$3
+    case "$test_path" in
+        test/staging/sm/TypedArray/map-and-filter.js)
+            if ! grep -Fxq sm/non262-TypedArray-shell.js "$includes_file" \
+                || ! grep -Fq '$262.createRealm' "$source_file" \
+                || ! grep -Fq 'const sharedConstructors = new WeakMap();' \
+                    "$suite/harness/sm/non262-TypedArray-shell.js"; then
+                echo "error: TypedArray map/filter realm or WeakMap dependency drifted: $test_path" >&2
+                return 2
+            fi
+            printf 'external:cross-realm\n'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 direct_core_dependency_reason() {
     local test_path=$1 includes_file=$2
     case "$test_path" in
@@ -932,6 +979,18 @@ if [[ "$check_only" == false ]]; then
     expect_value reduce_manifest_sha256 "$expected_reduce_manifest"
     expect_value reduce_variants "$expected_reduce_variants"
     expect_value reduce_keys_sha256 "$expected_reduce_keys"
+    expect_value map_filter_candidate_paths "$expected_map_filter_candidate_paths"
+    expect_value map_filter_candidate_sha256 "$expected_map_filter_candidate"
+    expect_value map_filter_candidate_variants "$expected_map_filter_candidate_variants"
+    expect_value map_filter_candidate_keys_sha256 "$expected_map_filter_candidate_keys"
+    expect_value map_filter_deferred_paths "$expected_map_filter_deferred_paths"
+    expect_value map_filter_deferred_sha256 "$expected_map_filter_deferred"
+    expect_value map_filter_deferred_variants "$expected_map_filter_deferred_variants"
+    expect_value map_filter_deferred_keys_sha256 "$expected_map_filter_deferred_keys"
+    expect_value map_filter_paths "$expected_map_filter_paths"
+    expect_value map_filter_manifest_sha256 "$expected_map_filter_manifest"
+    expect_value map_filter_variants "$expected_map_filter_variants"
+    expect_value map_filter_keys_sha256 "$expected_map_filter_keys"
     expect_value excluded_paths "$expected_excluded_paths"
     expect_value exclusions_sha256 "$expected_exclusions"
     expect_value exclusions_file_sha256 "$expected_exclusions_file"
@@ -1034,6 +1093,12 @@ reduce_deferred=$tmp_dir/reduce-deferred.txt
 reduce_deferred_keys=$tmp_dir/reduce-deferred-keys.txt
 reduce_manifest=$tmp_dir/reduce-manifest.txt
 reduce_keys=$tmp_dir/reduce-keys.txt
+map_filter_candidate=$tmp_dir/map-filter-candidate.txt
+map_filter_candidate_keys=$tmp_dir/map-filter-candidate-keys.txt
+map_filter_deferred=$tmp_dir/map-filter-deferred.txt
+map_filter_deferred_keys=$tmp_dir/map-filter-deferred-keys.txt
+map_filter_manifest=$tmp_dir/map-filter-manifest.txt
+map_filter_keys=$tmp_dir/map-filter-keys.txt
 candidate_features=$tmp_dir/candidate-features.txt
 candidate_includes=$tmp_dir/candidate-includes.txt
 candidate_flags=$tmp_dir/candidate-flags.txt
@@ -1107,7 +1172,7 @@ if ! awk -F'\t' '
         counts[$2]++
     }
     END {
-        if (NR != 829 ||
+        if (NR != 655 ||
             counts["dependency:join"] != 2 ||
             counts["external:cross-realm"] != 54 ||
             counts["external:SharedArrayBuffer"] != 71 ||
@@ -1119,7 +1184,7 @@ if ! awk -F'\t' '
             counts["method:iterator-entries-keys"] != 42 ||
             counts["method:mutation-copy-set"] != 0 ||
             counts["method:search-predicate"] != 0 ||
-            counts["method:species-copy-transform"] != 388 ||
+            counts["method:species-copy-transform"] != 214 ||
             counts["method:callback-reduce"] != 0 ||
             counts["method:sort"] != 47 ||
             counts["method:stringification"] != 84 ||
@@ -1171,6 +1236,9 @@ diff -u "$candidate_inventory" "$combined_inventory"
 : >"$reduce_candidate"
 : >"$reduce_deferred"
 : >"$reduce_manifest"
+: >"$map_filter_candidate"
+: >"$map_filter_deferred"
+: >"$map_filter_manifest"
 : >"$candidate_keys"
 while IFS= read -r test_path; do
     if [[ ! -f "$suite/$test_path" ]]; then
@@ -1237,6 +1305,20 @@ while IFS= read -r test_path; do
         if reason=$(reduce_dependency_reason \
             "$test_path" "$candidate_includes" "$source_file"); then
             printf '%s\n' "$test_path" >>"$reduce_deferred"
+            printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
+            continue
+        else
+            dependency_status=$?
+            if [[ "$dependency_status" != "1" ]]; then
+                exit 1
+            fi
+        fi
+    fi
+    if map_filter_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$map_filter_candidate"
+        if reason=$(map_filter_dependency_reason \
+            "$test_path" "$candidate_includes" "$source_file"); then
+            printf '%s\n' "$test_path" >>"$map_filter_deferred"
             printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
             continue
         else
@@ -1325,6 +1407,11 @@ while IFS= read -r test_path; do
         && reduce_candidate_path "$test_path"; then
         printf '%s\n' "$test_path" >>"$derived_manifest"
         printf '%s\n' "$test_path" >>"$reduce_manifest"
+        continue
+    elif [[ "$reason" == "method:species-copy-transform" ]] \
+        && map_filter_candidate_path "$test_path"; then
+        printf '%s\n' "$test_path" >>"$derived_manifest"
+        printf '%s\n' "$test_path" >>"$map_filter_manifest"
         continue
     fi
     printf '%s\t%s\n' "$test_path" "$reason" >>"$derived_exclusion_rows"
@@ -1662,6 +1749,66 @@ if [[ "$(wc -l <"$reduce_candidate" | tr -d '[:space:]')" \
     exit 1
 fi
 
+LC_ALL=C sort -o "$map_filter_candidate" "$map_filter_candidate"
+LC_ALL=C sort -o "$map_filter_deferred" "$map_filter_deferred"
+LC_ALL=C sort -o "$map_filter_manifest" "$map_filter_manifest"
+diff -u \
+    "$map_filter_candidate" \
+    <(LC_ALL=C sort -u "$map_filter_manifest" "$map_filter_deferred")
+if [[ -n "$(LC_ALL=C comm -12 \
+    "$map_filter_manifest" "$map_filter_deferred")" ]]; then
+    echo "error: TypedArray map/filter manifest overlaps its deferred ledger" >&2
+    exit 1
+fi
+
+: >"$map_filter_candidate_keys"
+: >"$map_filter_deferred_keys"
+: >"$map_filter_keys"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$map_filter_candidate_keys"
+done <"$map_filter_candidate"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$map_filter_deferred_keys"
+done <"$map_filter_deferred"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys "$test_path" "$candidate_flags" "$map_filter_keys"
+done <"$map_filter_manifest"
+LC_ALL=C sort -o "$map_filter_candidate_keys" "$map_filter_candidate_keys"
+LC_ALL=C sort -o "$map_filter_deferred_keys" "$map_filter_deferred_keys"
+LC_ALL=C sort -o "$map_filter_keys" "$map_filter_keys"
+if [[ "$(wc -l <"$map_filter_candidate" | tr -d '[:space:]')" \
+        != "$expected_map_filter_candidate_paths" \
+    || "$(sha256_file "$map_filter_candidate")" \
+        != "$expected_map_filter_candidate" \
+    || "$(wc -l <"$map_filter_candidate_keys" | tr -d '[:space:]')" \
+        != "$expected_map_filter_candidate_variants" \
+    || "$(sha256_file "$map_filter_candidate_keys")" \
+        != "$expected_map_filter_candidate_keys" \
+    || "$(wc -l <"$map_filter_deferred" | tr -d '[:space:]')" \
+        != "$expected_map_filter_deferred_paths" \
+    || "$(sha256_file "$map_filter_deferred")" \
+        != "$expected_map_filter_deferred" \
+    || "$(wc -l <"$map_filter_deferred_keys" | tr -d '[:space:]')" \
+        != "$expected_map_filter_deferred_variants" \
+    || "$(sha256_file "$map_filter_deferred_keys")" \
+        != "$expected_map_filter_deferred_keys" \
+    || "$(wc -l <"$map_filter_manifest" | tr -d '[:space:]')" \
+        != "$expected_map_filter_paths" \
+    || "$(sha256_file "$map_filter_manifest")" \
+        != "$expected_map_filter_manifest" \
+    || "$(wc -l <"$map_filter_keys" | tr -d '[:space:]')" \
+        != "$expected_map_filter_variants" \
+    || "$(sha256_file "$map_filter_keys")" \
+        != "$expected_map_filter_keys" ]]; then
+    echo "error: TypedArray map/filter promotion inventory drifted" >&2
+    exit 1
+fi
+
 while IFS= read -r test_path; do
     metadata_list "$test_path" features >"$candidate_features"
     metadata_list "$test_path" includes >"$candidate_includes"
@@ -1735,7 +1882,7 @@ verify_quickjs_oracle \
     "$oracle_log"
 
 if [[ "$check_only" == true ]]; then
-    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, and %s reduce/reduceRight paths/%s variants; %s every/some, %s forEach, and %s reduce/reduceRight staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
+    printf 'TypedArray core Test262 assets pass: %s candidate paths/%s variants, %s core paths/%s variants (including %s callback-find paths/%s variants, %s every/some paths/%s variants, %s forEach paths/%s variants, %s reduce/reduceRight paths/%s variants, and %s map/filter paths/%s variants; %s every/some, %s forEach, %s reduce/reduceRight, and %s map/filter staging paths deferred), %s exclusions; pinned QuickJS passes candidate and admitted vectors\n' \
         "$expected_candidate_paths" \
         "$expected_candidate_variants" \
         "$expected_paths" \
@@ -1748,9 +1895,12 @@ if [[ "$check_only" == true ]]; then
         "$expected_for_each_variants" \
         "$expected_reduce_paths" \
         "$expected_reduce_variants" \
+        "$expected_map_filter_paths" \
+        "$expected_map_filter_variants" \
         "$expected_every_some_deferred_paths" \
         "$expected_for_each_deferred_paths" \
         "$expected_reduce_deferred_paths" \
+        "$expected_map_filter_deferred_paths" \
         "$expected_excluded_paths"
     exit 0
 fi

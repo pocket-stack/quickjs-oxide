@@ -19,6 +19,7 @@ mod iteration;
 mod mutation;
 mod reduce;
 mod search;
+mod species;
 #[cfg(test)]
 mod tests;
 
@@ -127,6 +128,8 @@ impl Runtime {
             (ArrayIterationKind::Every, "every"),
             (ArrayIterationKind::Some, "some"),
             (ArrayIterationKind::ForEach, "forEach"),
+            (ArrayIterationKind::Map, "map"),
+            (ArrayIterationKind::Filter, "filter"),
         ] {
             self.define_native_builtin_auto_init(
                 &base_prototype,
@@ -1071,7 +1074,7 @@ impl Runtime {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
-                "typed array is too short",
+                "TypedArray length is too small",
             )?));
         }
         Ok(NativeConversion::Value(target))

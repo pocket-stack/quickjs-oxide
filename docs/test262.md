@@ -42,9 +42,9 @@ R3aq promotes the TypedArray mutation cohort, and R3ar promotes the indexed
 `at`/search cohort. R3as promotes the callback-driven
 `find`/`findIndex`/`findLast`/`findLastIndex` cohort, and R3at promotes
 `every`/`some`; R3au promotes `forEach`, and R3av promotes
-`reduce`/`reduceRight`. Later callback transforms such as `map`/`filter`,
-copying, stringification, sorting, SharedArrayBuffer, and wider interop
-surfaces remain explicit frontiers.
+`reduce`/`reduceRight`; R3aw promotes species-aware `map`/`filter`. Copying,
+stringification, sorting, SharedArrayBuffer, and wider interop surfaces remain
+explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -71,12 +71,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 51,908 pass;
+- 51,912 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 31,143 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance;
-- 18 fail to parse, 434 fail at runtime, 57 fail in the harness, and two
+- 18 fail to parse, 430 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 52,468 variants to execution. That count includes variants
@@ -85,11 +85,11 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 50.87% (`51,908 / 102,037`);
+- raw suite pass rate: 50.88% (`51,912 / 102,037`);
 - conservative target-scope lower bound: 62.12%
-  (`51,908 / (102,037 - 18,475)`);
+  (`51,912 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 99.03%
-  (`51,908 / 52,419`).
+  (`51,912 / 52,419`).
 
 The 62.12% figure is the useful whole-project progress floor, not a claim that
 the engine is 62.12% conformant. The 99.03% conditional rate measures quality
@@ -148,9 +148,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The current TSV and JSONL SHA-256 values are
-`3e5f9fd57b7a19a51843db7585e2b4aebed0fc1b93b75856f482dec962805fe3`
+`432394a9db53afd584a532b969382af167f0b17e42f77c8effd930a50389dfeb`
 and
-`f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
+`d4a7540e05ba0cbcea9b7d94a8c2a6c7c7dea51613b7dcafd90c71e0983ba356`.
 
 ## Milestone policy
 
@@ -5433,6 +5433,81 @@ rerun confirms that the complete vector is byte-identical to R3au at
 and
 `f75fd46059efcaade454d125b7643eb7a067b856f30570396663cf472443da37`.
 
+## R3aw TypedArray map/filter promotion
+
+R3aw publishes `%TypedArray%.prototype.map` and `filter` through the existing
+TypedArray callback dispatch while isolating species construction in a small
+shared seam. Both methods validate the branded receiver and its initial
+detached/out-of-bounds state before checking callback callability, then
+snapshot the original internal length and read each original-range element
+live without `HasProperty` or numeric prototype lookup.
+
+`map` resolves and constructs the target species before the first callback.
+Each callback result is converted and written immediately, so destination
+detach or resize still observes conversion before an out-of-bounds write is
+dropped. `filter` instead creates an ordinary hidden Array in the method's
+defining realm before callbacks, records selected source values there, and
+does not consult `constructor` or `@@species` until traversal completes. It
+then invokes the result's public `.set(hiddenArray)` method even for an empty
+selection. Pinned QuickJS performs no up-front Number/BigInt content-type
+check: custom cross-content species succeed or throw only through their
+observable write path.
+
+The exact atomic candidate is 175 paths / 349 variants, all passing in pinned
+QuickJS. The single
+`test/staging/sm/TypedArray/map-and-filter.js` raw path is deferred as
+`external:cross-realm`; it also depends on the SpiderMonkey shell's WeakMap
+state. That leaves one path / one variant explicit and promotes 174 paths /
+348 variants. The cumulative scoped gate expands to 1,707 paths / 3,375
+variants, the exclusion ledger falls to 654 paths, and Oxide and pinned
+QuickJS both pass 3,375/3,375.
+
+The candidate path-stream and variant-key SHA-256 values are:
+
+- path:
+  `2a4d0d92c7a4b3aec6e559770bd3baa5780b2c3780f408333526619dfbfef9fc`;
+- keys:
+  `9e51d82281ea14f0568b2116054927aca5187708584e68b8cf551426f7529743`.
+
+The deferred path/key hashes are:
+
+- path:
+  `198ede24f4c8a6e1dbb4135a14906c9f8a513178a42f23545711651eeaf26e31`;
+- keys:
+  `c7140d02e8e9d00feedd33ff35c98afa0a1bf365db3dd6ede640f1a8b34c6bd3`.
+
+The promoted path/key hashes are:
+
+- path:
+  `57a0d825fa96ae56a44dd64be290d6368838d90fcd5cdd739c9735573b8d2a02`;
+- keys:
+  `b92f4b302934a05ca68f39bde019ef71f2353a664f3e304f2092ccf1eb8cf78b`.
+
+The scoped profile remains unchanged. Its hash, followed by the current
+cumulative manifest, cumulative variant-key stream, exclusion path stream,
+and exclusion-ledger file SHA-256 values, is:
+
+- `08dda435c36df9b647ee575421d7d725df2d405fed9653b89d217231307167fc`;
+- `e6a3af181bf643b70558661802544681ac92356f06c4c27c9b1504b31379b42f`;
+- `6bf48fc08165d42f32ff8ed7cf08ad94249b23daaf111cc3700df248c667b075`;
+- `b2406a45aab98366342205bf4fb5149091b802500dc09b5a6afb8a1ef784c774`;
+- `1c3d6f79c99f423c77c11256d65993143b4fced944f700f64b16975ffb730298`.
+
+The canonical scoped TSV/JSONL SHA-256 values are
+`05080ac47b8b5be9cc0d8ab70ed7f2233c843c54e42bac54ea8eb7f92a7d206c`
+and
+`439fdf6994613b1f945e7bbd5a02ccd9326dd474c28fa54db45e82d5e208322d`.
+
+Broad TypedArray admission remains withheld. The exact canonical full-vector
+join retains all 102,037 keys and every previous pass. Only the sloppy/strict
+rows for `filter-species.js` and `map-species.js` change, producing four
+`fail-runtime -> pass` transitions with zero missing, extra, or detail-only
+rows. The vector reaches 51,912 passes and 430 runtime failures; its full
+TSV/JSONL hashes are
+`432394a9db53afd584a532b969382af167f0b17e42f77c8effd930a50389dfeb`
+and
+`d4a7540e05ba0cbcea9b7d94a8c2a6c7c7dea51613b7dcafd90c71e0983ba356`.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -5910,6 +5985,13 @@ path remains deferred; the other 104 paths / 208 variants join the cumulative
 completely. Broad TypedArray admission remains withheld; a fresh canonical
 full rerun confirms that the vector stays byte-identical to R3au at
 51,908/102,037.
+R3aw publishes species-aware TypedArray `map` and `filter`. One raw
+cross-realm/WeakMap staging path remains deferred; the other 174 paths / 348
+variants join the cumulative 1,707-path / 3,375-variant gate, which Oxide and
+pinned QuickJS both pass completely. The exact full join changes only the
+sloppy/strict `filter-species.js` and `map-species.js` rows from runtime failure
+to pass, advancing the complete vector to 51,912/102,037 with no other row
+drift.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
