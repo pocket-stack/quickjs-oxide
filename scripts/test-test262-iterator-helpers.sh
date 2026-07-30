@@ -8,8 +8,9 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-iterator-helpers-baseline.txt
 manifest=tests/test262-iterator-helpers.txt
+optional_adjacency_manifest=tests/test262-optional-chaining-iterator-adjacency.txt
 admission_profile=tests/test262-iterator-helpers.conf
-global_profile=compat/test262-oxide.conf
+historical_parent_profile=tests/test262-iterator-sequencing.conf
 report=target/test262-iterator-helpers.tsv
 json_report=target/test262-iterator-helpers.jsonl
 workers=${TEST262_WORKERS:-8}
@@ -64,7 +65,8 @@ sha256_stream() {
 }
 
 manifest_paths() {
-    awk 'NF && $1 !~ /^#/ { print }' "$manifest"
+    local input=${1:-$manifest}
+    awk 'NF && $1 !~ /^#/ { print }' "$input"
 }
 
 profile_section() {
@@ -118,6 +120,27 @@ verify_inventory() {
     fi
 }
 
+variant_keys() {
+    local test_path
+    while IFS= read -r test_path; do
+        [[ -z "$test_path" ]] && continue
+        printf '%s\tsloppy\n%s\tstrict\n' "$test_path" "$test_path"
+    done | LC_ALL=C sort
+}
+
+verify_key_inventory() {
+    local name=$1 paths=$2 expected_count expected_hash keys actual_count actual_hash
+    expected_count=$(read_value "${name}_variants")
+    expected_hash=$(read_value "${name}_keys_sha256")
+    keys=$(printf '%s\n' "$paths" | variant_keys)
+    actual_count=$(printf '%s\n' "$keys" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+    actual_hash=$(printf '%s\n' "$keys" | sed '/^$/d' | sha256_stream)
+    if [[ "$actual_count" != "$expected_count" || "$actual_hash" != "$expected_hash" ]]; then
+        echo "error: Iterator helpers $name variant-key inventory drifted" >&2
+        exit 1
+    fi
+}
+
 verify_quickjs_oracle() {
     local runner=$source_dir/run-test262 sloppy_output strict_output test_path
     local -a files=()
@@ -164,8 +187,13 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value test262_patch_sha256)" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
     || "$(read_value test262_config_sha256)" != "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b" \
     || "$(read_value test262_metadata_sha256)" != "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a" \
-    || "$(read_value global_oxide_profile_sha256)" != "fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23" \
-    || "$(read_value oxide_profile_sha256)" != "a6ce2d6be97d7826cf20aeba7ab8946ad28ce134b0ad7165a8e591a986e6d22e" \
+    || "$(read_value r3al_global_oxide_profile_sha256)" != "fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23" \
+    || "$(read_value historical_parent_profile_sha256)" != "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a" \
+    || "$(read_value oxide_profile_sha256)" != "a0ed7fa1a5cd46c5c47895d671c0078434635ae41f0a420e66573dcb86d18a7f" \
+    || "$(read_value profile_features)" != "76" \
+    || "$(read_value profile_features_sha256)" != "b089b0be988e13f6bdfb597ab64e37b18d22a5e090c3de3a74bb28e7a897d73b" \
+    || "$(read_value profile_negative_paths)" != "802" \
+    || "$(read_value profile_negative_sha256)" != "cde5aaadfe8a4330ff4961e637fa0cafc8814249345e6e8307a6b0c46b53a448" \
     || "$(read_value schema)" != "test262-canonical-classified-v2" \
     || "$(read_value mode)" != "both" \
     || "$(read_value timeout_ms)" != "30000" \
@@ -176,17 +204,24 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value is_html_dda_paths)" != "4" \
     || "$(read_value config_excluded_paths)" != "1" \
     || "$(read_value excluded_paths)" != "44" \
-    || "$(read_value paths)" != "523" \
-    || "$(read_value variants)" != "1046" \
-    || "$(read_value quickjs_sloppy_passes)" != "523" \
-    || "$(read_value quickjs_strict_passes)" != "523" \
-    || "$(read_value quickjs_passes)" != "1046" \
+    || "$(read_value optional_adjacency_paths)" != "14" \
+    || "$(read_value optional_adjacency_variants)" != "28" \
+    || "$(read_value deferred_paths)" != "30" \
+    || "$(read_value paths)" != "537" \
+    || "$(read_value variants)" != "1074" \
+    || "$(read_value quickjs_sloppy_passes)" != "537" \
+    || "$(read_value quickjs_strict_passes)" != "537" \
+    || "$(read_value quickjs_passes)" != "1074" \
     || "$(read_value global_this_paths)" != "13" \
     || "$(read_value features)" != "7" \
     || "$(read_value includes)" != "2" ]]; then
     echo "error: Iterator helpers baseline identity drifted" >&2
     exit 1
 fi
+
+[[ -f "$optional_adjacency_manifest" ]] \
+    || { echo "error: missing Iterator optional-adjacency ledger" >&2; exit 1; }
+manifest_paths "$optional_adjacency_manifest" | LC_ALL=C sort -c
 
 tagged_inventory=$(
     git -C "$suite" grep -l -F 'iterator-helpers' -- 'test/**/*.js' \
@@ -251,6 +286,38 @@ verify_inventory create_realm "$create_realm_inventory"
 verify_inventory is_html_dda "$is_html_dda_inventory"
 verify_inventory config_excluded "$config_excluded_inventory"
 
+optional_adjacency_inventory=$(
+    while IFS= read -r test_path; do
+        features=$(metadata_list "$test_path" features)
+        if ! grep -Fxq 'optional-chaining' <<<"$features" \
+            && grep -Fq '?.' < <(program_body "$test_path"); then
+            printf '%s\n' "$test_path"
+        fi
+    done <<<"$tagged_inventory" \
+        | LC_ALL=C sort
+)
+verify_inventory optional_adjacency "$optional_adjacency_inventory"
+verify_key_inventory optional_adjacency "$optional_adjacency_inventory"
+diff -u \
+    <(printf '%s\n' "$optional_adjacency_inventory") \
+    <(manifest_paths "$optional_adjacency_manifest")
+diff -u \
+    <(printf '%s\n' "$optional_adjacency_inventory") \
+    <(comm -12 \
+        <(printf '%s\n' "$optional_adjacency_inventory") \
+        <(printf '%s\n' "$proxy_inventory"))
+for adjacent_dependency in \
+    "$harness_proxy_inventory" \
+    "$create_realm_inventory" \
+    "$is_html_dda_inventory" \
+    "$config_excluded_inventory"
+do
+    [[ -z "$(comm -12 \
+        <(printf '%s\n' "$optional_adjacency_inventory") \
+        <(printf '%s\n' "$adjacent_dependency"))" ]] \
+        || { echo "error: Iterator optional adjacency overlaps an independent deferred dependency" >&2; exit 1; }
+done
+
 excluded_inventory=$(
     printf '%s\n%s\n%s\n%s\n%s\n' \
         "$proxy_inventory" \
@@ -263,16 +330,51 @@ excluded_inventory=$(
 )
 verify_inventory excluded "$excluded_inventory"
 
+deferred_inventory=$(
+    comm -23 \
+        <(printf '%s\n' "$excluded_inventory") \
+        <(printf '%s\n' "$optional_adjacency_inventory")
+)
+verify_inventory deferred "$deferred_inventory"
+diff -u \
+    <(printf '%s\n' "$excluded_inventory") \
+    <(printf '%s\n%s\n' "$optional_adjacency_inventory" "$deferred_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u)
+
 derived_manifest=$(
+    comm -23 \
+        <(printf '%s\n' "$tagged_inventory") \
+        <(printf '%s\n' "$deferred_inventory")
+)
+diff -u <(printf '%s\n' "$derived_manifest") <(manifest_paths)
+historical_clean_inventory=$(
     comm -23 \
         <(printf '%s\n' "$tagged_inventory") \
         <(printf '%s\n' "$excluded_inventory")
 )
-diff -u <(printf '%s\n' "$derived_manifest") <(manifest_paths)
+[[ -z "$(comm -23 \
+    <(printf '%s\n' "$historical_clean_inventory") \
+    <(printf '%s\n' "$derived_manifest"))" ]] \
+    || { echo "error: Iterator helpers refresh removed a historical clean path" >&2; exit 1; }
+diff -u \
+    <(printf '%s\n' "$optional_adjacency_inventory") \
+    <(comm -13 \
+        <(printf '%s\n' "$historical_clean_inventory") \
+        <(printf '%s\n' "$derived_manifest"))
+[[ -z "$(comm -12 \
+    <(printf '%s\n' "$derived_manifest") \
+    <(printf '%s\n' "$deferred_inventory"))" ]] \
+    || { echo "error: Iterator helpers manifest overlaps its deferred inventory" >&2; exit 1; }
+diff -u \
+    <(printf '%s\n' "$tagged_inventory") \
+    <(printf '%s\n%s\n' "$derived_manifest" "$deferred_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u)
 
 actual_paths=$(manifest_paths | wc -l | tr -d '[:space:]')
 unique_paths=$(manifest_paths | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
-[[ "$actual_paths" == "523" && "$unique_paths" == "523" ]] \
+[[ "$actual_paths" == "537" && "$unique_paths" == "537" ]] \
     || { echo "error: Iterator helpers manifest cardinality drifted" >&2; exit 1; }
 manifest_paths | LC_ALL=C sort -c
 [[ "$(manifest_paths | sha256_stream)" == "$(read_value manifest_sha256)" \
@@ -326,34 +428,50 @@ verify_inventory global_this "$global_this_inventory"
     && "$(printf '%s\n' "$variant_keys" | sha256_stream)" == "$(read_value keys_sha256)" ]] \
     || { echo "error: Iterator helpers sloppy/strict key inventory drifted" >&2; exit 1; }
 
-global_features=$(profile_section "$global_profile" features | LC_ALL=C sort)
+historical_parent_features=$(
+    profile_section "$historical_parent_profile" features | LC_ALL=C sort
+)
 admission_features=$(profile_section "$admission_profile" features | LC_ALL=C sort)
-profile_section "$global_profile" features | LC_ALL=C sort -c
+profile_section "$historical_parent_profile" features | LC_ALL=C sort -c
 profile_section "$admission_profile" features | LC_ALL=C sort -c
-diff -u \
-    <(printf '%s\n' async-functions async-iteration) \
-    <(comm -23 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))
+[[ -z "$(comm -23 \
+    <(printf '%s\n' "$historical_parent_features") \
+    <(printf '%s\n' "$admission_features"))" ]] \
+    || { echo "error: Iterator helpers profile lost a historical parent capability" >&2; exit 1; }
 diff -u \
     <(printf '%s\n' globalThis iterator-helpers) \
-    <(comm -13 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))
+    <(comm -13 \
+        <(printf '%s\n' "$historical_parent_features") \
+        <(printf '%s\n' "$admission_features"))
+[[ "$(printf '%s\n' "$admission_features" | wc -l | tr -d '[:space:]')" \
+        == "$(read_value profile_features)" \
+    && "$(printf '%s\n' "$admission_features" | sha256_stream)" \
+        == "$(read_value profile_features_sha256)" ]] \
+    || { echo "error: Iterator helpers profile feature inventory drifted" >&2; exit 1; }
 [[ -z "$(comm -23 <(printf '%s\n' "$feature_inventory") <(printf '%s\n' "$admission_features"))" ]] \
     || { echo "error: Iterator helpers metadata exceeds the scoped profile" >&2; exit 1; }
 diff -u \
-    <(profile_section "$global_profile" audited-negative-tests) \
+    <(profile_section "$historical_parent_profile" audited-negative-tests) \
     <(profile_section "$admission_profile" audited-negative-tests)
+admission_negatives=$(profile_section "$admission_profile" audited-negative-tests)
+[[ "$(printf '%s\n' "$admission_negatives" | wc -l | tr -d '[:space:]')" \
+        == "$(read_value profile_negative_paths)" \
+    && "$(printf '%s\n' "$admission_negatives" | sha256_stream)" \
+        == "$(read_value profile_negative_sha256)" ]] \
+    || { echo "error: Iterator helpers profile negative provenance drifted" >&2; exit 1; }
 [[ -z "$(profile_section "$admission_profile" execution)" ]] \
     || { echo "error: synchronous Iterator helpers profile admitted an execution capability" >&2; exit 1; }
-[[ "$(sha256_file "$global_profile")" == "$(read_value global_oxide_profile_sha256)" \
+[[ "$(sha256_file "$historical_parent_profile")" \
+        == "$(read_value historical_parent_profile_sha256)" \
     && "$(sha256_file "$admission_profile")" == "$(read_value oxide_profile_sha256)" ]] \
     || { echo "error: Iterator helpers capability profile drifted" >&2; exit 1; }
 
 verify_quickjs_oracle
 if "$check_only"; then
-    printf 'Iterator helpers inputs verified: %s tagged - %s source Proxy - %s harness Proxy - %s host/config = %s clean paths; QuickJS %s passes %s/%s sloppy+strict variants\n' \
+    printf 'Iterator helpers inputs verified: %s tagged - %s raw dependency paths + %s optional-adjacency promotions = %s selected paths; QuickJS %s passes %s/%s sloppy+strict variants\n' \
         "$(read_value tagged_paths)" \
-        "$(read_value proxy_paths)" \
-        "$(read_value harness_proxy_paths)" \
-        "$(( $(read_value create_realm_paths) + $(read_value is_html_dda_paths) + $(read_value config_excluded_paths) ))" \
+        "$(read_value excluded_paths)" \
+        "$(read_value optional_adjacency_paths)" \
         "$(read_value paths)" \
         "$(read_value quickjs)" \
         "$(read_value quickjs_passes)" \
@@ -491,6 +609,7 @@ if "$bless"; then
         }
         { print }
     ' "$baseline" >"$baseline_tmp"
+    chmod 644 "$baseline_tmp"
     mv -- "$baseline_tmp" "$baseline"
     printf 'Iterator helpers baseline blessed from an all-green vector: %s/%s pass\n' \
         "$actual_passes" "$actual_variants"

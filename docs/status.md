@@ -1,8 +1,39 @@
 # Implementation status
 
-Last audited: 2026-07-30. The completion definition remains
+Last audited: 2026-07-31. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
+
+## R3bl Iterator Helper optional-adjacency refresh
+
+R3bl promotes the exact 14-path optional-chaining adjacency ledger from the
+Iterator Helper gate's raw 44-path dependency union. The refreshed manifest
+contains 537 paths / 1,074 sloppy-strict variants. Pinned QuickJS passes all
+537 paths in each mode, and Oxide passes all 1,074 variants. Thirty paths
+remain explicitly deferred: 11 other source-Proxy paths, three harness-Proxy
+paths, 11 `$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one pinned
+QuickJS-config exclusion.
+
+The immutable scoped profile still contains 76 feature tags and 802 audited
+negative paths. Its complete-file SHA-256 is
+`a0ed7fa1a5cd46c5c47895d671c0078434635ae41f0a420e66573dcb86d18a7f`.
+The manifest path-stream, complete-file, variant-key, TSV, and JSONL hashes are
+`563b7040eb391512a5118d7102f2a58e0fe88629c9069b1019bfb9bc4ed07e75`,
+`09bbd1dd78d226ab2cdd9131072647aaaa87c4f98859f73db29559f924439da8`,
+`b4c06bdd75fe4ef062b04eefe2b5e21ccbf4bc5130afc7c5ba24b9e9295364fa`,
+`136c5e8b9520a1b61ee3981a32ec8009e0e023d8b2737debe76157f2f7615b59`,
+and
+`b8635ff35f5699cffd698f4d569960d505422b1b723e27661e13d88aece4a87c`.
+
+The independent Iterator sequencing gate remains 64/64 in both engines. Both
+Iterator scripts now authenticate immutable historical profile sections
+instead of comparing against the growing live global profile. R3bl is a
+focused evidence refresh, not global `iterator-helpers` admission: the
+complete vector remains at R3bj's 56,526/102,037 passes and 57,045 runnable
+variants, with canonical TSV/JSONL hashes
+`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+and
+`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
 
 ## R3bk refreshed `for await` focused gate
 
@@ -239,7 +270,10 @@ workstream. Build and architecture details live in
   reason-only. It also freezes the historical R3be parent's 802-path negative
   source. R3bk then refreshes the `for await` gate after optional chaining
   admission: its unchanged 1,297-path / 2,531-variant candidate now admits and
-  passes 1,265 paths / 2,492 variants in both engines. The cumulative
+  passes 1,265 paths / 2,492 variants in both engines. R3bl promotes the exact
+  14-path optional-chaining adjacency into the scoped Iterator Helper gate,
+  which now passes 537 paths / 1,074 variants in both engines while retaining
+  30 explicit deferrals. The cumulative
   TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
   measurement has 56,526 passes and 57,045 runnable variants:
@@ -2452,25 +2486,27 @@ workstream. Build and architecture details live in
   `flatMap` close-error priority; a two-context Rust probe separately locks
   cross-realm constructor identity.
 
-  The dependency-audited Test262 gate starts from all 567
-  `iterator-helpers` paths. It removes the exact 44-path union of 25 direct
+  At R3v, the dependency-audited Test262 gate started from all 567
+  `iterator-helpers` paths and removed the exact 44-path union of 25 direct
   Proxy dependencies, three harness-level Proxy dependencies, 11
   `$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one pinned-config
-  exclusion. Oxide and pinned QuickJS both pass all 1,046 sloppy/strict
-  variants from the remaining 523 paths. Its scoped-profile, key, TSV, and
-  JSONL hashes are
+  exclusion. Oxide and pinned QuickJS both passed all 1,046 sloppy/strict
+  variants from the remaining 523 paths. The historical scoped-profile, key,
+  TSV, and JSONL hashes were
   `a6ce2d6be97d7826cf20aeba7ab8946ad28ce134b0ad7165a8e591a986e6d22e`,
   `43be68340124e844c5e456899a084460ad87edd2c279c3ac1ca4057726b3697a`,
   `4746567453ed198096fd270e70f7c2c51975de837df0a1181645ceffd3cdefc9`,
   and
   `a25b115582160d38acb534c0192f93db65f3c8473d3c9211adb39c8f40a1a02a`.
-  The safe `--bless` path requires every frozen variant to pass.
+  The safe `--bless` path required every frozen variant to pass.
 
-  This milestone remains scoped because Proxy and the required host hooks are
-  separate implementation frontiers. The conservative global vector therefore
-  remains byte-identical at 43,521/102,037 passes. `Iterator.concat` is excluded
-  from this core-helper gate; the separate R3w `iterator-sequencing` milestone
-  follows immediately below.
+  At that checkpoint the milestone remained scoped because Proxy and the
+  required host hooks were separate frontiers, so the conservative global
+  vector stayed byte-identical at 43,521/102,037 passes. R3bl above is the
+  current focused gate: it promotes 14 paths and passes 537 paths / 1,074
+  variants while still withholding global `iterator-helpers` admission.
+  `Iterator.concat` remains in the separate R3w `iterator-sequencing`
+  milestone immediately below.
 
   R3w adds QuickJS's independent `Iterator.concat` class and sequencing state
   machine rather than folding it into Iterator Helpers. Construction eagerly
@@ -2511,10 +2547,12 @@ workstream. Build and architecture details live in
   `0f43b6e164c0954a02f911774c34871ea67e6255f28ffa65419ea15d3f4b73fd`
   and
   `f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
-  Core `iterator-helpers` remains scoped because its 44 Proxy/host/config
-  adjacencies are still independent frontiers. Re-running the profile-bound
-  focused gates also refreshes two stale tagged-template PrivateName staging
-  rows that later private-name work had already moved to pass.
+  At R3x, core `iterator-helpers` remained scoped behind its 44
+  Proxy/host/config adjacencies. R3bl later promotes 14 of those paths and
+  leaves the current 30-path deferred ledger explicit. Re-running the
+  profile-bound focused gates also refreshed two stale tagged-template
+  PrivateName staging rows that later private-name work had already moved to
+  pass.
 
   R3y authenticates the existing synchronous class implementation as one
   generated-matrix closure rather than widening the global `class` feature.

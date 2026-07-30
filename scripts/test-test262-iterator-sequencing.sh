@@ -9,7 +9,6 @@ root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-iterator-sequencing-baseline.txt
 manifest=tests/test262-iterator-sequencing.txt
 admission_profile=tests/test262-iterator-sequencing.conf
-global_profile=compat/test262-oxide.conf
 report=target/test262-iterator-sequencing.tsv
 json_report=target/test262-iterator-sequencing.jsonl
 workers=${TEST262_WORKERS:-8}
@@ -159,6 +158,8 @@ cd -- "$root"
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
 
+# This baseline key records the exact R3al global parent provenance. It is
+# intentionally not compared with the growing live global profile.
 if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value test262)" != "5c8206929d81b2d3d727ca6aac56c18358c8d790" \
     || "$(read_value test262_patch_sha256)" != "f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3" \
@@ -321,29 +322,21 @@ variant_keys=$(printf '%s\n' "$variant_keys" | sed '/^$/d' | LC_ALL=C sort)
     && "$(printf '%s\n' "$variant_keys" | sha256_stream)" == "$(read_value keys_sha256)" ]] \
     || { echo "error: Iterator sequencing sloppy/strict key inventory drifted" >&2; exit 1; }
 
-global_features=$(profile_section "$global_profile" features | LC_ALL=C sort)
 admission_features=$(profile_section "$admission_profile" features | LC_ALL=C sort)
-profile_section "$global_profile" features | LC_ALL=C sort -c
 profile_section "$admission_profile" features | LC_ALL=C sort -c
-diff -u \
-    <(printf '%s\n' async-functions async-iteration) \
-    <(comm -23 <(printf '%s\n' "$global_features") <(printf '%s\n' "$admission_features"))
-[[ -z "$(comm -13 \
-    <(printf '%s\n' "$global_features") \
-    <(printf '%s\n' "$admission_features"))" ]] \
-    || { echo "error: Iterator sequencing profile added a non-global capability" >&2; exit 1; }
 [[ "$(printf '%s\n' "$admission_features" | wc -l | tr -d '[:space:]')" == "$(read_value profile_features)" \
     && "$(printf '%s\n' "$admission_features" | sha256_stream)" == "$(read_value profile_features_sha256)" ]] \
     || { echo "error: Iterator sequencing profile feature inventory drifted" >&2; exit 1; }
 [[ -z "$(comm -23 <(printf '%s\n' "$feature_inventory") <(printf '%s\n' "$admission_features"))" ]] \
     || { echo "error: Iterator sequencing metadata exceeds the scoped profile" >&2; exit 1; }
-diff -u \
-    <(profile_section "$global_profile" audited-negative-tests) \
-    <(profile_section "$admission_profile" audited-negative-tests)
+admission_negatives=$(profile_section "$admission_profile" audited-negative-tests)
+[[ "$(printf '%s\n' "$admission_negatives" | wc -l | tr -d '[:space:]')" == "802" \
+    && "$(printf '%s\n' "$admission_negatives" | sha256_stream)" \
+        == "cde5aaadfe8a4330ff4961e637fa0cafc8814249345e6e8307a6b0c46b53a448" ]] \
+    || { echo "error: Iterator sequencing profile negative provenance drifted" >&2; exit 1; }
 [[ -z "$(profile_section "$admission_profile" execution)" ]] \
     || { echo "error: Iterator.concat sequencing profile admitted an execution capability" >&2; exit 1; }
-[[ "$(sha256_file "$global_profile")" == "$(read_value global_oxide_profile_sha256)" \
-    && "$(sha256_file "$admission_profile")" == "$(read_value oxide_profile_sha256)" ]] \
+[[ "$(sha256_file "$admission_profile")" == "$(read_value oxide_profile_sha256)" ]] \
     || { echo "error: Iterator sequencing capability profile drifted" >&2; exit 1; }
 
 verify_quickjs_oracle

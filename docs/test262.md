@@ -4,7 +4,7 @@ Test262 is now a pinned progress instrument, not yet a completion claim. The
 authoritative compatibility target remains QuickJS 2026-06-04; focused QuickJS
 differentials still decide exact behavior inside each implemented slice.
 
-Last audited: 2026-07-30.
+Last audited: 2026-07-31.
 
 ## Pinned inputs
 
@@ -72,6 +72,11 @@ locked separately by the pinned QuickJS differential. Public fields, static
 blocks, private elements, and
 public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
+
+Synchronous Iterator Helpers were first authenticated by R3v. The current
+R3bl focused gate adds the 14-path optional-chaining adjacency and passes 537
+paths / 1,074 variants in both engines; it is not a global
+`iterator-helpers` admission.
 
 Nineteen additional provenance variants guard the result: 10 audited negative
 variants pass for the intended parse error, while nine variants fail closed
@@ -3795,43 +3800,93 @@ close ordering. The implementation also follows QuickJS's low-64-bit
 cross-realm native-constructor identity, and nested `flatMap` close-error
 priority.
 
-The pinned Test262 metadata names `iterator-helpers` on 567 paths. The
-dependency audit removes 25 paths that execute `Proxy` directly, three whose
-included harness files execute `Proxy`, 11 that require `$262.createRealm`,
-four that require `$262.IsHTMLDDA`, and one excluded by the pinned QuickJS
-configuration. That exact union contains 44 paths, leaving 523 paths and 1,046
-sloppy/strict variants. Oxide and pinned QuickJS both pass 1,046/1,046 with no
-failure, unsupported result, skip, duplicate key, or engine fault.
+The pinned Test262 metadata names `iterator-helpers` on 567 paths. At R3v, the
+dependency audit removed 25 paths that executed `Proxy` directly, three whose
+included harness files executed `Proxy`, 11 that required
+`$262.createRealm`, four that required `$262.IsHTMLDDA`, and one excluded by
+the pinned QuickJS configuration. That exact union contained 44 paths, leaving
+523 paths and 1,046 sloppy/strict variants. Oxide and pinned QuickJS both
+passed 1,046/1,046 with no failure, unsupported result, skip, duplicate key, or
+engine fault.
 
-The manifest path-stream and complete-file SHA-256 values are
+The historical R3v manifest path-stream and complete-file SHA-256 values were
 `9d01f0a6846feac8b6c9b555d95fd1eb4942262f51d4602e4c395f5f45b76443`
 and
 `ce8dd5bfebd79924090ff4a628607009d11ff116ffeb38720808b585335a91e5`.
-The scoped profile and `(path, variant)` key hashes are
+The scoped profile and `(path, variant)` key hashes were
 `a6ce2d6be97d7826cf20aeba7ab8946ad28ce134b0ad7165a8e591a986e6d22e`
 and
 `43be68340124e844c5e456899a084460ad87edd2c279c3ac1ca4057726b3697a`.
-The canonical focused TSV/JSONL hashes are
+The canonical focused TSV/JSONL hashes were
 `4746567453ed198096fd270e70f7c2c51975de837df0a1181645ceffd3cdefc9`
 and
 `a25b115582160d38acb534c0192f93db65f3c8473d3c9211adb39c8f40a1a02a`.
 
-This remains a checksum-bound scoped admission. The global capability profile
-stays fail-closed for `iterator-helpers` because the excluded Proxy and host
-dependencies are not implemented; the complete vector therefore remains
-43,521/102,037 passes and byte-identical to R3u. The gate's explicit `--bless`
-mode refuses to write a baseline unless all 1,046 frozen variants pass, while
-`--check` authenticates the inventory, dependencies, scoped profile, and both
-pinned QuickJS modes without running Oxide. `Iterator.concat` belongs to the
-separate R3w `iterator-sequencing` cohort documented immediately below.
+At R3v this was a checksum-bound scoped admission and the global capability
+profile stayed fail-closed for `iterator-helpers`; the complete vector
+therefore remained at 43,521/102,037 passes and byte-identical to R3u. Those
+numbers are historical. The current script and focused receipt are R3bl
+below. `Iterator.concat` belongs to the separate R3w `iterator-sequencing`
+cohort.
 
-Reproduce R3v with:
+The implementation differential remains:
+
+```sh
+QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
+  cargo test --test oracle_iterator_helpers -- --nocapture
+```
+
+The focused script now reproduces R3bl below rather than this historical R3v
+receipt.
+
+## R3bl Iterator Helper optional-adjacency refresh
+
+R3bl re-derives the complete 567-path `iterator-helpers` metadata population
+and its raw 44-path dependency union. It promotes exactly the 14 source-Proxy
+paths frozen by the optional-chaining adjacency ledger, leaving 30 paths
+deferred: 11 other source-Proxy paths, three harness-Proxy paths, 11
+`$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one path excluded by
+the pinned QuickJS configuration. The selected manifest therefore grows from
+R3v's historical 523 paths / 1,046 variants to 537 paths / 1,074 variants.
+
+Pinned QuickJS passes all 537 selected paths in sloppy mode and all 537 in
+strict mode. Oxide passes all 1,074 variants with no failure, unsupported,
+skipped, timeout, crash, or infrastructure outcome. The scoped profile retains
+exactly 76 feature tags and 802 audited negative paths; its complete-file
+SHA-256 is
+`a0ed7fa1a5cd46c5c47895d671c0078434635ae41f0a420e66573dcb86d18a7f`.
+The manifest path-stream, complete-file, and variant-key SHA-256 values are
+`563b7040eb391512a5118d7102f2a58e0fe88629c9069b1019bfb9bc4ed07e75`,
+`09bbd1dd78d226ab2cdd9131072647aaaa87c4f98859f73db29559f924439da8`,
+and
+`b4c06bdd75fe4ef062b04eefe2b5e21ccbf4bc5130afc7c5ba24b9e9295364fa`.
+The canonical focused TSV/JSONL hashes are
+`136c5e8b9520a1b61ee3981a32ec8009e0e023d8b2737debe76157f2f7615b59`
+and
+`b8635ff35f5699cffd698f4d569960d505422b1b723e27661e13d88aece4a87c`.
+
+The helper profile now authenticates the immutable synchronous
+`iterator-sequencing` profile as its historical parent rather than comparing
+with the growing live global profile. The sequencing gate itself remains 32
+paths / 64 variants, all passing in both engines, and its script likewise
+treats the R3al global hash only as provenance. Later global feature growth
+therefore cannot drift either focused receipt.
+
+R3bl changes no runtime semantics and does not admit `iterator-helpers` into
+the global capability profile. The complete vector remains at R3bj's
+56,526/102,037 passes and 57,045 runnable variants, with canonical full
+TSV/JSONL SHA-256 values
+`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+and
+`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
+
+Reproduce the current focused gates with:
 
 ```sh
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
   cargo test --test oracle_iterator_helpers -- --nocapture
 ./scripts/test-test262-iterator-helpers.sh
-./scripts/test-test262-full.sh
+./scripts/test-test262-iterator-sequencing.sh
 ```
 
 ## R3w Iterator.concat sequencing
@@ -3866,6 +3921,10 @@ The canonical TSV/JSONL hashes are
 and
 `a184e7e80444282cc23015c5846052430c593eab93da358d4679859422f2e029`;
 the non-pass stream is empty.
+
+R3bl later decouples this historical gate from the growing live global
+profile. The script still authenticates the immutable 74-feature,
+802-negative scoped profile and the unchanged 64/64 result.
 
 Test262 has no cross-realm rows here and only shallow coverage of getter
 caching, retry state, return error priority, and reentry. The separate pinned
@@ -6857,6 +6916,11 @@ unchanged 1,297-path / 2,531-variant candidate now excludes 32 paths / 39
 variants and admits 1,265 paths / 2,492 variants, all passing in both engines.
 The scoped receipt is independent of later global-profile feature growth, and
 the complete R3bj vector remains unchanged.
+R3bl then promotes the exact 14-path optional-chaining adjacency into the
+scoped Iterator Helper gate. It passes 537 paths / 1,074 variants in both
+engines while retaining a 30-path deferred ledger. The independently
+authenticated 64-variant sequencing gate is unchanged, and neither focused
+refresh admits global `iterator-helpers` or moves the R3bj complete vector.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
