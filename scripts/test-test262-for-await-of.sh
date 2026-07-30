@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the R3ak baseline-enabled for-await-of Test262 gate.
+# Reproduce the R3bk refreshed for-await-of Test262 gate.
 
 set -euo pipefail
 export TZ=America/Los_Angeles
@@ -207,7 +207,7 @@ run_oxide() {
 cd -- "$root"
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3ak.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3bk.XXXXXX")
 trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 
 metadata_records=$tmp_dir/metadata.records
@@ -218,6 +218,8 @@ candidate_main=$tmp_dir/candidate-main.txt
 candidate_external=$tmp_dir/candidate-external.txt
 derived_exclusions=$tmp_dir/derived-exclusions.tsv
 excluded_paths=$tmp_dir/excluded-paths.txt
+promoted_optional_chaining=$tmp_dir/promoted-optional-chaining.txt
+promoted_optional_chaining_keys=$tmp_dir/promoted-optional-chaining-keys.txt
 manifest=$tmp_dir/manifest.txt
 partition_union=$tmp_dir/partition-union.txt
 candidate_keys=$tmp_dir/candidate-keys.txt
@@ -262,7 +264,7 @@ expect_value test262 5c8206929d81b2d3d727ca6aac56c18358c8d790
 expect_value test262_patch_sha256 f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 expect_value test262_config_sha256 79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 expect_value test262_metadata_sha256 a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-expect_value global_oxide_profile_sha256 fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23
+expect_value r3al_global_oxide_profile_sha256 fc6e8010c982bd6324b146e5f8e3ea0592aac7c03a323a8dbc8d778b4b670b23
 expect_value schema test262-canonical-classified-v2
 expect_value mode both
 expect_value timeout_ms 30000
@@ -270,21 +272,22 @@ expect_value candidate_paths 1297
 expect_value candidate_main_directory_paths 1234
 expect_value candidate_external_paths 63
 expect_value candidate_variants 2531
-expect_value excluded_paths 33
-expect_value excluded_variants 41
+expect_value excluded_paths 32
+expect_value excluded_variants 39
 expect_value excluded_baseline_unsupported_erm_paths 3
 expect_value excluded_module_or_dynamic_import_paths 28
-expect_value excluded_optional_chaining_paths 1
 expect_value excluded_host_is_html_dda_paths 1
-expect_value paths 1264
+expect_value promoted_optional_chaining_paths 1
+expect_value promoted_optional_chaining_variants 2
+expect_value paths 1265
 expect_value main_directory_paths 1232
 expect_value main_directory_variants 2427
 expect_value destructuring_paths 1215
 expect_value destructuring_variants 2396
 expect_value core_main_directory_paths 17
 expect_value core_main_directory_variants 31
-expect_value external_paths 32
-expect_value external_variants 63
+expect_value external_paths 33
+expect_value external_variants 65
 expect_value inherited_for_await_paths 24
 expect_value inherited_for_await_variants 48
 expect_value inherited_function_paths 6
@@ -298,23 +301,22 @@ expect_value async_interleaving_variants 2
 expect_value staging_grammar_paths 2
 expect_value staging_grammar_variants 3
 expect_value quickjs_candidate_enabled_passes 1294
-expect_value quickjs_passes 1264
-expect_value positive_paths 1174
+expect_value quickjs_passes 1265
+expect_value positive_paths 1175
 expect_value negative_paths 90
-expect_value async_paths 1170
+expect_value async_paths 1171
 expect_value sync_paths 94
-expect_value double_mode_paths 1226
+expect_value double_mode_paths 1227
 expect_value no_strict_paths 31
 expect_value only_strict_paths 7
-expect_value variants 2490
-expect_value features 12
+expect_value variants 2492
+expect_value features 13
 expect_value includes 3
 expect_value flags 4
 
-if [[ "$(sha256_file "$global_profile")" != "$(read_value global_oxide_profile_sha256)" \
-    || "$(sha256_file "$admission_profile")" != "$(read_value oxide_profile_sha256)" \
+if [[ "$(sha256_file "$admission_profile")" != "$(read_value oxide_profile_sha256)" \
     || "$(sha256_file "$exclusions")" != "$(read_value exclusions_file_sha256)" ]]; then
-    echo "error: for-await-of capability profile or exclusion ledger drifted" >&2
+    echo "error: for-await-of focused profile or exclusion ledger drifted" >&2
     exit 1
 fi
 if [[ "$(profile_section execution "$global_profile")" != "async=true" ]]; then
@@ -363,7 +365,6 @@ fi
 if awk -F'\t' '
     $1 != "baseline_unsupported_erm" &&
         $1 != "module_or_dynamic_import" &&
-        $1 != "optional_chaining" &&
         $1 != "host_is_html_dda" {
             print NR ":" $0
             bad=1
@@ -386,8 +387,6 @@ awk -F'\t' '
         } else if (has($4, "dynamic-import") || has($4, "import.meta") ||
                    has($4, "top-level-await") || has($3, "module")) {
             reason="module_or_dynamic_import"
-        } else if (has($4, "optional-chaining")) {
-            reason="optional_chaining"
         } else if (has($4, "IsHTMLDDA")) {
             reason="host_is_html_dda"
         }
@@ -411,7 +410,7 @@ if [[ "$(inventory_count "$excluded_keys")" != "$(read_value excluded_variants)"
     exit 1
 fi
 for reason in \
-    baseline_unsupported_erm module_or_dynamic_import optional_chaining host_is_html_dda; do
+    baseline_unsupported_erm module_or_dynamic_import host_is_html_dda; do
     reason_inventory=$tmp_dir/excluded-$reason.txt
     awk -F'\t' -v reason="$reason" '$1 == reason { print $2 }' \
         "$exclusions" > "$reason_inventory"
@@ -431,6 +430,26 @@ if [[ "$(inventory_count "$manifest")" != "$(read_value paths)" \
     exit 1
 fi
 
+awk -F'\t' '
+    function has(list, value) {
+        return index("," list ",", "," value ",") != 0
+    }
+    $1 == "test/language/expressions/optional-chaining/iteration-statement-for-await-of.js" &&
+        has($4, "optional-chaining") {
+            print $1
+        }
+' "$metadata_tsv" > "$promoted_optional_chaining"
+verify_inventory promoted_optional_chaining "$promoted_optional_chaining"
+verify_variant_count "$promoted_optional_chaining" \
+    "$(read_value promoted_optional_chaining_variants)" \
+    "$promoted_optional_chaining_keys"
+if [[ "$(sha256_file "$promoted_optional_chaining_keys")" \
+        != "$(read_value promoted_optional_chaining_keys_sha256)" \
+    || -n "$(comm -23 "$promoted_optional_chaining" "$manifest")" ]]; then
+    echo "error: promoted optional-chaining for-await-of path drifted" >&2
+    exit 1
+fi
+
 awk '/^test\/language\/statements\/for-await-of\// { print }' \
     "$manifest" > "$manifest_main"
 awk '!/^test\/language\/statements\/for-await-of\// { print }' \
@@ -438,10 +457,7 @@ awk '!/^test\/language\/statements\/for-await-of\// { print }' \
 verify_inventory main_directory "$manifest_main"
 verify_variant_count "$manifest_main" "$(read_value main_directory_variants)" \
     "$tmp_dir/main-keys.txt"
-if [[ "$(inventory_count "$manifest_external")" != "$(read_value external_paths)" ]]; then
-    echo "error: for-await-of external manifest inventory drifted" >&2
-    exit 1
-fi
+verify_inventory external "$manifest_external"
 verify_variant_count "$manifest_external" "$(read_value external_variants)" \
     "$tmp_dir/external-keys.txt"
 
@@ -513,7 +529,7 @@ verify_inventory inherited_for_await "$inherited"
 verify_variant_count "$inherited" "$(read_value inherited_for_await_variants)" \
     "$tmp_dir/inherited-keys.txt"
 if [[ -n "$(comm -23 "$inherited" "$manifest")" ]]; then
-    echo "error: inherited for_await ledger path escaped the R3ak manifest" >&2
+    echo "error: inherited for_await ledger path escaped the R3bk manifest" >&2
     exit 1
 fi
 
@@ -529,7 +545,8 @@ printf '%s\n' \
     const \
     destructuring-binding \
     generators \
-    object-rest > "$expected_features"
+    object-rest \
+    optional-chaining > "$expected_features"
 printf '%s\n' \
     asyncHelpers.js \
     compareArray.js \
@@ -634,7 +651,7 @@ verify_quickjs_oracle \
     "$candidate_quickjs_log" "complete baseline-enabled for-await-of candidate"
 verify_quickjs_oracle \
     "$manifest" "$(read_value quickjs_passes)" \
-    "$quickjs_log" "R3ak for-await-of"
+    "$quickjs_log" "R3bk for-await-of"
 if "$check_only"; then
     printf 'for-await-of inputs verified: %s candidates - %s exclusions = %s paths / %s variants; pinned QuickJS passes %s/%s admitted paths\n' \
         "$(read_value candidate_paths)" "$(read_value excluded_paths)" \
@@ -728,7 +745,7 @@ for key in runnable passes failures unsupported skipped nonpass_sha256 tsv_sha25
     fi
 done
 if "$pending"; then
-    echo "error: Oxide passed, but the R3ak baseline is intentionally still PENDING" >&2
+    echo "error: Oxide passed, but the R3bk baseline is intentionally still PENDING" >&2
     printf 'runnable=%s\npasses=%s\nfailures=%s\nunsupported=%s\nskipped=%s\n' \
         "$actual_runnable" "$actual_passes" "$actual_failures" \
         "$actual_unsupported" "$actual_skipped" >&2

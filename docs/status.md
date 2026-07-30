@@ -4,6 +4,37 @@ Last audited: 2026-07-30. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bk refreshed `for await` focused gate
+
+R3bk removes exactly
+`test/language/expressions/optional-chaining/iteration-statement-for-await-of.js`
+from the `for await` exclusion ledger and adds `optional-chaining` to the
+gate-owned scoped profile. Candidate discovery remains fixed at 1,297 paths /
+2,531 variants. The ledger now excludes 32 paths / 39 variants, leaving 1,265
+paths / 2,492 variants admitted. Pinned QuickJS passes 1,265/1,265 paths and
+Oxide passes 2,492/2,492 variants; independent 8/8/5-worker reports are
+byte-identical.
+
+The scoped-profile, exclusion-ledger, manifest, key-set, TSV, and JSONL
+SHA-256 values are
+`d5d30d77eaabebeea1a9fa3cb18f555e3c5d69d263d1b82ca624c339f6262a2e`,
+`cf172c4d38c6fee27f20ccc6775251284e328255f1a416b9ff22f5760e2a1e47`,
+`f87858a6c22df8c689d15f081075cba2758feb63eacb4be9ee310e72e9d17a0a`,
+`8669fd1b353cf24a52297a6680a4b43041a7c03ac5c33cd93abf8afbe82535cd`,
+`6b102a66ca2c71be3f9999efd027bda49f65b3a3465d555c7775a59b999ed823`,
+and
+`ca3703f6fb7296af390979df9f60a6049d3d8703cc6929cf2937586afd972832`.
+
+The R3al global-profile hash is retained only as historical provenance. The
+gate pins its own focused profile and checks the live global profile for async
+execution, so unrelated future global feature admissions cannot drift this
+receipt. This evidence-only refresh does not move the complete vector: it
+remains at 56,526/102,037 passes and 57,045 runnable variants with R3bj's
+canonical full TSV/JSONL hashes
+`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+and
+`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
+
 ## R3bj optional chaining global admission
 
 R3bj admits exactly the `optional-chaining` tag and its 26 audited
@@ -36,8 +67,8 @@ profile. Later feature or negative-provenance admissions therefore cannot move
 the R3be activation or reason-only partitions.
 
 This is a profile and evidence milestone, not a Feature Parity completion
-claim. The Iterator Helper adjacency cohort and the for-await-of ledger remain
-separate follow-up gates.
+claim. At R3bj, the Iterator Helper adjacency cohort and the for-await-of
+ledger remained separate follow-up gates; R3bk above refreshes the latter.
 
 ## R3bi optional chaining focused implementation
 
@@ -206,7 +237,10 @@ workstream. Build and architecture details live in
   the global tag together with its 26 audited negative paths; all 104
   dependency-clean variants pass, while eight class/private variants remain
   reason-only. It also freezes the historical R3be parent's 802-path negative
-  source. The cumulative TypedArray scoped gate still
+  source. R3bk then refreshes the `for await` gate after optional chaining
+  admission: its unchanged 1,297-path / 2,531-variant candidate now admits and
+  passes 1,265 paths / 2,492 variants in both engines. The cumulative
+  TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
   measurement has 56,526 passes and 57,045 runnable variants:
   55.40% raw,
@@ -3121,11 +3155,11 @@ workstream. Build and architecture details live in
   baseline-enabled paths in the wider candidate, with exactly the three
   upstream-configured ERM skips.
 
-  `./scripts/test-test262-for-await-of.sh` reproduces the candidate derivation,
-  all metadata and variant partitions, source-ledger provenance, profile and
-  inventory hashes, both pinned-QuickJS runs, and the Oxide result. Oxide
-  passes all 2,490 variants with no failure, unsupported, or skipped outcome;
-  independent 8/8/5-worker TSV and JSONL reports are byte-identical. The
+  At R3ak, the gate reproduced the candidate derivation, all metadata and
+  variant partitions, source-ledger provenance, profile and inventory hashes,
+  both pinned-QuickJS runs, and the Oxide result. Oxide passed all 2,490
+  variants with no failure, unsupported, or skipped outcome; independent
+  8/8/5-worker TSV and JSONL reports were byte-identical. The
   profile, manifest, key-set, TSV, and JSONL SHA-256 values are
   `20b369af5ce33890a6c480835baf3801392c26e6d7432da9d55fba1c4c1ad823`,
   `45afa1e6f8f61d44e733aeea8bde5dae562a7ec919ea40d9d1e18551d6f2881f`,
@@ -3145,6 +3179,8 @@ workstream. Build and architecture details live in
   `36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
   and
   `1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
+  These remain the historical R3ak receipt; R3bk above records the refreshed
+  current focused gate without changing the complete vector.
 
   R3al promotes `async-functions`, `async-iteration`, and the async Test262
   host into the global capability profile after the R3z-R3ak implementation

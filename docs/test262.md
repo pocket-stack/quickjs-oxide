@@ -65,8 +65,9 @@ functions are measured by R3af and ordinary object-literal async-generator
 methods by R3ag; public instance/static class async-generator methods are
 measured by R3ah and private instance/static class async-generator methods by
 R3ai. Async-generator `yield*` delegation is measured across all four shapes
-by R3aj. R3ak measures `for await ... of` across ordinary async functions and
-all four async-generator shapes; the active outer-iterator `.return()` path is
+by R3aj. R3ak first measured `for await ... of` across ordinary async functions
+and all four async-generator shapes; R3bk refreshes that focused gate after
+optional-chaining admission. The active outer-iterator `.return()` path is
 locked separately by the pinned QuickJS differential. Public fields, static
 blocks, private elements, and
 public/private synchronous generator methods are measured by the scoped
@@ -4772,15 +4773,10 @@ Pinned QuickJS 2026-06-04 passes 1,264/1,264 admitted paths. On the wider
 candidate it executes 1,294/1,294 baseline-enabled paths and skips exactly the
 three upstream-configured ERM paths.
 
-Reproduce the authenticated cohort and all-pass result with:
-
-```sh
-./scripts/test-test262-for-await-of.sh
-```
-
-Oxide passes all 2,490 variants: 2,490 pass, zero fail, zero unsupported, and
-zero skipped. Independent 8/8/5-worker runs produce byte-identical TSV and
-JSONL reports. The empty non-pass, TSV, and JSONL SHA-256 values are
+At the R3ak checkpoint, Oxide passed all 2,490 variants: 2,490 pass, zero
+fail, zero unsupported, and zero skipped. Independent 8/8/5-worker runs
+produced byte-identical TSV and JSONL reports. The empty non-pass, TSV, and
+JSONL SHA-256 values were
 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
 `7eafa4725fbb6f70954c5bdb52a823caeaa89497eb01d6c80d446925d01361d0`,
 and
@@ -4802,6 +4798,52 @@ variants and reaches 43,689 passes. Its TSV and JSONL SHA-256 values are
 `36e2a11f4eaba4ffd92fdd561b18b27337b90b14a564cab9da6385f1aa0f79a3`
 and
 `1dd6c356c678568b51794d253959a58a644dbdd2871187f67516ad8d78e649af`.
+These values remain the historical R3ak receipt. R3bk below records the
+refreshed current focused gate without changing the complete vector.
+
+## R3bk refreshed `for await` gate
+
+R3bk keeps the exhaustive R3ak candidate discovery unchanged at 1,297 paths /
+2,531 canonical variants. Now that optional chaining is implemented and
+globally admitted, the refreshed dependency ledger removes exactly
+`test/language/expressions/optional-chaining/iteration-statement-for-await-of.js`
+from its exclusions and the scoped profile adds `optional-chaining`. The
+remaining 32 exclusions account for 39 variants: three upstream-skipped
+explicit-resource-management paths, 28 module/dynamic-import paths, and one
+`$262.IsHTMLDDA` host path. The exclusion-ledger SHA-256 is
+`cf172c4d38c6fee27f20ccc6775251284e328255f1a416b9ff22f5760e2a1e47`.
+
+The refreshed manifest therefore admits 1,265 paths / 2,492 variants. Pinned
+QuickJS 2026-06-04 passes 1,265/1,265 admitted paths; Oxide passes all
+2,492/2,492 variants with zero non-pass outcome. Independent 8/8/5-worker runs
+again produce byte-identical TSV and JSONL reports. The scoped-profile,
+manifest, variant-key, TSV, and JSONL SHA-256 values are
+`d5d30d77eaabebeea1a9fa3cb18f555e3c5d69d263d1b82ca624c339f6262a2e`,
+`f87858a6c22df8c689d15f081075cba2758feb63eacb4be9ee310e72e9d17a0a`,
+`8669fd1b353cf24a52297a6680a4b43041a7c03ac5c33cd93abf8afbe82535cd`,
+`6b102a66ca2c71be3f9999efd027bda49f65b3a3465d555c7775a59b999ed823`,
+and
+`ca3703f6fb7296af390979df9f60a6049d3d8703cc6929cf2937586afd972832`.
+
+Reproduce the current refreshed gate with:
+
+```sh
+./scripts/test-test262-for-await-of.sh
+```
+
+The checked-in R3al global-profile hash now serves only as provenance for the
+historical async admission point. The focused gate no longer compares that
+hash with the growing global profile: it pins its own capability profile and
+checks that the live profile still enables async execution. This preserves the
+real async execution precondition while preventing unrelated future global
+feature admissions from drifting the focused receipt.
+
+This is a scoped evidence refresh, not a new global admission or runtime
+change. The complete vector remains at 56,526/102,037 passes and 57,045
+runnable variants. Its canonical R3bj TSV/JSONL SHA-256 values remain
+`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+and
+`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
 
 ## R3al global async admission
 
@@ -6236,9 +6278,9 @@ R3bj also makes the historical R3be TypedArray receipt independent of both
 kinds of later profile growth. Its reconstructed parent uses the checked-in
 80-tag inventory plus the immutable 802-path negative section of
 `tests/test262-iterator-sequencing.conf`; it no longer reads either historical
-section from the current global profile. The Iterator adjacency cohort and
-for-await-of ledger remain separate follow-up gates. This is not a Feature
-Parity completion claim.
+section from the current global profile. At R3bj, the Iterator adjacency cohort
+and for-await-of ledger remained separate follow-up gates; R3bk above refreshes
+the latter. This is not a Feature Parity completion claim.
 
 ## Runner contract
 
@@ -6810,6 +6852,11 @@ reason-only, and no previous pass regresses. The complete vector reaches
 56,526/102,037 with 57,045 runnable variants. R3bj also freezes the historical
 R3be TypedArray parent's 802-path negative-provenance source, completing the
 decoupling begun by R3bh's 80-tag feature inventory.
+R3bk then refreshes the `for await` focused gate after that admission. Its
+unchanged 1,297-path / 2,531-variant candidate now excludes 32 paths / 39
+variants and admits 1,265 paths / 2,492 variants, all passing in both engines.
+The scoped receipt is independent of later global-profile feature growth, and
+the complete R3bj vector remains unchanged.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
