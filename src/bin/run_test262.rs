@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "205554c5686ef2ec77420984ce038d321411a11acabefd2c37d9b63b67fcba62";
+    "8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -248,6 +248,12 @@ const TEST262_ITERATOR_HELPERS_PROFILE_SHA256: &str =
     "a0ed7fa1a5cd46c5c47895d671c0078434635ae41f0a420e66573dcb86d18a7f";
 const TEST262_ITERATOR_HELPERS_MANIFEST_SHA256: &str =
     "6db8a38003ba95245dde0e0559b64a75c1a0215e610408811174f482363b729c";
+const TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "205554c5686ef2ec77420984ce038d321411a11acabefd2c37d9b63b67fcba62";
+const TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910";
+const TEST262_ITERATOR_HELPERS_GLOBAL_MANIFEST_SHA256: &str =
+    "c4700fe6efcfa05d4e00c3d7cfc9d4a4aa062db7ac58cd8318a51bf41c1bbcf4";
 const TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256: &str =
     "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a";
 const TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256: &str =
@@ -835,6 +841,8 @@ enum OxideProfileKind {
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
+    IteratorHelpersGlobalParent,
+    IteratorHelpersGlobalCandidate,
     IteratorSequencing,
     OptionalChaining,
     Proxy,
@@ -1049,6 +1057,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::IteratorHelpers,
         ),
         (
+            root.join("tests/test262-iterator-helpers-global-parent.conf"),
+            OxideProfileKind::IteratorHelpersGlobalParent,
+        ),
+        (
+            root.join("tests/test262-iterator-helpers-global-candidate.conf"),
+            OxideProfileKind::IteratorHelpersGlobalCandidate,
+        ),
+        (
             root.join("tests/test262-iterator-sequencing.conf"),
             OxideProfileKind::IteratorSequencing,
         ),
@@ -1147,6 +1163,54 @@ fn verify_scoped_derived_profile(
         manifest,
         manifest_sha256,
         &format!("scoped {label} Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_historical_global_transition_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("historical global transition {label} Test262 capability profile"),
+    )?;
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the historical global transition {label} Test262 capability profile requires --all or its pinned manifest"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the historical global transition {label} Test262 capability profile requires --all or its pinned manifest"
+        )
+    })?;
+    let manifest_relative = "tests/test262-iterator-helpers-global.txt";
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve historical global transition {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
+        .map_err(|error| {
+            format!("resolve pinned historical global transition {label} manifest: {error}")
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the historical global transition {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_ITERATOR_HELPERS_GLOBAL_MANIFEST_SHA256,
+        &format!("historical global transition {label} Test262 manifest"),
     )?;
     Ok(profile_sha256)
 }
@@ -1890,6 +1954,20 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-iterator-helpers.txt",
             TEST262_ITERATOR_HELPERS_MANIFEST_SHA256,
         ),
+        OxideProfileKind::IteratorHelpersGlobalParent => {
+            verify_historical_global_transition_profile(
+                options,
+                "pre-R3bn Iterator helpers global parent",
+                TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256,
+            )
+        }
+        OxideProfileKind::IteratorHelpersGlobalCandidate => {
+            verify_historical_global_transition_profile(
+                options,
+                "R3bn Iterator helpers global candidate",
+                TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            )
+        }
         OxideProfileKind::IteratorSequencing => verify_scoped_pinned_profile(
             options,
             "Iterator.concat sequencing",
@@ -2198,9 +2276,11 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
         TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
-        TEST262_IDENTIFIER_REST_PROFILE_SHA256, TEST262_ITERATOR_HELPERS_PROFILE_SHA256,
-        TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256, TEST262_MAP_PROFILE_SHA256,
-        TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
+        TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_ITERATOR_HELPERS_PROFILE_SHA256, TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
+        TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
         TEST262_OBJECT_REST_BINDING_PROFILE_SHA256, TEST262_OPTIONAL_CHAINING_PROFILE_SHA256,
@@ -2567,6 +2647,20 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-iterator-helpers.conf")).unwrap(),
             OxideProfileKind::IteratorHelpers
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-iterator-helpers-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::IteratorHelpersGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-iterator-helpers-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::IteratorHelpersGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-iterator-sequencing.conf")).unwrap(),
@@ -5208,6 +5302,68 @@ mod cli_tests {
             };
             assert!(verify_oxide_profile(&options).is_err());
         }
+    }
+
+    #[test]
+    fn iterator_helpers_global_admission_profiles_require_the_manifest_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-iterator-helpers-global-parent.conf",
+                TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-iterator-helpers-global-candidate.conf",
+                TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                ["--manifest", "tests/test262-iterator-helpers-global.txt"],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+            }
+
+            for selection in [
+                [
+                    "--test",
+                    "test/built-ins/Iterator/prototype/map/callable.js",
+                ],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                arguments.push(selection[1]);
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
+
+        assert_eq!(
+            parse_error(&[
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-iterator-helpers-global-candidate.conf",
+                "--all",
+                "--manifest",
+                "tests/test262-iterator-helpers-global.txt",
+                "--report",
+                "report.tsv",
+            ]),
+            "select exactly one of --all, --manifest, or one-or-more --test"
+        );
     }
 
     #[test]

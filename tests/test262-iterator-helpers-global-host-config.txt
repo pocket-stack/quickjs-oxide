@@ -1,0 +1,19 @@
+# R3bn iterator-helpers host/config ledger.
+# These 16 paths remain blocked by createRealm, IsHTMLDDA, or pinned config.
+# Keep this path stream bytewise sorted.
+test/built-ins/Iterator/proto-from-ctor-realm.js
+test/staging/sm/Iterator/from/wrap-functions-on-other-global.js
+test/staging/sm/Iterator/from/wrap-new-global.js
+test/staging/sm/Iterator/from/wrap-next-not-object-throws.js
+test/staging/sm/Iterator/prototype/every/coerce-result-to-boolean.js
+test/staging/sm/Iterator/prototype/every/error-from-correct-realm.js
+test/staging/sm/Iterator/prototype/filter/coerce-result-to-boolean.js
+test/staging/sm/Iterator/prototype/find/coerce-result-to-boolean.js
+test/staging/sm/Iterator/prototype/find/error-from-correct-realm.js
+test/staging/sm/Iterator/prototype/forEach/error-from-correct-realm.js
+test/staging/sm/Iterator/prototype/iterator-helpers-from-other-global.js
+test/staging/sm/Iterator/prototype/lazy-methods-from-other-global.js
+test/staging/sm/Iterator/prototype/reduce/error-from-correct-realm.js
+test/staging/sm/Iterator/prototype/some/coerce-result-to-boolean.js
+test/staging/sm/Iterator/prototype/some/error-from-correct-realm.js
+test/staging/sm/Iterator/prototype/toArray/create-in-current-realm.js

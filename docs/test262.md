@@ -11,8 +11,8 @@ Last audited: 2026-07-31.
 - Test262 commit: `5c8206929d81b2d3d727ca6aac56c18358c8d790`
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
-- quickjs-oxide 82-tag capability profile SHA-256:
-  `205554c5686ef2ec77420984ce038d321411a11acabefd2c37d9b63b67fcba62`
+- quickjs-oxide 83-tag capability profile SHA-256:
+  `8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -73,10 +73,11 @@ blocks, private elements, and
 public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
-Synchronous Iterator Helpers were first authenticated by R3v. The current
-R3bm focused gate completes the 28-path source-and-harness Proxy closure and
-passes 551 paths / 1,102 variants in both engines while retaining 16 explicit
-host/config deferrals; it is not a global `iterator-helpers` admission.
+Synchronous Iterator Helpers were first authenticated by R3v. The historical
+R3bm focused gate completed the 28-path source-and-harness Proxy closure and
+passed 551 paths / 1,102 variants in both engines. R3bn now admits exactly
+`iterator-helpers` globally: 1,076 variants activate and pass, 26 remain
+fail-closed behind `globalThis`, and 32 host/config variants remain unchanged.
 
 Nineteen additional provenance variants guard the result: 10 audited negative
 variants pass for the intended parse error, while nine variants fail closed
@@ -89,28 +90,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 56,526 pass;
+- 57,602 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 26,566 are classified as unsupported because of a feature, mode, host
+- 25,490 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
-  provenance, including 21,599 `unsupported-feature` variants;
+  provenance, including 20,523 `unsupported-feature` variants;
 - 11 fail to parse, 400 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 57,045 variants to execution. That count includes variants
+The runner admitted 58,121 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 55.40% (`56,526 / 102,037`);
-- conservative target-scope lower bound: 67.65%
-  (`56,526 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.18%
-  (`56,526 / 56,996`).
+- raw suite pass rate: 56.45% (`57,602 / 102,037`);
+- conservative target-scope lower bound: 68.93%
+  (`57,602 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.19%
+  (`57,602 / 58,072`).
 
-The 67.65% figure is the useful whole-project progress floor, not a claim that
-the engine is 67.65% conformant. The 99.18% conditional rate measures quality
+The 68.93% figure is the useful whole-project progress floor, not a claim that
+the engine is 68.93% conformant. The 99.19% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -138,7 +139,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 82
+or pinned-target-error outcomes. The capability profile currently admits 83
 reviewed Test262 feature tags and 828 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -166,9 +167,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The canonical two-worker measurement's TSV and JSONL SHA-256 values are
-`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+`7b5bb9d188473f7f7298e131da405f7e77e66c6eddbf10d14949722bf275c6fc`
 and
-`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
+`869d9150a532a72c02e37eae9d1d3ead2c88c8384be23e5222efe055e99a18a2`.
 
 ## Milestone policy
 
@@ -3825,9 +3826,9 @@ and
 At R3v this was a checksum-bound scoped admission and the global capability
 profile stayed fail-closed for `iterator-helpers`; the complete vector
 therefore remained at 43,521/102,037 passes and byte-identical to R3u. Those
-numbers are historical. The current script and focused receipt are R3bm
-below. `Iterator.concat` belongs to the separate R3w `iterator-sequencing`
-cohort.
+numbers are historical. The focused script reproduces the historical R3bm
+receipt below. `Iterator.concat` belongs to the separate R3w
+`iterator-sequencing` cohort.
 
 The implementation differential remains:
 
@@ -3883,51 +3884,122 @@ and
 R3bl's receipt remains recorded as historical evidence. The focused script now
 reproduces R3bm below.
 
-## R3bm Iterator Helper Proxy-closure refresh
+## R3bn global Iterator Helpers admission
 
-R3bm retains the exhaustive 567-path `iterator-helpers` inventory and its raw
-44-path dependency union. It freezes the 25 source-Proxy paths and three
-harness-Proxy paths as one exhaustive 28-path closure. R3bl had already
-promoted the exact 14-path optional-chaining adjacency; R3bm promotes the
-remaining 11 source-Proxy and three harness-Proxy paths. The selected manifest
-therefore grows to 551 paths / 1,102 sloppy-strict variants.
+R3bn adds exactly `iterator-helpers` to R3bj's immutable 82-tag feature
+inventory and retains the same 828 audited negative paths and one async
+execution entry. The resulting 83-tag profile has SHA-256
+`8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910`;
+the feature section alone has SHA-256
+`4f33e9167adc040023ef9df3d5e8995b22877da83e327d7162632a1d4fc13198`.
+No negative path is present in the tagged Iterator Helper population.
 
-Pinned QuickJS passes all 551 selected paths in sloppy mode and all 551 in
-strict mode. Oxide passes all 1,102 variants with no failure, unsupported,
+The exhaustive metadata population is 567 paths / 1,134 sloppy-strict
+variants. Its path-stream, complete-manifest, and variant-key SHA-256 values
+are
+`70eca80ab1c3e1f45dfc4383ec08a9bcf0c0ef1d656fa345c356c4d9610f795c`,
+`c4700fe6efcfa05d4e00c3d7cfc9d4a4aa062db7ac58cd8318a51bf41c1bbcf4`,
+and
+`b8794b55c01b6e185bcb8a15275bef51aaf8eda8fe274eb8eda9824748fcaa02`.
+The partition is disjoint and exhaustive:
+
+- 538 paths / 1,076 variants activate. Their path-stream, complete-manifest,
+  and variant-key hashes are
+  `d3190f82ceaa1a3f16b32ac824b26a4fe1c689aa6ede51a43188d861899441d2`,
+  `4bbb1d7788c177bbfb924ffaddccec39084eaf482de9a4b6ea120a7a079aac5d`,
+  and
+  `de1acf288cbce9fed7ea4f5dfc81ce53c4795b5122a3e9e485e5b27356d68bfb`.
+- 13 paths / 26 variants are reason-only rows that also require `globalThis`.
+  Their corresponding hashes are
+  `0cd2175342155365d92fa29bedf5bd12193e4ed8c95426f1ad2f80a40cc9825b`,
+  `23a26e5f007ee4fac04486ad9c816d01e78802fd1c0974ca154aec3cd2ee2447`,
+  and
+  `cec177031ee2f3dab6596e0ab337ec411a42bf7551a57120e5a770c0fe11b56e`.
+- 16 paths / 32 variants remain behind host/config requirements: 11
+  `$262.createRealm`, four `$262.IsHTMLDDA`, and one pinned-config exclusion.
+  Their corresponding hashes are
+  `de0e1e40da2120f5149aa07a8a3f62588e61761aadf659b26c2a80706b2086c2`,
+  `1f346639b0b941fec7b6411c63057ab01a096196be3ac47906b1e2c4a643c49c`,
+  and
+  `5f9105c90732493741b8b652f0a5ad74f775740706d847171c96617fdd23b760`.
+
+The candidate tagged run passes every activated variant: 1,076 pass, 26
+remain `unsupported-feature` behind `globalThis`, 22 remain behind
+`$262.createRealm`, eight remain behind `$262.IsHTMLDDA`, and the two variants
+of the excluded path remain skipped. Its TSV/JSONL SHA-256 values are
+`21e6b0be9aa662c485176690d5665bc6f79687fc7bf4ae4ddf6335ee419a8f5d`
+and
+`d62917441f6a7c6a5163316d1c09ccf4540ff54b4a6599a58285d0f34f01a66b`.
+The 1,134-row transition receipt has no missing or duplicate key; its receipt
+and data SHA-256 values are
+`97d980227d3f9913d6fedb6e97deec7ae0b1db3df3fefe01b74d96320c775d4f`
+and
+`84cdc0c565ddff0257ff1aff6c29e0297f8d3c3afca72015cfd17d6192e5b108`.
+
+The exact complete-vector join retains all 102,037 keys. Exactly 1,076 rows
+move from `unsupported-feature` to `pass`; 26 rows remain
+`unsupported-feature` with only `iterator-helpers` removed from their
+diagnostic detail; the 32 host/config rows and all 100,903 non-Iterator-Helper
+rows are unchanged. No previous pass regresses. The canonical vector reaches
+57,602/102,037 passes with 58,121 runnable variants and 20,523
+`unsupported-feature` outcomes. That is 56.45% raw, a 68.93% lower bound
+after the 18,475 pinned QuickJS target exclusions, and 99.19% among 58,072
+variants with a non-unsupported observed outcome. Its full TSV/JSONL SHA-256
+values are
+`7b5bb9d188473f7f7298e131da405f7e77e66c6eddbf10d14949722bf275c6fc`
+and
+`869d9150a532a72c02e37eae9d1d3ead2c88c8384be23e5222efe055e99a18a2`.
+An independent canonical two-worker repeat is byte-identical.
+
+R3bn changes only the global capability profile and evidence. It adds no
+runtime semantics and is not a Feature Parity completion claim. The 13
+`globalThis` paths and 16 host/config paths remain deliberately fail-closed.
+
+## R3bm historical Iterator Helper Proxy-closure refresh
+
+At R3bm, the gate retained the exhaustive 567-path `iterator-helpers`
+inventory and its raw 44-path dependency union. It froze the 25 source-Proxy
+paths and three harness-Proxy paths as one exhaustive 28-path closure. R3bl
+had already promoted the exact 14-path optional-chaining adjacency; R3bm
+promoted the remaining 11 source-Proxy and three harness-Proxy paths. The
+selected manifest therefore grew to 551 paths / 1,102 sloppy-strict variants.
+
+Pinned QuickJS passed all 551 selected paths in sloppy mode and all 551 in
+strict mode. Oxide passed all 1,102 variants with no failure, unsupported,
 skipped, timeout, crash, or infrastructure outcome. Independent 8/8/5-worker
-Oxide reports are byte-identical. The scoped profile remains unchanged at 76
-feature tags and 802 audited negative paths; its complete-file SHA-256 remains
+Oxide reports were byte-identical. The scoped profile remained unchanged at
+76 feature tags and 802 audited negative paths; its complete-file SHA-256 was
 `a0ed7fa1a5cd46c5c47895d671c0078434635ae41f0a420e66573dcb86d18a7f`.
 
 The manifest path-stream, complete-file, and `(path, variant)` key SHA-256
-values are
+values were
 `32b3a539828fe72e32cb28bed6b6942749ac1aa6402a04bb809126da0a2cea4c`,
 `6db8a38003ba95245dde0e0559b64a75c1a0215e610408811174f482363b729c`,
 and
 `cc432f145a9f12ad959f0b856c5b91c73a1b9ce0ebb3fd0c9cc5a18ac0f2f841`.
-The canonical focused TSV/JSONL SHA-256 values are
+The canonical focused TSV/JSONL SHA-256 values were
 `47b725903172118e8fbde4ba8f6d87343d44fa280889630e1ee5d620634154e5`
 and
 `9c55978a8b8200be94617eb5c80ea97abac7172b93599fdd31769df6a7679d08`.
 
-The remaining deferred ledger is exactly 16 paths / 32 variants: 11
+The remaining deferred ledger was exactly 16 paths / 32 variants: 11
 `$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one pinned
-QuickJS-config exclusion. Its variant-key SHA-256 is
+QuickJS-config exclusion. Its variant-key SHA-256 was
 `5f9105c90732493741b8b652f0a5ad74f775740706d847171c96617fdd23b760`.
-The full Proxy closure and this host/config ledger are disjoint and exhaustive
+The full Proxy closure and this host/config ledger were disjoint and exhaustive
 within the original raw dependency union.
 
-R3bm changes no runtime semantics and does not admit `iterator-helpers` into
-the global capability profile. The complete vector therefore remains at
+R3bm changed no runtime semantics and did not admit `iterator-helpers` into
+the global capability profile. Its complete vector therefore remained at
 R3bj's 56,526/102,037 passes and 57,045 runnable variants, with canonical full
 TSV/JSONL SHA-256 values
 `84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
 and
 `96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
-The independently authenticated Iterator sequencing gate remains 64/64 in
+The independently authenticated Iterator sequencing gate remained 64/64 in
 both engines.
 
-Reproduce the current focused gates with:
+The historical focused gates remain reproducible with:
 
 ```sh
 QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
@@ -6967,11 +7039,17 @@ R3bl then promotes the exact 14-path optional-chaining adjacency into the
 scoped Iterator Helper gate. It passes 537 paths / 1,074 variants in both
 engines while retaining a 30-path deferred ledger.
 R3bm then promotes the remaining 11 source-Proxy and three harness-Proxy
-paths, completing the 28-path Proxy closure. The current scoped gate passes
-551 paths / 1,102 variants in both engines and retains only the 16
+paths, completing the 28-path Proxy closure. That historical scoped gate passed
+551 paths / 1,102 variants in both engines and retained only the 16
 host/config paths. The independently authenticated 64-variant sequencing gate
-is unchanged. Neither focused refresh admits global `iterator-helpers` or
-moves the R3bj complete vector.
+was unchanged. Neither R3bl nor R3bm admitted global `iterator-helpers` or
+moved the R3bj complete vector.
+R3bn then admits exactly `iterator-helpers` into the global profile. Its
+exhaustive 567-path / 1,134-variant join activates and passes 1,076 variants,
+changes only unsupported-reason detail for the 26 `globalThis` variants, and
+leaves the 32 host/config variants and all 100,903 non-Iterator-Helper variants
+unchanged. The current vector reaches 57,602/102,037 passes with 58,121
+runnable variants and no previous-pass regression.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

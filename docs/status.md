@@ -4,26 +4,66 @@ Last audited: 2026-07-31. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
-## R3bm Iterator Helper Proxy-closure refresh
+## R3bn global Iterator Helpers admission
 
-R3bm keeps the complete 567-path `iterator-helpers` population and its raw
-44-path dependency union explicit. That union partitions into the complete
+R3bn adds exactly `iterator-helpers` to the checksum-pinned global Test262
+profile after the R3bm focused gate closed its source-and-harness
+dependencies. The profile now contains 83 reviewed feature tags and the same
+828 audited negative paths; its SHA-256 is
+`8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910`.
+
+The exhaustive tagged population contains 567 paths / 1,134 variants. Its
+partition is exact: 538 paths / 1,076 variants are activated, 13 paths / 26
+variants remain `unsupported-feature` only because they also require
+`globalThis`, and 16 paths / 32 variants remain behind the audited host/config
+ledger. All 1,076 activated variants pass. The tagged candidate TSV/JSONL
+SHA-256 values are
+`21e6b0be9aa662c485176690d5665bc6f79687fc7bf4ae4ddf6335ee419a8f5d`
+and
+`d62917441f6a7c6a5163316d1c09ccf4540ff54b4a6599a58285d0f34f01a66b`.
+The exact transition receipt and data SHA-256 values are
+`97d980227d3f9913d6fedb6e97deec7ae0b1db3df3fefe01b74d96320c775d4f`
+and
+`84cdc0c565ddff0257ff1aff6c29e0297f8d3c3afca72015cfd17d6192e5b108`.
+
+The complete 102,037-key join records exactly 1,076
+`unsupported-feature -> pass` transitions and 26 diagnostic-detail-only
+changes; all 32 host/config variants and all 100,903 non-Iterator-Helper
+variants are unchanged. No previous pass regresses. The canonical vector now
+has 57,602 passes and 58,121 runnable variants: 56.45% raw, a 68.93% lower
+bound after the 18,475 pinned QuickJS target exclusions, and 99.19% among
+58,072 variants with a non-unsupported observed outcome. Its canonical full
+TSV/JSONL SHA-256 values are
+`7b5bb9d188473f7f7298e131da405f7e77e66c6eddbf10d14949722bf275c6fc`
+and
+`869d9150a532a72c02e37eae9d1d3ead2c88c8384be23e5222efe055e99a18a2`.
+An independent canonical two-worker repeat is byte-identical.
+
+This is a profile and evidence milestone with no production runtime-semantics
+change, not a Feature Parity completion claim. `globalThis` and the audited
+host/config capabilities remain explicit follow-up frontiers.
+
+## R3bm historical Iterator Helper Proxy-closure refresh
+
+R3bm kept the complete 567-path `iterator-helpers` population and its raw
+44-path dependency union explicit. That union partitioned into the complete
 28-path source-and-harness Proxy closure and 16 host/config paths. R3bl had
-already promoted the exact 14-path optional-chaining adjacency; R3bm promotes
+already promoted the exact 14-path optional-chaining adjacency; R3bm promoted
 the remaining 11 source-Proxy and three harness-Proxy paths. The refreshed
-manifest therefore contains 551 paths / 1,102 sloppy-strict variants. Pinned
-QuickJS passes all 551 paths in each mode, Oxide passes all 1,102 variants,
-and independent 8/8/5-worker Oxide reports are byte-identical.
+manifest therefore contained 551 paths / 1,102 sloppy-strict variants. Pinned
+QuickJS passed all 551 paths in each mode, Oxide passed all 1,102 variants,
+and independent 8/8/5-worker Oxide reports were byte-identical.
 
-The 16-path / 32-variant deferred ledger is now exactly 11
-`$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one pinned
-QuickJS-config exclusion. Its variant-key SHA-256 is
+The 16-path / 32-variant deferred ledger was exactly 11 `$262.createRealm`
+paths, four `$262.IsHTMLDDA` paths, and one pinned QuickJS-config exclusion.
+Its variant-key SHA-256 was
 `5f9105c90732493741b8b652f0a5ad74f775740706d847171c96617fdd23b760`.
 
-The immutable scoped profile still contains 76 feature tags and 802 audited
-negative paths. Its complete-file SHA-256 is
+The immutable scoped profile contained 76 feature tags and 802 audited
+negative paths. Its complete-file SHA-256 was
 `a0ed7fa1a5cd46c5c47895d671c0078434635ae41f0a420e66573dcb86d18a7f`.
-The manifest path-stream, complete-file, variant-key, TSV, and JSONL hashes are
+The manifest path-stream, complete-file, variant-key, TSV, and JSONL hashes
+were
 `32b3a539828fe72e32cb28bed6b6942749ac1aa6402a04bb809126da0a2cea4c`,
 `6db8a38003ba95245dde0e0559b64a75c1a0215e610408811174f482363b729c`,
 `cc432f145a9f12ad959f0b856c5b91c73a1b9ce0ebb3fd0c9cc5a18ac0f2f841`,
@@ -31,12 +71,12 @@ The manifest path-stream, complete-file, variant-key, TSV, and JSONL hashes are
 and
 `9c55978a8b8200be94617eb5c80ea97abac7172b93599fdd31769df6a7679d08`.
 
-The independent Iterator sequencing gate remains 64/64 in both engines. Both
-Iterator scripts now authenticate immutable historical profile sections
-instead of comparing against the growing live global profile. R3bm is a
-focused evidence refresh, not global `iterator-helpers` admission: the
-complete vector remains at R3bj's 56,526/102,037 passes and 57,045 runnable
-variants, with canonical TSV/JSONL hashes
+The independent Iterator sequencing gate remained 64/64 in both engines. Both
+Iterator scripts authenticated immutable historical profile sections instead
+of comparing against the growing live global profile. R3bm was a focused
+evidence refresh, not global `iterator-helpers` admission: its complete vector
+remained at R3bj's 56,526/102,037 passes and 57,045 runnable variants, with
+canonical TSV/JSONL hashes
 `84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
 and
 `96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
@@ -238,7 +278,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 82 reviewed feature tags and 828 exact audited
+  capability profile now admits 83 reviewed feature tags and 828 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -281,19 +321,22 @@ workstream. Build and architecture details live in
   gate. R3bm then promotes the remaining 14 source-and-harness Proxy paths,
   completing the 28-path Proxy closure. The gate now passes 551 paths / 1,102
   variants in both engines while retaining exactly 16 host/config deferrals.
+  R3bn then admits exactly `iterator-helpers` into the global profile: 1,076
+  variants activate and pass, 26 remain fail-closed behind `globalThis`, and
+  all 32 host/config variants remain unchanged.
   The cumulative
   TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 56,526 passes and 57,045 runnable variants:
-  55.40% raw,
-  a 67.65% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.18% among the 56,996 variants with a non-unsupported observed outcome. It
+  measurement has 57,602 passes and 58,121 runnable variants:
+  56.45% raw,
+  a 68.93% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.19% among the 58,072 variants with a non-unsupported observed outcome. It
   records 11 parse failures, 400 runtime failures, and 57 harness failures.
-  The exact R3bj join preserves all 102,037 keys with no previous-pass
+  The exact R3bn join preserves all 102,037 keys with no previous-pass
   regression. Current full TSV/JSONL SHA-256 values are
-  `84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+  `7b5bb9d188473f7f7298e131da405f7e77e66c6eddbf10d14949722bf275c6fc`
   and
-  `96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
+  `869d9150a532a72c02e37eae9d1d3ead2c88c8384be23e5222efe055e99a18a2`.
   Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
   coverage remain explicit frontiers.
   The fixed smoke now
@@ -2511,9 +2554,10 @@ workstream. Build and architecture details live in
   At that checkpoint the milestone remained scoped because Proxy and the
   required host hooks were separate frontiers, so the conservative global
   vector stayed byte-identical at 43,521/102,037 passes. R3bl later promoted
-  the 14-path optional adjacency; R3bm is the current focused gate, completing
-  the 28-path Proxy closure and passing 551 paths / 1,102 variants while still
-  withholding global `iterator-helpers` admission.
+  the 14-path optional adjacency, and R3bm completed the 28-path Proxy closure
+  while passing 551 paths / 1,102 variants. R3bn later admitted exactly
+  `iterator-helpers` globally; the 13 `globalThis` paths and 16 host/config
+  paths remain fail-closed.
   `Iterator.concat` remains in the separate R3w `iterator-sequencing`
   milestone immediately below.
 

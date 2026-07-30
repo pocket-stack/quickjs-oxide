@@ -254,11 +254,19 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-optional-chaining.conf"
     ));
+    const ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-iterator-helpers-global-parent.conf"
+    ));
+    const ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-iterator-helpers-global-candidate.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 82] = [
+    const EXPECTED_FEATURES: [&str; 83] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -319,6 +327,7 @@ mod tests {
         "for-in-order",
         "generators",
         "hashbang",
+        "iterator-helpers",
         "iterator-sequencing",
         "json-parse-with-source",
         "let",
@@ -678,13 +687,11 @@ mod tests {
         assert_eq!(previously_audited_negatives.len(), 802);
 
         let optional_chaining_profile = OxideProfile::parse(OPTIONAL_CHAINING_PROFILE).unwrap();
-        assert!(
-            optional_chaining_profile
-                .features
-                .iter()
-                .map(String::as_str)
-                .eq(EXPECTED_FEATURES)
-        );
+        let iterator_helpers_global_parent =
+            OxideProfile::parse(ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE).unwrap();
+        let iterator_helpers_global_candidate =
+            OxideProfile::parse(ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
             optional_chaining_profile
@@ -699,7 +706,47 @@ mod tests {
                 .count(),
             26
         );
-        assert_eq!(profile, optional_chaining_profile);
+        assert_eq!(
+            iterator_helpers_global_candidate
+                .features
+                .difference(&iterator_helpers_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["iterator-helpers"]
+        );
+        assert!(
+            iterator_helpers_global_parent
+                .features
+                .difference(&iterator_helpers_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            iterator_helpers_global_candidate.audited_negative_tests,
+            iterator_helpers_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            iterator_helpers_global_candidate.allows_async_execution(),
+            iterator_helpers_global_parent.allows_async_execution()
+        );
+        assert!(
+            iterator_helpers_global_candidate
+                .features
+                .difference(&profile.features)
+                .next()
+                .is_none()
+        );
+        assert!(
+            iterator_helpers_global_candidate
+                .audited_negative_tests
+                .difference(&profile.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            profile.allows_async_execution(),
+            iterator_helpers_global_candidate.allows_async_execution()
+        );
     }
 
     #[test]
