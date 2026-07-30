@@ -16,6 +16,13 @@ answer();`,
 values[0] + values[1] + values[2];`,
   },
   {
+    id: "uint8-codec",
+    label: "Uint8Array.fromHex",
+    source: `var bytes = Uint8Array.fromHex("2a");
+
+bytes[0];`,
+  },
+  {
     id: "class",
     label: "Class instance",
     source: `class Counter {

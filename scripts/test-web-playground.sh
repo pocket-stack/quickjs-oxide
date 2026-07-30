@@ -66,6 +66,7 @@ const examplesModule = await import(
 const expected = new Map([
   ["return-42", { kind: "number", text: "42" }],
   ["typed-array", { kind: "number", text: "42" }],
+  ["uint8-codec", { kind: "number", text: "42" }],
   ["class", { kind: "number", text: "42" }],
   ["promise", { kind: "boolean", text: "true" }],
   ["array-pipeline", { kind: "number", text: "42" }],
