@@ -11,8 +11,8 @@ Last audited: 2026-07-30.
 - Test262 commit: `5c8206929d81b2d3d727ca6aac56c18358c8d790`
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
-- quickjs-oxide 80-tag capability profile SHA-256:
-  `99ad7997a6328ab24f87af9575f9e8ddda76db81092c008d5a84e06a84a0c5ee`
+- quickjs-oxide 81-tag capability profile SHA-256:
+  `2bfad693206dd09934a4c95ca241c49c4997ad795b8f0016571aada9c2cf1804`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -37,7 +37,8 @@ This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
 surfaces. Modules, most `$262` host hooks, Uint8Array codecs,
 SharedArrayBuffer/Atomics, and many other broad built-ins remain absent. Proxy
-is measured separately by the checksum-bound R3am scoped gate below.
+is measured by the checksum-bound R3am scoped gate and admitted globally by
+R3bh below.
 The pure ArrayBuffer core is measured by the checksum-bound R3an gate, its
 DataView layer by R3ao, and the shared 12-class TypedArray kernel by R3ap.
 R3aq promotes the TypedArray mutation cohort, and R3ar promotes the indexed
@@ -82,28 +83,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 55,626 pass;
+- 56,413 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 27,457 are classified as unsupported because of a feature, mode, host
+- 26,670 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
-  provenance;
+  provenance, including 21,703 `unsupported-feature` variants;
 - 18 fail to parse, 402 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 56,154 variants to execution. That count includes variants
+The runner admitted 56,941 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 54.52% (`55,626 / 102,037`);
-- conservative target-scope lower bound: 66.57%
-  (`55,626 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.15%
-  (`55,626 / 56,105`).
+- raw suite pass rate: 55.29% (`56,413 / 102,037`);
+- conservative target-scope lower bound: 67.51%
+  (`56,413 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.16%
+  (`56,413 / 56,892`).
 
-The 66.57% figure is the useful whole-project progress floor, not a claim that
-the engine is 66.57% conformant. The 99.15% conditional rate measures quality
+The 67.51% figure is the useful whole-project progress floor, not a claim that
+the engine is 67.51% conformant. The 99.16% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -131,7 +132,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 80
+or pinned-target-error outcomes. The capability profile currently admits 81
 reviewed Test262 feature tags and 802 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -158,11 +159,10 @@ and the generic runner retain their existing parallel defaults. The current
 byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-Two independent formal two-worker runs reproduce the pinned canonical
-measurement. Its TSV and JSONL SHA-256 values are
-`bdeb287ea6f74baefa0eb034773aa57f7c87f9ecaa6d2af20f27a6ea94b53693`
+The canonical two-worker measurement's TSV and JSONL SHA-256 values are
+`b634753cd21d2ed2194ee6170bfaf530767ffbc591b04d16e21ca30021b96623`
 and
-`916fbebcb964be779138ca6ad588d14b9cf3e55c0f22b4aaeb474739bdb74ece`.
+`94ffbb29cbac96a3b1237ce3b4521b56f336f75020ff256ba79fb1875a5e63bb`.
 
 ## Milestone policy
 
@@ -6123,6 +6123,48 @@ QuickJS differentials for the `with`-statement spillover.
 Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-ins
 remain explicit frontiers.
 
+## R3bh Proxy global admission
+
+R3bh adds exactly one tag, `Proxy`, to the checksum-pinned global profile,
+which now contains 81 reviewed feature tags. The profile SHA-256 is
+`2bfad693206dd09934a4c95ca241c49c4997ad795b8f0016571aada9c2cf1804`.
+No adjacent module, host, SharedArrayBuffer/Atomics, or other broad built-in
+capability is admitted.
+
+The Proxy-only activation partition contains 405 paths / 787 variants. Every
+variant passes. A disjoint reason-only partition contains 21 paths / 42
+variants which remain `unsupported-feature`: removing `Proxy` from their
+diagnostic exposes another unsupported dependency, so these rows change only
+bookkeeping detail and do not become runnable.
+
+The historical R3be TypedArray gate now reconstructs its exact 80-tag parent
+profile from a checked-in feature inventory. Later global admissions therefore
+cannot silently alter that older transition receipt or its reason-only ledger.
+
+Four already-exposed Test262 variants remain deliberate pinned-target
+deviations:
+
+- `test/staging/sm/object/defineProperties-order.js` in sloppy and strict mode;
+- `test/staging/sm/regress/regress-1383630.js` in sloppy and strict mode.
+
+QuickJS 2026-06-04 fails the same four variants. The first observes QuickJS's
+batch descriptor-enumerability snapshot order in `Object.defineProperties`;
+the second observes its incomplete fixed-descriptor compatibility check in a
+Proxy `getOwnPropertyDescriptor` trap. Focused differential regressions freeze
+those target behaviors. R3bh therefore does not change the runtime to satisfy
+the conflicting Test262 expectations at the cost of QuickJS feature parity.
+
+The exact complete vector reaches 56,413/102,037 passes with 56,941 runnable
+variants and 21,703 `unsupported-feature` outcomes. Its canonical full
+TSV/JSONL SHA-256 values are
+`b634753cd21d2ed2194ee6170bfaf530767ffbc591b04d16e21ca30021b96623`
+and
+`94ffbb29cbac96a3b1237ce3b4521b56f336f75020ff256ba79fb1875a5e63bb`.
+All 787 newly activated variants move from `unsupported-feature` to `pass`;
+the 42 reason-only variants retain their outcome, and no previous pass
+regresses. This is a profile and evidence milestone, not a Feature Parity
+completion claim.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -6673,6 +6715,13 @@ The exact full join changes 3,686 unsupported rows to pass, changes only 938
 other diagnostic details, and has no other row movement or previous-pass
 regression. The complete vector reaches 55,626/102,037 with 56,154 runnable
 variants; no production runtime code changes.
+R3bh then admits the global `Proxy` tag. Its Proxy-only activation contains
+405 paths / 787 variants, all passing, while 21 paths / 42 variants remain
+reason-only rows behind other unsupported dependencies. The complete vector
+reaches 56,413/102,037 with 56,941 runnable variants and no previous-pass
+regression. Four already-exposed staging variants still fail in both engines
+and are frozen as pinned QuickJS target deviations rather than “fixed” away
+from the parity target.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

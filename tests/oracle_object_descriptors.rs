@@ -143,6 +143,17 @@ const CONVERSION_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const PROXY_GOPD_SAME_VALUE_OMISSION: &str = r#"(function(){
+    var target=Object(),fixed=Object();
+    fixed.value=2;fixed.writable=false;fixed.enumerable=true;fixed.configurable=false;
+    Object.defineProperty(target,"x",fixed);
+    var proxy=new Proxy(target,{getOwnPropertyDescriptor:function(){
+        return {value:1,writable:false,enumerable:true,configurable:false};
+    }});
+    var result=Object.getOwnPropertyDescriptor(proxy,"x");
+    return result.value+":"+result.writable+":"+result.enumerable+":"+result.configurable+"|"+target.x;
+})()"#;
+
 const BULK_CASES: &[(&str, &str)] = &[
     (
         "bulk includes every own string symbol and nonenumerable key in canonical order",
@@ -222,6 +233,10 @@ const EXOTIC_CASES: &[(&str, &str)] = &[
             }
             return "missing";
         })()"#,
+    ),
+    (
+        "pinned QuickJS omits the fixed data descriptor same value check",
+        PROXY_GOPD_SAME_VALUE_OMISSION,
     ),
     (
         "TypedArray singular descriptors cover valid out of range and minus zero indices",
@@ -337,6 +352,21 @@ fn object_descriptor_bulk_surface_matches_pinned_quickjs() {
 #[test]
 fn object_descriptor_exotic_surfaces_match_pinned_quickjs() {
     compare_cases("Object descriptor exotic surfaces", EXOTIC_CASES);
+}
+
+#[test]
+fn object_descriptor_pins_quickjs_proxy_same_value_omission_without_an_oracle() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_eq!(
+        observe_rust_eval(
+            &runtime,
+            &mut context,
+            PROXY_GOPD_SAME_VALUE_OMISSION,
+            "Proxy gOPD same-value omission",
+        ),
+        "return|string|1:false:true:false|2",
+    );
 }
 
 #[test]

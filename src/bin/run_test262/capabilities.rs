@@ -254,7 +254,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 80] = [
+    const EXPECTED_FEATURES: [&str; 81] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -264,6 +264,7 @@ mod tests {
         "Math.sumPrecise",
         "Object.fromEntries",
         "Object.hasOwn",
+        "Proxy",
         "Reflect",
         "Reflect.construct",
         "Reflect.set",

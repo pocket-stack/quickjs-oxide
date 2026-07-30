@@ -120,6 +120,19 @@ const CREATE_AND_PROTOTYPE_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const DEFINE_PROPERTIES_PROXY_ORDER: &str = r#"(function(){
+    function run(create){
+        var log=[],logger=new Proxy({},{
+            get:function(target,key){log.push(String(key))}
+        });
+        var descriptors=new Proxy({a:{value:0},b:{value:1}},logger);
+        if(create)Object.create(null,descriptors);
+        else Object.defineProperties({},descriptors);
+        return log.join(",");
+    }
+    return run(true)+"|"+run(false);
+})()"#;
+
 const DEFINE_PROPERTY_CASES: &[(&str, &str)] = &[
     (
         "Object.defineProperty applies data and accessor descriptors",
@@ -200,6 +213,10 @@ const DEFINE_PROPERTY_CASES: &[(&str, &str)] = &[
             }
             return "missing";
         })()"#,
+    ),
+    (
+        "QuickJS snapshots Proxy enumerability before reading descriptor values",
+        DEFINE_PROPERTIES_PROXY_ORDER,
     ),
     (
         "Object.create shares defineProperties partial failure behavior",
@@ -480,6 +497,22 @@ fn object_create_and_prototype_statics_match_pinned_quickjs() {
 #[test]
 fn object_descriptor_conversion_matches_pinned_quickjs() {
     compare_value_cases("Object descriptor conversion", DEFINE_PROPERTY_CASES);
+}
+
+#[test]
+fn object_define_properties_pins_quickjs_proxy_batch_order_without_an_oracle() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_eq!(
+        observe_rust_eval(
+            &runtime,
+            &mut context,
+            DEFINE_PROPERTIES_PROXY_ORDER,
+            "Object.defineProperties Proxy batch order",
+        ),
+        "return|string|ownKeys,getOwnPropertyDescriptor,getOwnPropertyDescriptor,get,get|\
+         ownKeys,getOwnPropertyDescriptor,getOwnPropertyDescriptor,get,get",
+    );
 }
 
 #[test]

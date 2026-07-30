@@ -902,26 +902,28 @@ const QUIRK_CASES: &[(&str, &str)] = &[
         })()"#,
     ),
     (
-        "pinned getOwnPropertyDescriptor frozen checks compare flags but not value or getter identity",
+        "pinned getOwnPropertyDescriptor frozen checks omit value getter and setter identity",
         r#"(function(){
             var data={},accessor={},first=function(){return 1},second=function(){return 2};
+            var firstSetter=function(){},secondSetter=function(){};
             Object.defineProperty(data,"x",{
                 value:1,writable:false,enumerable:false,configurable:false
             });
             Object.defineProperty(accessor,"x",{
-                get:first,set:undefined,enumerable:false,configurable:false
+                get:first,set:firstSetter,enumerable:false,configurable:false
             });
             var dataProxy=new Proxy(data,{getOwnPropertyDescriptor:function(){
                 return {value:2,writable:false,enumerable:false,configurable:false};
             }});
             var accessorProxy=new Proxy(accessor,{getOwnPropertyDescriptor:function(){
-                return {get:second,set:undefined,enumerable:false,configurable:false};
+                return {get:second,set:secondSetter,enumerable:false,configurable:false};
             }});
             var dataDescriptor=Object.getOwnPropertyDescriptor(dataProxy,"x");
             var accessorDescriptor=Object.getOwnPropertyDescriptor(accessorProxy,"x");
             return [
                 dataDescriptor.value,dataDescriptor.value!==data.x,
-                accessorDescriptor.get===second,accessorDescriptor.get!==first
+                accessorDescriptor.get===second,accessorDescriptor.get!==first,
+                accessorDescriptor.set===secondSetter,accessorDescriptor.set!==firstSetter
             ].join("|");
         })()"#,
     ),
@@ -1148,6 +1150,10 @@ fn proxy_forwarding_and_generic_consumers_have_rust_only_regressions() {
         (
             "pinned descriptor conversion replaces an abrupt HasProperty with the following Get",
             "return|string|d:42:1:11|has:enumerable|get:enumerable|has:configurable|get:configurable|has:value|get:value|has:writable|get:writable|has:get|has:set",
+        ),
+        (
+            "pinned getOwnPropertyDescriptor frozen checks omit value getter and setter identity",
+            "return|string|2|true|true|true|true|true",
         ),
         (
             "nested ownKeys fallback rechecks the Proxy which supplied the trap",

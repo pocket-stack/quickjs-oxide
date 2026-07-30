@@ -4,6 +4,42 @@ Last audited: 2026-07-30. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bh Proxy global admission
+
+R3bh admits exactly the `Proxy` tag into the checksum-pinned global Test262
+profile, bringing it to 81 reviewed feature tags with SHA-256
+`2bfad693206dd09934a4c95ca241c49c4997ad795b8f0016571aada9c2cf1804`.
+The Proxy-only activation partition contains 405 paths / 787 variants, all
+passing. A disjoint 21-path / 42-variant reason-only partition remains
+`unsupported-feature` because every row has another unsupported dependency.
+
+The exact complete vector now reaches 56,413/102,037 passes with 56,941
+runnable variants and 21,703 `unsupported-feature` outcomes. That is 55.29%
+raw, a 67.51% lower bound after the 18,475 pinned QuickJS target exclusions,
+and 99.16% among the 56,892 variants with a non-unsupported observed outcome.
+Canonical full TSV/JSONL SHA-256 values are
+`b634753cd21d2ed2194ee6170bfaf530767ffbc591b04d16e21ca30021b96623`
+and
+`94ffbb29cbac96a3b1237ce3b4521b56f336f75020ff256ba79fb1875a5e63bb`.
+All 787 newly activated variants move from `unsupported-feature` to `pass`;
+the 42 reason-only rows change only diagnostic detail, and no previous pass
+regresses. The older R3be TypedArray receipt now derives from an immutable
+checked-in 80-tag inventory, so later global admissions cannot move its
+historical partitions.
+
+Four already-exposed Test262 variants still fail in both Oxide and pinned
+QuickJS 2026-06-04: sloppy/strict
+`test/staging/sm/object/defineProperties-order.js` and sloppy/strict
+`test/staging/sm/regress/regress-1383630.js`. They respectively pin QuickJS's
+batch descriptor-enumerability snapshot order and its incomplete Proxy
+fixed-descriptor compatibility check. Differential regressions now preserve
+those target deviations, so the runtime is not changed to satisfy conflicting
+Test262 expectations at the expense of QuickJS feature parity.
+
+R3bh is a profile and evidence milestone; it does not claim Feature Parity.
+Modules, host hooks, SharedArrayBuffer/Atomics, and broad built-in coverage
+remain explicit frontiers.
+
 ## R3bg exotic object oracle activation
 
 R3bg removes seven obsolete capability sentinels which still expected
@@ -60,7 +96,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 80 reviewed feature tags and 802 exact audited
+  capability profile now admits 81 reviewed feature tags and 802 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -88,18 +124,21 @@ workstream. Build and architecture details live in
   authenticates static `TypedArray.from`, including QuickJS's nullish-source
   diagnostics, materialize-before-construct ordering, and hidden-list value
   lifetime. R3be then admits the global `TypedArray` feature after freezing its
-  exact activation and spillover partitions. The cumulative scoped gate now
+  exact activation and spillover partitions. R3bh admits the globally audited
+  `Proxy` feature after its 405-path / 787-variant activation passes in full;
+  21 paths / 42 variants remain reason-only rows behind other unsupported
+  dependencies. The cumulative TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 55,626 passes and 56,154 runnable variants:
-  54.52% raw,
-  a 66.57% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.15% among the 56,105 variants with a non-unsupported observed outcome. It
+  measurement has 56,413 passes and 56,941 runnable variants:
+  55.29% raw,
+  a 67.51% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.16% among the 56,892 variants with a non-unsupported observed outcome. It
   records 18 parse failures, 402 runtime failures, and 57 harness failures.
-  The exact R3be join preserves all 102,037 keys with no other outcome movement
-  or previous-pass regression. Current full TSV/JSONL SHA-256 values are
-  `bdeb287ea6f74baefa0eb034773aa57f7c87f9ecaa6d2af20f27a6ea94b53693`
+  The exact R3bh join preserves all 102,037 keys with no previous-pass
+  regression. Current full TSV/JSONL SHA-256 values are
+  `b634753cd21d2ed2194ee6170bfaf530767ffbc591b04d16e21ca30021b96623`
   and
-  `916fbebcb964be779138ca6ad588d14b9cf3e55c0f22b4aaeb474739bdb74ece`.
+  `94ffbb29cbac96a3b1237ce3b4521b56f336f75020ff256ba79fb1875a5e63bb`.
   Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
   coverage remain explicit frontiers.
   The fixed smoke now

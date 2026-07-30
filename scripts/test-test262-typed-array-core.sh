@@ -10,7 +10,9 @@ baseline=tests/test262-typed-array-core-baseline.txt
 manifest=tests/test262-typed-array-core.txt
 profile=tests/test262-typed-array-core.conf
 exclusions=tests/test262-typed-array-core-exclusions.tsv
-global_profile=compat/test262-oxide.conf
+current_global_profile=compat/test262-oxide.conf
+r3be_global_features=tests/test262-typed-array-r3be-global-features.txt
+global_profile=
 global_activation_baseline=tests/test262-typed-array-global-activation-baseline.txt
 global_activation_manifest=tests/test262-typed-array-global-activation.txt
 global_reason_only_manifest=tests/test262-typed-array-global-reason-only.txt
@@ -224,6 +226,8 @@ expected_manifest=91ac9a132c8099ecd15d3cfcfe160b21a1f7e9a083a5210a33406606270ad3
 expected_keys=e8e3c0d8f19343bbf0160c5af3239caa98fb7e01d006ff6b53f0d946a500e7cc
 expected_previous_global_profile=9b155f41c9c7541423c45b57da1bb805d6e7cf350ec7d6442d6700424afdbafc
 expected_global_profile=99ad7997a6328ab24f87af9575f9e8ddda76db81092c008d5a84e06a84a0c5ee
+expected_r3be_global_features=0208ceb83f737212fcd881dd43b95731d63196c3a1f7e3844d0c79ba1f9da0a8
+expected_r3be_global_feature_count=80
 expected_global_activation_paths=1865
 expected_global_activation=44a9b901eb59f9dc41dde71e0595d2777f52814a864632e7e27bdd739654bdee
 expected_global_activation_variants=3686
@@ -1475,7 +1479,8 @@ for required in \
     "$manifest" \
     "$profile" \
     "$exclusions" \
-    "$global_profile" \
+    "$current_global_profile" \
+    "$r3be_global_features" \
     "$global_activation_manifest" \
     "$global_reason_only_manifest" \
     "$global_transition_receipt"
@@ -1499,6 +1504,47 @@ if [[ ! "$workers" =~ ^[1-9][0-9]*$ ]]; then
     echo "error: TEST262_WORKERS must be a positive integer, found: $workers" >&2
     exit 2
 fi
+
+# The R3be activation receipt is historical evidence. Rebuild its exact parent
+# by retaining the checked-in 80-feature inventory, so every later global
+# admission is excluded without coupling this gate to a growing removal list.
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-typed-array-core.XXXXXX")
+trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
+global_profile=$tmp_dir/test262-oxide-r3be.conf
+awk '
+    FNR == NR {
+        if (NF && $0 !~ /^#/) retained[$0] = 1
+        next
+    }
+    $0 == "[features]" {
+        in_features = 1
+        print
+        next
+    }
+    /^\[/ {
+        in_features = 0
+        print
+        next
+    }
+    in_features && NF && $0 !~ /^#/ {
+        if ($0 in retained) print
+        next
+    }
+    { print }
+' "$r3be_global_features" "$current_global_profile" >"$global_profile"
+r3be_global_feature_count=$(awk 'NF && $0 !~ /^#/ { count++ } END { print count + 0 }' \
+    "$r3be_global_features")
+if [[ "$(sha256_file "$r3be_global_features")" \
+        != "$expected_r3be_global_features" \
+    || "$r3be_global_feature_count" != "$expected_r3be_global_feature_count" \
+    || "$(sha256_file "$global_profile")" != "$expected_global_profile" ]]; then
+    echo "error: committed R3be inventory or derived global profile drifted" >&2
+    exit 1
+fi
+awk 'NF && $0 !~ /^#/ { print }' "$r3be_global_features" | LC_ALL=C sort -c
+diff -u \
+    <(awk 'NF && $0 !~ /^#/ { print }' "$r3be_global_features") \
+    <(profile_section_from_file "$global_profile" features)
 
 if [[ "$check_only" == false ]]; then
     expect_value quickjs "$expected_quickjs"
@@ -1803,6 +1849,8 @@ fi
 if [[ "$(sha256_file "$profile")" != "$expected_profile" \
     || "$(sha256_file "$manifest")" != "$expected_manifest" \
     || "$(sha256_file "$exclusions")" != "$expected_exclusions_file" \
+    || "$(sha256_file "$r3be_global_features")" \
+        != "$expected_r3be_global_features" \
     || "$(sha256_file "$global_profile")" != "$expected_global_profile" \
     || "$(sha256_file "$global_activation_manifest")" \
         != "$expected_global_activation" \
@@ -1840,8 +1888,6 @@ if [[ "$(profile_section_from_file "$global_profile" features \
     exit 1
 fi
 
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-typed-array-core.XXXXXX")
-trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 direct_base=$tmp_dir/direct-base.txt
 array_buffer_inventory=$tmp_dir/array-buffer.txt
 array_buffer_interop=$tmp_dir/array-buffer-interop.txt
