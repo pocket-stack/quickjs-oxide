@@ -11,8 +11,8 @@ Last audited: 2026-07-30.
 - Test262 commit: `5c8206929d81b2d3d727ca6aac56c18358c8d790`
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
-- quickjs-oxide 81-tag capability profile SHA-256:
-  `2bfad693206dd09934a4c95ca241c49c4997ad795b8f0016571aada9c2cf1804`
+- quickjs-oxide 82-tag capability profile SHA-256:
+  `205554c5686ef2ec77420984ce038d321411a11acabefd2c37d9b63b67fcba62`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -72,10 +72,10 @@ blocks, private elements, and
 public/private synchronous generator methods are measured by the scoped
 R3g/R3h/R3i/R3j/R3k/R3l gates below.
 
-Nineteen additional provenance variants guard the result: eight audited negative
-variants pass for the intended parse error, while 11 unsupported grammar
-variants fail closed instead of passing because they happened to throw a
-`SyntaxError`.
+Nineteen additional provenance variants guard the result: 10 audited negative
+variants pass for the intended parse error, while nine variants fail closed
+behind unsupported features or unaudited negative provenance instead of
+passing because they happened to throw a `SyntaxError`.
 
 ## Complete classified vector
 
@@ -83,28 +83,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 56,422 pass;
+- 56,526 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 26,670 are classified as unsupported because of a feature, mode, host
+- 26,566 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
-  provenance, including 21,703 `unsupported-feature` variants;
+  provenance, including 21,599 `unsupported-feature` variants;
 - 11 fail to parse, 400 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 56,941 variants to execution. That count includes variants
+The runner admitted 57,045 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 55.30% (`56,422 / 102,037`);
-- conservative target-scope lower bound: 67.52%
-  (`56,422 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.17%
-  (`56,422 / 56,892`).
+- raw suite pass rate: 55.40% (`56,526 / 102,037`);
+- conservative target-scope lower bound: 67.65%
+  (`56,526 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.18%
+  (`56,526 / 56,996`).
 
-The 67.52% figure is the useful whole-project progress floor, not a claim that
-the engine is 67.52% conformant. The 99.17% conditional rate measures quality
+The 67.65% figure is the useful whole-project progress floor, not a claim that
+the engine is 67.65% conformant. The 99.18% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -132,8 +132,8 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 81
-reviewed Test262 feature tags and 802 reviewed
+or pinned-target-error outcomes. The capability profile currently admits 82
+reviewed Test262 feature tags and 828 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
 lands can only make the measurement more representative. Focused QuickJS
@@ -160,9 +160,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The canonical two-worker measurement's TSV and JSONL SHA-256 values are
-`5c388e568e6ee9e09799bc0f471a5926f0b680bd8f4d781e84130fce1a968e8a`
+`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
 and
-`19f076e99f56f22374a533e1f9c8fead0775bf81d2d1940641ae322901c1cc88`.
+`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
 
 ## Milestone policy
 
@@ -6137,9 +6137,11 @@ variants which remain `unsupported-feature`: removing `Proxy` from their
 diagnostic exposes another unsupported dependency, so these rows change only
 bookkeeping detail and do not become runnable.
 
-The historical R3be TypedArray gate now reconstructs its exact 80-tag parent
-profile from a checked-in feature inventory. Later global admissions therefore
-cannot silently alter that older transition receipt or its reason-only ledger.
+At R3bh, the historical R3be TypedArray gate began reconstructing its 80-tag
+feature side from a checked-in inventory. Its 802 audited negative paths still
+came from the growing global profile, so feature admission was decoupled but
+negative-provenance admission was not. R3bj below closes that remaining
+historical coupling.
 
 Four already-exposed Test262 variants remain deliberate pinned-target
 deviations:
@@ -6205,6 +6207,38 @@ retain the four reason-only rows. The Iterator adjacency cohort and the
 for-await-of exclusion are likewise left visible for their own cohesive gate
 refreshes. This focused implementation is not a Feature Parity completion
 claim.
+
+## R3bj optional chaining global admission
+
+R3bj adds exactly `optional-chaining` and the focused gate's 26 audited
+parse-negative paths to the global profile. The resulting 82-feature,
+828-negative profile has SHA-256
+`205554c5686ef2ec77420984ce038d321411a11acabefd2c37d9b63b67fcba62`.
+No adjacent class-private, Iterator Helper, module, host, or other broad
+built-in feature is admitted.
+
+The dependency-clean activation contains 52 paths / 104 variants, all of which
+move from `unsupported-feature` to `pass`. Four class/private paths / eight
+variants remain `unsupported-feature` behind another dependency and change
+diagnostic detail only. The provenance canary now records 10 intended parse
+passes and nine fail-closed variants.
+
+The exact R3bi/R3bj full join retains all 102,037 keys and every previous pass.
+The complete vector reaches 56,526 passes with 57,045 runnable variants and
+21,599 `unsupported-feature` outcomes. Its raw, pinned-target lower-bound, and
+observed-frontier rates are 55.40%, 67.65%, and 99.18% respectively. Canonical
+full TSV/JSONL SHA-256 values are
+`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+and
+`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
+
+R3bj also makes the historical R3be TypedArray receipt independent of both
+kinds of later profile growth. Its reconstructed parent uses the checked-in
+80-tag inventory plus the immutable 802-path negative section of
+`tests/test262-iterator-sequencing.conf`; it no longer reads either historical
+section from the current global profile. The Iterator adjacency cohort and
+for-await-of ledger remain separate follow-up gates. This is not a Feature
+Parity completion claim.
 
 ## Runner contract
 
@@ -6769,6 +6803,13 @@ all passing in both engines, while four class/private paths and 14 hidden
 Iterator-adjacency paths remain explicit ledgers. Nine already-runnable
 staging variants turn green, advancing the unchanged conservative global
 profile to 56,422/102,037 passes without admitting the broad feature tag.
+R3bj admits that `optional-chaining` tag together with all 26 audited
+parse-negative paths. The 104 dependency-clean variants move from
+`unsupported-feature` to `pass`, eight class/private variants remain
+reason-only, and no previous pass regresses. The complete vector reaches
+56,526/102,037 with 57,045 runnable variants. R3bj also freezes the historical
+R3be TypedArray parent's 802-path negative-provenance source, completing the
+decoupling begun by R3bh's 80-tag feature inventory.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

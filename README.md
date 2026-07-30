@@ -10,11 +10,10 @@ QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 `map`/`filter` and `slice`/`subarray`, plus non-species `with` and
 `toReversed`, dedicated `join`/`toLocaleString`, inherited `toString`, and
 QuickJS-shaped `sort`/`toSorted`, certified `entries`/`keys` iterators, and
-pinned-QuickJS-certified static `of` and `from`. The global `TypedArray` and
-`Proxy` feature tags are now admitted through checksum-bound audits. Optional
-chaining passes its independent 104-variant focused gate; global admission
-remains a separate audit. The complete conservative vector is 56,422/102,037
-with 56,941 runnable variants. Uint8Array codecs, modules,
+pinned-QuickJS-certified static `of` and `from`. The global `TypedArray`,
+`Proxy`, and `optional-chaining` feature tags are now admitted through
+checksum-bound audits. The complete conservative vector is 56,526/102,037
+with 57,045 runnable variants. Uint8Array codecs, modules,
 SharedArrayBuffer/Atomics, and broad built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.

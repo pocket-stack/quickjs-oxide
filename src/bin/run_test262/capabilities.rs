@@ -250,11 +250,15 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-generator-destructuring.conf"
     ));
+    const OPTIONAL_CHAINING_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-optional-chaining.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 81] = [
+    const EXPECTED_FEATURES: [&str; 82] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -323,6 +327,7 @@ mod tests {
         "numeric-separator-literal",
         "object-spread",
         "optional-catch-binding",
+        "optional-chaining",
         "regexp-dotall",
         "regexp-duplicate-named-groups",
         "regexp-lookbehind",
@@ -661,7 +666,7 @@ mod tests {
                 .all(|path| !previously_audited_negatives.contains(path.as_str()))
         );
 
-        let expected_audited_negatives = previously_audited_negatives
+        let previously_audited_negatives = previously_audited_negatives
             .into_iter()
             .chain(
                 generator_destructuring_profile
@@ -670,14 +675,31 @@ mod tests {
                     .map(String::as_str),
             )
             .collect::<BTreeSet<_>>();
-        assert_eq!(expected_audited_negatives.len(), 802);
+        assert_eq!(previously_audited_negatives.len(), 802);
+
+        let optional_chaining_profile = OxideProfile::parse(OPTIONAL_CHAINING_PROFILE).unwrap();
         assert!(
-            profile
-                .audited_negative_tests
+            optional_chaining_profile
+                .features
                 .iter()
                 .map(String::as_str)
-                .eq(expected_audited_negatives)
+                .eq(EXPECTED_FEATURES)
         );
+        assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
+        assert!(previously_audited_negatives.iter().all(|path| {
+            optional_chaining_profile
+                .audited_negative_tests
+                .contains(*path)
+        }));
+        assert_eq!(
+            optional_chaining_profile
+                .audited_negative_tests
+                .iter()
+                .filter(|path| !previously_audited_negatives.contains(path.as_str()))
+                .count(),
+            26
+        );
+        assert_eq!(profile, optional_chaining_profile);
     }
 
     #[test]

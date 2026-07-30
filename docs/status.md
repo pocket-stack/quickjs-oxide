@@ -4,6 +4,41 @@ Last audited: 2026-07-30. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bj optional chaining global admission
+
+R3bj admits exactly the `optional-chaining` tag and its 26 audited
+parse-negative paths into the checksum-pinned global Test262 profile. The
+profile now contains 82 reviewed feature tags and 828 reviewed negative paths;
+its SHA-256 is
+`205554c5686ef2ec77420984ce038d321411a11acabefd2c37d9b63b67fcba62`.
+
+The dependency-clean activation contains 52 paths / 104 variants. All 104 move
+from `unsupported-feature` to `pass`. Four class/private paths / eight variants
+remain `unsupported-feature` behind another dependency and change diagnostic
+detail only. The provenance canary consequently records 10 intended parse
+passes and nine fail-closed variants.
+
+The exact complete vector reaches 56,526/102,037 passes with 57,045 runnable
+variants and 21,599 `unsupported-feature` outcomes. That is 55.40% raw, a
+67.65% lower bound after the 18,475 pinned QuickJS target exclusions, and
+99.18% among the 56,996 variants with a non-unsupported observed outcome.
+Canonical full TSV/JSONL SHA-256 values are
+`84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
+and
+`96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
+No previous pass regresses.
+
+R3bj also closes the remaining historical coupling in the R3be TypedArray
+receipt. Its reconstructed parent now takes the frozen 80-tag inventory and
+the immutable 802-path negative section from the checksum-bound Iterator
+sequencing profile, rather than reading either section from the growing global
+profile. Later feature or negative-provenance admissions therefore cannot move
+the R3be activation or reason-only partitions.
+
+This is a profile and evidence milestone, not a Feature Parity completion
+claim. The Iterator Helper adjacency cohort and the for-await-of ledger remain
+separate follow-up gates.
+
 ## R3bi optional chaining focused implementation
 
 R3bi ports QuickJS-shaped optional chaining in the compiler without adding a
@@ -61,9 +96,10 @@ and
 `94ffbb29cbac96a3b1237ce3b4521b56f336f75020ff256ba79fb1875a5e63bb`.
 All 787 newly activated variants move from `unsupported-feature` to `pass`;
 the 42 reason-only rows change only diagnostic detail, and no previous pass
-regresses. The older R3be TypedArray receipt now derives from an immutable
-checked-in 80-tag inventory, so later global admissions cannot move its
-historical partitions.
+regresses. R3bh froze the feature side of the older R3be TypedArray parent with
+an immutable checked-in 80-tag inventory, but its 802 negative-provenance
+paths still came from the growing global profile. R3bj above closes that
+remaining historical coupling.
 
 Four already-exposed Test262 variants still fail in both Oxide and pinned
 QuickJS 2026-06-04: sloppy/strict
@@ -134,7 +170,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 81 reviewed feature tags and 802 exact audited
+  capability profile now admits 82 reviewed feature tags and 828 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -166,19 +202,22 @@ workstream. Build and architecture details live in
   `Proxy` feature after its 405-path / 787-variant activation passes in full;
   21 paths / 42 variants remain reason-only rows behind other unsupported
   dependencies. R3bi then implements QuickJS-shaped optional chaining and
-  authenticates its 104-variant dependency-clean focused cohort without yet
-  admitting the global tag. The cumulative TypedArray scoped gate still
+  authenticates its 104-variant dependency-clean focused cohort. R3bj admits
+  the global tag together with its 26 audited negative paths; all 104
+  dependency-clean variants pass, while eight class/private variants remain
+  reason-only. It also freezes the historical R3be parent's 802-path negative
+  source. The cumulative TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 56,422 passes and 56,941 runnable variants:
-  55.30% raw,
-  a 67.52% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.17% among the 56,892 variants with a non-unsupported observed outcome. It
+  measurement has 56,526 passes and 57,045 runnable variants:
+  55.40% raw,
+  a 67.65% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.18% among the 56,996 variants with a non-unsupported observed outcome. It
   records 11 parse failures, 400 runtime failures, and 57 harness failures.
-  The exact R3bi join preserves all 102,037 keys with no previous-pass
+  The exact R3bj join preserves all 102,037 keys with no previous-pass
   regression. Current full TSV/JSONL SHA-256 values are
-  `5c388e568e6ee9e09799bc0f471a5926f0b680bd8f4d781e84130fce1a968e8a`
+  `84c15d4a25343e1d306e17f431e515993abe09db76590920539eefe93d6fb3eb`
   and
-  `19f076e99f56f22374a533e1f9c8fead0775bf81d2d1940641ae322901c1cc88`.
+  `96ebd4a8f51001b403e88d19c128bebb92b74bb9abf1e45c832b187924c635fd`.
   Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
   coverage remain explicit frontiers.
   The fixed smoke now

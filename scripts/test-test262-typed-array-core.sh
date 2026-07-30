@@ -12,6 +12,7 @@ profile=tests/test262-typed-array-core.conf
 exclusions=tests/test262-typed-array-core-exclusions.tsv
 current_global_profile=compat/test262-oxide.conf
 r3be_global_features=tests/test262-typed-array-r3be-global-features.txt
+r3be_global_negatives_profile=tests/test262-iterator-sequencing.conf
 global_profile=
 global_activation_baseline=tests/test262-typed-array-global-activation-baseline.txt
 global_activation_manifest=tests/test262-typed-array-global-activation.txt
@@ -228,6 +229,9 @@ expected_previous_global_profile=9b155f41c9c7541423c45b57da1bb805d6e7cf350ec7d64
 expected_global_profile=99ad7997a6328ab24f87af9575f9e8ddda76db81092c008d5a84e06a84a0c5ee
 expected_r3be_global_features=0208ceb83f737212fcd881dd43b95731d63196c3a1f7e3844d0c79ba1f9da0a8
 expected_r3be_global_feature_count=80
+expected_r3be_global_negatives_profile=8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a
+expected_r3be_global_negative_count=802
+expected_r3be_global_negatives=cde5aaadfe8a4330ff4961e637fa0cafc8814249345e6e8307a6b0c46b53a448
 expected_global_activation_paths=1865
 expected_global_activation=44a9b901eb59f9dc41dde71e0595d2777f52814a864632e7e27bdd739654bdee
 expected_global_activation_variants=3686
@@ -1481,6 +1485,7 @@ for required in \
     "$exclusions" \
     "$current_global_profile" \
     "$r3be_global_features" \
+    "$r3be_global_negatives_profile" \
     "$global_activation_manifest" \
     "$global_reason_only_manifest" \
     "$global_transition_receipt"
@@ -1506,12 +1511,27 @@ if [[ ! "$workers" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # The R3be activation receipt is historical evidence. Rebuild its exact parent
-# by retaining the checked-in 80-feature inventory, so every later global
-# admission is excluded without coupling this gate to a growing removal list.
+# from the checked-in 80-feature inventory and the immutable 802-path negative
+# section of the Iterator sequencing profile. Later global feature admissions
+# are filtered out, and later global negative admissions are never read.
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-typed-array-core.XXXXXX")
 trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 global_profile=$tmp_dir/test262-oxide-r3be.conf
-awk '
+r3be_global_negatives=$tmp_dir/test262-oxide-r3be-negatives.txt
+profile_section_from_file \
+    "$r3be_global_negatives_profile" \
+    audited-negative-tests >"$r3be_global_negatives"
+r3be_global_negative_count=$(wc -l <"$r3be_global_negatives" | tr -d '[:space:]')
+if [[ "$(sha256_file "$r3be_global_negatives_profile")" \
+        != "$expected_r3be_global_negatives_profile" \
+    || "$r3be_global_negative_count" != "$expected_r3be_global_negative_count" \
+    || "$(sha256_file "$r3be_global_negatives")" \
+        != "$expected_r3be_global_negatives" ]]; then
+    echo "error: immutable R3be negative provenance source drifted" >&2
+    exit 1
+fi
+LC_ALL=C sort -c "$r3be_global_negatives"
+awk -v negative_file="$r3be_global_negatives" '
     FNR == NR {
         if (NF && $0 !~ /^#/) retained[$0] = 1
         next
@@ -1519,6 +1539,22 @@ awk '
     $0 == "[features]" {
         in_features = 1
         print
+        next
+    }
+    $0 == "[audited-negative-tests]" {
+        in_features = 0
+        in_negatives = 1
+        print
+        while ((getline negative < negative_file) > 0) print negative
+        close(negative_file)
+        next
+    }
+    in_negatives {
+        if ($0 == "[execution]") {
+            in_negatives = 0
+            print ""
+            print
+        }
         next
     }
     /^\[/ {
@@ -1537,6 +1573,14 @@ r3be_global_feature_count=$(awk 'NF && $0 !~ /^#/ { count++ } END { print count 
 if [[ "$(sha256_file "$r3be_global_features")" \
         != "$expected_r3be_global_features" \
     || "$r3be_global_feature_count" != "$expected_r3be_global_feature_count" \
+    || "$(profile_section_from_file \
+            "$global_profile" \
+            audited-negative-tests | wc -l | tr -d '[:space:]')" \
+        != "$expected_r3be_global_negative_count" \
+    || "$(profile_section_from_file \
+            "$global_profile" \
+            audited-negative-tests | sha256_stream)" \
+        != "$expected_r3be_global_negatives" \
     || "$(sha256_file "$global_profile")" != "$expected_global_profile" ]]; then
     echo "error: committed R3be inventory or derived global profile drifted" >&2
     exit 1
@@ -1851,6 +1895,10 @@ if [[ "$(sha256_file "$profile")" != "$expected_profile" \
     || "$(sha256_file "$exclusions")" != "$expected_exclusions_file" \
     || "$(sha256_file "$r3be_global_features")" \
         != "$expected_r3be_global_features" \
+    || "$(sha256_file "$r3be_global_negatives_profile")" \
+        != "$expected_r3be_global_negatives_profile" \
+    || "$(sha256_file "$r3be_global_negatives")" \
+        != "$expected_r3be_global_negatives" \
     || "$(sha256_file "$global_profile")" != "$expected_global_profile" \
     || "$(sha256_file "$global_activation_manifest")" \
         != "$expected_global_activation" \
