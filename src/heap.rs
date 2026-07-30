@@ -5858,12 +5858,24 @@ impl TypedArrayElementKind {
     }
 }
 
+/// Selector for the six concrete `Uint8Array` base64/hex codec builtins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Uint8ArrayCodecKind {
+    FromBase64,
+    FromHex,
+    SetFromBase64,
+    SetFromHex,
+    ToBase64,
+    ToHex,
+}
+
 /// Typed handler family for the abstract `%TypedArray%` graph, all concrete
-/// constructors, and the shared prototype method table.
+/// constructors, and the shared/concrete prototype method tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TypedArrayNativeKind {
     BaseConstructor,
     Constructor(TypedArrayElementKind),
+    Uint8Codec(Uint8ArrayCodecKind),
     From,
     Of,
     Species,
@@ -6460,6 +6472,7 @@ impl NativeFunctionId {
             | Self::TypedArray(
                 TypedArrayNativeKind::From
                 | TypedArrayNativeKind::Of
+                | TypedArrayNativeKind::Uint8Codec(_)
                 | TypedArrayNativeKind::At
                 | TypedArrayNativeKind::With
                 | TypedArrayNativeKind::Set
@@ -10001,6 +10014,62 @@ impl Heap {
             max_byte_length: data.max_byte_length,
             detached: data.detached,
         })
+    }
+
+    /// Borrow one validated live ArrayBuffer range only for a non-observable
+    /// leaf operation. The callback boundary prevents backing bytes from
+    /// escaping into runtime code which could re-enter or mutate the heap.
+    pub(crate) fn with_array_buffer_range<R>(
+        &self,
+        id: ObjectId,
+        byte_offset: usize,
+        byte_length: usize,
+        operation: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, HeapError> {
+        let ObjectPayload::ArrayBuffer(data) = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer range read reached another object class",
+            ));
+        };
+        let byte_end = byte_offset
+            .checked_add(byte_length)
+            .ok_or(HeapError::Invariant(
+                "ArrayBuffer range read overflowed usize",
+            ))?;
+        if data.detached || byte_end > data.bytes.len() {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer range read exceeded the live backing store",
+            ));
+        }
+        Ok(operation(&data.bytes[byte_offset..byte_end]))
+    }
+
+    /// Mutably borrow one validated live ArrayBuffer range only for a
+    /// non-observable leaf operation. All coercions, property access, and view
+    /// validation must finish before this callback is entered.
+    pub(crate) fn with_array_buffer_range_mut<R>(
+        &mut self,
+        id: ObjectId,
+        byte_offset: usize,
+        byte_length: usize,
+        operation: impl FnOnce(&mut [u8]) -> R,
+    ) -> Result<R, HeapError> {
+        let ObjectPayload::ArrayBuffer(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer range write reached another object class",
+            ));
+        };
+        let byte_end = byte_offset
+            .checked_add(byte_length)
+            .ok_or(HeapError::Invariant(
+                "ArrayBuffer range write overflowed usize",
+            ))?;
+        if data.detached || byte_end > data.bytes.len() {
+            return Err(HeapError::Invariant(
+                "ArrayBuffer range write exceeded the live backing store",
+            ));
+        }
+        Ok(operation(&mut data.bytes[byte_offset..byte_end]))
     }
 
     /// Copy one 1-, 2-, 4-, or 8-byte ArrayBuffer word into owned storage.

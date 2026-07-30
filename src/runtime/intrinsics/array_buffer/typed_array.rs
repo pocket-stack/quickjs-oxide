@@ -9,7 +9,7 @@ use crate::atom::PropertyKeyKind;
 use crate::heap::{
     ArrayBufferViewData, ArrayFindKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind,
     ArrayReduceKind, ArraySearchKind, ObjectData, ObjectPayload, TypedArrayData,
-    TypedArrayElementKind, TypedArrayNativeKind, TypedArrayRealmData,
+    TypedArrayElementKind, TypedArrayNativeKind, TypedArrayRealmData, Uint8ArrayCodecKind,
 };
 
 use super::*;
@@ -26,6 +26,7 @@ mod species;
 mod stringification;
 #[cfg(test)]
 mod tests;
+mod uint8_codec;
 
 /// Classification of an ECMAScript CanonicalNumericIndexString.
 ///
@@ -319,6 +320,23 @@ impl Runtime {
                 false,
                 false,
             )?;
+            if element == TypedArrayElementKind::Uint8 {
+                for (kind, name, length, min_readable_args) in [
+                    (Uint8ArrayCodecKind::ToBase64, "toBase64", 0, 1),
+                    (Uint8ArrayCodecKind::ToHex, "toHex", 0, 0),
+                    (Uint8ArrayCodecKind::SetFromBase64, "setFromBase64", 1, 2),
+                    (Uint8ArrayCodecKind::SetFromHex, "setFromHex", 1, 1),
+                ] {
+                    self.define_native_builtin_auto_init(
+                        &prototype,
+                        realm,
+                        NativeFunctionId::TypedArray(TypedArrayNativeKind::Uint8Codec(kind)),
+                        name,
+                        length,
+                        min_readable_args,
+                    )?;
+                }
+            }
             let constructor = self.new_native_builtin(
                 base_constructor.as_object(),
                 realm,
@@ -334,6 +352,21 @@ impl Runtime {
                 false,
                 false,
             )?;
+            if element == TypedArrayElementKind::Uint8 {
+                for (kind, name, min_readable_args) in [
+                    (Uint8ArrayCodecKind::FromBase64, "fromBase64", 2),
+                    (Uint8ArrayCodecKind::FromHex, "fromHex", 1),
+                ] {
+                    self.define_native_builtin_auto_init(
+                        constructor.as_object(),
+                        realm,
+                        NativeFunctionId::TypedArray(TypedArrayNativeKind::Uint8Codec(kind)),
+                        name,
+                        1,
+                        min_readable_args,
+                    )?;
+                }
+            }
             self.define_constructor_relationship(&constructor, &prototype)?;
             self.define_function_data_property(
                 global_object,
@@ -465,6 +498,9 @@ impl Runtime {
             )?)),
             TypedArrayNativeKind::Constructor(element) => {
                 self.call_typed_array_constructor(realm, element, invocation, arguments)
+            }
+            TypedArrayNativeKind::Uint8Codec(kind) => {
+                self.call_uint8_array_codec(realm, kind, invocation, arguments)
             }
             TypedArrayNativeKind::From => self.call_typed_array_from(realm, invocation, arguments),
             TypedArrayNativeKind::Of => self.call_typed_array_of(realm, invocation, arguments),

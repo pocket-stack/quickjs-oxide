@@ -4,6 +4,51 @@ Last audited: 2026-07-31. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3br focused Uint8Array base64/hex codec gate
+
+R3br implements the complete six-function codec surface from QuickJS
+2026-06-04 `quickjs.c:58741-59597`: static `Uint8Array.fromBase64` and
+`Uint8Array.fromHex`, plus prototype `toBase64`, `toHex`, `setFromBase64`,
+and `setFromHex`. The implementation preserves the pinned upstream behavior
+for function placement and descriptors, exact Uint8Array branding, base64
+alphabets and final-chunk modes, option getter order, capacity-limited and
+partial writes, detached/out-of-bounds revalidation, accepted whitespace,
+WTF-8 rejection, realm ownership, and diagnostics. A ten-vector differential
+oracle passes unchanged in both Oxide and pinned QuickJS.
+
+The checksum-bound scoped profile admits exactly `Reflect.construct`,
+`TypedArray`, and `uint8array-base64`. Its SHA-256 is
+`2e8f870a5c6d1c05adc37c759098d2412943beff8b8de3c1593ba74df7761ac9`;
+the ordered feature stream has SHA-256
+`41acf42eb5acbf12874115c7cbc757d7cb3e2ddd26603a55b55fbf95bb90532e`.
+The exhaustive sorted manifest contains 69 paths / 138 sloppy/strict variants.
+Its path-stream and complete-file SHA-256 values are
+`cbde75ee5038f3c24abfbf8f6e2734494281163bbe36370d0c81443da02a660c`
+and
+`2a52c3f54ef83a8df736e823d76e17927b670045f42d338d42a64f0e48681bb2`;
+the 138-key stream has SHA-256
+`e55870b3ba3591f83a43fb3e58c0beb6be7de35916aa6efdbde1844f4f9ba628`.
+
+All 138 variants are runnable and pass in Oxide, with zero failures,
+unsupported outcomes, or skips; pinned QuickJS independently passes the same
+138 variants. The classified TSV/JSONL SHA-256 values are
+`4862f2570cf27fed439f3bd4c731b520b2ebac1643a5b257aaa21d112592742b`
+and
+`04395a486012a649f6cba508791ebd83367a4e0db2cb7d418ec0bcc302b46663`;
+eight- and five-worker Oxide runs are byte-identical.
+
+Reproduce the implementation differential and scoped Test262 evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-uint8array-codecs.sh
+TEST262_WORKERS=5 ./scripts/test-test262-uint8array-codecs.sh
+```
+
+This is a focused implementation milestone. It does not yet add
+`uint8array-base64` to the 88-tag live global capability profile, change the
+58,168/102,037 canonical vector, or claim Feature Parity; global admission is
+the next separate evidence milestone.
+
 ## R3bq global Promise capability closure
 
 R3bq admits exactly `Promise`, `Promise.allSettled`, `Promise.any`, and

@@ -228,6 +228,10 @@ const TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256: &str =
     "dd106c074751866ce667352d3449cc0ec7d9b9072034a4f0a97050da7b7bad13";
 const TEST262_TYPED_ARRAY_CORE_MANIFEST_SHA256: &str =
     "91ac9a132c8099ecd15d3cfcfe160b21a1f7e9a083a5210a33406606270ad378";
+const TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256: &str =
+    "2e8f870a5c6d1c05adc37c759098d2412943beff8b8de3c1593ba74df7761ac9";
+const TEST262_UINT8ARRAY_CODECS_MANIFEST_SHA256: &str =
+    "2a52c3f54ef83a8df736e823d76e17927b670045f42d338d42a64f0e48681bb2";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -854,6 +858,7 @@ enum OxideProfileKind {
     ArrayBuffer,
     DataView,
     TypedArrayCore,
+    Uint8ArrayCodecs,
     Map,
     Set,
     SymbolProtocols,
@@ -1065,6 +1070,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-typed-array-core.conf"),
             OxideProfileKind::TypedArrayCore,
+        ),
+        (
+            root.join("tests/test262-uint8array-codecs.conf"),
+            OxideProfileKind::Uint8ArrayCodecs,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1960,6 +1969,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-typed-array-core.txt",
             TEST262_TYPED_ARRAY_CORE_MANIFEST_SHA256,
         ),
+        OxideProfileKind::Uint8ArrayCodecs => verify_scoped_pinned_profile(
+            options,
+            "Uint8Array base64 and hexadecimal codecs",
+            TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256,
+            "tests/test262-uint8array-codecs.txt",
+            TEST262_UINT8ARRAY_CODECS_MANIFEST_SHA256,
+        ),
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2478,8 +2494,8 @@ mod cli_tests {
         TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
         TEST262_REGEXP_BUILTINS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
-        default_worker_count, identify_oxide_profile, parse_args, verify_oxide_profile,
-        verify_scoped_pinned_profile,
+        TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
+        parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -5234,6 +5250,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-typed-array-core.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_uint8array_codec_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-uint8array-codecs.conf",
+            "--manifest",
+            "tests/test262-uint8array-codecs.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Uint8Array/fromBase64/results.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-uint8array-codecs.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

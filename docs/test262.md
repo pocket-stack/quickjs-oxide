@@ -6,6 +6,52 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-07-31.
 
+## R3br focused Uint8Array base64/hex codec gate
+
+R3br freezes the complete Test262 cohort for
+`Uint8Array.fromBase64`/`fromHex` and
+`Uint8Array.prototype.toBase64`/`toHex`/`setFromBase64`/`setFromHex`.
+The scoped profile contains exactly three feature tags:
+`Reflect.construct`, `TypedArray`, and `uint8array-base64`. Its complete
+SHA-256 is
+`2e8f870a5c6d1c05adc37c759098d2412943beff8b8de3c1593ba74df7761ac9`,
+and its ordered feature stream has SHA-256
+`41acf42eb5acbf12874115c7cbc757d7cb3e2ddd26603a55b55fbf95bb90532e`.
+
+The exhaustive sorted manifest contains 69 paths / 138 sloppy/strict
+variants. Its path-stream SHA-256 is
+`cbde75ee5038f3c24abfbf8f6e2734494281163bbe36370d0c81443da02a660c`,
+its complete-file SHA-256 is
+`2a52c3f54ef83a8df736e823d76e17927b670045f42d338d42a64f0e48681bb2`,
+and its 138-key stream SHA-256 is
+`e55870b3ba3591f83a43fb3e58c0beb6be7de35916aa6efdbde1844f4f9ba628`.
+All 138 variants are runnable and pass in Oxide, with zero failures,
+unsupported outcomes, or skips. Pinned QuickJS independently executes and
+passes the same 138 variants.
+
+The classified Oxide TSV/JSONL SHA-256 values are
+`4862f2570cf27fed439f3bd4c731b520b2ebac1643a5b257aaa21d112592742b`
+and
+`04395a486012a649f6cba508791ebd83367a4e0db2cb7d418ec0bcc302b46663`.
+The empty non-pass stream has SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+independent eight- and five-worker Oxide reports are byte-identical. The same
+gate first runs a ten-vector Oxide-versus-pinned-QuickJS differential covering
+descriptors, options, brands, capacity, partial writes, buffer invalidation,
+WTF-8, realms, and exact errors.
+
+Reproduce the complete focused evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-uint8array-codecs.sh
+TEST262_WORKERS=5 ./scripts/test-test262-uint8array-codecs.sh
+```
+
+R3br does not add `uint8array-base64` to the 88-tag live global profile and
+does not publish a new full-corpus vector. The global baseline therefore
+remains 58,168/102,037 passes with 58,687 runnable variants until the separate
+admission milestone.
+
 ## R3bq global Promise capability closure
 
 R3bq adds exactly `Promise`, `Promise.allSettled`, `Promise.any`, and
