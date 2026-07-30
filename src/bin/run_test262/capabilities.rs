@@ -270,11 +270,19 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-global-this-candidate.conf"
     ));
+    const GLOBAL_THIS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-global-this-global-parent.conf"
+    ));
+    const GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-global-this-global-candidate.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 83] = [
+    const EXPECTED_FEATURES: [&str; 84] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -334,6 +342,7 @@ mod tests {
         "exponentiation",
         "for-in-order",
         "generators",
+        "globalThis",
         "hashbang",
         "iterator-helpers",
         "iterator-sequencing",
@@ -701,6 +710,10 @@ mod tests {
             OxideProfile::parse(ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         let global_this_parent = OxideProfile::parse(GLOBAL_THIS_PARENT_PROFILE).unwrap();
         let global_this_candidate = OxideProfile::parse(GLOBAL_THIS_CANDIDATE_PROFILE).unwrap();
+        let global_this_global_parent =
+            OxideProfile::parse(GLOBAL_THIS_GLOBAL_PARENT_PROFILE).unwrap();
+        let global_this_global_candidate =
+            OxideProfile::parse(GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -780,6 +793,26 @@ mod tests {
         assert_eq!(
             global_this_candidate.allows_async_execution(),
             global_this_parent.allows_async_execution()
+        );
+        assert_eq!(global_this_global_parent, global_this_parent);
+        assert_eq!(global_this_global_candidate, global_this_candidate);
+        assert!(
+            global_this_global_candidate
+                .features
+                .difference(&profile.features)
+                .next()
+                .is_none()
+        );
+        assert!(
+            global_this_global_candidate
+                .audited_negative_tests
+                .difference(&profile.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            profile.allows_async_execution(),
+            global_this_global_candidate.allows_async_execution()
         );
     }
 

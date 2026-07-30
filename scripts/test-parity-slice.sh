@@ -119,6 +119,8 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-generator-destructuring.sh
 ./scripts/test-test262-iterator-helpers.sh
 ./scripts/test-test262-iterator-helpers-global.sh
+./scripts/test-test262-global-this.sh
+./scripts/test-test262-global-this-global.sh
 ./scripts/test-test262-iterator-sequencing.sh
 ./scripts/test-r3z-async-function-core-oracle.sh --oxide ./target/debug/qjs
 ./scripts/test-test262-async-function-core.sh
