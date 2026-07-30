@@ -175,6 +175,55 @@ const CASES: &[Case] = &[
         expected: "return|string|ReferenceError|false|undefined",
     },
     Case {
+        description: "TypedArray prototype numeric-index rejection composes with repeated with HasProperty",
+        source: r#"
+            (function () {
+                function environment() {
+                    var object = Object.create(new Int32Array(1));
+                    Object.defineProperty(object, "NaN", {
+                        configurable: true,
+                        value: 100
+                    });
+                    return object;
+                }
+
+                var sloppy = environment();
+                var sloppyError = "none";
+                var sloppyResult;
+                try {
+                    with (sloppy) {
+                        sloppyResult = NaN = (delete sloppy.NaN, 0);
+                    }
+                } catch (error) {
+                    sloppyError = error.name;
+                }
+
+                var strict = environment();
+                var strictChild;
+                with (strict) {
+                    strictChild = function () {
+                        "use strict";
+                        NaN = (delete strict.NaN, 0);
+                    };
+                }
+                var strictError = "none";
+                try { strictChild(); }
+                catch (error) { strictError = error.name; }
+
+                return [
+                    sloppyError,
+                    sloppyResult,
+                    Object.getOwnPropertyDescriptor(sloppy, "NaN") === undefined,
+                    "NaN" in sloppy,
+                    strictError,
+                    Object.getOwnPropertyDescriptor(strict, "NaN") === undefined,
+                    "NaN" in strict
+                ].join("|");
+            })()
+        "#,
+        expected: "return|string|none|0|true|false|ReferenceError|true|false",
+    },
+    Case {
         description: "failed selected writes are silent in sloppy code and throw in strict code",
         source: r#"
             (function () {

@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-07-26. The completion definition remains
+Last audited: 2026-07-30. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
@@ -10,7 +10,7 @@ claim full parity.
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 79 reviewed feature tags and 802 exact audited
+  capability profile now admits 80 reviewed feature tags and 802 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -37,19 +37,21 @@ claim full parity.
   static-`from`/`of` primitive-receiver constructor diagnostic seam. R3bd
   authenticates static `TypedArray.from`, including QuickJS's nullish-source
   diagnostics, materialize-before-construct ordering, and hidden-list value
-  lifetime. The cumulative scoped gate now passes 2,213 paths / 4,383 variants
-  in both engines. These
-  milestones do not widen the global TypedArray claim. The current
-  canonical measurement has 51,940 passes and 52,468 runnable variants:
-  50.90% raw,
-  a 62.16% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.09% among the 52,419 variants with a non-unsupported observed outcome. It
+  lifetime. R3be then admits the global `TypedArray` feature after freezing its
+  exact activation and spillover partitions. The cumulative scoped gate now
+  passes 2,254 paths / 4,463 variants in both engines. The current canonical
+  measurement has 55,626 passes and 56,154 runnable variants:
+  54.52% raw,
+  a 66.57% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.15% among the 56,105 variants with a non-unsupported observed outcome. It
   records 18 parse failures, 402 runtime failures, and 57 harness failures.
-  Two independent formal two-worker full runs reproduce the same canonical
-  vector. Current full TSV/JSONL SHA-256 values are
-  `f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07`
+  The exact R3be join preserves all 102,037 keys with no other outcome movement
+  or previous-pass regression. Current full TSV/JSONL SHA-256 values are
+  `bdeb287ea6f74baefa0eb034773aa57f7c87f9ecaa6d2af20f27a6ea94b53693`
   and
-  `8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390`.
+  `916fbebcb964be779138ca6ad588d14b9cf3e55c0f22b4aaeb474739bdb74ece`.
+  Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
+  coverage remain explicit frontiers.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -3934,10 +3936,56 @@ claim full parity.
   One resource-parity caveat remains explicit. Retained value lifetime now
   matches, but QuickJS allocates a hidden realm-local Array while Oxide stores
   the materialized values in a Rust Vec, so allocation, GC pressure, and
-  injected-OOM topology are not certified as identical. The next audit is
-  broad TypedArray global admission: enabling only `TypedArray` exposes 3,686
-  variants, 3,606 already covered by the scoped certification, leaving an
-  80-variant spillover across 41 paths for review.
+  injected-OOM topology are not certified as identical. At the R3bd landing,
+  the next audit was broad TypedArray global admission: enabling only
+  `TypedArray` exposed 3,686 variants, 3,606 already covered by the scoped
+  certification, leaving an 80-variant spillover across 41 paths for review.
+
+  R3be admits that single global `TypedArray` tag, bringing the checksum-pinned
+  global profile to 80 tags. Its frozen activation manifest contains 1,865
+  paths / 3,686 variants: 1,824 paths / 3,606 variants were already
+  authenticated, and the disjoint spillover adds 41 paths / 80 variants. The
+  activation manifest and key stream hash to
+  `44a9b901eb59f9dc41dde71e0595d2777f52814a864632e7e27bdd739654bdee`
+  and
+  `68b01ca00423a3e62a090ee8cac24d54b5866276de306b0c846e74d3663218e5`;
+  its all-pass TSV/JSONL hashes are
+  `e663c9b957e7e061573cc42e092ddd7b06a4508cd2e67ba74919ad243239ab54`
+  and
+  `9db88feb1d2d79dd3f0abce8a818c1bffff67d79f1a77f671c3a5fdb8a1078fc`.
+
+  The audited TypedArray candidate is now 2,402 paths / 4,749 variants, and the
+  cumulative scoped gate admits and passes 2,254 paths / 4,463 variants in
+  Oxide and pinned QuickJS. Its manifest, key stream, and TSV/JSONL hashes are
+  `91ac9a132c8099ecd15d3cfcfe160b21a1f7e9a083a5210a33406606270ad378`,
+  `e8e3c0d8f19343bbf0160c5af3239caa98fb7e01d006ff6b53f0d946a500e7cc`,
+  `388d8f32ef0d7d0a8f2c86ac0931178d2d850335b80cf13fe81888930be5f38c`,
+  and
+  `e32b0abdcab0409491132690a4b22441791016ac57c83c1bcbdfd26c0a0b3c9d`.
+  A separate 471-path / 938-variant reason-only ledger remains
+  `unsupported-feature`: removing `TypedArray` from its diagnostic exposes
+  another still-unsupported dependency rather than admitting execution.
+
+  The checked-in 4,624-data-row R3bd-to-R3be transition receipt,
+  `tests/test262-typed-array-global-r3bd-r3be-transitions.tsv`, partitions
+  exactly into 3,686 `unsupported-feature -> pass` transitions and 938
+  `unsupported-feature -> unsupported-feature` reason-only changes, with zero
+  other row changes or previous-pass regressions. Its complete-file and
+  header-free data-row SHA-256 values are
+  `851ef0961a28532081f7b9dc281c305ea8839dd3b8ceed750d182da90b69eafd`
+  and
+  `26babcba92c23bb699f8fd3a2db7cce376fa868f5b3ca4081abc4148a90a4a57`.
+  The complete vector reaches 55,626/102,037 passes with 56,154 runnable
+  variants; canonical full TSV/JSONL hashes are
+  `bdeb287ea6f74baefa0eb034773aa57f7c87f9ecaa6d2af20f27a6ea94b53693`
+  and
+  `916fbebcb964be779138ca6ad588d14b9cf3e55c0f22b4aaeb474739bdb74ece`.
+  R3be changes only profiles, manifests, gates, baselines, and focused tests:
+  no production runtime code changes, `runtime.rs` remains 9,950 lines, and
+  `heap.rs` remains 23,026 lines. Four focused `with` tests include pinned
+  QuickJS differentials for the `with`-statement spillover. Uint8Array codecs,
+  modules, SharedArrayBuffer/Atomics, and broad built-ins remain the next
+  frontiers.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -7007,7 +7055,7 @@ The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
 RegExp grammar, modules, remaining jobs/Promise/async and generator surfaces,
-remaining TypedArray methods, SharedArrayBuffer/Atomics,
+Uint8Array codecs, SharedArrayBuffer/Atomics,
 WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
@@ -7442,6 +7490,11 @@ module reaches 1,316 lines. The separate 914-line
 `oracle_typed_array_from.rs` owns eight focused vectors and keeps its three
 QuickJS observation/self-check/differential entries distinct from the fourth
 Rust-only cross-realm structural entry.
+R3be admits the global `TypedArray` profile without production runtime changes:
+`runtime.rs` remains 9,950 lines and `heap.rs` remains 23,026 lines. The
+activation, spillover, reason-only, scoped, and full-vector evidence stays in
+checksum-bound manifests and reports, while four focused `with` tests include
+pinned QuickJS differentials.
 Dedicated structural milestones must keep splitting those seams under the same
 differential and Rust-only gates, and future feature work must not resume
 extending either monolith indefinitely.

@@ -254,7 +254,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 79] = [
+    const EXPECTED_FEATURES: [&str; 80] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -294,6 +294,7 @@ mod tests {
         "Symbol.toPrimitive",
         "Symbol.toStringTag",
         "Symbol.unscopables",
+        "TypedArray",
         "__getter__",
         "__proto__",
         "__setter__",

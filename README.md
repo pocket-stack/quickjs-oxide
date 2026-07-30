@@ -10,12 +10,13 @@ QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 `map`/`filter` and `slice`/`subarray`, plus non-species `with` and
 `toReversed`, dedicated `join`/`toLocaleString`, inherited `toString`, and
 QuickJS-shaped `sort`/`toSorted`, certified `entries`/`keys` iterators, and
-pinned-QuickJS-certified static `of` and `from`. Its scoped gate reaches
-4,383/4,383 variants across 2,213 paths in both engines; the complete
-conservative vector is 51,940/102,037.
-TypedArray audit/admission, Uint8Array codecs, modules, SharedArrayBuffer/Atomics,
-and broad built-in coverage remain incomplete. Pinned QuickJS is the test oracle,
-never a product dependency; bookkeeping lives in the status documents.
+pinned-QuickJS-certified static `of` and `from`. The global `TypedArray`
+feature is now admitted through a checksum-bound audit. Its scoped gate reaches
+4,463/4,463 variants across 2,254 paths in both engines; the complete
+conservative vector is 55,626/102,037 with 56,154 runnable variants.
+Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
+coverage remain incomplete. Pinned QuickJS is the test oracle, never a product
+dependency; bookkeeping lives in the status documents.
 
 ## Try it
 

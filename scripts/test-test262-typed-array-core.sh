@@ -10,10 +10,19 @@ baseline=tests/test262-typed-array-core-baseline.txt
 manifest=tests/test262-typed-array-core.txt
 profile=tests/test262-typed-array-core.conf
 exclusions=tests/test262-typed-array-core-exclusions.tsv
+global_profile=compat/test262-oxide.conf
+global_activation_baseline=tests/test262-typed-array-global-activation-baseline.txt
+global_activation_manifest=tests/test262-typed-array-global-activation.txt
+global_reason_only_manifest=tests/test262-typed-array-global-reason-only.txt
+global_transition_receipt=tests/test262-typed-array-global-r3bd-r3be-transitions.tsv
 report=target/test262-typed-array-core.tsv
 json_report=target/test262-typed-array-core.jsonl
 oracle_log=target/test262-typed-array-core-quickjs.log
 candidate_oracle_log=target/test262-typed-array-core-candidate-quickjs.log
+global_activation_report=target/test262-typed-array-global-activation.tsv
+global_activation_json_report=target/test262-typed-array-global-activation.jsonl
+global_reason_only_report=target/test262-typed-array-global-reason-only.tsv
+global_reason_only_json_report=target/test262-typed-array-global-reason-only.jsonl
 workers=${TEST262_WORKERS:-8}
 check_only=false
 
@@ -26,14 +35,15 @@ expected_profile=dd106c074751866ce667352d3449cc0ec7d9b9072034a4f0a97050da7b7bad1
 expected_schema=test262-canonical-classified-v2
 expected_mode=both
 expected_timeout_ms=30000
+reason_detail_prefix='quickjs-oxide does not declare Test262 feature support: '
 expected_direct_candidate_paths=2316
 expected_direct_candidate=64dfc295efac5414db8743def6099f484bb69090676378087382a23d5b3565a4
-expected_spillover_paths=45
-expected_spillover=4551e669756e077624fdfc7e01f2abb916b624455b3f16f3afb8e67556d92557
-expected_candidate_paths=2361
-expected_candidate=81b1e9fa4104cf51f16a0e3cca8e9600ba1e3390c41f0b8ebb0b9618c12b533f
-expected_candidate_variants=4669
-expected_candidate_keys=fd98267b85136c844a3c83a238b4194a1c1447b22c370f1344bae51e49517320
+expected_spillover_paths=86
+expected_spillover=62f1568f813f2d4f892feab77d17fb85e6576bd9c89e645095830f0e85c71eae
+expected_candidate_paths=2402
+expected_candidate=3faf9a7c21d28381c13a6a56a0ee1198c4a2689b48b96b6d0ebab5b6ae4c88fa
+expected_candidate_variants=4749
+expected_candidate_keys=3ed6b7014bc4dbc2a0b000d9d51f075e902442567c48d315268a004d73c036c4
 expected_mutation_candidate_paths=254
 expected_mutation_candidate=040d1a0cc4c9068b230fd681a544a1c3b0351616363c4fa0a70ebf94b7c5e429
 expected_mutation_candidate_variants=508
@@ -203,15 +213,56 @@ expected_from_keys=5ea8a30f1578a6160441c068c91384ea635e179a90c6804af23730cfec7f6
 expected_excluded_paths=148
 expected_exclusions=0d425a326fc950257410849ada4c2435b410e84f4c9651f9393c39f6d5c3032a
 expected_exclusions_file=4c79c3c86364a5c0aa6d2ea5bf3cba6da47261d0b4847fbfeaa5cd368749b783
-expected_paths=2213
-expected_variants=4383
-expected_quickjs_variants=4383
+expected_paths=2254
+expected_variants=4463
+expected_quickjs_variants=4463
 expected_features=27
 expected_features_hash=de5b9c5c6a66566a6b1481fc0b014a6ef00a95ebecc90c37da4508aa85a8d830
 expected_includes=11
 expected_includes_hash=b1b60b5e1f7635615ff31eb139d1803608e5743c5f46ca53fadc3797e0abe012
-expected_manifest=d71be16dfcd42b58e3371c47d35d8f6cc9fbe29a11135ebd39ea447cb84d0c56
-expected_keys=ac56a6047ecb71616e098b5cb6a0c449d11af21141f8f18af5ebe4dccefb9a84
+expected_manifest=91ac9a132c8099ecd15d3cfcfe160b21a1f7e9a083a5210a33406606270ad378
+expected_keys=e8e3c0d8f19343bbf0160c5af3239caa98fb7e01d006ff6b53f0d946a500e7cc
+expected_previous_global_profile=9b155f41c9c7541423c45b57da1bb805d6e7cf350ec7d6442d6700424afdbafc
+expected_global_profile=99ad7997a6328ab24f87af9575f9e8ddda76db81092c008d5a84e06a84a0c5ee
+expected_global_activation_paths=1865
+expected_global_activation=44a9b901eb59f9dc41dde71e0595d2777f52814a864632e7e27bdd739654bdee
+expected_global_activation_variants=3686
+expected_global_activation_keys=68b01ca00423a3e62a090ee8cac24d54b5866276de306b0c846e74d3663218e5
+expected_global_authenticated_paths=1824
+expected_global_authenticated=b0c9f387fa32af126ce4fac0d84ffbb4e0b6876bd50a137c38ba9df2f6100fd4
+expected_global_authenticated_variants=3606
+expected_global_authenticated_keys=37a4623ced3162fe56e673ce24e9b532c1e171c00fc2deff6a75df5185fc2acb
+expected_global_spillover_paths=41
+expected_global_spillover=b85c1ab213028075ab4b9352eb8f939c1f39c345c7fee60847cdc5610a69412e
+expected_global_spillover_variants=80
+expected_global_spillover_keys=133d200dd4559dc869fbd7578ce6a948684dc80ae46fd5ac10491f80aad3d7ce
+expected_global_activation_features=16
+expected_global_activation_features_hash=47d6d7d8526717cf798fdf16b302dffcbdaf1d2f89af9875fabfff185e3498e2
+expected_global_activation_includes=7
+expected_global_activation_includes_hash=2ca4489c5ee986e70da369ed590d0d2c86963e84c6dcd7461edb4f9ec5d3a33b
+expected_global_spillover_features=4
+expected_global_spillover_features_hash=547bb058d5668040bec94843555efde0d00b924f827d738573449b4ad34ec28d
+expected_global_spillover_includes=3
+expected_global_spillover_includes_hash=d2f87c123dab82f2ef9f7c1824fb29732e188cc7110783c0b459d21350a5e593
+expected_global_reason_only_paths=471
+expected_global_reason_only=2c9273d1f8e3e793e519e6c5d09eb24ca7e65d798ae8827450931a403cdae2d9
+expected_global_reason_only_variants=938
+expected_global_reason_only_keys=6bb0f992e95e9f0c17d949c16a96675e61eeb297736cfdf0068551f6273b2999
+expected_previous_typed_array_unsupported_paths=2336
+expected_previous_typed_array_unsupported=2560741311d9fac8a5bf0b97a132a810a1e993270e4fcd65fa40155de1463b9b
+expected_previous_typed_array_unsupported_variants=4624
+expected_previous_typed_array_unsupported_keys=635b0f6190e77eb8e599eac245f58c17a88dcb3fd47bbde3bf9c0d3f186ab9db
+# Provenance only: these identify the parent canonical artifacts from which
+# the reason-only ledger was cut. The parent full A/B exact join is the
+# transition proof; this scoped gate intentionally does not reopen full runs.
+expected_previous_full_tsv=f9944fe74a9eee0330a9f4681e3064cba5fc70e00b4fc7eef73fcbce6f709b07
+expected_previous_full_jsonl=8cc3f8420e290d3094a21bee23a10e26c2cb2e860228d3f98a2bda80c5eb1390
+expected_after_full_tsv=bdeb287ea6f74baefa0eb034773aa57f7c87f9ecaa6d2af20f27a6ea94b53693
+expected_after_full_jsonl=916fbebcb964be779138ca6ad588d14b9cf3e55c0f22b4aaeb474739bdb74ece
+expected_transition_physical_lines=4633
+expected_transition_rows=4624
+expected_transition=851ef0961a28532081f7b9dc281c305ea8839dd3b8ceed750d182da90b69eafd
+expected_transition_data=26babcba92c23bb699f8fd3a2db7cce376fa868f5b3ca4081abc4148a90a4a57
 expected_test_typed_array_harness=4c0e237804f39a4aa670f72c05b4520730c03c2d2e9f2f41e6b380bd6749ec61
 expected_sm_typed_array_harness=3798d277ac8f105b65ad26602b500b497af7f3361fd14a169c58a601c605bb2e
 expected_sm_math_harness=79dea1172236685567e09da8c9e868e0f84686bf40cff728785223c5b43f5e7b
@@ -225,10 +276,11 @@ index/search, callback-find, every/some, forEach, reduce/reduceRight, and
 map/filter, slice/subarray, with/toReversed, join/toLocaleString/toString
 stringification, sort/toSorted, entries/keys iterator-contract, and static
 `of`/`from` promotions, manifest, and exclusion ledger.
-Verify all 4,669 candidate variants plus the 4,383 admitted variants against
-pinned QuickJS.
-With no option, also run the checksum-bound quickjs-oxide gate; that mode
-requires a measured all-green baseline file.
+Verify all 4,749 candidate variants plus the 4,463 admitted variants against
+pinned QuickJS, and audit the 3,686-row global `TypedArray` activation
+partition plus its 938-row reason-only ledger.
+With no option, also run the checksum-bound quickjs-oxide scoped and global
+activation gates; that mode requires both measured all-green baseline files.
 EOF
 }
 
@@ -298,12 +350,47 @@ expect_value() {
     fi
 }
 
+read_global_activation_value() {
+    local key=$1 value
+    if ! value=$(awk -F= -v key="$key" '
+        $1 == key { sub(/^[^=]*=/, ""); print; found++ }
+        END { if (found != 1) exit 1 }
+    ' "$global_activation_baseline"); then
+        echo "error: TypedArray global activation baseline is missing exactly one $key entry: $global_activation_baseline" >&2
+        exit 1
+    fi
+    if [[ -z "$value" ]]; then
+        echo "error: TypedArray global activation baseline contains an empty $key entry: $global_activation_baseline" >&2
+        exit 1
+    fi
+    printf '%s\n' "$value"
+}
+
+expect_global_activation_value() {
+    local key=$1 expected=$2 actual
+    actual=$(read_global_activation_value "$key")
+    if [[ "$actual" != "$expected" ]]; then
+        echo "error: TypedArray global activation baseline $key drifted" >&2
+        echo "expected: $expected" >&2
+        echo "actual:   $actual" >&2
+        exit 1
+    fi
+}
+
 read_header() {
     local key=$1
     awk -F= -v key="# $key" '
         $1 == key { sub(/^[^=]*=/, ""); print; found=1 }
         END { if (!found) exit 1 }
     ' "$report"
+}
+
+read_report_header() {
+    local report_file=$1 key=$2
+    awk -F= -v key="# $key" '
+        $1 == key { sub(/^[^=]*=/, ""); print; found=1 }
+        END { if (!found) exit 1 }
+    ' "$report_file"
 }
 
 manifest_paths() {
@@ -321,6 +408,15 @@ profile_section() {
         /^\[/ { inside=0 }
         inside && NF && $1 !~ /^#/ { print }
     ' "$profile"
+}
+
+profile_section_from_file() {
+    local profile_file=$1 section=$2
+    awk -v section="[$section]" '
+        $0 == section { inside=1; next }
+        /^\[/ { inside=0 }
+        inside && NF && $1 !~ /^#/ { print }
+    ' "$profile_file"
 }
 
 metadata_block() {
@@ -380,7 +476,7 @@ concrete_typed_array_tokens() {
     done
 }
 
-spillover_paths() {
+legacy_spillover_paths() {
     cat <<'EOF'
 test/built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js
 test/built-ins/Array/prototype/concat/Array.prototype.concat_small-typed-array.js
@@ -428,6 +524,59 @@ test/staging/sm/extensions/reviver-mutates-holder-object-nonnative.js
 test/staging/sm/object/values-entries-typedarray.js
 test/staging/sm/regress/regress-571014.js
 EOF
+}
+
+global_activation_spillover_paths() {
+    cat <<'EOF'
+test/built-ins/ArrayIteratorPrototype/next/Float32Array.js
+test/built-ins/ArrayIteratorPrototype/next/Float64Array.js
+test/built-ins/ArrayIteratorPrototype/next/Int16Array.js
+test/built-ins/ArrayIteratorPrototype/next/Int32Array.js
+test/built-ins/ArrayIteratorPrototype/next/Int8Array.js
+test/built-ins/ArrayIteratorPrototype/next/Uint16Array.js
+test/built-ins/ArrayIteratorPrototype/next/Uint32Array.js
+test/built-ins/ArrayIteratorPrototype/next/Uint8Array.js
+test/built-ins/ArrayIteratorPrototype/next/Uint8ClampedArray.js
+test/built-ins/ArrayIteratorPrototype/next/detach-typedarray-in-progress.js
+test/harness/testTypedArray-conversions-call-error.js
+test/harness/testTypedArray-conversions.js
+test/harness/testTypedArray.js
+test/language/expressions/class/subclass-builtins/subclass-ArrayBuffer.js
+test/language/expressions/class/subclass-builtins/subclass-BigInt64Array.js
+test/language/expressions/class/subclass-builtins/subclass-BigUint64Array.js
+test/language/statements/class/subclass-builtins/subclass-ArrayBuffer.js
+test/language/statements/class/subclass-builtins/subclass-BigInt64Array.js
+test/language/statements/class/subclass-builtins/subclass-BigUint64Array.js
+test/language/statements/class/subclass/builtin-objects/TypedArray/regular-subclassing.js
+test/language/statements/class/subclass/builtin-objects/TypedArray/super-must-be-called.js
+test/language/statements/for-of/float32array-mutate.js
+test/language/statements/for-of/float32array.js
+test/language/statements/for-of/float64array-mutate.js
+test/language/statements/for-of/float64array.js
+test/language/statements/for-of/int16array-mutate.js
+test/language/statements/for-of/int16array.js
+test/language/statements/for-of/int32array-mutate.js
+test/language/statements/for-of/int32array.js
+test/language/statements/for-of/int8array-mutate.js
+test/language/statements/for-of/int8array.js
+test/language/statements/for-of/uint16array-mutate.js
+test/language/statements/for-of/uint16array.js
+test/language/statements/for-of/uint32array-mutate.js
+test/language/statements/for-of/uint32array.js
+test/language/statements/for-of/uint8array-mutate.js
+test/language/statements/for-of/uint8array.js
+test/language/statements/for-of/uint8clampedarray-mutate.js
+test/language/statements/for-of/uint8clampedarray.js
+test/language/statements/with/set-mutable-binding-binding-deleted-with-typed-array-in-proto-chain-strict-mode.js
+test/language/statements/with/set-mutable-binding-binding-deleted-with-typed-array-in-proto-chain.js
+EOF
+}
+
+spillover_paths() {
+    {
+        legacy_spillover_paths
+        global_activation_spillover_paths
+    } | LC_ALL=C sort
 }
 
 is_direct_core_path() {
@@ -1193,9 +1342,16 @@ spillover_dependency_reason() {
 
 append_variant_keys() {
     local test_path=$1 flags_file=$2 output=$3
-    local flag_count
-    flag_count=$(wc -l <"$flags_file" | tr -d '[:space:]')
-    case "$flag_count:$(tr '\n' ',' <"$flags_file")" in
+    local flag_count flag_list
+    if grep -Evq '^(generated|noStrict|onlyStrict)$' "$flags_file" \
+        || [[ -n "$(LC_ALL=C sort "$flags_file" | uniq -d)" ]]; then
+        echo "error: TypedArray candidate gained unsupported variant flags: $test_path" >&2
+        sed 's/^/  /' "$flags_file" >&2
+        exit 1
+    fi
+    flag_count=$(grep -Evxc 'generated' "$flags_file" || true)
+    flag_list=$(grep -Ev 'generated' "$flags_file" | tr '\n' ',' || true)
+    case "$flag_count:$flag_list" in
         0:)
             printf '%s\tsloppy\n%s\tstrict\n' "$test_path" "$test_path" >>"$output"
             ;;
@@ -1207,6 +1363,40 @@ append_variant_keys() {
             ;;
         *)
             echo "error: TypedArray candidate gained unsupported variant flags: $test_path" >&2
+            sed 's/^/  /' "$flags_file" >&2
+            exit 1
+            ;;
+    esac
+}
+
+append_reason_only_variant_keys() {
+    local test_path=$1 flags_file=$2 output=$3
+    local mode_count mode_list
+    if grep -Evq \
+        '^(generated|CanBlockIsTrue|CanBlockIsFalse|noStrict|onlyStrict)$' \
+        "$flags_file" \
+        || [[ -n "$(LC_ALL=C sort "$flags_file" | uniq -d)" ]] \
+        || [[ "$(grep -Ec '^(CanBlockIsTrue|CanBlockIsFalse)$' \
+            "$flags_file" || true)" -gt 1 ]]; then
+        echo "error: TypedArray reason-only ledger gained unsupported or conflicting flags: $test_path" >&2
+        sed 's/^/  /' "$flags_file" >&2
+        exit 1
+    fi
+    mode_count=$(grep -Ec '^(noStrict|onlyStrict)$' "$flags_file" || true)
+    mode_list=$(grep -E '^(noStrict|onlyStrict)$' "$flags_file" \
+        | tr '\n' ',' || true)
+    case "$mode_count:$mode_list" in
+        0:)
+            printf '%s\tsloppy\n%s\tstrict\n' "$test_path" "$test_path" >>"$output"
+            ;;
+        1:noStrict,)
+            printf '%s\tsloppy\n' "$test_path" >>"$output"
+            ;;
+        1:onlyStrict,)
+            printf '%s\tstrict\n' "$test_path" >>"$output"
+            ;;
+        *)
+            echo "error: TypedArray reason-only ledger gained conflicting mode flags: $test_path" >&2
             sed 's/^/  /' "$flags_file" >&2
             exit 1
             ;;
@@ -1281,7 +1471,15 @@ verify_oxide_constructor_surface() {
 
 cd -- "$root"
 
-for required in "$manifest" "$profile" "$exclusions"; do
+for required in \
+    "$manifest" \
+    "$profile" \
+    "$exclusions" \
+    "$global_profile" \
+    "$global_activation_manifest" \
+    "$global_reason_only_manifest" \
+    "$global_transition_receipt"
+do
     if [[ ! -f "$required" ]]; then
         echo "error: TypedArray core gate input is missing: $required" >&2
         exit 1
@@ -1289,6 +1487,11 @@ for required in "$manifest" "$profile" "$exclusions"; do
 done
 if [[ "$check_only" == false && ! -f "$baseline" ]]; then
     echo "error: measured TypedArray core baseline is intentionally absent: $baseline" >&2
+    echo "error: run --check now; add the baseline only after an all-green Oxide run" >&2
+    exit 1
+fi
+if [[ "$check_only" == false && ! -f "$global_activation_baseline" ]]; then
+    echo "error: measured TypedArray global activation baseline is intentionally absent: $global_activation_baseline" >&2
     echo "error: run --check now; add the baseline only after an all-green Oxide run" >&2
     exit 1
 fi
@@ -1502,6 +1705,76 @@ if [[ "$check_only" == false ]]; then
         printf '%s\n' "$pending_keys" | sed 's/^/  /' >&2
         exit 1
     fi
+
+    expect_global_activation_value quickjs "$expected_quickjs"
+    expect_global_activation_value test262 "$expected_test262"
+    expect_global_activation_value test262_patch_sha256 "$expected_patch"
+    expect_global_activation_value test262_config_sha256 "$expected_config"
+    expect_global_activation_value test262_metadata_sha256 "$expected_metadata"
+    expect_global_activation_value previous_oxide_profile_sha256 \
+        "$expected_previous_global_profile"
+    expect_global_activation_value oxide_profile_sha256 "$expected_global_profile"
+    expect_global_activation_value schema "$expected_schema"
+    expect_global_activation_value mode "$expected_mode"
+    expect_global_activation_value timeout_ms "$expected_timeout_ms"
+    expect_global_activation_value external_excluded_paths "$expected_excluded_paths"
+    expect_global_activation_value external_exclusions_sha256 "$expected_exclusions"
+    expect_global_activation_value activation_paths "$expected_global_activation_paths"
+    expect_global_activation_value activation_sha256 "$expected_global_activation"
+    expect_global_activation_value activation_variants \
+        "$expected_global_activation_variants"
+    expect_global_activation_value activation_keys_sha256 \
+        "$expected_global_activation_keys"
+    expect_global_activation_value authenticated_paths \
+        "$expected_global_authenticated_paths"
+    expect_global_activation_value authenticated_sha256 \
+        "$expected_global_authenticated"
+    expect_global_activation_value authenticated_variants \
+        "$expected_global_authenticated_variants"
+    expect_global_activation_value authenticated_keys_sha256 \
+        "$expected_global_authenticated_keys"
+    expect_global_activation_value spillover_paths "$expected_global_spillover_paths"
+    expect_global_activation_value spillover_sha256 "$expected_global_spillover"
+    expect_global_activation_value spillover_variants \
+        "$expected_global_spillover_variants"
+    expect_global_activation_value spillover_keys_sha256 \
+        "$expected_global_spillover_keys"
+    expect_global_activation_value activation_features \
+        "$expected_global_activation_features"
+    expect_global_activation_value activation_features_sha256 \
+        "$expected_global_activation_features_hash"
+    expect_global_activation_value activation_includes \
+        "$expected_global_activation_includes"
+    expect_global_activation_value activation_includes_sha256 \
+        "$expected_global_activation_includes_hash"
+    expect_global_activation_value reason_only_paths \
+        "$expected_global_reason_only_paths"
+    expect_global_activation_value reason_only_sha256 \
+        "$expected_global_reason_only"
+    expect_global_activation_value reason_only_variants \
+        "$expected_global_reason_only_variants"
+    expect_global_activation_value reason_only_keys_sha256 \
+        "$expected_global_reason_only_keys"
+    expect_global_activation_value previous_typed_array_unsupported_paths \
+        "$expected_previous_typed_array_unsupported_paths"
+    expect_global_activation_value previous_typed_array_unsupported_sha256 \
+        "$expected_previous_typed_array_unsupported"
+    expect_global_activation_value previous_typed_array_unsupported_variants \
+        "$expected_previous_typed_array_unsupported_variants"
+    expect_global_activation_value previous_typed_array_unsupported_keys_sha256 \
+        "$expected_previous_typed_array_unsupported_keys"
+    expect_global_activation_value previous_full_tsv_sha256 \
+        "$expected_previous_full_tsv"
+    expect_global_activation_value previous_full_jsonl_sha256 \
+        "$expected_previous_full_jsonl"
+    expect_global_activation_value transition_rows "$expected_transition_rows"
+    expect_global_activation_value transition_sha256 "$expected_transition"
+    expect_global_activation_value transition_data_sha256 \
+        "$expected_transition_data"
+    expect_global_activation_value runnable "$expected_global_activation_variants"
+    expect_global_activation_value reason_only_runnable 0
+    expect_global_activation_value reason_only_unsupported \
+        "$expected_global_reason_only_variants"
 fi
 
 suite=$("$script_dir/prepare-test262.sh")
@@ -1529,8 +1802,41 @@ if ! grep -Fq 'floatArrayConstructors.push(Float16Array);' \
 fi
 if [[ "$(sha256_file "$profile")" != "$expected_profile" \
     || "$(sha256_file "$manifest")" != "$expected_manifest" \
-    || "$(sha256_file "$exclusions")" != "$expected_exclusions_file" ]]; then
+    || "$(sha256_file "$exclusions")" != "$expected_exclusions_file" \
+    || "$(sha256_file "$global_profile")" != "$expected_global_profile" \
+    || "$(sha256_file "$global_activation_manifest")" \
+        != "$expected_global_activation" \
+    || "$(sha256_file "$global_reason_only_manifest")" \
+        != "$expected_global_reason_only" \
+    || "$(awk '$0 != "TypedArray" { print }' "$global_profile" | sha256_stream)" \
+        != "$expected_previous_global_profile" ]]; then
     echo "error: committed TypedArray core gate assets drifted" >&2
+    exit 1
+fi
+expected_transition_header=$(printf '%s\n' \
+    '# quickjs-oxide R3bd-to-R3be TypedArray global-admission transitions v1' \
+    "# before_tsv_sha256=$expected_previous_full_tsv" \
+    "# before_jsonl_sha256=$expected_previous_full_jsonl" \
+    "# before_oxide_profile_sha256=$expected_previous_global_profile" \
+    "# after_tsv_sha256=$expected_after_full_tsv" \
+    "# after_jsonl_sha256=$expected_after_full_jsonl" \
+    "# after_oxide_profile_sha256=$expected_global_profile" \
+    "# schema=$expected_schema" \
+    $'path\tvariant\tbefore_outcome\tafter_outcome\tbefore_detail\tafter_detail')
+if [[ "$(sha256_file "$global_transition_receipt")" \
+        != "$expected_transition" \
+    || "$(wc -l <"$global_transition_receipt" | tr -d '[:space:]')" \
+        != "$expected_transition_physical_lines" \
+    || "$(sed -n '1,9p' "$global_transition_receipt")" \
+        != "$expected_transition_header" ]]; then
+    echo "error: TypedArray R3bd-to-R3be transition receipt header or file drifted" >&2
+    exit 1
+fi
+if [[ "$(profile_section_from_file "$global_profile" features \
+        | grep -Fxc TypedArray)" != "1" \
+    || -n "$(profile_section_from_file "$global_profile" features \
+        | LC_ALL=C sort | uniq -d)" ]]; then
+    echo "error: global profile TypedArray admission or feature ordering drifted" >&2
     exit 1
 fi
 
@@ -1642,13 +1948,181 @@ feature_inventory=$tmp_dir/features.txt
 include_inventory=$tmp_dir/includes.txt
 candidate_keys=$tmp_dir/candidate-keys.txt
 variant_keys=$tmp_dir/variant-keys.txt
+global_features=$tmp_dir/global-features.txt
+global_activation_inventory=$tmp_dir/global-activation.txt
+derived_global_activation=$tmp_dir/derived-global-activation.txt
+global_activation_keys=$tmp_dir/global-activation-keys.txt
+global_authenticated_inventory=$tmp_dir/global-authenticated.txt
+global_authenticated_keys=$tmp_dir/global-authenticated-keys.txt
+global_spillover_inventory=$tmp_dir/global-spillover.txt
+global_spillover_keys=$tmp_dir/global-spillover-keys.txt
+global_reason_only_inventory=$tmp_dir/global-reason-only.txt
+global_reason_only_keys=$tmp_dir/global-reason-only-keys.txt
+global_reason_only_flag_inventory=$tmp_dir/global-reason-only-flags.txt
+global_reason_only_missing_features=$tmp_dir/global-reason-only-missing-features.txt
+global_reason_only_missing_details=$tmp_dir/global-reason-only-missing-details.tsv
+global_reason_only_expected_details=$tmp_dir/global-reason-only-expected-details.tsv
+global_reason_only_actual_details=$tmp_dir/global-reason-only-actual-details.tsv
+global_transition_data=$tmp_dir/global-transition-data.tsv
+global_transition_activation_inventory=$tmp_dir/global-transition-activation.txt
+global_transition_activation_keys=$tmp_dir/global-transition-activation-keys.txt
+global_transition_reason_inventory=$tmp_dir/global-transition-reason.txt
+global_transition_reason_keys=$tmp_dir/global-transition-reason-keys.txt
+global_transition_all_inventory=$tmp_dir/global-transition-all.txt
+global_transition_all_keys=$tmp_dir/global-transition-all-keys.txt
+global_transition_reason_after_details=$tmp_dir/global-transition-reason-after-details.tsv
+global_transition_after_expected=$tmp_dir/global-transition-after-expected.tsv
+global_transition_after_actual=$tmp_dir/global-transition-after-actual.tsv
+previous_typed_array_unsupported_inventory=$tmp_dir/previous-typed-array-unsupported.txt
+previous_typed_array_unsupported_keys=$tmp_dir/previous-typed-array-unsupported-keys.txt
+global_activation_feature_occurrences=$tmp_dir/global-activation-features.raw
+global_activation_include_occurrences=$tmp_dir/global-activation-includes.raw
+global_activation_feature_inventory=$tmp_dir/global-activation-features.txt
+global_activation_include_inventory=$tmp_dir/global-activation-includes.txt
+global_spillover_feature_occurrences=$tmp_dir/global-spillover-features.raw
+global_spillover_include_occurrences=$tmp_dir/global-spillover-includes.raw
+global_spillover_feature_inventory=$tmp_dir/global-spillover-features.txt
+global_spillover_include_inventory=$tmp_dir/global-spillover-includes.txt
+global_spillover_flag_inventory=$tmp_dir/global-spillover-flags.txt
+
+awk -F'\t' '
+    BEGIN { OFS="\t" }
+    !/^#/ && !($1 == "path" && $2 == "variant") {
+        print $1, $2, $3, $4, $5, $6
+    }
+' "$global_transition_receipt" >"$global_transition_data"
+if [[ "$(wc -l <"$global_transition_data" | tr -d '[:space:]')" \
+        != "$expected_transition_rows" \
+    || "$(sha256_file "$global_transition_data")" \
+        != "$expected_transition_data" ]]; then
+    echo "error: TypedArray transition receipt data rows drifted" >&2
+    exit 1
+fi
+if ! LC_ALL=C sort -c "$global_transition_data" \
+    || ! awk -F'\t' \
+        -v prefix="$reason_detail_prefix" \
+        -v expected_rows="$expected_transition_rows" \
+        -v expected_activation="$expected_global_activation_variants" \
+        -v expected_reason="$expected_global_reason_only_variants" '
+    function fail() {
+        invalid=1
+        exit 1
+    }
+    {
+        if (NF != 6 || $1 == "" ||
+            ($2 != "sloppy" && $2 != "strict") ||
+            $3 != "unsupported-feature") fail()
+        key=$1 SUBSEP $2
+        if (seen_key[key]++) fail()
+        if ($4 == "pass") {
+            activation++
+            if ($5 != prefix "TypedArray" || $6 != "") fail()
+            next
+        }
+        if ($4 != "unsupported-feature" ||
+            index($5, prefix) != 1 ||
+            index($6, prefix) != 1) fail()
+        reason++
+        before=substr($5, length(prefix) + 1)
+        token_count=split(before, tokens, /, /)
+        if (token_count < 2) fail()
+        typed_array_count=0
+        remaining=""
+        delete seen_token
+        for (i=1; i <= token_count; i++) {
+            token=tokens[i]
+            if (token == "" ||
+                token !~ /^[^,[:space:]]+$/ ||
+                seen_token[token]++) fail()
+            if (token == "TypedArray") {
+                typed_array_count++
+            } else {
+                if (remaining != "") remaining=remaining ", "
+                remaining=remaining token
+            }
+        }
+        if (typed_array_count != 1 ||
+            remaining == "" ||
+            $6 != prefix remaining) fail()
+    }
+    END {
+        if (invalid ||
+            NR != expected_rows ||
+            activation != expected_activation ||
+            reason != expected_reason) exit 1
+    }
+' "$global_transition_data"; then
+    echo "error: TypedArray transition receipt ordering, keys, or semantics drifted" >&2
+    exit 1
+fi
+awk -F'\t' '$4 == "pass" { print $1 }' \
+    "$global_transition_data" \
+    | LC_ALL=C sort -u >"$global_transition_activation_inventory"
+awk -F'\t' '$4 == "pass" { print $1 "\t" $2 }' \
+    "$global_transition_data" \
+    | LC_ALL=C sort >"$global_transition_activation_keys"
+awk -F'\t' '$4 == "unsupported-feature" { print $1 }' \
+    "$global_transition_data" \
+    | LC_ALL=C sort -u >"$global_transition_reason_inventory"
+awk -F'\t' '$4 == "unsupported-feature" { print $1 "\t" $2 }' \
+    "$global_transition_data" \
+    | LC_ALL=C sort >"$global_transition_reason_keys"
+awk -F'\t' '{ print $1 }' "$global_transition_data" \
+    | LC_ALL=C sort -u >"$global_transition_all_inventory"
+awk -F'\t' '{ print $1 "\t" $2 }' "$global_transition_data" \
+    | LC_ALL=C sort >"$global_transition_all_keys"
+awk -F'\t' '$4 == "unsupported-feature" {
+    print $1 "\t" $2 "\t" $6
+}' "$global_transition_data" \
+    | LC_ALL=C sort >"$global_transition_reason_after_details"
+awk -F'\t' '{ print $1 "\t" $2 "\t" $4 "\t" $6 }' \
+    "$global_transition_data" \
+    | LC_ALL=C sort >"$global_transition_after_expected"
+if [[ "$(wc -l <"$global_transition_activation_inventory" \
+        | tr -d '[:space:]')" != "$expected_global_activation_paths" \
+    || "$(sha256_file "$global_transition_activation_inventory")" \
+        != "$expected_global_activation" \
+    || "$(wc -l <"$global_transition_activation_keys" \
+        | tr -d '[:space:]')" != "$expected_global_activation_variants" \
+    || "$(sha256_file "$global_transition_activation_keys")" \
+        != "$expected_global_activation_keys" \
+    || "$(wc -l <"$global_transition_reason_inventory" \
+        | tr -d '[:space:]')" != "$expected_global_reason_only_paths" \
+    || "$(sha256_file "$global_transition_reason_inventory")" \
+        != "$expected_global_reason_only" \
+    || "$(wc -l <"$global_transition_reason_keys" \
+        | tr -d '[:space:]')" != "$expected_global_reason_only_variants" \
+    || "$(sha256_file "$global_transition_reason_keys")" \
+        != "$expected_global_reason_only_keys" \
+    || "$(wc -l <"$global_transition_all_inventory" \
+        | tr -d '[:space:]')" \
+        != "$expected_previous_typed_array_unsupported_paths" \
+    || "$(sha256_file "$global_transition_all_inventory")" \
+        != "$expected_previous_typed_array_unsupported" \
+    || "$(wc -l <"$global_transition_all_keys" | tr -d '[:space:]')" \
+        != "$expected_previous_typed_array_unsupported_variants" \
+    || "$(sha256_file "$global_transition_all_keys")" \
+        != "$expected_previous_typed_array_unsupported_keys" ]]; then
+    echo "error: TypedArray transition receipt partition inventory drifted" >&2
+    exit 1
+fi
 
 manifest_paths >"$manifest_inventory"
 exclusion_paths >"$excluded_inventory"
 spillover_paths >"$spillover_inventory"
+awk 'NF && $1 !~ /^#/ { print }' \
+    "$global_activation_manifest" >"$global_activation_inventory"
+awk 'NF && $1 !~ /^#/ { print }' \
+    "$global_reason_only_manifest" >"$global_reason_only_inventory"
+global_activation_spillover_paths >"$global_spillover_inventory"
+profile_section_from_file "$global_profile" features >"$global_features"
 LC_ALL=C sort -c "$manifest_inventory"
 LC_ALL=C sort -c "$excluded_inventory"
 LC_ALL=C sort -c "$spillover_inventory"
+LC_ALL=C sort -c "$global_activation_inventory"
+LC_ALL=C sort -c "$global_reason_only_inventory"
+LC_ALL=C sort -c "$global_spillover_inventory"
+LC_ALL=C sort -c "$global_features"
 
 (
     cd -- "$suite"
@@ -2904,10 +3378,10 @@ fi
 while IFS= read -r test_path; do
     metadata_list "$test_path" features >"$candidate_features"
     metadata_list "$test_path" includes >"$candidate_includes"
+    metadata_list "$test_path" flags >"$candidate_flags"
     source_body "$test_path" >"$source_file"
     concrete_typed_array_tokens "$source_file" >"$typed_array_tokens"
     if [[ -z "$(metadata_block "$test_path")" \
-        || -n "$(metadata_list "$test_path" flags)" \
         || -n "$(metadata_list "$test_path" features \
             | grep -E '^(SharedArrayBuffer|Atomics|immutable-arraybuffer|cross-realm)$' \
             || true)" \
@@ -2916,7 +3390,17 @@ while IFS= read -r test_path; do
         echo "error: latent TypedArray core spillover gained an external dependency: $test_path" >&2
         exit 1
     fi
-    if [[ ! -s "$typed_array_tokens" ]] \
+    if global_activation_spillover_paths | grep -Fxq "$test_path"; then
+        if grep -Evq '^(generated|noStrict)$' "$candidate_flags" \
+            || [[ -n "$(LC_ALL=C sort "$candidate_flags" | uniq -d)" ]] \
+            || [[ "$(grep -Fxc TypedArray "$candidate_features")" != "1" ]]; then
+            echo "error: TypedArray global activation spillover flags drifted: $test_path" >&2
+            exit 1
+        fi
+    elif [[ -s "$candidate_flags" ]]; then
+        echo "error: latent TypedArray core spillover gained execution flags: $test_path" >&2
+        exit 1
+    elif [[ ! -s "$typed_array_tokens" ]] \
         && ! grep -Fxq sm/non262-Math-shell.js "$candidate_includes"; then
         echo "error: latent TypedArray spillover lost its source or harness dependency: $test_path" >&2
         exit 1
@@ -2959,6 +3443,322 @@ diff -u <(profile_section features | LC_ALL=C sort) "$feature_inventory"
 if [[ -n "$(profile_section audited-negative-tests)" \
     || -n "$(profile_section execution)" ]]; then
     echo "error: TypedArray core profile must contain no negatives or execution opt-ins" >&2
+    exit 1
+fi
+
+: >"$derived_global_activation"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" features >"$candidate_features"
+    if grep -Fxq TypedArray "$candidate_features" \
+        && [[ -z "$(LC_ALL=C comm -23 \
+            <(LC_ALL=C sort -u "$candidate_features") \
+            "$global_features")" ]]; then
+        printf '%s\n' "$test_path" >>"$derived_global_activation"
+    fi
+done <"$manifest_inventory"
+LC_ALL=C sort -o "$derived_global_activation" "$derived_global_activation"
+diff -u "$global_activation_inventory" "$derived_global_activation"
+
+LC_ALL=C comm -23 \
+    "$global_activation_inventory" \
+    "$global_spillover_inventory" >"$global_authenticated_inventory"
+if [[ -n "$(LC_ALL=C comm -12 \
+        "$global_authenticated_inventory" \
+        "$global_spillover_inventory")" ]]; then
+    echo "error: TypedArray global activation partitions overlap" >&2
+    exit 1
+fi
+diff -u \
+    "$global_activation_inventory" \
+    <(LC_ALL=C sort -u \
+        "$global_authenticated_inventory" \
+        "$global_spillover_inventory")
+diff -u \
+    "$global_spillover_inventory" \
+    <(LC_ALL=C comm -12 \
+        "$global_activation_inventory" \
+        "$global_spillover_inventory")
+if [[ -n "$(LC_ALL=C comm -12 \
+        "$global_activation_inventory" \
+        "$global_reason_only_inventory")" ]]; then
+    echo "error: TypedArray activation overlaps its reason-only ledger" >&2
+    exit 1
+fi
+
+: >"$global_activation_keys"
+: >"$global_authenticated_keys"
+: >"$global_spillover_keys"
+: >"$global_reason_only_keys"
+: >"$global_reason_only_flag_inventory"
+: >"$global_reason_only_missing_details"
+: >"$global_activation_feature_occurrences"
+: >"$global_activation_include_occurrences"
+: >"$global_spillover_feature_occurrences"
+: >"$global_spillover_include_occurrences"
+: >"$global_spillover_flag_inventory"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$global_activation_keys"
+    metadata_list "$test_path" features \
+        >>"$global_activation_feature_occurrences"
+    metadata_list "$test_path" includes \
+        >>"$global_activation_include_occurrences"
+done <"$global_activation_inventory"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" flags >"$candidate_flags"
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$global_authenticated_keys"
+done <"$global_authenticated_inventory"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" features >"$candidate_features"
+    metadata_list "$test_path" includes >"$candidate_includes"
+    metadata_list "$test_path" flags >"$candidate_flags"
+    source_body "$test_path" >"$source_file"
+    concrete_typed_array_tokens "$source_file" >"$typed_array_tokens"
+    if [[ -z "$(metadata_block "$test_path")" \
+        || ! -s "$candidate_features" \
+        || "$(grep -Fxc TypedArray "$candidate_features")" != "1" \
+        || -n "$(LC_ALL=C comm -23 \
+            <(LC_ALL=C sort -u "$candidate_features") \
+            "$global_features")" \
+        || -n "$(grep -Ev \
+            '^(compareArray\.js|detachArrayBuffer\.js|testTypedArray\.js)$' \
+            "$candidate_includes" || true)" \
+        || -n "$(grep -Ev '^(generated|noStrict)$' \
+            "$candidate_flags" || true)" \
+        || -n "$(LC_ALL=C sort "$candidate_flags" | uniq -d)" \
+        || "$(grep -c '^negative:' <<<"$(metadata_block "$test_path")" || true)" \
+            != "0" \
+        || -n "$(grep -F '$262.' "$source_file" || true)" ]]; then
+        echo "error: TypedArray global activation spillover dependency drifted: $test_path" >&2
+        exit 1
+    fi
+    if [[ -s "$candidate_flags" ]]; then
+        sed "s#^#$test_path\\t#" "$candidate_flags" \
+            >>"$global_spillover_flag_inventory"
+    else
+        printf '%s\tdefault\n' "$test_path" \
+            >>"$global_spillover_flag_inventory"
+    fi
+    append_variant_keys \
+        "$test_path" "$candidate_flags" "$global_spillover_keys"
+    cat "$candidate_features" >>"$global_spillover_feature_occurrences"
+    cat "$candidate_includes" >>"$global_spillover_include_occurrences"
+done <"$global_spillover_inventory"
+while IFS= read -r test_path; do
+    metadata_list "$test_path" features >"$candidate_features"
+    metadata_list "$test_path" flags >"$candidate_flags"
+    LC_ALL=C sort -u -o "$candidate_features" "$candidate_features"
+    LC_ALL=C comm -23 \
+        "$candidate_features" \
+        "$global_features" >"$global_reason_only_missing_features"
+    if [[ "$(grep -Fxc TypedArray "$candidate_features")" != "1" \
+        || ! -s "$global_reason_only_missing_features" \
+        || -n "$(grep -Fx TypedArray \
+            "$global_reason_only_missing_features" || true)" ]]; then
+        echo "error: TypedArray reason-only dependency drifted: $test_path" >&2
+        exit 1
+    fi
+    reason_flag_signature=$(LC_ALL=C sort "$candidate_flags" | paste -sd, -)
+    if [[ -z "$reason_flag_signature" ]]; then
+        reason_flag_signature=default
+    fi
+    printf '%s\t%s\n' \
+        "$test_path" \
+        "$reason_flag_signature" >>"$global_reason_only_flag_inventory"
+    reason_missing_detail=$(awk '
+        BEGIN { separator="" }
+        {
+            printf "%s%s", separator, $0
+            separator=", "
+        }
+        END { print "" }
+    ' "$global_reason_only_missing_features")
+    printf '%s\t%s%s\n' \
+        "$test_path" \
+        "$reason_detail_prefix" \
+        "$reason_missing_detail" >>"$global_reason_only_missing_details"
+    append_reason_only_variant_keys \
+        "$test_path" "$candidate_flags" "$global_reason_only_keys"
+done <"$global_reason_only_inventory"
+LC_ALL=C sort -o "$global_activation_keys" "$global_activation_keys"
+LC_ALL=C sort -o "$global_authenticated_keys" "$global_authenticated_keys"
+LC_ALL=C sort -o "$global_spillover_keys" "$global_spillover_keys"
+LC_ALL=C sort -o "$global_reason_only_keys" "$global_reason_only_keys"
+LC_ALL=C sort -o \
+    "$global_reason_only_flag_inventory" \
+    "$global_reason_only_flag_inventory"
+LC_ALL=C sort -o \
+    "$global_reason_only_missing_details" \
+    "$global_reason_only_missing_details"
+awk -F'\t' '
+    BEGIN { OFS="\t" }
+    NR == FNR {
+        if (NF != 2 || $1 == "" || ($1 in details)) exit 1
+        details[$1]=$2
+        next
+    }
+    {
+        if (NF != 2 || !($1 in details)) exit 1
+        print $1, $2, details[$1]
+        used[$1]=1
+    }
+    END {
+        for (path in details) {
+            if (!(path in used)) exit 1
+        }
+    }
+' "$global_reason_only_missing_details" \
+    "$global_reason_only_keys" >"$global_reason_only_expected_details"
+diff -u \
+    "$global_transition_reason_after_details" \
+    "$global_reason_only_expected_details"
+LC_ALL=C sort -u \
+    "$global_activation_inventory" \
+    "$global_reason_only_inventory" \
+    >"$previous_typed_array_unsupported_inventory"
+LC_ALL=C sort -u \
+    "$global_activation_keys" \
+    "$global_reason_only_keys" \
+    >"$previous_typed_array_unsupported_keys"
+diff -u \
+    "$global_transition_activation_inventory" \
+    "$global_activation_inventory"
+diff -u \
+    "$global_transition_activation_keys" \
+    "$global_activation_keys"
+diff -u \
+    "$global_transition_reason_inventory" \
+    "$global_reason_only_inventory"
+diff -u \
+    "$global_transition_reason_keys" \
+    "$global_reason_only_keys"
+diff -u \
+    "$global_transition_all_inventory" \
+    "$previous_typed_array_unsupported_inventory"
+diff -u \
+    "$global_transition_all_keys" \
+    "$previous_typed_array_unsupported_keys"
+LC_ALL=C sort -u \
+    "$global_activation_feature_occurrences" \
+    >"$global_activation_feature_inventory"
+LC_ALL=C sort -u \
+    "$global_activation_include_occurrences" \
+    >"$global_activation_include_inventory"
+LC_ALL=C sort -u \
+    "$global_spillover_feature_occurrences" \
+    >"$global_spillover_feature_inventory"
+LC_ALL=C sort -u \
+    "$global_spillover_include_occurrences" \
+    >"$global_spillover_include_inventory"
+LC_ALL=C sort -o \
+    "$global_spillover_flag_inventory" \
+    "$global_spillover_flag_inventory"
+
+if [[ "$(wc -l <"$global_activation_inventory" | tr -d '[:space:]')" \
+        != "$expected_global_activation_paths" \
+    || "$(sha256_file "$global_activation_inventory")" \
+        != "$expected_global_activation" \
+    || "$(wc -l <"$global_activation_keys" | tr -d '[:space:]')" \
+        != "$expected_global_activation_variants" \
+    || "$(sha256_file "$global_activation_keys")" \
+        != "$expected_global_activation_keys" \
+    || "$(wc -l <"$global_authenticated_inventory" | tr -d '[:space:]')" \
+        != "$expected_global_authenticated_paths" \
+    || "$(sha256_file "$global_authenticated_inventory")" \
+        != "$expected_global_authenticated" \
+    || "$(wc -l <"$global_authenticated_keys" | tr -d '[:space:]')" \
+        != "$expected_global_authenticated_variants" \
+    || "$(sha256_file "$global_authenticated_keys")" \
+        != "$expected_global_authenticated_keys" \
+    || "$(wc -l <"$global_spillover_inventory" | tr -d '[:space:]')" \
+        != "$expected_global_spillover_paths" \
+    || "$(sha256_file "$global_spillover_inventory")" \
+        != "$expected_global_spillover" \
+    || "$(wc -l <"$global_spillover_keys" | tr -d '[:space:]')" \
+        != "$expected_global_spillover_variants" \
+    || "$(sha256_file "$global_spillover_keys")" \
+        != "$expected_global_spillover_keys" \
+    || "$(wc -l <"$global_activation_feature_inventory" \
+        | tr -d '[:space:]')" != "$expected_global_activation_features" \
+    || "$(sha256_file "$global_activation_feature_inventory")" \
+        != "$expected_global_activation_features_hash" \
+    || "$(wc -l <"$global_activation_include_inventory" \
+        | tr -d '[:space:]')" != "$expected_global_activation_includes" \
+    || "$(sha256_file "$global_activation_include_inventory")" \
+        != "$expected_global_activation_includes_hash" \
+    || "$(wc -l <"$global_spillover_feature_inventory" \
+        | tr -d '[:space:]')" != "$expected_global_spillover_features" \
+    || "$(sha256_file "$global_spillover_feature_inventory")" \
+        != "$expected_global_spillover_features_hash" \
+    || "$(wc -l <"$global_spillover_include_inventory" \
+        | tr -d '[:space:]')" != "$expected_global_spillover_includes" \
+    || "$(sha256_file "$global_spillover_include_inventory")" \
+        != "$expected_global_spillover_includes_hash" \
+    || "$(wc -l <"$global_reason_only_inventory" | tr -d '[:space:]')" \
+        != "$expected_global_reason_only_paths" \
+    || "$(sha256_file "$global_reason_only_inventory")" \
+        != "$expected_global_reason_only" \
+    || "$(wc -l <"$global_reason_only_keys" | tr -d '[:space:]')" \
+        != "$expected_global_reason_only_variants" \
+    || "$(sha256_file "$global_reason_only_keys")" \
+        != "$expected_global_reason_only_keys" \
+    || "$(wc -l <"$global_reason_only_flag_inventory" \
+        | tr -d '[:space:]')" != "$expected_global_reason_only_paths" \
+    || "$(wc -l <"$global_reason_only_missing_details" \
+        | tr -d '[:space:]')" != "$expected_global_reason_only_paths" \
+    || "$(wc -l <"$global_reason_only_expected_details" \
+        | tr -d '[:space:]')" != "$expected_global_reason_only_variants" \
+    || "$(wc -l <"$previous_typed_array_unsupported_inventory" \
+        | tr -d '[:space:]')" \
+        != "$expected_previous_typed_array_unsupported_paths" \
+    || "$(sha256_file "$previous_typed_array_unsupported_inventory")" \
+        != "$expected_previous_typed_array_unsupported" \
+    || "$(wc -l <"$previous_typed_array_unsupported_keys" \
+        | tr -d '[:space:]')" \
+        != "$expected_previous_typed_array_unsupported_variants" \
+    || "$(sha256_file "$previous_typed_array_unsupported_keys")" \
+        != "$expected_previous_typed_array_unsupported_keys" ]]; then
+    echo "error: TypedArray global activation inventory drifted" >&2
+    exit 1
+fi
+if ! awk -F'\t' -v expected="$expected_global_reason_only_paths" '
+    {
+        if (NF != 2 || $1 == "" || seen[$1]++) exit 1
+        counts[$2]++
+    }
+    END {
+        for (flag in counts) {
+            if (flag != "default" &&
+                flag != "generated" &&
+                flag != "CanBlockIsTrue" &&
+                flag != "CanBlockIsFalse" &&
+                flag != "onlyStrict" &&
+                flag != "noStrict") exit 1
+        }
+        if (NR != expected ||
+            counts["default"] != 440 ||
+            counts["generated"] != 20 ||
+            counts["CanBlockIsTrue"] != 7 ||
+            counts["CanBlockIsFalse"] != 0 ||
+            counts["onlyStrict"] != 2 ||
+            counts["noStrict"] != 2) exit 1
+    }
+' "$global_reason_only_flag_inventory"; then
+    echo "error: TypedArray reason-only path flag inventory drifted" >&2
+    exit 1
+fi
+if ! awk -F'\t' '
+    { counts[$2]++ }
+    END {
+        if (NR != 41 ||
+            counts["default"] != 33 ||
+            counts["generated"] != 6 ||
+            counts["noStrict"] != 2) exit 1
+    }
+' "$global_spillover_flag_inventory"; then
+    echo "error: TypedArray global activation spillover flag inventory drifted" >&2
     exit 1
 fi
 
@@ -3014,6 +3814,17 @@ if [[ "$check_only" == true ]]; then
         "$expected_entries_keys_deferred_paths" \
         "$expected_of_deferred_paths" \
         "$expected_from_deferred_paths" \
+        "$expected_excluded_paths"
+    printf 'TypedArray global activation assets pass: %s paths/%s variants (%s authenticated paths/%s variants + %s spillover paths/%s variants), %s reason-only paths/%s variants, the %s-row R3bd-to-R3be receipt, and %s external exclusions remain frozen\n' \
+        "$expected_global_activation_paths" \
+        "$expected_global_activation_variants" \
+        "$expected_global_authenticated_paths" \
+        "$expected_global_authenticated_variants" \
+        "$expected_global_spillover_paths" \
+        "$expected_global_spillover_variants" \
+        "$expected_global_reason_only_paths" \
+        "$expected_global_reason_only_variants" \
+        "$expected_transition_rows" \
         "$expected_excluded_paths"
     exit 0
 fi
@@ -3137,3 +3948,338 @@ printf 'TypedArray core Test262 gate passes: %s/%s variants across %s paths; pin
     "$expected_paths" \
     "$expected_quickjs_variants" \
     "$expected_quickjs_variants"
+
+activation_expected_passes=$(read_global_activation_value passes)
+activation_expected_failures=$(read_global_activation_value failures)
+activation_expected_unsupported=$(read_global_activation_value unsupported)
+activation_expected_skipped=$(read_global_activation_value skipped)
+activation_expected_nonpass=$(read_global_activation_value nonpass_sha256)
+activation_expected_tsv=$(read_global_activation_value tsv_sha256)
+activation_expected_jsonl=$(read_global_activation_value jsonl_sha256)
+activation_expected_summary=$(read_global_activation_value summary)
+if [[ "$activation_expected_passes" \
+        != "$expected_global_activation_variants" \
+    || "$activation_expected_failures" != "0" \
+    || "$activation_expected_unsupported" != "0" \
+    || "$activation_expected_skipped" != "0" \
+    || "$activation_expected_nonpass" \
+        != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" \
+    || "$activation_expected_summary" \
+        != "pass=$expected_global_activation_variants" ]]; then
+    echo "error: measured TypedArray global activation baseline is not an all-green gate" >&2
+    exit 1
+fi
+
+rm -f -- "$global_activation_report" "$global_activation_json_report"
+global_activation_run_output=$(cargo run --locked --release --quiet \
+    --bin run-test262 -- \
+    --suite "$suite" \
+    --config "$source_dir/test262.conf" \
+    --oxide-profile "$global_profile" \
+    --manifest "$global_activation_manifest" \
+    --report "$global_activation_report" \
+    --mode "$expected_mode" \
+    --workers "$workers" \
+    --timeout-ms "$expected_timeout_ms" \
+    --allow-failures)
+printf '%s\n' "$global_activation_run_output"
+
+activation_actual_variants=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") { count++ }
+    END { print count + 0 }' "$global_activation_report")
+activation_execution_line=$(printf '%s\n' "$global_activation_run_output" \
+    | awk '/^execution: runnable=/ { print; found=1 } END { if (!found) exit 1 }')
+activation_actual_runnable=${activation_execution_line#*runnable=}
+activation_actual_runnable=${activation_actual_runnable%% *}
+if [[ "$(read_report_header "$global_activation_report" quickjs)" \
+        != "$expected_quickjs" \
+    || "$(read_report_header "$global_activation_report" test262)" \
+        != "$expected_test262" \
+    || "$(read_report_header \
+        "$global_activation_report" test262_patch_sha256)" != "$expected_patch" \
+    || "$(read_report_header \
+        "$global_activation_report" test262_config_sha256)" != "$expected_config" \
+    || "$(read_report_header \
+        "$global_activation_report" test262_metadata_sha256)" \
+        != "$expected_metadata" \
+    || "$(read_report_header \
+        "$global_activation_report" oxide_profile_sha256)" \
+        != "$expected_global_profile" \
+    || "$(read_report_header "$global_activation_report" profile)" \
+        != "$expected_schema" \
+    || "$(read_report_header "$global_activation_report" mode)" \
+        != "$expected_mode" \
+    || "$activation_actual_variants" \
+        != "$expected_global_activation_variants" \
+    || "$activation_actual_runnable" \
+        != "$expected_global_activation_variants" ]]; then
+    echo "error: TypedArray global activation report metadata drifted" >&2
+    exit 1
+fi
+
+diff -u \
+    "$global_activation_inventory" \
+    <(awk -F'\t' \
+        '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 }' \
+        "$global_activation_report" | LC_ALL=C sort -u)
+diff -u \
+    "$global_activation_feature_inventory" \
+    <(awk -F'\t' '
+        !/^#/ && !($1 == "path" && $2 == "variant") {
+            count=split($4, features, ",")
+            for (i=1; i <= count; i++) {
+                if (features[i] != "") print features[i]
+            }
+        }
+    ' "$global_activation_report" | LC_ALL=C sort -u)
+
+activation_actual_keys=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") {
+        print $1 "\t" $2
+    }' "$global_activation_report" | LC_ALL=C sort | sha256_stream)
+activation_actual_passes=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "pass" {
+        count++
+    }
+    END { print count + 0 }' "$global_activation_report")
+activation_actual_unsupported=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") &&
+        $7 ~ /^unsupported-/ { count++ }
+    END { print count + 0 }' "$global_activation_report")
+activation_actual_skipped=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") &&
+        $7 ~ /^skipped-/ { count++ }
+    END { print count + 0 }' "$global_activation_report")
+activation_actual_failures=$((
+    activation_actual_variants
+    - activation_actual_passes
+    - activation_actual_unsupported
+    - activation_actual_skipped
+))
+activation_actual_nonpass=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
+        print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10
+    }' "$global_activation_report" | sha256_stream)
+activation_actual_summary=$(tail -n 1 "$global_activation_report" \
+    | sed 's/^# summary //')
+activation_runner_summary=$(printf '%s\n' "$global_activation_run_output" \
+    | awk '/^Test262: total=/ { print; found=1 } END { if (!found) exit 1 }')
+activation_expected_runner_summary="Test262: total=$expected_global_activation_variants pass=$activation_expected_passes fail=$activation_expected_failures unsupported=$activation_expected_unsupported skipped=$activation_expected_skipped"
+
+if [[ "$activation_runner_summary" \
+        != "$activation_expected_runner_summary" \
+    || "$activation_actual_passes" != "$activation_expected_passes" \
+    || "$activation_actual_failures" != "$activation_expected_failures" \
+    || "$activation_actual_unsupported" != "$activation_expected_unsupported" \
+    || "$activation_actual_skipped" != "$activation_expected_skipped" \
+    || "$activation_actual_keys" != "$expected_global_activation_keys" \
+    || "$activation_actual_nonpass" != "$activation_expected_nonpass" \
+    || "$activation_actual_summary" != "$activation_expected_summary" \
+    || "$(sha256_file "$global_activation_report")" \
+        != "$activation_expected_tsv" \
+    || "$(sha256_file "$global_activation_json_report")" \
+        != "$activation_expected_jsonl" ]]; then
+    echo "error: TypedArray global activation classified vector drifted" >&2
+    printf 'path\tvariant\toutcome\tactual_phase\tactual_type\tdetail\n' >&2
+    awk -F'\t' '
+        !/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
+            print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10
+            if (++shown == 80) exit
+        }
+    ' "$global_activation_report" >&2
+    exit 1
+fi
+
+reason_expected_passes=$(read_global_activation_value reason_only_passes)
+reason_expected_failures=$(read_global_activation_value reason_only_failures)
+reason_expected_unsupported=$(read_global_activation_value reason_only_unsupported)
+reason_expected_skipped=$(read_global_activation_value reason_only_skipped)
+reason_expected_nonpass=$(read_global_activation_value \
+    reason_only_nonpass_sha256)
+reason_expected_tsv=$(read_global_activation_value reason_only_tsv_sha256)
+reason_expected_jsonl=$(read_global_activation_value \
+    reason_only_jsonl_sha256)
+reason_expected_summary=$(read_global_activation_value reason_only_summary)
+if [[ "$reason_expected_passes" != "0" \
+    || "$reason_expected_failures" != "0" \
+    || "$reason_expected_unsupported" \
+        != "$expected_global_reason_only_variants" \
+    || "$reason_expected_skipped" != "0" \
+    || "$reason_expected_summary" \
+        != "unsupported-feature=$expected_global_reason_only_variants" ]]; then
+    echo "error: measured TypedArray reason-only baseline drifted" >&2
+    exit 1
+fi
+
+rm -f -- "$global_reason_only_report" "$global_reason_only_json_report"
+reason_run_output=$(cargo run --locked --release --quiet \
+    --bin run-test262 -- \
+    --suite "$suite" \
+    --config "$source_dir/test262.conf" \
+    --oxide-profile "$global_profile" \
+    --manifest "$global_reason_only_manifest" \
+    --report "$global_reason_only_report" \
+    --mode "$expected_mode" \
+    --workers "$workers" \
+    --timeout-ms "$expected_timeout_ms" \
+    --allow-failures)
+printf '%s\n' "$reason_run_output"
+
+reason_actual_variants=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") { count++ }
+    END { print count + 0 }' "$global_reason_only_report")
+reason_execution_line=$(printf '%s\n' "$reason_run_output" \
+    | awk '/^execution: runnable=/ { print; found=1 } END { if (!found) exit 1 }')
+reason_actual_runnable=${reason_execution_line#*runnable=}
+reason_actual_runnable=${reason_actual_runnable%% *}
+if [[ "$(read_report_header "$global_reason_only_report" quickjs)" \
+        != "$expected_quickjs" \
+    || "$(read_report_header "$global_reason_only_report" test262)" \
+        != "$expected_test262" \
+    || "$(read_report_header \
+        "$global_reason_only_report" test262_patch_sha256)" != "$expected_patch" \
+    || "$(read_report_header \
+        "$global_reason_only_report" test262_config_sha256)" != "$expected_config" \
+    || "$(read_report_header \
+        "$global_reason_only_report" test262_metadata_sha256)" \
+        != "$expected_metadata" \
+    || "$(read_report_header \
+        "$global_reason_only_report" oxide_profile_sha256)" \
+        != "$expected_global_profile" \
+    || "$(read_report_header "$global_reason_only_report" profile)" \
+        != "$expected_schema" \
+    || "$(read_report_header "$global_reason_only_report" mode)" \
+        != "$expected_mode" \
+    || "$reason_actual_variants" != "$expected_global_reason_only_variants" \
+    || "$reason_actual_runnable" != "0" ]]; then
+    echo "error: TypedArray reason-only report metadata drifted" >&2
+    exit 1
+fi
+
+diff -u \
+    "$global_reason_only_inventory" \
+    <(awk -F'\t' \
+        '!/^#/ && !($1 == "path" && $2 == "variant") { print $1 }' \
+        "$global_reason_only_report" | LC_ALL=C sort -u)
+awk -F'\t' '
+    !/^#/ && !($1 == "path" && $2 == "variant") {
+        print $1 "\t" $2 "\t" $10
+    }
+' "$global_reason_only_report" \
+    | LC_ALL=C sort >"$global_reason_only_actual_details"
+diff -u \
+    "$global_reason_only_expected_details" \
+    "$global_reason_only_actual_details"
+if ! awk -F'\t' -v prefix="$reason_detail_prefix" '
+    !/^#/ && !($1 == "path" && $2 == "variant") {
+        if ($7 != "unsupported-feature" ||
+            $8 != "selection" ||
+            $9 != "EngineCapability") exit 1
+        typed_array_feature=0
+        count=split($4, features, ",")
+        for (i=1; i <= count; i++) {
+            if (features[i] == "TypedArray") typed_array_feature++
+        }
+        if (typed_array_feature != 1) exit 1
+        if (index($10, prefix) != 1) exit 1
+        detail=substr($10, length(prefix) + 1)
+        count=split(detail, missing, /, /)
+        if (count < 1) exit 1
+        for (i=1; i <= count; i++) {
+            if (missing[i] == "TypedArray") exit 1
+        }
+    }
+' "$global_reason_only_report"; then
+    echo "error: TypedArray reason-only outcome or missing-feature reason drifted" >&2
+    exit 1
+fi
+
+reason_actual_keys=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") {
+        print $1 "\t" $2
+    }' "$global_reason_only_report" | LC_ALL=C sort | sha256_stream)
+reason_actual_passes=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") && $7 == "pass" {
+        count++
+    }
+    END { print count + 0 }' "$global_reason_only_report")
+reason_actual_unsupported=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") &&
+        $7 ~ /^unsupported-/ { count++ }
+    END { print count + 0 }' "$global_reason_only_report")
+reason_actual_skipped=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") &&
+        $7 ~ /^skipped-/ { count++ }
+    END { print count + 0 }' "$global_reason_only_report")
+reason_actual_failures=$((
+    reason_actual_variants
+    - reason_actual_passes
+    - reason_actual_unsupported
+    - reason_actual_skipped
+))
+reason_actual_nonpass=$(awk -F'\t' \
+    '!/^#/ && !($1 == "path" && $2 == "variant") && $7 != "pass" {
+        print $1 "\t" $2 "\t" $7 "\t" $8 "\t" $9 "\t" $10
+    }' "$global_reason_only_report" | sha256_stream)
+reason_actual_summary=$(tail -n 1 "$global_reason_only_report" \
+    | sed 's/^# summary //')
+reason_runner_summary=$(printf '%s\n' "$reason_run_output" \
+    | awk '/^Test262: total=/ { print; found=1 } END { if (!found) exit 1 }')
+reason_expected_runner_summary="Test262: total=$expected_global_reason_only_variants pass=0 fail=$expected_global_reason_only_variants unsupported=$expected_global_reason_only_variants skipped=0"
+if [[ "$reason_runner_summary" != "$reason_expected_runner_summary" \
+    || "$reason_actual_passes" != "$reason_expected_passes" \
+    || "$reason_actual_failures" != "$reason_expected_failures" \
+    || "$reason_actual_unsupported" != "$reason_expected_unsupported" \
+    || "$reason_actual_skipped" != "$reason_expected_skipped" \
+    || "$reason_actual_keys" != "$expected_global_reason_only_keys" \
+    || "$reason_actual_nonpass" != "$reason_expected_nonpass" \
+    || "$reason_actual_summary" != "$reason_expected_summary" \
+    || "$(sha256_file "$global_reason_only_report")" \
+        != "$reason_expected_tsv" \
+    || "$(sha256_file "$global_reason_only_json_report")" \
+        != "$reason_expected_jsonl" ]]; then
+    echo "error: TypedArray reason-only classified vector drifted" >&2
+    exit 1
+fi
+
+{
+    awk -F'\t' '
+        BEGIN { OFS="\t" }
+        !/^#/ && !($1 == "path" && $2 == "variant") {
+            print $1, $2, $7, $10
+        }
+    ' "$global_activation_report"
+    awk -F'\t' '
+        BEGIN { OFS="\t" }
+        !/^#/ && !($1 == "path" && $2 == "variant") {
+            print $1, $2, $7, $10
+        }
+    ' "$global_reason_only_report"
+} | LC_ALL=C sort >"$global_transition_after_actual"
+if ! LC_ALL=C sort -c "$global_transition_after_actual" \
+    || ! awk -F'\t' -v expected="$expected_transition_rows" '
+        {
+            if (NF != 4 || $1 == "" ||
+                ($2 != "sloppy" && $2 != "strict") ||
+                seen[$1 SUBSEP $2]++) exit 1
+        }
+        END { if (NR != expected) exit 1 }
+    ' "$global_transition_after_actual"; then
+    echo "error: live TypedArray transition report join is incomplete or duplicated" >&2
+    exit 1
+fi
+if ! diff -u \
+    "$global_transition_after_expected" \
+    "$global_transition_after_actual"; then
+    echo "error: live TypedArray transition outcomes or details drifted from the receipt" >&2
+    exit 1
+fi
+
+printf 'TypedArray global activation gate passes: %s/%s variants across %s paths (%s authenticated + %s spillover); %s old unsupported rows transition to pass and %s retain unsupported-feature with reason-only changes\n' \
+    "$activation_expected_passes" \
+    "$expected_global_activation_variants" \
+    "$expected_global_activation_paths" \
+    "$expected_global_authenticated_paths" \
+    "$expected_global_spillover_paths" \
+    "$expected_global_activation_variants" \
+    "$expected_global_reason_only_variants"
