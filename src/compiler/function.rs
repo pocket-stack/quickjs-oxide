@@ -227,10 +227,10 @@ impl<'source> Parser<'source> {
             )
             && let Some((identifier, span)) = &header.name
             && identifier.value == "yield"
-            && !(header.parent_context.generator
-                && !header.parent_context.strict
-                && !identifier.has_escape
-                && identifier.keyword_hint == Some(crate::lexer::Keyword::Yield))
+            && (!header.parent_context.generator
+                || header.parent_context.strict
+                || identifier.has_escape
+                || identifier.keyword_hint != Some(crate::lexer::Keyword::Yield))
         {
             return Err(Error::syntax(
                 "'yield' is a reserved identifier",
@@ -247,10 +247,10 @@ impl<'source> Parser<'source> {
             )
             && let Some((identifier, span)) = &header.name
             && identifier.value == "await"
-            && !(header.parent_context.async_function
-                && !header.parent_context.module
-                && !identifier.has_escape
-                && identifier.keyword_hint == Some(crate::lexer::Keyword::Await))
+            && (!header.parent_context.async_function
+                || header.parent_context.module
+                || identifier.has_escape
+                || identifier.keyword_hint != Some(crate::lexer::Keyword::Await))
         {
             return Err(Error::syntax(
                 "'await' is a reserved identifier",

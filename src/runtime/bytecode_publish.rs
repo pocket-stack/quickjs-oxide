@@ -1033,11 +1033,11 @@ fn verify_eval_environments(
                 }
                 let is_catch_scope = scope.kind == crate::heap::EvalScopeKind::Catch;
                 let is_with_scope = scope.kind == crate::heap::EvalScopeKind::With;
-                if (binding.is_catch_parameter && !is_catch_scope)
-                    || (binding.is_catch_parameter
-                        && (!binding.is_lexical
-                            || binding.is_const
-                            || binding.kind != ClosureVariableKind::Normal))
+                if binding.is_catch_parameter
+                    && (!is_catch_scope
+                        || !binding.is_lexical
+                        || binding.is_const
+                        || binding.kind != ClosureVariableKind::Normal)
                 {
                     return Err(RuntimeError::Engine(Error::internal(
                         "eval catch binding metadata disagrees with its scope",

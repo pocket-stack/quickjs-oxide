@@ -10507,8 +10507,8 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         let valid_var = binding.kind == BindingKind::Normal
                             && binding.storage_scope == function.var_scope;
                         if binding.is_catch_parameter
-                            || (!matches!(function.kind, FunctionKind::Script)
-                                && !(matches!(function.kind, FunctionKind::Eval(_)) && valid_var))
+                            || !(matches!(function.kind, FunctionKind::Script)
+                                || matches!(function.kind, FunctionKind::Eval(_)) && valid_var)
                             || (!valid_lexical && !valid_var)
                         {
                             return Err(Error::internal("global binding metadata is malformed"));

@@ -254,11 +254,11 @@ impl Runtime {
             })?;
             for binding in &descriptor_scope.bindings {
                 let is_catch_scope = descriptor_scope.kind == crate::heap::EvalScopeKind::Catch;
-                if (binding.is_catch_parameter && !is_catch_scope)
-                    || (binding.is_catch_parameter
-                        && (!binding.is_lexical
-                            || binding.is_const
-                            || binding.kind != ClosureVariableKind::Normal))
+                if binding.is_catch_parameter
+                    && (!is_catch_scope
+                        || !binding.is_lexical
+                        || binding.is_const
+                        || binding.kind != ClosureVariableKind::Normal)
                 {
                     return Err(RuntimeError::Invariant(
                         "direct eval catch binding metadata is not authentic",
