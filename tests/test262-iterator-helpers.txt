@@ -1,16 +1,17 @@
 # Synchronous Iterator helpers clean gate for QuickJS 2026-06-04.
 #
 # Derived from every pinned Test262 path whose metadata names
-# iterator-helpers. Fourteen source-Proxy paths whose metadata omits their
-# optional-chaining dependency are admitted by the R3bl handoff ledger; 11
-# other source-Proxy paths, three harness-Proxy paths, 11 $262.createRealm
-# paths, four $262.IsHTMLDDA paths, and one pinned-config path remain deferred.
-# The 537 selected paths run in sloppy and strict mode (1,074 variants). Keep
-# this list bytewise sorted.
+# iterator-helpers. R3bm admits the complete 25-source plus three-harness Proxy
+# closure, preserving the R3bl optional-chaining handoff ledger as an
+# independently audited 14-path subset. Eleven $262.createRealm paths, four
+# $262.IsHTMLDDA paths, and one pinned-config path remain deferred. The 551
+# selected paths run in sloppy and strict mode (1,102 variants). Keep this list
+# bytewise sorted.
 test/built-ins/Iterator/constructor.js
 test/built-ins/Iterator/from/callable.js
 test/built-ins/Iterator/from/get-next-method-only-once.js
 test/built-ins/Iterator/from/get-next-method-throws.js
+test/built-ins/Iterator/from/get-return-method-when-call-return.js
 test/built-ins/Iterator/from/is-function.js
 test/built-ins/Iterator/from/iterable-primitives.js
 test/built-ins/Iterator/from/iterable-to-iterator-fallback.js
@@ -21,7 +22,9 @@ test/built-ins/Iterator/from/primitives.js
 test/built-ins/Iterator/from/prop-desc.js
 test/built-ins/Iterator/from/proto.js
 test/built-ins/Iterator/from/result-proto.js
+test/built-ins/Iterator/from/return-method-calls-base-return-method.js
 test/built-ins/Iterator/from/return-method-returns-iterator-result.js
+test/built-ins/Iterator/from/return-method-throws-for-invalid-this.js
 test/built-ins/Iterator/from/supports-iterable.js
 test/built-ins/Iterator/from/supports-iterator.js
 test/built-ins/Iterator/length.js
@@ -435,6 +438,7 @@ test/staging/sm/Iterator/prototype/every/proxy.js
 test/staging/sm/Iterator/prototype/every/return-true-if-all-match.js
 test/staging/sm/Iterator/prototype/every/short-circuit-on-false.js
 test/staging/sm/Iterator/prototype/every/this-not-iterator-throws.js
+test/staging/sm/Iterator/prototype/every/value-throws-iterator-not-closed.js
 test/staging/sm/Iterator/prototype/filter/length.js
 test/staging/sm/Iterator/prototype/filter/name.js
 test/staging/sm/Iterator/prototype/find/check-fn-after-getting-iterator.js
@@ -448,6 +452,7 @@ test/staging/sm/Iterator/prototype/find/proxy.js
 test/staging/sm/Iterator/prototype/find/return-undefined-if-none-match.js
 test/staging/sm/Iterator/prototype/find/short-circuit-on-match.js
 test/staging/sm/Iterator/prototype/find/this-not-iterator-throws.js
+test/staging/sm/Iterator/prototype/find/value-throws-iterator-not-closed.js
 test/staging/sm/Iterator/prototype/flatMap/close-iterator-when-inner-complete-throws.js
 test/staging/sm/Iterator/prototype/flatMap/close-iterator-when-inner-next-throws.js
 test/staging/sm/Iterator/prototype/flatMap/close-iterator-when-inner-value-throws.js
@@ -466,6 +471,7 @@ test/staging/sm/Iterator/prototype/forEach/name.js
 test/staging/sm/Iterator/prototype/forEach/next-throws-iterator-not-closed.js
 test/staging/sm/Iterator/prototype/forEach/proxy.js
 test/staging/sm/Iterator/prototype/forEach/this-not-iterator-throws.js
+test/staging/sm/Iterator/prototype/forEach/value-throws-iterator-not-closed.js
 test/staging/sm/Iterator/prototype/generator-methods-throw-on-iterator-helpers.js
 test/staging/sm/Iterator/prototype/iterator-helper-methods-throw-on-generators.js
 test/staging/sm/Iterator/prototype/lazy-methods-handle-empty-iterators.js
@@ -478,6 +484,7 @@ test/staging/sm/Iterator/prototype/lazy-methods-iterator-returns-done-generator-
 test/staging/sm/Iterator/prototype/lazy-methods-multiple-return-close-iterator-once.js
 test/staging/sm/Iterator/prototype/lazy-methods-pass-through-lastValue.js
 test/staging/sm/Iterator/prototype/lazy-methods-pass-value-through-chain.js
+test/staging/sm/Iterator/prototype/lazy-methods-proxy-accesses.js
 test/staging/sm/Iterator/prototype/lazy-methods-reentry-not-close-iterator.js
 test/staging/sm/Iterator/prototype/lazy-methods-return-closes-iterator.js
 test/staging/sm/Iterator/prototype/lazy-methods-return-new-iterator-result.js
@@ -498,6 +505,10 @@ test/staging/sm/Iterator/prototype/map/mutate-iterator.js
 test/staging/sm/Iterator/prototype/map/name.js
 test/staging/sm/Iterator/prototype/map/output-at-generator-end.js
 test/staging/sm/Iterator/prototype/map/pass-lastValue-to-next.js
+test/staging/sm/Iterator/prototype/map/proxy-abrupt-completion-in-iteratorValue.js
+test/staging/sm/Iterator/prototype/map/proxy-abrupt-completion-in-yield.js
+test/staging/sm/Iterator/prototype/map/proxy-abrupt-completion.js
+test/staging/sm/Iterator/prototype/map/proxy-accesses.js
 test/staging/sm/Iterator/prototype/map/reenter-map-generator-from-mapper.js
 test/staging/sm/Iterator/prototype/map/this-not-iterator-throw.js
 test/staging/sm/Iterator/prototype/map/this-value-array-throws.js
@@ -519,6 +530,7 @@ test/staging/sm/Iterator/prototype/reduce/reduce.js
 test/staging/sm/Iterator/prototype/reduce/reducer-not-callable-throws.js
 test/staging/sm/Iterator/prototype/reduce/reducer-throws-iterator-closed.js
 test/staging/sm/Iterator/prototype/reduce/this-not-iterator-throws.js
+test/staging/sm/Iterator/prototype/reduce/value-throws-iterator-not-closed.js
 test/staging/sm/Iterator/prototype/some/check-fn-after-getting-iterator.js
 test/staging/sm/Iterator/prototype/some/descriptor.js
 test/staging/sm/Iterator/prototype/some/fn-not-callable-throws.js
@@ -530,6 +542,7 @@ test/staging/sm/Iterator/prototype/some/proxy.js
 test/staging/sm/Iterator/prototype/some/return-false-if-none-match.js
 test/staging/sm/Iterator/prototype/some/short-circuit-on-true.js
 test/staging/sm/Iterator/prototype/some/this-not-iterator-throws.js
+test/staging/sm/Iterator/prototype/some/value-throws-iterator-not-closed.js
 test/staging/sm/Iterator/prototype/take-drop-throw-eagerly-on-negative.js
 test/staging/sm/Iterator/prototype/take-drop-throw-eagerly-on-non-integer.js
 test/staging/sm/Iterator/prototype/take/close-iterator-when-none-remaining.js
@@ -544,3 +557,4 @@ test/staging/sm/Iterator/prototype/toArray/next-throws.js
 test/staging/sm/Iterator/prototype/toArray/proxy.js
 test/staging/sm/Iterator/prototype/toArray/this-not-iterator-throws.js
 test/staging/sm/Iterator/prototype/toArray/toArray.js
+test/staging/sm/Iterator/prototype/toArray/value-throws-iterator-not-closed.js

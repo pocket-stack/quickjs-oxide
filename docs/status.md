@@ -4,30 +4,36 @@ Last audited: 2026-07-31. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
-## R3bl Iterator Helper optional-adjacency refresh
+## R3bm Iterator Helper Proxy-closure refresh
 
-R3bl promotes the exact 14-path optional-chaining adjacency ledger from the
-Iterator Helper gate's raw 44-path dependency union. The refreshed manifest
-contains 537 paths / 1,074 sloppy-strict variants. Pinned QuickJS passes all
-537 paths in each mode, and Oxide passes all 1,074 variants. Thirty paths
-remain explicitly deferred: 11 other source-Proxy paths, three harness-Proxy
-paths, 11 `$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one pinned
-QuickJS-config exclusion.
+R3bm keeps the complete 567-path `iterator-helpers` population and its raw
+44-path dependency union explicit. That union partitions into the complete
+28-path source-and-harness Proxy closure and 16 host/config paths. R3bl had
+already promoted the exact 14-path optional-chaining adjacency; R3bm promotes
+the remaining 11 source-Proxy and three harness-Proxy paths. The refreshed
+manifest therefore contains 551 paths / 1,102 sloppy-strict variants. Pinned
+QuickJS passes all 551 paths in each mode, Oxide passes all 1,102 variants,
+and independent 8/8/5-worker Oxide reports are byte-identical.
+
+The 16-path / 32-variant deferred ledger is now exactly 11
+`$262.createRealm` paths, four `$262.IsHTMLDDA` paths, and one pinned
+QuickJS-config exclusion. Its variant-key SHA-256 is
+`5f9105c90732493741b8b652f0a5ad74f775740706d847171c96617fdd23b760`.
 
 The immutable scoped profile still contains 76 feature tags and 802 audited
 negative paths. Its complete-file SHA-256 is
 `a0ed7fa1a5cd46c5c47895d671c0078434635ae41f0a420e66573dcb86d18a7f`.
 The manifest path-stream, complete-file, variant-key, TSV, and JSONL hashes are
-`563b7040eb391512a5118d7102f2a58e0fe88629c9069b1019bfb9bc4ed07e75`,
-`09bbd1dd78d226ab2cdd9131072647aaaa87c4f98859f73db29559f924439da8`,
-`b4c06bdd75fe4ef062b04eefe2b5e21ccbf4bc5130afc7c5ba24b9e9295364fa`,
-`136c5e8b9520a1b61ee3981a32ec8009e0e023d8b2737debe76157f2f7615b59`,
+`32b3a539828fe72e32cb28bed6b6942749ac1aa6402a04bb809126da0a2cea4c`,
+`6db8a38003ba95245dde0e0559b64a75c1a0215e610408811174f482363b729c`,
+`cc432f145a9f12ad959f0b856c5b91c73a1b9ce0ebb3fd0c9cc5a18ac0f2f841`,
+`47b725903172118e8fbde4ba8f6d87343d44fa280889630e1ee5d620634154e5`,
 and
-`b8635ff35f5699cffd698f4d569960d505422b1b723e27661e13d88aece4a87c`.
+`9c55978a8b8200be94617eb5c80ea97abac7172b93599fdd31769df6a7679d08`.
 
 The independent Iterator sequencing gate remains 64/64 in both engines. Both
 Iterator scripts now authenticate immutable historical profile sections
-instead of comparing against the growing live global profile. R3bl is a
+instead of comparing against the growing live global profile. R3bm is a
 focused evidence refresh, not global `iterator-helpers` admission: the
 complete vector remains at R3bj's 56,526/102,037 passes and 57,045 runnable
 variants, with canonical TSV/JSONL hashes
@@ -270,10 +276,12 @@ workstream. Build and architecture details live in
   reason-only. It also freezes the historical R3be parent's 802-path negative
   source. R3bk then refreshes the `for await` gate after optional chaining
   admission: its unchanged 1,297-path / 2,531-variant candidate now admits and
-  passes 1,265 paths / 2,492 variants in both engines. R3bl promotes the exact
-  14-path optional-chaining adjacency into the scoped Iterator Helper gate,
-  which now passes 537 paths / 1,074 variants in both engines while retaining
-  30 explicit deferrals. The cumulative
+  passes 1,265 paths / 2,492 variants in both engines. R3bl first promotes the
+  exact 14-path optional-chaining adjacency into the scoped Iterator Helper
+  gate. R3bm then promotes the remaining 14 source-and-harness Proxy paths,
+  completing the 28-path Proxy closure. The gate now passes 551 paths / 1,102
+  variants in both engines while retaining exactly 16 host/config deferrals.
+  The cumulative
   TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
   measurement has 56,526 passes and 57,045 runnable variants:
@@ -2502,9 +2510,10 @@ workstream. Build and architecture details live in
 
   At that checkpoint the milestone remained scoped because Proxy and the
   required host hooks were separate frontiers, so the conservative global
-  vector stayed byte-identical at 43,521/102,037 passes. R3bl above is the
-  current focused gate: it promotes 14 paths and passes 537 paths / 1,074
-  variants while still withholding global `iterator-helpers` admission.
+  vector stayed byte-identical at 43,521/102,037 passes. R3bl later promoted
+  the 14-path optional adjacency; R3bm is the current focused gate, completing
+  the 28-path Proxy closure and passing 551 paths / 1,102 variants while still
+  withholding global `iterator-helpers` admission.
   `Iterator.concat` remains in the separate R3w `iterator-sequencing`
   milestone immediately below.
 
@@ -2548,8 +2557,9 @@ workstream. Build and architecture details live in
   and
   `f24e92ad54c4c59651206db66bfd7a4ed9dea4f3543311a990def0fc16e66be8`.
   At R3x, core `iterator-helpers` remained scoped behind its 44
-  Proxy/host/config adjacencies. R3bl later promotes 14 of those paths and
-  leaves the current 30-path deferred ledger explicit. Re-running the
+  Proxy/host/config adjacencies. R3bl later promoted 14 Proxy paths, and R3bm
+  completed the 28-path Proxy closure while leaving the current 16-path
+  host/config deferred ledger explicit. Re-running the
   profile-bound focused gates also refreshed two stale tagged-template
   PrivateName staging rows that later private-name work had already moved to
   pass.

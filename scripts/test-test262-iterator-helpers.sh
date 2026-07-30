@@ -200,21 +200,28 @@ if [[ "$(read_value quickjs)" != "2026-06-04" \
     || "$(read_value tagged_paths)" != "567" \
     || "$(read_value proxy_paths)" != "25" \
     || "$(read_value harness_proxy_paths)" != "3" \
+    || "$(read_value proxy_closure_paths)" != "28" \
+    || "$(read_value proxy_closure_variants)" != "56" \
     || "$(read_value create_realm_paths)" != "11" \
     || "$(read_value is_html_dda_paths)" != "4" \
     || "$(read_value config_excluded_paths)" != "1" \
-    || "$(read_value excluded_paths)" != "44" \
+    || "$(read_value raw_dependency_paths)" != "44" \
     || "$(read_value optional_adjacency_paths)" != "14" \
     || "$(read_value optional_adjacency_variants)" != "28" \
-    || "$(read_value deferred_paths)" != "30" \
-    || "$(read_value paths)" != "537" \
-    || "$(read_value variants)" != "1074" \
-    || "$(read_value quickjs_sloppy_passes)" != "537" \
-    || "$(read_value quickjs_strict_passes)" != "537" \
-    || "$(read_value quickjs_passes)" != "1074" \
+    || "$(read_value remaining_proxy_paths)" != "14" \
+    || "$(read_value remaining_proxy_variants)" != "28" \
+    || "$(read_value deferred_paths)" != "16" \
+    || "$(read_value deferred_variants)" != "32" \
+    || "$(read_value r3bl_paths)" != "537" \
+    || "$(read_value r3bl_variants)" != "1074" \
+    || "$(read_value paths)" != "551" \
+    || "$(read_value variants)" != "1102" \
+    || "$(read_value quickjs_sloppy_passes)" != "551" \
+    || "$(read_value quickjs_strict_passes)" != "551" \
+    || "$(read_value quickjs_passes)" != "1102" \
     || "$(read_value global_this_paths)" != "13" \
     || "$(read_value features)" != "7" \
-    || "$(read_value includes)" != "2" ]]; then
+    || "$(read_value includes)" != "3" ]]; then
     echo "error: Iterator helpers baseline identity drifted" >&2
     exit 1
 fi
@@ -236,8 +243,8 @@ verify_inventory tagged "$tagged_inventory"
 
 proxy_inventory=$(
     while IFS= read -r test_path; do
-        if program_body "$test_path" \
-            | grep -Eq '(^|[^[:alnum:]_$])Proxy([^[:alnum:]_$]|$)'; then
+        if grep -Eq '(^|[^[:alnum:]_$])Proxy([^[:alnum:]_$]|$)' \
+            < <(program_body "$test_path"); then
             printf '%s\n' "$test_path"
         fi
     done <<<"$tagged_inventory"
@@ -286,6 +293,18 @@ verify_inventory create_realm "$create_realm_inventory"
 verify_inventory is_html_dda "$is_html_dda_inventory"
 verify_inventory config_excluded "$config_excluded_inventory"
 
+[[ -z "$(comm -12 \
+    <(printf '%s\n' "$proxy_inventory") \
+    <(printf '%s\n' "$harness_proxy_inventory"))" ]] \
+    || { echo "error: Iterator source- and harness-Proxy inventories overlap" >&2; exit 1; }
+proxy_closure_inventory=$(
+    printf '%s\n%s\n' "$proxy_inventory" "$harness_proxy_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u
+)
+verify_inventory proxy_closure "$proxy_closure_inventory"
+verify_key_inventory proxy_closure "$proxy_closure_inventory"
+
 optional_adjacency_inventory=$(
     while IFS= read -r test_path; do
         features=$(metadata_list "$test_path" features)
@@ -315,10 +334,27 @@ do
     [[ -z "$(comm -12 \
         <(printf '%s\n' "$optional_adjacency_inventory") \
         <(printf '%s\n' "$adjacent_dependency"))" ]] \
-        || { echo "error: Iterator optional adjacency overlaps an independent deferred dependency" >&2; exit 1; }
+        || { echo "error: Iterator optional adjacency overlaps an independent dependency class" >&2; exit 1; }
 done
 
-excluded_inventory=$(
+remaining_proxy_inventory=$(
+    comm -23 \
+        <(printf '%s\n' "$proxy_closure_inventory") \
+        <(printf '%s\n' "$optional_adjacency_inventory")
+)
+verify_inventory remaining_proxy "$remaining_proxy_inventory"
+verify_key_inventory remaining_proxy "$remaining_proxy_inventory"
+[[ -z "$(comm -12 \
+    <(printf '%s\n' "$optional_adjacency_inventory") \
+    <(printf '%s\n' "$remaining_proxy_inventory"))" ]] \
+    || { echo "error: Iterator R3bl and R3bm Proxy handoffs overlap" >&2; exit 1; }
+diff -u \
+    <(printf '%s\n' "$proxy_closure_inventory") \
+    <(printf '%s\n%s\n' "$optional_adjacency_inventory" "$remaining_proxy_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u)
+
+raw_dependency_inventory=$(
     printf '%s\n%s\n%s\n%s\n%s\n' \
         "$proxy_inventory" \
         "$harness_proxy_inventory" \
@@ -328,19 +364,49 @@ excluded_inventory=$(
         | sed '/^$/d' \
         | LC_ALL=C sort -u
 )
-verify_inventory excluded "$excluded_inventory"
+verify_inventory raw_dependency "$raw_dependency_inventory"
 
 deferred_inventory=$(
-    comm -23 \
-        <(printf '%s\n' "$excluded_inventory") \
-        <(printf '%s\n' "$optional_adjacency_inventory")
+    printf '%s\n%s\n%s\n' \
+        "$create_realm_inventory" \
+        "$is_html_dda_inventory" \
+        "$config_excluded_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u
 )
 verify_inventory deferred "$deferred_inventory"
+verify_key_inventory deferred "$deferred_inventory"
 diff -u \
-    <(printf '%s\n' "$excluded_inventory") \
-    <(printf '%s\n%s\n' "$optional_adjacency_inventory" "$deferred_inventory" \
+    <(printf '%s\n' "$deferred_inventory") \
+    <(comm -23 \
+        <(printf '%s\n' "$raw_dependency_inventory") \
+        <(printf '%s\n' "$proxy_closure_inventory"))
+[[ -z "$(comm -12 \
+    <(printf '%s\n' "$proxy_closure_inventory") \
+    <(printf '%s\n' "$deferred_inventory"))" ]] \
+    || { echo "error: Iterator promoted Proxy closure overlaps a deferred host/config dependency" >&2; exit 1; }
+diff -u \
+    <(printf '%s\n' "$raw_dependency_inventory") \
+    <(printf '%s\n%s\n' "$proxy_closure_inventory" "$deferred_inventory" \
         | sed '/^$/d' \
         | LC_ALL=C sort -u)
+
+historical_clean_inventory=$(
+    comm -23 \
+        <(printf '%s\n' "$tagged_inventory") \
+        <(printf '%s\n' "$raw_dependency_inventory")
+)
+r3bl_inventory=$(
+    printf '%s\n%s\n' "$historical_clean_inventory" "$optional_adjacency_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u
+)
+verify_inventory r3bl "$r3bl_inventory"
+verify_key_inventory r3bl "$r3bl_inventory"
+[[ -z "$(comm -12 \
+    <(printf '%s\n' "$historical_clean_inventory") \
+    <(printf '%s\n' "$optional_adjacency_inventory"))" ]] \
+    || { echo "error: Iterator R3bl optional handoff overlaps the historical clean cohort" >&2; exit 1; }
 
 derived_manifest=$(
     comm -23 \
@@ -348,20 +414,25 @@ derived_manifest=$(
         <(printf '%s\n' "$deferred_inventory")
 )
 diff -u <(printf '%s\n' "$derived_manifest") <(manifest_paths)
-historical_clean_inventory=$(
-    comm -23 \
-        <(printf '%s\n' "$tagged_inventory") \
-        <(printf '%s\n' "$excluded_inventory")
-)
 [[ -z "$(comm -23 \
-    <(printf '%s\n' "$historical_clean_inventory") \
+    <(printf '%s\n' "$r3bl_inventory") \
     <(printf '%s\n' "$derived_manifest"))" ]] \
-    || { echo "error: Iterator helpers refresh removed a historical clean path" >&2; exit 1; }
+    || { echo "error: Iterator helpers refresh removed an R3bl path" >&2; exit 1; }
 diff -u \
-    <(printf '%s\n' "$optional_adjacency_inventory") \
+    <(printf '%s\n' "$remaining_proxy_inventory") \
     <(comm -13 \
-        <(printf '%s\n' "$historical_clean_inventory") \
+        <(printf '%s\n' "$r3bl_inventory") \
         <(printf '%s\n' "$derived_manifest"))
+diff -u \
+    <(printf '%s\n' "$derived_manifest") \
+    <(printf '%s\n%s\n' "$r3bl_inventory" "$remaining_proxy_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u)
+diff -u \
+    <(printf '%s\n' "$derived_manifest") \
+    <(printf '%s\n%s\n' "$historical_clean_inventory" "$proxy_closure_inventory" \
+        | sed '/^$/d' \
+        | LC_ALL=C sort -u)
 [[ -z "$(comm -12 \
     <(printf '%s\n' "$derived_manifest") \
     <(printf '%s\n' "$deferred_inventory"))" ]] \
@@ -374,7 +445,7 @@ diff -u \
 
 actual_paths=$(manifest_paths | wc -l | tr -d '[:space:]')
 unique_paths=$(manifest_paths | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')
-[[ "$actual_paths" == "537" && "$unique_paths" == "537" ]] \
+[[ "$actual_paths" == "551" && "$unique_paths" == "551" ]] \
     || { echo "error: Iterator helpers manifest cardinality drifted" >&2; exit 1; }
 manifest_paths | LC_ALL=C sort -c
 [[ "$(manifest_paths | sha256_stream)" == "$(read_value manifest_sha256)" \
@@ -468,11 +539,13 @@ admission_negatives=$(profile_section "$admission_profile" audited-negative-test
 
 verify_quickjs_oracle
 if "$check_only"; then
-    printf 'Iterator helpers inputs verified: %s tagged - %s raw dependency paths + %s optional-adjacency promotions = %s selected paths; QuickJS %s passes %s/%s sloppy+strict variants\n' \
+    printf 'Iterator helpers inputs verified: %s tagged - %s host/config deferred = %s selected paths; complete %s-path Proxy closure = %s R3bl optional-adjacency + %s exact R3bm delta; QuickJS %s passes %s/%s sloppy+strict variants\n' \
         "$(read_value tagged_paths)" \
-        "$(read_value excluded_paths)" \
-        "$(read_value optional_adjacency_paths)" \
+        "$(read_value deferred_paths)" \
         "$(read_value paths)" \
+        "$(read_value proxy_closure_paths)" \
+        "$(read_value optional_adjacency_paths)" \
+        "$(read_value remaining_proxy_paths)" \
         "$(read_value quickjs)" \
         "$(read_value quickjs_passes)" \
         "$(read_value variants)"
