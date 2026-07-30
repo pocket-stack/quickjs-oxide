@@ -10,9 +10,9 @@ use quickjs_oxide::{
 // `Object.prototype.hasOwnProperty`, the static first performs ToObject on its
 // first argument and only then ToPropertyKey on its second argument. The final
 // query is an own-property descriptor probe and must not Get the property.
-// Proxy, TypedArray and module-namespace exotic own-property paths are recorded
-// below without requiring their unpublished Rust intrinsics; Arguments is
-// locked by this target and its dedicated differential.
+// Proxy, TypedArray, and Arguments exotic own-property paths participate in
+// this differential. Module namespace objects remain a separate module
+// boundary.
 
 const OWN_CASES: &[(&str, &str)] = &[
     (
@@ -159,7 +159,7 @@ const ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
+const EXOTIC_CASES: &[(&str, &str)] = &[
     (
         "Proxy own lookup follows key conversion and only invokes the descriptor trap",
         r#"(function(){
@@ -239,7 +239,7 @@ fn object_has_own_oracle_vectors_self_check() {
         ("own values", OWN_CASES),
         ("conversion order", ORDER_CASES),
         ("errors", ERROR_CASES),
-        ("exotic boundary", EXOTIC_ORACLE_ONLY_CASES),
+        ("exotic", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -269,6 +269,11 @@ fn object_has_own_conversion_and_lookup_order_match_pinned_quickjs() {
 #[test]
 fn object_has_own_errors_match_pinned_quickjs() {
     compare_cases("Object.hasOwn errors", ERROR_CASES);
+}
+
+#[test]
+fn object_has_own_exotic_surfaces_match_pinned_quickjs() {
+    compare_cases("Object.hasOwn exotic surfaces", EXOTIC_CASES);
 }
 
 #[test]
@@ -458,22 +463,6 @@ fn object_has_own_method_is_per_realm_and_retain_then_releases_its_realm() {
     drop(has_own);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
-}
-
-#[test]
-fn object_has_own_records_current_exotic_object_gap() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context
-            .eval("typeof Proxy+'|'+typeof ArrayBuffer+'|'+typeof Uint8Array")
-            .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
-        "activate the exotic Object.hasOwn oracle vectors as these intrinsics are published",
-    );
-    // Module namespace objects remain a separate module boundary. Their oracle
-    // vectors should join the differential once that object kind exists in the
-    // Rust heap.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

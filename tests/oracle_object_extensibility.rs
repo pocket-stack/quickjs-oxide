@@ -2,14 +2,14 @@ use std::ffi::OsStr;
 use std::process::Command;
 
 use quickjs_oxide::{
-    CallableRef, CompleteOrdinaryPropertyDescriptor, Context, JsString, ObjectRef, PropertyKey,
-    Runtime, RuntimeError, Value,
+    CallableRef, CompleteOrdinaryPropertyDescriptor, Context, ObjectRef, PropertyKey, Runtime,
+    RuntimeError, Value,
 };
 
 // Pins QuickJS 2026-06-04 `js_object_isExtensible` and
 // `js_object_preventExtensions`. Proxy [[IsExtensible]]/[[PreventExtensions]]
-// traps and Resizable ArrayBuffer-backed TypedArrays are intentionally outside
-// this milestone because the Rust runtime publishes neither object family yet.
+// traps and Resizable ArrayBuffer-backed TypedArrays participate in the same
+// differential.
 
 const PRIMITIVE_CASES: &[(&str, &str)] = &[
     (
@@ -130,6 +130,55 @@ const MUTATION_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const EXOTIC_CASES: &[(&str, &str)] = &[
+    (
+        "Proxy isExtensible forwards the trap and preserves its order",
+        r#"(function(){
+            var log="",base=Object();
+            var proxy=new Proxy(base,{isExtensible:function(target){
+                log+="is|";return Reflect.isExtensible(target);
+            }});
+            return Object.isExtensible(proxy)+"|"+log;
+        })()"#,
+    ),
+    (
+        "Proxy preventExtensions forwards the trap and returns the proxy",
+        r#"(function(){
+            var log="",base=Object();
+            var proxy=new Proxy(base,{preventExtensions:function(target){
+                log+="prevent|";return Reflect.preventExtensions(target);
+            }});
+            return (Object.preventExtensions(proxy)===proxy)+"|"+
+                Object.isExtensible(base)+"|"+log;
+        })()"#,
+    ),
+    (
+        "Proxy isExtensible invariant rejects a result inconsistent with its target",
+        r#"(function(){
+            var log="",base=Object();
+            var proxy=new Proxy(base,{isExtensible:function(){
+                log+="is|";return false;
+            }});
+            try{Object.isExtensible(proxy)}catch(error){
+                return log+error.name+":"+error.message;
+            }
+            return "missing";
+        })()"#,
+    ),
+    (
+        "Resizable ArrayBuffer backed TypedArray rejects preventExtensions",
+        r#"(function(){
+            var buffer=new ArrayBuffer(4,{maxByteLength:8});
+            var value=new Uint8Array(buffer);
+            try{Object.preventExtensions(value)}catch(error){
+                return "prevent-throw|"+error.name+"|"+error.message+"|"+
+                    Object.isExtensible(value);
+            }
+            return "missing";
+        })()"#,
+    ),
+];
+
 const GRAPH_ORACLE: &str = r#"
 function bits(descriptor){return 'D:'+Number(descriptor.writable)+Number(descriptor.enumerable)+Number(descriptor.configurable)}
 function isConstructor(value){try{Reflect.construct(function(){},[],value);return true}catch(_){return false}}
@@ -167,6 +216,7 @@ fn object_extensibility_oracle_vectors_self_check() {
         ("primitive", PRIMITIVE_CASES),
         ("object", OBJECT_CASES),
         ("mutation", MUTATION_CASES),
+        ("exotic", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -192,6 +242,11 @@ fn object_extensibility_object_families_match_pinned_quickjs() {
 #[test]
 fn object_extensibility_mutations_match_pinned_quickjs() {
     compare_cases("Object extensibility mutations", MUTATION_CASES);
+}
+
+#[test]
+fn object_extensibility_exotic_surfaces_match_pinned_quickjs() {
+    compare_cases("Object extensibility exotic surfaces", EXOTIC_CASES);
 }
 
 #[test]
@@ -360,19 +415,6 @@ fn object_extensibility_methods_are_per_realm_and_retain_then_release_their_real
     drop(prevent_extensions);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
-}
-
-#[test]
-fn object_extensibility_records_the_current_proxy_and_resizable_typed_array_gap() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context
-            .eval("typeof Proxy+'|'+typeof ArrayBuffer+'|'+typeof Uint8Array")
-            .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
-        "update this boundary when Proxy or Resizable ArrayBuffer-backed TypedArrays are published",
-    );
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

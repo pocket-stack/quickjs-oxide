@@ -409,10 +409,7 @@ const ERROR_CASES: &[(&str, &str)] = &[
     ("raw is not a constructor", "new String.raw()"),
 ];
 
-// These vectors document the internal-method surfaces which the Rust heap does
-// not publish yet. They are self-checked against the pinned oracle so they can
-// move into the ordinary differential as Proxy/RegExp/TypedArray land.
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
+const EXOTIC_CASES: &[(&str, &str)] = &[
     (
         "Proxy raw access exposes every ordered internal Get",
         r#"(function(){
@@ -438,6 +435,16 @@ const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
     (
         "RegExp and TypedArray values use ordinary conversion and array-like paths",
         r#"(function(){return String(/a/g)+"|"+String.raw({raw:new Uint16Array([65,66])},"-")})()"#,
+    ),
+    (
+        "String.raw reads a Proxy-wrapped TypedArray in array-like order",
+        r#"(function(){
+            var log="",target=new Uint16Array([65,66]);
+            var raw=new Proxy(target,{get:function(object,key){
+                log+=String(key)+";";return object[key];
+            }});
+            return String.raw({raw:raw},"-")+"|"+log;
+        })()"#,
     ),
 ];
 
@@ -474,7 +481,7 @@ fn string_intrinsic_oracle_vectors_self_check() {
         ("fromCodePoint", FROM_CODE_POINT_CASES),
         ("raw", RAW_CASES),
         ("errors", ERROR_CASES),
-        ("exotic boundary", EXOTIC_ORACLE_ONLY_CASES),
+        ("exotic", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -523,6 +530,11 @@ fn string_static_values_and_conversion_order_match_pinned_quickjs() {
 #[test]
 fn string_intrinsic_errors_match_pinned_quickjs() {
     compare_cases("String intrinsic errors", ERROR_CASES);
+}
+
+#[test]
+fn string_intrinsic_exotic_surfaces_match_pinned_quickjs() {
+    compare_cases("String intrinsic exotic surfaces", EXOTIC_CASES);
 }
 
 #[test]
@@ -696,21 +708,6 @@ fn string_wrapper_retains_then_releases_its_realm_graph() {
     drop(wrapper);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
-}
-
-#[test]
-fn string_intrinsic_records_current_proxy_and_typed_array_boundaries() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context
-            .eval("typeof Proxy+'|'+typeof RegExp+'|'+typeof Uint16Array+'|'+typeof String.prototype.includes")
-            .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|function|undefined|function").unwrap()),
-        "move the oracle-only vectors into the differential as these surfaces are published",
-    );
-    // Module namespace raw objects remain a corresponding language/object-model
-    // boundary.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

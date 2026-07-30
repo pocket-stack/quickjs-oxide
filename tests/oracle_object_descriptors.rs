@@ -8,8 +8,8 @@ use quickjs_oxide::{
 
 // Pins QuickJS 2026-06-04 `js_object_getOwnPropertyDescriptor` and
 // `js_object_getOwnPropertyDescriptors`. Proxy descriptor traps and TypedArray
-// integer-indexed exotic descriptors are intentionally outside this milestone
-// because the Rust runtime does not publish either object family yet.
+// integer-indexed exotic descriptors participate in the same differential.
+// Module namespace descriptors remain a separate module/object-model boundary.
 
 const DESCRIPTOR_CASES: &[(&str, &str)] = &[
     (
@@ -193,6 +193,80 @@ const BULK_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+const EXOTIC_CASES: &[(&str, &str)] = &[
+    (
+        "Proxy singular descriptor preserves key conversion and trap order",
+        r#"(function(){
+            var log="",base=Object(),key=Object(),descriptor=Object();
+            descriptor.value=7;descriptor.writable=true;descriptor.enumerable=true;descriptor.configurable=true;
+            Object.defineProperty(base,"x",descriptor);
+            key[Symbol.toPrimitive]=function(hint){log+="key:"+hint+";";return "x"};
+            var proxy=new Proxy(base,{getOwnPropertyDescriptor:function(target,name){
+                log+="descriptor:"+String(name)+";";
+                return Reflect.getOwnPropertyDescriptor(target,name);
+            }});
+            var result=Object.getOwnPropertyDescriptor(proxy,key);
+            return result.value+":"+result.writable+":"+result.enumerable+":"+result.configurable+"|"+log;
+        })()"#,
+    ),
+    (
+        "Proxy singular descriptor invariant failures remain observable",
+        r#"(function(){
+            var log="",base=Object.preventExtensions(Object());
+            var proxy=new Proxy(base,{getOwnPropertyDescriptor:function(){
+                log+="descriptor;";
+                return {value:1,writable:true,enumerable:true,configurable:true};
+            }});
+            try{Object.getOwnPropertyDescriptor(proxy,"x")}catch(error){
+                return log+error.name+":"+error.message;
+            }
+            return "missing";
+        })()"#,
+    ),
+    (
+        "TypedArray singular descriptors cover valid out of range and minus zero indices",
+        r#"(function(){
+            function token(descriptor){
+                if(descriptor===undefined)return "undefined";
+                return descriptor.value+":"+descriptor.writable+":"+descriptor.enumerable+":"+descriptor.configurable;
+            }
+            var value=new Uint8Array([7,8]);
+            return token(Object.getOwnPropertyDescriptor(value,0))+"|"+
+                token(Object.getOwnPropertyDescriptor(value,"1"))+"|"+
+                token(Object.getOwnPropertyDescriptor(value,2))+"|"+
+                token(Object.getOwnPropertyDescriptor(value,"-0"))+"|"+
+                token(Object.getOwnPropertyDescriptor(value,"length"));
+        })()"#,
+    ),
+    (
+        "Proxy bulk descriptors snapshot ownKeys and recheck every descriptor in order",
+        r#"(function(){
+            var log="",base={a:1,b:2,gone:3};
+            var proxy=new Proxy(base,{
+                ownKeys:function(){log+="keys;";return ["b","gone","a"]},
+                getOwnPropertyDescriptor:function(target,key){
+                    log+="desc:"+key+";";
+                    if(key==="gone")return undefined;
+                    return Reflect.getOwnPropertyDescriptor(target,key);
+                }
+            });
+            var result=Object.getOwnPropertyDescriptors(proxy);
+            return Object.getOwnPropertyNames(result).join(",")+"|"+
+                result.b.value+":"+result.a.value+"|"+log;
+        })()"#,
+    ),
+    (
+        "TypedArray bulk descriptors materialize integer indexed elements",
+        r#"(function(){
+            var result=Object.getOwnPropertyDescriptors(new Uint8Array([7,8]));
+            var descriptor=result[0];
+            return Object.getOwnPropertyNames(result).join(",")+"|"+
+                result[0].value+":"+result[1].value+":"+
+                descriptor.writable+":"+descriptor.enumerable+":"+descriptor.configurable;
+        })()"#,
+    ),
+];
+
 const GRAPH_ORACLE: &str = r#"
 function bit(value){return value?1:0}
 function bits(descriptor){return 'D:'+bit(descriptor.writable)+bit(descriptor.enumerable)+bit(descriptor.configurable)}
@@ -232,6 +306,7 @@ fn object_descriptor_oracle_vectors_self_check() {
         ("descriptors", DESCRIPTOR_CASES),
         ("conversion", CONVERSION_CASES),
         ("bulk", BULK_CASES),
+        ("exotic", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -257,6 +332,11 @@ fn object_descriptor_conversion_order_and_errors_match_pinned_quickjs() {
 #[test]
 fn object_descriptor_bulk_surface_matches_pinned_quickjs() {
     compare_cases("Object descriptor bulk surface", BULK_CASES);
+}
+
+#[test]
+fn object_descriptor_exotic_surfaces_match_pinned_quickjs() {
+    compare_cases("Object descriptor exotic surfaces", EXOTIC_CASES);
 }
 
 #[test]
@@ -479,19 +559,6 @@ fn object_descriptor_methods_and_results_retain_then_release_their_realm() {
     drop(nested);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
-}
-
-#[test]
-fn object_descriptor_records_the_current_proxy_and_typed_array_gap() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context
-            .eval("typeof Proxy+'|'+typeof ArrayBuffer+'|'+typeof Uint8Array")
-            .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
-        "update this boundary when Proxy or TypedArray descriptor semantics are published",
-    );
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

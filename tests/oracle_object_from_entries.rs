@@ -12,11 +12,9 @@ use quickjs_oxide::{
 // both reads, and routes every abrupt completion after iterator acquisition
 // through `JS_IteratorClose(..., TRUE)`.
 //
-// Proxy, TypedArray, and module-namespace integration are recorded
-// as explicit boundaries below; they do not silently weaken the ordinary
-// iterator differential while those intrinsics remain unpublished. Strong
-// Map/Set iterators and generator IteratorClose are part of the active
-// differential.
+// Proxy and TypedArray entries participate in the same differential. Strong
+// Map/Set iterators and generator IteratorClose are active as well. Module
+// namespace entries remain a separate module/object-model boundary.
 
 const VALUE_CASES: &[(&str, &str)] = &[
     (
@@ -283,9 +281,10 @@ const ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[(
-    "Proxy entries expose zero and one Get trap ordering",
-    r#"(function(){
+const EXOTIC_CASES: &[(&str, &str)] = &[
+    (
+        "Proxy entries expose zero and one Get trap ordering",
+        r#"(function(){
             var log="",base=["x",7];
             var entry=new Proxy(base,{get:function(target,key,receiver){
                 log+="get:"+String(key)+";";return Reflect.get(target,key,receiver);
@@ -293,7 +292,31 @@ const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[(
             var result=Object.fromEntries([entry]);
             return log+result.x;
         })()"#,
-)];
+    ),
+    (
+        "TypedArray entries expose their integer indexed zero and one values",
+        r#"(function(){
+            var result=Object.fromEntries([new Uint8Array([120,7])]);
+            return Object.getOwnPropertyNames(result).join(",")+"|"+result[120];
+        })()"#,
+    ),
+    (
+        "Proxy entry abrupt completion closes the iterator and preserves the throw",
+        r#"(function(){
+            var log="",entry=new Proxy(["x",7],{get:function(target,key,receiver){
+                log+="get:"+String(key)+";";
+                if(key==="0")throw "trap";
+                return Reflect.get(target,key,receiver);
+            }}),done=false,iterator={
+                next:function(){if(done)return {done:true};done=true;return {done:false,value:entry}},
+                return:function(){log+="return;";return {}}
+            },iterable={};
+            iterable[Symbol.iterator]=function(){return iterator};
+            try{Object.fromEntries(iterable)}catch(error){return log+error}
+            return "missing";
+        })()"#,
+    ),
+];
 
 const GRAPH_ORACLE: &str = r#"
 function bit(value){return value?1:0}
@@ -330,7 +353,7 @@ fn object_from_entries_oracle_vectors_self_check() {
         ("values", VALUE_CASES),
         ("order and close", ORDER_CASES),
         ("errors", ERROR_CASES),
-        ("exotic boundary", EXOTIC_ORACLE_ONLY_CASES),
+        ("exotic", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -365,6 +388,11 @@ fn object_from_entries_order_and_iterator_close_match_pinned_quickjs() {
 #[test]
 fn object_from_entries_errors_match_pinned_quickjs() {
     compare_cases("Object.fromEntries errors", ERROR_CASES);
+}
+
+#[test]
+fn object_from_entries_exotic_surfaces_match_pinned_quickjs() {
+    compare_cases("Object.fromEntries exotic surfaces", EXOTIC_CASES);
 }
 
 #[test]
@@ -590,23 +618,6 @@ fn object_from_entries_method_and_result_retain_then_release_their_realm() {
     drop(result);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
-}
-
-#[test]
-fn object_from_entries_records_current_proxy_and_typed_array_gap() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context
-            .eval(
-                "typeof Proxy+'|'+typeof Map+'|'+typeof Set+'|'+typeof ArrayBuffer+'|'+typeof Uint8Array",
-            )
-            .unwrap(),
-        Value::String(
-            JsString::try_from_utf8("undefined|function|function|undefined|undefined").unwrap(),
-        ),
-        "activate the remaining exotic Object.fromEntries vectors as those intrinsics are published",
-    );
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

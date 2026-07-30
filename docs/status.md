@@ -4,6 +4,30 @@ Last audited: 2026-07-30. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bg exotic object oracle activation
+
+R3bg removes seven obsolete capability sentinels which still expected
+`Proxy`, `ArrayBuffer`, and concrete TypedArrays to be absent after those
+families had already landed. It replaces them with 30 active pinned-QuickJS
+differential vectors across Object descriptors, extensibility, integrity,
+`fromEntries`, `hasOwn`, the String intrinsic, and the String includes family.
+
+The new coverage observes Proxy trap order and invariants, TypedArray
+integer-index descriptors, resizable-buffer extensibility rejection, partial
+integrity mutations, IteratorClose after a Proxy entry throw, and
+TypedArray/Proxy string conversion. The existing Rust release CLI and pinned
+QuickJS 2026-06-04 produce byte-for-byte identical observations for all 30
+vectors. This is a test-publication milestone: it changes no product runtime
+code and does not by itself justify global Proxy admission.
+
+The checksum-bound scoped Proxy vector remains the broader baseline: its 904
+variants contain 823 passes and 81 unsupported outcomes, with 829 classified
+as runnable and zero failures. The unsupported outcomes are 74 missing
+`create-realm` host cases, one module case, and six parser cases.
+Module namespace objects and SharedArrayBuffer/Atomics remain independent real
+frontiers rather than being hidden behind already-published Proxy/TypedArray
+capability checks.
+
 ## R3bf browser playground milestone
 
 R3bf adds the public
@@ -6023,7 +6047,7 @@ workstream. Build and architecture details live in
   prevention is irreversible and idempotent, returns the original object, and
   leaves existing property descriptors untouched. Proxy trap forwarding and
   invariants use the shared completion-aware methods; the resizable TypedArray
-  rejection branch remains an explicit boundary until that object kind exists.
+  rejection branch participates in the pinned differential.
   Descriptor reads preserve `ToObject` before property-key conversion, never
   call a stored getter, and publish fresh defining-realm ordinary objects. Data
   fields are created in `value`, `writable`, `enumerable`, `configurable` order;
@@ -6038,8 +6062,9 @@ workstream. Build and architecture details live in
   deeper join, sort, slice and flatten ceilings, but pinned QuickJS still
   permits platform-dependent chains, so exact byte-threshold parity requires
   the native-call trampoline. Proxy descriptor traps/invariants are active;
-  integer-indexed TypedArray details and module-namespace exotic descriptors
-  remain explicit object-model boundaries. The differential preserves two
+  integer-indexed TypedArray details participate in the same differential,
+  while module-namespace exotic descriptors remain an explicit object-model
+  boundary. The differential preserves two
   pinned QuickJS target quirks: incomplete identity checks for some frozen
   descriptors, and the nested-Proxy undefined-trap path which bypasses target
   `[[IsExtensible]]`.
@@ -6057,8 +6082,8 @@ workstream. Build and architecture details live in
   absent. Shape-time filtering leaves non-enumerable AutoInit slots lazy.
   Direct getter/setter recursion has a nine-call family guard and interleaved
   recursion is covered by the shared weighted budget. Proxy descriptor
-  rechecks and invariant quirks are active; stale TypedArray index snapshots
-  and module namespace sources remain explicit object-model boundaries.
+  rechecks, invariant quirks, and TypedArray index copying are active; module
+  namespace sources remain an explicit object-model boundary.
   `seal` and `freeze` preserve every primitive without boxing. For objects they
   first prevent extensions and then snapshot every own string and Symbol key.
   `seal` clears configurability while preserving data writability;
@@ -6070,9 +6095,9 @@ workstream. Build and architecture details live in
   read and short-circuit on current descriptors, and query extensibility only
   after every descriptor passes. Ordinary, Array and String-wrapper descriptor
   transitions are covered, including mapped and unmapped Arguments objects;
-  Proxy trap order and partial failures are active, while non-empty TypedArray
-  rejection and module namespace behavior remain explicit object-model
-  boundaries.
+  Proxy trap order, partial failures, and non-empty TypedArray rejection are
+  active, while module namespace behavior remains an explicit object-model
+  boundary.
   `fromEntries` allocates a fresh ordinary result in the builtin's defining
   realm before reading its input, obtains and caches a synchronous iterator's
   `next`, and requires every yielded entry itself to be an object. It reads
@@ -6086,9 +6111,9 @@ workstream. Build and architecture details live in
   does not close. A four-active-call guard plus the shared weighted budget keeps
   direct and interleaved getter/key-coercion recursion catchable. Strong Map
   entry iteration, Set values which are themselves entry objects, and generator
-  `finally` during IteratorClose now run in the pinned differential. Proxy
-  entry traps are active; TypedArrays and module namespace entries remain
-  explicit boundaries.
+  `finally` during IteratorClose now run in the pinned differential. Proxy and
+  TypedArray entry reads are active; module namespace entries remain an
+  explicit boundary.
   `hasOwn` converts and boxes its target in the defining realm before converting
   its property key, deliberately reversing the legacy prototype method's
   observable conversion order. It probes only the resulting object's own
@@ -6098,9 +6123,9 @@ workstream. Build and architecture details live in
   nine-active-call family guard turns recursive `@@toPrimitive` reentry into a
   catchable `InternalError` before the Rust host stack is exhausted; exact
   QuickJS platform-stack depth still awaits the general native-call trampoline.
-  Proxy `getOwnPropertyDescriptor` traps and invariants are active;
-  integer-indexed TypedArrays and module namespaces remain the corresponding
-  explicit object-model boundaries.
+  Proxy `getOwnPropertyDescriptor` traps, invariants, and integer-indexed
+  TypedArrays are active; module namespaces remain the corresponding explicit
+  object-model boundary.
   Anchors: `quickjs.c` 8905-8950, 10680-10702, 15840-15927, 16639-16675,
   16923-16996, 39796-40716, 40748-40927,
   50728-50831, 50992-51107, 52115-52230, and 56291-56313.

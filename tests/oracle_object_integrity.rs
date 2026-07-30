@@ -2,15 +2,16 @@ use std::ffi::OsStr;
 use std::process::Command;
 
 use quickjs_oxide::{
-    CallableRef, CompleteOrdinaryPropertyDescriptor, Context, JsString, ObjectRef, PropertyKey,
-    Runtime, RuntimeError, Value,
+    CallableRef, CompleteOrdinaryPropertyDescriptor, Context, ObjectRef, PropertyKey, Runtime,
+    RuntimeError, Value,
 };
 
 // Pins QuickJS 2026-06-04 `js_object_seal` and `js_object_isSealed` for
-// Object.seal/freeze/isSealed/isFrozen. Proxy trap invariants, non-empty
-// TypedArray freeze failures and module namespace objects are recorded as
-// oracle-only or explicit boundaries; mapped and unmapped Arguments integrity
-// semantics are locked by their dedicated differential.
+// Object.seal/freeze/isSealed/isFrozen. Proxy trap invariants and non-empty
+// TypedArray freeze failures participate in this differential. Module
+// namespace objects remain a separate module/object-model boundary; mapped and
+// unmapped Arguments integrity semantics are locked by their dedicated
+// differential.
 
 const PRIMITIVE_CASES: &[(&str, &str)] = &[
     (
@@ -174,12 +175,7 @@ const MUTATION_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-// These are pinned-oracle-only because the current Rust runtime intentionally
-// has none of the object families which can make an integrity operation fail
-// after it has already changed observable state. Ordinary, Array and String
-// transitions above are all valid descriptor tightenings and cannot produce a
-// user-controlled mid-loop failure.
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
+const EXOTIC_CASES: &[(&str, &str)] = &[
     (
         "Proxy defineProperty failure leaves preventExtensions and earlier keys applied",
         r#"(function(){
@@ -266,7 +262,7 @@ fn object_integrity_oracle_vectors_self_check() {
         ("primitives", PRIMITIVE_CASES),
         ("descriptors", DESCRIPTOR_CASES),
         ("mutations", MUTATION_CASES),
-        ("exotic boundaries", EXOTIC_ORACLE_ONLY_CASES),
+        ("exotic", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -301,6 +297,11 @@ fn object_integrity_descriptors_match_pinned_quickjs() {
 #[test]
 fn object_integrity_mutation_and_idempotence_match_pinned_quickjs() {
     compare_cases("Object integrity mutations", MUTATION_CASES);
+}
+
+#[test]
+fn object_integrity_exotic_surfaces_match_pinned_quickjs() {
+    compare_cases("Object integrity exotic surfaces", EXOTIC_CASES);
 }
 
 #[test]
@@ -480,21 +481,6 @@ fn object_integrity_methods_are_per_realm_and_retain_then_release_their_realm() 
     drop(is_frozen);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
-}
-
-#[test]
-fn object_integrity_records_current_exotic_object_gap() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context
-            .eval("typeof Proxy+'|'+typeof ArrayBuffer+'|'+typeof Uint8Array")
-            .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
-        "activate the exotic integrity vectors when these object families are published",
-    );
-    // Module namespace objects remain an additional ownKeys/DefineOwnProperty
-    // integration point for the integrity surface.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

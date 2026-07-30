@@ -11,9 +11,9 @@ use quickjs_oxide::{
 // (46634-46636). The three methods deliberately share one magic-selected
 // kernel but retain distinct position defaults and search ranges.
 //
-// Rust-side vectors avoid Proxy and object-literal syntax. Constructor-created
-// genuine RegExp values exercise the published R1a brand; the oracle-only
-// vectors below preserve the remaining Proxy boundary.
+// Proxy, TypedArray, and genuine RegExp values participate in the same
+// differential. Module namespace conversion remains a separate
+// module/object-model boundary.
 
 const CASE_PRELUDE: &str = r#"
 function __bits(object,key){
@@ -396,7 +396,7 @@ const REGEXP_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
+const EXOTIC_CASES: &[(&str, &str)] = &[
     (
         "Proxy exposes match Get then search ToPrimitive order",
         r#"(function(){
@@ -421,6 +421,58 @@ const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
             return String.prototype.startsWith.call(receiver,search,1)+"|"+log;
         })()"#,
     ),
+    (
+        "TypedArrays are generic receiver search and position values",
+        r#"(function(){
+            return [
+                String.prototype.includes.call(new Uint8Array([1,2]),","),
+                "x65y".includes(new Uint8Array([65])),
+                "abc".startsWith("b",new Uint8Array([1])),
+                "abc".endsWith("b",new Uint8Array([2]))
+            ].join("|");
+        })()"#,
+    ),
+    (
+        "TypedArray prototype match lookup precedes string conversion",
+        r#"(function(){
+            var log="",search=Uint8Array.prototype,descriptor=Object();
+            descriptor.configurable=true;
+            descriptor.get=function(){log+="match;";return false};
+            Object.defineProperty(search,Symbol.match,descriptor);
+            search[Symbol.toPrimitive]=function(hint){log+="convert:"+hint+";";return "b"};
+            return "abc".includes(search)+"|"+log;
+        })()"#,
+    ),
+    (
+        "Proxy Get invariant applies to a fixed Symbol.match property",
+        r#"(function(){
+            var target=Object(),descriptor=Object();
+            descriptor.value=false;descriptor.writable=false;descriptor.configurable=false;
+            Object.defineProperty(target,Symbol.match,descriptor);
+            var search=new Proxy(target,{get:function(){return true}});
+            try{"abc".includes(search)}catch(error){return error.name+":"+error.message}
+            return "missing";
+        })()"#,
+    ),
+    (
+        "revoked Proxy rejection occurs during Symbol.match lookup",
+        r#"(function(){
+            var pair=Proxy.revocable(Object(),Object());pair.revoke();
+            try{"abc".includes(pair.proxy)}catch(error){return error.name+":"+error.message}
+            return "missing";
+        })()"#,
+    ),
+    (
+        "Proxy wrapping RegExp is not branded when Symbol.match is undefined",
+        r#"(function(){
+            var target=RegExp("b");target.toString=function(){return "b"};
+            var search=new Proxy(target,{get:function(object,key,receiver){
+                if(key===Symbol.match)return undefined;
+                return Reflect.get(object,key,receiver);
+            }});
+            return "abc".includes(search);
+        })()"#,
+    ),
 ];
 
 #[test]
@@ -437,7 +489,7 @@ fn string_includes_oracle_vectors_self_check() {
         ("errors", ERROR_CASES),
         ("stack", STACK_CASES),
         ("RegExp", REGEXP_CASES),
-        ("exotic boundary", EXOTIC_ORACLE_ONLY_CASES),
+        ("exotic", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -469,6 +521,11 @@ fn string_includes_is_regexp_and_conversion_order_match_pinned_quickjs() {
 #[test]
 fn string_includes_errors_match_pinned_quickjs() {
     compare_cases("String includes-family errors", ERROR_CASES);
+}
+
+#[test]
+fn string_includes_exotic_surfaces_match_pinned_quickjs() {
+    compare_cases("String includes-family exotic surfaces", EXOTIC_CASES);
 }
 
 #[test]
@@ -616,20 +673,6 @@ fn string_includes_callables_are_per_realm_and_collectable() {
     drop(retained);
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
-}
-
-#[test]
-fn string_includes_records_current_proxy_and_module_boundaries() {
-    let runtime = Runtime::new();
-    let mut context = runtime.new_context();
-    assert_eq!(
-        context.eval("typeof RegExp+'|'+typeof Proxy").unwrap(),
-        Value::String(JsString::try_from_utf8("function|undefined").unwrap()),
-        "move the remaining oracle-only vectors into the differential when Proxy lands",
-    );
-    // Module namespace exotic Get and Proxy invariant paths remain explicit
-    // object-model boundaries. Neither is needed for the ordinary IsRegExp
-    // algorithm covered above.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {
