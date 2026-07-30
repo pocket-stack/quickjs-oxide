@@ -2033,9 +2033,10 @@ impl Runtime {
             };
 
             // QuickJS's ordinary-object fast path applies ENUM_ONLY while it
-            // snapshots all string and Symbol keys. Later getters therefore
-            // cannot add initially hidden keys or remove an initially visible
-            // key from this source's copy list.
+            // snapshots all string and Symbol keys. A Proxy's observable
+            // ownKeys path cannot use that optimization: it snapshots every
+            // key first, then rechecks each descriptor immediately before Get.
+            let enumerable_at_snapshot = !self.is_proxy_object(&source)?;
             let mut keys = Vec::new();
             let own_keys = match self.internal_own_property_keys(realm, &source)? {
                 NativeConversion::Value(keys) => keys,
@@ -2043,19 +2044,37 @@ impl Runtime {
             };
             for key in own_keys {
                 let kind = self.0.state.borrow().atoms.property_key_kind(key.atom())?;
-                let enumerable = match self
-                    .internal_snapshot_own_property_is_enumerable(realm, &source, &key)?
-                {
-                    NativeConversion::Value(value) => value,
-                    NativeConversion::Throw(value) => {
-                        return Ok(Completion::Throw(value));
-                    }
-                };
-                if matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) && enumerable {
-                    keys.push(key);
+                if !matches!(kind, PropertyKeyKind::String | PropertyKeyKind::Symbol) {
+                    continue;
                 }
+                if enumerable_at_snapshot {
+                    let enumerable = match self
+                        .internal_snapshot_own_property_is_enumerable(realm, &source, &key)?
+                    {
+                        NativeConversion::Value(value) => value,
+                        NativeConversion::Throw(value) => {
+                            return Ok(Completion::Throw(value));
+                        }
+                    };
+                    if !enumerable {
+                        continue;
+                    }
+                }
+                keys.push(key);
             }
             for key in keys {
+                if !enumerable_at_snapshot {
+                    let enumerable =
+                        match self.internal_own_property_is_enumerable(realm, &source, &key)? {
+                            NativeConversion::Value(value) => value,
+                            NativeConversion::Throw(value) => {
+                                return Ok(Completion::Throw(value));
+                            }
+                        };
+                    if !enumerable {
+                        continue;
+                    }
+                }
                 let value = match self.get_property_in_realm(realm, &source, &key)? {
                     Completion::Return(value) => value,
                     Completion::Throw(value) => return Ok(Completion::Throw(value)),

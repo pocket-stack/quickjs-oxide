@@ -8,10 +8,9 @@ use quickjs_oxide::{
 
 // Pins QuickJS 2026-06-04 `js_object_assign` and `JS_CopyDataProperties`.
 // Ordinary sources use QuickJS's enumerable-at-snapshot optimization; Proxy
-// sources instead recheck each descriptor. Proxy, TypedArray and
-// module-namespace exotic paths are recorded below but deliberately do not
-// require support from the current Rust object model; Arguments is locked by
-// its dedicated differential.
+// sources instead recheck each descriptor. Proxy and TypedArray exotic sources
+// are locked below; module-namespace objects remain a separate frontier.
+// Arguments is locked by its dedicated differential.
 
 const CONVERSION_CASES: &[(&str, &str)] = &[
     (
@@ -294,11 +293,10 @@ const PARTIAL_AND_ERROR_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-// Only pinned QuickJS executes these vectors. They document the exotic branch
-// where `JS_CopyDataProperties` cannot apply its ordinary enumerable-at-snapshot
-// optimization and therefore rechecks every descriptor. The Rust differential
-// becomes active when the corresponding object families are published.
-const EXOTIC_ORACLE_ONLY_CASES: &[(&str, &str)] = &[
+// These vectors document the exotic branch where `JS_CopyDataProperties`
+// cannot apply its ordinary enumerable-at-snapshot optimization and therefore
+// rechecks every descriptor.
+const EXOTIC_CASES: &[(&str, &str)] = &[
     (
         "Proxy ownKeys snapshot is followed by descriptor recheck then Get",
         r#"(function(){
@@ -356,7 +354,7 @@ fn object_assign_oracle_vectors_self_check() {
         ("properties", PROPERTY_CASES),
         ("mutations", MUTATION_CASES),
         ("partial errors", PARTIAL_AND_ERROR_CASES),
-        ("exotic boundary", EXOTIC_ORACLE_ONLY_CASES),
+        ("exotic boundary", EXOTIC_CASES),
     ] {
         for &(description, source) in cases {
             let observation = observe_oracle(&oracle, source, description);
@@ -386,6 +384,11 @@ fn object_assign_property_selection_matches_pinned_quickjs() {
 #[test]
 fn object_assign_snapshot_get_set_order_matches_pinned_quickjs() {
     compare_cases("Object.assign mutation order", MUTATION_CASES);
+}
+
+#[test]
+fn object_assign_exotic_sources_match_pinned_quickjs() {
+    compare_cases("Object.assign exotic sources", EXOTIC_CASES);
 }
 
 #[test]
@@ -613,18 +616,16 @@ fn object_assign_method_and_boxed_result_retain_then_release_their_realm() {
 }
 
 #[test]
-fn object_assign_records_current_proxy_typed_array_and_namespace_gap() {
+fn object_assign_exotic_source_families_are_published() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     assert_eq!(
         context
             .eval("typeof Proxy+'|'+typeof ArrayBuffer+'|'+typeof Uint8Array")
             .unwrap(),
-        Value::String(JsString::try_from_utf8("undefined|undefined|undefined").unwrap()),
-        "activate the exotic oracle vectors when these Object.assign sources are published",
+        Value::String(JsString::try_from_utf8("function|function|function").unwrap()),
+        "the active exotic Object.assign vectors require these source families",
     );
-    // Module namespace objects still need their own-key exotic integration
-    // before the full CopyDataProperties surface is done.
 }
 
 fn compare_cases(group: &str, cases: &[(&str, &str)]) {

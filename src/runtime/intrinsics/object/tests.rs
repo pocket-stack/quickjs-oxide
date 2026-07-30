@@ -427,6 +427,45 @@ fn object_assign_autoinit_and_ordinary_snapshot_semantics_match_pinned_quickjs()
 }
 
 #[test]
+fn object_assign_proxy_rechecks_each_descriptor_before_get() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval(
+            r#"(function(){
+                var log="",visible=true,base={a:"A",b:"B"};
+                var source=new Proxy(base,{
+                    ownKeys:function(){log+="ownKeys|";return ["a","b"]},
+                    getOwnPropertyDescriptor:function(target,key){
+                        log+="desc-"+key+":"+visible+"|";
+                        return {
+                            value:target[key],
+                            writable:true,
+                            enumerable:visible,
+                            configurable:true
+                        };
+                    },
+                    get:function(target,key){
+                        log+="get-"+key+"|";
+                        if(key==="a")visible=false;
+                        return target[key];
+                    }
+                });
+                var target=Object.assign({},source);
+                return log+Object.getOwnPropertyNames(target).join(",")+":"+
+                    target.a+":"+(target.b===undefined);
+            })()"#,
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        Value::String(JsString::from_static(
+            "ownKeys|desc-a:true|get-a|desc-b:false|a:A:true",
+        )),
+    );
+}
+
+#[test]
 fn object_from_entries_autoinit_preserves_pinned_metadata() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
