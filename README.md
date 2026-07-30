@@ -18,6 +18,10 @@ Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
 coverage remain incomplete. Pinned QuickJS is the test oracle, never a product
 dependency; bookkeeping lives in the status documents.
 
+**[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
+— it runs this Rust engine's actual WebAssembly build, not host `eval`. The
+playground is a pre-parity milestone, not a Feature Parity claim.
+
 ## Try it
 
 Rust 1.85 or newer is required.

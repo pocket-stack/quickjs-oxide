@@ -7,6 +7,11 @@ description = "A memory-safe Rust rewrite aiming for QuickJS feature parity"
 license = "MIT"
 repository = "https://github.com/pocket-stack/quickjs-oxide"
 
+[workspace]
+members = ["web/wasm"]
+default-members = ["."]
+resolver = "3"
+
 [dependencies]
 num-bigint = "=0.5.1"
 num-traits = "=0.2.19"
@@ -29,3 +34,11 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

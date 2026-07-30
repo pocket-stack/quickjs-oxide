@@ -10,7 +10,7 @@ mod host;
 mod parse;
 mod prototype;
 
-pub(in crate::runtime) use host::{DateHost, SystemDateHost};
+pub(in crate::runtime) use host::SystemHostServices;
 
 use super::*;
 
@@ -236,44 +236,92 @@ impl Runtime {
     }
 
     pub(super) fn date_now_millis(&self) -> i64 {
-        self.0.date_host.now_millis()
+        self.0.host_services.now_millis()
     }
 
     pub(super) fn date_timezone_offset_minutes(&self, epoch_millis: i64) -> i32 {
-        self.0.date_host.timezone_offset_minutes(epoch_millis)
+        self.0.host_services.timezone_offset_minutes(epoch_millis)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use super::*;
 
     #[derive(Debug)]
-    struct FixedDateHost {
+    struct FixedHostServices {
         now_millis: i64,
         timezone_offset_minutes: i32,
+        random_seed: u64,
+        timezone_queries: Rc<RefCell<Vec<i64>>>,
+        random_seed_calls: Rc<Cell<usize>>,
     }
 
-    impl DateHost for FixedDateHost {
+    impl HostServices for FixedHostServices {
         fn now_millis(&self) -> i64 {
             self.now_millis
         }
 
-        fn timezone_offset_minutes(&self, _epoch_millis: i64) -> i32 {
+        fn timezone_offset_minutes(&self, epoch_millis: i64) -> i32 {
+            self.timezone_queries.borrow_mut().push(epoch_millis);
             self.timezone_offset_minutes
+        }
+
+        fn random_seed(&self) -> u64 {
+            self.random_seed_calls.set(self.random_seed_calls.get() + 1);
+            self.random_seed
         }
     }
 
     #[test]
-    fn runtime_owns_an_injectable_date_host() {
-        let runtime = Runtime::new_with_date_host(Rc::new(FixedDateHost {
+    fn runtime_owns_injectable_clock_timezone_and_random_seed_services() {
+        let timezone_queries = Rc::new(RefCell::new(Vec::new()));
+        let random_seed_calls = Rc::new(Cell::new(0));
+        let runtime = Runtime::new_with_host_services(FixedHostServices {
             now_millis: 42,
             timezone_offset_minutes: -480,
-        }));
+            random_seed: 0x1234,
+            timezone_queries: timezone_queries.clone(),
+            random_seed_calls: random_seed_calls.clone(),
+        });
+        let mut context = runtime.new_context();
 
-        assert_eq!(runtime.date_now_millis(), 42);
-        assert_eq!(runtime.date_timezone_offset_minutes(i64::MAX), -480);
+        assert_eq!(context.eval("Date.now()").unwrap(), Value::Int(42));
+        assert_eq!(
+            context.eval("new Date(1234).getTimezoneOffset()").unwrap(),
+            Value::Int(-480)
+        );
+        assert_eq!(&*timezone_queries.borrow(), &[1234]);
+        assert_eq!(random_seed_calls.get(), 1);
+
+        let first_random = context.eval("Math.random()").unwrap();
+        let same_seed_runtime = Runtime::new_with_host_services(FixedHostServices {
+            now_millis: 0,
+            timezone_offset_minutes: 0,
+            random_seed: 0x1234,
+            timezone_queries: Rc::new(RefCell::new(Vec::new())),
+            random_seed_calls: Rc::new(Cell::new(0)),
+        });
+        let same_random = same_seed_runtime
+            .new_context()
+            .eval("Math.random()")
+            .unwrap();
+        assert_eq!(first_random, same_random);
+
+        let different_seed_runtime = Runtime::new_with_host_services(FixedHostServices {
+            now_millis: 0,
+            timezone_offset_minutes: 0,
+            random_seed: 0x1235,
+            timezone_queries: Rc::new(RefCell::new(Vec::new())),
+            random_seed_calls: Rc::new(Cell::new(0)),
+        });
+        let different_random = different_seed_runtime
+            .new_context()
+            .eval("Math.random()")
+            .unwrap();
+        assert_ne!(first_random, different_random);
     }
 }

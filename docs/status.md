@@ -4,6 +4,31 @@ Last audited: 2026-07-30. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bf browser playground milestone
+
+R3bf adds the public
+[browser playground](https://pocket-stack.github.io/quickjs-oxide/) as a
+pre-parity presentation milestone. The page executes the project's real Rust
+engine compiled to WebAssembly; it does not route source through browser or
+Node `eval`/`Function`.
+
+- The new `HostServices` seam supplies time, timezone offset, and random seed
+  data. Native runtimes keep their system-backed services, while the WebAssembly
+  wrapper supplies browser-backed services without changing JavaScript
+  semantics in the product layer.
+- Every evaluation creates a fresh `Runtime` and `Context`. A dedicated Worker
+  owns the engine and is terminated and recreated after the two-second limit,
+  so a non-terminating example does not strand the page.
+- The build smoke loads the generated WebAssembly in Node and evaluates the
+  demo function through the Rust compiler/VM, returning `42`. The current web
+  profile bundle is 3,139,549 bytes raw and 1,036,734 bytes gzip-compressed.
+
+This milestone improves access and demonstration only. Its examples and smoke
+test are not parity evidence; the pinned QuickJS differential gates and full
+Test262 vector remain the conformance baseline and the main Feature Parity
+workstream. Build and architecture details live in
+[`playground.md`](playground.md).
+
 ## Implemented on the final architecture path
 
 - QuickJS 2026-06-04 release metadata, archive checksum, bytecode version,

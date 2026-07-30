@@ -4,8 +4,6 @@
 //! owns the native handlers and the numerical kernels so adding `Math` does not
 //! grow the runtime facade or duplicate arithmetic behavior in the compiler.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use super::super::*;
 use super::object::ObjectIteratorStep;
 
@@ -354,10 +352,7 @@ impl Runtime {
         realm: ContextId,
         global_object: &ObjectRef,
     ) -> Result<(), RuntimeError> {
-        let seed = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_micros() as u64,
-            Err(error) => 0_u64.wrapping_sub(error.duration().as_micros() as u64),
-        };
+        let seed = self.0.host_services.random_seed();
         self.0
             .state
             .borrow_mut()

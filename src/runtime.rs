@@ -14,6 +14,7 @@ mod class_fields;
 mod for_in;
 mod generator;
 mod home_object;
+mod host;
 mod internal_methods;
 mod intrinsics;
 mod jobs;
@@ -26,8 +27,9 @@ mod qjs_host;
 mod template_object;
 mod vm_host;
 
+pub use self::host::HostServices;
 use self::intrinsics::CanonicalNumericIndex;
-use self::intrinsics::date::{DateHost, SystemDateHost};
+use self::intrinsics::date::SystemHostServices;
 use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::PromiseRejectionEvent;
 pub use self::jobs::PendingJobError;
@@ -89,7 +91,7 @@ static NEXT_RUNTIME_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 struct RuntimeInner {
     state: RefCell<RuntimeState>,
     deferred_references: RefCell<VecDeque<DeferredRefOp>>,
-    date_host: Rc<dyn DateHost>,
+    host_services: Rc<dyn HostServices>,
     promise_rejection_tracker: RefCell<Option<HostPromiseRejectionTracker>>,
     /// Address marker captured at the outermost JavaScript/native call entry.
     /// Nested call guards compare against it using QuickJS's one-MiB host-stack
@@ -703,10 +705,17 @@ impl Default for Runtime {
 impl Runtime {
     #[must_use]
     pub fn new() -> Self {
-        Self::new_with_date_host(Rc::new(SystemDateHost::default()))
+        Self::new_with_host_services(SystemHostServices::default())
     }
 
-    fn new_with_date_host(date_host: Rc<dyn DateHost>) -> Self {
+    /// Create a runtime with embedder-provided clock, time-zone, and random
+    /// seed services.
+    ///
+    /// The services are called synchronously and retained for the runtime's
+    /// lifetime. [`Self::new`] selects the native system provider.
+    #[must_use]
+    pub fn new_with_host_services(host_services: impl HostServices + 'static) -> Self {
+        let host_services: Rc<dyn HostServices> = Rc::new(host_services);
         let domain_id = NEXT_RUNTIME_DOMAIN_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(domain_id, 0, "runtime domain ID space exhausted");
         let mut atoms = AtomTable::new();
@@ -735,7 +744,7 @@ impl Runtime {
                 iterator_result_allocations: 0,
             }),
             deferred_references: RefCell::new(VecDeque::new()),
-            date_host,
+            host_services,
             promise_rejection_tracker: RefCell::new(None),
             host_stack_top: Cell::new(None),
             proxy_method_depth: Cell::new(0),

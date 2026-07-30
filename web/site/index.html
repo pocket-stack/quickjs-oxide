@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101312">
+    <meta
+      name="description"
+      content="Run the in-progress quickjs-oxide JavaScript engine in your browser, compiled from Rust to WebAssembly."
+    >
+    <title>quickjs-oxide — Rust JavaScript engine playground</title>
+    <link rel="stylesheet" href="./style.css">
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#playground">Skip to playground</a>
+
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="quickjs-oxide home">
+        <span class="brand-mark" aria-hidden="true">
+          <span>Q</span>
+        </span>
+        <span class="brand-name">quickjs<span>/</span>oxide</span>
+      </a>
+
+      <nav class="site-nav" aria-label="Project links">
+        <span class="build-chip">
+          <span class="build-chip-dot" aria-hidden="true"></span>
+          Rust → WASM
+        </span>
+        <a
+          class="github-link"
+          href="https://github.com/pocket-stack/quickjs-oxide"
+          rel="noreferrer"
+        >
+          View source
+          <span aria-hidden="true">↗</span>
+        </a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">
+            <span>Live engine preview</span>
+            <span class="pre-parity">Pre-parity</span>
+          </p>
+          <h1 id="hero-title">
+            JavaScript,<br>
+            <span>rewritten in Rust.</span>
+          </h1>
+          <p class="hero-summary">
+            Try the real quickjs-oxide interpreter, compiled to WebAssembly and
+            isolated in a browser worker. This is a public workbench—not a claim
+            of complete QuickJS compatibility yet.
+          </p>
+        </div>
+
+        <dl class="hero-facts" aria-label="Playground facts">
+          <div>
+            <dt>Runtime</dt>
+            <dd>Actual Rust WASM</dd>
+          </div>
+          <div>
+            <dt>Execution</dt>
+            <dd>Dedicated worker</dd>
+          </div>
+          <div>
+            <dt>Time budget</dt>
+            <dd>2 seconds</dd>
+          </div>
+        </dl>
+      </section>
+
+      <aside id="offline-notice" class="offline-notice" role="alert" hidden>
+        <span class="offline-icon" aria-hidden="true">!</span>
+        <span>
+          You are offline. The playground will keep working only if its WASM
+          files are already available in this browser.
+        </span>
+      </aside>
+
+      <section id="playground" class="playground"
+        aria-labelledby="playground-title">
+        <div class="playground-heading">
+          <div>
+            <p class="section-index">01 / Playground</p>
+            <h2 id="playground-title">Put the engine to work.</h2>
+          </div>
+
+          <div class="engine-status" aria-live="polite" aria-atomic="true">
+            <span id="status-light" class="status-light is-loading"
+              aria-hidden="true"></span>
+            <span id="engine-status">Loading engine…</span>
+          </div>
+        </div>
+
+        <div class="workbench">
+          <section class="panel editor-panel" aria-labelledby="editor-title">
+            <header class="panel-header">
+              <div class="panel-title-group">
+                <p class="panel-kicker">Input</p>
+                <h3 id="editor-title">script.js</h3>
+              </div>
+
+              <label class="example-picker">
+                <span>Example</span>
+                <select id="example-select" aria-label="Choose an example">
+                </select>
+              </label>
+            </header>
+
+            <div class="editor-shell">
+              <div class="editor-gutter" aria-hidden="true">
+                <span>JS</span>
+              </div>
+              <textarea
+                id="source-editor"
+                aria-label="JavaScript source"
+                aria-describedby="editor-help"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                wrap="off"
+              ></textarea>
+            </div>
+
+            <footer class="panel-footer editor-footer">
+              <p id="editor-help">
+                <kbd>⌘</kbd><span aria-hidden="true">/</span><kbd>Ctrl</kbd>
+                <span>+</span> <kbd>Enter</kbd> to run
+              </p>
+              <span id="source-stat" aria-live="polite">0 lines · 0 bytes</span>
+            </footer>
+          </section>
+
+          <section class="panel output-panel" aria-labelledby="output-title">
+            <header class="panel-header">
+              <div class="panel-title-group">
+                <p class="panel-kicker">Output</p>
+                <h3 id="output-title">Engine result</h3>
+              </div>
+
+              <span id="result-state"
+                class="result-state is-idle">Waiting</span>
+            </header>
+
+            <div
+              id="result-region"
+              class="result-region"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <div id="result-empty" class="result-empty">
+                <span class="prompt-glyph" aria-hidden="true">›_</span>
+                <p>Choose an example or write a script, then run it.</p>
+              </div>
+
+              <div id="result-content" class="result-content" hidden>
+                <p id="result-label" class="result-label">Result</p>
+                <pre id="result-value" class="result-value"></pre>
+
+                <dl class="result-meta">
+                  <div>
+                    <dt>Type</dt>
+                    <dd id="result-type">—</dd>
+                  </div>
+                  <div>
+                    <dt>Engine time</dt>
+                    <dd id="result-duration">—</dd>
+                  </div>
+                </dl>
+
+                <details id="result-details" class="result-details">
+                  <summary>Engine response</summary>
+                  <pre id="result-raw"></pre>
+                </details>
+              </div>
+            </div>
+
+            <footer class="panel-footer output-footer">
+              <span>Worker-isolated</span>
+              <span>2,000 ms limit</span>
+            </footer>
+          </section>
+        </div>
+
+        <div class="playground-actions">
+          <p>
+            Every run gets a fresh Rust runtime and realm. Reset also reloads
+            the worker and restores this example.
+          </p>
+          <div class="action-buttons">
+            <button id="reset-button" class="button button-secondary"
+              type="button">
+              Reset
+            </button>
+            <button id="run-button" class="button button-primary" type="button"
+              disabled>
+              <span id="run-button-label">Loading…</span>
+              <span class="button-key" aria-hidden="true">⌘↵</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="project-note" aria-labelledby="project-note-title">
+        <p class="section-index">02 / What you are running</p>
+        <div class="project-note-grid">
+          <h2 id="project-note-title">No browser-native shortcut.</h2>
+          <div class="project-note-copy">
+            <p>
+              Your source is sent to a dedicated worker and evaluated by the
+              quickjs-oxide Rust engine. The playground does not pass it to the
+              page’s JavaScript evaluator.
+            </p>
+            <p>
+              Feature parity with pinned QuickJS remains the destination. Some
+              programs will fail today; those failures are useful, visible
+              checkpoints—not hidden fallbacks.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>quickjs-oxide <span aria-hidden="true">·</span> an unsafe-free QuickJS rewrite</p>
+      <a href="https://github.com/pocket-stack/quickjs-oxide#readme"
+        rel="noreferrer">
+        Read the project notes <span aria-hidden="true">→</span>
+      </a>
+    </footer>
+  </body>
+</html>

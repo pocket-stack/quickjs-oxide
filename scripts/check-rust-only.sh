@@ -137,9 +137,22 @@ if ! CARGO_TERM_COLOR=never cargo tree \
     exit 2
 fi
 
+# A workspace embedder may depend on the repository's own product crate. Cargo
+# prints that path dependency at positive depth, so remove only entries that
+# resolve back to this exact repository root before looking for external
+# QuickJS packages. All workspace source remains covered by the product-input
+# scans above.
+filter_status=0
+rg -v -F "($root)" "$tmp_dir/cargo-tree" \
+    >"$tmp_dir/external-cargo-tree" || filter_status=$?
+if (( filter_status > 1 )); then
+    echo "error: could not filter the repository's workspace crate" >&2
+    exit 2
+fi
+
 check_matches "QuickJS wrapper in the resolved Cargo dependency graph" -n -i \
     '^[1-9][0-9]*[^[:space:]]*(quick[-_]?js|rquickjs|qjs[-_]?sys)[^[:space:]]*[[:space:]]+v' \
-    "$tmp_dir/cargo-tree"
+    "$tmp_dir/external-cargo-tree"
 
 if (( violations != 0 )); then
     printf '\nrust-only gate failed: %d violation categor%s found\n' \

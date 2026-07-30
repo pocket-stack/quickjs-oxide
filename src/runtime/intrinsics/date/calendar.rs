@@ -172,6 +172,7 @@ fn fp_step(value: f64) -> f64 {
 ///
 /// `timezone_offset` has the same sign as the JavaScript
 /// `getTimezoneOffset()` result (UTC minus local) and is not called for UTC.
+#[allow(clippy::manual_range_contains)] // Keep the pinned QuickJS bound checks source-visible.
 pub(super) fn set_date_fields<F>(
     fields: &DateInputFields,
     is_local: bool,

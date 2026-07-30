@@ -1,31 +1,20 @@
-//! Host clock and time-zone boundary for the pinned QuickJS `Date` intrinsic.
+//! Native host services for the pinned QuickJS runtime.
 //!
-//! QuickJS keeps its calendar algorithms inside the engine but delegates two
-//! values to the host: the current Unix time and the UTC offset in effect at a
-//! particular Unix instant.  Keeping that boundary typed lets unit tests use a
-//! deterministic provider without replacing any of QuickJS's Date semantics
-//! with a third-party calendar implementation.
+//! QuickJS delegates its current time, `Math.random` seed, and local time-zone
+//! lookup to the host. The default provider preserves those native algorithms;
+//! alternate embedders implement the public typed boundary instead.
 
 use std::cell::RefCell;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::runtime::HostServices;
 use tz::TimeZone;
-
-/// Runtime-wide host services used by Date algorithms.
-pub(in crate::runtime) trait DateHost: std::fmt::Debug {
-    /// Milliseconds since the Unix epoch, with pre-epoch fractions rounded in
-    /// the same direction as POSIX `gettimeofday` plus QuickJS's integer math.
-    fn now_millis(&self) -> i64;
-
-    /// QuickJS/ECMAScript offset convention: UTC minus local time, in minutes.
-    fn timezone_offset_minutes(&self, epoch_millis: i64) -> i32;
-}
 
 /// Production provider backed by `SystemTime` and the host TZif/POSIX rules.
 #[derive(Debug, Default)]
-pub(in crate::runtime) struct SystemDateHost {
+pub(in crate::runtime) struct SystemHostServices {
     cached_time_zone: RefCell<Option<CachedTimeZone>>,
 }
 
@@ -35,7 +24,7 @@ struct CachedTimeZone {
     time_zone: TimeZone,
 }
 
-impl DateHost for SystemDateHost {
+impl HostServices for SystemHostServices {
     fn now_millis(&self) -> i64 {
         system_time_millis(SystemTime::now())
     }
@@ -77,6 +66,10 @@ impl DateHost for SystemDateHost {
             unix_seconds,
         )
     }
+
+    fn random_seed(&self) -> u64 {
+        system_time_random_seed(SystemTime::now())
+    }
 }
 
 fn timezone_offset_at(time_zone: &TimeZone, unix_seconds: i64) -> i32 {
@@ -115,23 +108,35 @@ fn duration_millis_saturating(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
+fn system_time_random_seed(time: SystemTime) -> u64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_micros() as u64,
+        Err(error) => 0_u64.wrapping_sub(error.duration().as_micros() as u64),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[derive(Debug)]
-    struct FixedDateHost {
+    struct FixedHostServices {
         now_millis: i64,
         timezone_offset_minutes: i32,
+        random_seed: u64,
     }
 
-    impl DateHost for FixedDateHost {
+    impl HostServices for FixedHostServices {
         fn now_millis(&self) -> i64 {
             self.now_millis
         }
 
         fn timezone_offset_minutes(&self, _epoch_millis: i64) -> i32 {
             self.timezone_offset_minutes
+        }
+
+        fn random_seed(&self) -> u64 {
+            self.random_seed
         }
     }
 
@@ -162,12 +167,27 @@ mod tests {
 
     #[test]
     fn fixed_provider_keeps_clock_and_offset_injectable() {
-        let host = FixedDateHost {
+        let host = FixedHostServices {
             now_millis: -123,
             timezone_offset_minutes: 480,
+            random_seed: 7,
         };
         assert_eq!(host.now_millis(), -123);
         assert_eq!(host.timezone_offset_minutes(i64::MAX), 480);
+        assert_eq!(host.random_seed(), 7);
+    }
+
+    #[test]
+    fn system_random_seed_preserves_quickjs_microsecond_shape() {
+        assert_eq!(system_time_random_seed(UNIX_EPOCH), 0);
+        assert_eq!(
+            system_time_random_seed(UNIX_EPOCH.checked_add(Duration::from_micros(7)).unwrap()),
+            7
+        );
+        assert_eq!(
+            system_time_random_seed(UNIX_EPOCH.checked_sub(Duration::from_micros(7)).unwrap()),
+            0_u64.wrapping_sub(7)
+        );
     }
 
     #[test]
