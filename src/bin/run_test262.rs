@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15";
+    "5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -266,6 +266,12 @@ const TEST262_GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15";
 const TEST262_GLOBAL_THIS_GLOBAL_MANIFEST_SHA256: &str =
     "aecc6d30cc47676fd20541c509c1016b3cd8d238e96afa6178d3f0c2bd62abc4";
+const TEST262_PROMISE_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15";
+const TEST262_PROMISE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9";
+const TEST262_PROMISE_GLOBAL_MANIFEST_SHA256: &str =
+    "1d1016e310a423629b8be481912823c0d1f7c078dd21710f01fc0350d6f589ba";
 const TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256: &str =
     "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a";
 const TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256: &str =
@@ -859,6 +865,8 @@ enum OxideProfileKind {
     GlobalThisCandidate,
     GlobalThisGlobalParent,
     GlobalThisGlobalCandidate,
+    PromiseGlobalParent,
+    PromiseGlobalCandidate,
     IteratorSequencing,
     OptionalChaining,
     Proxy,
@@ -1097,6 +1105,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::GlobalThisGlobalCandidate,
         ),
         (
+            root.join("tests/test262-promise-global-parent.conf"),
+            OxideProfileKind::PromiseGlobalParent,
+        ),
+        (
+            root.join("tests/test262-promise-global-candidate.conf"),
+            OxideProfileKind::PromiseGlobalCandidate,
+        ),
+        (
             root.join("tests/test262-iterator-sequencing.conf"),
             OxideProfileKind::IteratorSequencing,
         ),
@@ -1291,6 +1307,54 @@ fn verify_global_this_global_transition_profile(
         manifest,
         TEST262_GLOBAL_THIS_GLOBAL_MANIFEST_SHA256,
         &format!("historical globalThis transition {label} Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_promise_global_transition_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("historical Promise transition {label} Test262 capability profile"),
+    )?;
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the historical Promise transition {label} Test262 capability profile requires --all or its pinned tag manifest"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the historical Promise transition {label} Test262 capability profile requires --all or its pinned tag manifest"
+        )
+    })?;
+    let manifest_relative = "tests/test262-promise-global.txt";
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve historical Promise transition {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
+        .map_err(|error| {
+            format!("resolve pinned historical Promise transition {label} manifest: {error}")
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the historical Promise transition {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_PROMISE_GLOBAL_MANIFEST_SHA256,
+        &format!("historical Promise transition {label} Test262 manifest"),
     )?;
     Ok(profile_sha256)
 }
@@ -2074,6 +2138,16 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE_SHA256,
             )
         }
+        OxideProfileKind::PromiseGlobalParent => verify_promise_global_transition_profile(
+            options,
+            "pre-R3bq global parent",
+            TEST262_PROMISE_GLOBAL_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::PromiseGlobalCandidate => verify_promise_global_transition_profile(
+            options,
+            "R3bq global candidate",
+            TEST262_PROMISE_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        ),
         OxideProfileKind::IteratorSequencing => verify_scoped_pinned_profile(
             options,
             "Iterator.concat sequencing",
@@ -2399,6 +2473,8 @@ mod cli_tests {
         TEST262_PARAMETER_EXPRESSION_BINDING_PATTERNS_PROFILE_SHA256,
         TEST262_PROMISE_ALL_PROFILE_SHA256, TEST262_PROMISE_ALL_SETTLED_PROFILE_SHA256,
         TEST262_PROMISE_ANY_PROFILE_SHA256, TEST262_PROMISE_FINALLY_PROFILE_SHA256,
+        TEST262_PROMISE_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_PROMISE_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
         TEST262_REGEXP_BUILTINS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
@@ -2789,6 +2865,15 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-global-this-global-candidate.conf"))
                 .unwrap(),
             OxideProfileKind::GlobalThisGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-promise-global-parent.conf")).unwrap(),
+            OxideProfileKind::PromiseGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-promise-global-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::PromiseGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-iterator-sequencing.conf")).unwrap(),
@@ -5572,6 +5657,51 @@ mod cli_tests {
             for selection in [
                 ["--test", "test/built-ins/global/global-object.js"],
                 ["--manifest", "tests/test262-global-this-activation.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                arguments.push(selection[1]);
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn promise_global_admission_profiles_require_the_tag_manifest_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-promise-global-parent.conf",
+                TEST262_PROMISE_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-promise-global-candidate.conf",
+                TEST262_PROMISE_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                ["--manifest", "tests/test262-promise-global.txt"],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+            }
+
+            for selection in [
+                ["--test", "test/built-ins/Promise/any/name.js"],
+                ["--manifest", "tests/test262-promise-global-activation.txt"],
                 ["--manifest", "Cargo.toml"],
             ] {
                 let mut arguments =

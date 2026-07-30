@@ -4,12 +4,70 @@ Last audited: 2026-07-31. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bq global Promise capability closure
+
+R3bq admits exactly `Promise`, `Promise.allSettled`, `Promise.any`, and
+`Promise.prototype.finally` to the checksum-pinned global Test262 profile.
+The live profile now contains 88 reviewed feature tags, retains the same 828
+audited negative paths and async execution entry, and has SHA-256
+`5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9`.
+The admission reuses the pinned-QuickJS Promise jobs,
+`Promise.prototype.finally`, and aggregate differential gates; all three pass.
+
+The exhaustive metadata universe is 226 paths / 452 variants. Its exact
+partition is 208 paths / 416 activation variants, all passing after admission,
+plus 18 paths / 36 reason-only variants that remain fail-closed: 12 for
+`class` and 24 for `computed-property-names`. The historical parent tag
+TSV/JSONL SHA-256 values are
+`623a2e0fecca4a2746b667ea0552b9621a89bc8f1448a1c3b1aa7f557e487b1a`
+and
+`fff4000cdd7f160f12e7495f09f6f995e0be2d96452ffbecdce54822a50c2ed5`;
+the candidate values are
+`500d94a18e8872bdd9df1bf87cb535cee41a3632a922575f6a11699170662c2d`
+and
+`04f9e7b06d26709b507a9809e8f757a075811f4069345f070513c86b60ee29b3`.
+The 452-row transition receipt and data SHA-256 values are
+`955e77db96a429533b946fac4de9f9c0808f793a1506fddec2d2ab29eb1e91d8`
+and
+`0831ea9577c8ae2c9ddf7a84903ffaaa49882e1f9fd889570740d1d3da3a91b4`.
+
+The complete 102,037-key join contains exactly 416 outcome changes, 36
+diagnostic-detail-only changes, and 101,585 byte-identical rows, with zero
+previous-pass regressions. The canonical vector now has 58,168 passes, 58,687
+runnable variants, 19,957 `unsupported-feature` outcomes, and 24,924 total
+unsupported outcomes. Its rates are 57.01% raw, a 69.61% conservative
+target-scope lower bound after the 18,475 pinned QuickJS target exclusions,
+and 99.20% among 58,638 variants with a non-unsupported observed outcome. The
+full TSV/JSONL SHA-256 values are
+`4a529df1318a233d16de1e3563de3e987a4a51f200bb6d37e73281142e51e19a`
+and
+`80006172f384144bb3f169ba56d587bb2f48f5e21cdaadde0308e0fcde386df9`.
+Eight- and five-worker tag repeats are byte-identical, as are two- and
+one-worker full repeats; an independent two-worker canonical repeat matches
+the frozen candidate.
+
+Reproduce the admission and canonical evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-promise-global.sh
+TEST262_WORKERS=5 ./scripts/test-test262-promise-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-promise-global.sh --full
+TEST262_FULL_WORKERS=1 ./scripts/test-test262-promise-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+This closes the global profile admission for the already-implemented Promise
+surface. It is not a Feature Parity completion claim; modules, host hooks, and
+the broader remaining engine surface stay explicit.
+
 ## R3bp global `globalThis` admission
 
-R3bp adds exactly `globalThis` to the checksum-pinned live Test262 profile
-after the R3bo focused gate closed its source, compiler, and harness evidence.
-The profile now contains 84 reviewed feature tags, the same 828 audited
-negative paths, and the same async execution entry. Its complete SHA-256 is
+At R3bp, exactly `globalThis` was added to the then-live checksum-pinned
+Test262 profile after the R3bo focused gate closed its source, compiler, and
+harness evidence.
+The resulting historical profile contained 84 reviewed feature tags, the same
+828 audited negative paths, and the same async execution entry. Its complete
+SHA-256 is
 `caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15`;
 the feature section alone has SHA-256
 `e928613f44d53e2d3690a5305ae29a707b30fc66ec0a797016b46d2460b39423`.
@@ -30,11 +88,11 @@ and
 `d4351933687b1ee1a284c84868af09f158584806a3a23545bf53b1d373491466`.
 Independent eight- and five-worker tagged runs are byte-identical.
 
-The exact full join retains all 102,037 keys. Its only changes are the 150
-focused `unsupported-feature -> pass` rows: all 15 deferred rows, all 101,872
-non-`globalThis` rows, and therefore all 101,887 unchanged rows are
+The exact historical full join retains all 102,037 keys. Its only changes are
+the 150 focused `unsupported-feature -> pass` rows: all 15 deferred rows, all
+101,872 non-`globalThis` rows, and therefore all 101,887 unchanged rows are
 byte-identical in both TSV and JSONL. There are zero detail-only changes and
-zero previous-pass regressions. The canonical vector now has 57,752 passes,
+zero previous-pass regressions. The R3bp canonical vector had 57,752 passes,
 58,271 runnable variants, 20,373 `unsupported-feature` outcomes, and 25,340
 total unsupported outcomes. Its rates are 56.60% raw, a 69.11% conservative
 target-scope lower bound after the 18,475 pinned QuickJS target exclusions,
@@ -47,8 +105,7 @@ The candidate report from the two-worker admission run, the independent
 one-worker frozen-vector reproduction, and the independent canonical
 two-worker live run are byte-identical.
 
-Reproduce the focused, tagged, historical full-join, and live canonical gates
-with:
+Reproduce the focused, tagged, and historical full-join gates with:
 
 ```sh
 ./scripts/test-test262-global-this.sh
@@ -56,7 +113,6 @@ TEST262_WORKERS=8 ./scripts/test-test262-global-this-global.sh
 TEST262_WORKERS=5 ./scripts/test-test262-global-this-global.sh
 TEST262_FULL_WORKERS=2 ./scripts/test-test262-global-this-global.sh --full
 TEST262_FULL_WORKERS=1 ./scripts/test-test262-global-this-global.sh --full
-TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
 This is a profile and evidence milestone with no production runtime-semantics
@@ -377,7 +433,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 84 reviewed feature tags and 828 exact audited
+  capability profile now admits 88 reviewed feature tags and 828 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -424,21 +480,24 @@ workstream. Build and architecture details live in
   variants activate and pass, 26 remain fail-closed behind `globalThis`, and
   all 32 host/config variants remain unchanged. R3bp then admits exactly
   `globalThis`: its 150 dependency-clean variants activate and pass while all
-  15 module/config deferrals remain unchanged.
+  15 module/config deferrals remain unchanged. R3bq closes the implemented
+  global Promise surface: 416 variants activate and pass, while 36 variants
+  remain fail-closed behind `class` or `computed-property-names`.
   The cumulative
   TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 57,752 passes and 58,271 runnable variants:
-  56.60% raw,
-  a 69.11% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.19% among the 58,222 variants with a non-unsupported observed outcome. It
-  records 20,373 `unsupported-feature` and 25,340 total unsupported outcomes,
+  measurement has 58,168 passes and 58,687 runnable variants:
+  57.01% raw,
+  a 69.61% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.20% among the 58,638 variants with a non-unsupported observed outcome. It
+  records 19,957 `unsupported-feature` and 24,924 total unsupported outcomes,
   11 parse failures, 400 runtime failures, and 57 harness failures. The exact
-  R3bp join preserves all 102,037 keys with no detail-only change or
-  previous-pass regression. Current full TSV/JSONL SHA-256 values are
-  `1dfbd54d69e3ebace9edfb1ba3502d402edbd1919f34a353c8996eec63522a0d`
+  R3bq join preserves all 102,037 keys with 416 outcome changes, 36
+  detail-only changes, 101,585 unchanged rows, and no previous-pass
+  regression. Current full TSV/JSONL SHA-256 values are
+  `4a529df1318a233d16de1e3563de3e987a4a51f200bb6d37e73281142e51e19a`
   and
-  `f255a6852b17479e0d699195e2b50477e5094113861672587852b04bb3ed9668`.
+  `80006172f384144bb3f169ba56d587bb2f48f5e21cdaadde0308e0fcde386df9`.
   Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
   coverage remain explicit frontiers.
   The fixed smoke now

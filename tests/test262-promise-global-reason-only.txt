@@ -1,0 +1,21 @@
+# R3bq Promise global reason-only ledger.
+# These 18 paths / 36 variants remain behind class or computed-property-names.
+# Keep this path stream bytewise sorted.
+test/built-ins/Promise/allSettled/ctx-ctor.js
+test/built-ins/Promise/allSettled/invoke-resolve-on-promises-every-iteration-of-custom.js
+test/built-ins/Promise/any/ctx-ctor.js
+test/built-ins/Promise/any/invoke-resolve-error-close.js
+test/built-ins/Promise/any/invoke-resolve-on-promises-every-iteration-of-custom.js
+test/built-ins/Promise/any/invoke-resolve-on-values-every-iteration-of-custom.js
+test/built-ins/Promise/any/invoke-then-error-close.js
+test/built-ins/Promise/any/invoke-then-get-error-close.js
+test/built-ins/Promise/any/iter-assigned-false-reject.js
+test/built-ins/Promise/any/iter-assigned-null-reject.js
+test/built-ins/Promise/any/iter-assigned-number-reject.js
+test/built-ins/Promise/any/iter-assigned-string-reject.js
+test/built-ins/Promise/any/iter-assigned-symbol-reject.js
+test/built-ins/Promise/any/iter-assigned-true-reject.js
+test/built-ins/Promise/any/iter-assigned-undefined-reject.js
+test/built-ins/Promise/any/iter-step-err-no-close.js
+test/built-ins/Promise/any/iter-step-err-reject.js
+test/built-ins/Promise/prototype/finally/rejected-observable-then-calls-argument.js

@@ -278,11 +278,19 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-global-this-global-candidate.conf"
     ));
+    const PROMISE_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-promise-global-parent.conf"
+    ));
+    const PROMISE_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-promise-global-candidate.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 84] = [
+    const EXPECTED_FEATURES: [&str; 88] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -292,6 +300,10 @@ mod tests {
         "Math.sumPrecise",
         "Object.fromEntries",
         "Object.hasOwn",
+        "Promise",
+        "Promise.allSettled",
+        "Promise.any",
+        "Promise.prototype.finally",
         "Proxy",
         "Reflect",
         "Reflect.construct",
@@ -714,6 +726,9 @@ mod tests {
             OxideProfile::parse(GLOBAL_THIS_GLOBAL_PARENT_PROFILE).unwrap();
         let global_this_global_candidate =
             OxideProfile::parse(GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let promise_global_parent = OxideProfile::parse(PROMISE_GLOBAL_PARENT_PROFILE).unwrap();
+        let promise_global_candidate =
+            OxideProfile::parse(PROMISE_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -814,6 +829,53 @@ mod tests {
             profile.allows_async_execution(),
             global_this_global_candidate.allows_async_execution()
         );
+        assert_eq!(promise_global_parent, global_this_global_candidate);
+        assert_eq!(
+            promise_global_candidate
+                .features
+                .difference(&promise_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "Promise",
+                "Promise.allSettled",
+                "Promise.any",
+                "Promise.prototype.finally",
+            ]
+        );
+        assert!(
+            promise_global_parent
+                .features
+                .difference(&promise_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            promise_global_candidate.audited_negative_tests,
+            promise_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            promise_global_candidate.allows_async_execution(),
+            promise_global_parent.allows_async_execution()
+        );
+        assert!(
+            promise_global_candidate
+                .features
+                .difference(&profile.features)
+                .next()
+                .is_none()
+        );
+        assert!(
+            promise_global_candidate
+                .audited_negative_tests
+                .difference(&profile.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            profile.allows_async_execution(),
+            promise_global_candidate.allows_async_execution()
+        );
     }
 
     #[test]
@@ -822,7 +884,11 @@ mod tests {
         let classification = profile
             .classify(
                 Path::new("test/not-audited.js"),
-                &["class".to_owned(), "Promise".to_owned(), "class".to_owned()],
+                &[
+                    "class".to_owned(),
+                    "computed-property-names".to_owned(),
+                    "class".to_owned(),
+                ],
                 true,
             )
             .unwrap();
@@ -830,7 +896,7 @@ mod tests {
         assert_eq!(classification.outcome, "unsupported-feature");
         assert_eq!(
             classification.detail,
-            "quickjs-oxide does not declare Test262 feature support: Promise, class"
+            "quickjs-oxide does not declare Test262 feature support: class, computed-property-names"
         );
     }
 

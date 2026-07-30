@@ -6,12 +6,69 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-07-31.
 
+## R3bq global Promise capability closure
+
+R3bq adds exactly `Promise`, `Promise.allSettled`, `Promise.any`, and
+`Promise.prototype.finally` to the checksum-pinned live capability profile.
+It now contains 88 reviewed feature tags, the same 828 audited negative paths,
+and the same async execution entry. Its SHA-256 is
+`5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9`.
+The pinned QuickJS Promise jobs, `Promise.prototype.finally`, and aggregate
+differential gates all pass before the Test262 admission runs.
+
+The exhaustive tagged universe contains 226 paths / 452 variants. The exact
+activation is 208 paths / 416 variants, all passing after admission. The other
+18 paths / 36 variants remain `unsupported-feature` only for their residual
+dependencies: 12 variants require `class`, and 24 require
+`computed-property-names`. The historical parent tag TSV/JSONL SHA-256 values
+are
+`623a2e0fecca4a2746b667ea0552b9621a89bc8f1448a1c3b1aa7f557e487b1a`
+and
+`fff4000cdd7f160f12e7495f09f6f995e0be2d96452ffbecdce54822a50c2ed5`;
+the candidate values are
+`500d94a18e8872bdd9df1bf87cb535cee41a3632a922575f6a11699170662c2d`
+and
+`04f9e7b06d26709b507a9809e8f757a075811f4069345f070513c86b60ee29b3`.
+The exact 452-row transition receipt and data SHA-256 values are
+`955e77db96a429533b946fac4de9f9c0808f793a1506fddec2d2ab29eb1e91d8`
+and
+`0831ea9577c8ae2c9ddf7a84903ffaaa49882e1f9fd889570740d1d3da3a91b4`.
+
+The full join retains all 102,037 keys: 416 outcomes change from
+`unsupported-feature` to `pass`, 36 reason-only rows change diagnostic detail,
+and all 101,585 non-universe rows are byte-identical. No previous pass
+regresses. The canonical vector reaches 58,168 passes with 58,687 runnable
+variants, 19,957 `unsupported-feature` outcomes, and 24,924 total unsupported
+outcomes. That is 57.01% raw, a 69.61% conservative target-scope lower bound
+after the 18,475 pinned QuickJS target exclusions, and 99.20% among 58,638
+variants with a non-unsupported observed outcome. Its full TSV/JSONL SHA-256
+values are
+`4a529df1318a233d16de1e3563de3e987a4a51f200bb6d37e73281142e51e19a`
+and
+`80006172f384144bb3f169ba56d587bb2f48f5e21cdaadde0308e0fcde386df9`.
+Eight- and five-worker tagged runs are byte-identical; two- and one-worker
+full runs are also byte-identical, and an independent two-worker canonical
+repeat matches the candidate.
+
+Reproduce the evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-promise-global.sh
+TEST262_WORKERS=5 ./scripts/test-test262-promise-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-promise-global.sh --full
+TEST262_FULL_WORKERS=1 ./scripts/test-test262-promise-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+This is a global profile and evidence milestone, not a Feature Parity
+completion claim.
+
 ## R3bp global `globalThis` admission
 
-R3bp adds exactly `globalThis` to the live capability profile frozen by the
-R3bo focused gate. The resulting profile contains 84 reviewed feature tags,
-the same 828 audited negative paths, and the same async execution entry. Its
-complete SHA-256 is
+At R3bp, `globalThis` was added to the capability profile frozen by the R3bo
+focused gate. The resulting historical profile contained 84 reviewed feature
+tags, the same 828 audited negative paths, and the same async execution entry.
+Its complete SHA-256 is
 `caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15`;
 the feature-section SHA-256 is
 `e928613f44d53e2d3690a5305ae29a707b30fc66ec0a797016b46d2460b39423`.
@@ -36,12 +93,12 @@ The exact full-corpus join retains all 102,037 keys. Exactly 150 rows move
 from `unsupported-feature` to `pass`; all 15 deferred rows, all 101,872
 non-`globalThis` rows, and all 101,887 unchanged rows remain byte-identical in
 both report formats. There are zero detail-only changes and zero previous-pass
-regressions. The canonical vector reaches 57,752/102,037 passes with 58,271
-runnable variants, 20,373 `unsupported-feature` outcomes, and 25,340 total
-unsupported outcomes. That is 56.60% raw, a 69.11% conservative target-scope
-lower bound after the 18,475 pinned QuickJS target exclusions, and 99.19%
-among 58,222 variants with a non-unsupported observed outcome. Its full
-TSV/JSONL SHA-256 values are
+regressions. The R3bp canonical vector reached 57,752/102,037 passes with
+58,271 runnable variants, 20,373 `unsupported-feature` outcomes, and 25,340
+total unsupported outcomes. That is 56.60% raw, a 69.11% conservative
+target-scope lower bound after the 18,475 pinned QuickJS target exclusions,
+and 99.19% among 58,222 variants with a non-unsupported observed outcome. Its
+full TSV/JSONL SHA-256 values are
 `1dfbd54d69e3ebace9edfb1ba3502d402edbd1919f34a353c8996eec63522a0d`
 and
 `f255a6852b17479e0d699195e2b50477e5094113861672587852b04bb3ed9668`.
@@ -57,10 +114,9 @@ TEST262_WORKERS=8 ./scripts/test-test262-global-this-global.sh
 TEST262_WORKERS=5 ./scripts/test-test262-global-this-global.sh
 TEST262_FULL_WORKERS=2 ./scripts/test-test262-global-this-global.sh --full
 TEST262_FULL_WORKERS=1 ./scripts/test-test262-global-this-global.sh --full
-TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
-This changes only the global capability profile and its evidence. It is not a
+This changed only the global capability profile and its evidence. It is not a
 Feature Parity completion claim.
 
 ## R3bo focused `globalThis` gate
@@ -112,8 +168,8 @@ classified vector. R3bp later performs that global admission above.
 - Test262 commit: `5c8206929d81b2d3d727ca6aac56c18358c8d790`
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
-- quickjs-oxide 84-tag capability profile SHA-256:
-  `caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15`
+- quickjs-oxide 88-tag capability profile SHA-256:
+  `5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -179,9 +235,12 @@ R3bm focused gate completed the 28-path source-and-harness Proxy closure and
 passed 551 paths / 1,102 variants in both engines. R3bn admitted exactly
 `iterator-helpers` globally: 1,076 variants activated and passed, 26 remained
 fail-closed behind `globalThis`, and 32 host/config variants remained
-unchanged. R3bp now admits `globalThis`: those 26 Iterator Helper variants and
-the rest of the 150-row activation pass, while its 15 module/config variants
-remain unchanged.
+unchanged. R3bp subsequently admitted `globalThis`: those 26 Iterator Helper
+variants and the rest of the 150-row activation pass, while its 15
+module/config variants remained unchanged.
+R3bq subsequently admitted the four implemented Promise tags: 416 activation
+variants pass, and 36 reason-only variants remain fail-closed behind `class`
+or `computed-property-names`.
 
 Nineteen additional provenance variants guard the result: 10 audited negative
 variants pass for the intended parse error, while nine variants fail closed
@@ -194,28 +253,28 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 57,752 pass;
+- 58,168 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 25,340 are classified as unsupported because of a feature, mode, host
+- 24,924 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
-  provenance, including 20,373 `unsupported-feature` variants;
+  provenance, including 19,957 `unsupported-feature` variants;
 - 11 fail to parse, 400 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admitted 58,271 variants to execution. That count includes variants
+The runner admitted 58,687 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 56.60% (`57,752 / 102,037`);
-- conservative target-scope lower bound: 69.11%
-  (`57,752 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.19%
-  (`57,752 / 58,222`).
+- raw suite pass rate: 57.01% (`58,168 / 102,037`);
+- conservative target-scope lower bound: 69.61%
+  (`58,168 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.20%
+  (`58,168 / 58,638`).
 
-The 69.11% figure is the useful whole-project progress floor, not a claim that
-the engine is 69.11% conformant. The 99.19% conditional rate measures quality
+The 69.61% figure is the useful whole-project progress floor, not a claim that
+the engine is 69.61% conformant. The 99.20% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -243,7 +302,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 84
+or pinned-target-error outcomes. The capability profile currently admits 88
 reviewed Test262 feature tags and 828 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -271,9 +330,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The canonical two-worker measurement's TSV and JSONL SHA-256 values are
-`1dfbd54d69e3ebace9edfb1ba3502d402edbd1919f34a353c8996eec63522a0d`
+`4a529df1318a233d16de1e3563de3e987a4a51f200bb6d37e73281142e51e19a`
 and
-`f255a6852b17479e0d699195e2b50477e5094113861672587852b04bb3ed9668`.
+`80006172f384144bb3f169ba56d587bb2f48f5e21cdaadde0308e0fcde386df9`.
 
 ## Milestone policy
 
@@ -7155,9 +7214,13 @@ leaves the 32 host/config variants and all 100,903 non-Iterator-Helper variants
 unchanged. R3bp then admits exactly `globalThis`: 150 variants move from
 `unsupported-feature` to `pass`, its 15 module/config deferrals and all
 101,872 non-`globalThis` variants remain byte-identical, and no detail-only
-change or previous-pass regression occurs. The current vector reaches
-57,752/102,037 passes with 58,271 runnable variants, 20,373
-`unsupported-feature` outcomes, and 25,340 total unsupported outcomes.
+change or previous-pass regression occurs.
+R3bq then admits the four implemented global Promise tags. Its 416 activation
+variants pass, 36 reason-only variants retain their `class` or
+`computed-property-names` frontier, and all 101,585 non-universe rows remain
+byte-identical. The current vector reaches 58,168/102,037 passes with 58,687
+runnable variants, 19,957 `unsupported-feature` outcomes, and 24,924 total
+unsupported outcomes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

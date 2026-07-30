@@ -10,12 +10,12 @@ QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 `map`/`filter` and `slice`/`subarray`, plus non-species `with` and
 `toReversed`, dedicated `join`/`toLocaleString`, inherited `toString`, and
 QuickJS-shaped `sort`/`toSorted`, certified `entries`/`keys` iterators, and
-pinned-QuickJS-certified static `of` and `from`. The 84-tag global Test262
-profile now admits `TypedArray`, `Proxy`, `optional-chaining`,
-`iterator-helpers`, and `globalThis` through checksum-bound audits. The
-complete conservative vector is 57,752/102,037 with 58,271 runnable variants.
-Uint8Array codecs, modules,
-SharedArrayBuffer/Atomics, and broad built-in coverage remain incomplete.
+pinned-QuickJS-certified static `of` and `from`. The 88-tag global Test262
+profile admits `TypedArray`, `Proxy`, optional chaining, Iterator Helpers,
+`globalThis`, and the implemented Promise surface through checksum-bound
+audits. The complete conservative vector is 58,168/102,037 with 58,687
+runnable variants. Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and
+broad built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.
 
@@ -53,6 +53,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-optional-chaining.sh
 ./scripts/test-test262-global-this.sh
 ./scripts/test-test262-global-this-global.sh
+./scripts/test-test262-promise-global.sh
 ./scripts/test-test262-full.sh
 ```
 
