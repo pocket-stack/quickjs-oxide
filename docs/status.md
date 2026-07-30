@@ -21,7 +21,8 @@ Node `eval`/`Function`.
   so a non-terminating example does not strand the page.
 - The build smoke loads the generated WebAssembly in Node and evaluates the
   demo function through the Rust compiler/VM, returning `42`. The current web
-  profile bundle is 3,139,549 bytes raw and 1,036,734 bytes gzip-compressed.
+  profile's first CI deployment is 3,140,771 bytes raw and 1,037,571 bytes
+  gzip-compressed.
 
 This milestone improves access and demonstration only. Its examples and smoke
 test are not parity evidence; the pinned QuickJS differential gates and full
