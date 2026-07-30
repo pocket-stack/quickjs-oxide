@@ -340,6 +340,7 @@ impl<'source> Parser<'source> {
         self.current_ir_mut().stack_depth = entry_depth + 1;
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         Ok(())
     }
 
@@ -1148,6 +1149,9 @@ impl<'source> Parser<'source> {
         &mut self,
     ) -> Result<DestructuringAssignmentReference, Error> {
         self.parse_left_hand_side_expression()?;
+        if self.current_ir().last_optional_chain.is_some() {
+            return Err(self.syntax_here("invalid destructuring target"));
+        }
         if let Some(target) = self.take_tail_identifier_reference()? {
             self.validate_identifier_assignment_target(&target)?;
             return Ok(DestructuringAssignmentReference::Identifier(target));

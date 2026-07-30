@@ -4,6 +4,44 @@ Last audited: 2026-07-30. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bi optional chaining focused implementation
+
+R3bi ports QuickJS-shaped optional chaining in the compiler without adding a
+runtime or VM opcode. Each `?.` edge lowers to the existing nullish test,
+branch, drop, fallback, and shared-chain-end instructions. Parser-owned
+Reference metadata preserves method receivers across public grouped calls and
+deliberately reproduces pinned QuickJS behavior for indirect `eval?.()`,
+authored-`with` optional calls, grouped private methods, and optional private
+`delete`.
+
+The pinned QuickJS oracle contains 38 reviewed vectors covering fixed and
+computed members, fixed/spread calls, multi-edge short circuiting, grouping,
+receiver identity, `super`, private fields and methods, `new.target`, async and
+generator effects, `delete`, and assignment/update/destructuring/iteration/
+`new`/template early errors. Oxide and QuickJS 2026-06-04 agree on all 38.
+
+The checksum-bound focused Test262 gate derives 56 tagged paths, keeps four
+class/private paths in an explicit reason-only ledger, authenticates all 26
+parse-negative paths, and runs the remaining 52 paths / 104 variants. Oxide
+and pinned QuickJS both pass 104/104. A separate 14-path / 28-variant ledger
+records the hidden optional-chain dependency in Iterator Helpers without
+claiming that family here. The global `optional-chaining` tag is intentionally
+not admitted by this milestone.
+
+Five already-runnable staging paths improve by exactly nine variants, with no
+other full-vector movement: seven parse failures and two runtime failures
+become passes. The canonical complete vector therefore reaches
+56,422/102,037 passes while remaining at 56,941 runnable variants. Its
+TSV/JSONL SHA-256 values are
+`5c388e568e6ee9e09799bc0f471a5926f0b680bd8f4d781e84130fce1a968e8a`
+and
+`19f076e99f56f22374a533e1f9c8fead0775bf81d2d1940641ae322901c1cc88`.
+Iterator spillover, the now-obsolete for-await-of exclusion, negative
+provenance, and global admission remain separately auditable next steps.
+
+R3bi is an implementation and focused-evidence milestone, not a Feature
+Parity completion claim.
+
 ## R3bh Proxy global admission
 
 R3bh admits exactly the `Proxy` tag into the checksum-pinned global Test262
@@ -127,18 +165,20 @@ workstream. Build and architecture details live in
   exact activation and spillover partitions. R3bh admits the globally audited
   `Proxy` feature after its 405-path / 787-variant activation passes in full;
   21 paths / 42 variants remain reason-only rows behind other unsupported
-  dependencies. The cumulative TypedArray scoped gate still
+  dependencies. R3bi then implements QuickJS-shaped optional chaining and
+  authenticates its 104-variant dependency-clean focused cohort without yet
+  admitting the global tag. The cumulative TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 56,413 passes and 56,941 runnable variants:
-  55.29% raw,
-  a 67.51% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.16% among the 56,892 variants with a non-unsupported observed outcome. It
-  records 18 parse failures, 402 runtime failures, and 57 harness failures.
-  The exact R3bh join preserves all 102,037 keys with no previous-pass
+  measurement has 56,422 passes and 56,941 runnable variants:
+  55.30% raw,
+  a 67.52% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.17% among the 56,892 variants with a non-unsupported observed outcome. It
+  records 11 parse failures, 400 runtime failures, and 57 harness failures.
+  The exact R3bi join preserves all 102,037 keys with no previous-pass
   regression. Current full TSV/JSONL SHA-256 values are
-  `b634753cd21d2ed2194ee6170bfaf530767ffbc591b04d16e21ca30021b96623`
+  `5c388e568e6ee9e09799bc0f471a5926f0b680bd8f4d781e84130fce1a968e8a`
   and
-  `94ffbb29cbac96a3b1237ce3b4521b56f336f75020ff256ba79fb1875a5e63bb`.
+  `19f076e99f56f22374a533e1f9c8fead0775bf81d2d1940641ae322901c1cc88`.
   Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
   coverage remain explicit frontiers.
   The fixed smoke now

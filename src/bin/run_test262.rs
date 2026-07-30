@@ -252,6 +252,10 @@ const TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256: &str =
     "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a";
 const TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256: &str =
     "74eebb8c63a2606e54e1d0023c5244b8a0538ac51d1ca0a105fe56a04fa74af2";
+const TEST262_OPTIONAL_CHAINING_PROFILE_SHA256: &str =
+    "42bdcf4005aafed999604c10db1298651875210ea2ee2d96569a3ec54a99e064";
+const TEST262_OPTIONAL_CHAINING_MANIFEST_SHA256: &str =
+    "c49c346272b7910aee065ccfc866439b8acce2c656919198631ab55ce4316c45";
 const TEST262_PROXY_PROFILE_SHA256: &str =
     "0c151608ed8cd580238e27188f5e63382ee11e1dc91f7c480db2c366e1232d12";
 const TEST262_PROXY_MANIFEST_SHA256: &str =
@@ -832,6 +836,7 @@ enum OxideProfileKind {
     GeneratorDestructuring,
     IteratorHelpers,
     IteratorSequencing,
+    OptionalChaining,
     Proxy,
     RegExpBuiltins,
 }
@@ -1046,6 +1051,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-iterator-sequencing.conf"),
             OxideProfileKind::IteratorSequencing,
+        ),
+        (
+            root.join("tests/test262-optional-chaining.conf"),
+            OxideProfileKind::OptionalChaining,
         ),
         (
             root.join("tests/test262-proxy.conf"),
@@ -1888,6 +1897,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-iterator-sequencing.txt",
             TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256,
         ),
+        OxideProfileKind::OptionalChaining => verify_scoped_pinned_profile(
+            options,
+            "optional chaining",
+            TEST262_OPTIONAL_CHAINING_PROFILE_SHA256,
+            "tests/test262-optional-chaining.txt",
+            TEST262_OPTIONAL_CHAINING_MANIFEST_SHA256,
+        ),
         OxideProfileKind::Proxy => verify_scoped_pinned_profile(
             options,
             "Proxy",
@@ -2187,7 +2203,7 @@ mod cli_tests {
         TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
-        TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
+        TEST262_OBJECT_REST_BINDING_PROFILE_SHA256, TEST262_OPTIONAL_CHAINING_PROFILE_SHA256,
         TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256,
         TEST262_PARAMETER_DIRECT_EVAL_PROFILE_SHA256,
         TEST262_PARAMETER_EXPRESSION_BINDING_PATTERNS_PROFILE_SHA256,
@@ -2555,6 +2571,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-iterator-sequencing.conf")).unwrap(),
             OxideProfileKind::IteratorSequencing
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-optional-chaining.conf")).unwrap(),
+            OxideProfileKind::OptionalChaining
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-proxy.conf")).unwrap(),
@@ -5272,6 +5292,53 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-proxy.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_optional_chaining_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-optional-chaining.conf",
+            "--manifest",
+            "tests/test262-optional-chaining.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_OPTIONAL_CHAINING_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/expressions/optional-chaining/member-expression.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-optional-chaining.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

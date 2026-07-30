@@ -1,0 +1,14 @@
+test/staging/sm/Iterator/from/proxy-not-wrapped.js
+test/staging/sm/Iterator/from/proxy-wrap-next.js
+test/staging/sm/Iterator/from/proxy-wrap-return.js
+test/staging/sm/Iterator/prototype/every/check-fn-after-getting-iterator.js
+test/staging/sm/Iterator/prototype/every/proxy.js
+test/staging/sm/Iterator/prototype/find/check-fn-after-getting-iterator.js
+test/staging/sm/Iterator/prototype/find/proxy.js
+test/staging/sm/Iterator/prototype/forEach/check-fn-after-getting-iterator.js
+test/staging/sm/Iterator/prototype/forEach/proxy.js
+test/staging/sm/Iterator/prototype/reduce/check-fn-after-getting-iterator.js
+test/staging/sm/Iterator/prototype/reduce/proxy.js
+test/staging/sm/Iterator/prototype/some/check-fn-after-getting-iterator.js
+test/staging/sm/Iterator/prototype/some/proxy.js
+test/staging/sm/Iterator/prototype/toArray/proxy.js

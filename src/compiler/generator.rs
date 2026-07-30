@@ -90,6 +90,7 @@ impl<'source> Parser<'source> {
             self.anonymous_function_definition = None;
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
+            self.current_ir_mut().last_optional_chain = None;
             return Ok(());
         }
 
@@ -113,6 +114,7 @@ impl<'source> Parser<'source> {
         self.current_ir_mut().stack_depth = resumed_depth;
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         Ok(())
     }
 

@@ -83,12 +83,12 @@ The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
 every outcome in canonical order, and the checked-in baseline pins the complete
 vector hashes and summary:
 
-- 56,413 pass;
+- 56,422 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 26,670 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance, including 21,703 `unsupported-feature` variants;
-- 18 fail to parse, 402 fail at runtime, 57 fail in the harness, and two
+- 11 fail to parse, 400 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
 The runner admitted 56,941 variants to execution. That count includes variants
@@ -97,14 +97,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 55.29% (`56,413 / 102,037`);
-- conservative target-scope lower bound: 67.51%
-  (`56,413 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.16%
-  (`56,413 / 56,892`).
+- raw suite pass rate: 55.30% (`56,422 / 102,037`);
+- conservative target-scope lower bound: 67.52%
+  (`56,422 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.17%
+  (`56,422 / 56,892`).
 
-The 67.51% figure is the useful whole-project progress floor, not a claim that
-the engine is 67.51% conformant. The 99.16% conditional rate measures quality
+The 67.52% figure is the useful whole-project progress floor, not a claim that
+the engine is 67.52% conformant. The 99.17% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -160,9 +160,9 @@ byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
 The canonical two-worker measurement's TSV and JSONL SHA-256 values are
-`b634753cd21d2ed2194ee6170bfaf530767ffbc591b04d16e21ca30021b96623`
+`5c388e568e6ee9e09799bc0f471a5926f0b680bd8f4d781e84130fce1a968e8a`
 and
-`94ffbb29cbac96a3b1237ce3b4521b56f336f75020ff256ba79fb1875a5e63bb`.
+`19f076e99f56f22374a533e1f9c8fead0775bf81d2d1940641ae322901c1cc88`.
 
 ## Milestone policy
 
@@ -6165,6 +6165,47 @@ the 42 reason-only variants retain their outcome, and no previous pass
 regresses. This is a profile and evidence milestone, not a Feature Parity
 completion claim.
 
+## R3bi optional chaining focused implementation
+
+R3bi implements optional chaining in the parser/compiler using QuickJS's
+shared-chain-end lowering. No optional-chain VM opcode or runtime intrinsic is
+introduced. The compiler retains only the Reference metadata needed for
+method-call receivers and `delete`, including pinned QuickJS's observable
+grouped-public, grouped-private, `with`, and indirect-eval behavior.
+
+The focused inventory is derived from the pinned Test262 metadata:
+
+- 56 paths / 112 variants carry `features: [optional-chaining]`;
+- four class/private paths / eight variants remain reason-only behind the
+  separately unsupported class-private dependency;
+- all 26 parse-negative paths / 52 variants have explicit provenance;
+- the remaining 52 paths / 104 variants are runnable in the scoped profile;
+- pinned QuickJS and Oxide both pass all 104 runnable variants.
+
+`scripts/test-test262-optional-chaining.sh` re-derives those partitions, binds
+the immutable scoped profile and manifest hashes in the runner, verifies the
+pinned QuickJS input, and reproduces the all-pass Oxide TSV/JSONL receipt. A
+separate ledger freezes 14 Iterator Helper paths / 28 variants whose source
+uses optional chaining without declaring the metadata tag. They remain outside
+this focused claim and outside the unchanged global profile.
+
+The implementation also changes five untagged, already-runnable staging paths:
+nine variants move to pass, comprising seven prior parse failures and two
+prior runtime failures. A fresh canonical two-worker run keeps all 102,037
+keys and 56,941 runnable variants fixed, advances the pass count from 56,413
+to 56,422, and produces complete TSV/JSONL SHA-256 values
+`5c388e568e6ee9e09799bc0f471a5926f0b680bd8f4d781e84130fce1a968e8a`
+and
+`19f076e99f56f22374a533e1f9c8fead0775bf81d2d1940641ae322901c1cc88`.
+No previous pass regresses.
+
+Global `optional-chaining` admission is intentionally separate: it must admit
+the tag and negative provenance together, refresh the complete receipt, and
+retain the four reason-only rows. The Iterator adjacency cohort and the
+for-await-of exclusion are likewise left visible for their own cohesive gate
+refreshes. This focused implementation is not a Feature Parity completion
+claim.
+
 ## Runner contract
 
 `run-test262` provides a conservative, process-isolated progress measurement:
@@ -6722,6 +6763,12 @@ reaches 56,413/102,037 with 56,941 runnable variants and no previous-pass
 regression. Four already-exposed staging variants still fail in both engines
 and are frozen as pinned QuickJS target deviations rather than “fixed” away
 from the parity target.
+R3bi implements optional chaining through the QuickJS-shaped compiler path.
+Its independent gate authenticates 52 dependency-clean paths / 104 variants,
+all passing in both engines, while four class/private paths and 14 hidden
+Iterator-adjacency paths remain explicit ledgers. Nine already-runnable
+staging variants turn green, advancing the unchanged conservative global
+profile to 56,422/102,037 passes without admitting the broad feature tag.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

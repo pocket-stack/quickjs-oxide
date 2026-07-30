@@ -186,6 +186,7 @@ impl<'source> Parser<'source> {
     fn finish_template_expression(&mut self) {
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         self.anonymous_function_definition = None;
     }
 }

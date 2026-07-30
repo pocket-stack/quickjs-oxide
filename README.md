@@ -11,11 +11,13 @@ QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 `toReversed`, dedicated `join`/`toLocaleString`, inherited `toString`, and
 QuickJS-shaped `sort`/`toSorted`, certified `entries`/`keys` iterators, and
 pinned-QuickJS-certified static `of` and `from`. The global `TypedArray` and
-`Proxy` feature tags are now admitted through checksum-bound audits. The
-complete conservative vector is 56,413/102,037 with 56,941 runnable variants.
-Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
-coverage remain incomplete. Pinned QuickJS is the test oracle, never a product
-dependency; detailed bookkeeping lives in the status documents.
+`Proxy` feature tags are now admitted through checksum-bound audits. Optional
+chaining passes its independent 104-variant focused gate; global admission
+remains a separate audit. The complete conservative vector is 56,422/102,037
+with 56,941 runnable variants. Uint8Array codecs, modules,
+SharedArrayBuffer/Atomics, and broad built-in coverage remain incomplete.
+Pinned QuickJS is the test oracle, never a product dependency; detailed
+bookkeeping lives in the status documents.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
@@ -48,6 +50,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-data-view.sh
 ./scripts/test-test262-typed-array-core.sh
 ./scripts/test-test262-proxy.sh
+./scripts/test-test262-optional-chaining.sh
 ./scripts/test-test262-full.sh
 ```
 

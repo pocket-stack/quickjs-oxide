@@ -47,10 +47,12 @@ mod destructuring;
 mod function;
 mod generator;
 mod object_literal;
+mod optional_chain;
 mod private_reference;
 mod pseudo_binding;
 mod template;
 
+use optional_chain::{FinalizedOptionalChain, PendingOptionalChain};
 use pseudo_binding::{
     ACTIVE_FUNCTION_LOCAL_NAME, HOME_OBJECT_LOCAL_NAME, NEW_TARGET_LOCAL_NAME, PseudoBinding,
     THIS_LOCAL_NAME, ensure_eval_visible_pseudo_bindings, find_or_create_own_pseudo_binding,
@@ -1206,6 +1208,9 @@ struct FunctionIr {
     /// parenthesized IdentifierReferences remain assignment targets while
     /// composed values (comma, conditional, logical and binary forms) do not.
     last_identifier_reference: Option<usize>,
+    /// A completed optional chain whose value has not yet been composed with
+    /// an outer operation. Parentheses deliberately preserve this marker.
+    last_optional_chain: Option<FinalizedOptionalChain>,
     constants: Vec<IrConstant>,
     closure_variables: Vec<ClosureVariable>,
     /// Exact flattened caller bindings imported by a synthetic direct-eval
@@ -1418,6 +1423,7 @@ impl FunctionIr {
             ops,
             last_member_reference: None,
             last_identifier_reference: None,
+            last_optional_chain: None,
             constants: Vec::new(),
             closure_variables: Vec::new(),
             external_bindings: Vec::new(),
@@ -2246,6 +2252,7 @@ impl<'source> Parser<'source> {
         }
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         self.anonymous_function_definition = None;
         self.pop_scope(scope)?;
         Ok(())
@@ -2831,6 +2838,9 @@ impl<'source> Parser<'source> {
             _ => None,
         };
         self.parse_left_hand_side_expression()?;
+        if self.current_ir().last_optional_chain.is_some() {
+            return Err(self.syntax_here("invalid for in/of left hand-side"));
+        }
         if let Some(async_span) = async_span
             && iteration_kind == ForIterationKind::Of
             && !is_for_await
@@ -3574,6 +3584,7 @@ impl<'source> Parser<'source> {
     fn finish_control_statement(&mut self) {
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         self.anonymous_function_definition = None;
     }
 
@@ -4549,6 +4560,7 @@ impl<'source> Parser<'source> {
             self.anonymous_function_definition = None;
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
+            self.current_ir_mut().last_optional_chain = None;
         }
         Ok(())
     }
@@ -4592,6 +4604,31 @@ impl<'source> Parser<'source> {
             _ => None,
         };
         self.parse_conditional()?;
+        if self.current_ir().last_optional_chain.is_some()
+            && matches!(
+                self.current().kind,
+                TokenKind::Punctuator(
+                    Punctuator::Equal
+                        | Punctuator::PlusAssign
+                        | Punctuator::MinusAssign
+                        | Punctuator::MultiplyAssign
+                        | Punctuator::DivideAssign
+                        | Punctuator::RemainderAssign
+                        | Punctuator::ExponentAssign
+                        | Punctuator::ShiftLeftAssign
+                        | Punctuator::ShiftRightAssign
+                        | Punctuator::UnsignedShiftRightAssign
+                        | Punctuator::BitAndAssign
+                        | Punctuator::BitOrAssign
+                        | Punctuator::BitXorAssign
+                        | Punctuator::LogicalAndAssign
+                        | Punctuator::LogicalOrAssign
+                        | Punctuator::NullishAssign
+                )
+            )
+        {
+            return Err(self.syntax_here("invalid assignment left-hand side"));
+        }
         let logical = match self.current().kind {
             TokenKind::Punctuator(Punctuator::LogicalAndAssign) => Some(LogicalAssignment::And),
             TokenKind::Punctuator(Punctuator::LogicalOrAssign) => Some(LogicalAssignment::Or),
@@ -4792,6 +4829,7 @@ impl<'source> Parser<'source> {
         self.anonymous_function_definition = None;
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         Ok(())
     }
 
@@ -4862,6 +4900,7 @@ impl<'source> Parser<'source> {
         self.patch_jump(end, self.current_ir().ops.len())?;
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         Ok(())
     }
 
@@ -4894,6 +4933,7 @@ impl<'source> Parser<'source> {
         self.patch_jump(end_jump, self.current_ir().ops.len())?;
         self.current_ir_mut().last_member_reference = None;
         self.current_ir_mut().last_identifier_reference = None;
+        self.current_ir_mut().last_optional_chain = None;
         Ok(())
     }
 
@@ -4920,6 +4960,7 @@ impl<'source> Parser<'source> {
             }
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
+            self.current_ir_mut().last_optional_chain = None;
         }
         Ok(())
     }
@@ -4943,6 +4984,7 @@ impl<'source> Parser<'source> {
         if composed {
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
+            self.current_ir_mut().last_optional_chain = None;
         }
         Ok(())
     }
@@ -4966,6 +5008,7 @@ impl<'source> Parser<'source> {
         if composed {
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
+            self.current_ir_mut().last_optional_chain = None;
         }
         Ok(())
     }
@@ -5137,6 +5180,7 @@ impl<'source> Parser<'source> {
             self.anonymous_function_definition = None;
             self.current_ir_mut().last_member_reference = None;
             self.current_ir_mut().last_identifier_reference = None;
+            self.current_ir_mut().last_optional_chain = None;
             return Ok(());
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Typeof)) {
@@ -5166,6 +5210,22 @@ impl<'source> Parser<'source> {
             self.advance()?;
             let operand_start = self.current_ir().ops.len();
             self.parse_unary_with_power(PowerMode::Forbidden)?;
+            // Chain close deliberately clears a terminal private Reference,
+            // so optional private delete falls through to the ordinary
+            // value-delete path: it performs the branded read when live and
+            // returns true without deleting. Only public terminal References
+            // retain metadata for the Delete-specific branch rewrite.
+            let terminal_optional_chain = {
+                let function = self.current_ir_mut();
+                if function.last_optional_chain.as_ref().is_some_and(|chain| {
+                    chain.terminal_member_get == function.last_member_reference
+                        && chain.terminal_member_get == function.ops.len().checked_sub(1)
+                }) {
+                    function.last_optional_chain.take()
+                } else {
+                    None
+                }
+            };
             if let Some(target) = self.take_tail_member_reference()? {
                 match target {
                     MemberReference::Field { key, site } => {
@@ -5184,6 +5244,9 @@ impl<'source> Parser<'source> {
                             source_span(span),
                         ));
                     }
+                }
+                if let Some(chain) = terminal_optional_chain {
+                    self.rewrite_optional_chain_delete_fallback(chain)?;
                 }
             } else if self.current_ir().ops.len() == operand_start + 1
                 && matches!(
@@ -5292,12 +5355,27 @@ impl<'source> Parser<'source> {
     /// for-of assignment target, deliberately stopping before postfix update.
     fn parse_left_hand_side_expression(&mut self) -> Result<(), Error> {
         self.parse_primary()?;
+        let mut optional_chain: Option<PendingOptionalChain> = None;
         loop {
+            let optional_call = if self.is_punctuator(Punctuator::OptionalChain) {
+                let optional_span = self.current().span;
+                self.advance()?;
+                let chain = optional_chain.get_or_insert_default();
+                if !self.is_punctuator(Punctuator::LeftParen) {
+                    self.emit_optional_chain_test(chain, 1)?;
+                    self.parse_optional_member_suffix(optional_span)?;
+                    continue;
+                }
+                true
+            } else {
+                false
+            };
+
             if self.parse_member_suffix()? {
                 continue;
             }
 
-            if self.is_punctuator(Punctuator::LeftParen) {
+            if optional_call || self.is_punctuator(Punctuator::LeftParen) {
                 let call_span = self.current().span;
                 let member_method = self.promote_last_member_get_for_call()?;
                 // QuickJS selects OP_eval from the syntactic callee before
@@ -5305,7 +5383,11 @@ impl<'source> Parser<'source> {
                 // while comma/member/other composed expressions have already
                 // cleared this marker. Runtime identity still decides whether
                 // this is original eval or an ordinary replacement call.
-                let direct_eval_scope = if member_method {
+                //
+                // `eval?.()` is deliberately indirect: the optional call
+                // consumes the identifier marker as an ordinary callable
+                // Reference and never emits EvalCall.
+                let direct_eval_scope = if member_method || optional_call {
                     None
                 } else {
                     self.take_direct_eval_scope()?
@@ -5320,6 +5402,26 @@ impl<'source> Parser<'source> {
                     self.promote_tail_identifier_get(IdentifierReferenceAccess::Call)?
                         .is_some_and(|reference| reference.object_environment)
                 };
+                if optional_call && identifier_method {
+                    // Pinned QuickJS 2026-06-04 promotes an authored-with
+                    // identifier to a two-slot Reference, then applies the
+                    // optional-call test with the one-slot accounting used by
+                    // ordinary identifier calls. Its verifier rejects the
+                    // resulting function before execution.
+                    return Err(Error::new(ErrorKind::JsInternal, "inconsistent stack size"));
+                }
+                if optional_call {
+                    self.emit_optional_chain_test(
+                        optional_chain
+                            .as_mut()
+                            .ok_or_else(|| Error::internal("optional call lost its chain"))?,
+                        if member_method || identifier_method {
+                            2
+                        } else {
+                            1
+                        },
+                    )?;
+                }
                 self.advance()?;
                 let arguments = self.parse_call_arguments()?;
                 if let Some(scope) = direct_eval_scope {
@@ -5361,10 +5463,16 @@ impl<'source> Parser<'source> {
                 self.anonymous_function_definition = None;
                 continue;
             }
+            if optional_chain.is_some() && matches!(self.current().kind, TokenKind::Template(_)) {
+                return Err(self.syntax_here("template literal cannot appear in an optional chain"));
+            }
             if self.parse_tagged_template_suffix()? {
                 continue;
             }
             break;
+        }
+        if let Some(optional_chain) = optional_chain {
+            self.finish_optional_chain(optional_chain)?;
         }
         Ok(())
     }
@@ -5379,6 +5487,9 @@ impl<'source> Parser<'source> {
         increment: bool,
         postfix: bool,
     ) -> Result<(), Error> {
+        if self.current_ir().last_optional_chain.is_some() {
+            return Err(self.syntax_here("invalid increment/decrement operand"));
+        }
         let operation = match (postfix, increment) {
             (false, true) => Instruction::Inc,
             (false, false) => Instruction::Dec,
@@ -5484,6 +5595,7 @@ impl<'source> Parser<'source> {
         if function.last_member_reference != function.ops.len().checked_sub(1) {
             return Ok(false);
         }
+        let terminal_get = function.last_member_reference;
         let Some(last) = function.ops.last_mut() else {
             return Ok(false);
         };
@@ -5514,6 +5626,7 @@ impl<'source> Parser<'source> {
                 .stack_depth
                 .checked_add(1)
                 .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+            optional_chain::pad_grouped_method_receiver(function, terminal_get)?;
         }
         function.last_member_reference = None;
         Ok(promoted)
@@ -6016,6 +6129,9 @@ impl<'source> Parser<'source> {
         // while calls after the completed construction remain postfix calls.
         self.parse_primary()?;
         loop {
+            if self.is_punctuator(Punctuator::OptionalChain) {
+                return Err(self.syntax_here("new keyword cannot be used with an optional chain"));
+            }
             if self.parse_member_suffix()? {
                 continue;
             }
@@ -7303,6 +7419,7 @@ impl<'source> Parser<'source> {
         let function = self.current_ir_mut();
         function.last_member_reference = None;
         function.last_identifier_reference = None;
+        function.last_optional_chain = None;
         function.stack_depth = function
             .stack_depth
             .checked_sub(popped)
