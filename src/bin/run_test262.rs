@@ -254,6 +254,12 @@ const TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910";
 const TEST262_ITERATOR_HELPERS_GLOBAL_MANIFEST_SHA256: &str =
     "c4700fe6efcfa05d4e00c3d7cfc9d4a4aa062db7ac58cd8318a51bf41c1bbcf4";
+const TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256: &str =
+    "8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910";
+const TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256: &str =
+    "caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15";
+const TEST262_GLOBAL_THIS_ACTIVATION_MANIFEST_SHA256: &str =
+    "4d8be634488c72eafbbd350f0d75829f4d3f71fb4b141db192e5f69ace41ea23";
 const TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256: &str =
     "8284db009a398fb88b2d357d7d8255479943d963574392f7b718610ee12cb16a";
 const TEST262_ITERATOR_SEQUENCING_MANIFEST_SHA256: &str =
@@ -843,6 +849,8 @@ enum OxideProfileKind {
     IteratorHelpers,
     IteratorHelpersGlobalParent,
     IteratorHelpersGlobalCandidate,
+    GlobalThisParent,
+    GlobalThisCandidate,
     IteratorSequencing,
     OptionalChaining,
     Proxy,
@@ -1063,6 +1071,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-iterator-helpers-global-candidate.conf"),
             OxideProfileKind::IteratorHelpersGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-global-this-parent.conf"),
+            OxideProfileKind::GlobalThisParent,
+        ),
+        (
+            root.join("tests/test262-global-this-candidate.conf"),
+            OxideProfileKind::GlobalThisCandidate,
         ),
         (
             root.join("tests/test262-iterator-sequencing.conf"),
@@ -1968,6 +1984,20 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
             )
         }
+        OxideProfileKind::GlobalThisParent => verify_scoped_pinned_profile(
+            options,
+            "pre-R3bo globalThis parent",
+            TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256,
+            "tests/test262-global-this-activation.txt",
+            TEST262_GLOBAL_THIS_ACTIVATION_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::GlobalThisCandidate => verify_scoped_pinned_profile(
+            options,
+            "globalThis activation candidate",
+            TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
+            "tests/test262-global-this-activation.txt",
+            TEST262_GLOBAL_THIS_ACTIVATION_MANIFEST_SHA256,
+        ),
         OxideProfileKind::IteratorSequencing => verify_scoped_pinned_profile(
             options,
             "Iterator.concat sequencing",
@@ -2275,8 +2305,9 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
         TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
-        TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
-        TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
+        TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256, TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256,
+        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_PROFILE_SHA256, TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
@@ -2661,6 +2692,14 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::IteratorHelpersGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-global-this-parent.conf")).unwrap(),
+            OxideProfileKind::GlobalThisParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-global-this-candidate.conf")).unwrap(),
+            OxideProfileKind::GlobalThisCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-iterator-sequencing.conf")).unwrap(),
@@ -5364,6 +5403,53 @@ mod cli_tests {
             ]),
             "select exactly one of --all, --manifest, or one-or-more --test"
         );
+    }
+
+    #[test]
+    fn global_this_transition_profiles_are_bound_to_the_activation_manifest() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-global-this-parent.conf",
+                TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-global-this-candidate.conf",
+                TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            let invocation = parse(&[
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                profile,
+                "--manifest",
+                "tests/test262-global-this-activation.txt",
+                "--report",
+                "report.tsv",
+            ])
+            .unwrap();
+            let Invocation::Coordinator(options) = invocation else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+
+            for selection in [
+                ["--all", ""],
+                ["--test", "test/built-ins/global/global-object.js"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
     }
 
     #[test]

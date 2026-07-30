@@ -6,6 +6,51 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-07-31.
 
+## R3bo focused `globalThis` gate
+
+R3bo freezes the complete `globalThis` metadata universe at 148 paths / 165
+variants. The exact activation contains 135 paths / 150 variants; the
+remaining 13 paths / 15 variants are a disjoint deferred ledger of 11 module
+paths / 11 variants and two `explicit-resource-management` paths / four
+variants excluded by the pinned QuickJS config. The universe, activation, and
+deferred manifest SHA-256 values are
+`aecc6d30cc47676fd20541c509c1016b3cd8d238e96afa6178d3f0c2bd62abc4`,
+`4d8be634488c72eafbbd350f0d75829f4d3f71fb4b141db192e5f69ace41ea23`,
+and
+`989c02dd93d888cad5116edb9e00a047b4843fbffa3a0ac86145907e593dd75c`.
+Reproduce the gate with `scripts/test-test262-global-this.sh`.
+All eight negative paths are deferred module-resolution `SyntaxError` tests;
+the activation has no negative or `$262` host-requirement path. Pinned
+QuickJS passes all 150/150 activation variants.
+
+The frozen parent profile is the historical 83-tag global profile with
+SHA-256
+`8a3b253f6d2a24b18f9bec66628ba5aec3fb337d677c60bfde37c4c3a33d3910`.
+It has 0 runnable activation variants and all 150 rows are the exact
+`globalThis`-only `unsupported-feature` vector. The candidate profile adds
+only `globalThis`, has SHA-256
+`caa287cbf8188ea1c0519daa7d77fc5adb63d98c523299377eec14730b54cd15`,
+and admits and passes all 150/150 variants. The 150-key transition receipt
+and data SHA-256 values are
+`33cc8a8ffd153694a0f0d331c75f777e859a0de39bf227e1ff441ba1e1e73193`
+and
+`f43cb0f5682c394eeacffdee49dc1353f9fd92cf792efbd04831272a6779eb97`.
+
+Independent eight- and five-worker runs are byte-identical. The parent
+TSV/JSONL SHA-256 values are
+`46850bdc3e24aeda34b5dfb26fec33cae85b9bdce2fc8c75e43e26bcb4d035c5`
+and
+`b2db5df01d15118155f20453adaaefeba0bffe6b54759177d1ba11c15d181736`;
+the candidate values are
+`21b125444add1d6e114670e69e9510e305b659608f41b59a4a6a46ab5a419c2e`
+and
+`73b47ebf51b0cdb70112654eb0791e1a01a8729e952192dd02ddb23112dbd75d`.
+
+R3bo changes no production runtime semantics. It does not add `globalThis` to
+the live global profile, which remains at 83 reviewed tags, and it does not
+run or publish a new complete classified vector. R3bn remains the latest
+global admission and full-vector baseline.
+
 ## Pinned inputs
 
 - Test262 commit: `5c8206929d81b2d3d727ca6aac56c18358c8d790`

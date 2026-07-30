@@ -4,6 +4,45 @@ Last audited: 2026-07-31. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bo focused `globalThis` gate
+
+R3bo freezes the complete `globalThis` metadata population at 148 paths / 165
+variants. Its partition is disjoint and exhaustive: 135 paths / 150 variants
+form the activation, while 13 paths / 15 variants remain deferred. The
+deferred ledger is exactly 11 module paths / 11 variants plus two
+`explicit-resource-management` paths / four variants excluded by the pinned
+QuickJS config. All eight negative tests are deferred module-resolution
+`SyntaxError` cases. Pinned QuickJS passes all 150/150 activation variants.
+
+The immutable historical parent is the current 83-tag global profile. It
+admits 0 activation variants and classifies all 150 as `unsupported-feature`
+for exactly `globalThis`. A frozen candidate adds only `globalThis`; it admits
+and passes all 150/150 variants. The exact transition receipt and data
+SHA-256 values are
+`33cc8a8ffd153694a0f0d331c75f777e859a0de39bf227e1ff441ba1e1e73193`
+and
+`f43cb0f5682c394eeacffdee49dc1353f9fd92cf792efbd04831272a6779eb97`.
+
+Independent eight- and five-worker reports are byte-identical. The parent
+TSV/JSONL SHA-256 values are
+`46850bdc3e24aeda34b5dfb26fec33cae85b9bdce2fc8c75e43e26bcb4d035c5`
+and
+`b2db5df01d15118155f20453adaaefeba0bffe6b54759177d1ba11c15d181736`;
+the candidate values are
+`21b125444add1d6e114670e69e9510e305b659608f41b59a4a6a46ab5a419c2e`
+and
+`73b47ebf51b0cdb70112654eb0791e1a01a8729e952192dd02ddb23112dbd75d`.
+
+A pinned-source audit also matched QuickJS's global-object installation,
+parameter-scope direct-eval declaration checks, and
+`with`/`Symbol.unscopables` lookup against Oxide's corresponding runtime and
+compiler paths. Ten representative real Test262 probes spanning those three
+families passed in both engines before the exhaustive gate ran.
+
+This is a focused evidence milestone with no production runtime-semantics
+change. `globalThis` has not been admitted to the live global profile, which
+remains at 83 tags, and no complete-vector run or new global score is claimed.
+
 ## R3bn global Iterator Helpers admission
 
 R3bn adds exactly `iterator-helpers` to the checksum-pinned global Test262

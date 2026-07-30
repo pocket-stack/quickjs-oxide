@@ -51,6 +51,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-typed-array-core.sh
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-optional-chaining.sh
+./scripts/test-test262-global-this.sh
 ./scripts/test-test262-full.sh
 ```
 

@@ -1,4 +1,5 @@
 # The fixed-width Test262 TSV keeps trailing tabs for empty final columns.
 tests/test262-smoke-baseline.tsv whitespace=-blank-at-eol
+tests/test262-global-this-transitions.tsv whitespace=-blank-at-eol
 tests/test262-iterator-helpers-global-transitions.tsv whitespace=-blank-at-eol
 tests/test262-typed-array-global-r3bd-r3be-transitions.tsv whitespace=-blank-at-eol
