@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9";
+    "ed80ab5aed86c606a1d7b5c1854b78ab1bb3c517cf0c6898a89e9f8d19135000";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -232,6 +232,10 @@ const TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256: &str =
     "2e8f870a5c6d1c05adc37c759098d2412943beff8b8de3c1593ba74df7761ac9";
 const TEST262_UINT8ARRAY_CODECS_MANIFEST_SHA256: &str =
     "2a52c3f54ef83a8df736e823d76e17927b670045f42d338d42a64f0e48681bb2";
+const TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9";
+const TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "ed80ab5aed86c606a1d7b5c1854b78ab1bb3c517cf0c6898a89e9f8d19135000";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -859,6 +863,8 @@ enum OxideProfileKind {
     DataView,
     TypedArrayCore,
     Uint8ArrayCodecs,
+    Uint8ArrayCodecsGlobalParent,
+    Uint8ArrayCodecsGlobalCandidate,
     Map,
     Set,
     SymbolProtocols,
@@ -1074,6 +1080,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-uint8array-codecs.conf"),
             OxideProfileKind::Uint8ArrayCodecs,
+        ),
+        (
+            root.join("tests/test262-uint8array-codecs-global-parent.conf"),
+            OxideProfileKind::Uint8ArrayCodecsGlobalParent,
+        ),
+        (
+            root.join("tests/test262-uint8array-codecs-global-candidate.conf"),
+            OxideProfileKind::Uint8ArrayCodecsGlobalCandidate,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1364,6 +1378,56 @@ fn verify_promise_global_transition_profile(
         manifest,
         TEST262_PROMISE_GLOBAL_MANIFEST_SHA256,
         &format!("historical Promise transition {label} Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_uint8array_codecs_global_transition_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("historical Uint8Array codec transition {label} Test262 capability profile"),
+    )?;
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the historical Uint8Array codec transition {label} Test262 capability profile requires --all or its pinned tag manifest"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the historical Uint8Array codec transition {label} Test262 capability profile requires --all or its pinned tag manifest"
+        )
+    })?;
+    let manifest_relative = "tests/test262-uint8array-codecs.txt";
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve historical Uint8Array codec transition {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
+        .map_err(|error| {
+            format!(
+                "resolve pinned historical Uint8Array codec transition {label} manifest: {error}"
+            )
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the historical Uint8Array codec transition {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_UINT8ARRAY_CODECS_MANIFEST_SHA256,
+        &format!("historical Uint8Array codec transition {label} Test262 manifest"),
     )?;
     Ok(profile_sha256)
 }
@@ -1976,6 +2040,20 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-uint8array-codecs.txt",
             TEST262_UINT8ARRAY_CODECS_MANIFEST_SHA256,
         ),
+        OxideProfileKind::Uint8ArrayCodecsGlobalParent => {
+            verify_uint8array_codecs_global_transition_profile(
+                options,
+                "pre-R3bs global parent",
+                TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
+            )
+        }
+        OxideProfileKind::Uint8ArrayCodecsGlobalCandidate => {
+            verify_uint8array_codecs_global_transition_profile(
+                options,
+                "R3bs global candidate",
+                TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            )
+        }
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2494,6 +2572,8 @@ mod cli_tests {
         TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
         TEST262_REGEXP_BUILTINS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
+        TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
         parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
     };
@@ -2828,6 +2908,24 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-typed-array-core.conf")).unwrap(),
             OxideProfileKind::TypedArrayCore
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-uint8array-codecs.conf")).unwrap(),
+            OxideProfileKind::Uint8ArrayCodecs
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-uint8array-codecs-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::Uint8ArrayCodecsGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-uint8array-codecs-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::Uint8ArrayCodecsGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -5304,6 +5402,51 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn uint8array_codec_global_admission_profiles_require_the_tag_manifest_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-uint8array-codecs-global-parent.conf",
+                TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-uint8array-codecs-global-candidate.conf",
+                TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                ["--manifest", "tests/test262-uint8array-codecs.txt"],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+            }
+
+            for selection in [
+                ["--test", "test/built-ins/Uint8Array/fromBase64/results.js"],
+                ["--manifest", "tests/test262-typed-array-core.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                arguments.push(selection[1]);
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
         }
     }
 

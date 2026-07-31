@@ -12,11 +12,11 @@ QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
 QuickJS-shaped `sort`/`toSorted`, certified `entries`/`keys` iterators, and
 pinned-QuickJS-certified static `of` and `from`. The six Uint8Array base64/hex
 codecs—static `fromBase64`/`fromHex` and prototype `toBase64`/`toHex`/
-`setFromBase64`/`setFromHex`—are also implemented and scoped-certified. The
-88-tag global Test262 profile admits `TypedArray`, `Proxy`, optional chaining,
+`setFromBase64`/`setFromHex`—are also implemented and globally admitted. The
+89-tag global Test262 profile admits `TypedArray`, `Proxy`, optional chaining,
 Iterator Helpers, `globalThis`, and the implemented Promise surface through
-checksum-bound audits. The complete conservative vector is 58,168/102,037
-with 58,687 runnable variants. Modules, SharedArrayBuffer/Atomics, and broad
+checksum-bound audits. The complete conservative vector is 58,306/102,037
+with 58,825 runnable variants. Modules, SharedArrayBuffer/Atomics, and broad
 built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.
@@ -57,6 +57,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-global-this-global.sh
 ./scripts/test-test262-promise-global.sh
 ./scripts/test-test262-uint8array-codecs.sh
+./scripts/test-test262-uint8array-codecs-global.sh
 ./scripts/test-test262-full.sh
 ```
 

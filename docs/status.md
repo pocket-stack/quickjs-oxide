@@ -4,6 +4,56 @@ Last audited: 2026-07-31. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bs global Uint8Array base64/hex codec admission
+
+R3bs admits exactly `uint8array-base64` to the checksum-pinned global Test262
+profile after the R3br implementation and focused differential gate. The live
+profile now contains 89 reviewed feature tags, retains the same 828 audited
+negative paths and async execution entry, and has SHA-256
+`ed80ab5aed86c606a1d7b5c1854b78ab1bb3c517cf0c6898a89e9f8d19135000`.
+Its ordered feature stream has SHA-256
+`593a376a65171a87d8c12df6834570322657ab42d6d48560a7ca14df5c6e7e96`.
+The frozen parent is exactly the historical 88-tag R3bq profile with SHA-256
+`5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9`;
+the negative and execution sections are byte-identical across the transition.
+
+The exhaustive tagged universe is the same 69 paths / 138 sloppy/strict
+variants authenticated by R3br. Under the parent, all 138 fail closed as
+`unsupported-feature` for exactly `uint8array-base64`; under the candidate,
+all 138 are runnable and pass. The transition receipt and its data-row
+SHA-256 values are
+`d3c7b72f7dfaea4523c7378deedbd5f9b2f3a8aca26dcbdf3f86727b1f1fb2c5`
+and
+`ce4172f23d0e5986b85171c2b85201f20b96e3f772d684d5ffd050c0f88010ad`.
+The candidate tag TSV/JSONL SHA-256 values are
+`2a2c523a9d02087a72eca78a94cbe785fac269e81815a3065f8daa0b3ca87fe2`
+and
+`fbc2b21194d9fece3e2b9d7afc1d906d8576eaafa0c6608fa3cca7020a69a127`;
+independent eight- and five-worker tagged runs are byte-identical.
+
+The exact full-corpus candidate changes only those 138 outcomes from
+`unsupported-feature` to `pass`: all 101,899 non-universe rows are unchanged,
+there are no detail-only changes, and no previous pass regresses. It contains
+58,306 passes, 58,825 runnable variants, 19,819 `unsupported-feature`
+outcomes, and 24,786 total unsupported outcomes. Its rates are 57.14% raw, a
+69.78% conservative target-scope lower bound after the 18,475 pinned QuickJS
+target exclusions, and 99.20% among 58,776 variants with a non-unsupported
+observed outcome. The candidate full TSV/JSONL SHA-256 values are
+`789b1d116e10dbeb7607faf4bbbcb5df818a6e588799d156579b5047238b0379`
+and
+`d1476490e0f53bb1397ce432c813c781e51130cfd97da22e1fdc8edc10f95a8f`.
+
+Reproduce the focused dependency gate and global transition with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-uint8array-codecs-global.sh
+TEST262_WORKERS=5 ./scripts/test-test262-uint8array-codecs-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-uint8array-codecs-global.sh --full
+```
+
+This is a global capability-profile and evidence milestone. It adds no new
+runtime semantics beyond R3br and is not a Feature Parity completion claim.
+
 ## R3br focused Uint8Array base64/hex codec gate
 
 R3br implements the complete six-function codec surface from QuickJS
@@ -44,10 +94,11 @@ TEST262_WORKERS=8 ./scripts/test-test262-uint8array-codecs.sh
 TEST262_WORKERS=5 ./scripts/test-test262-uint8array-codecs.sh
 ```
 
-This is a focused implementation milestone. It does not yet add
-`uint8array-base64` to the 88-tag live global capability profile, change the
-58,168/102,037 canonical vector, or claim Feature Parity; global admission is
-the next separate evidence milestone.
+This was the focused implementation milestone. At R3br it did not yet add
+`uint8array-base64` to the then-live 88-tag global capability profile or
+change the then-current 58,168/102,037 canonical vector. R3bs now performs
+that separate global admission above; neither milestone claims Feature
+Parity.
 
 ## R3bq global Promise capability closure
 
@@ -478,7 +529,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 88 reviewed feature tags and 828 exact audited
+  capability profile now admits 89 reviewed feature tags and 828 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -528,23 +579,28 @@ workstream. Build and architecture details live in
   15 module/config deferrals remain unchanged. R3bq closes the implemented
   global Promise surface: 416 variants activate and pass, while 36 variants
   remain fail-closed behind `class` or `computed-property-names`.
+  R3br then implements the complete six-entry Uint8Array base64/hex codec
+  surface and authenticates all 138 variants against pinned QuickJS. R3bs
+  admits exactly `uint8array-base64` globally: those 138 variants move from
+  `unsupported-feature` to `pass`, while every non-universe row remains
+  unchanged.
   The cumulative
   TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 58,168 passes and 58,687 runnable variants:
-  57.01% raw,
-  a 69.61% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.20% among the 58,638 variants with a non-unsupported observed outcome. It
-  records 19,957 `unsupported-feature` and 24,924 total unsupported outcomes,
+  measurement has 58,306 passes and 58,825 runnable variants:
+  57.14% raw,
+  a 69.78% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.20% among the 58,776 variants with a non-unsupported observed outcome. It
+  records 19,819 `unsupported-feature` and 24,786 total unsupported outcomes,
   11 parse failures, 400 runtime failures, and 57 harness failures. The exact
-  R3bq join preserves all 102,037 keys with 416 outcome changes, 36
-  detail-only changes, 101,585 unchanged rows, and no previous-pass
-  regression. Current full TSV/JSONL SHA-256 values are
-  `4a529df1318a233d16de1e3563de3e987a4a51f200bb6d37e73281142e51e19a`
+  R3bs join preserves all 102,037 keys with 138 outcome changes, no
+  detail-only changes, 101,899 unchanged rows, and no previous-pass
+  regression. Its full TSV/JSONL SHA-256 values are
+  `789b1d116e10dbeb7607faf4bbbcb5df818a6e588799d156579b5047238b0379`
   and
-  `80006172f384144bb3f169ba56d587bb2f48f5e21cdaadde0308e0fcde386df9`.
-  Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-in
-  coverage remain explicit frontiers.
+  `d1476490e0f53bb1397ce432c813c781e51130cfd97da22e1fdc8edc10f95a8f`.
+  Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
+  explicit frontiers.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -4263,8 +4319,8 @@ workstream. Build and architecture details live in
   The exact candidate is 46 paths / 92 variants. Three paths / six variants
   remain deferred: the SpiderMonkey staging `entries.js` and `keys.js` paths
   require both the unavailable `createRealm` and WeakMap shell, while
-  `prototype-constructor-identity.js` requires WeakMap and the still-missing
-  Uint8Array codec surface. The other 43 paths / 86 variants—42
+  `prototype-constructor-identity.js` required WeakMap and the then-missing
+  Uint8Array codec surface at R3bb. The other 43 paths / 86 variants—42
   `entries`/`keys` paths / 84 variants plus the two-variant
   `detached-array-buffer-checks.js` canary—join the cumulative 2,098-path /
   4,157-variant gate. Oxide and pinned QuickJS both pass all 4,157 variants,
@@ -4485,9 +4541,9 @@ workstream. Build and architecture details live in
   R3be changes only profiles, manifests, gates, baselines, and focused tests:
   no production runtime code changes, `runtime.rs` remains 9,950 lines, and
   `heap.rs` remains 23,026 lines. Four focused `with` tests include pinned
-  QuickJS differentials for the `with`-statement spillover. Uint8Array codecs,
-  modules, SharedArrayBuffer/Atomics, and broad built-ins remain the next
-  frontiers.
+  QuickJS differentials for the `with`-statement spillover. At R3be,
+  Uint8Array codecs, modules, SharedArrayBuffer/Atomics, and broad built-ins
+  remained the next frontiers; R3br/R3bs later close the codec item.
 
 - The lexer models parser-selected division/RegExp/template lexical goals,
   source spans and ASI trivia, contextual keywords, numeric/String/BigInt/
@@ -7558,8 +7614,7 @@ The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
 RegExp grammar, modules, remaining jobs/Promise/async and generator surfaces,
-Uint8Array codecs, SharedArrayBuffer/Atomics,
-WeakRef/finalization, bytecode version 5 and
+SharedArrayBuffer/Atomics, WeakRef/finalization, bytecode version 5 and
 BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
 and C embedding APIs.
 
@@ -8345,6 +8400,8 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-array-buffer.sh
 ./scripts/test-test262-data-view.sh
 ./scripts/test-test262-typed-array-core.sh
+./scripts/test-test262-uint8array-codecs.sh
+./scripts/test-test262-uint8array-codecs-global.sh
 ./scripts/test-test262-full.sh
 ```
 

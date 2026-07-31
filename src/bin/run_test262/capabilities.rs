@@ -286,11 +286,19 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-promise-global-candidate.conf"
     ));
+    const UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-uint8array-codecs-global-parent.conf"
+    ));
+    const UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-uint8array-codecs-global-candidate.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 88] = [
+    const EXPECTED_FEATURES: [&str; 89] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -378,6 +386,7 @@ mod tests {
         "super",
         "template",
         "u180e",
+        "uint8array-base64",
         "well-formed-json-stringify",
     ];
     const EXPECTED_AUDITED_NEGATIVES: [&str; 281] = [
@@ -729,6 +738,10 @@ mod tests {
         let promise_global_parent = OxideProfile::parse(PROMISE_GLOBAL_PARENT_PROFILE).unwrap();
         let promise_global_candidate =
             OxideProfile::parse(PROMISE_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let uint8array_codecs_global_parent =
+            OxideProfile::parse(UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE).unwrap();
+        let uint8array_codecs_global_candidate =
+            OxideProfile::parse(UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -858,24 +871,31 @@ mod tests {
             promise_global_candidate.allows_async_execution(),
             promise_global_parent.allows_async_execution()
         );
-        assert!(
-            promise_global_candidate
+        assert_eq!(uint8array_codecs_global_parent, promise_global_candidate);
+        assert_eq!(
+            uint8array_codecs_global_candidate
                 .features
-                .difference(&profile.features)
-                .next()
-                .is_none()
+                .difference(&uint8array_codecs_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["uint8array-base64"]
         );
         assert!(
-            promise_global_candidate
-                .audited_negative_tests
-                .difference(&profile.audited_negative_tests)
+            uint8array_codecs_global_parent
+                .features
+                .difference(&uint8array_codecs_global_candidate.features)
                 .next()
                 .is_none()
         );
         assert_eq!(
-            profile.allows_async_execution(),
-            promise_global_candidate.allows_async_execution()
+            uint8array_codecs_global_candidate.audited_negative_tests,
+            uint8array_codecs_global_parent.audited_negative_tests
         );
+        assert_eq!(
+            uint8array_codecs_global_candidate.allows_async_execution(),
+            uint8array_codecs_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, uint8array_codecs_global_candidate);
     }
 
     #[test]
