@@ -1,0 +1,1 @@
+test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js

@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "b51eee39825e3325effab1c326df30b999e636f67c8ce7bb800f0afdc2d8eab4";
+    "f229cd652dd5b38ed3a0387a089eab974148d404bd166e8b4c0eb2cb0fa7a2c1";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -216,6 +216,14 @@ const TEST262_OBJECT_REST_BINDING_PROFILE_SHA256: &str =
     "122a2b055aaf40672a0540441861ecd1e6c09b65e88d45b947bc27a691afc45e";
 const TEST262_OBJECT_REST_BINDING_MANIFEST_SHA256: &str =
     "fc75564488d2ae45a015fa8b07989f3a178f08978221d87ffdeeca0a9359fe57";
+const TEST262_OBJECT_REST_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "b51eee39825e3325effab1c326df30b999e636f67c8ce7bb800f0afdc2d8eab4";
+const TEST262_OBJECT_REST_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "f229cd652dd5b38ed3a0387a089eab974148d404bd166e8b4c0eb2cb0fa7a2c1";
+const TEST262_OBJECT_REST_GLOBAL_MANIFEST_SHA256: &str =
+    "c0c20cc6d5bad2dd2f92b977497dacb62e77797af237c2a840c92247b60955cf";
+const TEST262_OBJECT_REST_COMPANION_MANIFEST_SHA256: &str =
+    "4effcae61bf4ca623de68d7a7e9eadb9e4c215d5c8e80b930c6a6f34a4eb7cfa";
 const TEST262_ARRAY_BUFFER_PROFILE_SHA256: &str =
     "0803a027b2e9c238f80189993968816adfdda983ef3b23114a06f07b26c2d598";
 const TEST262_ARRAY_BUFFER_MANIFEST_SHA256: &str =
@@ -903,6 +911,8 @@ enum OxideProfileKind {
     ObjectAssignmentRest,
     ObjectBinding,
     ObjectRestBinding,
+    ObjectRestGlobalParent,
+    ObjectRestGlobalCandidate,
     ArrayBuffer,
     DataView,
     DataViewGlobalParent,
@@ -1122,6 +1132,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-object-rest-binding.conf"),
             OxideProfileKind::ObjectRestBinding,
+        ),
+        (
+            root.join("tests/test262-object-rest-global-parent.conf"),
+            OxideProfileKind::ObjectRestGlobalParent,
+        ),
+        (
+            root.join("tests/test262-object-rest-global-candidate.conf"),
+            OxideProfileKind::ObjectRestGlobalCandidate,
         ),
         (
             root.join("tests/test262-array-buffer.conf"),
@@ -2285,6 +2303,38 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             )?;
             Ok(TEST262_OBJECT_REST_BINDING_PROFILE_SHA256)
         }
+        OxideProfileKind::ObjectRestGlobalParent => verify_tag_transition_profile(
+            options,
+            "object-rest global admission",
+            "parent",
+            TEST262_OBJECT_REST_GLOBAL_PARENT_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-object-rest-universe.txt",
+                    TEST262_OBJECT_REST_GLOBAL_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-object-rest-companion.txt",
+                    TEST262_OBJECT_REST_COMPANION_MANIFEST_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::ObjectRestGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "object-rest global admission",
+            "candidate",
+            TEST262_OBJECT_REST_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-object-rest-universe.txt",
+                    TEST262_OBJECT_REST_GLOBAL_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-object-rest-companion.txt",
+                    TEST262_OBJECT_REST_COMPANION_MANIFEST_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::ArrayBuffer => verify_scoped_pinned_profile(
             options,
             "ArrayBuffer",
@@ -2980,7 +3030,9 @@ mod cli_tests {
         TEST262_MAP_PROFILE_SHA256, TEST262_OBJECT_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_NESTED_PROFILE_SHA256,
         TEST262_OBJECT_ASSIGNMENT_REST_PROFILE_SHA256, TEST262_OBJECT_BINDING_PROFILE_SHA256,
-        TEST262_OBJECT_REST_BINDING_PROFILE_SHA256, TEST262_OPTIONAL_CHAINING_PROFILE_SHA256,
+        TEST262_OBJECT_REST_BINDING_PROFILE_SHA256,
+        TEST262_OBJECT_REST_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_OBJECT_REST_GLOBAL_PARENT_PROFILE_SHA256, TEST262_OPTIONAL_CHAINING_PROFILE_SHA256,
         TEST262_PARAMETER_BINDING_PATTERNS_PROFILE_SHA256,
         TEST262_PARAMETER_DIRECT_EVAL_PROFILE_SHA256,
         TEST262_PARAMETER_EXPRESSION_BINDING_PATTERNS_PROFILE_SHA256,
@@ -3320,6 +3372,16 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-object-rest-binding.conf")).unwrap(),
             OxideProfileKind::ObjectRestBinding
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-object-rest-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::ObjectRestGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-object-rest-global-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::ObjectRestGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-array-buffer.conf")).unwrap(),
@@ -6272,6 +6334,31 @@ mod cli_tests {
                 &["tests/test262-data-view-universe.txt"],
                 "tests/test262-data-view.txt",
                 "test/built-ins/DataView/is-a-constructor.js",
+            );
+        }
+    }
+
+    #[test]
+    fn object_rest_global_profiles_require_their_pinned_manifests() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-object-rest-global-parent.conf",
+                TEST262_OBJECT_REST_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-object-rest-global-candidate.conf",
+                TEST262_OBJECT_REST_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &[
+                    "tests/test262-object-rest-universe.txt",
+                    "tests/test262-object-rest-companion.txt",
+                ],
+                "tests/test262-object-rest-binding.txt",
+                "test/language/statements/variable/dstr/obj-ptrn-rest-getter.js",
             );
         }
     }

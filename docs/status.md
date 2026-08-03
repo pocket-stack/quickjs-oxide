@@ -4,6 +4,50 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cc global object-rest admission
+
+R3cc promotes the complete pinned `object-rest` metadata tag while separately
+auditing nine tag-external syntax companions. The live profile now contains 95
+reviewed features and 1,157 audited negative paths, preserves async execution,
+and has SHA-256
+`f229cd652dd5b38ed3a0387a089eab974148d404bd166e8b4c0eb2cb0fa7a2c1`.
+It adds exactly `object-rest` and three non-module parse-negative paths; the
+tagged `import.meta` negative remains honestly `unsupported-module`.
+
+The tag contains 355 paths / 707 variants: 282 / 562 become passes, 72 / 144
+retain other feature dependencies, and one module row is unchanged. Existing
+binding and assignment gates cover a disjoint 53 paths / 105 activation
+variants; a 229-path / 457-variant supplement closes the activation set.
+Oxide passes all 562 activated variants and pinned QuickJS 2026-06-04 passes
+all 707 tag variants. The nine companions contribute 18 unchanged global
+rows: eight passes, two residual private-class-field outcomes, and eight
+QuickJS-config exclusions. Pinned QuickJS independently passes all ten
+non-config companion variants.
+
+The complete 102,037-key join records 562 outcome changes, 144 diagnostic-only
+changes, 101,331 unchanged rows, and zero previous-pass regressions. All
+101,330 rows outside the tag, including the explicitly extracted companion
+rows, are byte-identical. The canonical vector is 63,831 passes, 64,350
+runnable variants, 14,316 `unsupported-feature` outcomes, 3,451
+`unsupported-negative-provenance` outcomes, and 19,261 total unsupported. Its
+TSV/JSONL SHA-256 values are
+`2cf5a7da27e028c4b3d5d91e8f1df43b25fb133714f0cd1ac2bfe64bc2726ac2`
+and
+`665f8c066abb3e894a4c80e86ed0f25dffff14c46b651e2e89e63faecf2cf473`.
+
+Reproduce the evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh
+TEST262_WORKERS=8 TEST262_FULL_WORKERS=8 \
+  ./scripts/test-test262-object-rest-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+This is a checksum-bound admission for already implemented object-rest
+semantics, not a claim that Feature Parity is complete.
+
 ## R3cb global DataView admission
 
 R3cb promotes the complete pinned `DataView` tag into the checksum-bound live
@@ -8691,6 +8735,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-object-assignment-rest.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
+./scripts/test-test262-object-rest-global.sh
 ./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-identifier-rest.sh
 ./scripts/test-test262-identifier-defaults.sh

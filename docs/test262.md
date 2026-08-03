@@ -6,6 +6,70 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3cc global object-rest admission
+
+R3cc admits `object-rest` into the live profile and binds the exact delta to
+the pinned metadata inventory. The profile grows from 94 to 95 feature tags
+and from 1,154 to 1,157 audited negative paths. Its SHA-256 is
+`f229cd652dd5b38ed3a0387a089eab974148d404bd166e8b4c0eb2cb0fa7a2c1`.
+The three added negatives are the assignment, `for-in`, and `for-of`
+`obj-rest-not-last-element-invalid.js` paths; the separate module negative is
+not misclassified as an audited runnable test.
+
+The 355-path / 707-variant tag partitions exactly into:
+
+- 282 paths / 562 variants which change from `unsupported-feature` to pass;
+- 72 paths / 144 variants which retain another unsupported feature but lose
+  only `object-rest` from their diagnostic;
+- one parse-negative row which remains `unsupported-module`.
+
+The established binding (27 paths / 54 variants) and assignment-rest (26 / 51)
+certificates are disjoint. Their 53-path / 105-variant union plus a frozen
+229-path / 457-variant supplement exactly covers the activation partition.
+Five- and eight-worker tag reports are byte-identical. Pinned QuickJS
+2026-06-04 passes all 707 tag variants. The candidate tag TSV/JSONL SHA-256
+values are
+`35fd4c36a2cd8f20b0b13862730e8abde0097017d1671564ef0f97c0481e5af9`
+and
+`05a1044dc221d3e12d3c7495b4a731d5c07d6bc8415a8a603738ec827091f311`.
+The 707-row transition receipt/data hashes are
+`38ad31cab30e4a4bbe90ff4fdece5fe907f39d586668cf6cfb505d63d786e003`
+and
+`07df02d020f8e0e5f7943206f352c56f8c674fc432ae4e4961a84dd32b683e93`.
+
+Nine tag-external object-rest syntax companions are audited separately. Their
+18 global rows are byte-identical between parent and candidate: eight pass,
+two remain blocked by `class,class-fields-private`, and eight are excluded by
+the pinned QuickJS config because they require `Temporal`. Pinned QuickJS
+passes the ten non-config companion variants; the shared TSV/JSONL data hash
+is `bb11a1c81d6ff7d634a755862970ea2dab820288699f3f3919a5680d33ca40c8`.
+
+The exact full join has 562 outcome changes, 144 detail-only changes, 101,331
+unchanged rows, and no previous-pass regression. Every one of the 101,330
+non-tag rows is byte-identical, with the companion rows also extracted and
+verified explicitly. The new canonical progress vector is:
+
+- 63,831 pass and 64,350 runnable;
+- 14,316 `unsupported-feature`, 3,451
+  `unsupported-negative-provenance`, and 19,261 total unsupported;
+- TSV SHA-256
+  `2cf5a7da27e028c4b3d5d91e8f1df43b25fb133714f0cd1ac2bfe64bc2726ac2`;
+- JSONL SHA-256
+  `665f8c066abb3e894a4c80e86ed0f25dffff14c46b651e2e89e63faecf2cf473`.
+
+Reproduce it with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh
+TEST262_WORKERS=8 TEST262_FULL_WORKERS=8 \
+  ./scripts/test-test262-object-rest-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+This milestone changes only the authenticated capability boundary and
+evidence; it does not add runtime shortcuts or claim complete Feature Parity.
+
 ## R3cb global DataView admission
 
 R3cb admits the complete pinned `DataView` metadata tag into the live global
@@ -7149,6 +7213,7 @@ canonical progress report.
 ./scripts/test-test262-object-assignment-rest.sh
 ./scripts/test-test262-object-binding.sh
 ./scripts/test-test262-object-rest-binding.sh
+./scripts/test-test262-object-rest-global.sh
 ./scripts/test-test262-catch-binding.sh
 ./scripts/test-test262-identifier-rest.sh
 ./scripts/test-test262-identifier-defaults.sh

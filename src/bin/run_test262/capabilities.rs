@@ -342,6 +342,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-data-view-global-candidate.conf"
     ));
+    const OBJECT_REST_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-object-rest-global-parent.conf"
+    ));
+    const OBJECT_REST_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-object-rest-global-candidate.conf"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -350,7 +358,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 94] = [
+    const EXPECTED_FEATURES: [&str; 95] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -426,6 +434,7 @@ mod tests {
         "logical-assignment-operators",
         "new.target",
         "numeric-separator-literal",
+        "object-rest",
         "object-spread",
         "optional-catch-binding",
         "optional-chaining",
@@ -819,6 +828,10 @@ mod tests {
         let data_view_global_parent = OxideProfile::parse(DATA_VIEW_GLOBAL_PARENT_PROFILE).unwrap();
         let data_view_global_candidate =
             OxideProfile::parse(DATA_VIEW_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let object_rest_global_parent =
+            OxideProfile::parse(OBJECT_REST_GLOBAL_PARENT_PROFILE).unwrap();
+        let object_rest_global_candidate =
+            OxideProfile::parse(OBJECT_REST_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1071,7 +1084,8 @@ mod tests {
         );
         assert_eq!(default_parameters_parent, rest_parameters_candidate);
         assert_eq!(data_view_global_parent, default_parameters_global_candidate);
-        assert_eq!(profile, data_view_global_candidate);
+        assert_eq!(object_rest_global_parent, data_view_global_candidate);
+        assert_eq!(profile, object_rest_global_candidate);
         assert_eq!(
             data_view_global_candidate
                 .features
@@ -1087,6 +1101,44 @@ mod tests {
         assert_eq!(
             data_view_global_candidate.allows_async_execution(),
             data_view_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            object_rest_global_candidate
+                .features
+                .difference(&object_rest_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["object-rest"]
+        );
+        assert!(
+            object_rest_global_parent
+                .features
+                .difference(&object_rest_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            object_rest_global_candidate
+                .audited_negative_tests
+                .difference(&object_rest_global_parent.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "test/language/expressions/assignment/dstr/obj-rest-not-last-element-invalid.js",
+                "test/language/statements/for-in/dstr/obj-rest-not-last-element-invalid.js",
+                "test/language/statements/for-of/dstr/obj-rest-not-last-element-invalid.js",
+            ])
+        );
+        assert!(
+            object_rest_global_parent
+                .audited_negative_tests
+                .difference(&object_rest_global_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            object_rest_global_candidate.allows_async_execution(),
+            object_rest_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate
