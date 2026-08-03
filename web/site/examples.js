@@ -16,6 +16,18 @@ answer();`,
 values[0] + values[1] + values[2];`,
   },
   {
+    id: "resizable-array-buffer",
+    label: "Resizable ArrayBuffer",
+    source: `var buffer = new ArrayBuffer(1, { maxByteLength: 4 });
+var bytes = new Uint8Array(buffer);
+bytes[0] = 40;
+buffer.resize(2);
+var grown = new Uint8Array(buffer);
+grown[1] = 2;
+
+grown[0] + grown[1];`,
+  },
+  {
     id: "uint8-codec",
     label: "Uint8Array.fromHex",
     source: `var bytes = Uint8Array.fromHex("2a");
