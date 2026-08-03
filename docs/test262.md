@@ -6,6 +6,45 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3by global rest parameters admission
+
+R3by adds exactly `rest-parameters` and its 96 audited parse-negative paths to
+the live capability profile. The 92-tag / 924-negative-path profile SHA-256 is
+`d55e0625b1f6878b7afa6885d82cf332909271ce1c2222100fe3a403a8455969`;
+its async-execution policy is unchanged.
+
+The complete 192-row tag join changes every parent `unsupported-feature`
+outcome to `pass`, with no residual dependency, module, or configuration
+partition. The transition receipt/data SHA-256 values are
+`0aa8ac11097f5f81f138c7782b992312003f7ffca6bfad1f92dbb89f6fa8f8ce`
+and
+`602f57fb32774acc3fbfafa473b339fabca07581ebf882c31b602fa7d698a64b`.
+The candidate tag TSV/JSONL SHA-256 values remain
+`9db05360e6b8d8199caea374321bdf3808fbd4d06218693212c3f1aeb6669c3d`
+and
+`4127e8c0b024f7039070352c99232656028b6f2a85e8aa35369e26fd7649fe5f`.
+
+The exact 102,037-key global join preserves all 101,845 non-universe rows and
+records zero previous-pass regressions. The new canonical vector is exactly:
+
+- 59,699 pass and 60,218 runnable;
+- 18,426 `unsupported-feature` and 23,393 total unsupported;
+- 11 parse failures, 400 runtime failures, 57 harness failures, and two
+  timeouts;
+- TSV SHA-256
+  `3268581d1be88057cd4953d8b91401cb6068bff95aa4830d49c77cd902baa9a5`;
+- JSONL SHA-256
+  `7d1595d9aff6d04c022e688d5e82f32e09a6cfe7adc1f5ea1c0cb21d412933a6`.
+
+The gate authenticates the focused QuickJS oracle, both profile sections, the
+tag reports and transition receipt, then performs an exact TSV/JSONL
+parent/candidate join over the whole suite:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-rest-parameters-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-rest-parameters-global.sh --full
+```
+
 ## R3bx rest parameters certification
 
 R3bx freezes the exhaustive `rest-parameters` metadata universe without yet
@@ -36,6 +75,8 @@ Because this Test262 tag is exclusively an early-error cohort, it is evidence
 for that complete tag rather than a standalone claim that every rest-parameter
 runtime interaction is covered. Existing rest, BindingPattern, direct-eval,
 and pinned-QuickJS differential gates remain part of the parity evidence.
+R3by above performs the full-suite admission and makes this candidate the live
+canonical profile.
 
 ## R3bw global computed property names admission
 

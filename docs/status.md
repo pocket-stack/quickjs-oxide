@@ -4,6 +4,42 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3by global rest parameters admission
+
+R3by promotes the R3bx `rest-parameters` certificate into the live
+checksum-pinned Test262 profile. The profile now contains 92 reviewed feature
+tags and 924 audited negative paths, retains the same async-execution entry,
+and has SHA-256
+`d55e0625b1f6878b7afa6885d82cf332909271ce1c2222100fe3a403a8455969`.
+This is a capability/evidence promotion of semantics already implemented and
+authenticated against QuickJS 2026-06-04; it adds no runtime code.
+
+The complete tag transition changes all 192 sloppy/strict variants from
+`unsupported-feature` to `pass`. Its receipt/data SHA-256 values are
+`0aa8ac11097f5f81f138c7782b992312003f7ffca6bfad1f92dbb89f6fa8f8ce`
+and
+`602f57fb32774acc3fbfafa473b339fabca07581ebf882c31b602fa7d698a64b`.
+The exact 102,037-key full-suite join has those same 192 outcome changes,
+keeps the other 101,845 rows byte-identical, and records zero previous-pass
+regressions.
+
+Two independent two-worker full runs reproduce the new canonical vector:
+59,699 passes, 60,218 runnable variants, 18,426 `unsupported-feature`
+outcomes, and 23,393 total unsupported outcomes. Its TSV/JSONL SHA-256 values
+are
+`3268581d1be88057cd4953d8b91401cb6068bff95aa4830d49c77cd902baa9a5`
+and
+`7d1595d9aff6d04c022e688d5e82f32e09a6cfe7adc1f5ea1c0cb21d412933a6`.
+
+Reproduce the focused, admission, and canonical evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-rest-parameters.sh
+TEST262_WORKERS=8 ./scripts/test-test262-rest-parameters-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-rest-parameters-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3bx rest parameters certification
 
 R3bx freezes the complete pinned Test262 `rest-parameters` tag as a scoped
@@ -45,9 +81,9 @@ TEST262_WORKERS=8 ./scripts/test-test262-rest-parameters.sh
 ```
 
 The projected global transition is exactly 192 new passes and 101,845
-unchanged non-universe rows, with no previous-pass regression. A later global
-milestone must still execute and freeze that complete 102,037-row join before
-the candidate becomes the canonical profile.
+unchanged non-universe rows, with no previous-pass regression. R3by above
+executes and freezes that complete 102,037-row join and promotes the candidate
+to the canonical profile.
 
 ## R3bw global computed property names admission
 

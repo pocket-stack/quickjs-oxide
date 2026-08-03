@@ -326,7 +326,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 91] = [
+    const EXPECTED_FEATURES: [&str; 92] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -411,6 +411,7 @@ mod tests {
         "regexp-named-groups",
         "regexp-unicode-property-escapes",
         "resizable-arraybuffer",
+        "rest-parameters",
         "set-methods",
         "string-trimming",
         "super",
@@ -990,8 +991,11 @@ mod tests {
             computed_property_names_global_candidate.allows_async_execution(),
             computed_property_names_global_parent.allows_async_execution()
         );
-        assert_eq!(profile, computed_property_names_global_candidate);
-        assert!(profile == rest_parameters_parent || profile == rest_parameters_candidate);
+        assert_eq!(
+            rest_parameters_parent,
+            computed_property_names_global_candidate
+        );
+        assert_eq!(profile, rest_parameters_candidate);
         assert_eq!(
             rest_parameters_candidate
                 .features

@@ -12,21 +12,34 @@ live_profile=compat/test262-oxide.conf
 workers=${TEST262_WORKERS:-8}
 lock_dir=$root/target/test262-rest-parameters-focused.lock
 lock_held=0
+live_policy=current
 
-if [[ $# -gt 0 ]]; then
-    if [[ $# == 1 && ( "$1" == -h || "$1" == --help ) ]]; then
+case ${1-} in
+    '') ;;
+    --frozen-profiles) live_policy=frozen ;;
+    -h | --help)
         cat <<'EOF'
-usage: scripts/test-test262-rest-parameters.sh
+usage: scripts/test-test262-rest-parameters.sh [--frozen-profiles]
 
 Rebuild the complete rest-parameters metadata inventory, certify its 192
 variants in pinned QuickJS, and reproduce the exact parent/candidate Oxide
 transition. TEST262_WORKERS controls parallelism (default: 8).
+
+--frozen-profiles reproduces only the immutable certificate. Historical
+global-admission gates use it after independently authenticating current live
+profiles that strictly descend from this candidate.
 EOF
         exit 0
-    fi
+        ;;
+    *)
     echo "error: this gate accepts no arguments" >&2
     exit 2
-fi
+        ;;
+esac
+[[ $# -le 1 ]] || {
+    echo "error: this gate accepts at most one argument" >&2
+    exit 2
+}
 if [[ ! "$workers" =~ ^[1-9][0-9]*$ ]]; then
     echo "error: TEST262_WORKERS must be a positive integer: $workers" >&2
     exit 2
@@ -326,7 +339,8 @@ if [[ "$(wc -l <"$candidate_execution" | tr -d '[:space:]')" \
     echo "error: profile execution policy drifted" >&2
     exit 1
 fi
-if ! cmp -s "$live_profile" "$parent_profile" \
+if [[ "$live_policy" == current ]] \
+    && ! cmp -s "$live_profile" "$parent_profile" \
     && ! cmp -s "$live_profile" "$candidate_profile"; then
     echo "error: live profile is neither the frozen parent nor candidate" >&2
     exit 1
