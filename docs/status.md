@@ -4,6 +4,51 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bx rest parameters certification
+
+R3bx freezes the complete pinned Test262 `rest-parameters` tag as a scoped
+candidate. The parent is the 91-feature R3bw profile; the candidate adds
+exactly `rest-parameters` and the 96 negative-test paths selected by that tag,
+growing to 92 reviewed features and 924 audited negatives. Their SHA-256
+values are
+`fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a`
+and
+`d55e0625b1f6878b7afa6885d82cf332909271ce1c2222100fe3a403a8455969`.
+
+The tag is narrower than the full rest-parameter runtime surface: all 96
+paths are generated parse-negative tests for the early error that forbids a
+function body's own `"use strict"` directive when its parameter list is not
+simple. They expand to 192 sloppy/strict variants with no module, config, or
+residual-feature partition. The parent classifies all 192 as
+`unsupported-feature`; the candidate and pinned QuickJS 2026-06-04 both pass
+all 192. Five- and eight-worker Oxide reports are byte-identical, with TSV and
+JSONL SHA-256 values
+`9db05360e6b8d8199caea374321bdf3808fbd4d06218693212c3f1aeb6669c3d`
+and
+`4127e8c0b024f7039070352c99232656028b6f2a85e8aa35369e26fd7649fe5f`.
+
+This certifies existing implementation rather than adding runtime code.
+QuickJS clears `has_simple_parameter_list` while parsing rest and destructured
+formals, then rejects `has_use_strict` in `js_parse_function_check_names`.
+Oxide carries the same state through ordinary, arrow, async, generator, and
+method parsing and already has dedicated strict-body early-error tests. The
+broader rest surface remains independently covered by the 65-variant
+identifier-rest gate, the now-green six formerly deferred pattern/new-target
+variants, the 298- and 936-variant parameter BindingPattern gates, the
+71-variant direct-eval parameter-environment gate, and 43 pinned-QuickJS
+differential probes.
+
+Reproduce the certificate with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-rest-parameters.sh
+```
+
+The projected global transition is exactly 192 new passes and 101,845
+unchanged non-universe rows, with no previous-pass regression. A later global
+milestone must still execute and freeze that complete 102,037-row join before
+the candidate becomes the canonical profile.
+
 ## R3bw global computed property names admission
 
 R3bw promotes the R3bv `computed-property-names` candidate into the live

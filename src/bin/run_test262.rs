@@ -258,6 +258,12 @@ const TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a";
 const TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_MANIFEST_SHA256: &str =
     "478f57b13521b3e93df055cc43c44a14c197cbed65f3616b0dbe24ec87d9d5b5";
+const TEST262_REST_PARAMETERS_PARENT_PROFILE_SHA256: &str =
+    "fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a";
+const TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256: &str =
+    "d55e0625b1f6878b7afa6885d82cf332909271ce1c2222100fe3a403a8455969";
+const TEST262_REST_PARAMETERS_MANIFEST_SHA256: &str =
+    "2757425b53ce1f046c5c4a063b3931c9299c64f8c8911a764a83ff720407ad46";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -894,6 +900,8 @@ enum OxideProfileKind {
     ComputedPropertyNamesCandidate,
     ComputedPropertyNamesGlobalParent,
     ComputedPropertyNamesGlobalCandidate,
+    RestParametersParent,
+    RestParametersCandidate,
     Map,
     Set,
     SymbolProtocols,
@@ -1145,6 +1153,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-computed-property-names-global-candidate.conf"),
             OxideProfileKind::ComputedPropertyNamesGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-rest-parameters-parent.conf"),
+            OxideProfileKind::RestParametersParent,
+        ),
+        (
+            root.join("tests/test262-rest-parameters-candidate.conf"),
+            OxideProfileKind::RestParametersCandidate,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1587,6 +1603,52 @@ fn verify_computed_property_names_global_transition_profile(
         manifest,
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_MANIFEST_SHA256,
         &format!("historical computed-property-names transition {label} Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_rest_parameters_transition_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("rest-parameters {label} Test262 capability profile"),
+    )?;
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the rest-parameters {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the rest-parameters {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+        )
+    })?;
+    let manifest_relative = "tests/test262-rest-parameters-universe.txt";
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve rest-parameters {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
+        .map_err(|error| format!("resolve pinned rest-parameters {label} manifest: {error}"))?;
+    if actual != expected {
+        return Err(format!(
+            "the rest-parameters {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_REST_PARAMETERS_MANIFEST_SHA256,
+        &format!("rest-parameters {label} Test262 manifest"),
     )?;
     Ok(profile_sha256)
 }
@@ -2262,6 +2324,16 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
             )
         }
+        OxideProfileKind::RestParametersParent => verify_rest_parameters_transition_profile(
+            options,
+            "parent",
+            TEST262_REST_PARAMETERS_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::RestParametersCandidate => verify_rest_parameters_transition_profile(
+            options,
+            "candidate",
+            TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256,
+        ),
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2785,7 +2857,9 @@ mod cli_tests {
         TEST262_REGEXP_BUILTINS_PROFILE_SHA256,
         TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
+        TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256,
+        TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256,
+        TEST262_REST_PARAMETERS_PARENT_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
@@ -3185,6 +3259,15 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::ComputedPropertyNamesGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-rest-parameters-parent.conf")).unwrap(),
+            OxideProfileKind::RestParametersParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-rest-parameters-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::RestParametersCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -5882,6 +5965,70 @@ mod cli_tests {
             "tests/test262-computed-property-names-parent.conf",
             TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256,
         );
+    }
+
+    fn assert_rest_parameters_profile_binding(profile: &str, expected_hash: &str) {
+        for selection in [
+            ["--manifest", "tests/test262-rest-parameters-universe.txt"],
+            ["--all", ""],
+        ] {
+            let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+        }
+
+        for selection in [
+            [
+                "--test",
+                "test/language/expressions/function/rest-param-strict-body.js",
+            ],
+            ["--manifest", "tests/test262-rest-parameters-activation.txt"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+
+        assert!(
+            parse_error(&[
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                profile,
+                "--report",
+                "report.tsv",
+            ])
+            .contains("select exactly one")
+        );
+    }
+
+    #[test]
+    fn rest_parameters_profiles_require_their_pinned_universe_manifest() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-rest-parameters-parent.conf",
+                TEST262_REST_PARAMETERS_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-rest-parameters-candidate.conf",
+                TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_rest_parameters_profile_binding(profile, expected_hash);
+        }
     }
 
     #[test]

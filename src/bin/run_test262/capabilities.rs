@@ -310,6 +310,18 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-computed-property-names-global-candidate.conf"
     ));
+    const REST_PARAMETERS_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-rest-parameters-parent.conf"
+    ));
+    const REST_PARAMETERS_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-rest-parameters-candidate.conf"
+    ));
+    const REST_PARAMETERS_ACTIVATION: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-rest-parameters-activation.txt"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
@@ -768,6 +780,9 @@ mod tests {
             OxideProfile::parse(COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE).unwrap();
         let computed_property_names_global_candidate =
             OxideProfile::parse(COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let rest_parameters_parent = OxideProfile::parse(REST_PARAMETERS_PARENT_PROFILE).unwrap();
+        let rest_parameters_candidate =
+            OxideProfile::parse(REST_PARAMETERS_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -976,6 +991,46 @@ mod tests {
             computed_property_names_global_parent.allows_async_execution()
         );
         assert_eq!(profile, computed_property_names_global_candidate);
+        assert!(profile == rest_parameters_parent || profile == rest_parameters_candidate);
+        assert_eq!(
+            rest_parameters_candidate
+                .features
+                .difference(&rest_parameters_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["rest-parameters"]
+        );
+        assert!(
+            rest_parameters_parent
+                .features
+                .difference(&rest_parameters_candidate.features)
+                .next()
+                .is_none()
+        );
+        let expected_rest_negatives = REST_PARAMETERS_ACTIVATION
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_rest_negatives.len(), 96);
+        assert_eq!(
+            rest_parameters_candidate
+                .audited_negative_tests
+                .difference(&rest_parameters_parent.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_rest_negatives
+        );
+        assert!(
+            rest_parameters_parent
+                .audited_negative_tests
+                .difference(&rest_parameters_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            rest_parameters_candidate.allows_async_execution(),
+            rest_parameters_parent.allows_async_execution()
+        );
     }
 
     #[test]

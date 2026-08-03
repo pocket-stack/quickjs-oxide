@@ -6,6 +6,37 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3bx rest parameters certification
+
+R3bx freezes the exhaustive `rest-parameters` metadata universe without yet
+promoting it into the live capability profile. The candidate differs from the
+91-feature R3bw parent by exactly one tag and by all 96 negative paths selected
+by that tag; no existing feature, audit, or execution policy is removed.
+
+All 96 paths are generated parse-phase `SyntaxError` cases and expand to 192
+sloppy/strict variants. There are no module, QuickJS-config, or residual
+dependency rows. The exact transition is therefore 192
+`unsupported-feature` outcomes in the parent to 192 passes in the candidate.
+Pinned QuickJS 2026-06-04 independently passes the same 192 variants. The
+candidate TSV/JSONL SHA-256 values are
+`9db05360e6b8d8199caea374321bdf3808fbd4d06218693212c3f1aeb6669c3d`
+and
+`4127e8c0b024f7039070352c99232656028b6f2a85e8aa35369e26fd7649fe5f`.
+
+The checksum-bound gate rebuilds the complete 53,125-record metadata index,
+proves the tag universe equals the 96 audited negatives, authenticates the
+one-feature profile delta, checks TSV/JSONL projections and the keyed
+parent/candidate transition, and runs both engines:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-rest-parameters.sh
+```
+
+Because this Test262 tag is exclusively an early-error cohort, it is evidence
+for that complete tag rather than a standalone claim that every rest-parameter
+runtime interaction is covered. Existing rest, BindingPattern, direct-eval,
+and pinned-QuickJS differential gates remain part of the parity evidence.
+
 ## R3bw global computed property names admission
 
 R3bw adds exactly `computed-property-names` to the live capability profile.
