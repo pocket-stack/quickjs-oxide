@@ -236,6 +236,16 @@ const TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "5d3543018b022f968e4d7bb1725cef1c0e101e3c61a4d2d35f2c77df5ec975e9";
 const TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "ed80ab5aed86c606a1d7b5c1854b78ab1bb3c517cf0c6898a89e9f8d19135000";
+const TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256: &str =
+    "e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898";
+const TEST262_RESIZABLE_ARRAYBUFFER_MANIFEST_SHA256: &str =
+    "f6e3b6ceb2e2b725a42543bf0f6652652ad4f0716657bd6ba62398cb7df38295";
+const TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "ed80ab5aed86c606a1d7b5c1854b78ab1bb3c517cf0c6898a89e9f8d19135000";
+const TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898";
+const TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_MANIFEST_SHA256: &str =
+    "5b58d035de75cc264f1fa3497458d25b5fd0c525b8a0eebe9838e34aff54ab1e";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -865,6 +875,9 @@ enum OxideProfileKind {
     Uint8ArrayCodecs,
     Uint8ArrayCodecsGlobalParent,
     Uint8ArrayCodecsGlobalCandidate,
+    ResizableArrayBuffer,
+    ResizableArrayBufferGlobalParent,
+    ResizableArrayBufferGlobalCandidate,
     Map,
     Set,
     SymbolProtocols,
@@ -1088,6 +1101,18 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-uint8array-codecs-global-candidate.conf"),
             OxideProfileKind::Uint8ArrayCodecsGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-resizable-arraybuffer.conf"),
+            OxideProfileKind::ResizableArrayBuffer,
+        ),
+        (
+            root.join("tests/test262-resizable-arraybuffer-global-parent.conf"),
+            OxideProfileKind::ResizableArrayBufferGlobalParent,
+        ),
+        (
+            root.join("tests/test262-resizable-arraybuffer-global-candidate.conf"),
+            OxideProfileKind::ResizableArrayBufferGlobalCandidate,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1428,6 +1453,56 @@ fn verify_uint8array_codecs_global_transition_profile(
         manifest,
         TEST262_UINT8ARRAY_CODECS_MANIFEST_SHA256,
         &format!("historical Uint8Array codec transition {label} Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_resizable_arraybuffer_global_transition_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("historical resizable-arraybuffer transition {label} Test262 capability profile"),
+    )?;
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the historical resizable-arraybuffer transition {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the historical resizable-arraybuffer transition {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+        )
+    })?;
+    let manifest_relative = "tests/test262-resizable-arraybuffer-universe.txt";
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve historical resizable-arraybuffer transition {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
+        .map_err(|error| {
+            format!(
+                "resolve pinned historical resizable-arraybuffer transition {label} manifest: {error}"
+            )
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the historical resizable-arraybuffer transition {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_MANIFEST_SHA256,
+        &format!("historical resizable-arraybuffer transition {label} Test262 manifest"),
     )?;
     Ok(profile_sha256)
 }
@@ -2054,6 +2129,27 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
             )
         }
+        OxideProfileKind::ResizableArrayBuffer => verify_scoped_pinned_profile(
+            options,
+            "resizable ArrayBuffer activation",
+            TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256,
+            "tests/test262-resizable-arraybuffer.txt",
+            TEST262_RESIZABLE_ARRAYBUFFER_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ResizableArrayBufferGlobalParent => {
+            verify_resizable_arraybuffer_global_transition_profile(
+                options,
+                "pre-admission global parent",
+                TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE_SHA256,
+            )
+        }
+        OxideProfileKind::ResizableArrayBufferGlobalCandidate => {
+            verify_resizable_arraybuffer_global_transition_profile(
+                options,
+                "resizable ArrayBuffer global candidate",
+                TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            )
+        }
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2570,7 +2666,10 @@ mod cli_tests {
         TEST262_PROMISE_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_PROMISE_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
-        TEST262_REGEXP_BUILTINS_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
+        TEST262_REGEXP_BUILTINS_PROFILE_SHA256,
+        TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
@@ -2926,6 +3025,24 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::Uint8ArrayCodecsGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-resizable-arraybuffer.conf")).unwrap(),
+            OxideProfileKind::ResizableArrayBuffer
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-resizable-arraybuffer-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ResizableArrayBufferGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-resizable-arraybuffer-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ResizableArrayBufferGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -5436,6 +5553,112 @@ mod cli_tests {
             for selection in [
                 ["--test", "test/built-ins/Uint8Array/fromBase64/results.js"],
                 ["--manifest", "tests/test262-typed-array-core.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                arguments.push(selection[1]);
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_resizable_arraybuffer_profile_is_bound_to_its_activation_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-resizable-arraybuffer.conf",
+            "--manifest",
+            "tests/test262-resizable-arraybuffer.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/built-ins/ArrayBuffer/prototype/resize/resize.js",
+            ],
+            [
+                "--manifest",
+                "tests/test262-resizable-arraybuffer-universe.txt",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-resizable-arraybuffer.conf",
+                selection[0],
+            ];
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn resizable_arraybuffer_global_profiles_require_the_universe_manifest_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-resizable-arraybuffer-global-parent.conf",
+                TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-resizable-arraybuffer-global-candidate.conf",
+                TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                [
+                    "--manifest",
+                    "tests/test262-resizable-arraybuffer-universe.txt",
+                ],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+            }
+
+            for selection in [
+                [
+                    "--test",
+                    "test/built-ins/ArrayBuffer/prototype/resize/resize.js",
+                ],
+                ["--manifest", "tests/test262-resizable-arraybuffer.txt"],
+                [
+                    "--manifest",
+                    "tests/test262-resizable-arraybuffer-reason-only.txt",
+                ],
                 ["--manifest", "Cargo.toml"],
             ] {
                 let mut arguments =
