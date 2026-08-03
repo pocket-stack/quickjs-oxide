@@ -4,6 +4,51 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ca global default parameters admission
+
+R3ca promotes the complete R3bz `default-parameters` certificate into the
+live checksum-pinned profile and closes its untagged early-error collateral.
+The profile now contains 93 reviewed feature tags and 1,154 audited negative
+paths, preserves the async-execution policy, and has SHA-256
+`63f139b1a74da9a6114180593770dbcc86bb84fbafab5731f59e1387175c5a6a`.
+Relative to R3by it adds exactly `default-parameters`, the 219 tagged
+parse-negative paths, and 11 previously unaudited paths from the complete
+14-path non-simple-parameter strict-body cohort.
+
+The admission scope is a disjoint union of the 2,269-path / 4,516-variant tag
+universe and 14 companion paths / 28 variants. The tag transition contains
+3,352 `unsupported-feature` to `pass` changes, 1,162 diagnostic-only changes,
+and two unchanged `IsHTMLDDA` host rows. The companion transition contains
+22 `unsupported-negative-provenance` to `pass` changes and six unchanged
+passes. All 28 companion variants are forced through both the raw Oxide worker
+and pinned QuickJS 2026-06-04 as parse-phase `SyntaxError` tests; both engines
+pass every variant.
+
+The exact 102,037-key full-suite join records 3,374 outcome changes, 1,162
+diagnostic-only changes, 97,501 unchanged rows, and zero previous-pass
+regressions. The other 97,493 rows outside the combined admission scope are
+byte-identical in both TSV and JSONL. The new canonical vector contains
+63,073 passes, 63,592 runnable variants, 15,074 `unsupported-feature`
+outcomes, 3,451 `unsupported-negative-provenance` outcomes, and 20,019 total
+unsupported outcomes. Its TSV/JSONL SHA-256 values are
+`2db7d8772074f90de6525cd51ffcd43ea3bf906d78e7c938d452cd6cac21a216`
+and
+`5c201991551f3bb3f03f5a5b232cff0b2470969ae440bc942c324ba4fc5d57a3`.
+
+Reproduce the focused, admission, and canonical evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-default-parameters.sh
+TEST262_WORKERS=8 ./scripts/test-test262-default-parameters-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-default-parameters-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+The known staging case for implicit `this` inside a parameter-expression
+direct eval remains explicit shared QuickJS/Test262 spec debt: pinned QuickJS
+2026-06-04 and Oxide fail it identically. It is not hidden by this admission
+and is not an Oxide-versus-QuickJS parity blocker.
+
 ## R3bz default parameters certification
 
 R3bz freezes the complete pinned Test262 `default-parameters` tag without yet
@@ -44,15 +89,14 @@ TEST262_WORKERS=8 ./scripts/test-test262-default-parameters.sh
 
 This milestone authenticates the exact feature-tag universe; it does not
 claim that every untagged parameter-expression interaction is finished. The
-next global admission must separately retain 14 non-simple-parameter
-strict-body companion paths (11 need new negative provenance) and the existing
-staging failure for implicit `this` inside a parameter-expression direct eval
-remains visible.
+R3ca admission above separately retains all 14 non-simple-parameter
+strict-body companion paths, including 11 newly audited negatives, while the
+existing staging failure for implicit `this` inside a parameter-expression
+direct eval remains visible.
 Pinned QuickJS 2026-06-04 fails that staging case in the same way, so it is
 shared Test262/spec debt rather than an Oxide parity blocker. The exact tag
-projection is 3,352 new passes; admitting all companion provenance should add
-22 more passes outside the tag universe. R3by remains the canonical global
-vector until that complete join is executed.
+projection was 3,352 new passes, and the complete R3ca join confirms 22 more
+passes outside the tag universe.
 
 ## R3by global rest parameters admission
 

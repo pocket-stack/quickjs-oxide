@@ -322,11 +322,27 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-rest-parameters-activation.txt"
     ));
+    const DEFAULT_PARAMETERS_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-default-parameters-parent.conf"
+    ));
+    const DEFAULT_PARAMETERS_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-default-parameters-candidate.conf"
+    ));
+    const DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-default-parameters-global-candidate.conf"
+    ));
+    const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-default-parameters-strict-body.txt"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 92] = [
+    const EXPECTED_FEATURES: [&str; 93] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -386,6 +402,7 @@ mod tests {
         "coalesce-expression",
         "computed-property-names",
         "const",
+        "default-parameters",
         "destructuring-binding",
         "error-cause",
         "exponentiation",
@@ -784,6 +801,12 @@ mod tests {
         let rest_parameters_parent = OxideProfile::parse(REST_PARAMETERS_PARENT_PROFILE).unwrap();
         let rest_parameters_candidate =
             OxideProfile::parse(REST_PARAMETERS_CANDIDATE_PROFILE).unwrap();
+        let default_parameters_parent =
+            OxideProfile::parse(DEFAULT_PARAMETERS_PARENT_PROFILE).unwrap();
+        let default_parameters_candidate =
+            OxideProfile::parse(DEFAULT_PARAMETERS_CANDIDATE_PROFILE).unwrap();
+        let default_parameters_global_candidate =
+            OxideProfile::parse(DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -995,7 +1018,6 @@ mod tests {
             rest_parameters_parent,
             computed_property_names_global_candidate
         );
-        assert_eq!(profile, rest_parameters_candidate);
         assert_eq!(
             rest_parameters_candidate
                 .features
@@ -1034,6 +1056,74 @@ mod tests {
         assert_eq!(
             rest_parameters_candidate.allows_async_execution(),
             rest_parameters_parent.allows_async_execution()
+        );
+        assert_eq!(default_parameters_parent, rest_parameters_candidate);
+        assert_eq!(profile, default_parameters_global_candidate);
+        assert_eq!(
+            default_parameters_candidate
+                .features
+                .difference(&default_parameters_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["default-parameters"]
+        );
+        assert!(
+            default_parameters_parent
+                .features
+                .difference(&default_parameters_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            default_parameters_candidate
+                .audited_negative_tests
+                .difference(&default_parameters_parent.audited_negative_tests)
+                .count(),
+            219
+        );
+        assert!(
+            default_parameters_parent
+                .audited_negative_tests
+                .difference(&default_parameters_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            default_parameters_candidate.allows_async_execution(),
+            default_parameters_parent.allows_async_execution()
+        );
+        assert_eq!(
+            default_parameters_global_candidate.features,
+            default_parameters_candidate.features
+        );
+        let expected_strict_body_negatives = DEFAULT_PARAMETERS_STRICT_BODY
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter(|path| {
+                !default_parameters_candidate
+                    .audited_negative_tests
+                    .contains(*path)
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_strict_body_negatives.len(), 11);
+        assert_eq!(
+            default_parameters_global_candidate
+                .audited_negative_tests
+                .difference(&default_parameters_candidate.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_strict_body_negatives
+        );
+        assert!(
+            default_parameters_candidate
+                .audited_negative_tests
+                .difference(&default_parameters_global_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            default_parameters_global_candidate.allows_async_execution(),
+            default_parameters_candidate.allows_async_execution()
         );
     }
 

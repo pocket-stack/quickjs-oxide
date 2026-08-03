@@ -9,6 +9,15 @@ export const EXAMPLES = [
 answer();`,
   },
   {
+    id: "default-parameters",
+    label: "Default parameters",
+    source: `function answer({ base = 40 } = {}, offset = 2) {
+  return base + offset;
+}
+
+answer();`,
+  },
+  {
     id: "typed-array",
     label: "TypedArray.from",
     source: `var values = Uint8Array.from([10, 20, 12]);

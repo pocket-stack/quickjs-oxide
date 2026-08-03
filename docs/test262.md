@@ -6,6 +6,51 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3ca global default parameters admission
+
+R3ca promotes `default-parameters` into the live profile together with the
+full untagged non-simple-parameter strict-body cohort. The resulting profile
+has 93 feature tags, 1,154 audited negative paths, and SHA-256
+`63f139b1a74da9a6114180593770dbcc86bb84fbafab5731f59e1387175c5a6a`.
+Its exact delta from R3by is one feature and 230 negative paths: all 219
+tagged negatives plus the 11 not already audited among 14 companion paths.
+
+The two disjoint admission partitions behave as follows:
+
+- tag universe: 4,516 variants, with 3,352 new passes, 1,162 residual-feature
+  detail changes, and two unchanged `IsHTMLDDA` rows;
+- strict-body companions: 28 variants, with 22 new passes and six unchanged
+  passes.
+
+The gate independently executes every companion variant through the raw
+Oxide worker and pinned QuickJS 2026-06-04, authenticates the exact profile
+delta and both manifests, and joins the combined 4,544-row scope against the
+complete suite. The full 102,037-row transition has 3,374 outcome changes,
+1,162 detail-only changes, 97,501 unchanged rows, and no previous-pass
+regression. All 97,493 rows outside the combined scope are byte-identical.
+
+The new canonical progress vector is exactly:
+
+- 63,073 pass and 63,592 runnable;
+- 15,074 `unsupported-feature`, 3,451
+  `unsupported-negative-provenance`, and 20,019 total unsupported;
+- TSV SHA-256
+  `2db7d8772074f90de6525cd51ffcd43ea3bf906d78e7c938d452cd6cac21a216`;
+- JSONL SHA-256
+  `5c201991551f3bb3f03f5a5b232cff0b2470969ae440bc942c324ba4fc5d57a3`.
+
+Reproduce it with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-default-parameters-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-default-parameters-global.sh --full
+```
+
+The staging implicit-`this` parameter-eval failure remains in the full vector.
+Pinned QuickJS fails the same test with the same behavior, so it is tracked as
+shared upstream/spec debt rather than being erased or misreported as an Oxide
+parity regression.
+
 ## R3bz default parameters certification
 
 R3bz creates a checksum-bound candidate for the exact pinned
@@ -44,14 +89,12 @@ alone:
 TEST262_WORKERS=8 ./scripts/test-test262-default-parameters.sh
 ```
 
-The focused scope deliberately remains the exact feature tag. Fourteen
-untagged non-simple-parameter strict-body companion paths are reserved for an
-explicit collateral check in the global-admission milestone; 11 need new
-negative provenance. An existing staging failure involving implicit `this`
-in parameter-expression direct eval remains visible. Pinned QuickJS
-2026-06-04 produces the same failure, so it is shared Test262/spec debt rather
-than an Oxide parity blocker. Until the full 102,037-row join is run, the
-canonical progress vector remains R3by.
+The focused scope deliberately remains the exact feature tag. The R3ca
+milestone above performs the separate collateral check for all 14 untagged
+non-simple-parameter strict-body paths and admits the 11 new negative paths.
+An existing staging failure involving implicit `this` in parameter-expression
+direct eval remains visible. Pinned QuickJS 2026-06-04 produces the same
+failure, so it is shared Test262/spec debt rather than an Oxide parity blocker.
 
 ## R3by global rest parameters admission
 

@@ -1,0 +1,14 @@
+test/language/expressions/arrow-function/syntax/early-errors/use-strict-with-non-simple-param.js
+test/language/expressions/async-arrow-function/early-errors-arrow-NSPL-with-USD.js
+test/language/expressions/async-function/early-errors-expression-NSPL-with-USD.js
+test/language/expressions/async-generator/early-errors-expression-NSPL-with-USD.js
+test/language/expressions/function/use-strict-with-non-simple-param.js
+test/language/expressions/generators/use-strict-with-non-simple-param.js
+test/language/expressions/object/method-definition/early-errors-object-method-NSPL-with-USD.js
+test/language/expressions/object/method-definition/generator-use-strict-with-non-simple-param.js
+test/language/expressions/object/method-definition/setter-use-strict-with-non-simple-param.js
+test/language/expressions/object/method-definition/use-strict-with-non-simple-param.js
+test/language/statements/async-function/early-errors-declaration-NSPL-with-USD.js
+test/language/statements/class/definition/early-errors-class-method-NSPL-with-USD.js
+test/language/statements/function/use-strict-with-non-simple-param.js
+test/language/statements/generators/use-strict-with-non-simple-param.js
