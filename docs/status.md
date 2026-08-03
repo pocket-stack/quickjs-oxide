@@ -1,14 +1,75 @@
 # Implementation status
 
-Last audited: 2026-07-31. The completion definition remains
+Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
+
+## R3bu global resizable ArrayBuffer admission
+
+R3bu adds exactly `resizable-arraybuffer` to the checksum-pinned global
+Test262 profile after the R3bt focused spillover gate. The live profile grows
+from 89 to 90 reviewed feature tags, retains the same 828 audited negative
+paths and async execution entry, and has SHA-256
+`e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898`.
+Its ordered feature stream has SHA-256
+`2c02df29f05b4d3303da0c26784f7f6eab7a83d4f20caf7b3e5747bcaed7de42`.
+
+The exhaustive metadata universe contains 463 paths / 926 sloppy and strict
+variants. It partitions into 381 paths / 762 activation variants, 80 paths /
+160 reason-only variants that retain other unsupported dependencies, and two
+paths / four QuickJS-config skips. The earlier ArrayBuffer, DataView, and
+TypedArray gates already cover 312 of those paths; R3bt freezes the remaining
+151-path spillover as 95 activation, 54 reason-only, and two config-skip
+paths. Oxide and pinned QuickJS both pass all 762 activation variants, and
+the four-vector ArrayBuffer differential also passes. The focused TSV/JSONL
+SHA-256 values are
+`79baa1c1e323cb1256f3e0f7bdfbc403f3732100f40be807f63dfed6d84ab70c`
+and
+`8a0ed16786ae3ecec118e1fd84392cb6857fb3c9ecb57d6977e7b962ed8bb0da`.
+
+The global parent records 922 `unsupported-feature` rows and four unchanged
+config skips. The candidate changes all 762 activation rows to `pass`,
+narrows only the diagnostic detail of the 160 reason-only rows, and preserves
+the four skips. The 926-row transition receipt and data-row SHA-256 values are
+`f51b57c077fcbea258c39907ed95cffa50280d4af11ef355076bcad675959c0e`
+and
+`2dab3bfcf31b227e34920dbdbf5e3cd47c7a16fb32abda95c14d88d10965d335`.
+The candidate tag TSV/JSONL SHA-256 values are
+`dbaa0982f04607a08819b73e2505f20c83e62ed9670b779043764f0ce2a8053b`
+and
+`54882a02e660938116bc4acb7a9fa5d9efeb611bb8e5bd0ac3780d3e4a8ecd37`.
+
+The exact 102,037-key full join has 762 outcome changes, 160 detail-only
+changes, four unchanged config rows, and 101,111 byte-identical non-universe
+rows. No previous pass regresses. The canonical vector now contains 59,068
+passes, 59,587 runnable variants, 19,057 `unsupported-feature` outcomes, and
+24,024 total unsupported outcomes. Its rates are 57.89% raw, a 70.69%
+conservative target-scope lower bound after the 18,475 pinned QuickJS target
+exclusions, and 99.21% among 59,538 variants with a non-unsupported observed
+outcome. The full TSV/JSONL SHA-256 values are
+`a21d195a1a6209c5df6b7080a9a941d773c87abeed7ec63961b5896b1b294045`
+and
+`834754d9d6ab62606c3463b351932dedade8e9f78ba6ea835a87aa743cf9fb41`;
+independent worker-count reproductions are byte-identical.
+
+Reproduce the focused and global evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-resizable-arraybuffer.sh
+TEST262_WORKERS=8 ./scripts/test-test262-resizable-arraybuffer-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-resizable-arraybuffer-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+This admission adds no runtime semantics beyond the already-certified buffer
+and view implementation. It is a capability-profile and evidence milestone,
+not a Feature Parity completion claim.
 
 ## R3bs global Uint8Array base64/hex codec admission
 
 R3bs admits exactly `uint8array-base64` to the checksum-pinned global Test262
-profile after the R3br implementation and focused differential gate. The live
-profile now contains 89 reviewed feature tags, retains the same 828 audited
+profile after the R3br implementation and focused differential gate. The R3bs
+candidate contains 89 reviewed feature tags, retains the same 828 audited
 negative paths and async execution entry, and has SHA-256
 `ed80ab5aed86c606a1d7b5c1854b78ab1bb3c517cf0c6898a89e9f8d19135000`.
 Its ordered feature stream has SHA-256
@@ -529,7 +590,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 89 reviewed feature tags and 828 exact audited
+  capability profile now admits 90 reviewed feature tags and 828 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -583,22 +644,25 @@ workstream. Build and architecture details live in
   surface and authenticates all 138 variants against pinned QuickJS. R3bs
   admits exactly `uint8array-base64` globally: those 138 variants move from
   `unsupported-feature` to `pass`, while every non-universe row remains
-  unchanged.
+  unchanged. R3bt then authenticates the complete 762-variant
+  `resizable-arraybuffer` activation and its previously uncovered spillover;
+  R3bu admits that tag globally while keeping all residual dependencies and
+  config skips explicit.
   The cumulative
   TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 58,306 passes and 58,825 runnable variants:
-  57.14% raw,
-  a 69.78% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.20% among the 58,776 variants with a non-unsupported observed outcome. It
-  records 19,819 `unsupported-feature` and 24,786 total unsupported outcomes,
+  measurement has 59,068 passes and 59,587 runnable variants:
+  57.89% raw,
+  a 70.69% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.21% among the 59,538 variants with a non-unsupported observed outcome. It
+  records 19,057 `unsupported-feature` and 24,024 total unsupported outcomes,
   11 parse failures, 400 runtime failures, and 57 harness failures. The exact
-  R3bs join preserves all 102,037 keys with 138 outcome changes, no
-  detail-only changes, 101,899 unchanged rows, and no previous-pass
+  R3bu join preserves all 102,037 keys with 762 outcome changes, 160
+  detail-only changes, 101,115 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `789b1d116e10dbeb7607faf4bbbcb5df818a6e588799d156579b5047238b0379`
+  `a21d195a1a6209c5df6b7080a9a941d773c87abeed7ec63961b5896b1b294045`
   and
-  `d1476490e0f53bb1397ce432c813c781e51130cfd97da22e1fdc8edc10f95a8f`.
+  `834754d9d6ab62606c3463b351932dedade8e9f78ba6ea835a87aa743cf9fb41`.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
   explicit frontiers.
   The fixed smoke now

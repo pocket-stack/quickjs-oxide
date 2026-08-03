@@ -407,14 +407,20 @@ if [[ "$(sha256_file "$array_buffer_manifest")" \
     echo "error: an antecedent certification asset drifted" >&2
     exit 1
 fi
+canonical_tsv=$(read_value_from "$full_baseline" tsv_sha256)
+canonical_jsonl=$(read_value_from "$full_baseline" jsonl_sha256)
 if [[ "$(read_value_from "$array_buffer_baseline" summary)" != "pass=288" \
     || "$(read_value_from "$data_view_baseline" summary)" != "pass=984" \
-    || "$(read_value_from "$typed_array_baseline" summary)" != "pass=4463" \
-    || "$(read_value_from "$full_baseline" tsv_sha256)" \
-        != "$(read_value parent_full_tsv_sha256)" \
-    || "$(read_value_from "$full_baseline" jsonl_sha256)" \
-        != "$(read_value parent_full_jsonl_sha256)" ]]; then
-    echo "error: antecedent all-green or parent full receipt drifted" >&2
+    || "$(read_value_from "$typed_array_baseline" summary)" != "pass=4463" ]]; then
+    echo "error: antecedent all-green receipt drifted" >&2
+    exit 1
+fi
+if [[ "$canonical_tsv" != "$(read_value parent_full_tsv_sha256)" \
+        || "$canonical_jsonl" != "$(read_value parent_full_jsonl_sha256)" ]] \
+    && [[ "$canonical_tsv" != "$(read_value global_candidate_full_tsv_sha256)" \
+        || "$canonical_jsonl" \
+            != "$(read_value global_candidate_full_jsonl_sha256)" ]]; then
+    echo "error: canonical full receipt is neither the frozen parent nor R3bu candidate" >&2
     exit 1
 fi
 

@@ -294,11 +294,19 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-uint8array-codecs-global-candidate.conf"
     ));
+    const RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-resizable-arraybuffer-global-parent.conf"
+    ));
+    const RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-resizable-arraybuffer-global-candidate.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 89] = [
+    const EXPECTED_FEATURES: [&str; 90] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -381,6 +389,7 @@ mod tests {
         "regexp-modifiers",
         "regexp-named-groups",
         "regexp-unicode-property-escapes",
+        "resizable-arraybuffer",
         "set-methods",
         "string-trimming",
         "super",
@@ -742,6 +751,10 @@ mod tests {
             OxideProfile::parse(UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE).unwrap();
         let uint8array_codecs_global_candidate =
             OxideProfile::parse(UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let resizable_arraybuffer_global_parent =
+            OxideProfile::parse(RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE).unwrap();
+        let resizable_arraybuffer_global_candidate =
+            OxideProfile::parse(RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -895,7 +908,34 @@ mod tests {
             uint8array_codecs_global_candidate.allows_async_execution(),
             uint8array_codecs_global_parent.allows_async_execution()
         );
-        assert_eq!(profile, uint8array_codecs_global_candidate);
+        assert_eq!(
+            resizable_arraybuffer_global_parent,
+            uint8array_codecs_global_candidate
+        );
+        assert_eq!(
+            resizable_arraybuffer_global_candidate
+                .features
+                .difference(&resizable_arraybuffer_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["resizable-arraybuffer"]
+        );
+        assert!(
+            resizable_arraybuffer_global_parent
+                .features
+                .difference(&resizable_arraybuffer_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            resizable_arraybuffer_global_candidate.audited_negative_tests,
+            resizable_arraybuffer_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            resizable_arraybuffer_global_candidate.allows_async_execution(),
+            resizable_arraybuffer_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, resizable_arraybuffer_global_candidate);
     }
 
     #[test]

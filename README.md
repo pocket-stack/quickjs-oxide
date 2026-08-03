@@ -3,20 +3,14 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. The current TypedArray
-stack includes the shared 12-class kernel, in-place mutation, indexed search,
-QuickJS-shaped `find`/`findIndex`/`findLast`/`findLastIndex`,
-`every`/`some`, `forEach`, `reduce`/`reduceRight`, species-aware
-`map`/`filter` and `slice`/`subarray`, plus non-species `with` and
-`toReversed`, dedicated `join`/`toLocaleString`, inherited `toString`, and
-QuickJS-shaped `sort`/`toSorted`, certified `entries`/`keys` iterators, and
-pinned-QuickJS-certified static `of` and `from`. The six Uint8Array base64/hex
-codecs—static `fromBase64`/`fromHex` and prototype `toBase64`/`toHex`/
-`setFromBase64`/`setFromHex`—are also implemented and globally admitted. The
-89-tag global Test262 profile admits `TypedArray`, `Proxy`, optional chaining,
+The `unsafe`-free engine is runnable but incomplete. Its strongest covered
+slice is the shared ArrayBuffer/DataView/12-class TypedArray stack: resizable
+buffers, fixed and length-tracking views, transfers, iteration, search,
+mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
+The 90-tag global Test262 profile also admits `Proxy`, optional chaining,
 Iterator Helpers, `globalThis`, and the implemented Promise surface through
-checksum-bound audits. The complete conservative vector is 58,306/102,037
-with 58,825 runnable variants. Modules, SharedArrayBuffer/Atomics, and broad
+checksum-bound audits. The complete conservative vector is 59,068/102,037
+with 59,587 runnable variants. Modules, SharedArrayBuffer/Atomics, and broad
 built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.
@@ -48,17 +42,10 @@ cargo run --quiet --bin qjs -- --print-result -e \
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-array-buffer.sh
-./scripts/test-test262-data-view.sh
-./scripts/test-test262-typed-array-core.sh
-./scripts/test-test262-proxy.sh
-./scripts/test-test262-optional-chaining.sh
-./scripts/test-test262-global-this.sh
-./scripts/test-test262-global-this-global.sh
-./scripts/test-test262-promise-global.sh
-./scripts/test-test262-uint8array-codecs.sh
-./scripts/test-test262-uint8array-codecs-global.sh
+./scripts/test-test262-resizable-arraybuffer.sh
+./scripts/test-test262-resizable-arraybuffer-global.sh --full
 ./scripts/test-test262-full.sh
+./scripts/test-web-playground.sh
 ```
 
 ## License
