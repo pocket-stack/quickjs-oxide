@@ -6,6 +6,53 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3bz default parameters certification
+
+R3bz creates a checksum-bound candidate for the exact pinned
+`default-parameters` metadata universe. It does not yet change the global
+capability profile. The candidate adds exactly that feature plus all 219
+tagged parse-negative paths to the R3by parent, growing from 92 to 93 feature
+tags and from 924 to 1,143 audited negatives. Its SHA-256 is
+`9c345c1e2d79911eec5d6c8750a730f3b3ed0dbefdcd483e0f9c92fcf66aeca0`.
+
+The universe contains 2,269 paths / 4,516 variants and partitions exactly as
+follows:
+
+- 1,516 positive paths / 3,013 runnable variants;
+- 171 newly audited negative paths / 339 runnable variants;
+- 581 paths / 1,162 variants with other unsupported feature dependencies;
+- one path / two variants requiring `IsHTMLDDA`.
+
+The parent records 4,514 `unsupported-feature` and two host outcomes. The
+candidate passes all 3,352 dependency-clean variants, retains 1,162
+`unsupported-feature` and the same two host outcomes, and has zero failure or
+unaudited-negative outcomes. Pinned QuickJS 2026-06-04 independently passes
+the same 3,352 activation variants. Five- and eight-worker Oxide reports are
+byte-identical; their TSV/JSONL SHA-256 values are
+`a8047ac4a92d9d482eace99eec54bb361de70b8787c1c55f41a0c98bef89400f`
+and
+`4eb248df0b35c4ce6aa0e207de3c035d3d6792dabad90a383460b3246f8cb146`.
+
+The gate rebuilds the complete metadata inventory, verifies the exact
+feature/audit delta and all four partitions, cross-checks TSV and JSONL, and
+authenticates the keyed transition and both engines. It also forces all 219
+tagged negative paths / 435 variants through Oxide and pinned QuickJS, so the
+48 residual-feature negative paths do not enter the audit list on metadata
+alone:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-default-parameters.sh
+```
+
+The focused scope deliberately remains the exact feature tag. Fourteen
+untagged non-simple-parameter strict-body companion paths are reserved for an
+explicit collateral check in the global-admission milestone; 11 need new
+negative provenance. An existing staging failure involving implicit `this`
+in parameter-expression direct eval remains visible. Pinned QuickJS
+2026-06-04 produces the same failure, so it is shared Test262/spec debt rather
+than an Oxide parity blocker. Until the full 102,037-row join is run, the
+canonical progress vector remains R3by.
+
 ## R3by global rest parameters admission
 
 R3by adds exactly `rest-parameters` and its 96 audited parse-negative paths to

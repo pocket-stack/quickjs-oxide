@@ -42,7 +42,7 @@ cargo run --quiet --bin qjs -- --print-result -e \
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-rest-parameters.sh
+./scripts/test-test262-default-parameters.sh
 ./scripts/test-test262-rest-parameters-global.sh --full
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh

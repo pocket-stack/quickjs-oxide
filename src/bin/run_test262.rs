@@ -264,6 +264,12 @@ const TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256: &str =
     "d55e0625b1f6878b7afa6885d82cf332909271ce1c2222100fe3a403a8455969";
 const TEST262_REST_PARAMETERS_MANIFEST_SHA256: &str =
     "2757425b53ce1f046c5c4a063b3931c9299c64f8c8911a764a83ff720407ad46";
+const TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256: &str =
+    "d55e0625b1f6878b7afa6885d82cf332909271ce1c2222100fe3a403a8455969";
+const TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256: &str =
+    "9c345c1e2d79911eec5d6c8750a730f3b3ed0dbefdcd483e0f9c92fcf66aeca0";
+const TEST262_DEFAULT_PARAMETERS_MANIFEST_SHA256: &str =
+    "b61ac2d12fffe88b77fa1edec117a795390de9bdf16ee65509393461bc7b2cff";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -902,6 +908,8 @@ enum OxideProfileKind {
     ComputedPropertyNamesGlobalCandidate,
     RestParametersParent,
     RestParametersCandidate,
+    DefaultParametersParent,
+    DefaultParametersCandidate,
     Map,
     Set,
     SymbolProtocols,
@@ -1161,6 +1169,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-rest-parameters-candidate.conf"),
             OxideProfileKind::RestParametersCandidate,
+        ),
+        (
+            root.join("tests/test262-default-parameters-parent.conf"),
+            OxideProfileKind::DefaultParametersParent,
+        ),
+        (
+            root.join("tests/test262-default-parameters-candidate.conf"),
+            OxideProfileKind::DefaultParametersCandidate,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1607,19 +1623,22 @@ fn verify_computed_property_names_global_transition_profile(
     Ok(profile_sha256)
 }
 
-fn verify_rest_parameters_transition_profile(
+fn verify_tag_transition_profile(
     options: &CoordinatorOptions,
+    cohort: &str,
     label: &str,
     profile_sha256: &'static str,
+    manifest_relative: &str,
+    manifest_sha256: &str,
 ) -> Result<&'static str, String> {
     verify_sha256(
         &options.oxide_profile,
         profile_sha256,
-        &format!("rest-parameters {label} Test262 capability profile"),
+        &format!("{cohort} {label} Test262 capability profile"),
     )?;
     if !options.tests.is_empty() {
         return Err(format!(
-            "the rest-parameters {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+            "the {cohort} {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
         ));
     }
     if options.all {
@@ -1627,28 +1646,27 @@ fn verify_rest_parameters_transition_profile(
     }
     let manifest = options.manifest.as_ref().ok_or_else(|| {
         format!(
-            "the rest-parameters {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+            "the {cohort} {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
         )
     })?;
-    let manifest_relative = "tests/test262-rest-parameters-universe.txt";
     let actual = fs::canonicalize(manifest).map_err(|error| {
         format!(
-            "resolve rest-parameters {label} manifest {}: {error}",
+            "resolve {cohort} {label} manifest {}: {error}",
             manifest.display()
         )
     })?;
     let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
-        .map_err(|error| format!("resolve pinned rest-parameters {label} manifest: {error}"))?;
+        .map_err(|error| format!("resolve pinned {cohort} {label} manifest: {error}"))?;
     if actual != expected {
         return Err(format!(
-            "the rest-parameters {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
+            "the {cohort} {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
             manifest.display()
         ));
     }
     verify_sha256(
         manifest,
-        TEST262_REST_PARAMETERS_MANIFEST_SHA256,
-        &format!("rest-parameters {label} Test262 manifest"),
+        manifest_sha256,
+        &format!("{cohort} {label} Test262 manifest"),
     )?;
     Ok(profile_sha256)
 }
@@ -2324,15 +2342,37 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
             )
         }
-        OxideProfileKind::RestParametersParent => verify_rest_parameters_transition_profile(
+        OxideProfileKind::RestParametersParent => verify_tag_transition_profile(
             options,
+            "rest-parameters",
             "parent",
             TEST262_REST_PARAMETERS_PARENT_PROFILE_SHA256,
+            "tests/test262-rest-parameters-universe.txt",
+            TEST262_REST_PARAMETERS_MANIFEST_SHA256,
         ),
-        OxideProfileKind::RestParametersCandidate => verify_rest_parameters_transition_profile(
+        OxideProfileKind::RestParametersCandidate => verify_tag_transition_profile(
             options,
+            "rest-parameters",
             "candidate",
             TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256,
+            "tests/test262-rest-parameters-universe.txt",
+            TEST262_REST_PARAMETERS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::DefaultParametersParent => verify_tag_transition_profile(
+            options,
+            "default-parameters",
+            "parent",
+            TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256,
+            "tests/test262-default-parameters-universe.txt",
+            TEST262_DEFAULT_PARAMETERS_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::DefaultParametersCandidate => verify_tag_transition_profile(
+            options,
+            "default-parameters",
+            "candidate",
+            TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
+            "tests/test262-default-parameters-universe.txt",
+            TEST262_DEFAULT_PARAMETERS_MANIFEST_SHA256,
         ),
         OxideProfileKind::Map => {
             verify_sha256(
@@ -2833,6 +2873,8 @@ mod cli_tests {
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
+        TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
+        TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -3268,6 +3310,16 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-rest-parameters-candidate.conf"))
                 .unwrap(),
             OxideProfileKind::RestParametersCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-default-parameters-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::DefaultParametersParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-default-parameters-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::DefaultParametersCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -5967,11 +6019,14 @@ mod cli_tests {
         );
     }
 
-    fn assert_rest_parameters_profile_binding(profile: &str, expected_hash: &str) {
-        for selection in [
-            ["--manifest", "tests/test262-rest-parameters-universe.txt"],
-            ["--all", ""],
-        ] {
+    fn assert_tag_transition_profile_binding(
+        profile: &str,
+        expected_hash: &str,
+        universe: &str,
+        rejected_manifest: &str,
+        rejected_test: &str,
+    ) {
+        for selection in [["--manifest", universe], ["--all", ""]] {
             let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
             if !selection[1].is_empty() {
                 arguments.push(selection[1]);
@@ -5984,11 +6039,8 @@ mod cli_tests {
         }
 
         for selection in [
-            [
-                "--test",
-                "test/language/expressions/function/rest-param-strict-body.js",
-            ],
-            ["--manifest", "tests/test262-rest-parameters-activation.txt"],
+            ["--test", rejected_test],
+            ["--manifest", rejected_manifest],
             ["--manifest", "Cargo.toml"],
         ] {
             let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
@@ -6027,7 +6079,35 @@ mod cli_tests {
                 TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256,
             ),
         ] {
-            assert_rest_parameters_profile_binding(profile, expected_hash);
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                "tests/test262-rest-parameters-universe.txt",
+                "tests/test262-rest-parameters-activation.txt",
+                "test/language/expressions/function/rest-param-strict-body.js",
+            );
+        }
+    }
+
+    #[test]
+    fn default_parameters_profiles_require_their_pinned_universe_manifest() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-default-parameters-parent.conf",
+                TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-default-parameters-candidate.conf",
+                TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                "tests/test262-default-parameters-universe.txt",
+                "tests/test262-identifier-defaults.txt",
+                "test/language/expressions/function/dflt-params.js",
+            );
         }
     }
 

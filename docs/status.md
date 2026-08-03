@@ -4,6 +4,56 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bz default parameters certification
+
+R3bz freezes the complete pinned Test262 `default-parameters` tag without yet
+promoting it into the live profile. The candidate differs from the 92-feature
+R3by parent by exactly that feature and all 219 parse-phase `SyntaxError`
+paths selected by the tag. It therefore contains 93 reviewed features and
+1,143 audited negative paths. The parent and candidate profile SHA-256 values
+are
+`d55e0625b1f6878b7afa6885d82cf332909271ce1c2222100fe3a403a8455969`
+and
+`9c345c1e2d79911eec5d6c8750a730f3b3ed0dbefdcd483e0f9c92fcf66aeca0`.
+
+The exhaustive metadata universe is 2,269 paths / 4,516 variants. The
+candidate activates 1,687 paths / 3,352 variants: 1,516 positive paths plus
+171 newly authenticated negative paths. Oxide passes all 3,352, as does
+pinned QuickJS 2026-06-04. Another 581 paths / 1,162 variants retain explicit
+dependencies on private class methods or object rest, while one path / two
+variants remains blocked by the unsupported `IsHTMLDDA` host capability.
+There are no module, configuration-skip, failure, timeout, harness, or
+negative-provenance outcomes in the runnable partition.
+All 219 tagged negative paths / 435 variants are also forced through the raw
+Oxide worker and pinned QuickJS, including the 48 paths whose normal candidate
+rows remain blocked by another feature; both engines pass every variant.
+
+Five- and eight-worker candidate reports are byte-identical. Their TSV/JSONL
+SHA-256 values are
+`a8047ac4a92d9d482eace99eec54bb361de70b8787c1c55f41a0c98bef89400f`
+and
+`4eb248df0b35c4ce6aa0e207de3c035d3d6792dabad90a383460b3246f8cb146`.
+The exact keyed parent/candidate join contains 3,352 outcome changes, 1,162
+diagnostic-only changes, and two unchanged host rows.
+
+Reproduce the certificate with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-default-parameters.sh
+```
+
+This milestone authenticates the exact feature-tag universe; it does not
+claim that every untagged parameter-expression interaction is finished. The
+next global admission must separately retain 14 non-simple-parameter
+strict-body companion paths (11 need new negative provenance) and the existing
+staging failure for implicit `this` inside a parameter-expression direct eval
+remains visible.
+Pinned QuickJS 2026-06-04 fails that staging case in the same way, so it is
+shared Test262/spec debt rather than an Oxide parity blocker. The exact tag
+projection is 3,352 new passes; admitting all companion provenance should add
+22 more passes outside the tag universe. R3by remains the canonical global
+vector until that complete join is executed.
+
 ## R3by global rest parameters admission
 
 R3by promotes the R3bx `rest-parameters` certificate into the live
