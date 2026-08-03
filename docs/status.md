@@ -4,6 +4,51 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bv computed property names certification
+
+R3bv freezes a scoped candidate for the core `computed-property-names`
+grammar and runtime semantics. The candidate adds exactly that tag to the
+R3bu profile, growing from 90 to 91 reviewed features while preserving all
+828 audited negative paths and the async-execution entry byte-for-byte. The
+parent and candidate profile SHA-256 values are
+`e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898`
+and
+`fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a`.
+
+The complete pinned tag universe contains 478 paths / 946 variants. Its
+disjoint partition is 220 paths / 439 dependency-clean activation variants,
+228 / 456 reason-only variants, 21 / 42 `Atomics.waitAsync` config skips, and
+nine module paths / variants. The frozen parent has zero runnable rows and
+records 895 `unsupported-feature`, 42 `skipped-feature`, and nine
+`unsupported-module` outcomes. The candidate passes all 439 activation rows,
+leaves the 456 residual dependencies explicit, and preserves the 51 config
+and module rows. Five- and eight-worker candidate reports are byte-identical;
+their TSV/JSONL SHA-256 values are
+`f29e969d8ce120fbbeba909265515a35219c68a621cc8892488137fc8fb55b56`
+and
+`ff01f50adcdc58253e55df2d13f01d960694c3a654548c3b7bc8a60148a5f3ba`.
+Pinned QuickJS 2026-06-04 independently passes the same 439 activation
+variants.
+
+The implementation follows QuickJS's corresponding parser/lowering shape:
+`js_parse_property_name` evaluates bracketed assignment expressions,
+object literals apply `OP_to_propkey` before their values, and class fields
+retain each computed key in a hidden lexical binding for later instance or
+static initialization. R3bv adds no runtime semantics; it authenticates the
+already implemented object, method, accessor, class, conversion-order, and
+function-name behavior against both engines.
+
+Reproduce the scoped evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-computed-property-names.sh
+```
+
+The projected global join is 439 outcome changes, 456 detail-only changes,
+51 unchanged in-universe rows, and 101,091 unchanged non-universe rows. Those
+whole-suite numbers remain a projection until a later global-admission
+milestone reruns and freezes the complete 102,037-key vector.
+
 ## R3bu global resizable ArrayBuffer admission
 
 R3bu adds exactly `resizable-arraybuffer` to the checksum-pinned global

@@ -246,6 +246,12 @@ const TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898";
 const TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_MANIFEST_SHA256: &str =
     "5b58d035de75cc264f1fa3497458d25b5fd0c525b8a0eebe9838e34aff54ab1e";
+const TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256: &str =
+    "e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898";
+const TEST262_COMPUTED_PROPERTY_NAMES_CANDIDATE_PROFILE_SHA256: &str =
+    "fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a";
+const TEST262_COMPUTED_PROPERTY_NAMES_MANIFEST_SHA256: &str =
+    "478f57b13521b3e93df055cc43c44a14c197cbed65f3616b0dbe24ec87d9d5b5";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
 const TEST262_MAP_MANIFEST_SHA256: &str =
@@ -878,6 +884,8 @@ enum OxideProfileKind {
     ResizableArrayBuffer,
     ResizableArrayBufferGlobalParent,
     ResizableArrayBufferGlobalCandidate,
+    ComputedPropertyNamesParent,
+    ComputedPropertyNamesCandidate,
     Map,
     Set,
     SymbolProtocols,
@@ -1113,6 +1121,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-resizable-arraybuffer-global-candidate.conf"),
             OxideProfileKind::ResizableArrayBufferGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-computed-property-names-parent.conf"),
+            OxideProfileKind::ComputedPropertyNamesParent,
+        ),
+        (
+            root.join("tests/test262-computed-property-names.conf"),
+            OxideProfileKind::ComputedPropertyNamesCandidate,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -2150,6 +2166,20 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256,
             )
         }
+        OxideProfileKind::ComputedPropertyNamesParent => verify_scoped_pinned_profile(
+            options,
+            "computed property names parent",
+            TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256,
+            "tests/test262-computed-property-names-universe.txt",
+            TEST262_COMPUTED_PROPERTY_NAMES_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::ComputedPropertyNamesCandidate => verify_scoped_pinned_profile(
+            options,
+            "computed property names candidate",
+            TEST262_COMPUTED_PROPERTY_NAMES_CANDIDATE_PROFILE_SHA256,
+            "tests/test262-computed-property-names-universe.txt",
+            TEST262_COMPUTED_PROPERTY_NAMES_MANIFEST_SHA256,
+        ),
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2644,7 +2674,9 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
-        TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
+        TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256,
+        TEST262_COMPUTED_PROPERTY_NAMES_CANDIDATE_PROFILE_SHA256,
+        TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -3043,6 +3075,18 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::ResizableArrayBufferGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-computed-property-names.conf"))
+                .unwrap(),
+            OxideProfileKind::ComputedPropertyNamesCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-computed-property-names-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ComputedPropertyNamesParent
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -5671,6 +5715,75 @@ mod cli_tests {
                 assert!(verify_oxide_profile(&options).is_err());
             }
         }
+    }
+
+    fn assert_computed_property_names_profile_binding(profile: &str, expected_hash: &str) {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            profile,
+            "--manifest",
+            "tests/test262-computed-property-names-universe.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/language/expressions/object/computed-property-name.js",
+            ],
+            [
+                "--manifest",
+                "tests/test262-computed-property-names-activation.txt",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+
+        assert!(
+            parse_error(&[
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                profile,
+                "--report",
+                "report.tsv",
+            ])
+            .contains("select exactly one")
+        );
+    }
+
+    #[test]
+    fn computed_property_names_candidate_requires_its_pinned_universe_manifest() {
+        assert_computed_property_names_profile_binding(
+            "tests/test262-computed-property-names.conf",
+            TEST262_COMPUTED_PROPERTY_NAMES_CANDIDATE_PROFILE_SHA256,
+        );
+    }
+
+    #[test]
+    fn computed_property_names_parent_requires_its_pinned_universe_manifest() {
+        assert_computed_property_names_profile_binding(
+            "tests/test262-computed-property-names-parent.conf",
+            TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256,
+        );
     }
 
     #[test]

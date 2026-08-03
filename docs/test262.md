@@ -6,6 +6,36 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3bv computed property names certification
+
+R3bv creates a checksum-bound scoped candidate for
+`computed-property-names`; it does not yet add the tag to the live global
+profile. The 91-tag candidate differs from the R3bu parent by exactly that one
+feature, while the 828 audited negatives and async-execution entry remain
+byte-identical. Its SHA-256 is
+`fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a`.
+
+Pinned metadata yields 478 paths / 946 variants, partitioned without overlap
+into 220 / 439 activation, 228 / 456 residual-capability, 21 / 42
+QuickJS-config-skip, and nine / nine module rows. The candidate report is
+exactly `pass=439 skipped-feature=42 unsupported-feature=456
+unsupported-module=9`; its TSV/JSONL SHA-256 values are
+`f29e969d8ce120fbbeba909265515a35219c68a621cc8892488137fc8fb55b56`
+and
+`ff01f50adcdc58253e55df2d13f01d960694c3a654548c3b7bc8a60148a5f3ba`.
+Pinned QuickJS 2026-06-04 also passes all 439 activation variants. The gate
+verifies the exhaustive metadata-derived universe, both profile sections,
+all path and variant-key fingerprints, the parent/candidate keyed transition,
+both report formats, and the QuickJS differential:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-computed-property-names.sh
+```
+
+The eventual global admission is expected to expose 439 new passes and only
+narrow 456 residual diagnostics, but the canonical 102,037-row baseline stays
+at R3bu until that full join is rerun and independently checked.
+
 ## R3bu global resizable ArrayBuffer admission
 
 R3bu adds exactly `resizable-arraybuffer` to the live capability profile. The
@@ -7391,6 +7421,9 @@ dependency-clean `resizable-arraybuffer` variants, and R3bu admits that tag:
 diagnostic detail, and the other 101,115 rows remain unchanged. The current
 vector reaches 59,068/102,037 passes with 59,587 runnable variants, 19,057
 `unsupported-feature` outcomes, and 24,024 total unsupported outcomes.
+R3bv then certifies all 439 dependency-clean `computed-property-names`
+variants against both engines and freezes the remaining 507 tagged rows; it
+is still scoped, so the R3bu canonical vector remains unchanged.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
