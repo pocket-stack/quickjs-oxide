@@ -4,6 +4,40 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3bw global computed property names admission
+
+R3bw promotes the R3bv `computed-property-names` candidate into the live
+checksum-pinned Test262 profile. The profile now contains 91 reviewed feature
+tags, preserves the same 828 audited negative paths and async execution entry,
+and has SHA-256
+`fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a`.
+This is a capability/evidence promotion of semantics already authenticated
+against QuickJS 2026-06-04, not a new runtime implementation.
+
+The complete 478-path / 946-variant tagged join changes exactly the expected
+895 rows: 439 dependency-clean variants move from `unsupported-feature` to
+`pass`, while 456 variants retain `unsupported-feature` with only the admitted
+tag removed from their residual dependency detail. All 42 configuration skips
+and nine module rows remain byte-identical. The other 101,091 full-suite rows
+also remain byte-identical, and no previous pass regresses.
+
+Two independent full-suite constructions agree byte-for-byte. The canonical
+102,037-row vector now contains 59,507 passes, 60,026 runnable variants,
+18,618 `unsupported-feature` outcomes, and 23,585 total unsupported outcomes.
+Its TSV/JSONL SHA-256 values are
+`574d90530b5815329e65ab55d94bce4dd684233f1b296a888c87eced9077ba69`
+and
+`6d7ec82af17368ebea46213633efcec331198cf904db457434b7493b003e9616`.
+
+Reproduce the focused, admission, and canonical evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-computed-property-names.sh
+TEST262_WORKERS=8 ./scripts/test-test262-computed-property-names-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-computed-property-names-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3bv computed property names certification
 
 R3bv freezes a scoped candidate for the core `computed-property-names`
@@ -47,7 +81,8 @@ TEST262_WORKERS=8 ./scripts/test-test262-computed-property-names.sh
 The projected global join is 439 outcome changes, 456 detail-only changes,
 51 unchanged in-universe rows, and 101,091 unchanged non-universe rows. Those
 whole-suite numbers remain a projection until a later global-admission
-milestone reruns and freezes the complete 102,037-key vector.
+milestone reruns and freezes the complete 102,037-key vector. R3bw above is
+that admission and confirms the projection exactly.
 
 ## R3bu global resizable ArrayBuffer admission
 
@@ -86,7 +121,7 @@ and
 
 The exact 102,037-key full join has 762 outcome changes, 160 detail-only
 changes, four unchanged config rows, and 101,111 byte-identical non-universe
-rows. No previous pass regresses. The canonical vector now contains 59,068
+rows. No previous pass regresses. The R3bu vector contained 59,068
 passes, 59,587 runnable variants, 19,057 `unsupported-feature` outcomes, and
 24,024 total unsupported outcomes. Its rates are 57.89% raw, a 70.69%
 conservative target-scope lower bound after the 18,475 pinned QuickJS target
@@ -635,7 +670,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 90 reviewed feature tags and 828 exact audited
+  capability profile now admits 91 reviewed feature tags and 828 exact audited
   negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -692,22 +727,25 @@ workstream. Build and architecture details live in
   unchanged. R3bt then authenticates the complete 762-variant
   `resizable-arraybuffer` activation and its previously uncovered spillover;
   R3bu admits that tag globally while keeping all residual dependencies and
-  config skips explicit.
+  config skips explicit. R3bv then authenticates the complete
+  `computed-property-names` universe against pinned QuickJS, and R3bw admits
+  that tag globally while preserving its residual class-field, config, and
+  module boundaries.
   The cumulative
   TypedArray scoped gate still
   passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 59,068 passes and 59,587 runnable variants:
-  57.89% raw,
-  a 70.69% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.21% among the 59,538 variants with a non-unsupported observed outcome. It
-  records 19,057 `unsupported-feature` and 24,024 total unsupported outcomes,
+  measurement has 59,507 passes and 60,026 runnable variants:
+  58.32% raw,
+  a 71.21% lower bound after the 18,475 pinned QuickJS target exclusions, or
+  99.22% among the 59,977 variants with a non-unsupported observed outcome. It
+  records 18,618 `unsupported-feature` and 23,585 total unsupported outcomes,
   11 parse failures, 400 runtime failures, and 57 harness failures. The exact
-  R3bu join preserves all 102,037 keys with 762 outcome changes, 160
-  detail-only changes, 101,115 unchanged rows, and no previous-pass
+  R3bw join preserves all 102,037 keys with 439 outcome changes, 456
+  detail-only changes, 101,142 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `a21d195a1a6209c5df6b7080a9a941d773c87abeed7ec63961b5896b1b294045`
+  `574d90530b5815329e65ab55d94bce4dd684233f1b296a888c87eced9077ba69`
   and
-  `834754d9d6ab62606c3463b351932dedade8e9f78ba6ea835a87aa743cf9fb41`.
+  `6d7ec82af17368ebea46213633efcec331198cf904db457434b7493b003e9616`.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
   explicit frontiers.
   The fixed smoke now

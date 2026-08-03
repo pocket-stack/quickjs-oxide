@@ -244,22 +244,54 @@ awk -F= 'NF && $1 !~ /^#/ {print $1}' "$full_baseline" | sort \
 diff -u "$tmp_dir/expected-full-baseline-keys.txt" \
     "$tmp_dir/actual-full-baseline-keys.txt"
 parent_full_summary=$(read_value parent_full_summary)
+candidate_full_summary=$(read_value expected_candidate_full_summary)
+parent_canonical_runnable=$(read_value parent_full_runnable)
+parent_canonical_passes=$(read_value parent_full_passes)
+parent_canonical_tsv=$(read_value parent_full_tsv_sha256)
+parent_canonical_jsonl=$(read_value parent_full_jsonl_sha256)
+parent_canonical_unsupported_feature=$(read_value parent_full_unsupported_feature)
+parent_canonical_total_unsupported=$(read_value parent_full_total_unsupported)
+candidate_canonical_runnable=$(read_value expected_candidate_full_runnable)
+candidate_canonical_passes=$(read_value expected_candidate_full_passes)
+candidate_canonical_tsv=$(read_value expected_candidate_full_tsv_sha256)
+candidate_canonical_jsonl=$(read_value expected_candidate_full_jsonl_sha256)
+candidate_canonical_unsupported_feature=$(read_value expected_candidate_full_unsupported_feature)
+candidate_canonical_total_unsupported=$(read_value expected_candidate_full_total_unsupported)
+canonical_runnable=$(read_full_value runnable)
+canonical_passes=$(read_full_value passes)
+canonical_tsv=$(read_full_value tsv_sha256)
+canonical_jsonl=$(read_full_value jsonl_sha256)
+canonical_summary=$(read_full_value summary)
 if [[ "$(read_full_value schema)" != "$(read_value schema)" \
     || "$(read_full_value timeout_ms)" != "$(read_value timeout_ms)" \
-    || "$(read_full_value variants)" != "$(read_value full_variants)" \
-    || "$(read_full_value runnable)" != "$(read_value parent_full_runnable)" \
-    || "$(read_full_value passes)" != "$(read_value parent_full_passes)" \
-    || "$(read_full_value tsv_sha256)" != "$(read_value parent_full_tsv_sha256)" \
-    || "$(read_full_value jsonl_sha256)" \
-        != "$(read_value parent_full_jsonl_sha256)" \
-    || "$(read_full_value summary)" != "$parent_full_summary" \
-    || "$(summary_count "$parent_full_summary" pass)" \
-        != "$(read_value parent_full_passes)" \
-    || "$(summary_count "$parent_full_summary" unsupported-feature)" \
-        != "$(read_value parent_full_unsupported_feature)" \
-    || "$(unsupported_total "$parent_full_summary")" \
-        != "$(read_value parent_full_total_unsupported)" ]]; then
-    echo "error: canonical R3bu full baseline is not the frozen parent receipt" >&2
+    || "$(read_full_value variants)" != "$(read_value full_variants)" ]]; then
+    echo "error: canonical full baseline metadata drifted" >&2
+    exit 1
+fi
+if [[ "$canonical_runnable" == "$parent_canonical_runnable" \
+    && "$canonical_passes" == "$parent_canonical_passes" \
+    && "$canonical_tsv" == "$parent_canonical_tsv" \
+    && "$canonical_jsonl" == "$parent_canonical_jsonl" \
+    && "$canonical_summary" == "$parent_full_summary" ]]; then
+    canonical_unsupported_feature=$parent_canonical_unsupported_feature
+    canonical_total_unsupported=$parent_canonical_total_unsupported
+elif [[ "$canonical_runnable" == "$candidate_canonical_runnable" \
+    && "$canonical_passes" == "$candidate_canonical_passes" \
+    && "$canonical_tsv" == "$candidate_canonical_tsv" \
+    && "$canonical_jsonl" == "$candidate_canonical_jsonl" \
+    && "$canonical_summary" == "$candidate_full_summary" ]]; then
+    canonical_unsupported_feature=$candidate_canonical_unsupported_feature
+    canonical_total_unsupported=$candidate_canonical_total_unsupported
+else
+    echo "error: canonical full receipt is neither the frozen R3bu parent nor R3bw candidate" >&2
+    exit 1
+fi
+if [[ "$(summary_count "$canonical_summary" pass)" != "$canonical_passes" \
+    || "$(summary_count "$canonical_summary" unsupported-feature)" \
+        != "$canonical_unsupported_feature" \
+    || "$(unsupported_total "$canonical_summary")" \
+        != "$canonical_total_unsupported" ]]; then
+    echo "error: canonical full summary arithmetic drifted" >&2
     exit 1
 fi
 
@@ -961,7 +993,7 @@ verify_transition module "$(read_value module_variants)"
 awk -F= 'NF && $1 !~ /^#/ {print $1}' "$baseline" | sort \
     >"$tmp_dir/all-baseline-keys.txt"
 sort -u "$consumed_keys" >"$tmp_dir/consumed-baseline-keys-sorted.txt"
-if [[ "$(wc -l <"$tmp_dir/all-baseline-keys.txt" | tr -d '[:space:]')" != 154 ]]; then
+if [[ "$(wc -l <"$tmp_dir/all-baseline-keys.txt" | tr -d '[:space:]')" != 156 ]]; then
     echo "error: computed-property-names baseline key schema drifted" >&2
     exit 1
 fi

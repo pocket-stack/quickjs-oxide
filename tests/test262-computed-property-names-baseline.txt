@@ -169,3 +169,5 @@ expected_candidate_full_passes=59507
 expected_candidate_full_unsupported_feature=18618
 expected_candidate_full_total_unsupported=23585
 expected_candidate_full_summary=fail-parse=11 fail-runtime=400 harness-error=57 pass=59507 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=18618 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-eval-script=44 unsupported-host-gc=26 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3473 unsupported-parser=26 unsupported-runtime=23
+expected_candidate_full_tsv_sha256=574d90530b5815329e65ab55d94bce4dd684233f1b296a888c87eced9077ba69
+expected_candidate_full_jsonl_sha256=6d7ec82af17368ebea46213633efcec331198cf904db457434b7493b003e9616

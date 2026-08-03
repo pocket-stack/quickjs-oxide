@@ -6,6 +6,37 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3bw global computed property names admission
+
+R3bw adds exactly `computed-property-names` to the live capability profile.
+The 91-tag profile SHA-256 is
+`fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a`;
+its 828 audited negative paths and single async-execution entry are unchanged
+from R3bu.
+
+The complete 946-row tag join contains 439 outcome changes, 456 detail-only
+changes, 42 unchanged config skips, and nine unchanged module rows. The full
+102,037-key join preserves all 101,091 non-universe rows and records zero
+previous-pass regressions. The new canonical vector is exactly:
+
+- 59,507 pass and 60,026 runnable;
+- 18,618 `unsupported-feature` and 23,585 total unsupported;
+- 11 parse failures, 400 runtime failures, 57 harness failures, and two
+  timeouts;
+- TSV SHA-256
+  `574d90530b5815329e65ab55d94bce4dd684233f1b296a888c87eced9077ba69`;
+- JSONL SHA-256
+  `6d7ec82af17368ebea46213633efcec331198cf904db457434b7493b003e9616`.
+
+The gate cross-checks TSV and JSONL projections, the complete parent/candidate
+tag transition, all four tagged partitions, the byte-identical non-universe,
+the canonical 102,037-key join, and the focused QuickJS oracle:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-computed-property-names-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-computed-property-names-global.sh --full
+```
+
 ## R3bv computed property names certification
 
 R3bv creates a checksum-bound scoped candidate for
@@ -34,7 +65,8 @@ TEST262_WORKERS=8 ./scripts/test-test262-computed-property-names.sh
 
 The eventual global admission is expected to expose 439 new passes and only
 narrow 456 residual diagnostics, but the canonical 102,037-row baseline stays
-at R3bu until that full join is rerun and independently checked.
+at R3bu until that full join is rerun and independently checked. R3bw above
+performs that admission and confirms the projection exactly.
 
 ## R3bu global resizable ArrayBuffer admission
 
@@ -72,7 +104,7 @@ and
 The complete 102,037-key join contains exactly 762
 `unsupported-feature -> pass` transitions and 160 diagnostic-only changes.
 All four config skips and all 101,111 non-universe rows are unchanged, and no
-previous pass regresses. The canonical vector reaches 59,068 passes with
+previous pass regresses. The R3bu vector reached 59,068 passes with
 59,587 runnable variants, 19,057 `unsupported-feature` outcomes, and 24,024
 total unsupported outcomes. That is 57.89% raw, a 70.69% conservative
 target-scope lower bound after the 18,475 pinned QuickJS target exclusions,
@@ -356,8 +388,8 @@ classified vector. R3bp later performs that global admission above.
 - Test262 commit: `5c8206929d81b2d3d727ca6aac56c18358c8d790`
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
-- quickjs-oxide 90-tag capability profile SHA-256:
-  `e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898`
+- quickjs-oxide 91-tag capability profile SHA-256:
+  `fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -402,8 +434,9 @@ The cumulative scoped TypedArray gate reaches 2,254 paths / 4,463 variants.
 R3br separately implements and authenticates the Uint8Array codec surface, and
 R3bs admits its feature tag globally. R3bt authenticates the complete
 resizable ArrayBuffer activation and spillover, and R3bu admits its feature
-tag globally. Modules, SharedArrayBuffer/Atomics, and broad built-ins remain
-explicit frontiers.
+tag globally. R3bv authenticates computed property names, and R3bw admits that
+feature globally. Modules, SharedArrayBuffer/Atomics, and broad built-ins
+remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -443,30 +476,30 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The R3bu canonical summary is:
+every outcome in canonical order. The R3bw canonical summary is:
 
-- 59,068 pass;
+- 59,507 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 24,024 are classified as unsupported because of a feature, mode, host
+- 23,585 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
-  provenance, including 19,057 `unsupported-feature` variants;
+  provenance, including 18,618 `unsupported-feature` variants;
 - 11 fail to parse, 400 fail at runtime, 57 fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admits 59,587 variants to execution. That count includes variants
+The runner admits 60,026 variants to execution. That count includes variants
 which then report a typed parser/runtime frontier or harness failure rather
 than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 57.89% (`59,068 / 102,037`);
-- conservative target-scope lower bound: 70.69%
-  (`59,068 / (102,037 - 18,475)`);
-- pass rate among variants with a non-unsupported observed outcome: 99.21%
-  (`59,068 / 59,538`).
+- raw suite pass rate: 58.32% (`59,507 / 102,037`);
+- conservative target-scope lower bound: 71.21%
+  (`59,507 / (102,037 - 18,475)`);
+- pass rate among variants with a non-unsupported observed outcome: 99.22%
+  (`59,507 / 59,977`).
 
-The 70.69% figure is the useful whole-project progress floor, not a claim that
-the engine is 70.69% conformant. The 99.21% conditional rate measures quality
+The 71.21% figure is the useful whole-project progress floor, not a claim that
+the engine is 71.21% conformant. The 99.22% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -494,7 +527,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 90
+or pinned-target-error outcomes. The capability profile currently admits 91
 reviewed Test262 feature tags and 828 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -521,10 +554,10 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The R3bu canonical full TSV/JSONL SHA-256 values are
-`a21d195a1a6209c5df6b7080a9a941d773c87abeed7ec63961b5896b1b294045`
+The R3bw canonical full TSV/JSONL SHA-256 values are
+`574d90530b5815329e65ab55d94bce4dd684233f1b296a888c87eced9077ba69`
 and
-`834754d9d6ab62606c3463b351932dedade8e9f78ba6ea835a87aa743cf9fb41`.
+`6d7ec82af17368ebea46213633efcec331198cf904db457434b7493b003e9616`.
 
 ## Milestone policy
 
@@ -7418,12 +7451,17 @@ move from `unsupported-feature` to `pass`; the other 101,899 rows remain
 unchanged and no previous pass regresses. R3bt then authenticates all 762
 dependency-clean `resizable-arraybuffer` variants, and R3bu admits that tag:
 762 outcomes change to `pass`, 160 residual-capability rows change only their
-diagnostic detail, and the other 101,115 rows remain unchanged. The current
-vector reaches 59,068/102,037 passes with 59,587 runnable variants, 19,057
+diagnostic detail, and the other 101,115 rows remain unchanged. The R3bu
+vector reached 59,068/102,037 passes with 59,587 runnable variants, 19,057
 `unsupported-feature` outcomes, and 24,024 total unsupported outcomes.
 R3bv then certifies all 439 dependency-clean `computed-property-names`
 variants against both engines and freezes the remaining 507 tagged rows; it
 is still scoped, so the R3bu canonical vector remains unchanged.
+R3bw then admits that tag globally: 439 outcomes change to `pass`, 456 rows
+change only their residual-capability detail, and 101,142 rows remain
+unchanged. The current vector reaches 59,507/102,037 passes with 60,026
+runnable variants, 18,618 `unsupported-feature` outcomes, and 23,585 total
+unsupported outcomes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

@@ -302,11 +302,19 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-resizable-arraybuffer-global-candidate.conf"
     ));
+    const COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-computed-property-names-global-parent.conf"
+    ));
+    const COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-computed-property-names-global-candidate.conf"
+    ));
     const PROPERTY_POSITIVE_PATHS: [&str; 2] = [
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 90] = [
+    const EXPECTED_FEATURES: [&str; 91] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -364,6 +372,7 @@ mod tests {
         "async-iteration",
         "change-array-by-copy",
         "coalesce-expression",
+        "computed-property-names",
         "const",
         "destructuring-binding",
         "error-cause",
@@ -755,6 +764,10 @@ mod tests {
             OxideProfile::parse(RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE).unwrap();
         let resizable_arraybuffer_global_candidate =
             OxideProfile::parse(RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let computed_property_names_global_parent =
+            OxideProfile::parse(COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE).unwrap();
+        let computed_property_names_global_candidate =
+            OxideProfile::parse(COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -935,7 +948,34 @@ mod tests {
             resizable_arraybuffer_global_candidate.allows_async_execution(),
             resizable_arraybuffer_global_parent.allows_async_execution()
         );
-        assert_eq!(profile, resizable_arraybuffer_global_candidate);
+        assert_eq!(
+            computed_property_names_global_parent,
+            resizable_arraybuffer_global_candidate
+        );
+        assert_eq!(
+            computed_property_names_global_candidate
+                .features
+                .difference(&computed_property_names_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["computed-property-names"]
+        );
+        assert!(
+            computed_property_names_global_parent
+                .features
+                .difference(&computed_property_names_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            computed_property_names_global_candidate.audited_negative_tests,
+            computed_property_names_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            computed_property_names_global_candidate.allows_async_execution(),
+            computed_property_names_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, computed_property_names_global_candidate);
     }
 
     #[test]
@@ -946,7 +986,7 @@ mod tests {
                 Path::new("test/not-audited.js"),
                 &[
                     "class".to_owned(),
-                    "computed-property-names".to_owned(),
+                    "class-fields-private".to_owned(),
                     "class".to_owned(),
                 ],
                 true,
@@ -956,7 +996,7 @@ mod tests {
         assert_eq!(classification.outcome, "unsupported-feature");
         assert_eq!(
             classification.detail,
-            "quickjs-oxide does not declare Test262 feature support: class, computed-property-names"
+            "quickjs-oxide does not declare Test262 feature support: class, class-fields-private"
         );
     }
 

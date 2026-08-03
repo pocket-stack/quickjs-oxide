@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898";
+    "fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -251,6 +251,12 @@ const TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256: &str =
 const TEST262_COMPUTED_PROPERTY_NAMES_CANDIDATE_PROFILE_SHA256: &str =
     "fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a";
 const TEST262_COMPUTED_PROPERTY_NAMES_MANIFEST_SHA256: &str =
+    "478f57b13521b3e93df055cc43c44a14c197cbed65f3616b0dbe24ec87d9d5b5";
+const TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "e9c1ca295ca9270391f128c3f58484be3ac03a2a649b0170b551d41ab542f898";
+const TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "fc2716ff2ef12fda73c33db0603525f100713ff3b6df0ac8205977a20717ea3a";
+const TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_MANIFEST_SHA256: &str =
     "478f57b13521b3e93df055cc43c44a14c197cbed65f3616b0dbe24ec87d9d5b5";
 const TEST262_MAP_PROFILE_SHA256: &str =
     "16ab6bfe18540aae398c847905f492491e81500045b45a6bfb21f447fd537ea2";
@@ -886,6 +892,8 @@ enum OxideProfileKind {
     ResizableArrayBufferGlobalCandidate,
     ComputedPropertyNamesParent,
     ComputedPropertyNamesCandidate,
+    ComputedPropertyNamesGlobalParent,
+    ComputedPropertyNamesGlobalCandidate,
     Map,
     Set,
     SymbolProtocols,
@@ -1129,6 +1137,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-computed-property-names.conf"),
             OxideProfileKind::ComputedPropertyNamesCandidate,
+        ),
+        (
+            root.join("tests/test262-computed-property-names-global-parent.conf"),
+            OxideProfileKind::ComputedPropertyNamesGlobalParent,
+        ),
+        (
+            root.join("tests/test262-computed-property-names-global-candidate.conf"),
+            OxideProfileKind::ComputedPropertyNamesGlobalCandidate,
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
@@ -1519,6 +1535,58 @@ fn verify_resizable_arraybuffer_global_transition_profile(
         manifest,
         TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_MANIFEST_SHA256,
         &format!("historical resizable-arraybuffer transition {label} Test262 manifest"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_computed_property_names_global_transition_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!(
+            "historical computed-property-names transition {label} Test262 capability profile"
+        ),
+    )?;
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the historical computed-property-names transition {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the historical computed-property-names transition {label} Test262 capability profile requires --all or its pinned tag-universe manifest"
+        )
+    })?;
+    let manifest_relative = "tests/test262-computed-property-names-universe.txt";
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve historical computed-property-names transition {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
+        .map_err(|error| {
+            format!(
+                "resolve pinned historical computed-property-names transition {label} manifest: {error}"
+            )
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the historical computed-property-names transition {label} Test262 capability profile requires --all or {manifest_relative}, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_MANIFEST_SHA256,
+        &format!("historical computed-property-names transition {label} Test262 manifest"),
     )?;
     Ok(profile_sha256)
 }
@@ -2180,6 +2248,20 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-computed-property-names-universe.txt",
             TEST262_COMPUTED_PROPERTY_NAMES_MANIFEST_SHA256,
         ),
+        OxideProfileKind::ComputedPropertyNamesGlobalParent => {
+            verify_computed_property_names_global_transition_profile(
+                options,
+                "pre-admission global parent",
+                TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256,
+            )
+        }
+        OxideProfileKind::ComputedPropertyNamesGlobalCandidate => {
+            verify_computed_property_names_global_transition_profile(
+                options,
+                "computed property names global candidate",
+                TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            )
+        }
         OxideProfileKind::Map => {
             verify_sha256(
                 &options.oxide_profile,
@@ -2676,6 +2758,8 @@ mod cli_tests {
         TEST262_CLASS_PRIVATE_METHODS_PROFILE_SHA256, TEST262_CLASS_PUBLIC_INIT_PROFILE_SHA256,
         TEST262_CLASS_SYNC_MATRIX_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_CANDIDATE_PROFILE_SHA256,
+        TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
@@ -3087,6 +3171,20 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::ComputedPropertyNamesParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-computed-property-names-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ComputedPropertyNamesGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-computed-property-names-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ComputedPropertyNamesGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-map.conf")).unwrap(),
@@ -5784,6 +5882,76 @@ mod cli_tests {
             "tests/test262-computed-property-names-parent.conf",
             TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256,
         );
+    }
+
+    #[test]
+    fn computed_property_names_global_profiles_require_the_universe_manifest_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-computed-property-names-global-parent.conf",
+                TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-computed-property-names-global-candidate.conf",
+                TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                [
+                    "--manifest",
+                    "tests/test262-computed-property-names-universe.txt",
+                ],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+            }
+
+            for selection in [
+                [
+                    "--test",
+                    "test/language/expressions/object/computed-property-name.js",
+                ],
+                [
+                    "--manifest",
+                    "tests/test262-computed-property-names-activation.txt",
+                ],
+                [
+                    "--manifest",
+                    "tests/test262-computed-property-names-reason-only.txt",
+                ],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                arguments.push(selection[1]);
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+
+            assert!(
+                parse_error(&[
+                    "--suite",
+                    "suite",
+                    "--oxide-profile",
+                    profile,
+                    "--report",
+                    "report.tsv",
+                ])
+                .contains("select exactly one")
+            );
+        }
     }
 
     #[test]
