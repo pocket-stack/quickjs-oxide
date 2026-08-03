@@ -67,6 +67,15 @@ new Counter(40).add(2);`,
 promise instanceof Promise;`,
   },
   {
+    id: "weak-map",
+    label: "WeakMap identity",
+    source: `var key = {};
+var answers = new WeakMap([[key, 40]]);
+answers.set(key, answers.get(key) + 2);
+
+answers.get(key);`,
+  },
+  {
     id: "array-pipeline",
     label: "Array pipeline",
     source: `[3, 7, 11]

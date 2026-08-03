@@ -4,6 +4,53 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cd WeakMap and WeakSet runtime
+
+R3cd implements genuine QuickJS-shaped `WeakMap` and `WeakSet` objects rather
+than admitting their names through the capability profile. Object keys and
+non-registered Symbol keys use non-owning generational identities; WeakMap
+values remain strong edges. The heap uses expected-O(1) hash storage, prunes
+weak records in QuickJS construction order, and preserves QuickJS's explicit
+GC lifetime boundaries. Constructors cache their adder and iterator `next`,
+perform IteratorClose at the same abrupt-completion boundaries, select the
+`new.target` realm fallback, and expose `getOrInsert` /
+`getOrInsertComputed` with QuickJS-compatible reentrancy.
+
+The checksum-bound source universe contains 264 paths: the 231-path built-in
+core plus every metadata-tagged WeakMap/WeakSet consumer, including 33 paths
+outside that core. Seven paths retain explicit unmet dependencies (two
+`cross-realm`, two `host-gc-required`, and three WeakRef/FinalizationRegistry
+paths), leaving 257 paths / 513 variants. Oxide and pinned QuickJS 2026-06-04
+both pass all 513. Separate Rust/QuickJS vectors cover the constructor graph
+and descriptors, object and Symbol keys, iterator close, upsert reentrancy,
+brand errors, stale-key mutation, and cross-realm fallback. A 100,000-key heap
+test protects the deep-WeakMap complexity boundary.
+
+Without changing the 95-tag global profile, the complete 102,037-variant run
+moves from 63,831 to 64,178 passes. `fail-runtime` falls from 400 to 110 and
+all 57 former `harness-error` rows become passes; those include every variant
+from the separately frozen 29-path TypedArray harness audit. All other summary
+categories and the 64,350 runnable count are unchanged. The canonical
+TSV/JSONL SHA-256 values are
+`a7dbb819f224c1710843dab51033c4c32e7eb5c47cbad272e53b77031eb9babd`
+and
+`73249b49ff9f4081c8de1f9f3ca802de8eac6506c2b2c4dd8152f939832b5eaa`.
+Of the expanded focused manifest, 280 variants already pass under the
+conservative global profile and 233 remain classified as
+`unsupported-feature`; promoting the weak-collection tags is a separate
+admission milestone, not hidden inside this runtime change.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-weak-collections.sh
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+This advances the Feature Parity implementation and its raw full-suite
+behavior; it does not claim that host GC, cross-realm Test262 hooks, WeakRef,
+or FinalizationRegistry are complete.
+
 ## R3cc global object-rest admission
 
 R3cc promotes the complete pinned `object-rest` metadata tag while separately
@@ -40,8 +87,6 @@ Reproduce the evidence with:
 ```sh
 TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh --check
 TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh
-TEST262_WORKERS=8 TEST262_FULL_WORKERS=8 \
-  ./scripts/test-test262-object-rest-global.sh --full
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 

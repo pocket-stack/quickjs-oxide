@@ -502,6 +502,12 @@ impl Runtime {
             NativeFunctionId::MapIteratorNext => self.call_map_iterator_next(realm, invocation),
             NativeFunctionId::Set(kind) => self.call_set_native(realm, kind, invocation, arguments),
             NativeFunctionId::SetIteratorNext => self.call_set_iterator_next(realm, invocation),
+            NativeFunctionId::WeakMap(kind) => {
+                self.call_weak_map_native(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::WeakSet(kind) => {
+                self.call_weak_set_native(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::ArrayBuffer(kind) => {
                 self.call_array_buffer_native(realm, kind, invocation, arguments)
             }

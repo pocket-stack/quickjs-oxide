@@ -6,6 +6,59 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3cd WeakMap and WeakSet runtime
+
+R3cd freezes a 264-path WeakMap/WeakSet source universe: a 231-path core from
+both built-in directories, the adjacent Object.seal tests, and three named
+SpiderMonkey staging paths, joined with all 110 metadata-tagged paths. The
+union includes 33 tagged consumers outside the core. Metadata excludes exactly
+seven paths from the focused execution boundary: two `cross-realm`, two
+`host-gc-required`, and three which also require WeakRef or
+FinalizationRegistry. The pinned manifest therefore contains 257 paths / 513
+sloppy-strict variants, with one `onlyStrict` path and four checksum-bound
+`generated` paths. Its scoped profile admits exactly 11 dependency tags and no
+negative-test or host-execution exceptions.
+
+Pinned QuickJS 2026-06-04 and Oxide both pass all 513 variants with zero
+failure, unsupported, or skipped outcomes. The focused TSV/JSONL SHA-256
+values are
+`6fef7950676c1578300a52d6bdd6935892163428b39b1424f3d97f3db0275872`
+and
+`855047a97f9626c8b3ddad5a72e16e19dd60c7f038c2f5568c933c7b44e757d3`.
+The profile and manifest-file hashes are
+`a23cfb3270eb40eb3839413f3dacaf75fee2cecaca9d1b0ecc40d2c6c3c804c1`
+and
+`6189cde88a7fcb15222d536d19f3e8172be66e35de24f47107e0c67910b92b7a`.
+
+The independent canonical run deliberately keeps the existing 95-tag global
+profile unchanged. Even at that conservative boundary, implemented weak
+collections change the raw vector by 347 passes: `fail-runtime` drops from
+400 to 110, and `harness-error` drops from 57 to zero. The separately
+checksum-bound 29-path TypedArray audit accounts for all 57 of its variants,
+which now pass after the SpiderMonkey harness can construct `WeakMap`.
+The canonical vector is now:
+
+- 64,178 pass and 64,350 runnable out of 102,037 variants;
+- 110 `fail-runtime`, 14,316 `unsupported-feature`, 3,451
+  `unsupported-negative-provenance`, and 19,261 total unsupported;
+- TSV SHA-256
+  `a7dbb819f224c1710843dab51033c4c32e7eb5c47cbad272e53b77031eb9babd`;
+- JSONL SHA-256
+  `73249b49ff9f4081c8de1f9f3ca802de8eac6506c2b2c4dd8152f939832b5eaa`.
+
+Of the focused 513 variants, 280 already run and pass under the global profile;
+233 remain conservatively `unsupported-feature` until a separate global
+tag-admission audit. Reproduce both receipts with:
+
+```sh
+./scripts/test-test262-weak-collections.sh
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+The seven dependency- or host-blocked source paths and the broader
+WeakRef/FinalizationRegistry surface remain explicit future work; this receipt
+is not a full Feature Parity claim.
+
 ## R3cc global object-rest admission
 
 R3cc admits `object-rest` into the live profile and binds the exact delta to
@@ -62,8 +115,6 @@ Reproduce it with:
 ```sh
 TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh --check
 TEST262_WORKERS=8 ./scripts/test-test262-object-rest-global.sh
-TEST262_WORKERS=8 TEST262_FULL_WORKERS=8 \
-  ./scripts/test-test262-object-rest-global.sh --full
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 

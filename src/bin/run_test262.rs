@@ -296,6 +296,10 @@ const TEST262_SET_PROFILE_SHA256: &str =
     "6869e9d28fff1d5bd4e5b698dcdf6ee677b9134a91781ad7abe226200d669455";
 const TEST262_SET_MANIFEST_SHA256: &str =
     "0f560c202e9463ff4896796be6e924db984e25bc3e95ae2604a54ce9dee61e9f";
+const TEST262_WEAK_COLLECTIONS_PROFILE_SHA256: &str =
+    "a23cfb3270eb40eb3839413f3dacaf75fee2cecaca9d1b0ecc40d2c6c3c804c1";
+const TEST262_WEAK_COLLECTIONS_MANIFEST_SHA256: &str =
+    "6189cde88a7fcb15222d536d19f3e8172be66e35de24f47107e0c67910b92b7a";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -935,6 +939,7 @@ enum OxideProfileKind {
     DefaultParametersGlobalCandidate,
     Map,
     Set,
+    WeakCollections,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1223,6 +1228,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         ),
         (root.join("tests/test262-map.conf"), OxideProfileKind::Map),
         (root.join("tests/test262-set.conf"), OxideProfileKind::Set),
+        (
+            root.join("tests/test262-weak-collections.conf"),
+            OxideProfileKind::WeakCollections,
+        ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
             OxideProfileKind::SymbolProtocols,
@@ -2590,6 +2599,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             )?;
             Ok(TEST262_SET_PROFILE_SHA256)
         }
+        OxideProfileKind::WeakCollections => verify_scoped_pinned_profile(
+            options,
+            "WeakMap/WeakSet",
+            TEST262_WEAK_COLLECTIONS_PROFILE_SHA256,
+            "tests/test262-weak-collections.txt",
+            TEST262_WEAK_COLLECTIONS_MANIFEST_SHA256,
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3050,8 +3066,9 @@ mod cli_tests {
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
-        parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
+        TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256, TEST262_WEAK_COLLECTIONS_PROFILE_SHA256,
+        default_worker_count, identify_oxide_profile, parse_args, verify_oxide_profile,
+        verify_scoped_pinned_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -3500,6 +3517,10 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-set.conf")).unwrap(),
             OxideProfileKind::Set
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-weak-collections.conf")).unwrap(),
+            OxideProfileKind::WeakCollections
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -6508,6 +6529,50 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-set.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_weak_collections_profile_is_bound_to_its_pinned_manifest() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-weak-collections.conf",
+            "--manifest",
+            "tests/test262-weak-collections.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_WEAK_COLLECTIONS_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/WeakMap/length.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-weak-collections.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

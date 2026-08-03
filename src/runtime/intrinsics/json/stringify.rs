@@ -330,6 +330,8 @@ impl Runtime {
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }
+            | ObjectPayload::WeakMap { .. }
+            | ObjectPayload::WeakSet { .. }
             | ObjectPayload::SetIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(PrimitiveObjectData::Symbol(_))

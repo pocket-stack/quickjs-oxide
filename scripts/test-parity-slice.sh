@@ -95,6 +95,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-json-raw.sh
 ./scripts/test-test262-map.sh
 ./scripts/test-test262-set.sh
+./scripts/test-test262-weak-collections.sh
 ./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh

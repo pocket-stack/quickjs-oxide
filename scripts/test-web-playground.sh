@@ -71,6 +71,7 @@ const expected = new Map([
   ["uint8-codec", { kind: "number", text: "42" }],
   ["class", { kind: "number", text: "42" }],
   ["promise", { kind: "boolean", text: "true" }],
+  ["weak-map", { kind: "number", text: "42" }],
   ["array-pipeline", { kind: "number", text: "42" }],
 ]);
 

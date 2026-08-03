@@ -69,7 +69,7 @@ use crate::heap::{
     PublishedPrivateBindings, RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind,
     StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
     StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition, WeakSymbolGcEvent,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -1066,6 +1066,13 @@ impl Runtime {
             &global_object,
         )
         .expect("Set intrinsic initialization must succeed");
+        self.initialize_weak_collection_intrinsics(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("WeakMap/WeakSet intrinsic initialization must succeed");
         self.initialize_array_buffer_intrinsic(
             realm,
             &function_prototype,
@@ -4061,7 +4068,28 @@ impl Runtime {
     pub fn run_gc(&self) -> Result<GcStats, RuntimeError> {
         let _operation = self.operation();
         let mut state = self.0.state.borrow_mut();
-        let mut stats = state.heap.run_gc()?;
+        let mut atom_error = None;
+        let mut stats = {
+            let RuntimeState { atoms, heap, .. } = &mut *state;
+            heap.run_gc_with_weak_symbol_hooks(|event| {
+                Ok(match event {
+                    WeakSymbolGcEvent::IsLive(atom) => atoms.is_live(atom),
+                    WeakSymbolGcEvent::Release(atom) => {
+                        if let Err(error) = atoms.release(atom) {
+                            // A detached weak value owned this atom, so this
+                            // can fail only after an ownership invariant has
+                            // already been violated. Latch the exact error but
+                            // continue without scheduling a double release.
+                            atom_error.get_or_insert(error);
+                        }
+                        true
+                    }
+                })
+            })?
+        };
+        if let Some(error) = atom_error {
+            return Err(error.into());
+        }
         let atoms = std::mem::take(&mut stats.cleanup.atoms);
         state.unlink_finalized_shapes(stats.cleanup.finalized_shape_ids.iter().copied());
         state.release_atoms(atoms)?;
@@ -4951,6 +4979,8 @@ impl Runtime {
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
+                | ObjectPayload::WeakMap { .. }
+                | ObjectPayload::WeakSet { .. }
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -5022,6 +5052,8 @@ impl Runtime {
             | ObjectPayload::Map { .. }
             | ObjectPayload::MapIterator { .. }
             | ObjectPayload::Set { .. }
+            | ObjectPayload::WeakMap { .. }
+            | ObjectPayload::WeakSet { .. }
             | ObjectPayload::SetIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
@@ -6438,6 +6470,8 @@ impl Runtime {
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
+                        | ObjectPayload::WeakMap { .. }
+                        | ObjectPayload::WeakSet { .. }
                         | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -6794,6 +6828,8 @@ impl Runtime {
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
+                | ObjectPayload::WeakMap { .. }
+                | ObjectPayload::WeakSet { .. }
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -7023,6 +7059,8 @@ impl Runtime {
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
+                        | ObjectPayload::WeakMap { .. }
+                        | ObjectPayload::WeakSet { .. }
                         | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -7149,6 +7187,8 @@ impl Runtime {
                         | ObjectPayload::Map { .. }
                         | ObjectPayload::MapIterator { .. }
                         | ObjectPayload::Set { .. }
+                        | ObjectPayload::WeakMap { .. }
+                        | ObjectPayload::WeakSet { .. }
                         | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -7537,6 +7577,8 @@ impl Runtime {
                     | ObjectPayload::Map { .. }
                     | ObjectPayload::MapIterator { .. }
                     | ObjectPayload::Set { .. }
+                    | ObjectPayload::WeakMap { .. }
+                    | ObjectPayload::WeakSet { .. }
                     | ObjectPayload::SetIterator { .. }
                     | ObjectPayload::ForInIterator(_)
                     | ObjectPayload::Primitive(_)
@@ -8456,6 +8498,8 @@ impl Runtime {
                 | ObjectPayload::Map { .. }
                 | ObjectPayload::MapIterator { .. }
                 | ObjectPayload::Set { .. }
+                | ObjectPayload::WeakMap { .. }
+                | ObjectPayload::WeakSet { .. }
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
