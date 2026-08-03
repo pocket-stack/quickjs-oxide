@@ -6,6 +6,56 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-03.
 
+## R3cb global DataView admission
+
+R3cb admits the complete pinned `DataView` metadata tag into the live global
+profile. The profile grows from 93 to 94 reviewed feature tags while retaining
+all 1,154 audited negative paths and the async-execution policy byte-for-byte.
+Its SHA-256 is
+`b51eee39825e3325effab1c326df30b999e636f67c8ce7bb800f0afdc2d8eab4`.
+
+The exact tag universe contains 190 paths / 380 sloppy-strict variants. It
+partitions without overlap into 98 paths / 196 dependency-clean activation
+variants, 79 / 158 variants which retain other feature dependencies, and 13 /
+26 QuickJS-configuration skips. The established 492-path DataView gate covers
+87 activation paths / 174 variants; an explicit 11-path / 22-variant
+supplement closes the remainder. Oxide and pinned QuickJS 2026-06-04 pass the
+entire 196-variant activation.
+
+The candidate tag report is exactly `pass=196 skipped-feature=26
+unsupported-feature=158`. Its TSV/JSONL SHA-256 values are
+`c198565eebea7459a7ed76b1d83d28cf3a2fd320c1afcdb519ccc2d6ec339baa`
+and
+`2793cbdc7ff38beb93a90ffc9f882210b03c9d4852293e5445f63d285ed73f4d`.
+The 380-row transition receipt has 196 outcome changes, 158 detail-only
+changes, and 26 unchanged skips; its receipt/data SHA-256 values are
+`ee4b95f69ef34e41cd69bf10062b0cda302640933432a69b3abe1e4e6c9e38dd`
+and
+`9136cff39561f0a5c4b28f1ff78731748f7127d3db6a8c77146d93e5bfeca371`.
+
+The exact 102,037-key join keeps all 101,657 non-universe rows byte-identical,
+records zero previous-pass regressions, and produces the new canonical vector:
+
+- 63,269 pass and 63,788 runnable;
+- 14,878 `unsupported-feature`, 3,451
+  `unsupported-negative-provenance`, and 19,823 total unsupported;
+- TSV SHA-256
+  `324e9d64423494796a9403a7f799f29075a2a98be9d705f7d8310cfb1707bff4`;
+- JSONL SHA-256
+  `6b68da27cf87198da2c4f2db4e99d1af54b54df2bb936e7d33320f27acee147b`.
+
+Reproduce the focused, admission, and canonical evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-data-view.sh
+TEST262_WORKERS=8 ./scripts/test-test262-data-view-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-data-view-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+This milestone promotes already implemented QuickJS-shaped DataView semantics;
+it does not broaden the Feature Parity completion claim.
+
 ## R3ca global default parameters admission
 
 R3ca promotes `default-parameters` into the live profile together with the
@@ -7124,6 +7174,7 @@ canonical progress report.
 ./scripts/test-test262-global-async.sh
 ./scripts/test-test262-array-buffer.sh
 ./scripts/test-test262-data-view.sh
+./scripts/test-test262-data-view-global.sh
 ./scripts/test-test262-typed-array-core.sh
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-uint8array-codecs.sh

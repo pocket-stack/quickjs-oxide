@@ -4,6 +4,41 @@ Last audited: 2026-08-03. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cb global DataView admission
+
+R3cb promotes the complete pinned `DataView` tag into the checksum-bound live
+profile. The profile now contains 94 reviewed features and 1,154 audited
+negative paths, preserves the async-execution policy, and has SHA-256
+`b51eee39825e3325effab1c326df30b999e636f67c8ce7bb800f0afdc2d8eab4`.
+This is an evidence admission for the QuickJS-shaped DataView implementation
+landed in R3ao, not a new runtime shortcut.
+
+The exhaustive metadata universe is 190 paths / 380 variants: 98 paths / 196
+variants activate, 79 / 158 retain other unsupported dependencies, and 13 /
+26 remain QuickJS-config skips. The all-green 492-path DataView gate directly
+covers 174 activation variants; a checksum-bound 11-path supplement covers the
+other 22. Oxide and pinned QuickJS 2026-06-04 pass all 196 activation variants.
+
+The complete tag transition has 196 `unsupported-feature` to `pass` changes,
+158 diagnostic-only changes, and 26 unchanged skips. The full 102,037-key join
+keeps every one of the 101,657 non-universe rows byte-identical and records no
+previous-pass regression. The canonical vector is now 63,269 passes, 63,788
+runnable variants, 14,878 `unsupported-feature` outcomes, 3,451
+`unsupported-negative-provenance` outcomes, and 19,823 total unsupported.
+Its TSV/JSONL SHA-256 values are
+`324e9d64423494796a9403a7f799f29075a2a98be9d705f7d8310cfb1707bff4`
+and
+`6b68da27cf87198da2c4f2db4e99d1af54b54df2bb936e7d33320f27acee147b`.
+
+Reproduce the evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-data-view.sh
+TEST262_WORKERS=8 ./scripts/test-test262-data-view-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-data-view-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3ca global default parameters admission
 
 R3ca promotes the complete R3bz `default-parameters` certificate into the
@@ -8721,6 +8756,7 @@ QJS_ORACLE=/path/to/quickjs-2026-06-04/qjs \
 ./scripts/test-test262-proxy.sh
 ./scripts/test-test262-array-buffer.sh
 ./scripts/test-test262-data-view.sh
+./scripts/test-test262-data-view-global.sh
 ./scripts/test-test262-typed-array-core.sh
 ./scripts/test-test262-uint8array-codecs.sh
 ./scripts/test-test262-uint8array-codecs-global.sh

@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "63f139b1a74da9a6114180593770dbcc86bb84fbafab5731f59e1387175c5a6a";
+    "b51eee39825e3325effab1c326df30b999e636f67c8ce7bb800f0afdc2d8eab4";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -224,6 +224,12 @@ const TEST262_DATA_VIEW_PROFILE_SHA256: &str =
     "485ea3baf6695767108fb9f7f346c3a82d5a3db000af4510d6d002b313990cc8";
 const TEST262_DATA_VIEW_MANIFEST_SHA256: &str =
     "3475b4a32f0a5f0ab50d5cd4e4843a7c7a59365298ecabcc5986b3fdd3f697e2";
+const TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "63f139b1a74da9a6114180593770dbcc86bb84fbafab5731f59e1387175c5a6a";
+const TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "b51eee39825e3325effab1c326df30b999e636f67c8ce7bb800f0afdc2d8eab4";
+const TEST262_DATA_VIEW_GLOBAL_MANIFEST_SHA256: &str =
+    "dc7c4e6d43ca6e86f4119b2f684fe1f8c538b2a07e598323a11edeb01e1f40cf";
 const TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256: &str =
     "dd106c074751866ce667352d3449cc0ec7d9b9072034a4f0a97050da7b7bad13";
 const TEST262_TYPED_ARRAY_CORE_MANIFEST_SHA256: &str =
@@ -899,6 +905,8 @@ enum OxideProfileKind {
     ObjectRestBinding,
     ArrayBuffer,
     DataView,
+    DataViewGlobalParent,
+    DataViewGlobalCandidate,
     TypedArrayCore,
     Uint8ArrayCodecs,
     Uint8ArrayCodecsGlobalParent,
@@ -1122,6 +1130,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-data-view.conf"),
             OxideProfileKind::DataView,
+        ),
+        (
+            root.join("tests/test262-data-view-global-parent.conf"),
+            OxideProfileKind::DataViewGlobalParent,
+        ),
+        (
+            root.join("tests/test262-data-view-global-candidate.conf"),
+            OxideProfileKind::DataViewGlobalCandidate,
         ),
         (
             root.join("tests/test262-typed-array-core.conf"),
@@ -2283,6 +2299,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-data-view.txt",
             TEST262_DATA_VIEW_MANIFEST_SHA256,
         ),
+        OxideProfileKind::DataViewGlobalParent => verify_tag_transition_profile(
+            options,
+            "DataView global admission",
+            "parent",
+            TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-data-view-universe.txt",
+                TEST262_DATA_VIEW_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::DataViewGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "DataView global admission",
+            "candidate",
+            TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-data-view-universe.txt",
+                TEST262_DATA_VIEW_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::TypedArrayCore => verify_scoped_pinned_profile(
             options,
             "TypedArray core",
@@ -2926,7 +2962,9 @@ mod cli_tests {
         TEST262_COMPUTED_PROPERTY_NAMES_CANDIDATE_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
+        TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256,
+        TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256,
@@ -3290,6 +3328,16 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-data-view.conf")).unwrap(),
             OxideProfileKind::DataView
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-data-view-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::DataViewGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-data-view-global-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::DataViewGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-typed-array-core.conf")).unwrap(),
@@ -6204,6 +6252,28 @@ mod cli_tests {
             "tests/test262-identifier-defaults.txt",
             "test/language/expressions/function/dflt-params.js",
         );
+    }
+
+    #[test]
+    fn data_view_global_profiles_require_their_pinned_universe_manifest() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-data-view-global-parent.conf",
+                TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-data-view-global-candidate.conf",
+                TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-data-view-universe.txt"],
+                "tests/test262-data-view.txt",
+                "test/built-ins/DataView/is-a-constructor.js",
+            );
+        }
     }
 
     #[test]

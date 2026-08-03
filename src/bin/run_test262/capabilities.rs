@@ -334,6 +334,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-global-candidate.conf"
     ));
+    const DATA_VIEW_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-data-view-global-parent.conf"
+    ));
+    const DATA_VIEW_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-data-view-global-candidate.conf"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -342,12 +350,13 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 93] = [
+    const EXPECTED_FEATURES: [&str; 94] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
         "ArrayBuffer",
         "BigInt",
+        "DataView",
         "Map",
         "Math.sumPrecise",
         "Object.fromEntries",
@@ -807,6 +816,9 @@ mod tests {
             OxideProfile::parse(DEFAULT_PARAMETERS_CANDIDATE_PROFILE).unwrap();
         let default_parameters_global_candidate =
             OxideProfile::parse(DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let data_view_global_parent = OxideProfile::parse(DATA_VIEW_GLOBAL_PARENT_PROFILE).unwrap();
+        let data_view_global_candidate =
+            OxideProfile::parse(DATA_VIEW_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1058,7 +1070,24 @@ mod tests {
             rest_parameters_parent.allows_async_execution()
         );
         assert_eq!(default_parameters_parent, rest_parameters_candidate);
-        assert_eq!(profile, default_parameters_global_candidate);
+        assert_eq!(data_view_global_parent, default_parameters_global_candidate);
+        assert_eq!(profile, data_view_global_candidate);
+        assert_eq!(
+            data_view_global_candidate
+                .features
+                .difference(&data_view_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["DataView"]
+        );
+        assert_eq!(
+            data_view_global_candidate.audited_negative_tests,
+            data_view_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            data_view_global_candidate.allows_async_execution(),
+            data_view_global_parent.allows_async_execution()
+        );
         assert_eq!(
             default_parameters_candidate
                 .features

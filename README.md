@@ -7,10 +7,10 @@ The `unsafe`-free engine is runnable but incomplete. Its strongest covered
 slice is the shared ArrayBuffer/DataView/12-class TypedArray stack: resizable
 buffers, fixed and length-tracking views, transfers, iteration, search,
 mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
-The 93-tag global Test262 profile also admits `Proxy`, optional chaining,
-Iterator Helpers, `globalThis`, default parameters, and the implemented
-Promise surface through checksum-bound audits. The complete conservative
-vector is 63,073/102,037 with 63,592 runnable variants. Modules,
+The 94-tag global Test262 profile also admits `DataView`, `Proxy`, optional
+chaining, Iterator Helpers, `globalThis`, default parameters, and the
+implemented Promise surface through checksum-bound audits. The complete
+conservative vector is 63,269/102,037 with 63,788 runnable variants. Modules,
 SharedArrayBuffer/Atomics, and broad built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.
@@ -42,8 +42,8 @@ cargo run --quiet --bin qjs -- --print-result -e \
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-default-parameters.sh
-./scripts/test-test262-default-parameters-global.sh --full
+./scripts/test-test262-data-view.sh
+./scripts/test-test262-data-view-global.sh --full
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
 ```

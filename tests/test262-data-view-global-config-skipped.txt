@@ -1,0 +1,13 @@
+test/built-ins/Atomics/waitAsync/bad-range.js
+test/built-ins/Atomics/waitAsync/bigint/bad-range.js
+test/built-ins/DataView/prototype/setBigInt64/immutable-buffer.js
+test/built-ins/DataView/prototype/setBigUint64/immutable-buffer.js
+test/built-ins/DataView/prototype/setFloat16/immutable-buffer.js
+test/built-ins/DataView/prototype/setFloat32/immutable-buffer.js
+test/built-ins/DataView/prototype/setFloat64/immutable-buffer.js
+test/built-ins/DataView/prototype/setInt16/immutable-buffer.js
+test/built-ins/DataView/prototype/setInt32/immutable-buffer.js
+test/built-ins/DataView/prototype/setInt8/immutable-buffer.js
+test/built-ins/DataView/prototype/setUint16/immutable-buffer.js
+test/built-ins/DataView/prototype/setUint32/immutable-buffer.js
+test/built-ins/DataView/prototype/setUint8/immutable-buffer.js
