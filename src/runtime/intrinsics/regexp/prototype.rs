@@ -134,6 +134,8 @@ impl Runtime {
                 | ObjectPayload::Set { .. }
                 | ObjectPayload::WeakMap { .. }
                 | ObjectPayload::WeakSet { .. }
+                | ObjectPayload::WeakRef { .. }
+                | ObjectPayload::FinalizationRegistry(_)
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -210,6 +212,8 @@ impl Runtime {
                 | ObjectPayload::Set { .. }
                 | ObjectPayload::WeakMap { .. }
                 | ObjectPayload::WeakSet { .. }
+                | ObjectPayload::WeakRef { .. }
+                | ObjectPayload::FinalizationRegistry(_)
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)

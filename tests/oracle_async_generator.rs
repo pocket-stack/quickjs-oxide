@@ -607,6 +607,7 @@ crossRealm().next().then(undefined, function (error) {
         let job_realm = runtime
             .execute_pending_job_with_context()
             .unwrap()
+            .context()
             .expect("pending job had no realm");
         saw_settler_realm |= job_realm == settler_realm;
     }

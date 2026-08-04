@@ -508,6 +508,12 @@ impl Runtime {
             NativeFunctionId::WeakSet(kind) => {
                 self.call_weak_set_native(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::WeakRef(kind) => {
+                self.call_weak_ref_native(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::FinalizationRegistry(kind) => {
+                self.call_finalization_registry_native(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::ArrayBuffer(kind) => {
                 self.call_array_buffer_native(realm, kind, invocation, arguments)
             }

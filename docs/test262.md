@@ -6,6 +6,42 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-04.
 
+## R3cf WeakRef and FinalizationRegistry focused gate
+
+R3cf freezes every pinned metadata path carrying `WeakRef` or
+`FinalizationRegistry`: 82 paths / 164 sloppy-strict variants. Pinned QuickJS
+2026-06-04 passes the entire universe. The scoped candidate profile is derived
+from the authenticated 99-feature global profile and adds exactly those two
+feature tags; it changes no audited-negative or execution-policy row.
+
+The universe partitions exactly into:
+
+- 79 paths / 158 activated variants, all passing in isolated Oxide workers;
+- one path / two variants still requiring the independent `for-of` feature;
+- two paths / four variants requiring the Test262 host's `createRealm` hook.
+
+The universe path/key hashes are
+`0325512882ba3d93d225423b62b76b9d8bebc7266a427ed6e05be3b70559c060`
+and `f4beb592d73342a4d694430d8b13a04122b03f61e7c9a79d2e24476e002910a9`.
+The activation path/key hashes are
+`de660ae31e700129f9668760e92cd0e712fcbbe753d4f31d321790645428b848`
+and `f04acfd7dcc3c8aaf9e06f4734089eb61bf1cf0ffc99d47cf80c5f98ab35e5de`.
+The generated focused report has SHA-256
+`5ff2b92a694f71b63ab5b883e6c9416e2810c7230e26d36fcaec5f5815b20fe6`.
+
+Reproduce the receipt with:
+
+```sh
+./scripts/test-test262-weak-ref-finalization.sh --check
+./scripts/test-test262-weak-ref-finalization.sh
+```
+
+This cohort has no `$262.gc` tests, so it proves the public API surface rather
+than collection timing. Runtime/heap tests checked against the pinned QuickJS
+source and manual oracle probes separately bind the lifecycle semantics. The
+live global profile remains at 99 features in this implementation milestone;
+global admission is intentionally separate.
+
 ## R3ce global Weak collections admission
 
 R3ce admits the four implemented metadata tags `WeakMap`, `WeakSet`,
@@ -59,9 +95,9 @@ TEST262_FULL_WORKERS=2 ./scripts/test-test262-weak-collections-global.sh --full
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
-The 14 residual variants intentionally make the next WeakRef /
-FinalizationRegistry frontier visible. This remains a progress certificate,
-not a whole-project Feature Parity claim.
+The 14 residual variants made the later R3cf WeakRef / FinalizationRegistry
+frontier visible. This remains a progress certificate, not a whole-project
+Feature Parity claim.
 
 ## R3cd WeakMap and WeakSet runtime
 
@@ -112,9 +148,9 @@ tag-admission audit. Reproduce both receipts with:
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
-The seven dependency- or host-blocked source paths and the broader
-WeakRef/FinalizationRegistry surface remain explicit future work; this receipt
-is not a full Feature Parity claim.
+The later R3ce/R3cf milestones close or reclassify these dependency rows and
+implement the WeakRef/FinalizationRegistry surface. This historical receipt is
+not a full Feature Parity claim.
 
 ## R3cc global object-rest admission
 

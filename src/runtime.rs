@@ -32,7 +32,7 @@ use self::intrinsics::CanonicalNumericIndex;
 use self::intrinsics::date::SystemHostServices;
 use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::PromiseRejectionEvent;
-pub use self::jobs::PendingJobError;
+pub use self::jobs::{PendingJobError, PendingJobOutcome};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -1103,6 +1103,13 @@ impl Runtime {
         .expect("Promise intrinsic initialization must succeed");
         self.initialize_async_generator_intrinsic(realm, &function_prototype, &object_prototype)
             .expect("AsyncGenerator intrinsic initialization must succeed");
+        self.initialize_weak_ref_intrinsics(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("WeakRef intrinsic initialization must succeed");
         drop(global_var_object);
         drop(global_object);
         drop(uninitialized_vars);
@@ -4070,22 +4077,31 @@ impl Runtime {
         let mut state = self.0.state.borrow_mut();
         let mut atom_error = None;
         let mut stats = {
-            let RuntimeState { atoms, heap, .. } = &mut *state;
-            heap.run_gc_with_weak_symbol_hooks(|event| {
-                Ok(match event {
-                    WeakSymbolGcEvent::IsLive(atom) => atoms.is_live(atom),
-                    WeakSymbolGcEvent::Release(atom) => {
-                        if let Err(error) = atoms.release(atom) {
-                            // A detached weak value owned this atom, so this
-                            // can fail only after an ownership invariant has
-                            // already been violated. Latch the exact error but
-                            // continue without scheduling a double release.
-                            atom_error.get_or_insert(error);
+            let RuntimeState {
+                atoms,
+                heap,
+                pending_jobs,
+                ..
+            } = &mut *state;
+            let mut finalization_sink = jobs::RuntimeFinalizationJobSink::new(pending_jobs);
+            heap.run_gc_with_finalization_sink(
+                |event| {
+                    Ok(match event {
+                        WeakSymbolGcEvent::IsLive(atom) => atoms.is_live(atom),
+                        WeakSymbolGcEvent::Release(atom) => {
+                            if let Err(error) = atoms.release(atom) {
+                                // A detached weak value owned this atom, so this
+                                // can fail only after an ownership invariant has
+                                // already been violated. Latch the exact error but
+                                // continue without scheduling a double release.
+                                atom_error.get_or_insert(error);
+                            }
+                            true
                         }
-                        true
-                    }
-                })
-            })?
+                    })
+                },
+                &mut finalization_sink,
+            )?
         };
         if let Some(error) = atom_error {
             return Err(error.into());
@@ -4981,6 +4997,8 @@ impl Runtime {
                 | ObjectPayload::Set { .. }
                 | ObjectPayload::WeakMap { .. }
                 | ObjectPayload::WeakSet { .. }
+                | ObjectPayload::WeakRef { .. }
+                | ObjectPayload::FinalizationRegistry(_)
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -5054,6 +5072,8 @@ impl Runtime {
             | ObjectPayload::Set { .. }
             | ObjectPayload::WeakMap { .. }
             | ObjectPayload::WeakSet { .. }
+            | ObjectPayload::WeakRef { .. }
+            | ObjectPayload::FinalizationRegistry(_)
             | ObjectPayload::SetIterator { .. }
             | ObjectPayload::ForInIterator(_)
             | ObjectPayload::Primitive(_)
@@ -6472,6 +6492,8 @@ impl Runtime {
                         | ObjectPayload::Set { .. }
                         | ObjectPayload::WeakMap { .. }
                         | ObjectPayload::WeakSet { .. }
+                        | ObjectPayload::WeakRef { .. }
+                        | ObjectPayload::FinalizationRegistry(_)
                         | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -6830,6 +6852,8 @@ impl Runtime {
                 | ObjectPayload::Set { .. }
                 | ObjectPayload::WeakMap { .. }
                 | ObjectPayload::WeakSet { .. }
+                | ObjectPayload::WeakRef { .. }
+                | ObjectPayload::FinalizationRegistry(_)
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -7061,6 +7085,8 @@ impl Runtime {
                         | ObjectPayload::Set { .. }
                         | ObjectPayload::WeakMap { .. }
                         | ObjectPayload::WeakSet { .. }
+                        | ObjectPayload::WeakRef { .. }
+                        | ObjectPayload::FinalizationRegistry(_)
                         | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -7189,6 +7215,8 @@ impl Runtime {
                         | ObjectPayload::Set { .. }
                         | ObjectPayload::WeakMap { .. }
                         | ObjectPayload::WeakSet { .. }
+                        | ObjectPayload::WeakRef { .. }
+                        | ObjectPayload::FinalizationRegistry(_)
                         | ObjectPayload::SetIterator { .. }
                         | ObjectPayload::ForInIterator(_)
                         | ObjectPayload::Primitive(_)
@@ -7579,6 +7607,8 @@ impl Runtime {
                     | ObjectPayload::Set { .. }
                     | ObjectPayload::WeakMap { .. }
                     | ObjectPayload::WeakSet { .. }
+                    | ObjectPayload::WeakRef { .. }
+                    | ObjectPayload::FinalizationRegistry(_)
                     | ObjectPayload::SetIterator { .. }
                     | ObjectPayload::ForInIterator(_)
                     | ObjectPayload::Primitive(_)
@@ -8500,6 +8530,8 @@ impl Runtime {
                 | ObjectPayload::Set { .. }
                 | ObjectPayload::WeakMap { .. }
                 | ObjectPayload::WeakSet { .. }
+                | ObjectPayload::WeakRef { .. }
+                | ObjectPayload::FinalizationRegistry(_)
                 | ObjectPayload::SetIterator { .. }
                 | ObjectPayload::ForInIterator(_)
                 | ObjectPayload::Primitive(_)
@@ -9288,7 +9320,7 @@ impl Drop for RuntimeInner {
         }
         let result = state
             .heap
-            .run_gc()
+            .run_gc_for_runtime_teardown()
             .map_err(RuntimeError::Heap)
             .and_then(|mut stats| {
                 let atoms = std::mem::take(&mut stats.cleanup.atoms);

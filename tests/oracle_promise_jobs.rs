@@ -291,7 +291,7 @@ source.then(function () { return 1; });
     );
 
     let failure = runtime.execute_pending_job_with_context().unwrap_err();
-    assert_eq!(failure.context(), first.realm_id());
+    assert_eq!(failure.context(), Some(first.realm_id()));
     assert_eq!(failure.error(), &RuntimeError::Exception);
     assert_eq!(
         text(first.take_exception().unwrap().expect("job exception")),
@@ -299,7 +299,10 @@ source.then(function () { return 1; });
     );
 
     assert_eq!(
-        runtime.execute_pending_job_with_context().unwrap(),
+        runtime
+            .execute_pending_job_with_context()
+            .unwrap()
+            .context(),
         Some(second.realm_id())
     );
 }

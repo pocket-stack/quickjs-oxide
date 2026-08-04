@@ -418,6 +418,16 @@ pub struct WeakSetRealmData {
     pub prototype: ObjectId,
 }
 
+/// Realm-owned class prototypes installed together by QuickJS's
+/// `JS_AddIntrinsicWeakRef` bootstrap step. The public constructors remain
+/// reachable through their ordinary prototype/global property graph and are
+/// therefore not duplicated as Context roots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeakRefRealmData {
+    pub weak_ref_prototype: ObjectId,
+    pub finalization_registry_prototype: ObjectId,
+}
+
 /// Realm-owned identities required by synchronous generator functions and
 /// generator instances.
 ///
@@ -569,6 +579,9 @@ pub struct ContextData {
     /// Realm-local WeakSet ordinary prototype, attached after its public
     /// constructor/prototype cycle is initialized.
     pub weak_set: Option<WeakSetRealmData>,
+    /// Realm-local WeakRef and FinalizationRegistry class prototypes,
+    /// attached atomically by the shared weak-reference bootstrap step.
+    pub weak_ref: Option<WeakRefRealmData>,
     /// Realm-local `%ArrayBuffer.prototype%` class root, attached after the
     /// public constructor/prototype cycle has been initialized and validated.
     pub array_buffer: Option<ArrayBufferRealmData>,
@@ -651,6 +664,7 @@ impl ContextData {
             set: None,
             weak_map: None,
             weak_set: None,
+            weak_ref: None,
             array_buffer: None,
             data_view: None,
             typed_array: None,
@@ -4428,6 +4442,68 @@ pub struct WeakCollectionRecords<V> {
     tail: Option<WeakCollectionKey>,
 }
 
+/// One live registration owned by a genuine `FinalizationRegistry`.
+///
+/// `target` and `unregister_token` are non-owning generational identities.
+/// `held_value` owns its ordinary object or Symbol edge until the registration
+/// is unregistered, finalized with its registry, or moved into a prepared
+/// finalization job by the ordered weak-object pass.
+#[derive(Clone, Debug, PartialEq)]
+struct FinalizationRegistryEntry {
+    target: WeakCollectionKey,
+    held_value: RawValue,
+    unregister_token: Option<WeakCollectionKey>,
+}
+
+/// QuickJS-shaped opaque data for one genuine `FinalizationRegistry`.
+///
+/// The cleanup callback and creation realm are strong arena edges. Entries
+/// remain in registration order so token clearing, target clearing, and job
+/// preparation follow pinned QuickJS's single forward traversal.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalizationRegistryData {
+    callback: ObjectId,
+    realm: ContextId,
+    entries: Vec<FinalizationRegistryEntry>,
+}
+
+/// One FinalizationRegistry callback job whose roots have already transferred
+/// out of the registry entry and into the runtime boundary.
+///
+/// Publication through [`FinalizationJobSink`] transfers exactly one owned
+/// callback, realm, and held-value root per record. A Runtime adapter must not
+/// retain them again when it adopts the record.
+#[derive(Debug, PartialEq)]
+pub(crate) struct PreparedFinalizationJob {
+    pub(crate) realm: ContextId,
+    pub(crate) callback: ObjectId,
+    pub(crate) held_value: RawValue,
+}
+
+/// Allocation boundary used by the weak-object pass to hand finalization work
+/// directly to the Runtime. `try_reserve_one` runs before callback/realm roots
+/// are retained or the held value leaves its registration. Once it succeeds,
+/// `publish_preowned` must be infallible and must not retain the roots again.
+pub(crate) trait FinalizationJobSink {
+    fn try_reserve_one(&mut self) -> bool;
+    fn publish_preowned(&mut self, job: PreparedFinalizationJob);
+}
+
+/// Used by heap-only GC callers which have no Runtime job queue. Returning
+/// false deliberately takes QuickJS's silent job-drop path.
+struct DiscardFinalizationJobSink;
+
+impl FinalizationJobSink for DiscardFinalizationJobSink {
+    fn try_reserve_one(&mut self) -> bool {
+        false
+    }
+
+    fn publish_preowned(&mut self, _job: PreparedFinalizationJob) {
+        unreachable!("discarding finalization sink never reserves a slot")
+    }
+}
+
 impl<V> Default for WeakCollectionRecords<V> {
     fn default() -> Self {
         Self::new()
@@ -5167,6 +5243,16 @@ pub enum ObjectPayload {
     WeakSet {
         records: WeakCollectionRecords<()>,
     },
+    /// `JS_CLASS_WEAK_REF`: one non-owning generational target identity. A
+    /// dead target is cleared by the ordered weak-object pass, never traced as
+    /// an arena edge.
+    WeakRef {
+        target: Option<WeakCollectionKey>,
+    },
+    /// `JS_CLASS_FINALIZATION_REGISTRY`: weak registration target/token
+    /// identities plus strong callback, creation-realm, and held-value edges.
+    /// Entries remain ordered until unregister or finalization preparation.
+    FinalizationRegistry(FinalizationRegistryData),
     /// Realm global object and its hidden table of unresolved global VarRefs.
     GlobalObject {
         uninitialized_vars: ObjectId,
@@ -5275,6 +5361,8 @@ pub enum ObjectKind {
     SetIterator,
     WeakMap,
     WeakSet,
+    WeakRef,
+    FinalizationRegistry,
     GlobalObject,
     Error,
     StringIterator,
@@ -6030,6 +6118,21 @@ pub enum WeakSetNativeKind {
     Delete,
 }
 
+/// Typed handler family for pinned QuickJS's WeakRef surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WeakRefNativeKind {
+    Constructor,
+    Deref,
+}
+
+/// Typed handler family for pinned QuickJS's FinalizationRegistry surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FinalizationRegistryNativeKind {
+    Constructor,
+    Register,
+    Unregister,
+}
+
 /// Typed handler family for the Promise constructor and its initial surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PromiseNativeKind {
@@ -6320,6 +6423,8 @@ pub enum NativeFunctionId {
     SetIteratorNext,
     WeakMap(WeakMapNativeKind),
     WeakSet(WeakSetNativeKind),
+    WeakRef(WeakRefNativeKind),
+    FinalizationRegistry(FinalizationRegistryNativeKind),
     ArrayBuffer(ArrayBufferNativeKind),
     DataView(DataViewNativeKind),
     TypedArray(TypedArrayNativeKind),
@@ -6808,6 +6913,11 @@ impl NativeFunctionId {
             | Self::WeakSet(
                 WeakSetNativeKind::Add | WeakSetNativeKind::Has | WeakSetNativeKind::Delete,
             )
+            | Self::WeakRef(WeakRefNativeKind::Deref)
+            | Self::FinalizationRegistry(
+                FinalizationRegistryNativeKind::Register
+                | FinalizationRegistryNativeKind::Unregister,
+            )
             | Self::ArrayBuffer(ArrayBufferNativeKind::IsView)
             | Self::TypedArray(
                 TypedArrayNativeKind::From
@@ -7008,9 +7118,13 @@ impl NativeFunctionId {
             | Self::ObjectConstructor
             | Self::IteratorConstructor
             | Self::Date(DateNativeKind::Constructor)
-            | Self::RegExp(RegExpNativeKind::Constructor) => NativeFunctionDescriptor {
-                cproto: NativeCProto::ConstructorOrFunction,
-            },
+            | Self::RegExp(RegExpNativeKind::Constructor)
+            | Self::WeakRef(WeakRefNativeKind::Constructor)
+            | Self::FinalizationRegistry(FinalizationRegistryNativeKind::Constructor) => {
+                NativeFunctionDescriptor {
+                    cproto: NativeCProto::ConstructorOrFunction,
+                }
+            }
             Self::Map(MapNativeKind::Constructor)
             | Self::Set(SetNativeKind::Constructor)
             | Self::WeakMap(WeakMapNativeKind::Constructor)
@@ -7455,6 +7569,53 @@ impl ObjectData {
             payload: ObjectPayload::WeakSet {
                 records: WeakCollectionRecords::new(),
             },
+        }
+    }
+
+    /// Construct one heap-internal genuine WeakRef. The runtime intrinsic
+    /// layer supplies the public constructor and selected prototype.
+    #[must_use]
+    pub(crate) const fn weak_ref(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        target: WeakCollectionKey,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::WeakRef,
+            payload: ObjectPayload::WeakRef {
+                target: Some(target),
+            },
+        }
+    }
+
+    /// Construct one heap-internal genuine FinalizationRegistry. Its callback
+    /// and creation realm are ordinary traced payload edges.
+    #[must_use]
+    pub(crate) const fn finalization_registry(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        callback: ObjectId,
+        realm: ContextId,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::FinalizationRegistry,
+            payload: ObjectPayload::FinalizationRegistry(FinalizationRegistryData {
+                callback,
+                realm,
+                entries: Vec::new(),
+            }),
         }
     }
 
@@ -8060,6 +8221,14 @@ pub enum WeakSymbolGcEvent {
     Release(Atom),
 }
 
+/// Whether an internal collection performs QuickJS's ordered weak-object
+/// removal pass before trial deletion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WeakObjectGcMode {
+    Remove,
+    PreserveForRuntimeTeardown,
+}
+
 /// Current arena population, split by lifecycle state and node kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeapCounts {
@@ -8274,6 +8443,38 @@ impl Heap {
         self.allocate_object_inner(object)
     }
 
+    /// Allocate a genuine WeakRef behind the runtime intrinsic surface. The
+    /// target remains a non-owning generational identity.
+    pub(crate) fn allocate_weak_ref_object(
+        &mut self,
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        target: WeakCollectionKey,
+    ) -> Result<ObjectId, HeapError> {
+        self.validate_live_weak_target(target)?;
+        self.allocate_object_inner(ObjectData::weak_ref(shape, slots, target))
+    }
+
+    /// Allocate a genuine FinalizationRegistry behind its public runtime
+    /// constructor. Callback and realm are traced by the payload itself.
+    pub(crate) fn allocate_finalization_registry_object(
+        &mut self,
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        callback: ObjectId,
+        realm: ContextId,
+    ) -> Result<ObjectId, HeapError> {
+        if !object_data_is_callable(self.object(callback)?) {
+            return Err(HeapError::Invariant(
+                "FinalizationRegistry callback is not callable",
+            ));
+        }
+        self.context(realm)?;
+        self.allocate_object_inner(ObjectData::finalization_registry(
+            shape, slots, callback, realm,
+        ))
+    }
+
     /// Allocate the one provisional native callable needed to bootstrap a
     /// realm. The caller must synchronously finish it with
     /// [`Self::attach_native_function_realm`] before exposing it.
@@ -8301,9 +8502,12 @@ impl Heap {
 
     fn allocate_object_inner(&mut self, object: ObjectData) -> Result<ObjectId, HeapError> {
         self.validate_object_layout(&object)?;
-        let is_weak_collection = matches!(
+        let is_weak_object = matches!(
             &object.payload,
-            ObjectPayload::WeakMap { .. } | ObjectPayload::WeakSet { .. }
+            ObjectPayload::WeakMap { .. }
+                | ObjectPayload::WeakSet { .. }
+                | ObjectPayload::WeakRef { .. }
+                | ObjectPayload::FinalizationRegistry(_)
         );
         let (index, generation) = self.reserve(HeapNodeKind::Object)?;
         let id = ObjectId { index, generation };
@@ -8315,8 +8519,8 @@ impl Heap {
         }
 
         self.publish(index, NodeData::Object(object))?;
-        if is_weak_collection {
-            self.link_weak_collection(id)?;
+        if is_weak_object {
+            self.link_weak_object(id)?;
         }
         Ok(id)
     }
@@ -8388,6 +8592,8 @@ impl Heap {
             | ObjectPayload::SetIterator { .. }
             | ObjectPayload::WeakMap { .. }
             | ObjectPayload::WeakSet { .. }
+            | ObjectPayload::WeakRef { .. }
+            | ObjectPayload::FinalizationRegistry(_)
             | ObjectPayload::GlobalObject { .. }
             | ObjectPayload::Error
             | ObjectPayload::StringIterator { .. }
@@ -8883,6 +9089,59 @@ impl Heap {
             unreachable!("context identity was validated before retaining WeakSet roots")
         };
         context.weak_set = Some(weak_set);
+        Ok(())
+    }
+
+    /// Atomically publish the realm's WeakRef and FinalizationRegistry class
+    /// prototype roots. Both are ordinary children of this realm's
+    /// Object.prototype and are installed together by pinned QuickJS.
+    pub(crate) fn attach_weak_ref_intrinsics(
+        &mut self,
+        realm: ContextId,
+        weak_ref: WeakRefRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.weak_ref.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has WeakRef intrinsic roots",
+            ));
+        }
+        if weak_ref.weak_ref_prototype == weak_ref.finalization_registry_prototype {
+            return Err(HeapError::Invariant(
+                "WeakRef and FinalizationRegistry prototypes share one identity",
+            ));
+        }
+        let object_prototype = context.object_prototype;
+        for (prototype, message) in [
+            (
+                weak_ref.weak_ref_prototype,
+                "WeakRef prototype is not an ordinary child of Object.prototype",
+            ),
+            (
+                weak_ref.finalization_registry_prototype,
+                "FinalizationRegistry prototype is not an ordinary child of Object.prototype",
+            ),
+        ] {
+            let object = self.object(prototype)?;
+            if object.kind != ObjectKind::Ordinary
+                || !matches!(object.payload, ObjectPayload::Ordinary)
+                || self.shape(object.shape)?.prototype() != Some(object_prototype)
+            {
+                return Err(HeapError::Invariant(message));
+            }
+        }
+
+        let edges = [
+            RawId::Object(weak_ref.weak_ref_prototype),
+            RawId::Object(weak_ref.finalization_registry_prototype),
+        ];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining WeakRef roots")
+        };
+        context.weak_ref = Some(weak_ref);
         Ok(())
     }
 
@@ -12255,6 +12514,152 @@ impl Heap {
         }
     }
 
+    /// Snapshot the non-owning target currently stored by a genuine WeakRef.
+    /// A stale identity remains visible here until the next weak-object pass;
+    /// the runtime must still perform AtomTable liveness for Symbol targets.
+    pub(crate) fn weak_ref_target(
+        &self,
+        id: ObjectId,
+    ) -> Result<Option<WeakCollectionKey>, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::WeakRef { target } => Ok(*target),
+            _ => Err(HeapError::Invariant(
+                "WeakRef target lookup reached an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Append one FinalizationRegistry registration in construction order.
+    /// Weak target/token identities retain nothing; the held value transfers
+    /// one already-owned Symbol atom and transactionally retained arena edges.
+    pub(crate) fn finalization_registry_register(
+        &mut self,
+        id: ObjectId,
+        target: WeakCollectionKey,
+        held_value: RawValue,
+        unregister_token: Option<WeakCollectionKey>,
+    ) -> Result<(), HeapError> {
+        if !is_map_storable_value(&held_value) {
+            return Err(HeapError::Invariant(
+                "FinalizationRegistry held value contains an internal sentinel",
+            ));
+        }
+        if raw_value_matches_weak_key(&held_value, target) {
+            return Err(HeapError::Invariant(
+                "FinalizationRegistry held value aliases its weak target",
+            ));
+        }
+        self.validate_live_weak_target(target)?;
+        if let Some(token) = unregister_token {
+            self.validate_live_weak_target(token)?;
+        }
+        let ObjectPayload::FinalizationRegistry(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "FinalizationRegistry registration reached an object with the wrong class",
+            ));
+        };
+        data.entries
+            .try_reserve(1)
+            .map_err(|_| HeapError::Allocation {
+                operation: "growing FinalizationRegistry entries",
+            })?;
+
+        self.retain_edges_transactionally(&raw_value_edges(&held_value))?;
+        let ObjectPayload::FinalizationRegistry(data) = &mut self.object_mut(id)?.payload else {
+            unreachable!("FinalizationRegistry disappeared after retaining its held value")
+        };
+        data.entries.push(FinalizationRegistryEntry {
+            target,
+            held_value,
+            unregister_token,
+        });
+        Ok(())
+    }
+
+    /// Remove every live registration carrying `unregister_token`, preserving
+    /// the relative order of all remaining entries.
+    pub(crate) fn finalization_registry_unregister(
+        &mut self,
+        id: ObjectId,
+        unregister_token: WeakCollectionKey,
+    ) -> Result<(bool, HeapCleanup), HeapError> {
+        self.validate_live_weak_target(unregister_token)?;
+        if !matches!(
+            self.object(id)?.payload,
+            ObjectPayload::FinalizationRegistry(_)
+        ) {
+            return Err(HeapError::Invariant(
+                "FinalizationRegistry unregister reached an object with the wrong class",
+            ));
+        }
+
+        // QuickJS deletes matching records in place. Avoid a temporary Vec so
+        // unregister introduces no extra allocation/OOM boundary.
+        let mut matched = false;
+        let mut index = 0usize;
+        let mut cleanup = HeapCleanup::default();
+        loop {
+            let held_value = {
+                let ObjectPayload::FinalizationRegistry(data) = &mut self.object_mut(id)?.payload
+                else {
+                    unreachable!("FinalizationRegistry changed during unregister")
+                };
+                if index >= data.entries.len() {
+                    break;
+                }
+                if data.entries[index].unregister_token == Some(unregister_token) {
+                    Some(data.entries.remove(index).held_value)
+                } else {
+                    index = index.saturating_add(1);
+                    None
+                }
+            };
+            let Some(held_value) = held_value else {
+                continue;
+            };
+            matched = true;
+            cleanup.atoms.extend(raw_value_atom(&held_value));
+            for edge in raw_value_edges(&held_value) {
+                self.release_raw_no_drain(edge)?;
+            }
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok((matched, cleanup))
+    }
+
+    /// Number of registrations not yet unregistered or prepared as jobs.
+    #[cfg(test)]
+    pub(crate) fn finalization_registry_len(&self, id: ObjectId) -> Result<usize, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::FinalizationRegistry(data) => Ok(data.entries.len()),
+            _ => Err(HeapError::Invariant(
+                "FinalizationRegistry length reached an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Release a batch previously published to a FinalizationJobSink. Each
+    /// record already owns callback, realm, and held-value roots, so callers
+    /// must either adopt them without retaining or return them here.
+    #[cfg(test)]
+    pub(crate) fn discard_finalization_jobs(
+        &mut self,
+        jobs: VecDeque<PreparedFinalizationJob>,
+    ) -> Result<HeapCleanup, HeapError> {
+        let mut cleanup = HeapCleanup::default();
+        for job in jobs {
+            cleanup.atoms.extend(raw_value_atom(&job.held_value));
+            for edge in raw_value_edges(&job.held_value)
+                .into_iter()
+                .chain([RawId::Object(job.callback), RawId::Context(job.realm)])
+            {
+                self.release_raw_no_drain(edge)?;
+            }
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
     /// Snapshot one branded Set Iterator's live source, stable record cursor,
     /// and result projection.
     pub fn set_iterator_state(
@@ -13843,8 +14248,58 @@ impl Heap {
     where
         H: FnMut(WeakSymbolGcEvent) -> Result<bool, HeapError>,
     {
+        let mut sink = DiscardFinalizationJobSink;
+        self.run_gc_with_weak_symbol_hooks_in_mode(WeakObjectGcMode::Remove, &mut hook, &mut sink)
+    }
+
+    /// Runtime-facing collection entry point. The sink reserves its concrete
+    /// job queue before the heap transfers any ownership, eliminating a
+    /// second allocation boundary between weak removal and Runtime adoption.
+    pub(crate) fn run_gc_with_finalization_sink<H, S>(
+        &mut self,
+        mut hook: H,
+        sink: &mut S,
+    ) -> Result<GcStats, HeapError>
+    where
+        H: FnMut(WeakSymbolGcEvent) -> Result<bool, HeapError>,
+        S: FinalizationJobSink,
+    {
+        self.run_gc_with_weak_symbol_hooks_in_mode(WeakObjectGcMode::Remove, &mut hook, sink)
+    }
+
+    /// Runtime teardown counterpart of QuickJS
+    /// `JS_RunGCInternal(rt, FALSE)`. The caller discards its existing Runtime
+    /// jobs before entering here; this mode clears no weak targets, converts no
+    /// registrations to jobs, and introduces no new user-code work.
+    pub(crate) fn run_gc_for_runtime_teardown(&mut self) -> Result<GcStats, HeapError> {
+        let mut hook = |event| {
+            Ok(match event {
+                WeakSymbolGcEvent::IsLive(_) => true,
+                WeakSymbolGcEvent::Release(_) => false,
+            })
+        };
+        let mut sink = DiscardFinalizationJobSink;
+        self.run_gc_with_weak_symbol_hooks_in_mode(
+            WeakObjectGcMode::PreserveForRuntimeTeardown,
+            &mut hook,
+            &mut sink,
+        )
+    }
+
+    fn run_gc_with_weak_symbol_hooks_in_mode<H, S>(
+        &mut self,
+        mode: WeakObjectGcMode,
+        hook: &mut H,
+        sink: &mut S,
+    ) -> Result<GcStats, HeapError>
+    where
+        H: FnMut(WeakSymbolGcEvent) -> Result<bool, HeapError>,
+        S: FinalizationJobSink,
+    {
         let mut cleanup = self.drain_zero_queue()?;
-        cleanup.merge(self.prune_dead_weak_records(&mut hook)?);
+        if mode == WeakObjectGcMode::Remove {
+            cleanup.merge(self.remove_dead_weak_objects(hook, sink)?);
+        }
         if self
             .slots
             .iter()
@@ -13965,18 +14420,25 @@ impl Heap {
         })
     }
 
-    /// Remove stale weak records in the same single construction-order pass
+    /// Remove stale weak targets in the same single construction-order pass
     /// as QuickJS's `gc_remove_weak_objects`. Releasing a WeakMap value can
-    /// make a key in a *later* collection stale during this traversal, but an
-    /// earlier collection is deliberately not revisited until the next GC.
-    fn prune_dead_weak_records<H>(&mut self, hook: &mut H) -> Result<HeapCleanup, HeapError>
+    /// make a target in a *later* weak object stale during this traversal, but
+    /// an earlier weak object is deliberately not revisited until the next GC.
+    fn remove_dead_weak_objects<H, S>(
+        &mut self,
+        hook: &mut H,
+        sink: &mut S,
+    ) -> Result<HeapCleanup, HeapError>
     where
         H: FnMut(WeakSymbolGcEvent) -> Result<bool, HeapError>,
+        S: FinalizationJobSink,
     {
         #[derive(Clone, Copy)]
-        enum CollectionKind {
+        enum WeakObjectKind {
             Map,
             Set,
+            Ref,
+            Registry,
         }
 
         let mut cleanup = HeapCleanup::default();
@@ -13986,15 +14448,13 @@ impl Heap {
             // release may zero-queue either endpoint, but finalization stays
             // deferred until the complete weak-ref traversal has finished.
             let next = self.weak_registry_next(id)?;
-            let (kind, mut key) = {
-                let object = self.weak_collection_object_for_prune(id)?;
+            let kind = {
+                let object = self.weak_object_for_prune(id)?;
                 match &object.payload {
-                    ObjectPayload::WeakMap { records } => {
-                        (CollectionKind::Map, records.first_key())
-                    }
-                    ObjectPayload::WeakSet { records } => {
-                        (CollectionKind::Set, records.first_key())
-                    }
+                    ObjectPayload::WeakMap { .. } => WeakObjectKind::Map,
+                    ObjectPayload::WeakSet { .. } => WeakObjectKind::Set,
+                    ObjectPayload::WeakRef { .. } => WeakObjectKind::Ref,
+                    ObjectPayload::FinalizationRegistry(_) => WeakObjectKind::Registry,
                     _ => {
                         return Err(HeapError::Invariant(
                             "weak registry changed object class during traversal",
@@ -14003,72 +14463,173 @@ impl Heap {
                 }
             };
 
-            while let Some(record_key) = key {
-                // Cache the record successor before detaching its value. The
-                // release can kill that successor's key, whose liveness is
-                // intentionally queried only on the next loop iteration.
-                let record_next = {
-                    let object = self.weak_collection_object_for_prune(id)?;
-                    match (&object.payload, kind) {
-                        (ObjectPayload::WeakMap { records }, CollectionKind::Map) => {
-                            records.next_key(record_key)?
-                        }
-                        (ObjectPayload::WeakSet { records }, CollectionKind::Set) => {
-                            records.next_key(record_key)?
-                        }
-                        _ => {
-                            return Err(HeapError::Invariant(
-                                "weak registry changed class during record traversal",
-                            ));
-                        }
-                    }
-                };
-                let key_is_live = match record_key {
-                    WeakCollectionKey::Object(object) => self.is_live(RawId::Object(object)),
-                    WeakCollectionKey::Symbol(atom) => hook(WeakSymbolGcEvent::IsLive(atom))?,
-                };
-
-                if !key_is_live {
-                    match kind {
-                        CollectionKind::Map => {
-                            let value = {
-                                let ObjectPayload::WeakMap { records } =
-                                    &mut self.weak_collection_object_for_prune_mut(id)?.payload
-                                else {
-                                    return Err(HeapError::Invariant(
-                                        "weak registry changed map class during pruning",
-                                    ));
-                                };
-                                records.remove(&record_key)?.ok_or(HeapError::Invariant(
-                                    "ordered weak-map record disappeared during pruning",
-                                ))?
-                            };
-                            if let Some(atom) = raw_value_atom(&value) {
-                                if !hook(WeakSymbolGcEvent::Release(atom))? {
-                                    cleanup.atoms.push(atom);
+            match kind {
+                WeakObjectKind::Map | WeakObjectKind::Set => {
+                    let mut key = match &self.weak_object_for_prune(id)?.payload {
+                        ObjectPayload::WeakMap { records } => records.first_key(),
+                        ObjectPayload::WeakSet { records } => records.first_key(),
+                        _ => unreachable!("weak collection kind was authenticated above"),
+                    };
+                    while let Some(record_key) = key {
+                        // Cache the record successor before detaching its
+                        // value. A release can kill a later key in this pass.
+                        let record_next = match (&self.weak_object_for_prune(id)?.payload, kind) {
+                            (ObjectPayload::WeakMap { records }, WeakObjectKind::Map) => {
+                                records.next_key(record_key)?
+                            }
+                            (ObjectPayload::WeakSet { records }, WeakObjectKind::Set) => {
+                                records.next_key(record_key)?
+                            }
+                            _ => {
+                                return Err(HeapError::Invariant(
+                                    "weak registry changed class during record traversal",
+                                ));
+                            }
+                        };
+                        if !self.weak_target_is_live(record_key, hook)? {
+                            match kind {
+                                WeakObjectKind::Map => {
+                                    let value = {
+                                        let ObjectPayload::WeakMap { records } =
+                                            &mut self.weak_object_for_prune_mut(id)?.payload
+                                        else {
+                                            return Err(HeapError::Invariant(
+                                                "weak registry changed map class during pruning",
+                                            ));
+                                        };
+                                        records.remove(&record_key)?.ok_or(HeapError::Invariant(
+                                            "ordered weak-map record disappeared during pruning",
+                                        ))?
+                                    };
+                                    if let Some(atom) = raw_value_atom(&value) {
+                                        if !hook(WeakSymbolGcEvent::Release(atom))? {
+                                            cleanup.atoms.push(atom);
+                                        }
+                                    }
+                                    for edge in raw_value_edges(&value) {
+                                        self.release_raw_no_drain(edge)?;
+                                    }
                                 }
-                            }
-                            for edge in raw_value_edges(&value) {
-                                self.release_raw_no_drain(edge)?;
-                            }
-                        }
-                        CollectionKind::Set => {
-                            let ObjectPayload::WeakSet { records } =
-                                &mut self.weak_collection_object_for_prune_mut(id)?.payload
-                            else {
-                                return Err(HeapError::Invariant(
-                                    "weak registry changed set class during pruning",
-                                ));
-                            };
-                            if records.remove(&record_key)?.is_none() {
-                                return Err(HeapError::Invariant(
-                                    "ordered weak-set record disappeared during pruning",
-                                ));
+                                WeakObjectKind::Set => {
+                                    let ObjectPayload::WeakSet { records } =
+                                        &mut self.weak_object_for_prune_mut(id)?.payload
+                                    else {
+                                        return Err(HeapError::Invariant(
+                                            "weak registry changed set class during pruning",
+                                        ));
+                                    };
+                                    if records.remove(&record_key)?.is_none() {
+                                        return Err(HeapError::Invariant(
+                                            "ordered weak-set record disappeared during pruning",
+                                        ));
+                                    }
+                                }
+                                WeakObjectKind::Ref | WeakObjectKind::Registry => unreachable!(),
                             }
                         }
+                        key = record_next;
                     }
                 }
-                key = record_next;
+                WeakObjectKind::Ref => {
+                    let target = match &self.weak_object_for_prune(id)?.payload {
+                        ObjectPayload::WeakRef { target } => *target,
+                        _ => unreachable!("WeakRef kind was authenticated above"),
+                    };
+                    if let Some(target) = target
+                        && !self.weak_target_is_live(target, hook)?
+                    {
+                        let ObjectPayload::WeakRef { target } =
+                            &mut self.weak_object_for_prune_mut(id)?.payload
+                        else {
+                            return Err(HeapError::Invariant(
+                                "weak registry changed WeakRef class during pruning",
+                            ));
+                        };
+                        *target = None;
+                    }
+                }
+                WeakObjectKind::Registry => {
+                    let mut entry_index = 0usize;
+                    while let Some((token, target)) = match &self.weak_object_for_prune(id)?.payload
+                    {
+                        ObjectPayload::FinalizationRegistry(data) => data
+                            .entries
+                            .get(entry_index)
+                            .map(|entry| (entry.unregister_token, entry.target)),
+                        _ => {
+                            return Err(HeapError::Invariant(
+                                "weak registry changed FinalizationRegistry class",
+                            ));
+                        }
+                    } {
+                        if let Some(token) = token
+                            && !self.weak_target_is_live(token, hook)?
+                        {
+                            let ObjectPayload::FinalizationRegistry(data) =
+                                &mut self.weak_object_for_prune_mut(id)?.payload
+                            else {
+                                unreachable!("FinalizationRegistry changed after validation")
+                            };
+                            data.entries[entry_index].unregister_token = None;
+                        }
+
+                        if self.weak_target_is_live(target, hook)? {
+                            entry_index = entry_index.saturating_add(1);
+                            continue;
+                        }
+
+                        // QuickJS's no-exception enqueue silently drops the
+                        // callback if queue preparation fails. Decide this
+                        // before retaining callback/realm or moving held.
+                        if !sink.try_reserve_one() {
+                            let entry = {
+                                let ObjectPayload::FinalizationRegistry(data) =
+                                    &mut self.weak_object_for_prune_mut(id)?.payload
+                                else {
+                                    unreachable!("FinalizationRegistry changed after validation")
+                                };
+                                data.entries.remove(entry_index)
+                            };
+                            if let Some(atom) = raw_value_atom(&entry.held_value)
+                                && !hook(WeakSymbolGcEvent::Release(atom))?
+                            {
+                                cleanup.atoms.push(atom);
+                            }
+                            for edge in raw_value_edges(&entry.held_value) {
+                                self.release_raw_no_drain(edge)?;
+                            }
+                            continue;
+                        }
+
+                        let (callback, realm) = match &self.weak_object_for_prune(id)?.payload {
+                            ObjectPayload::FinalizationRegistry(data) => {
+                                (data.callback, data.realm)
+                            }
+                            _ => unreachable!("FinalizationRegistry changed after validation"),
+                        };
+                        self.retain_edges_transactionally(&[
+                            RawId::Object(callback),
+                            RawId::Context(realm),
+                        ])?;
+                        let entry = {
+                            let ObjectPayload::FinalizationRegistry(data) =
+                                &mut self.weak_object_for_prune_mut(id)?.payload
+                            else {
+                                unreachable!("FinalizationRegistry changed after retaining roots")
+                            };
+                            data.entries.remove(entry_index)
+                        };
+                        // Moving held_value preserves its existing object and
+                        // Atom ownership. callback/realm are the two newly
+                        // retained roots which make the prepared job external
+                        // to trial-deletion tracing.
+                        sink.publish_preowned(PreparedFinalizationJob {
+                            realm,
+                            callback,
+                            held_value: entry.held_value,
+                        });
+                    }
+                }
             }
             current = next;
         }
@@ -14215,11 +14776,11 @@ impl Heap {
         Ok(())
     }
 
-    /// Append a newly published WeakMap/WeakSet to the runtime-local weak-ref
-    /// list. QuickJS traverses this list once in construction order before
-    /// trial deletion, so physical arena indices are not a valid substitute:
-    /// a recycled low slot still belongs at the tail.
-    fn link_weak_collection(&mut self, id: ObjectId) -> Result<(), HeapError> {
+    /// Append a newly published WeakMap, WeakSet, WeakRef, or
+    /// FinalizationRegistry to the runtime-local mixed weak-object list.
+    /// QuickJS traverses this list once in construction order before trial
+    /// deletion, so a recycled low arena slot still belongs at the tail.
+    fn link_weak_object(&mut self, id: ObjectId) -> Result<(), HeapError> {
         if self.weak_head.is_none() != self.weak_tail.is_none() {
             return Err(HeapError::Invariant(
                 "weak-collection registry endpoints disagreed",
@@ -14236,7 +14797,10 @@ impl Heap {
             &slot.state,
             SlotState::Live(Node {
                 data: NodeData::Object(ObjectData {
-                    payload: ObjectPayload::WeakMap { .. } | ObjectPayload::WeakSet { .. },
+                    payload: ObjectPayload::WeakMap { .. }
+                        | ObjectPayload::WeakSet { .. }
+                        | ObjectPayload::WeakRef { .. }
+                        | ObjectPayload::FinalizationRegistry(_),
                     ..
                 }),
                 ..
@@ -14269,11 +14833,11 @@ impl Heap {
         Ok(())
     }
 
-    /// Detach a weak collection immediately before its payload releases its
+    /// Detach a weak object immediately before its payload releases its
     /// outgoing edges. The current slot may already be Vacant (zero-count
     /// finalization) or Zombie (cycle finalization), so registry identity is
     /// checked by generation rather than by the slot's transient state.
-    fn unlink_weak_collection(&mut self, id: ObjectId) -> Result<(), HeapError> {
+    fn unlink_weak_object(&mut self, id: ObjectId) -> Result<(), HeapError> {
         let index = self.weak_registry_slot_index(id)?;
         let (previous, next) = {
             let slot = &self.slots[index];
@@ -14369,7 +14933,7 @@ impl Heap {
         Ok(slot.weak_next)
     }
 
-    fn weak_collection_object_for_prune(&self, id: ObjectId) -> Result<&ObjectData, HeapError> {
+    fn weak_object_for_prune(&self, id: ObjectId) -> Result<&ObjectData, HeapError> {
         let index = self.weak_registry_slot_index(id)?;
         let node = match &self.slots[index].state {
             SlotState::Live(node) | SlotState::ZeroQueued(node) => node,
@@ -14383,7 +14947,10 @@ impl Heap {
             NodeData::Object(object)
                 if matches!(
                     &object.payload,
-                    ObjectPayload::WeakMap { .. } | ObjectPayload::WeakSet { .. }
+                    ObjectPayload::WeakMap { .. }
+                        | ObjectPayload::WeakSet { .. }
+                        | ObjectPayload::WeakRef { .. }
+                        | ObjectPayload::FinalizationRegistry(_)
                 ) =>
             {
                 Ok(object)
@@ -14394,10 +14961,7 @@ impl Heap {
         }
     }
 
-    fn weak_collection_object_for_prune_mut(
-        &mut self,
-        id: ObjectId,
-    ) -> Result<&mut ObjectData, HeapError> {
+    fn weak_object_for_prune_mut(&mut self, id: ObjectId) -> Result<&mut ObjectData, HeapError> {
         let index = self.weak_registry_slot_index(id)?;
         let node = match &mut self.slots[index].state {
             SlotState::Live(node) | SlotState::ZeroQueued(node) => node,
@@ -14411,7 +14975,10 @@ impl Heap {
             NodeData::Object(object)
                 if matches!(
                     &object.payload,
-                    ObjectPayload::WeakMap { .. } | ObjectPayload::WeakSet { .. }
+                    ObjectPayload::WeakMap { .. }
+                        | ObjectPayload::WeakSet { .. }
+                        | ObjectPayload::WeakRef { .. }
+                        | ObjectPayload::FinalizationRegistry(_)
                 ) =>
             {
                 Ok(object)
@@ -14419,6 +14986,27 @@ impl Heap {
             _ => Err(HeapError::Invariant(
                 "weak-ref pass mutated a non-weak object",
             )),
+        }
+    }
+
+    fn validate_live_weak_target(&self, target: WeakCollectionKey) -> Result<(), HeapError> {
+        if let WeakCollectionKey::Object(object) = target {
+            self.object(object)?;
+        }
+        Ok(())
+    }
+
+    fn weak_target_is_live<H>(
+        &self,
+        target: WeakCollectionKey,
+        hook: &mut H,
+    ) -> Result<bool, HeapError>
+    where
+        H: FnMut(WeakSymbolGcEvent) -> Result<bool, HeapError>,
+    {
+        match target {
+            WeakCollectionKey::Object(object) => Ok(self.is_live(RawId::Object(object))),
+            WeakCollectionKey::Symbol(atom) => hook(WeakSymbolGcEvent::IsLive(atom)),
         }
     }
 
@@ -14474,6 +15062,11 @@ impl Heap {
                 | (ObjectKind::SetIterator, ObjectPayload::SetIterator { .. })
                 | (ObjectKind::WeakMap, ObjectPayload::WeakMap { .. })
                 | (ObjectKind::WeakSet, ObjectPayload::WeakSet { .. })
+                | (ObjectKind::WeakRef, ObjectPayload::WeakRef { .. })
+                | (
+                    ObjectKind::FinalizationRegistry,
+                    ObjectPayload::FinalizationRegistry(_)
+                )
                 | (ObjectKind::GlobalObject, ObjectPayload::GlobalObject { .. })
                 | (ObjectKind::Error, ObjectPayload::Error)
                 | (
@@ -15202,6 +15795,40 @@ impl Heap {
                 }
             }
         }
+        if let ObjectPayload::WeakRef {
+            target: Some(WeakCollectionKey::Object(target)),
+        } = &object.payload
+            && self.is_live(RawId::Object(*target))
+        {
+            self.object(*target)?;
+        }
+        if let ObjectPayload::FinalizationRegistry(data) = &object.payload {
+            if !object_data_is_callable(self.object(data.callback)?) {
+                return Err(HeapError::Invariant(
+                    "FinalizationRegistry callback is not callable",
+                ));
+            }
+            self.context(data.realm)?;
+            for entry in &data.entries {
+                if !is_map_storable_value(&entry.held_value)
+                    || raw_value_matches_weak_key(&entry.held_value, entry.target)
+                {
+                    return Err(HeapError::Invariant(
+                        "FinalizationRegistry contains an invalid held value",
+                    ));
+                }
+                for weak in [Some(entry.target), entry.unregister_token]
+                    .into_iter()
+                    .flatten()
+                {
+                    if let WeakCollectionKey::Object(target) = weak
+                        && self.is_live(RawId::Object(target))
+                    {
+                        self.object(target)?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -15372,14 +15999,17 @@ impl Heap {
             NodeData::Object(object) => {
                 if matches!(
                     &object.payload,
-                    ObjectPayload::WeakMap { .. } | ObjectPayload::WeakSet { .. }
+                    ObjectPayload::WeakMap { .. }
+                        | ObjectPayload::WeakSet { .. }
+                        | ObjectPayload::WeakRef { .. }
+                        | ObjectPayload::FinalizationRegistry(_)
                 ) {
                     let RawId::Object(object_id) = id else {
                         return Err(HeapError::Invariant(
-                            "weak collection finalized through a non-object handle",
+                            "weak object finalized through a non-object handle",
                         ));
                     };
-                    self.unlink_weak_collection(object_id)?;
+                    self.unlink_weak_object(object_id)?;
                 }
                 cleanup.finalized_objects = cleanup.finalized_objects.saturating_add(1);
                 cleanup.atoms.extend(object_atoms(&object));
@@ -15644,6 +16274,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::WeakSet { .. }
+        | ObjectPayload::WeakRef { .. }
         | ObjectPayload::Generator { .. } => 0,
         ObjectPayload::DataView(_) | ObjectPayload::TypedArray(_) => 1,
         ObjectPayload::Proxy(_) => 2,
@@ -15710,6 +16341,12 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
             .values()
             .map(|value| raw_value_edges(value).len())
             .sum(),
+        ObjectPayload::FinalizationRegistry(data) => data
+            .entries
+            .iter()
+            .map(|entry| raw_value_edges(&entry.held_value).len())
+            .sum::<usize>()
+            .saturating_add(2),
         ObjectPayload::BoundFunction { arguments, .. } => arguments.len().saturating_add(2),
         ObjectPayload::BytecodeFunction { closure_slots, .. } => closure_slots.len(),
         ObjectPayload::Promise(data) => raw_value_edges(&data.result).len().saturating_add(
@@ -15745,7 +16382,8 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::ArrayBuffer(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
-        | ObjectPayload::WeakSet { .. } => {}
+        | ObjectPayload::WeakSet { .. }
+        | ObjectPayload::WeakRef { .. } => {}
         ObjectPayload::DataView(data) => {
             edges.push(RawId::Object(data.buffer));
         }
@@ -15815,6 +16453,15 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
                 // Weak keys are intentionally absent from the graph. Values
                 // retain their ordinary owned edges, matching QuickJS mark.
                 edges.extend(raw_value_edges(value));
+            }
+        }
+        ObjectPayload::FinalizationRegistry(data) => {
+            edges.push(RawId::Object(data.callback));
+            edges.push(RawId::Context(data.realm));
+            for entry in &data.entries {
+                // target and unregister_token are intentionally weak. Only
+                // held values participate in ordinary trial-deletion tracing.
+                edges.extend(raw_value_edges(&entry.held_value));
             }
         }
         ObjectPayload::ForInIterator(data) => {
@@ -16066,6 +16713,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.set.map_or(0, |_| 2))
             .saturating_add(context.weak_map.map_or(0, |_| 1))
             .saturating_add(context.weak_set.map_or(0, |_| 1))
+            .saturating_add(context.weak_ref.map_or(0, |_| 2))
             .saturating_add(context.array_buffer.map_or(0, |_| 1))
             .saturating_add(context.data_view.map_or(0, |_| 1))
             .saturating_add(
@@ -16116,6 +16764,10 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     }
     if let Some(weak_set) = context.weak_set {
         edges.push(RawId::Object(weak_set.prototype));
+    }
+    if let Some(weak_ref) = context.weak_ref {
+        edges.push(RawId::Object(weak_ref.weak_ref_prototype));
+        edges.push(RawId::Object(weak_ref.finalization_registry_prototype));
     }
     if let Some(array_buffer) = context.array_buffer {
         edges.push(RawId::Object(array_buffer.prototype));
@@ -16265,6 +16917,11 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
             .values()
             .filter_map(raw_value_atom)
             .collect::<Vec<_>>(),
+        ObjectPayload::FinalizationRegistry(data) => data
+            .entries
+            .iter()
+            .filter_map(|entry| raw_value_atom(&entry.held_value))
+            .collect(),
         ObjectPayload::Generator { activation, .. } => activation
             .as_deref()
             .map(generator_activation_atoms)
@@ -16327,6 +16984,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::MapIterator { .. }
         | ObjectPayload::SetIterator { .. }
         | ObjectPayload::WeakSet { .. }
+        | ObjectPayload::WeakRef { .. }
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -16375,6 +17033,16 @@ fn raw_value_atom(value: &RawValue) -> Option<Atom> {
         | RawValue::Object(_)
         | RawValue::Uninitialized
         | RawValue::Exception => None,
+    }
+}
+
+fn raw_value_matches_weak_key(value: &RawValue, key: WeakCollectionKey) -> bool {
+    match (value, key) {
+        (RawValue::Object(value), WeakCollectionKey::Object(key)) => {
+            value.index == key.index && value.generation == key.generation
+        }
+        (RawValue::Symbol(value), WeakCollectionKey::Symbol(key)) => *value == key,
+        _ => false,
     }
 }
 
@@ -17027,6 +17695,81 @@ mod tests {
 
     fn empty_shape(heap: &mut Heap) -> ShapeId {
         heap.allocate_shape(Shape::new(None, []).unwrap()).unwrap()
+    }
+
+    #[derive(Default)]
+    struct RecordingFinalizationJobSink {
+        jobs: VecDeque<PreparedFinalizationJob>,
+        fail_next_reservation: bool,
+    }
+
+    impl FinalizationJobSink for RecordingFinalizationJobSink {
+        fn try_reserve_one(&mut self) -> bool {
+            if std::mem::take(&mut self.fail_next_reservation) {
+                return false;
+            }
+            self.jobs.try_reserve(1).is_ok()
+        }
+
+        fn publish_preowned(&mut self, job: PreparedFinalizationJob) {
+            self.jobs.push_back(job);
+        }
+    }
+
+    fn finalization_test_realm(
+        heap: &mut Heap,
+        shape: ShapeId,
+    ) -> (ObjectId, ObjectId, ContextId, ObjectId) {
+        let root = leaf(heap, shape);
+        let function_prototype = heap
+            .allocate_bootstrap_native_function(ObjectData::native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::FunctionPrototype,
+                0,
+            ))
+            .unwrap();
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root,
+                function_prototype,
+                root,
+                root,
+                root,
+                root,
+                root,
+                root,
+            ))
+            .unwrap();
+        heap.attach_native_function_realm(function_prototype, realm)
+            .unwrap();
+        let callback = heap
+            .allocate_object(ObjectData::bound_native_function(
+                shape,
+                Vec::new(),
+                NativeFunctionId::ErrorIsError,
+                realm,
+                1,
+            ))
+            .unwrap();
+        (root, function_prototype, realm, callback)
+    }
+
+    fn release_finalization_test_realm(
+        heap: &mut Heap,
+        shape: ShapeId,
+        root: ObjectId,
+        function_prototype: ObjectId,
+        realm: ContextId,
+        callback: ObjectId,
+    ) {
+        heap.release_object(callback).unwrap();
+        heap.release_context(realm).unwrap();
+        heap.release_object(function_prototype).unwrap();
+        heap.release_object(root).unwrap();
+        heap.release_shape(shape).unwrap();
+        heap.run_gc_for_runtime_teardown().unwrap();
+        assert_eq!(heap.counts().live, 0);
     }
 
     #[test]
@@ -17698,6 +18441,457 @@ mod tests {
     }
 
     #[test]
+    fn weak_ref_target_is_non_owning_and_cleared_by_the_weak_pass() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let target = leaf(&mut heap, shape);
+        let weak_target = WeakCollectionKey::Object(target);
+        let weak_ref = heap
+            .allocate_weak_ref_object(shape, Vec::new(), weak_target)
+            .unwrap();
+
+        assert_eq!(heap.object_strong_count(target), Ok(1));
+        assert_eq!(heap.weak_ref_target(weak_ref), Ok(Some(weak_target)));
+        assert_eq!(heap.release_object(target).unwrap().finalized_objects, 1);
+        // The generational identity is cleared only by the ordered weak pass.
+        assert_eq!(heap.weak_ref_target(weak_ref), Ok(Some(weak_target)));
+
+        heap.run_gc().unwrap();
+        assert_eq!(heap.weak_ref_target(weak_ref), Ok(None));
+
+        heap.release_object(weak_ref).unwrap();
+        heap.release_shape(shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
+    }
+
+    #[test]
+    fn finalization_registry_transfers_held_and_job_roots_without_retain_on_adoption() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
+        let registry = heap
+            .allocate_finalization_registry_object(shape, Vec::new(), callback, realm)
+            .unwrap();
+        let target = leaf(&mut heap, shape);
+        let held = leaf(&mut heap, shape);
+        heap.finalization_registry_register(
+            registry,
+            WeakCollectionKey::Object(target),
+            RawValue::Object(held),
+            None,
+        )
+        .unwrap();
+        assert_eq!(heap.object_strong_count(held), Ok(2));
+        heap.release_object(held).unwrap();
+        heap.release_object(target).unwrap();
+
+        let callback_before = heap.object_strong_count(callback).unwrap();
+        let realm_before = heap.context_strong_count(realm).unwrap();
+        let mut sink = RecordingFinalizationJobSink::default();
+        heap.run_gc_with_finalization_sink(
+            |event| Ok(matches!(event, WeakSymbolGcEvent::IsLive(_))),
+            &mut sink,
+        )
+        .unwrap();
+
+        assert_eq!(heap.finalization_registry_len(registry), Ok(0));
+        assert_eq!(sink.jobs.len(), 1);
+        assert_eq!(heap.object_strong_count(held), Ok(1));
+        assert_eq!(heap.object_strong_count(callback), Ok(callback_before + 1));
+        assert_eq!(heap.context_strong_count(realm), Ok(realm_before + 1));
+        let job = sink.jobs.front().unwrap();
+        assert_eq!(job.callback, callback);
+        assert_eq!(job.realm, realm);
+        assert_eq!(job.held_value, RawValue::Object(held));
+
+        // Releasing the registry removes only its own callback/realm roots;
+        // the already-published job keeps its roots without another retain.
+        heap.release_object(registry).unwrap();
+        assert_eq!(heap.object_strong_count(callback), Ok(callback_before));
+        assert_eq!(heap.context_strong_count(realm), Ok(realm_before));
+        let cleanup = heap.discard_finalization_jobs(sink.jobs).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert!(matches!(heap.object(held), Err(HeapError::Stale { .. })));
+
+        release_finalization_test_realm(
+            &mut heap,
+            shape,
+            root,
+            function_prototype,
+            realm,
+            callback,
+        );
+    }
+
+    #[test]
+    fn finalization_job_moves_held_symbol_ownership_until_job_release() {
+        let mut atoms = crate::atom::AtomTable::new();
+        let held = atoms.new_symbol(Some("finalization held value")).unwrap();
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
+        let registry = heap
+            .allocate_finalization_registry_object(shape, Vec::new(), callback, realm)
+            .unwrap();
+        let target = leaf(&mut heap, shape);
+        heap.finalization_registry_register(
+            registry,
+            WeakCollectionKey::Object(target),
+            RawValue::Symbol(held),
+            None,
+        )
+        .unwrap();
+        heap.release_object(target).unwrap();
+
+        let mut sink = RecordingFinalizationJobSink::default();
+        heap.run_gc_with_finalization_sink(
+            |event| {
+                Ok(match event {
+                    WeakSymbolGcEvent::IsLive(atom) => atoms.is_live(atom),
+                    WeakSymbolGcEvent::Release(atom) => {
+                        atoms
+                            .release(atom)
+                            .map_err(|_| HeapError::Invariant("held Symbol release failed"))?;
+                        true
+                    }
+                })
+            },
+            &mut sink,
+        )
+        .unwrap();
+        assert_eq!(sink.jobs.len(), 1);
+        assert_eq!(sink.jobs[0].held_value, RawValue::Symbol(held));
+        assert!(atoms.is_live(held));
+
+        heap.release_object(registry).unwrap();
+        let cleanup = heap.discard_finalization_jobs(sink.jobs).unwrap();
+        assert_eq!(cleanup.atoms, [held]);
+        assert_eq!(
+            atoms.release(held),
+            Ok(crate::atom::ReleaseOutcome::Removed)
+        );
+        release_finalization_test_realm(
+            &mut heap,
+            shape,
+            root,
+            function_prototype,
+            realm,
+            callback,
+        );
+    }
+
+    #[test]
+    fn weak_pass_can_prepare_a_later_zero_queued_registry_before_finalizing_it() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
+        // Construction order matters: the map releases the registry before
+        // the same mixed-list pass reaches the registry.
+        let weak_map = heap
+            .allocate_object(ObjectData::weak_map(shape, Vec::new()))
+            .unwrap();
+        let registry = heap
+            .allocate_finalization_registry_object(shape, Vec::new(), callback, realm)
+            .unwrap();
+        let map_key = leaf(&mut heap, shape);
+        let target = leaf(&mut heap, shape);
+        let held = leaf(&mut heap, shape);
+        heap.weak_map_set(
+            weak_map,
+            WeakCollectionKey::Object(map_key),
+            RawValue::Object(registry),
+        )
+        .unwrap();
+        heap.finalization_registry_register(
+            registry,
+            WeakCollectionKey::Object(target),
+            RawValue::Object(held),
+            None,
+        )
+        .unwrap();
+        heap.release_object(map_key).unwrap();
+        heap.release_object(target).unwrap();
+        heap.release_object(held).unwrap();
+        heap.release_object(registry).unwrap();
+
+        let mut sink = RecordingFinalizationJobSink::default();
+        let stats = heap
+            .run_gc_with_finalization_sink(
+                |event| Ok(matches!(event, WeakSymbolGcEvent::IsLive(_))),
+                &mut sink,
+            )
+            .unwrap();
+        assert_eq!(sink.jobs.len(), 1);
+        assert!(stats.cleanup.finalized_objects >= 1);
+        assert!(matches!(
+            heap.object(registry),
+            Err(HeapError::Stale { .. })
+        ));
+        assert_eq!(heap.object_strong_count(held), Ok(1));
+
+        assert_eq!(
+            heap.discard_finalization_jobs(sink.jobs)
+                .unwrap()
+                .finalized_objects,
+            1
+        );
+        heap.release_object(weak_map).unwrap();
+        release_finalization_test_realm(
+            &mut heap,
+            shape,
+            root,
+            function_prototype,
+            realm,
+            callback,
+        );
+    }
+
+    #[test]
+    fn mixed_weak_object_construction_order_controls_one_vs_two_pass_clear() {
+        for weak_ref_first in [false, true] {
+            let mut heap = Heap::new();
+            let shape = empty_shape(&mut heap);
+            let target = leaf(&mut heap, shape);
+            let key = leaf(&mut heap, shape);
+            let weak_target = WeakCollectionKey::Object(target);
+            let weak_key = WeakCollectionKey::Object(key);
+
+            let (weak_map, weak_ref) = if weak_ref_first {
+                let weak_ref = heap
+                    .allocate_weak_ref_object(shape, Vec::new(), weak_target)
+                    .unwrap();
+                let weak_map = heap
+                    .allocate_object(ObjectData::weak_map(shape, Vec::new()))
+                    .unwrap();
+                (weak_map, weak_ref)
+            } else {
+                let weak_map = heap
+                    .allocate_object(ObjectData::weak_map(shape, Vec::new()))
+                    .unwrap();
+                let weak_ref = heap
+                    .allocate_weak_ref_object(shape, Vec::new(), weak_target)
+                    .unwrap();
+                (weak_map, weak_ref)
+            };
+            heap.weak_map_set(weak_map, weak_key, RawValue::Object(target))
+                .unwrap();
+            heap.release_object(key).unwrap();
+            heap.release_object(target).unwrap();
+
+            heap.run_gc().unwrap();
+            if weak_ref_first {
+                assert_eq!(heap.weak_ref_target(weak_ref), Ok(Some(weak_target)));
+                heap.run_gc().unwrap();
+            }
+            assert_eq!(heap.weak_ref_target(weak_ref), Ok(None));
+
+            heap.release_object(weak_ref).unwrap();
+            heap.release_object(weak_map).unwrap();
+            heap.release_shape(shape).unwrap();
+            assert_eq!(heap.counts().live, 0);
+        }
+    }
+
+    #[test]
+    fn finalization_job_reservation_failure_silently_drops_the_registration() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
+        let registry = heap
+            .allocate_finalization_registry_object(shape, Vec::new(), callback, realm)
+            .unwrap();
+        let target = leaf(&mut heap, shape);
+        let held = leaf(&mut heap, shape);
+        heap.finalization_registry_register(
+            registry,
+            WeakCollectionKey::Object(target),
+            RawValue::Object(held),
+            None,
+        )
+        .unwrap();
+        heap.release_object(target).unwrap();
+        heap.release_object(held).unwrap();
+        let callback_before = heap.object_strong_count(callback).unwrap();
+        let realm_before = heap.context_strong_count(realm).unwrap();
+
+        let mut sink = RecordingFinalizationJobSink {
+            fail_next_reservation: true,
+            ..RecordingFinalizationJobSink::default()
+        };
+        let stats = heap
+            .run_gc_with_finalization_sink(
+                |event| Ok(matches!(event, WeakSymbolGcEvent::IsLive(_))),
+                &mut sink,
+            )
+            .unwrap();
+        assert!(sink.jobs.is_empty());
+        assert_eq!(heap.finalization_registry_len(registry), Ok(0));
+        assert_eq!(stats.cleanup.finalized_objects, 1);
+        assert!(matches!(heap.object(held), Err(HeapError::Stale { .. })));
+        assert_eq!(heap.object_strong_count(callback), Ok(callback_before));
+        assert_eq!(heap.context_strong_count(realm), Ok(realm_before));
+
+        heap.release_object(registry).unwrap();
+        release_finalization_test_realm(
+            &mut heap,
+            shape,
+            root,
+            function_prototype,
+            realm,
+            callback,
+        );
+    }
+
+    #[test]
+    fn runtime_teardown_gc_skips_weak_removal_from_the_start() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
+        let target = leaf(&mut heap, shape);
+        let weak_target = WeakCollectionKey::Object(target);
+        let weak_ref = heap
+            .allocate_weak_ref_object(shape, Vec::new(), weak_target)
+            .unwrap();
+        let registry = heap
+            .allocate_finalization_registry_object(shape, Vec::new(), callback, realm)
+            .unwrap();
+        let held = leaf(&mut heap, shape);
+        heap.finalization_registry_register(registry, weak_target, RawValue::Object(held), None)
+            .unwrap();
+        heap.release_object(target).unwrap();
+        heap.release_object(held).unwrap();
+
+        heap.run_gc_for_runtime_teardown().unwrap();
+        assert_eq!(heap.weak_ref_target(weak_ref), Ok(Some(weak_target)));
+        assert_eq!(heap.finalization_registry_len(registry), Ok(1));
+        assert_eq!(heap.object_strong_count(held), Ok(1));
+
+        // A normal heap-only collection takes the no-queue drop path.
+        heap.run_gc().unwrap();
+        assert_eq!(heap.weak_ref_target(weak_ref), Ok(None));
+        assert_eq!(heap.finalization_registry_len(registry), Ok(0));
+        assert!(matches!(heap.object(held), Err(HeapError::Stale { .. })));
+
+        heap.release_object(weak_ref).unwrap();
+        heap.release_object(registry).unwrap();
+        release_finalization_test_realm(
+            &mut heap,
+            shape,
+            root,
+            function_prototype,
+            realm,
+            callback,
+        );
+    }
+
+    #[test]
+    fn finalization_registry_unregister_is_allocation_free_and_stable() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
+        let registry = heap
+            .allocate_finalization_registry_object(shape, Vec::new(), callback, realm)
+            .unwrap();
+        let target = leaf(&mut heap, shape);
+        let token_a = leaf(&mut heap, shape);
+        let token_b = leaf(&mut heap, shape);
+        let token_c = leaf(&mut heap, shape);
+        let held = (0..4).map(|_| leaf(&mut heap, shape)).collect::<Vec<_>>();
+        for (held_value, token) in held
+            .iter()
+            .copied()
+            .zip([token_a, token_b, token_a, token_c])
+        {
+            heap.finalization_registry_register(
+                registry,
+                WeakCollectionKey::Object(target),
+                RawValue::Object(held_value),
+                Some(WeakCollectionKey::Object(token)),
+            )
+            .unwrap();
+            heap.release_object(held_value).unwrap();
+        }
+
+        let (matched, cleanup) = heap
+            .finalization_registry_unregister(registry, WeakCollectionKey::Object(token_a))
+            .unwrap();
+        assert!(matched);
+        assert_eq!(cleanup.finalized_objects, 2);
+        let ObjectPayload::FinalizationRegistry(data) = &heap.object(registry).unwrap().payload
+        else {
+            unreachable!()
+        };
+        assert_eq!(data.entries.len(), 2);
+        assert_eq!(data.entries[0].held_value, RawValue::Object(held[1]));
+        assert_eq!(data.entries[1].held_value, RawValue::Object(held[3]));
+        assert!(matches!(heap.object(held[0]), Err(HeapError::Stale { .. })));
+        assert!(matches!(heap.object(held[2]), Err(HeapError::Stale { .. })));
+
+        heap.release_object(registry).unwrap();
+        for object in [target, token_a, token_b, token_c] {
+            heap.release_object(object).unwrap();
+        }
+        release_finalization_test_realm(
+            &mut heap,
+            shape,
+            root,
+            function_prototype,
+            realm,
+            callback,
+        );
+    }
+
+    #[test]
+    fn finalization_registry_held_edges_participate_in_trial_deletion() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let cycle_shape = one_slot_shape(&mut heap);
+        let (root, function_prototype, realm, callback) = finalization_test_realm(&mut heap, shape);
+        let registry = heap
+            .allocate_finalization_registry_object(shape, Vec::new(), callback, realm)
+            .unwrap();
+        let target = leaf(&mut heap, shape);
+        let held = heap
+            .allocate_object(ObjectData::ordinary(
+                cycle_shape,
+                vec![PropertySlot::Data(RawValue::Undefined)],
+            ))
+            .unwrap();
+        heap.finalization_registry_register(
+            registry,
+            WeakCollectionKey::Object(target),
+            RawValue::Object(held),
+            None,
+        )
+        .unwrap();
+        heap.replace_object_slot(held, 0, PropertySlot::Data(RawValue::Object(registry)))
+            .unwrap();
+        assert_eq!(heap.object_strong_count(registry), Ok(2));
+        assert_eq!(heap.object_strong_count(held), Ok(2));
+
+        heap.release_object(registry).unwrap();
+        heap.release_object(held).unwrap();
+        let stats = heap.run_gc().unwrap();
+        assert!(stats.cleanup.finalized_objects >= 2);
+        assert!(matches!(
+            heap.object(registry),
+            Err(HeapError::Stale { .. })
+        ));
+        assert!(matches!(heap.object(held), Err(HeapError::Stale { .. })));
+
+        heap.release_object(target).unwrap();
+        heap.release_shape(cycle_shape).unwrap();
+        release_finalization_test_realm(
+            &mut heap,
+            shape,
+            root,
+            function_prototype,
+            realm,
+            callback,
+        );
+    }
+
+    #[test]
     fn weak_object_keys_are_not_retained_and_gc_prunes_their_values() {
         let mut heap = Heap::new();
         let shape = empty_shape(&mut heap);
@@ -18190,6 +19384,143 @@ mod tests {
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }
+    }
+
+    #[test]
+    fn weak_reference_native_descriptors_match_quickjs_protocols() {
+        for target in [
+            NativeFunctionId::WeakRef(WeakRefNativeKind::Constructor),
+            NativeFunctionId::FinalizationRegistry(FinalizationRegistryNativeKind::Constructor),
+        ] {
+            assert_eq!(
+                target.descriptor().cproto,
+                NativeCProto::ConstructorOrFunction
+            );
+            assert!(target.descriptor().cproto.default_is_constructor());
+            assert!(!target.uses_calling_realm());
+        }
+        for target in [
+            NativeFunctionId::WeakRef(WeakRefNativeKind::Deref),
+            NativeFunctionId::FinalizationRegistry(FinalizationRegistryNativeKind::Register),
+            NativeFunctionId::FinalizationRegistry(FinalizationRegistryNativeKind::Unregister),
+        ] {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+            assert!(!target.uses_calling_realm());
+        }
+    }
+
+    #[test]
+    fn weak_reference_intrinsics_attach_atomically_and_root_both_prototypes() {
+        let mut heap = Heap::new();
+        let empty_shape = empty_shape(&mut heap);
+        let root = leaf(&mut heap, empty_shape);
+        let realm = heap
+            .allocate_context(ContextData::new(
+                root, root, root, root, root, root, root, root,
+            ))
+            .unwrap();
+        assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+
+        let intrinsic_shape = heap
+            .allocate_shape(Shape::new(Some(root), []).unwrap())
+            .unwrap();
+        let weak_ref_prototype = heap
+            .allocate_object(ObjectData::ordinary(intrinsic_shape, Vec::new()))
+            .unwrap();
+        let finalization_registry_prototype = heap
+            .allocate_object(ObjectData::ordinary(intrinsic_shape, Vec::new()))
+            .unwrap();
+        let roots = WeakRefRealmData {
+            weak_ref_prototype,
+            finalization_registry_prototype,
+        };
+        let weak_ref_strong = heap.object_strong_count(weak_ref_prototype).unwrap();
+        let finalization_registry_strong = heap
+            .object_strong_count(finalization_registry_prototype)
+            .unwrap();
+
+        assert_eq!(
+            heap.attach_weak_ref_intrinsics(
+                realm,
+                WeakRefRealmData {
+                    weak_ref_prototype,
+                    finalization_registry_prototype: weak_ref_prototype,
+                },
+            ),
+            Err(HeapError::Invariant(
+                "WeakRef and FinalizationRegistry prototypes share one identity",
+            ))
+        );
+        assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+
+        assert_eq!(
+            heap.attach_weak_ref_intrinsics(
+                realm,
+                WeakRefRealmData {
+                    weak_ref_prototype: root,
+                    finalization_registry_prototype,
+                },
+            ),
+            Err(HeapError::Invariant(
+                "WeakRef prototype is not an ordinary child of Object.prototype",
+            ))
+        );
+        assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+        assert_eq!(
+            heap.object_strong_count(weak_ref_prototype),
+            Ok(weak_ref_strong)
+        );
+        assert_eq!(
+            heap.object_strong_count(finalization_registry_prototype),
+            Ok(finalization_registry_strong)
+        );
+
+        heap.live_node_mut(RawId::Object(finalization_registry_prototype))
+            .unwrap()
+            .strong = u32::MAX;
+        assert_eq!(
+            heap.attach_weak_ref_intrinsics(realm, roots),
+            Err(HeapError::Overflow {
+                operation: "retaining outgoing heap edges",
+            })
+        );
+        assert_eq!(heap.context(realm).unwrap().weak_ref, None);
+        assert_eq!(
+            heap.object_strong_count(weak_ref_prototype),
+            Ok(weak_ref_strong)
+        );
+        heap.live_node_mut(RawId::Object(finalization_registry_prototype))
+            .unwrap()
+            .strong = finalization_registry_strong;
+
+        heap.attach_weak_ref_intrinsics(realm, roots).unwrap();
+        assert_eq!(heap.context(realm).unwrap().weak_ref, Some(roots));
+        assert_eq!(
+            heap.object_strong_count(weak_ref_prototype),
+            Ok(weak_ref_strong + 1)
+        );
+        assert_eq!(
+            heap.object_strong_count(finalization_registry_prototype),
+            Ok(finalization_registry_strong + 1)
+        );
+        assert_eq!(
+            heap.attach_weak_ref_intrinsics(realm, roots),
+            Err(HeapError::Invariant(
+                "context already has WeakRef intrinsic roots",
+            ))
+        );
+
+        heap.release_object(weak_ref_prototype).unwrap();
+        heap.release_object(finalization_registry_prototype)
+            .unwrap();
+        let cleanup = heap.release_context(realm).unwrap();
+        assert_eq!(cleanup.finalized_contexts, 1);
+        assert_eq!(cleanup.finalized_objects, 2);
+        heap.release_shape(intrinsic_shape).unwrap();
+        heap.release_object(root).unwrap();
+        heap.release_shape(empty_shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
     }
 
     #[test]

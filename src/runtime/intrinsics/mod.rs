@@ -19,6 +19,7 @@ mod replacement;
 mod set;
 mod string;
 mod weak_collection;
+mod weak_ref;
 
 /// Pinned QuickJS `JS_ToInt64Free` for an already numeric value.
 ///

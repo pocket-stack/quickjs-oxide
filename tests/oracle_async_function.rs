@@ -192,7 +192,10 @@ promise.then(function (value) {
         "function|2|add|false|[object AsyncFunction]|AsyncFunction|true|body,after|pending"
     );
     assert_eq!(
-        runtime.execute_pending_job_with_context().unwrap(),
+        runtime
+            .execute_pending_job_with_context()
+            .unwrap()
+            .context(),
         Some(context.realm_id())
     );
     assert_eq!(integer(eval(&mut context, "answer")), 42);
@@ -265,14 +268,20 @@ order.join('|');
 
     for expected in ["f0|sync|f1:7", "f0|sync|f1:7|f2:8"] {
         assert_eq!(
-            runtime.execute_pending_job_with_context().unwrap(),
+            runtime
+                .execute_pending_job_with_context()
+                .unwrap()
+                .context(),
             Some(context.realm_id())
         );
         assert_eq!(text(eval(&mut context, "order.join('|')")), expected);
         assert_eq!(text(eval(&mut context, "answer")), "pending");
     }
     assert_eq!(
-        runtime.execute_pending_job_with_context().unwrap(),
+        runtime
+            .execute_pending_job_with_context()
+            .unwrap()
+            .context(),
         Some(context.realm_id())
     );
     assert_eq!(integer(eval(&mut context, "answer")), 15);
@@ -316,7 +325,10 @@ events.join('|');
         "try|sync"
     );
     assert_eq!(
-        runtime.execute_pending_job_with_context().unwrap(),
+        runtime
+            .execute_pending_job_with_context()
+            .unwrap()
+            .context(),
         Some(context.realm_id())
     );
     assert_eq!(
@@ -325,7 +337,10 @@ events.join('|');
     );
     assert_eq!(text(eval(&mut context, "answer")), "pending");
     assert_eq!(
-        runtime.execute_pending_job_with_context().unwrap(),
+        runtime
+            .execute_pending_job_with_context()
+            .unwrap()
+            .context(),
         Some(context.realm_id())
     );
     assert_eq!(integer(eval(&mut context, "answer")), 42);
@@ -386,7 +401,10 @@ events.join('|');
     ];
     for expected in checkpoints {
         assert_eq!(
-            runtime.execute_pending_job_with_context().unwrap(),
+            runtime
+                .execute_pending_job_with_context()
+                .unwrap()
+                .context(),
             Some(context.realm_id())
         );
         runtime.run_gc().unwrap();
@@ -652,12 +670,18 @@ crossPromise.then(undefined, function (error) {
     runtime.run_gc().unwrap();
 
     assert_eq!(
-        runtime.execute_pending_job_with_context().unwrap(),
+        runtime
+            .execute_pending_job_with_context()
+            .unwrap()
+            .context(),
         Some(caller_realm),
         "the private await reaction belongs to the caller realm"
     );
     assert_eq!(
-        runtime.execute_pending_job_with_context().unwrap(),
+        runtime
+            .execute_pending_job_with_context()
+            .unwrap()
+            .context(),
         Some(caller_realm),
         "the public Promise reaction also belongs to the caller realm"
     );
@@ -745,7 +769,10 @@ stackPromises.every(function (promise) {
     let mut jobs = 0;
     while runtime.is_job_pending() {
         assert_eq!(
-            runtime.execute_pending_job_with_context().unwrap(),
+            runtime
+                .execute_pending_job_with_context()
+                .unwrap()
+                .context(),
             Some(caller.realm_id())
         );
         jobs += 1;

@@ -4,6 +4,53 @@ Last audited: 2026-08-04. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cf WeakRef and FinalizationRegistry runtime
+
+R3cf implements genuine `WeakRef` and `FinalizationRegistry` objects and keeps
+the public surface in a dedicated intrinsic module. Object and non-registered
+Symbol targets use non-owning generational identities. FinalizationRegistry
+holds callback, creation realm, and held values strongly while targets and
+unregister tokens remain weak; `unregister` removes every matching cell without
+introducing an allocation boundary.
+
+The heap now keeps WeakMap, WeakSet, WeakRef, and FinalizationRegistry in one
+construction-order list. A single forward weak pass therefore reproduces
+pinned QuickJS's observable one-versus-two-GC behavior. Dead registrations
+transfer pre-owned roots into the runtime-wide Promise/finalization FIFO only
+after queue capacity is reserved. Reservation failure silently drops the
+cleanup job, and runtime teardown skips weak removal from the start, matching
+the upstream no-exception and teardown paths.
+
+Pending-job root retention and release now use a fixed, allocation-free root
+set. `PendingJobOutcome` also distinguishes an empty queue from a job that ran
+after its realm's last non-job owner disappeared; the latter reports
+`Executed { context: None }`, matching QuickJS's successful return with a null
+`pctx`. Broader heap teardown GC still uses allocation-backed worklists, so
+fault-injected OOM topology there remains an explicit whole-engine parity gap.
+
+The checksum-bound Test262 universe contains 82 paths / 164 variants. Pinned
+QuickJS 2026-06-04 passes all 164. A candidate profile whose only feature delta
+is `WeakRef` plus `FinalizationRegistry` activates 79 paths / 158 variants, all
+of which pass in Oxide. One path / two variants remains behind the independent
+`for-of` feature, and two paths / four variants remain behind the Test262
+host's `createRealm` capability. The focused report SHA-256 is
+`5ff2b92a694f71b63ab5b883e6c9416e2810c7230e26d36fcaec5f5815b20fe6`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-weak-ref-finalization.sh --check
+./scripts/test-test262-weak-ref-finalization.sh
+```
+
+The cohort intentionally contains no host-GC tests. Rust heap/runtime tests,
+checked against the pinned QuickJS source and manual oracle probes, therefore
+cover dereference clearing, mixed-list pass order, registration transfer,
+Promise/finalizer FIFO order, callback exceptions, Symbol ownership, silent
+reservation failure, and teardown. The global 99-feature profile remains
+unchanged in this runtime milestone; admission is a separate audited change,
+and neither milestone claims whole-engine parity.
+
 ## R3ce global WeakMap and WeakSet admission
 
 R3ce promotes exactly `WeakMap`, `WeakSet`, `symbols-as-weakmap-keys`, and
@@ -38,9 +85,10 @@ TEST262_FULL_WORKERS=2 ./scripts/test-test262-weak-collections-global.sh --full
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
-WeakRef, FinalizationRegistry, host-GC observation, and cross-realm hooks remain
-explicit later frontiers. This admission advances the Feature Parity evidence;
-it is not a completion claim.
+The later R3cf milestone implements the WeakRef and FinalizationRegistry
+surface; host-GC observation, `createRealm`, and global-profile admission remain
+separate frontiers. This advances the Feature Parity evidence; it is not a
+completion claim.
 
 ## R3cd WeakMap and WeakSet runtime
 
@@ -85,9 +133,9 @@ Reproduce the evidence with:
 TEST262_WORKERS=2 ./scripts/test-test262-full.sh
 ```
 
-This advances the Feature Parity implementation and its raw full-suite
-behavior; it does not claim that host GC, cross-realm Test262 hooks, WeakRef,
-or FinalizationRegistry are complete.
+This historical milestone advanced the Feature Parity implementation and raw
+full-suite behavior. R3cf later implements WeakRef and FinalizationRegistry;
+host-GC and cross-realm Test262 hooks remain separate work.
 
 ## R3cc global object-rest admission
 

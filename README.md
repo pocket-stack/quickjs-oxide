@@ -7,14 +7,17 @@ The `unsafe`-free engine is runnable but incomplete. Its strongest covered
 slice is the shared ArrayBuffer/DataView/12-class TypedArray stack: resizable
 buffers, fixed and length-tracking views, transfers, iteration, search,
 mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
-`Map`, `Set`, `WeakMap`, and `WeakSet` also have QuickJS-shaped constructors,
-protocols, and weak-key lifecycle behavior.
-The 99-tag global Test262 profile admits that weak-collection surface alongside
-object rest, `DataView`, `Proxy`, optional chaining, Iterator Helpers,
-`globalThis`, default parameters, and the implemented Promise surface through
-checksum-bound audits. The complete conservative vector is 64,470/102,037 with
-64,642 runnable variants. Modules, SharedArrayBuffer/Atomics, and broad built-in
-coverage remain incomplete.
+`Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, and `FinalizationRegistry` also
+have QuickJS-shaped constructors, protocols, weak lifetimes, and ordered
+runtime jobs.
+The 99-tag global Test262 profile admits `WeakMap` and `WeakSet` alongside object
+rest, `DataView`, `Proxy`, optional chaining, Iterator Helpers, `globalThis`,
+default parameters, and the implemented Promise surface through checksum-bound
+audits. A separate focused candidate gate covers `WeakRef` and
+`FinalizationRegistry`; their global admission is the next audit milestone. The
+last admitted full vector is 64,470/102,037 with 64,642 runnable variants.
+Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
+incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.
 
@@ -47,6 +50,7 @@ cargo run --quiet --bin qjs -- --print-result -e \
 cargo test --locked --workspace --all-targets
 ./scripts/test-test262-weak-collections.sh
 ./scripts/test-test262-weak-collections-global.sh
+./scripts/test-test262-weak-ref-finalization.sh
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
 ```
