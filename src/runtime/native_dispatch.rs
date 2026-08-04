@@ -685,6 +685,10 @@ impl Runtime {
             NativeFunctionId::Test262DetachArrayBuffer => {
                 self.call_test262_detach_array_buffer(invocation, arguments)
             }
+            NativeFunctionId::Test262EvalScript => {
+                self.call_test262_eval_script(realm, invocation, arguments)
+            }
+            NativeFunctionId::Test262CreateRealm => self.call_test262_create_realm(invocation),
             NativeFunctionId::Test262Gc => self.call_test262_gc(invocation),
             NativeFunctionId::QjsPrint => self.call_qjs_print(realm, invocation, arguments),
             NativeFunctionId::PrimitivePrototypeToString(kind) => {

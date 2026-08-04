@@ -25,6 +25,7 @@ mod private_elements;
 mod properties;
 mod qjs_host;
 mod template_object;
+mod test262_host;
 mod vm_host;
 
 pub use self::host::HostServices;

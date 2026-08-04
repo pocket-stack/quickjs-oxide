@@ -6447,6 +6447,10 @@ pub enum NativeFunctionId {
     StringCodePointRange,
     /// QuickJS's test262-only `$262.detachArrayBuffer` host hook.
     Test262DetachArrayBuffer,
+    /// QuickJS's test262-only `$262.evalScript` host hook.
+    Test262EvalScript,
+    /// QuickJS's test262-only `$262.createRealm` host hook.
+    Test262CreateRealm,
     /// QuickJS's test262-only `$262.gc` host hook.
     Test262Gc,
     /// qjs-host `print`, installed explicitly by the CLI rather than as an
@@ -6976,6 +6980,8 @@ impl NativeFunctionId {
             | Self::StringStatic(_)
             | Self::StringCodePointRange
             | Self::Test262DetachArrayBuffer
+            | Self::Test262EvalScript
+            | Self::Test262CreateRealm
             | Self::Test262Gc
             | Self::QjsPrint
             | Self::StringPrototypeCharCodeAt
