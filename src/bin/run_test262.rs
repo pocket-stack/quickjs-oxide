@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "1a85d1b9b43c54825c1a435011be737593ccc9754753daabdd255f9bd078bf7a";
+    "40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -384,6 +384,12 @@ const TEST262_DEBUGGER_STATEMENT_ACTIVATION_SHA256: &str =
 const TEST262_DEBUGGER_STATEMENT_ALREADY_PASS_SHA256: &str =
     "a7bda874232cecde93a93353beeec56f0bf905f9452eedf34aa5e3713b4956d7";
 const TEST262_DEBUGGER_STATEMENT_NEGATIVE_PENDING_SHA256: &str =
+    "67d1cf8f442e51b2c71e9b943ec87a297d866070f1899e671e57bf2d06feb25e";
+const TEST262_DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "1a85d1b9b43c54825c1a435011be737593ccc9754753daabdd255f9bd078bf7a";
+const TEST262_DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e";
+const TEST262_DEBUGGER_STATEMENT_GLOBAL_ADDED_NEGATIVES_SHA256: &str =
     "67d1cf8f442e51b2c71e9b943ec87a297d866070f1899e671e57bf2d06feb25e";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
@@ -1046,6 +1052,8 @@ enum OxideProfileKind {
     HtmlCommentsGlobalParent,
     HtmlCommentsGlobalCandidate,
     DebuggerStatementScoped,
+    DebuggerStatementGlobalParent,
+    DebuggerStatementGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1413,6 +1421,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-debugger-statement-scoped.conf"),
             OxideProfileKind::DebuggerStatementScoped,
+        ),
+        (
+            root.join("tests/test262-debugger-statement-global-parent.conf"),
+            OxideProfileKind::DebuggerStatementGlobalParent,
+        ),
+        (
+            root.join("tests/test262-debugger-statement-global-candidate.conf"),
+            OxideProfileKind::DebuggerStatementGlobalCandidate,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -3107,6 +3123,54 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 ),
             ],
         ),
+        OxideProfileKind::DebuggerStatementGlobalParent => verify_tag_transition_profile(
+            options,
+            "debugger-statement negative-test global admission",
+            "parent",
+            TEST262_DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-debugger-statement.txt",
+                    TEST262_DEBUGGER_STATEMENT_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-activation.txt",
+                    TEST262_DEBUGGER_STATEMENT_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-already-pass.txt",
+                    TEST262_DEBUGGER_STATEMENT_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-global-added-negatives.txt",
+                    TEST262_DEBUGGER_STATEMENT_GLOBAL_ADDED_NEGATIVES_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::DebuggerStatementGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "debugger-statement negative-test global admission",
+            "candidate",
+            TEST262_DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-debugger-statement.txt",
+                    TEST262_DEBUGGER_STATEMENT_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-activation.txt",
+                    TEST262_DEBUGGER_STATEMENT_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-already-pass.txt",
+                    TEST262_DEBUGGER_STATEMENT_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-global-added-negatives.txt",
+                    TEST262_DEBUGGER_STATEMENT_GLOBAL_ADDED_NEGATIVES_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3535,6 +3599,8 @@ mod cli_tests {
         TEST262_CREATE_REALM_ORACLE_ENVELOPE_SHA256, TEST262_CREATE_REALM_PROFILE_SHA256,
         TEST262_CREATE_REALM_UNIVERSE_SHA256, TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
+        TEST262_DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_DEBUGGER_STATEMENT_SCOPED_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -7446,6 +7512,33 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn debugger_statement_global_profiles_require_their_pinned_manifests_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-debugger-statement-global-parent.conf",
+                TEST262_DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-debugger-statement-global-candidate.conf",
+                TEST262_DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &[
+                    "tests/test262-debugger-statement.txt",
+                    "tests/test262-debugger-statement-activation.txt",
+                    "tests/test262-debugger-statement-already-pass.txt",
+                    "tests/test262-debugger-statement-global-added-negatives.txt",
+                ],
+                "tests/test262-debugger-statement-negative-pending.txt",
+                "test/language/statements/debugger/statement.js",
+            );
         }
     }
 

@@ -21,8 +21,9 @@ Its Test262 host provides real reentrant GC, recursive realm creation, and
 defining-realm script evaluation. Script and eval parsing implement the Annex
 B HTML-comment forms; the matching ten negative-test paths / 17 variants are
 provenance-audited and globally admitted. `debugger` statements follow
-QuickJS's no-op and automatic-semicolon-insertion semantics. The last audited
-full vector is 65,341 passes / 65,455 runnable / 102,037 total variants.
+QuickJS's no-op and automatic-semicolon-insertion semantics; their five
+negative paths / ten variants are also globally admitted. The last audited
+full vector is 65,351 passes / 65,465 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -69,6 +70,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-promise-try-with-resolvers-global.sh
 ./scripts/test-test262-html-comments-runtime.sh
 ./scripts/test-test262-debugger-statement.sh
+./scripts/test-test262-debugger-statement-global.sh
 ./scripts/test-test262-current-global.sh
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh

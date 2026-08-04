@@ -410,6 +410,18 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-html-comments-global-added-negatives.txt"
     ));
+    const DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-debugger-statement-global-parent.conf"
+    ));
+    const DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-debugger-statement-global-candidate.conf"
+    ));
+    const DEBUGGER_STATEMENT_GLOBAL_ADDED_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-debugger-statement-global-added-negatives.txt"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -948,6 +960,10 @@ mod tests {
             OxideProfile::parse(HTML_COMMENTS_GLOBAL_PARENT_PROFILE).unwrap();
         let html_comments_global_candidate =
             OxideProfile::parse(HTML_COMMENTS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let debugger_statement_global_parent =
+            OxideProfile::parse(DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE).unwrap();
+        let debugger_statement_global_candidate =
+            OxideProfile::parse(DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1459,7 +1475,39 @@ mod tests {
             html_comments_global_candidate.allows_async_execution(),
             html_comments_global_parent.allows_async_execution()
         );
-        assert_eq!(profile, html_comments_global_candidate);
+        assert_eq!(
+            debugger_statement_global_parent,
+            html_comments_global_candidate
+        );
+        assert_eq!(
+            debugger_statement_global_candidate.features,
+            debugger_statement_global_parent.features
+        );
+        let expected_debugger_statement_negatives = DEBUGGER_STATEMENT_GLOBAL_ADDED_NEGATIVES
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_debugger_statement_negatives.len(), 5);
+        assert_eq!(
+            debugger_statement_global_candidate
+                .audited_negative_tests
+                .difference(&debugger_statement_global_parent.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_debugger_statement_negatives
+        );
+        assert!(
+            debugger_statement_global_parent
+                .audited_negative_tests
+                .difference(&debugger_statement_global_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            debugger_statement_global_candidate.allows_async_execution(),
+            debugger_statement_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, debugger_statement_global_candidate);
         assert_eq!(
             default_parameters_candidate
                 .features

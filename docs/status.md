@@ -4,6 +4,37 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cq debugger negative-test global admission
+
+R3cq globally admits the five negative paths / ten sloppy-and-strict variants
+whose exact parse-phase `SyntaxError` provenance was authenticated by R3cp.
+This is a profile and evidence milestone, not a new runtime change. The full
+ten-path / 20-variant `debugger` cohort now passes in both Oxide and pinned
+QuickJS 2026-06-04.
+
+The live profile retains 124 feature tags and its execution policy while its
+audited-negative section grows from 1,167 to 1,172 paths. The profile SHA-256
+is
+`40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e`.
+The focused join changes exactly those ten negative variants, leaves the other
+ten cohort rows unchanged, and records no detail-only movement.
+
+Across the complete 102,037-row vector, exactly the same ten outcomes change,
+102,027 rows remain byte-identical, and no previous pass regresses. The
+canonical scoreboard is 65,351 passes / 65,465 runnable; full candidate
+TSV/JSONL hashes are
+`91bad0c048a1d90a76346a41dd2676ae5a530b8ad787c30292bd2f7c956e573a`
+and
+`40c39453be1b9e7cbc912fd841442a0e81cbab650b568a44b765168424433583`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-debugger-statement-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-debugger-statement-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-debugger-statement-global.sh --full
+```
+
 ## R3cp debugger statement runtime parity
 
 R3cp implements QuickJS 2026-06-04's `debugger` statement semantics. QuickJS
@@ -1513,8 +1544,8 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 91 reviewed feature tags and 828 exact audited
-  negative-test paths. Those fail-closed canaries and the source/metadata host
+  capability profile now admits 124 reviewed feature tags and 1,172 exact
+  audited negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
   preserve canonical byte-for-byte TSV and JSONL ordering. R3al promotes the
@@ -1573,22 +1604,21 @@ workstream. Build and architecture details live in
   config skips explicit. R3bv then authenticates the complete
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
-  module boundaries.
-  The cumulative
-  TypedArray scoped gate still
-  passes 2,254 paths / 4,463 variants in both engines. The current canonical
-  measurement has 59,507 passes and 60,026 runnable variants:
-  58.32% raw,
-  a 71.21% lower bound after the 18,475 pinned QuickJS target exclusions, or
-  99.22% among the 59,977 variants with a non-unsupported observed outcome. It
-  records 18,618 `unsupported-feature` and 23,585 total unsupported outcomes,
-  11 parse failures, 400 runtime failures, and 57 harness failures. The exact
-  R3bw join preserves all 102,037 keys with 439 outcome changes, 456
-  detail-only changes, 101,142 unchanged rows, and no previous-pass
+  module boundaries. Those R3bw counts are historical; subsequent runtime,
+  host, feature-admission, and provenance milestones through R3cq advance the
+  current canonical measurement to 65,351 passes and 65,465 runnable variants:
+  64.05% raw, a 78.21% lower bound after the 18,475 pinned QuickJS target
+  exclusions, or 99.90% among the 65,418 variants with a non-unsupported
+  observed outcome. It records 13,788 `unsupported-feature` and 18,144 total
+  unsupported outcomes, 11 parse failures, 54 runtime failures, no harness
+  failures, and two timeouts. The exact R3cq join preserves all 102,037 keys
+  with ten outcome changes, 102,027 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `574d90530b5815329e65ab55d94bce4dd684233f1b296a888c87eced9077ba69`
+  `91bad0c048a1d90a76346a41dd2676ae5a530b8ad787c30292bd2f7c956e573a`
   and
-  `6d7ec82af17368ebea46213633efcec331198cf904db457434b7493b003e9616`.
+  `40c39453be1b9e7cbc912fd841442a0e81cbab650b568a44b765168424433583`.
+  The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
+  variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
   explicit frontiers.
   The fixed smoke now
@@ -5284,9 +5314,9 @@ workstream. Build and architecture details live in
   and
   `8948ee41244d744c6099868b86bbca8dfc88d7cea9865d5e58b6eb86492cb8f9`.
 
-  Broad TypedArray admission remains withheld. The current canonical full
-  measurement retains all 102,037 keys and the 52,468 runnable count while
-  moving 14 runtime failures to pass; every other summary category is
+  Broad TypedArray admission remained withheld at R3ba. That milestone's
+  canonical full measurement retains all 102,037 keys and the 52,468 runnable
+  count while moving 14 runtime failures to pass; every other summary category is
   unchanged. The vector reaches 51,940 passes and 402 runtime failures. Two
   independent formal two-worker repeats reproduce the measured full
   TSV/JSONL hashes:

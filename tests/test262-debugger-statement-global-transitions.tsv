@@ -1,0 +1,25 @@
+# Exhaustive R3cq debugger-statement negative-test global-admission transition.
+# parent_profile_sha256=1a85d1b9b43c54825c1a435011be737593ccc9754753daabdd255f9bd078bf7a
+# candidate_profile_sha256=40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e
+# manifest_sha256=2c16707fc0b9e5a73d1ba7114ae5fc7fbc6cf3bedf534e984a09f64f20c9a24b
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/language/expressions/assignment/member-expr-ident-name-debugger-escaped.js	sloppy	generated		normal		pass	normal			pass	normal		
+test/language/expressions/assignment/member-expr-ident-name-debugger-escaped.js	strict	generated		normal		pass	normal			pass	normal		
+test/language/expressions/object/covered-ident-name-prop-name-literal-debugger-escaped.js	sloppy	generated		normal		pass	normal			pass	normal		
+test/language/expressions/object/covered-ident-name-prop-name-literal-debugger-escaped.js	strict	generated		normal		pass	normal			pass	normal		
+test/language/expressions/object/ident-name-method-def-debugger-escaped.js	sloppy	generated		normal		pass	normal			pass	normal		
+test/language/expressions/object/ident-name-method-def-debugger-escaped.js	strict	generated		normal		pass	normal			pass	normal		
+test/language/expressions/object/ident-name-prop-name-literal-debugger-escaped.js	sloppy	generated		normal		pass	normal			pass	normal		
+test/language/expressions/object/ident-name-prop-name-literal-debugger-escaped.js	strict	generated		normal		pass	normal			pass	normal		
+test/language/future-reserved-words/debugger.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/debugger.js	pass	parse	SyntaxError	variable name expected
+test/language/future-reserved-words/debugger.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/debugger.js	pass	parse	SyntaxError	variable name expected
+test/language/identifiers/val-debugger-via-escape-hex.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/identifiers/val-debugger-via-escape-hex.js	pass	parse	SyntaxError	'debugger' is a reserved identifier
+test/language/identifiers/val-debugger-via-escape-hex.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/identifiers/val-debugger-via-escape-hex.js	pass	parse	SyntaxError	'debugger' is a reserved identifier
+test/language/identifiers/val-debugger-via-escape-hex4.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/identifiers/val-debugger-via-escape-hex4.js	pass	parse	SyntaxError	'debugger' is a reserved identifier
+test/language/identifiers/val-debugger-via-escape-hex4.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/identifiers/val-debugger-via-escape-hex4.js	pass	parse	SyntaxError	'debugger' is a reserved identifier
+test/language/identifiers/val-debugger.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/identifiers/val-debugger.js	pass	parse	SyntaxError	variable name expected
+test/language/identifiers/val-debugger.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/identifiers/val-debugger.js	pass	parse	SyntaxError	variable name expected
+test/language/statements/debugger/expression.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/statements/debugger/expression.js	pass	parse	SyntaxError	unexpected token in expression: 'debugger'
+test/language/statements/debugger/expression.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/statements/debugger/expression.js	pass	parse	SyntaxError	unexpected token in expression: 'debugger'
+test/language/statements/debugger/statement.js	sloppy			normal		pass	normal			pass	normal		
+test/language/statements/debugger/statement.js	strict			normal		pass	normal			pass	normal		
