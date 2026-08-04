@@ -14,7 +14,8 @@ parent=tests/test262-realm-hosts-global-parent.conf
 candidate=tests/test262-realm-hosts-global-candidate.conf
 successor_parent=tests/test262-binary-data-global-parent.conf
 successor_candidate=tests/test262-binary-data-global-candidate.conf
-successor_gate=scripts/test-test262-current-global.sh
+successor_gate=scripts/test-test262-binary-data-global.sh
+runtime_successor_gate=scripts/test-test262-string-normalize.sh
 live_profile=compat/test262-oxide.conf
 upstream=compat/upstream.toml
 added_features=tests/test262-realm-hosts-global-added-features.txt
@@ -212,13 +213,15 @@ bridge_r3cj_successor() {
         && "$(successor_value full_detail_only)" == 10 \
         && "$(successor_value full_pass_regressions)" == 0 ]] \
         || die 'R3cj successor does not checksum-bridge the historical R3ci receipt'
-    if [[ "$(sha "$live_profile")" != "$successor_sha" ]]; then
+    if [[ "$(sha "$live_profile")" != "$successor_sha" \
+        || "$(canonical_value tsv_sha256)" \
+            != "$(successor_value candidate_full_tsv_sha256)" ]]; then
         case $mode in
-            check) "$successor_gate" --check ;;
-            focused) "$successor_gate" ;;
-            full) "$successor_gate" --full ;;
+            check) "$runtime_successor_gate" --check ;;
+            focused) "$runtime_successor_gate" ;;
+            full) "$runtime_successor_gate" --full ;;
         esac
-        echo 'Historical R3ci realm-host receipt is transitively checksum-bridged through the current successor chain.'
+        echo 'Historical R3ci realm-host receipt is transitively checksum-bridged through the runtime successor chain.'
         exit 0
     fi
     check_file "$live_profile" 1292 "$successor_sha"

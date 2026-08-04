@@ -6,6 +6,60 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-04.
 
+## R3ck String.prototype.normalize runtime parity
+
+R3ck freezes every direct normalize test in the pinned Test262 tree plus the
+supplemental SpiderMonkey receiver-error test: 19 paths / 38 variants. The 18
+direct paths and 36 variant keys have SHA-256 values
+`fbc367395cfe02aff55fdc162f7bac0e1dd9218d6416c50359809d03058486ff`
+and
+`ba68067e07e79dd0e498d1b7666c0783db0f5063544711bb558fa7428f721ad1`;
+the complete gate's path and key hashes are
+`6f70d7c7adbce4cae537c05e6e35338baee407a813d01c60b1b1f4e187dcca4c`
+and
+`dbcbd112f6d4b3c08580b9ee40f9e7e111a57a9f2995b428083f66f0356ae44f`.
+Pinned QuickJS 2026-06-04 and Oxide both pass all 38 variants.
+
+The historical parent report contains 20 `fail-runtime` outcomes and 18
+outcome-level false-passes caused by missing-method errors, guards, or property
+enumeration. The candidate changes exactly those 20 failures to passes; the
+other 18 rows remain outcomes-equivalent but are rerun with the intrinsic
+present. The focused transition therefore has 20 outcome changes, no
+detail-only changes, and 18 unchanged rows. Its TSV SHA-256 is
+`b72ee5fccd647d74275c756f1bdd44f95c2976fa2bd5c1eab99cc24a2ab7ed8d`.
+The focused parent TSV/JSONL hashes are
+`4ef7519798294a023d7cefa1af595945fcfab49060639d49a23271fb9e8b35ad`
+and
+`9533e4e935a9a77dc8444ea761e06daeca49684a143583c8c784dc040c7d4353`;
+the candidate hashes are
+`22a3aa4192be516cd5ca6eb0ce7c69325ab6ccf7cb7619892726015f8051d2a7`
+and
+`b613d9f29d75e67b41561ad2b7e29d8a6e89f933b02e70e5a73b07e9f82283fb`.
+
+Because Test262 assigns no feature tag to `String.prototype.normalize`, this
+runtime milestone leaves the 122-tag profile byte-identical at SHA-256
+`1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2`.
+The exact full-suite join changes the same 20 outcomes, leaves 102,017 rows
+unchanged, and has zero previous-pass regressions. The canonical vector is
+65,254 passes and 65,406 runnable variants out of 102,037; `fail-runtime`
+drops from 110 to 90. The full parent TSV/JSONL hashes are
+`acd43fe1eb9752246e9994c58c3f139ceff0c5e80416baea06757428e5ba6bba`
+and
+`c1a4bf7cc058a70b6b97475fccc92700403a19c63936c341ea3a6ebe79e4f34a`;
+the candidate hashes are
+`f491512281647b752796da1abe8fcf559981b48a53270bf128e9b698ade60c3f`
+and
+`d65c1fbb9f17bc1666b2dbd0c228843a33147d4f762f7c18aa9491e883c3c59a`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-string-normalize.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-string-normalize.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-string-normalize.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cj binary-data metadata admission
 
 R3cj admits the remaining Test262 metadata names for the implemented numeric
@@ -41,7 +95,7 @@ reasons, and leaves the four config skips unchanged.
 
 The exact 102,037-row parent/candidate join changes those same 396 rows: 386
 outcome changes, ten detail-only changes, 101,641 byte-identical rows, and zero
-previous-pass regressions. The canonical vector is now 65,234 passes and
+previous-pass regressions. The R3cj candidate vector was 65,234 passes and
 65,406 runnable variants, with 13,820 `unsupported-feature` selections. Its
 TSV/JSONL SHA-256 values are
 `acd43fe1eb9752246e9994c58c3f139ceff0c5e80416baea06757428e5ba6bba`

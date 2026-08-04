@@ -34,7 +34,8 @@ done
 generated_ident=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-unicode-ident.XXXXXX")
 generated_case=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-unicode-case.XXXXXX")
 generated_property=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-unicode-property.XXXXXX")
-trap 'rm -f -- "$generated_ident" "$generated_case" "$generated_property"' EXIT HUP INT TERM
+generated_normalize=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-unicode-normalize.XXXXXX")
+trap 'rm -f -- "$generated_ident" "$generated_case" "$generated_property" "$generated_normalize"' EXIT HUP INT TERM
 ./scripts/generate-unicode-ident-tables.sh "$unicode_source" "$generated_ident"
 if ! cmp -s "$generated_ident" src/unicode_ident_tables.rs; then
     echo "error: checked-in Unicode identifier tables do not match the pinned source" >&2
@@ -50,7 +51,13 @@ if ! cmp -s "$generated_property" src/unicode_property_tables.rs; then
     echo "error: checked-in Unicode property tables do not match the pinned source" >&2
     exit 1
 fi
-rm -f -- "$generated_ident" "$generated_case" "$generated_property"
+./scripts/generate-unicode-normalize-tables.py "$unicode_source" "$generated_normalize"
+if ! cmp -s "$generated_normalize" src/unicode_normalize_tables.rs; then
+    echo "error: checked-in Unicode normalization tables do not match the pinned source" >&2
+    exit 1
+fi
+./scripts/check-unicode-normalize-fingerprint.sh "$unicode_root"
+rm -f -- "$generated_ident" "$generated_case" "$generated_property" "$generated_normalize"
 trap - EXIT HUP INT TERM
 
 cargo fmt --all -- --check
@@ -62,6 +69,7 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-reflect.sh
 ./scripts/test-test262-date.sh
 ./scripts/test-test262-string-split.sh
+./scripts/test-test262-string-normalize.sh
 ./scripts/test-test262-regexp-core.sh
 ./scripts/run-test262-regexp-literals.sh
 ./scripts/run-test262-regexp-search.sh

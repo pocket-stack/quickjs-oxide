@@ -10,6 +10,8 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-binary-data-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-string-normalize-baseline.txt
+successor_gate=scripts/test-test262-string-normalize.sh
 parent=tests/test262-binary-data-global-parent.conf
 candidate=tests/test262-binary-data-global-candidate.conf
 live_profile=compat/test262-oxide.conf
@@ -71,6 +73,11 @@ canonical_value() {
     awk -F= -v wanted="$1" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
         "$canonical_baseline"
+}
+successor_value() {
+    awk -F= -v wanted="$1" \
+        '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
+        "$successor_baseline"
 }
 header() {
     awk -F= -v wanted="# $2" \
@@ -160,6 +167,61 @@ transition_counts() {
         different=0;for(i=7;i<=10;i++)if($i!=$(i+4))different=1
         if(different){changed++;if($7!=$11)outcome++;else detail++}else unchanged++
     } END{printf "changed=%d outcome=%d detail=%d unchanged=%d",changed,outcome,detail,unchanged}' "$1"
+}
+
+bridge_r3ck_successor() {
+    [[ -f "$live_profile" ]] || return 0
+    [[ "$(canonical_value tsv_sha256)" \
+        != "$(value candidate_full_tsv_sha256)" ]] || return 0
+
+    check_file "$baseline" 95 \
+        0d188b3b2c0f65417e02e4c3350077f94665cb6de6e7ac4fc453750e1cfa83d6
+    check_file "$candidate" "$(value candidate_profile_lines)" \
+        "$(value candidate_oxide_profile_sha256)"
+    [[ -f "$successor_baseline" && -x "$successor_gate" ]] \
+        || die 'missing R3ck string-normalize successor gate'
+    [[ "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" \
+            == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" \
+            == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" \
+            == "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" \
+            == 5f51b0aa039ce60fe21720a8c46ce21bd0065ec6 \
+        && "$(successor_value candidate_commit)" \
+            == 6bdf1e9bb9090bddc6fed33d99c892354813509c \
+        && "$(successor_value oxide_profile_sha256)" \
+            == "$(value candidate_oxide_profile_sha256)" \
+        && "$(successor_value full_variants)" == "$(value full_variants)" \
+        && "$(successor_value full_keys_sha256)" == "$(value full_keys_sha256)" \
+        && "$(successor_value parent_full_runnable)" \
+            == "$(value candidate_full_runnable)" \
+        && "$(successor_value parent_full_passes)" \
+            == "$(value candidate_full_passes)" \
+        && "$(successor_value parent_full_tsv_sha256)" \
+            == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value parent_full_jsonl_sha256)" \
+            == "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value parent_full_summary)" \
+            == "$(value candidate_full_summary)" \
+        && "$(successor_value full_changed)" == 20 \
+        && "$(successor_value full_outcome_changed)" == 20 \
+        && "$(successor_value full_detail_only)" == 0 \
+        && "$(successor_value full_unchanged)" == 102017 \
+        && "$(successor_value full_pass_regressions)" == 0 ]] \
+        || die 'R3ck successor does not checksum-bridge the historical R3cj receipt'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3cj binary-data receipt is checksum-bridged through the runtime-only R3ck successor.'
+    exit 0
 }
 
 check_profiles() {
@@ -273,6 +335,7 @@ verify_quickjs() {
 }
 
 cd -- "$root"
+bridge_r3ck_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-binary-data-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 check_inputs

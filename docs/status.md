@@ -4,6 +4,56 @@ Last audited: 2026-08-04. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ck Unicode string normalization
+
+R3ck implements `String.prototype.normalize` as an unsafe-free Rust port of
+QuickJS 2026-06-04's Unicode 17 normalization data and algorithm. NFC, NFD,
+NFKC, and NFKD preserve QuickJS's UTF-16 behavior, including lone surrogates,
+coercion order, error types, defining-realm errors, recursion limits, and
+allocation-failure recovery. This is parity for the normalization intrinsic,
+not yet for the rest of the String surface.
+
+The checksum-bound gate combines all 18 direct normalize paths with one
+supplemental receiver-error path, for 19 paths / 38 variants. Pinned QuickJS
+and Oxide both pass 38/38. The historical parent had 20 `fail-runtime` rows
+and 18 outcome-level false-passes caused by missing-method errors, guards, or
+property enumeration. The exact focused join changes those 20 outcomes to
+`pass` and deliberately reruns the other 18 unchanged rows under the
+implemented intrinsic. The focused parent TSV/JSONL SHA-256 values are
+`4ef7519798294a023d7cefa1af595945fcfab49060639d49a23271fb9e8b35ad`
+and
+`9533e4e935a9a77dc8444ea761e06daeca49684a143583c8c784dc040c7d4353`;
+the candidate values are
+`22a3aa4192be516cd5ca6eb0ce7c69325ab6ccf7cb7619892726015f8051d2a7`
+and
+`b613d9f29d75e67b41561ad2b7e29d8a6e89f933b02e70e5a73b07e9f82283fb`.
+
+Test262 has no normalize feature tag, so the live 122-tag profile is unchanged
+at SHA-256
+`1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2`.
+The exhaustive 102,037-row join has the same 20 outcome changes, 102,017
+unchanged rows, and zero prior-pass regressions. The canonical vector is now
+65,254 passes with 65,406 runnable variants. The full parent TSV/JSONL hashes
+are
+`acd43fe1eb9752246e9994c58c3f139ceff0c5e80416baea06757428e5ba6bba`
+and
+`c1a4bf7cc058a70b6b97475fccc92700403a19c63936c341ea3a6ebe79e4f34a`;
+the candidate hashes are
+`f491512281647b752796da1abe8fcf559981b48a53270bf128e9b698ade60c3f`
+and
+`d65c1fbb9f17bc1666b2dbd0c228843a33147d4f762f7c18aa9491e883c3c59a`.
+
+Reproduce the evidence with:
+
+```sh
+oracle=$(./scripts/build-quickjs-oracle.sh)
+./scripts/check-unicode-normalize-fingerprint.sh "$(dirname "$oracle")"
+./scripts/test-test262-string-normalize.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-string-normalize.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-string-normalize.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cj binary-data Test262 admission
 
 R3cj globally admits the 18 residual metadata names for the implemented
@@ -22,8 +72,8 @@ two paths / four variants remain pinned configuration skips.
 
 The complete parent/candidate join produces 386 new passes and ten detail-only
 reason refinements, leaves 101,641 rows byte-identical, and has zero prior-pass
-regressions. The canonical Test262 vector is now 65,234 passes with 65,406
-runnable variants out of 102,037. Its TSV/JSONL SHA-256 values are
+regressions. The R3cj candidate vector was 65,234 passes with 65,406 runnable
+variants out of 102,037. Its TSV/JSONL SHA-256 values are
 `acd43fe1eb9752246e9994c58c3f139ceff0c5e80416baea06757428e5ba6bba`
 and
 `c1a4bf7cc058a70b6b97475fccc92700403a19c63936c341ea3a6ebe79e4f34a`.
