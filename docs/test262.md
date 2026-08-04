@@ -6,6 +6,46 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3co HTML-like-comments negative provenance admission
+
+R3co admits the ten negative Script paths authenticated by the R3cn scoped
+receipt. Their path manifest hashes to
+`e301116b8ea4220bc054d7228b338f6982d4001c4ef74560fd1af2b44f5bb8fd`;
+the 17 variant keys hash to
+`e6d4e9b8750fc22295c5c02041917a98c9f941180d4f3a885d54b7db9f0ec5a1`.
+Thirteen variants require their declared runtime error and four require their
+declared parse error. Together with the R3cn activation, already-pass, and
+Module partitions, the complete universe remains 19 paths / 32 variants.
+Pinned QuickJS passes all 32.
+
+The live profile keeps 124 feature tags and an unchanged execution policy,
+but grows from 1,157 to 1,167 audited negative paths. The parent and candidate
+profile SHA-256 values are
+`ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb`
+and
+`1a85d1b9b43c54825c1a435011be737593ccc9754753daabdd255f9bd078bf7a`.
+The focused parent records `pass=12 unsupported-negative-provenance=17
+unsupported-module=3`; the candidate records `pass=29
+unsupported-module=3`. The exact join has 17 outcome changes and 15 unchanged
+rows.
+
+Across all 102,037 variants, those same 17 outcomes change, 102,020 rows stay
+byte-identical, and no previous pass regresses. The canonical vector is now
+65,339 passes / 65,455 runnable; `unsupported-negative-provenance` falls from
+3,451 to 3,434. Full candidate TSV/JSONL hashes are
+`2502eda033dc3a91c64ddaab00093af254bead7c2dd15b13060b6b6088b5c1a7`
+and
+`062115b6363fb8ea49ed7240c80bfcb6fd035e94f34d2ff8365284cd75844302`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-html-comments-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-html-comments-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-html-comments-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cn HTML-like-comments runtime parity
 
 R3cn freezes the complete pinned HTML-like-comments universe: 19 paths / 32

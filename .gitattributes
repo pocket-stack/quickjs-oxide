@@ -25,3 +25,5 @@ tests/test262-promise-try-with-resolvers-global-transitions.tsv whitespace=-blan
 tests/test262-html-comments-runtime-parent.tsv whitespace=-blank-at-eol
 tests/test262-html-comments-runtime-scoped.tsv whitespace=-blank-at-eol
 tests/test262-html-comments-runtime-transitions.tsv whitespace=-blank-at-eol
+tests/test262-html-comments-global-parent.tsv whitespace=-blank-at-eol
+tests/test262-html-comments-global-transitions.tsv whitespace=-blank-at-eol

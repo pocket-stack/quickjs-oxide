@@ -398,6 +398,18 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-promise-try-with-resolvers-global-candidate.conf"
     ));
+    const HTML_COMMENTS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-html-comments-global-parent.conf"
+    ));
+    const HTML_COMMENTS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-html-comments-global-candidate.conf"
+    ));
+    const HTML_COMMENTS_GLOBAL_ADDED_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-html-comments-global-added-negatives.txt"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -932,6 +944,10 @@ mod tests {
             OxideProfile::parse(PROMISE_TRY_WITH_RESOLVERS_GLOBAL_PARENT_PROFILE).unwrap();
         let promise_try_with_resolvers_global_candidate =
             OxideProfile::parse(PROMISE_TRY_WITH_RESOLVERS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let html_comments_global_parent =
+            OxideProfile::parse(HTML_COMMENTS_GLOBAL_PARENT_PROFILE).unwrap();
+        let html_comments_global_candidate =
+            OxideProfile::parse(HTML_COMMENTS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1200,7 +1216,10 @@ mod tests {
             promise_try_with_resolvers_global_parent,
             binary_data_global_candidate
         );
-        assert_eq!(profile, promise_try_with_resolvers_global_candidate);
+        assert_eq!(
+            html_comments_global_parent,
+            promise_try_with_resolvers_global_candidate
+        );
         assert_eq!(
             data_view_global_candidate
                 .features
@@ -1412,6 +1431,35 @@ mod tests {
             promise_try_with_resolvers_global_candidate.allows_async_execution(),
             promise_try_with_resolvers_global_parent.allows_async_execution()
         );
+        assert_eq!(
+            html_comments_global_candidate.features,
+            html_comments_global_parent.features
+        );
+        let expected_html_comment_negatives = HTML_COMMENTS_GLOBAL_ADDED_NEGATIVES
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_html_comment_negatives.len(), 10);
+        assert_eq!(
+            html_comments_global_candidate
+                .audited_negative_tests
+                .difference(&html_comments_global_parent.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_html_comment_negatives
+        );
+        assert!(
+            html_comments_global_parent
+                .audited_negative_tests
+                .difference(&html_comments_global_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            html_comments_global_candidate.allows_async_execution(),
+            html_comments_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, html_comments_global_candidate);
         assert_eq!(
             default_parameters_candidate
                 .features

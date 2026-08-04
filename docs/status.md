@@ -4,6 +4,38 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3co Annex B HTML-like-comment global admission
+
+R3co globally admits the ten negative Script paths / 17 variants whose parse
+or runtime error provenance was authenticated in R3cn. This is a profile and
+evidence milestone, with no new engine semantics: 13 variants exercise the
+expected runtime error and four the expected parse error. The complete
+HTML-like-comments universe remains 19 paths / 32 variants, and pinned QuickJS
+passes all 32. Oxide now passes 29 globally, with only the three Module
+variants still unsupported.
+
+The live profile retains the same 124 feature tags and execution policy while
+its audited-negative section grows from 1,157 to 1,167 paths. Its SHA-256 is
+`1a85d1b9b43c54825c1a435011be737593ccc9754753daabdd255f9bd078bf7a`.
+The focused transition changes exactly the 17 admitted outcomes and leaves the
+other 15 rows unchanged.
+
+Across the complete 102,037-row vector, the same 17 outcomes change, 102,020
+rows remain byte-identical, and no previous pass regresses. The canonical
+scoreboard is now 65,339 passes / 65,455 runnable. Full candidate TSV/JSONL
+hashes are
+`2502eda033dc3a91c64ddaab00093af254bead7c2dd15b13060b6b6088b5c1a7`
+and
+`062115b6363fb8ea49ed7240c80bfcb6fd035e94f34d2ff8365284cd75844302`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-html-comments-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-html-comments-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-html-comments-global.sh --full
+```
+
 ## R3cn Annex B HTML-like comments
 
 R3cn enables the existing typed lexer implementation of Annex B HTML-like

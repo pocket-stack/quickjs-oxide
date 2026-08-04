@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb";
+    "1a85d1b9b43c54825c1a435011be737593ccc9754753daabdd255f9bd078bf7a";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -361,8 +361,20 @@ const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_MODULE_UNCHANGED_SHA256: &str =
     "ca26a1e9b4db6cba6bff448a34b6c25b9e8f95c4e25f4b7c9f967cae1b7538ef";
 const TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256: &str =
     "039aef2612a7d3dd2cf5a5b59ba386a0ba52d5af23149b49e365652ce155a25a";
+const TEST262_HTML_COMMENTS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb";
+const TEST262_HTML_COMMENTS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "1a85d1b9b43c54825c1a435011be737593ccc9754753daabdd255f9bd078bf7a";
 const TEST262_HTML_COMMENTS_MANIFEST_SHA256: &str =
     "cefee3d124372362a146cff066bd3da2609d66db3c50a60956bc4a63351948e6";
+const TEST262_HTML_COMMENTS_GLOBAL_ADDED_NEGATIVES_SHA256: &str =
+    "e301116b8ea4220bc054d7228b338f6982d4001c4ef74560fd1af2b44f5bb8fd";
+const TEST262_HTML_COMMENTS_RUNTIME_ACTIVATION_SHA256: &str =
+    "8d1c83f7ad12f523cc5d0461ad56fe9749ecfcef9e7709a5f56a8b9a54aff47b";
+const TEST262_HTML_COMMENTS_ALREADY_PASS_SHA256: &str =
+    "4df0fa19cbed1b6a97e53d9fc3326db5ea2403ab9aa8ba4c99f1a0ec2fccee13";
+const TEST262_HTML_COMMENTS_MODULE_UNCHANGED_SHA256: &str =
+    "81931fd362c33baf4a87190bbba12c3483826f7d532f41af99b373c3e7bbbdd4";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -1021,6 +1033,8 @@ enum OxideProfileKind {
     PromiseTryWithResolversGlobalParent,
     PromiseTryWithResolversGlobalCandidate,
     HtmlCommentsScoped,
+    HtmlCommentsGlobalParent,
+    HtmlCommentsGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1376,6 +1390,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-html-comments-scoped.conf"),
             OxideProfileKind::HtmlCommentsScoped,
+        ),
+        (
+            root.join("tests/test262-html-comments-global-parent.conf"),
+            OxideProfileKind::HtmlCommentsGlobalParent,
+        ),
+        (
+            root.join("tests/test262-html-comments-global-candidate.conf"),
+            OxideProfileKind::HtmlCommentsGlobalCandidate,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -2991,6 +3013,62 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-html-comments.txt",
             TEST262_HTML_COMMENTS_MANIFEST_SHA256,
         ),
+        OxideProfileKind::HtmlCommentsGlobalParent => verify_tag_transition_profile(
+            options,
+            "HTML-like comments negative-test global admission",
+            "parent",
+            TEST262_HTML_COMMENTS_GLOBAL_PARENT_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-html-comments.txt",
+                    TEST262_HTML_COMMENTS_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-global-added-negatives.txt",
+                    TEST262_HTML_COMMENTS_GLOBAL_ADDED_NEGATIVES_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-runtime-activation.txt",
+                    TEST262_HTML_COMMENTS_RUNTIME_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-already-pass.txt",
+                    TEST262_HTML_COMMENTS_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-module-unchanged.txt",
+                    TEST262_HTML_COMMENTS_MODULE_UNCHANGED_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::HtmlCommentsGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "HTML-like comments negative-test global admission",
+            "candidate",
+            TEST262_HTML_COMMENTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-html-comments.txt",
+                    TEST262_HTML_COMMENTS_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-global-added-negatives.txt",
+                    TEST262_HTML_COMMENTS_GLOBAL_ADDED_NEGATIVES_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-runtime-activation.txt",
+                    TEST262_HTML_COMMENTS_RUNTIME_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-already-pass.txt",
+                    TEST262_HTML_COMMENTS_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-html-comments-module-unchanged.txt",
+                    TEST262_HTML_COMMENTS_MODULE_UNCHANGED_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3428,6 +3506,8 @@ mod cli_tests {
         TEST262_GLOBAL_THIS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256, TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256, TEST262_HOST_GC_PROFILE_SHA256,
+        TEST262_HTML_COMMENTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_HTML_COMMENTS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
         TEST262_IDENTIFIER_REST_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -4024,6 +4104,18 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-html-comments-scoped.conf")).unwrap(),
             OxideProfileKind::HtmlCommentsScoped
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-html-comments-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::HtmlCommentsGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-html-comments-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::HtmlCommentsGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -7244,6 +7336,34 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn html_comments_global_profiles_require_their_pinned_manifests_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-html-comments-global-parent.conf",
+                TEST262_HTML_COMMENTS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-html-comments-global-candidate.conf",
+                TEST262_HTML_COMMENTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &[
+                    "tests/test262-html-comments.txt",
+                    "tests/test262-html-comments-global-added-negatives.txt",
+                    "tests/test262-html-comments-runtime-activation.txt",
+                    "tests/test262-html-comments-already-pass.txt",
+                    "tests/test262-html-comments-module-unchanged.txt",
+                ],
+                "tests/test262-html-comments-negative-pending.txt",
+                "test/annexB/language/comments/single-line-html-open.js",
+            );
         }
     }
 
