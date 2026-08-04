@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef";
+    "8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -306,6 +306,12 @@ const TEST262_WEAK_COLLECTIONS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef";
 const TEST262_WEAK_COLLECTIONS_GLOBAL_MANIFEST_SHA256: &str =
     "d0bd5c21db1165cd72618168ce5592b78a6909be5f2cd0813fa15ed6a3c17cc1";
+const TEST262_WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef";
+const TEST262_WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990";
+const TEST262_WEAK_REF_FINALIZATION_GLOBAL_MANIFEST_SHA256: &str =
+    "0325512882ba3d93d225423b62b76b9d8bebc7266a427ed6e05be3b70559c060";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -948,6 +954,8 @@ enum OxideProfileKind {
     WeakCollections,
     WeakCollectionsGlobalParent,
     WeakCollectionsGlobalCandidate,
+    WeakRefFinalizationGlobalParent,
+    WeakRefFinalizationGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1247,6 +1255,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-weak-collections-global-candidate.conf"),
             OxideProfileKind::WeakCollectionsGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-weak-ref-finalization-global-parent.conf"),
+            OxideProfileKind::WeakRefFinalizationGlobalParent,
+        ),
+        (
+            root.join("tests/test262-weak-ref-finalization-global-candidate.conf"),
+            OxideProfileKind::WeakRefFinalizationGlobalCandidate,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -2642,6 +2658,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_WEAK_COLLECTIONS_GLOBAL_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::WeakRefFinalizationGlobalParent => verify_tag_transition_profile(
+            options,
+            "WeakRef/FinalizationRegistry global admission",
+            "parent",
+            TEST262_WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-weak-ref-finalization-universe.txt",
+                TEST262_WEAK_REF_FINALIZATION_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::WeakRefFinalizationGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "WeakRef/FinalizationRegistry global admission",
+            "candidate",
+            TEST262_WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-weak-ref-finalization-universe.txt",
+                TEST262_WEAK_REF_FINALIZATION_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3105,8 +3141,10 @@ mod cli_tests {
         TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256,
         TEST262_WEAK_COLLECTIONS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_WEAK_COLLECTIONS_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_WEAK_COLLECTIONS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
-        parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
+        TEST262_WEAK_COLLECTIONS_PROFILE_SHA256,
+        TEST262_WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE_SHA256, default_worker_count,
+        identify_oxide_profile, parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -3573,6 +3611,20 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::WeakCollectionsGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-weak-ref-finalization-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::WeakRefFinalizationGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-weak-ref-finalization-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::WeakRefFinalizationGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -6454,6 +6506,28 @@ mod cli_tests {
                 &["tests/test262-weak-collections-global-universe.txt"],
                 "tests/test262-weak-collections.txt",
                 "test/built-ins/WeakMap/length.js",
+            );
+        }
+    }
+
+    #[test]
+    fn weak_ref_finalization_global_profiles_require_their_pinned_universe_manifest() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-weak-ref-finalization-global-parent.conf",
+                TEST262_WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-weak-ref-finalization-global-candidate.conf",
+                TEST262_WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-weak-ref-finalization-universe.txt"],
+                "tests/test262-weak-collections-global-universe.txt",
+                "test/built-ins/WeakRef/constructor.js",
             );
         }
     }

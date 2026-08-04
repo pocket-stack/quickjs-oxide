@@ -4,6 +4,51 @@ Last audited: 2026-08-04. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cg global WeakRef and FinalizationRegistry admission
+
+R3cg promotes exactly `WeakRef` and `FinalizationRegistry` from the focused
+R3cf candidate into the live Test262 profile. The profile grows from 99 to 101
+sorted feature tags while retaining all 1,157 audited negative paths and the
+same execution policy; its SHA-256 is
+`8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990`.
+The pinned runner permits both frozen profiles only with the checksum-bound
+82-path manifest or an explicit full-suite `--all`, so an unreviewed manifest
+or unrelated profile cannot reproduce the admission.
+
+Pinned QuickJS 2026-06-04 passes all 164 universe variants. The exact focused
+join changes 158 `unsupported-feature` outcomes to passes, changes only the
+remaining-feature detail on the two `for-of` variants, and leaves four
+`createRealm` host-capability rows byte-identical. The full 102,037-row join
+contains those same 160 changes, keeps the other 101,877 rows byte-identical,
+and has no previous-pass regression. The checked-in focused transition receipt
+has SHA-256
+`dd7080494f0d628aec4ab45bb793228cca52bebd208e4177ff308dd682b7c5af`.
+
+The new canonical vector is 64,628 passes with 64,800 runnable variants and
+13,866 `unsupported-feature` outcomes. Its TSV/JSONL SHA-256 values are
+`c919dd56fc37f2946d729ee9a9a6958fc91c3f95366843ffae258953145e5a4f`
+and
+`342c22edd7cfdc4edf2b5085455c8586095bb4abc5b59d55cc4657c5ff954459`.
+The parent full reports are byte-identical to the preceding R3ce canonical
+receipts
+(`e0b0be534f07a34bc7a9e18f4c3bae8c9360dd62c89176f96bf3234c5895b6ec` /
+`8227cb6d19fc2f814bdb016308cf1003be6c91ebe01145ccc3c719f6e38ac6bf`),
+proving that the runtime milestone did not alter any result hidden by the
+former global feature boundary.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-weak-ref-finalization-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-weak-ref-finalization-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-weak-ref-finalization-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+The independent `for-of` tag, Test262 `createRealm`/GC host hooks, broader heap
+teardown OOM topology, and the rest of the engine remain explicit parity
+frontiers. This is a stronger Feature Parity receipt, not a completion claim.
+
 ## R3cf WeakRef and FinalizationRegistry runtime
 
 R3cf implements genuine `WeakRef` and `FinalizationRegistry` objects and keeps

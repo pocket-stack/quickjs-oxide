@@ -6,6 +6,67 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-04.
 
+## R3cg global WeakRef and FinalizationRegistry admission
+
+R3cg admits the two implemented metadata tags `WeakRef` and
+`FinalizationRegistry`. The frozen parent and candidate profile SHA-256 values
+are `3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef`
+and `8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990`.
+Their only difference is the two sorted feature entries: the candidate keeps
+the same 1,157 audited negative paths and async-execution policy. The live
+profile now contains 101 feature tags and is checksum-bound by both the runner
+and upstream manifest.
+
+The gate derives the complete 82-path / 164-variant universe from all 53,125
+pinned metadata records. Its path/key hashes are
+`0325512882ba3d93d225423b62b76b9d8bebc7266a427ed6e05be3b70559c060`
+and `f4beb592d73342a4d694430d8b13a04122b03f61e7c9a79d2e24476e002910a9`.
+Pinned QuickJS passes every variant. The exact partition is:
+
+- 79 paths / 158 variants changing from `unsupported-feature` to `pass`;
+- one path / two variants retaining `unsupported-feature`, with only the
+  diagnostic changing to the independent `for-of` dependency;
+- two paths / four variants retaining the identical
+  `unsupported-host-create-realm` classification.
+
+The focused parent TSV/JSONL receipts are
+`ff55fff3c7a4d2d8dd1bebdb352f0971c3f28c44ff6819cfd72a0acbce8021cc`
+and `e5dea54cb9cb809c27bda931e38a876e416c84bc7523bb9455b9bde097ae2deb`;
+the candidate receipts are
+`b36215a9c1c3863ecafb324ebe67bf4f89d90e7ac05df86369193be584ddfb72`
+and `12ef67d72c0dca233599ed041fa6243bc62d376fa5db96932fe082e0e5998745`.
+The 169-line transition receipt has SHA-256
+`dd7080494f0d628aec4ab45bb793228cca52bebd208e4177ff308dd682b7c5af`.
+
+Before admitting the candidate, the gate proves that its 102,037-row parent
+TSV/JSONL is byte-identical to the preceding live canonical baseline:
+`e0b0be534f07a34bc7a9e18f4c3bae8c9360dd62c89176f96bf3234c5895b6ec`
+and `8227cb6d19fc2f814bdb016308cf1003be6c91ebe01145ccc3c719f6e38ac6bf`.
+The full parent/candidate join has 158 outcome changes, two detail-only
+changes, 101,877 unchanged rows, and zero previous-pass regressions. The new
+canonical vector is:
+
+- 64,628 pass and 64,800 runnable out of 102,037 variants;
+- 110 `fail-runtime`, 13,866 `unsupported-feature`, and 3,451
+  `unsupported-negative-provenance` outcomes;
+- TSV SHA-256
+  `c919dd56fc37f2946d729ee9a9a6958fc91c3f95366843ffae258953145e5a4f`;
+- JSONL SHA-256
+  `342c22edd7cfdc4edf2b5085455c8586095bb4abc5b59d55cc4657c5ff954459`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-weak-ref-finalization-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-weak-ref-finalization-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-weak-ref-finalization-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+The two `for-of` variants and four `createRealm` variants remain classified at
+their independent boundaries. Admission therefore widens only the capability
+surface justified by R3cf and does not hide host or parser work.
+
 ## R3cf WeakRef and FinalizationRegistry focused gate
 
 R3cf freezes every pinned metadata path carrying `WeakRef` or

@@ -358,6 +358,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-weak-collections-global-candidate.conf"
     ));
+    const WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-weak-ref-finalization-global-parent.conf"
+    ));
+    const WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-weak-ref-finalization-global-candidate.conf"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -366,13 +374,14 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 99] = [
+    const EXPECTED_FEATURES: [&str; 101] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
         "ArrayBuffer",
         "BigInt",
         "DataView",
+        "FinalizationRegistry",
         "Map",
         "Math.sumPrecise",
         "Object.fromEntries",
@@ -414,6 +423,7 @@ mod tests {
         "Symbol.unscopables",
         "TypedArray",
         "WeakMap",
+        "WeakRef",
         "WeakSet",
         "__getter__",
         "__proto__",
@@ -848,6 +858,10 @@ mod tests {
             OxideProfile::parse(WEAK_COLLECTIONS_GLOBAL_PARENT_PROFILE).unwrap();
         let weak_collections_global_candidate =
             OxideProfile::parse(WEAK_COLLECTIONS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let weak_ref_finalization_global_parent =
+            OxideProfile::parse(WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE).unwrap();
+        let weak_ref_finalization_global_candidate =
+            OxideProfile::parse(WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1102,7 +1116,11 @@ mod tests {
         assert_eq!(data_view_global_parent, default_parameters_global_candidate);
         assert_eq!(object_rest_global_parent, data_view_global_candidate);
         assert_eq!(weak_collections_global_parent, object_rest_global_candidate);
-        assert_eq!(profile, weak_collections_global_candidate);
+        assert_eq!(
+            weak_ref_finalization_global_parent,
+            weak_collections_global_candidate
+        );
+        assert_eq!(profile, weak_ref_finalization_global_candidate);
         assert_eq!(
             data_view_global_candidate
                 .features
@@ -1179,6 +1197,29 @@ mod tests {
         assert_eq!(
             weak_collections_global_candidate.allows_async_execution(),
             weak_collections_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            weak_ref_finalization_global_candidate
+                .features
+                .difference(&weak_ref_finalization_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["FinalizationRegistry", "WeakRef"]
+        );
+        assert!(
+            weak_ref_finalization_global_parent
+                .features
+                .difference(&weak_ref_finalization_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            weak_ref_finalization_global_candidate.audited_negative_tests,
+            weak_ref_finalization_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            weak_ref_finalization_global_candidate.allows_async_execution(),
+            weak_ref_finalization_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate

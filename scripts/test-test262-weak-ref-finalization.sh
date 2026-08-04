@@ -2,7 +2,7 @@
 # Checksum-bound WeakRef and FinalizationRegistry Test262 admission gate.
 #
 # The candidate profile is generated in a temporary directory from the authenticated
-# live profile and adds exactly WeakRef and FinalizationRegistry. The focused
+# frozen global-admission parent and adds exactly WeakRef and FinalizationRegistry. The focused
 # universe deliberately keeps its independent for-of and createRealm blockers
 # visible instead of admitting either capability globally.
 
@@ -13,7 +13,7 @@ export TZ=America/Los_Angeles
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 
-base_profile=compat/test262-oxide.conf
+base_profile=tests/test262-weak-ref-finalization-global-parent.conf
 candidate_features=tests/test262-weak-ref-finalization-candidate-features.txt
 universe=tests/test262-weak-ref-finalization-universe.txt
 activation=tests/test262-weak-ref-finalization-activation.txt
