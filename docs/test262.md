@@ -6,6 +6,55 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-04.
 
+## R3ch host-GC admission
+
+R3ch freezes every path in the pinned Test262 tree which declares
+`host-gc-required`: 15 paths / 28 variants. Source-token and metadata
+projections authenticate the universe. Fourteen paths / 26 variants require
+only `$262.gc`; one DataView path / two variants also calls
+`$262.createRealm`. Pinned QuickJS passes all 28 variants.
+
+The worker now publishes a genuine QuickJS-shaped GC callback. With the scoped
+profile, Oxide passes all 26 activation variants while the other two remain
+`unsupported-host-create-realm`. Repeated focused runs at different worker
+counts are byte-identical. The scoped TSV/JSONL SHA-256 values are
+`78ba543fd816f68a82ce264353478bc94dc4dfa067663d88d80a44fc51699211`
+and `a3ae18bfc094bb7957cf45adaa3efa42830163e2eed912f9b754f6fe60ee770e`.
+
+The global admission adds exactly `host-gc-required` to the prior 101-feature
+profile. The candidate has 102 features, preserves all 1,157 audited negative
+paths and the execution policy, and has SHA-256
+`c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f`.
+Three authenticated joins separate the runtime capability from the profile
+change:
+
+- historical canonical to runtime-only parent: 26 host-GC rows become
+  `unsupported-feature`, while two `createRealm` diagnostics lose only their
+  GC residual;
+- runtime-only parent to admitted candidate: those 26 rows become passes and
+  the two `createRealm` rows are unchanged;
+- historical canonical to admitted candidate: 26 outcome changes, two
+  detail-only changes, 102,009 unchanged rows, and zero pass regressions.
+
+The canonical full vector is 64,654 passes and 64,826 runnable variants out of
+102,037. Its TSV/JSONL SHA-256 values are
+`8e5c370f57e8d7dcd813df7199c79d210bf82316e802219c6d8a982dab72ac58`
+and `f5270e02f19cfb1ab5fc7a5ba5020e15a1ee0cea947914d7656766af0e8a721e`.
+The remaining two cohort variants stay attributed to `createRealm`; this
+admission does not claim cross-realm host parity.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-host-gc-reentrant-oracle.sh --oxide
+./scripts/test-test262-host-gc.sh --check
+./scripts/test-test262-host-gc.sh
+./scripts/test-test262-host-gc-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-host-gc-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-host-gc-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cg global WeakRef and FinalizationRegistry admission
 
 R3cg admits the two implemented metadata tags `WeakRef` and

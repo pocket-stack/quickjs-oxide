@@ -4113,6 +4113,22 @@ impl Runtime {
         Ok(stats)
     }
 
+    /// Execute QuickJS's test262-only `js_gc` host callback.
+    ///
+    /// The callback runs collection synchronously on the current runtime and
+    /// deliberately does not drain the pending-job queue. Active JavaScript
+    /// and native frames keep their ordinary stack-owned roots while the
+    /// collector runs.
+    fn call_test262_gc(&self, invocation: NativeInvocation) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Test262 gc received a constructor invocation",
+            ));
+        };
+        self.run_gc()?;
+        Ok(Completion::Return(Value::Undefined))
+    }
+
     /// Runtime heap population for diagnostics and lifecycle tests.
     #[must_use]
     pub fn heap_counts(&self) -> HeapCounts {
@@ -9704,6 +9720,22 @@ impl Context {
             2,
             "codePointRange",
             2,
+        )
+    }
+
+    /// Create QuickJS's test262-only `$262.gc` host function.
+    ///
+    /// The function is not an ECMAScript intrinsic. Embedders choose whether
+    /// and where to publish it.
+    pub fn new_test262_gc_function(&mut self) -> Result<CallableRef, RuntimeError> {
+        let function_prototype = self.function_prototype()?;
+        self.runtime.new_native_builtin(
+            &function_prototype,
+            self.realm,
+            NativeFunctionId::Test262Gc,
+            0,
+            "gc",
+            0,
         )
     }
 

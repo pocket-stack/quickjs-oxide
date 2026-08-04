@@ -1,0 +1,7 @@
+host-shape=function|gc|0|false|true|true
+active-frame=42
+generator-frame=42
+weakref-death=true|true|true|true
+weakmap-ephemeron=true|true
+gc-sync=0
+job-fifo=pending-active:42|promise-before-native|promise-after-native|finalizer:native-this|finalizer:native-argument|promise-before-cycle|promise-between-cycle-gcs|finalizer:cycle|promise-after-cycle|pending-released:true|true|finalizer:pending

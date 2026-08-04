@@ -1,0 +1,33 @@
+# R3ch scoped $262.gc host-hook admission transition.
+# before_oxide_profile_sha256=8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990
+# after_oxide_profile_sha256=496a4bc7538454b8b14e361d922679d401a5be0ed3af4b2be0cdbf1a3761ed99
+# manifest_sha256=4ab5a2feb62b100afd4aa5e6afd9f418c415142a1678d1c2c1c9de9d1553c630
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/staging/sm/extensions/ArrayBuffer-slice-arguments-detaching.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/ArrayBuffer-slice-arguments-detaching.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/DataView-construct-arguments-detaching.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/DataView-construct-arguments-detaching.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/DataView-set-arguments-detaching.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/DataView-set-arguments-detaching.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/dataview.js	sloppy		host-gc-required	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm, gc	unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm
+test/staging/sm/extensions/dataview.js	strict		host-gc-required	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm, gc	unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm
+test/staging/sm/extensions/recursion.js	sloppy	noStrict	host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/regress-650753.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/regress-650753.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/typedarray-set-detach.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/typedarray-set-detach.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/weakmap.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/extensions/weakmap.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/generators/gen-with-call-obj.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/generators/gen-with-call-obj.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/generators/iteration.js	sloppy	noStrict	host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/object/clear-dictionary-accessor-getset.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/object/clear-dictionary-accessor-getset.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/regress/regress-1507322-deep-weakmap.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/regress/regress-1507322-deep-weakmap.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/regress/regress-592556-c35.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/regress/regress-592556-c35.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/regress/regress-596103.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/regress/regress-596103.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/statements/for-in-with-gc-and-unvisited-deletion.js	sloppy		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		
+test/staging/sm/statements/for-in-with-gc-and-unvisited-deletion.js	strict		host-gc-required	normal		unsupported-host-gc	selection	HostCapability	missing execution capabilities: gc	pass	normal		

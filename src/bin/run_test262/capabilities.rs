@@ -366,6 +366,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-weak-ref-finalization-global-candidate.conf"
     ));
+    const HOST_GC_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-host-gc-global-parent.conf"
+    ));
+    const HOST_GC_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-host-gc-global-candidate.conf"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -374,7 +382,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 101] = [
+    const EXPECTED_FEATURES: [&str; 102] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -447,6 +455,7 @@ mod tests {
         "generators",
         "globalThis",
         "hashbang",
+        "host-gc-required",
         "iterator-helpers",
         "iterator-sequencing",
         "json-parse-with-source",
@@ -862,6 +871,9 @@ mod tests {
             OxideProfile::parse(WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE).unwrap();
         let weak_ref_finalization_global_candidate =
             OxideProfile::parse(WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let host_gc_global_parent = OxideProfile::parse(HOST_GC_GLOBAL_PARENT_PROFILE).unwrap();
+        let host_gc_global_candidate =
+            OxideProfile::parse(HOST_GC_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1120,7 +1132,11 @@ mod tests {
             weak_ref_finalization_global_parent,
             weak_collections_global_candidate
         );
-        assert_eq!(profile, weak_ref_finalization_global_candidate);
+        assert_eq!(
+            host_gc_global_parent,
+            weak_ref_finalization_global_candidate
+        );
+        assert_eq!(profile, host_gc_global_candidate);
         assert_eq!(
             data_view_global_candidate
                 .features
@@ -1220,6 +1236,29 @@ mod tests {
         assert_eq!(
             weak_ref_finalization_global_candidate.allows_async_execution(),
             weak_ref_finalization_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            host_gc_global_candidate
+                .features
+                .difference(&host_gc_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["host-gc-required"]
+        );
+        assert!(
+            host_gc_global_parent
+                .features
+                .difference(&host_gc_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            host_gc_global_candidate.audited_negative_tests,
+            host_gc_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            host_gc_global_candidate.allows_async_execution(),
+            host_gc_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate

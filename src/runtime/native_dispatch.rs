@@ -685,6 +685,7 @@ impl Runtime {
             NativeFunctionId::Test262DetachArrayBuffer => {
                 self.call_test262_detach_array_buffer(invocation, arguments)
             }
+            NativeFunctionId::Test262Gc => self.call_test262_gc(invocation),
             NativeFunctionId::QjsPrint => self.call_qjs_print(realm, invocation, arguments),
             NativeFunctionId::PrimitivePrototypeToString(kind) => {
                 self.call_primitive_prototype_to_string(realm, kind, invocation, arguments)

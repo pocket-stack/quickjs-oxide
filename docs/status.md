@@ -4,6 +4,48 @@ Last audited: 2026-08-04. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ch reentrant Test262 host GC
+
+R3ch implements QuickJS 2026-06-04's Test262-only `js_gc` callback as a real
+native `$262.gc` function. It is realm-bound, non-constructible, has
+`name="gc"` and `length=0`, runs collection synchronously, returns `undefined`,
+and does not drain the pending-job queue. Active ordinary, generator, and job
+frames keep their receiver, arguments, locals, closures, and callable roots
+while collection re-enters the runtime.
+
+An exact QuickJS/Oxide lifecycle transcript covers WeakRef death, WeakMap
+ephemeron cleanup, FinalizationRegistry's two-pass cycle handling, and Promise
+and finalizer FIFO order. The checksum-bound Test262 inventory contains 15
+paths / 28 variants. Pinned QuickJS passes all 28; Oxide now executes and
+passes the 14 paths / 26 variants whose only missing dependency was host GC.
+The remaining DataView path / two variants still requires `createRealm` and
+keeps that independent host classification.
+
+The global profile adds only `host-gc-required`, growing from 101 to 102
+features with SHA-256
+`c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f`.
+Against the preceding canonical 102,037-row vector, exactly 26
+`unsupported-host-gc` outcomes become passes, the two `createRealm` rows only
+drop `gc` from their residual diagnostic, and the other 102,009 rows are
+byte-identical. There is no previous-pass regression. The canonical vector is
+now 64,654 passes with 64,826 runnable variants; its TSV/JSONL SHA-256 values
+are `8e5c370f57e8d7dcd813df7199c79d210bf82316e802219c6d8a982dab72ac58`
+and `f5270e02f19cfb1ab5fc7a5ba5020e15a1ee0cea947914d7656766af0e8a721e`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-host-gc-reentrant-oracle.sh --oxide
+./scripts/test-test262-host-gc.sh
+./scripts/test-test262-host-gc-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-host-gc-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-host-gc-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+`createRealm`, the broader cross-realm host surface, the independent `for-of`
+tag, and the rest of the engine remain explicit parity frontiers.
+
 ## R3cg global WeakRef and FinalizationRegistry admission
 
 R3cg promotes exactly `WeakRef` and `FinalizationRegistry` from the focused

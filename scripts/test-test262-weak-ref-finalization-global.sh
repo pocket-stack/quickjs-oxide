@@ -11,6 +11,8 @@ baseline=tests/test262-weak-ref-finalization-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
 parent=tests/test262-weak-ref-finalization-global-parent.conf
 candidate=tests/test262-weak-ref-finalization-global-candidate.conf
+successor_parent=tests/test262-host-gc-global-parent.conf
+successor_candidate=tests/test262-host-gc-global-candidate.conf
 live_profile=compat/test262-oxide.conf
 upstream=compat/upstream.toml
 added_features=tests/test262-weak-ref-finalization-candidate-features.txt
@@ -36,6 +38,7 @@ config_sha=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 metadata_sha=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
 parent_sha=3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef
 candidate_sha=8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990
+successor_sha=c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f
 added_features_sha=0a462001d5a51db3b103ccdadfad17076941c5a5f7f163d767bedec5fc471406
 parent_features_sha=a892ce31bef675386670419a9410e6086c24f1edd9f8e14f6c793d8bfb07503b
 candidate_features_sha=82f8c1c3f217e45d3e02b60776bad5ec8268b8270a608990906802c38c8ce139
@@ -55,6 +58,9 @@ historical_parent_full_jsonl_sha=8227cb6d19fc2f814bdb016308cf1003be6c91ebe01145c
 canonical_full_tsv_sha=c919dd56fc37f2946d729ee9a9a6958fc91c3f95366843ffae258953145e5a4f
 canonical_full_jsonl_sha=342c22edd7cfdc4edf2b5085455c8586095bb4abc5b59d55cc4657c5ff954459
 canonical_full_summary='fail-parse=11 fail-runtime=110 pass=64628 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=13866 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-eval-script=44 unsupported-host-gc=26 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3451 unsupported-parser=26 unsupported-runtime=23'
+successor_full_tsv_sha=8e5c370f57e8d7dcd813df7199c79d210bf82316e802219c6d8a982dab72ac58
+successor_full_jsonl_sha=f5270e02f19cfb1ab5fc7a5ba5020e15a1ee0cea947914d7656766af0e8a721e
+successor_full_summary='fail-parse=11 fail-runtime=110 pass=64654 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=13866 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-eval-script=44 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3451 unsupported-parser=26 unsupported-runtime=23'
 baseline_sha=d1758cc0bdcb82c06b63335f8becdd75496be6f100305afd70d9c58c9edf2e2d
 
 usage() {
@@ -149,9 +155,13 @@ check_file() {
         || die "authenticated input drifted: $file"
 }
 check_live_admission_binding() {
-    check_file "$live_profile" 1271 "$candidate_sha"
-    cmp -s "$candidate" "$live_profile" \
-        || die 'live Test262 profile is not byte-identical to the admitted candidate'
+    check_file "$successor_parent" 1271 "$candidate_sha"
+    cmp -s "$candidate" "$successor_parent" \
+        || die 'R3cg candidate is not byte-identical to the R3ch parent'
+    check_file "$successor_candidate" 1272 "$successor_sha"
+    check_file "$live_profile" 1272 "$successor_sha"
+    cmp -s "$successor_candidate" "$live_profile" \
+        || die 'live Test262 profile is not byte-identical to the R3ch successor'
     [[ "$(toml_test262_value "$upstream" repository)" == https://github.com/tc39/test262.git \
         && "$(toml_test262_value "$upstream" commit)" == "$test262" \
         && "$(toml_test262_value "$upstream" shallow_since)" == 2025-09-01 \
@@ -162,7 +172,7 @@ check_live_admission_binding() {
         && "$(toml_test262_value "$upstream" test_count)" == 53125 \
         && "$(toml_test262_value "$upstream" metadata_records_sha256)" == "$metadata_sha" \
         && "$(toml_test262_value "$upstream" oxide_profile)" == "$live_profile" \
-        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" == "$candidate_sha" ]] \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" == "$successor_sha" ]] \
         && [[ "$(toml_test262_value "$upstream" expected_errors)" == test262_errors.txt ]] \
         || die 'compat/upstream.toml Test262 identity does not match the admission certificate'
 }
@@ -171,12 +181,12 @@ check_canonical_baseline_identity() {
         && "$(canonical_value schema)" == test262-canonical-classified-v2 \
         && "$(canonical_value timeout_ms)" == 30000 \
         && "$(canonical_value variants)" == 102037 \
-        && "$(canonical_value runnable)" == 64800 \
-        && "$(canonical_value passes)" == 64628 \
-        && "$(canonical_value tsv_sha256)" == "$canonical_full_tsv_sha" \
-        && "$(canonical_value jsonl_sha256)" == "$canonical_full_jsonl_sha" \
-        && "$(canonical_value summary)" == "$canonical_full_summary" ]] \
-        || die 'canonical Test262 full baseline does not identify R3cg candidate output'
+        && "$(canonical_value runnable)" == 64826 \
+        && "$(canonical_value passes)" == 64654 \
+        && "$(canonical_value tsv_sha256)" == "$successor_full_tsv_sha" \
+        && "$(canonical_value jsonl_sha256)" == "$successor_full_jsonl_sha" \
+        && "$(canonical_value summary)" == "$successor_full_summary" ]] \
+        || die 'canonical Test262 full baseline does not identify the R3ch successor output'
 }
 check_authenticated_inputs() {
     check_file "$parent" 1269 "$parent_sha"
@@ -468,13 +478,13 @@ check_report_receipt() {
 check_canonical_full_report() {
     local report=$1
     check_canonical_baseline_identity
-    [[ "$(lines <(report_rows "$report"))" == "$(canonical_value variants)" \
-        && "$(report_runnable "$report")" == "$(canonical_value runnable)" \
-        && "$(report_count pass "$report")" == "$(canonical_value passes)" \
-        && "$(sha "$report")" == "$(canonical_value tsv_sha256)" \
-        && "$(sha "${report%.tsv}.jsonl")" == "$(canonical_value jsonl_sha256)" \
-        && "$(report_summary "$report")" == "$(canonical_value summary)" ]] \
-        || die 'candidate full report does not match the canonical Test262 baseline'
+    [[ "$(lines <(report_rows "$report"))" == 102037 \
+        && "$(report_runnable "$report")" == 64800 \
+        && "$(report_count pass "$report")" == 64628 \
+        && "$(sha "$report")" == "$canonical_full_tsv_sha" \
+        && "$(sha "${report%.tsv}.jsonl")" == "$canonical_full_jsonl_sha" \
+        && "$(report_summary "$report")" == "$canonical_full_summary" ]] \
+        || die 'candidate full report does not match the historical R3cg receipt'
 }
 run_report() {
     local profile=$1 report=$2 scope=$3 pool=$4

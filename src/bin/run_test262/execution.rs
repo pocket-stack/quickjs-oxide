@@ -17,6 +17,7 @@ use super::{Variant, WorkerOptions, validate_relative_test_path};
 
 pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
     detach_array_buffer: true,
+    gc: true,
 };
 
 const WORKER_HOST_FILENAME: &str = "<test262-worker-host>";
@@ -521,6 +522,29 @@ fn install_test262_hosts(runtime: &Runtime, context: &mut Context) -> Result<(),
         return Err("Test262 worker host rejected $262.codePointRange".to_owned());
     }
 
+    let gc = match context.new_test262_gc_function() {
+        Ok(function) => function,
+        Err(error) => {
+            return Err(worker_host_error(runtime, context, "create $262.gc", error));
+        }
+    };
+    let gc_key = runtime
+        .intern_property_key("gc")
+        .map_err(|error| format!("intern Test262 host gc key: {error}"))?;
+    let defined = match context.define_own_property(
+        &object_262,
+        &gc_key,
+        &worker_host_data_property(Value::Object(gc.as_object().clone())),
+    ) {
+        Ok(defined) => defined,
+        Err(error) => {
+            return Err(worker_host_error(runtime, context, "define $262.gc", error));
+        }
+    };
+    if !defined {
+        return Err("Test262 worker host rejected $262.gc".to_owned());
+    }
+
     let object_262_key = runtime
         .intern_property_key("$262")
         .map_err(|error| format!("intern Test262 host $262 key: {error}"))?;
@@ -994,17 +1018,21 @@ flags: [raw]
 ---*/
 if (typeof $262 !== "object" ||
     typeof $262.detachArrayBuffer !== "function" ||
-    typeof $262.codePointRange !== "function") {
+    typeof $262.codePointRange !== "function" ||
+    typeof $262.gc !== "function") {
     throw new Error("QuickJS Test262 host surface is missing");
 }
 var globalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "$262");
 var detachDescriptor = Object.getOwnPropertyDescriptor($262, "detachArrayBuffer");
 var helperDescriptor = Object.getOwnPropertyDescriptor($262, "codePointRange");
+var gcDescriptor = Object.getOwnPropertyDescriptor($262, "gc");
 if (!globalDescriptor.writable || !globalDescriptor.enumerable ||
     !globalDescriptor.configurable || !detachDescriptor.writable ||
     !detachDescriptor.enumerable || !detachDescriptor.configurable ||
     !helperDescriptor.writable ||
-    !helperDescriptor.enumerable || !helperDescriptor.configurable) {
+    !helperDescriptor.enumerable || !helperDescriptor.configurable ||
+    !gcDescriptor.writable || !gcDescriptor.enumerable ||
+    !gcDescriptor.configurable) {
     throw new Error("QuickJS host property flags changed");
 }
 if ($262.detachArrayBuffer.name !== "detachArrayBuffer" ||
@@ -1016,6 +1044,10 @@ if ($262.codePointRange.name !== "codePointRange" ||
     $262.codePointRange.length !== 2 ||
     Object.getPrototypeOf($262.codePointRange) !== Function.prototype) {
     throw new Error("QuickJS codePointRange function metadata changed");
+}
+if ($262.gc.name !== "gc" || $262.gc.length !== 0 ||
+    Object.getPrototypeOf($262.gc) !== Function.prototype) {
+    throw new Error("QuickJS gc function metadata changed");
 }
 var constructorThrew = false;
 try {
@@ -1034,6 +1066,27 @@ try {
 }
 if (!constructorThrew) {
     throw new Error("QuickJS detachArrayBuffer became constructible");
+}
+constructorThrew = false;
+try {
+    new $262.gc();
+} catch (error) {
+    constructorThrew = error instanceof TypeError;
+}
+if (!constructorThrew) {
+    throw new Error("QuickJS gc became constructible");
+}
+
+var activeResult = (function activeFrame() {
+    var local = { answer: 42 };
+    activeFrame = null;
+    if ($262.gc.call(local, local, "ignored") !== undefined) {
+        throw new Error("QuickJS gc return value changed");
+    }
+    return local.answer;
+})();
+if (activeResult !== 42) {
+    throw new Error("QuickJS gc released an active frame root");
 }
 
 var ordinary = {};

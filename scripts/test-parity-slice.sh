@@ -99,6 +99,9 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-weak-collections-global.sh
 ./scripts/test-test262-weak-ref-finalization.sh
 ./scripts/test-test262-weak-ref-finalization-global.sh
+./scripts/test-host-gc-reentrant-oracle.sh --check
+./scripts/test-test262-host-gc.sh
+./scripts/test-test262-host-gc-global.sh
 ./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh

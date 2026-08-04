@@ -11,12 +11,14 @@ use super::metadata::Metadata;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct HostCapabilities {
     pub detach_array_buffer: bool,
+    pub gc: bool,
 }
 
 impl HostCapabilities {
     pub(super) fn retain_missing(self, capabilities: &mut Vec<String>) {
         capabilities.retain(|capability| {
-            !(self.detach_array_buffer && capability == "detach-array-buffer")
+            !(self.detach_array_buffer && capability == "detach-array-buffer"
+                || self.gc && capability == "gc")
         });
     }
 }
@@ -816,19 +818,20 @@ mod tests {
     }
 
     #[test]
-    fn installed_detach_host_removes_only_its_discovered_gap() {
+    fn installed_hosts_remove_only_their_discovered_gaps() {
         let metadata = metadata(&[], &[], &["detachArrayBuffer.js"]);
         let mut missing = missing_host_capability_hints(
             Path::new("test/example.js"),
-            "$262.detachArrayBuffer(buffer); $262.gc();",
+            "$262.detachArrayBuffer(buffer); $262.gc(); $262.createRealm();",
             &metadata,
             false,
         );
         HostCapabilities {
             detach_array_buffer: true,
+            gc: true,
         }
         .retain_missing(&mut missing);
-        assert_eq!(missing, ["gc"]);
+        assert_eq!(missing, ["create-realm"]);
     }
 
     #[test]

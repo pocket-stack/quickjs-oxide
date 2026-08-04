@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990";
+    "c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -312,6 +312,14 @@ const TEST262_WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990";
 const TEST262_WEAK_REF_FINALIZATION_GLOBAL_MANIFEST_SHA256: &str =
     "0325512882ba3d93d225423b62b76b9d8bebc7266a427ed6e05be3b70559c060";
+const TEST262_HOST_GC_PROFILE_SHA256: &str =
+    "496a4bc7538454b8b14e361d922679d401a5be0ed3af4b2be0cdbf1a3761ed99";
+const TEST262_HOST_GC_MANIFEST_SHA256: &str =
+    "4ab5a2feb62b100afd4aa5e6afd9f418c415142a1678d1c2c1c9de9d1553c630";
+const TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990";
+const TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -956,6 +964,9 @@ enum OxideProfileKind {
     WeakCollectionsGlobalCandidate,
     WeakRefFinalizationGlobalParent,
     WeakRefFinalizationGlobalCandidate,
+    HostGc,
+    HostGcGlobalParent,
+    HostGcGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1263,6 +1274,18 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-weak-ref-finalization-global-candidate.conf"),
             OxideProfileKind::WeakRefFinalizationGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-host-gc.conf"),
+            OxideProfileKind::HostGc,
+        ),
+        (
+            root.join("tests/test262-host-gc-global-parent.conf"),
+            OxideProfileKind::HostGcGlobalParent,
+        ),
+        (
+            root.join("tests/test262-host-gc-global-candidate.conf"),
+            OxideProfileKind::HostGcGlobalCandidate,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -2678,6 +2701,33 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_WEAK_REF_FINALIZATION_GLOBAL_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::HostGc => verify_scoped_pinned_profile(
+            options,
+            "$262.gc host hook",
+            TEST262_HOST_GC_PROFILE_SHA256,
+            "tests/test262-host-gc-universe.txt",
+            TEST262_HOST_GC_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::HostGcGlobalParent => verify_tag_transition_profile(
+            options,
+            "$262.gc global admission",
+            "parent",
+            TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-host-gc-universe.txt",
+                TEST262_HOST_GC_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::HostGcGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "$262.gc global admission",
+            "candidate",
+            TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-host-gc-universe.txt",
+                TEST262_HOST_GC_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3110,8 +3160,9 @@ mod cli_tests {
         TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
-        TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256, TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256, TEST262_HOST_GC_PROFILE_SHA256,
+        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_PROFILE_SHA256, TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
@@ -3627,6 +3678,19 @@ mod cli_tests {
             OxideProfileKind::WeakRefFinalizationGlobalCandidate
         );
         assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-host-gc.conf")).unwrap(),
+            OxideProfileKind::HostGc
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-host-gc-global-parent.conf")).unwrap(),
+            OxideProfileKind::HostGcGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-host-gc-global-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::HostGcGlobalCandidate
+        );
+        assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
             OxideProfileKind::SymbolProtocols
         );
@@ -3699,6 +3763,65 @@ mod cli_tests {
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
         assert!(error.contains("unsupported Test262 capability profile"));
+    }
+
+    #[test]
+    fn scoped_host_gc_profile_is_bound_to_its_pinned_universe() {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "tests/test262-host-gc.conf",
+            "--manifest",
+            "tests/test262-host-gc-universe.txt",
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_HOST_GC_PROFILE_SHA256
+        );
+
+        let tamper_error = verify_scoped_pinned_profile(
+            &options,
+            "$262.gc host hook",
+            TEST262_HOST_GC_PROFILE_SHA256,
+            "tests/test262-host-gc-universe.txt",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(
+            tamper_error.contains("manifest checksum mismatch"),
+            "unexpected manifest tamper error: {tamper_error}"
+        );
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/staging/sm/extensions/ArrayBuffer-slice-arguments-detaching.js",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-host-gc.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
     }
 
     #[test]
@@ -6528,6 +6651,28 @@ mod cli_tests {
                 &["tests/test262-weak-ref-finalization-universe.txt"],
                 "tests/test262-weak-collections-global-universe.txt",
                 "test/built-ins/WeakRef/constructor.js",
+            );
+        }
+    }
+
+    #[test]
+    fn host_gc_global_profiles_require_their_pinned_universe_manifest_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-host-gc-global-parent.conf",
+                TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-host-gc-global-candidate.conf",
+                TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-host-gc-universe.txt"],
+                "tests/test262-host-gc-activation.txt",
+                "test/staging/sm/extensions/ArrayBuffer-slice-arguments-detaching.js",
             );
         }
     }
