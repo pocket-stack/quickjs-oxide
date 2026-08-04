@@ -33,3 +33,7 @@ tests/test262-debugger-statement-transitions.tsv whitespace=-blank-at-eol
 tests/test262-debugger-statement-global-parent.tsv whitespace=-blank-at-eol
 tests/test262-debugger-statement-global-candidate.tsv whitespace=-blank-at-eol
 tests/test262-debugger-statement-global-transitions.tsv whitespace=-blank-at-eol
+tests/test262-future-reserved-words-parent.tsv whitespace=-blank-at-eol
+tests/test262-future-reserved-words-candidate.tsv whitespace=-blank-at-eol
+tests/test262-future-reserved-words-scoped.tsv whitespace=-blank-at-eol
+tests/test262-future-reserved-words-transitions.tsv whitespace=-blank-at-eol

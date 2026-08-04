@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::process::Command;
 
 use quickjs_oxide::value::number_to_string;
-use quickjs_oxide::{Runtime, RuntimeError, Value};
+use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError, Value};
 
 const ORACLE_NORMALIZER: &str = r#"
 var __qjo_type = typeof __qjo_value;
@@ -653,6 +653,134 @@ const CASES: &[(&str, &str)] = &[
     ("typeof bigint", "typeof 1n"),
 ];
 
+const FUTURE_RESERVED_VALUE_CASES: &[(&str, &str)] = &[
+    (
+        "always-reserved data property IdentifierNames",
+        "({enum:20,export:22}).enum+({enum:20,export:22}).export",
+    ),
+    (
+        "always-reserved method property IdentifierNames",
+        "({extends(){return 20},import(){return 22}}).extends()+({extends(){return 20},import(){return 22}}).import()",
+    ),
+    (
+        "escaped always-reserved property IdentifierNames",
+        r"({en\u0075m:20,exp\u006frt:22}).en\u0075m+({en\u0075m:20,exp\u006frt:22}).exp\u006frt",
+    ),
+];
+
+const FUTURE_RESERVED_UNSUPPORTED_IMPORT_CASES: &[(&str, &str)] = &[
+    ("one-argument dynamic import", "import('fixture')"),
+    ("dynamic import across a line break", "import\n('fixture')"),
+    ("dynamic import with a trailing comma", "import('fixture',)"),
+    ("two-argument dynamic import", "import('fixture', {})"),
+    (
+        "two-argument dynamic import with a trailing comma",
+        "import('fixture', {},)",
+    ),
+    (
+        "dynamic import followed by a member suffix",
+        "import('fixture').then",
+    ),
+    (
+        "dynamic import followed by an optional member suffix",
+        "import('fixture')?.then",
+    ),
+    (
+        "dynamic import followed by an optional computed suffix",
+        "import('fixture')?.[0]",
+    ),
+    (
+        "dynamic import followed by an optional call suffix",
+        "import('fixture')?.()",
+    ),
+    (
+        "dynamic import followed by a tagged template",
+        "import('fixture')`tag`",
+    ),
+    (
+        "parenthesized dynamic import as a new target",
+        "new (import('fixture'))",
+    ),
+];
+
+const FUTURE_RESERVED_ERROR_CASES: &[(&str, &str)] = &[
+    ("sloppy always-reserved enum statement", "enum;"),
+    (
+        "strict always-reserved export statement",
+        "'use strict'; export;",
+    ),
+    ("always-reserved extends expression", "1 + extends;"),
+    ("bare import expression", "import;"),
+    ("always-reserved variable binding", "var enum;"),
+    ("always-reserved formal binding", "function f(import){}"),
+    ("escaped always-reserved reference", r"exp\u006frt;"),
+    ("escaped always-reserved binding", r"var ext\u0065nds;"),
+    ("direct eval reserved statement", r#"eval("enum;")"#),
+    (
+        "strict direct eval reserved statement",
+        r#"eval("'use strict'; export;")"#,
+    ),
+    (
+        "indirect eval reserved statement",
+        r#"(0, eval)("extends;")"#,
+    ),
+    ("eval bare import", r#"eval("import;")"#),
+    ("empty dynamic import", "import()"),
+    ("spread dynamic import", "import(...source)"),
+    ("adjacent dynamic import arguments", "import(source extra)"),
+    (
+        "three dynamic import arguments",
+        "import(source, {}, extra)",
+    ),
+    ("dynamic import as new target", "new import(source)"),
+    ("empty dynamic import as new target", "new import()"),
+    ("dynamic import assignment target", "import(source) = 1"),
+    ("dynamic import postfix update", "import(source)++"),
+    ("dynamic import prefix update", "++import(source)"),
+    ("script import.meta", "import.meta"),
+    ("script import property other than meta", "import.foo"),
+    ("script escaped import meta", r"import.\u006deta"),
+    ("optional call directly on import", "import?.(source)"),
+    ("tagged template directly on import", "import`source`"),
+    (
+        "optional tagged template directly after import call",
+        "import('fixture')?.`tag`",
+    ),
+    (
+        "tagged template after an import optional chain",
+        "import('fixture')?.then`tag`",
+    ),
+    (
+        "optional chain after parenthesized dynamic import new target",
+        "new (import('fixture'))?.then",
+    ),
+    (
+        "valid dynamic import defers to a later syntax error",
+        "import('fixture'); enum;",
+    ),
+    (
+        "valid dynamic import defers to a private field early error",
+        "import('fixture'); class C { method(){ return this.#missing; } }",
+    ),
+    (
+        "valid dynamic import defers to a private-in early error",
+        "import('fixture'); class C { method(object){ return #missing in object; } }",
+    ),
+    (
+        "direct eval import defers to a private field early error",
+        r#"eval("import('fixture'); class C { method(){ return this.#missing; } }")"#,
+    ),
+    ("direct eval import.meta", r#"eval("import.meta")"#),
+    (
+        "indirect eval malformed dynamic import",
+        r#"(0, eval)("import(...source)")"#,
+    ),
+    (
+        "eval escaped always-reserved reference",
+        r#"eval("imp\\u006frt;")"#,
+    ),
+];
+
 const SHARED_ERRORS: &[(&str, &str)] = &[
     (
         "strict mode reaches earlier directive escapes",
@@ -949,6 +1077,64 @@ const RUNTIME_ERROR_CASES: &[(&str, &str)] = &[
         "(function named() { 'use strict'; return function() { named = 1; }; })()()",
     ),
 ];
+
+#[test]
+fn future_reserved_words_match_quickjs_oracle() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP future-reserved-word differential: set QJS_ORACLE to upstream qjs");
+        return;
+    };
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let import_options = CompileOptions::new("future-reserved-import.js");
+    for &(description, source) in FUTURE_RESERVED_UNSUPPORTED_IMPORT_CASES {
+        let RuntimeError::Engine(error) = context
+            .compile_with_options_preserving_unsupported_diagnostics(source, &import_options)
+            .unwrap_err()
+        else {
+            panic!("Rust did not preserve Unsupported for {description:?} ({source:?})");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{description:?}");
+        assert_eq!(error.message(), "import syntax is not implemented yet");
+        assert!(context.take_exception().unwrap().is_none());
+
+        // Parse the same expression in a dead branch so the pinned oracle
+        // validates its grammar without attempting a module load.
+        let guarded = format!("if (false) {{ {source}; }}");
+        let output = Command::new(&oracle)
+            .args([OsStr::new("-e"), OsStr::new(&guarded)])
+            .output()
+            .unwrap_or_else(|error| {
+                panic!("could not run oracle for {description:?} ({source:?}): {error}")
+            });
+        assert!(
+            output.status.success(),
+            "oracle rejected valid import grammar for {description:?} ({source:?}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    for &(description, source) in FUTURE_RESERVED_VALUE_CASES {
+        let rust_value = context.eval(source).unwrap_or_else(|error| {
+            panic!("Rust evaluation failed for {description:?} ({source:?}): {error}")
+        });
+        assert_eq!(
+            normalize_rust_value(&rust_value),
+            run_oracle(&oracle, source, description),
+            "future-reserved property differential mismatch for {description:?} ({source:?})"
+        );
+    }
+
+    for &(description, source) in FUTURE_RESERVED_ERROR_CASES {
+        assert_eq!(context.eval(source), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_rust_error_observation(&runtime, &mut context),
+            run_oracle_error(&oracle, source, description),
+            "future-reserved error differential mismatch for {description:?} ({source:?})"
+        );
+    }
+}
 
 #[test]
 fn primitive_expressions_match_quickjs_oracle() {

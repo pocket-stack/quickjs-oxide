@@ -327,6 +327,7 @@ mod tests {
             in_mode: InMode::Allow,
             functions: vec![root],
             anonymous_function_definition: None,
+            pending_unsupported: None,
         };
         parser.push_scope(ScopeKind::ClassPrivate);
         parser

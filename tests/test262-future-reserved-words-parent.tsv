@@ -1,0 +1,97 @@
+# quickjs-oxide Test262 outcome vector v2
+# quickjs=2026-06-04
+# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+# oxide_profile_sha256=40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e
+# profile=test262-canonical-classified-v2
+# mode=both
+path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
+test/language/future-reserved-words/_implements.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/_implements.js	strict			normal		pass	normal		
+test/language/future-reserved-words/abstract.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/abstract.js	strict			normal		pass	normal		
+test/language/future-reserved-words/boolean.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/boolean.js	strict			normal		pass	normal		
+test/language/future-reserved-words/byte.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/byte.js	strict			normal		pass	normal		
+test/language/future-reserved-words/char.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/char.js	strict			normal		pass	normal		
+test/language/future-reserved-words/class.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/class.js
+test/language/future-reserved-words/class.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/class.js
+test/language/future-reserved-words/const.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/const.js
+test/language/future-reserved-words/const.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/const.js
+test/language/future-reserved-words/debugger.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	variable name expected
+test/language/future-reserved-words/debugger.js	strict			parse	SyntaxError	pass	parse	SyntaxError	variable name expected
+test/language/future-reserved-words/double.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/double.js	strict			normal		pass	normal		
+test/language/future-reserved-words/enum.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/enum.js
+test/language/future-reserved-words/enum.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/enum.js
+test/language/future-reserved-words/export.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/export.js
+test/language/future-reserved-words/export.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/export.js
+test/language/future-reserved-words/extends.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/extends.js
+test/language/future-reserved-words/extends.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/extends.js
+test/language/future-reserved-words/final.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/final.js	strict			normal		pass	normal		
+test/language/future-reserved-words/float.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/float.js	strict			normal		pass	normal		
+test/language/future-reserved-words/goto.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/goto.js	strict			normal		pass	normal		
+test/language/future-reserved-words/implement.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/implement.js	strict			normal		pass	normal		
+test/language/future-reserved-words/implements-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/implements-strict-escaped.js
+test/language/future-reserved-words/implements-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/implements-strict.js
+test/language/future-reserved-words/implements-titlecase.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/implements-titlecase.js	strict			normal		pass	normal		
+test/language/future-reserved-words/implements-uppercase.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/implements-uppercase.js	strict			normal		pass	normal		
+test/language/future-reserved-words/implements.js	sloppy	noStrict		normal		pass	normal		
+test/language/future-reserved-words/implements0.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/implements0.js	strict			normal		pass	normal		
+test/language/future-reserved-words/implementss.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/implementss.js	strict			normal		pass	normal		
+test/language/future-reserved-words/import.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/import.js
+test/language/future-reserved-words/import.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/import.js
+test/language/future-reserved-words/int.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/int.js	strict			normal		pass	normal		
+test/language/future-reserved-words/interface-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/interface-strict-escaped.js
+test/language/future-reserved-words/interface-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/interface-strict.js
+test/language/future-reserved-words/interface.js	sloppy	noStrict		normal		pass	normal		
+test/language/future-reserved-words/let-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/let-strict-escaped.js
+test/language/future-reserved-words/let-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/let-strict.js
+test/language/future-reserved-words/long.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/long.js	strict			normal		pass	normal		
+test/language/future-reserved-words/native.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/native.js	strict			normal		pass	normal		
+test/language/future-reserved-words/package-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/package-strict-escaped.js
+test/language/future-reserved-words/package-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/package-strict.js
+test/language/future-reserved-words/package.js	sloppy	noStrict		normal		pass	normal		
+test/language/future-reserved-words/private-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/private-strict-escaped.js
+test/language/future-reserved-words/private-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/private-strict.js
+test/language/future-reserved-words/private.js	sloppy	noStrict		normal		pass	normal		
+test/language/future-reserved-words/protected-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/protected-strict-escaped.js
+test/language/future-reserved-words/protected-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/protected-strict.js
+test/language/future-reserved-words/protected.js	sloppy	noStrict		normal		pass	normal		
+test/language/future-reserved-words/public-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/public-strict-escaped.js
+test/language/future-reserved-words/public-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/public-strict.js
+test/language/future-reserved-words/public.js	sloppy	noStrict		normal		pass	normal		
+test/language/future-reserved-words/short.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/short.js	strict			normal		pass	normal		
+test/language/future-reserved-words/static-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/static-strict-escaped.js
+test/language/future-reserved-words/static-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/static-strict.js
+test/language/future-reserved-words/static.js	sloppy	noStrict		normal		pass	normal		
+test/language/future-reserved-words/super.js	sloppy			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/super.js
+test/language/future-reserved-words/super.js	strict			parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/super.js
+test/language/future-reserved-words/synchronized.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/synchronized.js	strict			normal		pass	normal		
+test/language/future-reserved-words/throws.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/throws.js	strict			normal		pass	normal		
+test/language/future-reserved-words/transient.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/transient.js	strict			normal		pass	normal		
+test/language/future-reserved-words/volatile.js	sloppy			normal		pass	normal		
+test/language/future-reserved-words/volatile.js	strict			normal		pass	normal		
+test/language/future-reserved-words/yield-strict-escaped.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/yield-strict-escaped.js
+test/language/future-reserved-words/yield-strict.js	strict	onlyStrict		parse	SyntaxError	unsupported-negative-provenance	selection	EngineCapability	negative Test262 path has not been audited: test/language/future-reserved-words/yield-strict.js
+test/staging/sm/misc/future-reserved-words.js	sloppy	noStrict		normal		unsupported-runtime	runtime	Unsupported	enum syntax is not implemented yet
+# summary pass=53 unsupported-negative-provenance=32 unsupported-runtime=1

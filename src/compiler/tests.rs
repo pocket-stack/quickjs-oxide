@@ -2429,6 +2429,7 @@ fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
         functions: vec![strict],
         source: "".into(),
         filename: JsString::from_static("<strict-with-metadata>"),
+        pending_unsupported: None,
     };
     assert!(
         validate_scope_graph(&tree)
@@ -8865,6 +8866,144 @@ fn strict_and_escaped_reserved_binding_names_are_rejected_late() {
 }
 
 #[test]
+fn always_reserved_words_use_quickjs_syntax_diagnostics() {
+    for (source, message) in [
+        ("enum;", "unsupported keyword: enum"),
+        ("'use strict'; enum;", "unsupported keyword: enum"),
+        ("export;", "unsupported keyword: export"),
+        ("'use strict'; export;", "unsupported keyword: export"),
+        ("extends;", "unsupported keyword: extends"),
+        ("'use strict'; extends;", "unsupported keyword: extends"),
+        ("import;", "expecting '('"),
+        ("'use strict'; import;", "expecting '('"),
+        ("(enum);", "unexpected token in expression: 'enum'"),
+        ("void export;", "unexpected token in expression: 'export'"),
+        ("1 + extends;", "unexpected token in expression: 'extends'"),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}: {error}");
+        assert_eq!(error.message(), message, "{source:?}");
+    }
+
+    for (source, message) in [
+        ("var enum;", "variable name expected"),
+        ("'use strict'; let export;", "variable name expected"),
+        ("const extends = 1;", "variable name expected"),
+        ("function f(import){}", "missing formal parameter"),
+        ("try{}catch(enum){}", "identifier expected"),
+        ("let { enum: export } = {};", "invalid destructuring target"),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}: {error}");
+        assert_eq!(error.message(), message, "{source:?}");
+    }
+
+    for (source, word) in [
+        (r"var en\u0075m;", "enum"),
+        (r"exp\u006frt;", "export"),
+        (r"var ext\u0065nds;", "extends"),
+        (r"imp\u006frt;", "import"),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}: {error}");
+        assert_eq!(
+            error.message(),
+            format!("'{word}' is a reserved identifier"),
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn reserved_property_names_and_import_frontiers_remain_distinct() {
+    for source in [
+        "import('module')",
+        "import /* trivia */ ('module')",
+        "import\n('module')",
+        "import('module',)",
+        "import('module', {})",
+        "import('module', {},)",
+        "import(('mod' + 'ule')).then",
+        "import('module')?.foo",
+        "import('module')?.[0]",
+        "import('module')?.()",
+        "import('module')`tag`",
+        "new (import('module'))",
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source:?}: {error}");
+        assert_eq!(error.message(), "import syntax is not implemented yet");
+    }
+
+    for (source, message) in [
+        ("import binding from 'module';", "expecting '('"),
+        ("import { binding } from 'module';", "expecting '('"),
+        ("import.meta", "import.meta only valid in module code"),
+        (
+            "import /* trivia */ . meta",
+            "import.meta only valid in module code",
+        ),
+        ("import.foo", "meta expected"),
+        (r"import.\u006deta", "meta expected"),
+        ("import()", "unexpected token in expression: ')'"),
+        ("import(,)", "unexpected token in expression: ','"),
+        ("import(...source)", "unexpected token in expression: '...'"),
+        ("import(source extra)", "expecting ')'"),
+        ("import(source, {}, extra)", "expecting ')'"),
+        ("new import(source)", "invalid use of 'import()'"),
+        ("new import()", "invalid use of 'import()'"),
+        ("import(source) = 1", "invalid assignment left-hand side"),
+        ("import(source)++", "invalid increment/decrement operand"),
+        ("++import(source)", "invalid increment/decrement operand"),
+        ("import?.(source)", "expecting '('"),
+        ("import`source`", "expecting '('"),
+        ("import('module')?.`tag`", "expecting field name"),
+        (
+            "import('module')?.foo`tag`",
+            "template literal cannot appear in an optional chain",
+        ),
+        (
+            "new (import('module'))?.foo",
+            "new keyword cannot be used with an optional chain",
+        ),
+        ("import('module'); enum;", "unsupported keyword: enum"),
+        (
+            "import('module'); class C { method(){ return this.#missing; } }",
+            "undefined private field '#missing'",
+        ),
+        (
+            "import('module'); class C { method(object){ return #missing in object; } }",
+            "undefined private field '#missing'",
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}: {error}");
+        assert_eq!(error.message(), message, "{source:?}");
+    }
+
+    let detached_error =
+        compile_script("import('module'); class C { method(){ return this.#missing; } }")
+            .unwrap_err();
+    assert_eq!(detached_error.kind(), ErrorKind::Syntax);
+    assert_eq!(
+        detached_error.message(),
+        "undefined private field '#missing'"
+    );
+
+    for source in [
+        "({enum:20,export:22}).enum+({enum:20,export:22}).export",
+        "({extends(){return 20},import(){return 22}}).extends()+({extends(){return 20},import(){return 22}}).import()",
+        r"({en\u0075m:42}).en\u0075m",
+        r"({exp\u006frt(){return 42}}).exp\u006frt()",
+        "class C extends Object {}; 42",
+        "class C { extends(){return 42} import(){return 42} }; new C().extends()",
+        "({enum:42})?.enum",
+    ] {
+        assert_eq!(evaluate_in_context(source), Value::Int(42), "{source:?}");
+    }
+}
+
+#[test]
 fn parser_driven_lexing_preserves_quickjs_error_priority_and_locations() {
     let cases = [
         (
@@ -9388,6 +9527,7 @@ fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
             .unwrap(),
         ],
         anonymous_function_definition: None,
+        pending_unsupported: None,
     };
 
     assert_eq!(parser.parenthesized_parameter_has_assignment(), Some(true));

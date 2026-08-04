@@ -391,6 +391,18 @@ const TEST262_DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e";
 const TEST262_DEBUGGER_STATEMENT_GLOBAL_ADDED_NEGATIVES_SHA256: &str =
     "67d1cf8f442e51b2c71e9b943ec87a297d866070f1899e671e57bf2d06feb25e";
+const TEST262_FUTURE_RESERVED_WORDS_SCOPED_PROFILE_SHA256: &str =
+    "ce3adb330026abe3ab687f499f4132193efd00cf7d295297612b8f822d7d0097";
+const TEST262_FUTURE_RESERVED_WORDS_MANIFEST_SHA256: &str =
+    "ddc1a774a1c92cefc48140a3a44e824687a5d03091cf03b9d620ba3ea2cd7f56";
+const TEST262_FUTURE_RESERVED_WORDS_ACTIVATION_SHA256: &str =
+    "0913393310188c7e9d684e88b5e5f7cca60ec2cab2c23124739463a118817463";
+const TEST262_FUTURE_RESERVED_WORDS_ALREADY_PASS_SHA256: &str =
+    "9bb456f10dfbd63af66a66c66d2880d111d3a56362aa50ad3c28ab19c7a499ca";
+const TEST262_FUTURE_RESERVED_WORDS_NEGATIVE_SHA256: &str =
+    "20562d3c08a2ecb1e828ae3f6cb60eb48a1f5cb308f1957e2cac2359b2aa7dcc";
+const TEST262_FUTURE_RESERVED_WORDS_GLOBAL_NEGATIVE_PENDING_SHA256: &str =
+    "8bd18ff57c518d106de263d3b77ea56695fd6368e846afdabaaaab72033fd51f";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -1054,6 +1066,7 @@ enum OxideProfileKind {
     DebuggerStatementScoped,
     DebuggerStatementGlobalParent,
     DebuggerStatementGlobalCandidate,
+    FutureReservedWordsScoped,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1429,6 +1442,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-debugger-statement-global-candidate.conf"),
             OxideProfileKind::DebuggerStatementGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-future-reserved-words-scoped.conf"),
+            OxideProfileKind::FutureReservedWordsScoped,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -3171,6 +3188,33 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 ),
             ],
         ),
+        OxideProfileKind::FutureReservedWordsScoped => verify_scoped_pinned_manifests(
+            options,
+            "future reserved words",
+            TEST262_FUTURE_RESERVED_WORDS_SCOPED_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-future-reserved-words.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-runtime-activation.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-already-pass.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-negative.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_NEGATIVE_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-global-negative-pending.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_GLOBAL_NEGATIVE_PENDING_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3605,6 +3649,7 @@ mod cli_tests {
         TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256, TEST262_EVAL_SCRIPT_PROFILE_SHA256,
+        TEST262_FUTURE_RESERVED_WORDS_SCOPED_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -4226,6 +4271,11 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-debugger-statement-scoped.conf"))
                 .unwrap(),
             OxideProfileKind::DebuggerStatementScoped
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-future-reserved-words-scoped.conf"))
+                .unwrap(),
+            OxideProfileKind::FutureReservedWordsScoped
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -7539,6 +7589,41 @@ mod cli_tests {
                 "tests/test262-debugger-statement-negative-pending.txt",
                 "test/language/statements/debugger/statement.js",
             );
+        }
+    }
+
+    #[test]
+    fn future_reserved_words_scoped_profile_requires_an_exact_pinned_manifest() {
+        let profile = "tests/test262-future-reserved-words-scoped.conf";
+        for manifest in [
+            "tests/test262-future-reserved-words.txt",
+            "tests/test262-future-reserved-words-runtime-activation.txt",
+            "tests/test262-future-reserved-words-already-pass.txt",
+            "tests/test262-future-reserved-words-negative.txt",
+            "tests/test262-future-reserved-words-global-negative-pending.txt",
+        ] {
+            let options = scoped_profile_options(profile, manifest);
+            assert_eq!(
+                verify_oxide_profile(&options).unwrap(),
+                TEST262_FUTURE_RESERVED_WORDS_SCOPED_PROFILE_SHA256
+            );
+        }
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/language/future-reserved-words/enum.js"],
+            ["--manifest", "tests/test262-object-methods.txt"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
         }
     }
 

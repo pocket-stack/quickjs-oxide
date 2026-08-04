@@ -18,12 +18,14 @@ The 124-tag global Test262 profile admits `WeakMap`, `WeakSet`, `WeakRef`, and
 chaining, Iterator Helpers, `globalThis`, default parameters, and the
 implemented binary-data and Promise surfaces through checksum-bound audits.
 Its Test262 host provides real reentrant GC, recursive realm creation, and
-defining-realm script evaluation. Script and eval parsing implement the Annex
-B HTML-comment forms; the matching ten negative-test paths / 17 variants are
-provenance-audited and globally admitted. `debugger` statements follow
-QuickJS's no-op and automatic-semicolon-insertion semantics; their five
-negative paths / ten variants are also globally admitted. The last audited
-full vector is 65,351 passes / 65,465 runnable / 102,037 total variants.
+defining-realm script evaluation. Script/eval parsing implements Annex B HTML
+comments and QuickJS's no-op `debugger` semantics; both negative cohorts are
+globally admitted. Future-reserved words now follow QuickJS too: invalid
+`enum`, `export`, and `extends`, malformed `import()`, and Script/Eval
+`import.meta` are real syntax errors. Valid dynamic import remains typed
+Unsupported, deferred through parsing and identifier/private-name resolution
+so it cannot hide early errors. The last audited full vector is 65,352 passes
+/ 65,465 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -71,6 +73,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-html-comments-runtime.sh
 ./scripts/test-test262-debugger-statement.sh
 ./scripts/test-test262-debugger-statement-global.sh
+./scripts/test-test262-future-reserved-words.sh
 ./scripts/test-test262-current-global.sh
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh

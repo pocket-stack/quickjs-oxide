@@ -6,6 +6,43 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3cr future-reserved-word runtime and scoped receipt
+
+R3cr freezes the complete future-reserved-word universe at 56 paths / 86
+variants; pinned QuickJS 2026-06-04 passes all 86. Oxide now rejects invalid
+`enum`, `export`, and `extends` statement/expression uses with `SyntaxError`
+while preserving their IdentifierName property uses. It also distinguishes
+malformed ImportCall and Script/Eval `import.meta`, which are real
+`SyntaxError` results, from syntactically valid dynamic import, which remains
+a typed `Unsupported` module-loading frontier.
+
+The valid-import diagnostic is deferred until the whole Script/Eval source has
+parsed and identifier/private-name resolution has completed. Consequently a
+later grammar or private-name early error wins instead of being hidden by the
+unimplemented import runtime. The unchanged global profile SHA-256 is
+`40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e`.
+Its focused parent records 53 passes, one `unsupported-runtime`, and 32
+`unsupported-negative-provenance`; the candidate records 54 passes and the
+same 32 fail-closed negatives. The scoped profile audits all 26 negative paths
+and passes 86/86. The exact focused join changes one outcome, leaves 85 rows
+unchanged, and has no regression.
+
+Across all 102,037 variants, the same one outcome changes, 102,036 rows stay
+byte-identical, and no previous pass regresses. The canonical vector is now
+65,352 passes / 65,465 runnable; `unsupported-runtime` falls from 23 to 22.
+Full candidate TSV/JSONL hashes are
+`22203b1a0cdb51a76552ef4e999dde24c582f981f50fe85f9f8c12a0b17a6f7f`
+and
+`c009cbc3c65fdd617d33b488b47fd80c10cb703b269e034025facce1e5b1a470`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-future-reserved-words.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-future-reserved-words.sh
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cq debugger negative-test global admission
 
 R3cq admits the five negative paths / ten sloppy-and-strict variants from the
@@ -1429,11 +1466,11 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The current R3cq canonical summary is:
+every outcome in canonical order. The current R3cr canonical summary is:
 
-- 65,351 pass;
+- 65,352 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 18,144 are classified as unsupported because of a feature, mode, host
+- 18,143 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance, including 13,788 `unsupported-feature` variants;
 - 11 fail to parse, 54 fail at runtime, none fail in the harness, and two
@@ -1445,11 +1482,11 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 64.05% (`65,351 / 102,037`);
+- raw suite pass rate: 64.05% (`65,352 / 102,037`);
 - conservative target-scope lower bound: 78.21%
-  (`65,351 / (102,037 - 18,475)`);
+  (`65,352 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 99.90%
-  (`65,351 / 65,418`).
+  (`65,352 / 65,419`).
 
 The 78.21% figure is the useful whole-project progress floor, not a claim that
 the engine is 78.21% conformant. The 99.90% conditional rate measures quality
@@ -1507,10 +1544,10 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The current R3cq canonical full TSV/JSONL SHA-256 values are
-`91bad0c048a1d90a76346a41dd2676ae5a530b8ad787c30292bd2f7c956e573a`
+The current R3cr canonical full TSV/JSONL SHA-256 values are
+`22203b1a0cdb51a76552ef4e999dde24c582f981f50fe85f9f8c12a0b17a6f7f`
 and
-`40c39453be1b9e7cbc912fd841442a0e81cbab650b568a44b765168424433583`.
+`c009cbc3c65fdd617d33b488b47fd80c10cb703b269e034025facce1e5b1a470`.
 
 ## Milestone policy
 
@@ -8417,9 +8454,9 @@ R3bw then admits that tag globally: 439 outcomes change to `pass`, 456 rows
 change only their residual-capability detail, and 101,142 rows remain
 unchanged. That historical R3bw vector reached 59,507/102,037 passes with 60,026
 runnable variants, 18,618 `unsupported-feature` outcomes, and 23,585 total
-unsupported outcomes. Subsequent milestones through R3cq advance the current
-vector to 65,351/102,037 passes with 65,465 runnable variants, 13,788
-`unsupported-feature` outcomes, and 18,144 total unsupported outcomes.
+unsupported outcomes. Subsequent milestones through R3cr advance the current
+vector to 65,352/102,037 passes with 65,465 runnable variants, 13,788
+`unsupported-feature` outcomes, and 18,143 total unsupported outcomes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

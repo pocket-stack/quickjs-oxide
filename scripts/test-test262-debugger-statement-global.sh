@@ -9,6 +9,8 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-debugger-statement-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-future-reserved-words-baseline.txt
+successor_gate=scripts/test-test262-future-reserved-words.sh
 upstream=compat/upstream.toml
 live_profile=compat/test262-oxide.conf
 parent_profile=tests/test262-debugger-statement-global-parent.conf
@@ -31,6 +33,8 @@ runner_override=${TEST262_RUNNER:-}
 
 baseline_lines=94
 baseline_sha=15a6d99eb8d518593d7f15781561e3879a9459a78807e0491b8f9487e90a86b2
+successor_lines=104
+successor_sha=5918d4e3962b3f73fa920ec36ad3da65501bd88d964fd04dbc07891d4062497a
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -68,6 +72,7 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -476,7 +481,52 @@ verify_focused_semantics() {
     done
 }
 
+bridge_r3cr_successor() {
+    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
+        || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
+    [[ -x "$successor_gate" \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" == 12a9f5e3b4d3aa823c72b37d6c50ae4dc6d4cbee \
+        && "$(successor_value global_profile_sha256)" == "$(value candidate_profile_sha256)" \
+        && "$(successor_value parent_full_runnable)" == "$(value candidate_full_runnable)" \
+        && "$(successor_value parent_full_passes)" == "$(value candidate_full_passes)" \
+        && "$(successor_value parent_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value parent_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value parent_full_summary)" == "$(value candidate_full_summary)" \
+        && "$(successor_value candidate_full_runnable)" == "$(successor_value parent_full_runnable)" \
+        && "$(( $(successor_value candidate_full_passes) - $(successor_value parent_full_passes) ))" == 1 \
+        && "$(successor_value full_changed)" == 1 \
+        && "$(successor_value full_outcome_changed)" == 1 \
+        && "$(successor_value full_detail_only)" == 0 \
+        && "$(successor_value full_unchanged)" == 102036 \
+        && "$(successor_value full_pass_regressions)" == 0 \
+        && "$(canonical_value runnable)" == "$(successor_value candidate_full_runnable)" \
+        && "$(canonical_value passes)" == "$(successor_value candidate_full_passes)" \
+        && "$(canonical_value tsv_sha256)" == "$(successor_value candidate_full_tsv_sha256)" \
+        && "$(canonical_value jsonl_sha256)" == "$(successor_value candidate_full_jsonl_sha256)" \
+        && "$(canonical_value summary)" == "$(successor_value candidate_full_summary)" ]] \
+        || die 'R3cr successor does not checksum-bridge the historical R3cq receipt'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3cq debugger-statement global admission is checksum-bridged through R3cr future-reserved words.'
+    exit 0
+}
+
 cd -- "$root"
+bridge_r3cr_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-debugger-statement-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 check_static_inputs

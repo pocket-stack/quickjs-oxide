@@ -217,13 +217,16 @@ impl EvalCompileContext {
 /// grammar which has not yet reached the feature-parity implementation path.
 pub fn compile_script(source: &str) -> Result<BytecodeFunction, Error> {
     let mut tree = Parser::parse(source, JsString::from_static(DEFAULT_EVAL_FILENAME))?;
+    resolve_identifiers(&mut tree)?;
+    if let Some(error) = tree.pending_unsupported.take() {
+        return Err(error);
+    }
     if tree.functions.len() != 1 {
         return Err(Error::unsupported(
             "nested function bytecode requires runtime publication; use Context::compile or Context::eval",
             source_span(tree.functions[1].source.span),
         ));
     }
-    resolve_identifiers(&mut tree)?;
     lower_detached_script(tree)
 }
 
@@ -244,6 +247,9 @@ pub(crate) fn compile_unlinked_script_with_filename(
 ) -> Result<UnlinkedFunction, Error> {
     let mut tree = Parser::parse(source, JsString::try_from_utf8(filename)?)?;
     resolve_identifiers(&mut tree)?;
+    if let Some(error) = tree.pending_unsupported.take() {
+        return Err(error);
+    }
     lower_unlinked_tree(tree, debug_info)
 }
 
@@ -260,6 +266,9 @@ pub(crate) fn compile_unlinked_eval_with_filename(
 ) -> Result<UnlinkedFunction, Error> {
     let mut tree = Parser::parse_eval(source, JsString::try_from_utf8(filename)?, context)?;
     resolve_identifiers(&mut tree)?;
+    if let Some(error) = tree.pending_unsupported.take() {
+        return Err(error);
+    }
     lower_unlinked_tree(tree, debug_info)
 }
 
@@ -1757,6 +1766,7 @@ struct FunctionTree {
     functions: Vec<FunctionIr>,
     source: Box<str>,
     filename: JsString,
+    pending_unsupported: Option<Error>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1788,6 +1798,10 @@ struct Parser<'source> {
     /// Operators which make the surrounding expression cease to be an
     /// AnonymousFunctionDefinition clear this marker.
     anonymous_function_definition: Option<AnonymousFunctionDefinition>,
+    /// First syntactically valid construct which belongs to an unimplemented
+    /// engine frontier. The parser keeps going so later grammar and early
+    /// errors retain QuickJS priority over the implementation diagnostic.
+    pending_unsupported: Option<Error>,
 }
 
 enum RootCompileContext {
@@ -1894,6 +1908,7 @@ impl<'source> Parser<'source> {
             current_function: 0,
             in_mode: InMode::Allow,
             anonymous_function_definition: None,
+            pending_unsupported: None,
             functions: vec![FunctionIr::new(
                 None,
                 root_kind,
@@ -1935,6 +1950,7 @@ impl<'source> Parser<'source> {
             functions: parser.functions,
             source: source.into(),
             filename,
+            pending_unsupported: parser.pending_unsupported,
         })
     }
 
@@ -2057,6 +2073,9 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw_statement(),
             TokenKind::Keyword(Keyword::Debugger) => self.parse_debugger_statement(),
+            TokenKind::Keyword(keyword @ (Keyword::Enum | Keyword::Export | Keyword::Extends)) => {
+                Err(self.syntax_here(format!("unsupported keyword: {}", keyword.as_str())))
+            }
             _ => self.parse_expression_statement(completion),
         }
     }
@@ -5373,7 +5392,7 @@ impl<'source> Parser<'source> {
     /// Parse the LeftHandSideExpression subset shared by assignment and a
     /// for-of assignment target, deliberately stopping before postfix update.
     fn parse_left_hand_side_expression(&mut self) -> Result<(), Error> {
-        self.parse_primary()?;
+        self.parse_primary(true)?;
         let mut optional_chain: Option<PendingOptionalChain> = None;
         loop {
             let optional_call = if self.is_punctuator(Punctuator::OptionalChain) {
@@ -6146,7 +6165,7 @@ impl<'source> Parser<'source> {
         // QuickJS parses the constructor head with calls disabled but member
         // suffixes enabled. The following `(` therefore belongs to this `new`,
         // while calls after the completed construction remain postfix calls.
-        self.parse_primary()?;
+        self.parse_primary(false)?;
         loop {
             if self.is_punctuator(Punctuator::OptionalChain) {
                 return Err(self.syntax_here("new keyword cannot be used with an optional chain"));
@@ -6309,7 +6328,68 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_primary(&mut self) -> Result<(), Error> {
+    /// Parse the Script/Eval import-expression grammar without implementing
+    /// module loading. QuickJS validates the complete ImportCall and its
+    /// surrounding expression before execution, so a valid call is lowered to
+    /// a harmless placeholder and its Unsupported diagnostic is deferred until
+    /// the whole source has passed syntax validation.
+    fn parse_import_expression(
+        &mut self,
+        import_span: Span,
+        import_call_allowed: bool,
+    ) -> Result<(), Error> {
+        self.advance()?;
+        if self.is_punctuator(Punctuator::Dot) {
+            self.advance()?;
+            let exact_meta = matches!(
+                &self.current().kind,
+                TokenKind::Identifier(identifier)
+                    if identifier.value == "meta" && !identifier.has_escape
+            );
+            if !exact_meta {
+                return Err(self.syntax_here("meta expected"));
+            }
+            // This compiler currently has only Script and Eval roots. A future
+            // Module root must handle import.meta after selecting that goal;
+            // accepting it here would silently open the Module frontier.
+            return Err(self.syntax_here("import.meta only valid in module code"));
+        }
+
+        self.expect_punctuator(Punctuator::LeftParen)?;
+        if !import_call_allowed {
+            return Err(self.syntax_here("invalid use of 'import()'"));
+        }
+
+        // ImportCall accepts one required AssignmentExpression and at most one
+        // options AssignmentExpression. Spread is not part of this grammar;
+        // ordinary expression parsing therefore supplies QuickJS's exact
+        // unexpected-token diagnostics for `import()` and `import(...x)`.
+        self.parse_assignment_allow_in()?;
+        self.emit_instruction(Instruction::Drop)?;
+        if self.is_punctuator(Punctuator::Comma) {
+            self.advance()?;
+            if !self.is_punctuator(Punctuator::RightParen) {
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction(Instruction::Drop)?;
+                if self.is_punctuator(Punctuator::Comma) {
+                    self.advance()?;
+                }
+            }
+        }
+        self.expect_punctuator(Punctuator::RightParen)?;
+
+        self.emit_instruction(Instruction::Undefined)?;
+        self.anonymous_function_definition = None;
+        if self.pending_unsupported.is_none() {
+            self.pending_unsupported = Some(Error::unsupported(
+                "import syntax is not implemented yet",
+                source_span(import_span),
+            ));
+        }
+        Ok(())
+    }
+
+    fn parse_primary(&mut self, import_call_allowed: bool) -> Result<(), Error> {
         // QuickJS initially tokenizes a leading slash as `/` or `/=`, then
         // rewinds from `js_parse_postfix_expr` once the grammar has proved
         // that the current position requires a PrimaryExpression.  Keep the
@@ -6426,6 +6506,15 @@ impl<'source> Parser<'source> {
             }
             TokenKind::Keyword(Keyword::Super) => {
                 self.parse_super_property(token.span)?;
+            }
+            TokenKind::Keyword(keyword @ (Keyword::Enum | Keyword::Export | Keyword::Extends)) => {
+                return Err(self.syntax_here(format!(
+                    "unexpected token in expression: '{}'",
+                    keyword.as_str()
+                )));
+            }
+            TokenKind::Keyword(Keyword::Import) => {
+                self.parse_import_expression(token.span, import_call_allowed)?;
             }
             TokenKind::Keyword(Keyword::Yield)
                 if matches!(
@@ -14089,6 +14178,7 @@ fn lower_unlinked_tree(
         functions: tree_functions,
         source,
         filename,
+        pending_unsupported: _,
     } = tree;
     let function_count = tree_functions.len();
     let captured_locals = captured_locals_by_function(&tree_functions)?;

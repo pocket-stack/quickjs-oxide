@@ -422,6 +422,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-debugger-statement-global-added-negatives.txt"
     ));
+    const FUTURE_RESERVED_WORDS_SCOPED_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-future-reserved-words-scoped.conf"
+    ));
+    const FUTURE_RESERVED_WORDS_NEGATIVE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-future-reserved-words-negative.txt"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -1573,6 +1581,51 @@ mod tests {
         assert_eq!(
             default_parameters_global_candidate.allows_async_execution(),
             default_parameters_candidate.allows_async_execution()
+        );
+    }
+
+    #[test]
+    fn future_reserved_words_scoped_profile_is_exact_and_fail_closed() {
+        let profile = OxideProfile::parse(FUTURE_RESERVED_WORDS_SCOPED_PROFILE).unwrap();
+        let expected = FUTURE_RESERVED_WORDS_NEGATIVE
+            .lines()
+            .collect::<BTreeSet<_>>();
+
+        assert!(profile.features.is_empty());
+        assert!(!profile.allows_async_execution());
+        assert_eq!(profile.audited_negative_tests.len(), 26);
+        assert_eq!(
+            profile
+                .audited_negative_tests
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(
+            profile.classify(
+                Path::new("test/language/future-reserved-words/enum.js"),
+                &[],
+                true,
+            ),
+            None
+        );
+        assert!(
+            profile
+                .classify(
+                    Path::new("test/language/future-reserved-words/not-pinned.js"),
+                    &[],
+                    true,
+                )
+                .is_some()
+        );
+        assert_eq!(
+            profile.classify(
+                Path::new("test/staging/sm/misc/future-reserved-words.js"),
+                &[],
+                false,
+            ),
+            None
         );
     }
 

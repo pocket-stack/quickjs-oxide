@@ -4,6 +4,42 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cr future-reserved-word runtime parity
+
+R3cr matches QuickJS 2026-06-04's Script/Eval treatment of the complete pinned
+future-reserved-word cohort. Always-reserved `enum`, `export`, and `extends`
+now produce real `SyntaxError` results in invalid statement and expression
+positions while remaining valid IdentifierName property keys. `import` keeps
+three boundaries distinct: malformed ImportCall grammar and Script/Eval
+`import.meta` produce `SyntaxError`, but syntactically valid dynamic import
+remains a typed `Unsupported` module-loading frontier.
+
+That `Unsupported` result is deliberately deferred until the complete source
+has parsed and identifier/private-name resolution has finished. A later syntax
+or private-name early error therefore retains QuickJS priority instead of
+being swallowed by the unimplemented dynamic-import runtime. Pinned QuickJS
+passes the exhaustive 56-path / 86-variant cohort. Under the unchanged global
+profile Oxide moves from 53 to 54 passes; the scoped profile audits all 26
+negative paths and passes 86/86. The focused join changes one outcome, leaves
+85 rows unchanged, and has no regression. The live 124-tag profile remains
+`40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e`.
+
+Across the complete 102,037-row vector, the same one outcome changes, 102,036
+rows remain byte-identical, and no previous pass regresses. The canonical
+scoreboard is 65,352 passes / 65,465 runnable, and `unsupported-runtime` falls
+from 23 to 22. Full candidate TSV/JSONL hashes are
+`22203b1a0cdb51a76552ef4e999dde24c582f981f50fe85f9f8c12a0b17a6f7f`
+and
+`c009cbc3c65fdd617d33b488b47fd80c10cb703b269e034025facce1e5b1a470`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-future-reserved-words.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-future-reserved-words.sh
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cq debugger negative-test global admission
 
 R3cq globally admits the five negative paths / ten sloppy-and-strict variants
@@ -1605,18 +1641,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent runtime,
-  host, feature-admission, and provenance milestones through R3cq advance the
-  current canonical measurement to 65,351 passes and 65,465 runnable variants:
+  host, feature-admission, and provenance milestones through R3cr advance the
+  current canonical measurement to 65,352 passes and 65,465 runnable variants:
   64.05% raw, a 78.21% lower bound after the 18,475 pinned QuickJS target
-  exclusions, or 99.90% among the 65,418 variants with a non-unsupported
-  observed outcome. It records 13,788 `unsupported-feature` and 18,144 total
+  exclusions, or 99.90% among the 65,419 variants with a non-unsupported
+  observed outcome. It records 13,788 `unsupported-feature` and 18,143 total
   unsupported outcomes, 11 parse failures, 54 runtime failures, no harness
-  failures, and two timeouts. The exact R3cq join preserves all 102,037 keys
-  with ten outcome changes, 102,027 unchanged rows, and no previous-pass
+  failures, and two timeouts. The exact R3cr join preserves all 102,037 keys
+  with one outcome change, 102,036 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `91bad0c048a1d90a76346a41dd2676ae5a530b8ad787c30292bd2f7c956e573a`
+  `22203b1a0cdb51a76552ef4e999dde24c582f981f50fe85f9f8c12a0b17a6f7f`
   and
-  `40c39453be1b9e7cbc912fd841442a0e81cbab650b568a44b765168424433583`.
+  `c009cbc3c65fdd617d33b488b47fd80c10cb703b269e034025facce1e5b1a470`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
