@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the R3cq global admission of audited debugger-statement negatives.
+# Reproduce the R3cs global admission of audited future-reserved-word negatives.
 
 set -euo pipefail
 export LC_ALL=C
@@ -7,34 +7,31 @@ export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-debugger-statement-global-baseline.txt
+baseline=tests/test262-future-reserved-words-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
-successor_baseline=tests/test262-future-reserved-words-baseline.txt
-successor_gate=scripts/test-test262-future-reserved-words.sh
 upstream=compat/upstream.toml
 live_profile=compat/test262-oxide.conf
-parent_profile=tests/test262-debugger-statement-global-parent.conf
-candidate_profile=tests/test262-debugger-statement-global-candidate.conf
-added_negatives=tests/test262-debugger-statement-global-added-negatives.txt
-universe=tests/test262-debugger-statement.txt
-activation=tests/test262-debugger-statement-activation.txt
-already_pass=tests/test262-debugger-statement-already-pass.txt
-parent_report=tests/test262-debugger-statement-global-parent.tsv
-candidate_report=tests/test262-debugger-statement-global-candidate.tsv
-transition=tests/test262-debugger-statement-global-transitions.tsv
-candidate_full=target/test262-debugger-statement-global-full.tsv
-preferred_parent_full=${TEST262_DEBUGGER_STATEMENT_GLOBAL_PARENT_FULL:-target/test262-debugger-statement-full.tsv}
-generated_parent_full=target/test262-debugger-statement-global-parent-full.tsv
-oracle_log=target/test262-debugger-statement-global-quickjs.log
+parent_profile=tests/test262-future-reserved-words-global-parent.conf
+candidate_profile=tests/test262-future-reserved-words-global-candidate.conf
+added_negatives=tests/test262-future-reserved-words-global-added-negatives.txt
+universe=tests/test262-future-reserved-words.txt
+activation=tests/test262-future-reserved-words-runtime-activation.txt
+already_pass=tests/test262-future-reserved-words-already-pass.txt
+debugger_added=tests/test262-debugger-statement-global-added-negatives.txt
+parent_report=tests/test262-future-reserved-words-global-parent.tsv
+candidate_report=tests/test262-future-reserved-words-global-candidate.tsv
+transition=tests/test262-future-reserved-words-global-transitions.tsv
+candidate_full=target/test262-future-reserved-words-global-full.tsv
+preferred_parent_full=${TEST262_FUTURE_RESERVED_WORDS_GLOBAL_PARENT_FULL:-target/test262-future-reserved-words-full.tsv}
+generated_parent_full=target/test262-future-reserved-words-global-parent-full.tsv
+oracle_log=target/test262-future-reserved-words-global-quickjs.log
 workers=${TEST262_WORKERS:-8}
 full_workers=${TEST262_FULL_WORKERS:-2}
 reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
 runner_override=${TEST262_RUNNER:-}
 
-baseline_lines=94
-baseline_sha=15a6d99eb8d518593d7f15781561e3879a9459a78807e0491b8f9487e90a86b2
-successor_lines=104
-successor_sha=5918d4e3962b3f73fa920ec36ad3da65501bd88d964fd04dbc07891d4062497a
+baseline_lines=103
+baseline_sha=2fdb008650e965e35b3b7817a74ac19911f736e1b02085c2c2a959a2688300fc
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -72,7 +69,6 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
-successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -146,6 +142,8 @@ verify_report() {
         && "$(report_keys "$report" | sha /dev/stdin)" == "$(value universe_keys_sha256)" \
         && "$(report_summary "$report")" == "$(value "${label}_summary")" \
         && "$(computed_summary "$report")" == "$(value "${label}_summary")" \
+        && "$(report_rows "$report" | sha /dev/stdin)" \
+            == "$(value "${label}_rows_sha256")" \
         && "$(sha "$report")" == "$(value "${label}_tsv_sha256")" \
         && "$(sha "$json")" == "$(value "${label}_jsonl_sha256")" ]] \
         || die "classified report drifted: $report"
@@ -181,7 +179,7 @@ check_profiles() {
     check_file "$live_profile" "$(value candidate_profile_lines)" \
         "$(value candidate_profile_sha256)"
     cmp -s "$candidate_profile" "$live_profile" \
-        || die 'live profile is not byte-identical to the R3cq candidate'
+        || die 'live profile is not byte-identical to the R3cs candidate'
 
     for section in features audited-negative-tests execution; do
         profile_section "$section" "$parent_profile" >"$tmp/parent.$section"
@@ -207,17 +205,17 @@ check_profiles() {
         && "$(lines "$tmp/candidate.execution")" == "$(value profile_execution_entries)" \
         && "$(sha "$tmp/parent.execution")" == "$(value profile_execution_sha256)" \
         && "$(sha "$tmp/candidate.execution")" == "$(value profile_execution_sha256)" ]] \
-        || die 'R3cq profile inventory drifted'
+        || die 'R3cs profile inventory drifted'
     cmp -s "$tmp/parent.features" "$tmp/candidate.features" \
-        || die 'R3cq changes the feature profile section'
+        || die 'R3cs changes the feature profile section'
     cmp -s "$tmp/parent.execution" "$tmp/candidate.execution" \
-        || die 'R3cq changes the execution profile section'
+        || die 'R3cs changes the execution profile section'
     comm -23 "$tmp/parent.audited-negative-tests" \
         "$tmp/candidate.audited-negative-tests" >"$tmp/removed.negatives"
     comm -13 "$tmp/parent.audited-negative-tests" \
         "$tmp/candidate.audited-negative-tests" >"$tmp/added.negatives"
     [[ ! -s "$tmp/removed.negatives" ]] \
-        || die 'R3cq removes an audited negative Test262 path'
+        || die 'R3cs removes an audited negative Test262 path'
     diff -u "$added_negatives" "$tmp/added.negatives"
 }
 
@@ -238,10 +236,27 @@ check_manifests() {
             && "$(sha "$tmp/$prefix.keys")" == "$(value "${prefix}_keys_sha256")" ]] \
             || die "manifest variant keys drifted: $file"
     done
-    cat "$activation" "$already_pass" "$added_negatives" | sort >"$tmp/universe.partition"
+    check_file "$debugger_added" "$(value debugger_added_paths)" \
+        "$(value debugger_added_paths_sha256)"
+    sort -c "$debugger_added" || die "manifest is not bytewise sorted: $debugger_added"
+    comm -12 "$universe" "$debugger_added" >"$tmp/already-admitted-negatives"
+    [[ "$(lines "$tmp/already-admitted-negatives")" \
+            == "$(value already_admitted_negative_paths)" \
+        && "$(sha "$tmp/already-admitted-negatives")" \
+            == "$(value already_admitted_negative_paths_sha256)" ]] \
+        || die 'previously admitted debugger negative inventory drifted'
+    manifest_keys "$tmp/already-admitted-negatives" \
+        >"$tmp/already_admitted_negative.keys"
+    [[ "$(lines "$tmp/already_admitted_negative.keys")" \
+            == "$(value already_admitted_negative_variants)" \
+        && "$(sha "$tmp/already_admitted_negative.keys")" \
+            == "$(value already_admitted_negative_keys_sha256)" ]] \
+        || die 'previously admitted debugger negative variants drifted'
+    cat "$activation" "$already_pass" "$tmp/already-admitted-negatives" \
+        "$added_negatives" | sort >"$tmp/universe.partition"
     diff -u "$universe" "$tmp/universe.partition"
     [[ -z "$(uniq -d "$tmp/universe.partition")" ]] \
-        || die 'R3cq debugger-statement manifest partitions overlap'
+        || die 'R3cs future-reserved-word manifest partitions overlap'
 }
 
 transition_counts() {
@@ -254,7 +269,7 @@ transition_counts() {
 make_transition() {
     local before=$1 after=$2 output=$3
     {
-        echo '# Exhaustive R3cq debugger-statement negative-test global-admission transition.'
+        echo '# Exhaustive R3cs future-reserved-word negative-test global-admission transition.'
         echo "# parent_profile_sha256=$(value parent_profile_sha256)"
         echo "# candidate_profile_sha256=$(value candidate_profile_sha256)"
         echo "# manifest_sha256=$(value universe_paths_sha256)"
@@ -273,11 +288,11 @@ make_transition() {
 
 check_static_inputs() {
     check_file "$baseline" "$baseline_lines" "$baseline_sha"
-    check_file "$parent_report" 31 "$(value parent_focused_tsv_sha256)"
-    check_file "${parent_report%.tsv}.jsonl" 22 \
+    check_file "$parent_report" 97 "$(value parent_focused_tsv_sha256)"
+    check_file "${parent_report%.tsv}.jsonl" 88 \
         "$(value parent_focused_jsonl_sha256)"
-    check_file "$candidate_report" 31 "$(value candidate_focused_tsv_sha256)"
-    check_file "${candidate_report%.tsv}.jsonl" 22 \
+    check_file "$candidate_report" 97 "$(value candidate_focused_tsv_sha256)"
+    check_file "${candidate_report%.tsv}.jsonl" 88 \
         "$(value candidate_focused_jsonl_sha256)"
     check_file "$transition" "$(value transition_lines)" \
         "$(value transition_receipt_sha256)"
@@ -299,7 +314,7 @@ check_static_inputs() {
         && "$(toml_test262_value oxide_profile)" == "$live_profile" \
         && "$(toml_test262_value oxide_profile_sha256)" \
             == "$(value candidate_profile_sha256)" ]] \
-        || die 'R3cq upstream or transition binding drifted'
+        || die 'R3cs upstream or transition binding drifted'
     [[ "$(canonical_value schema)" == "$(value schema)" \
         && "$(canonical_value timeout_ms)" == "$(value timeout_ms)" \
         && "$(canonical_value variants)" == "$(value full_variants)" \
@@ -318,7 +333,7 @@ check_static_inputs() {
         && "$(( $(value full_changed) + $(value full_unchanged) ))" \
             == "$(value full_variants)" \
         && "$(value full_pass_regressions)" == 0 ]] \
-        || die 'canonical Test262 baseline does not identify the frozen R3cq candidate'
+        || die 'canonical Test262 baseline does not identify the frozen R3cs candidate'
 }
 
 verify_quickjs() {
@@ -331,14 +346,33 @@ verify_quickjs() {
         ./run-test262 -m -c test262.conf -a -T "$workers" -f "${files[@]}") \
         >"$root/$oracle_log" 2>&1; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS could not execute the debugger-statement universe'
+        die 'pinned QuickJS could not execute the future-reserved-word universe'
     fi
     if grep -Eq '(^|[[:space:]])FAILED($|[[:space:]])|SKIPPED FEATURE' "$oracle_log" \
         || ! grep -Fq "Average memory statistics for $(value quickjs_passes) tests:" \
             "$oracle_log"; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS no longer passes the debugger-statement universe'
+        die 'pinned QuickJS no longer passes the future-reserved-word universe'
     fi
+}
+
+verify_added_metadata_privileges() {
+    local test_path metadata flags
+    while IFS= read -r test_path; do
+        metadata=$(sed -n '/\/\*---/,/---\*\//p' "$suite/$test_path")
+        [[ "$(grep -Ec '^negative:$' <<<"$metadata")" == 1 \
+            && "$(grep -Ec '^  phase: parse$' <<<"$metadata")" == 1 \
+            && "$(grep -Ec '^  type: SyntaxError$' <<<"$metadata")" == 1 ]] \
+            || die "admitted path is not a parse/SyntaxError negative: $test_path"
+        ! grep -Eq '^(features|includes):' <<<"$metadata" \
+            || die "admitted path requests features or includes: $test_path"
+        flags=$(grep -E '^flags:' <<<"$metadata" || true)
+        [[ -z "$flags" || "$flags" == 'flags: [onlyStrict]' ]] \
+            || die "admitted path requests privileged flags: $test_path"
+        ! grep -Eqi '(^|[^[:alnum:]_-])(module|async|host)([^[:alnum:]_-]|$)' \
+            <<<"$flags" \
+            || die "admitted path requests module, async, or host privileges: $test_path"
+    done <"$added_negatives"
 }
 
 run_report() {
@@ -366,7 +400,7 @@ reconstruct_parent_full() {
     local candidate=$1 output=$2
     local candidate_json=${candidate%.tsv}.jsonl output_json=${output%.tsv}.jsonl
     [[ -f "$candidate" && -f "$candidate_json" ]] \
-        || die 'cannot reconstruct the R3cp parent without a candidate full vector'
+        || die 'cannot reconstruct the R3cr parent without a candidate full vector'
     awk -F'\t' -v parent="$parent_report" \
         -v profile="# oxide_profile_sha256=$(value parent_profile_sha256)" \
         -v summary="# summary $(value parent_full_summary)" '
@@ -382,7 +416,7 @@ reconstruct_parent_full() {
         {print}
         END{for(key in old)if(!(key in seen))exit 2}
     ' "$parent_report" "$candidate" >"$output" \
-        || die 'could not reconstruct the R3cp parent TSV'
+        || die 'could not reconstruct the R3cr parent TSV'
 
     awk -v parent="${parent_report%.tsv}.jsonl" \
         -v profile="$(value parent_profile_sha256)" \
@@ -405,7 +439,7 @@ reconstruct_parent_full() {
         {print}
         END{for(key in old)if(!(key in seen))exit 2}
     ' "${parent_report%.tsv}.jsonl" "$candidate_json" >"$output_json" \
-        || die 'could not reconstruct the R3cp parent JSONL'
+        || die 'could not reconstruct the R3cr parent JSONL'
 }
 
 verify_full_join() {
@@ -430,7 +464,7 @@ verify_full_join() {
             == "$(value full_non_universe_rows_sha256)" \
         && "$(sha "$tmp/full-candidate-non-universe.rows")" \
             == "$(value full_non_universe_rows_sha256)" ]] \
-        || die 'R3cq full universe partition drifted'
+        || die 'R3cs full universe partition drifted'
     diff -u "$tmp/focused-parent.rows" "$tmp/full-parent-universe.rows"
     diff -u "$tmp/focused-candidate.rows" "$tmp/full-candidate-universe.rows"
     diff -u "$tmp/full-parent-non-universe.rows" \
@@ -447,9 +481,9 @@ verify_full_join() {
         }
         END{for(key in old)if(!(key in seen))exit 4
             printf "changed=%d outcome=%d detail=%d unchanged=%d regressions=%d",changed,outcome,detail,before-changed,regress}
-    ' "$parent" "$candidate") || die 'R3cq full exact join failed'
+    ' "$parent" "$candidate") || die 'R3cs full exact join failed'
     local expected="changed=$(value full_changed) outcome=$(value full_outcome_changed) detail=$(value full_detail_only) unchanged=$(value full_unchanged) regressions=$(value full_pass_regressions)"
-    [[ "$counts" == "$expected" ]] || die "R3cq full transition drifted: $counts"
+    [[ "$counts" == "$expected" ]] || die "R3cs full transition drifted: $counts"
 }
 
 verify_focused_semantics() {
@@ -459,80 +493,48 @@ verify_focused_semantics() {
             == "$(value parent_focused_unsupported_negative_provenance)" \
         && "$(report_runnable "$candidate_report")" == "$(value candidate_focused_runnable)" \
         && "$(report_count pass "$candidate_report")" == "$(value candidate_focused_passes)" ]] \
-        || die 'R3cq focused outcome counts drifted'
+        || die 'R3cs focused outcome counts drifted'
     awk -F'\t' 'NR==FNR{wanted[$0]=1;next}
         !/^#/&&!($1=="path"&&$2=="variant")&&($1 in wanted)&&
         !($7=="unsupported-negative-provenance"&&$8=="selection"&&$9=="EngineCapability"){exit 2}' \
         "$added_negatives" "$parent_report" \
-        || die 'R3cq parent negative provenance frontier drifted'
+        || die 'R3cs parent negative provenance frontier drifted'
     awk -F'\t' 'NR==FNR{wanted[$0]=1;next}
         !/^#/&&!($1=="path"&&$2=="variant")&&($1 in wanted)&&
         !($7=="pass"&&$8==$5&&$9==$6){exit 2}' \
         "$added_negatives" "$candidate_report" \
-        || die 'R3cq admitted negative phase/type semantics drifted'
+        || die 'R3cs admitted negative phase/type semantics drifted'
     for manifest in "$activation" "$already_pass"; do
         for report in "$parent_report" "$candidate_report"; do
             awk -F'\t' 'NR==FNR{wanted[$0]=1;next}
                 !/^#/&&!($1=="path"&&$2=="variant")&&($1 in wanted)&&
                 !($7=="pass"&&$8=="normal"&&$9==""&&$10==""){exit 2}' \
                 "$manifest" "$report" \
-                || die "R3cq unchanged debugger semantics drifted: $manifest / $report"
+                || die "R3cs unchanged future-reserved-word semantics drifted: $manifest / $report"
         done
+    done
+    for report in "$parent_report" "$candidate_report"; do
+        awk -F'\t' 'NR==FNR{wanted[$0]=1;next}
+            !/^#/&&!($1=="path"&&$2=="variant")&&($1 in wanted)&&
+            !($5=="parse"&&$6=="SyntaxError"&&$7=="pass"&&$8=="parse"&&$9=="SyntaxError"){exit 2}' \
+            "$tmp/already-admitted-negatives" "$report" \
+            || die "previously admitted debugger negative semantics drifted: $report"
     done
 }
 
-bridge_r3cr_successor() {
-    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
-        || return 0
-
-    check_file "$baseline" "$baseline_lines" "$baseline_sha"
-    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
-    [[ -x "$successor_gate" \
-        && "$(successor_value quickjs)" == "$(value quickjs)" \
-        && "$(successor_value test262)" == "$(value test262)" \
-        && "$(successor_value test262_patch_sha256)" == "$(value test262_patch_sha256)" \
-        && "$(successor_value test262_config_sha256)" == "$(value test262_config_sha256)" \
-        && "$(successor_value test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
-        && "$(successor_value schema)" == "$(value schema)" \
-        && "$(successor_value mode)" == "$(value mode)" \
-        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
-        && "$(successor_value parent_commit)" == 12a9f5e3b4d3aa823c72b37d6c50ae4dc6d4cbee \
-        && "$(successor_value global_profile_sha256)" == "$(value candidate_profile_sha256)" \
-        && "$(successor_value parent_full_runnable)" == "$(value candidate_full_runnable)" \
-        && "$(successor_value parent_full_passes)" == "$(value candidate_full_passes)" \
-        && "$(successor_value parent_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
-        && "$(successor_value parent_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
-        && "$(successor_value parent_full_summary)" == "$(value candidate_full_summary)" \
-        && "$(successor_value candidate_full_runnable)" == "$(successor_value parent_full_runnable)" \
-        && "$(( $(successor_value candidate_full_passes) - $(successor_value parent_full_passes) ))" == 1 \
-        && "$(successor_value full_changed)" == 1 \
-        && "$(successor_value full_outcome_changed)" == 1 \
-        && "$(successor_value full_detail_only)" == 0 \
-        && "$(successor_value full_unchanged)" == 102036 \
-        && "$(successor_value full_pass_regressions)" == 0 ]] \
-        || die 'R3cr successor does not checksum-bridge the historical R3cq receipt'
-    case $mode in
-        check) "$successor_gate" --check ;;
-        focused) "$successor_gate" ;;
-        full) "$successor_gate" --full ;;
-    esac
-    echo 'Historical R3cq debugger-statement global admission is checksum-bridged through R3cr future-reserved words.'
-    exit 0
-}
-
 cd -- "$root"
-bridge_r3cr_successor
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-debugger-statement-global.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-future-reserved-word-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 check_static_inputs
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
 while IFS= read -r test_path; do
-    [[ -f "$suite/$test_path" ]] || die "pinned debugger-statement test is missing: $test_path"
+    [[ -f "$suite/$test_path" ]] || die "pinned future-reserved-word test is missing: $test_path"
 done <"$universe"
+verify_added_metadata_privileges
 verify_quickjs
 if [[ "$mode" == check ]]; then
-    echo 'R3cq debugger-statement inputs verified: 10 paths, 20 variants, QuickJS 20/20, checksum-bound parent/candidate receipts.'
+    echo 'R3cs future-reserved-word inputs verified: 56 paths, 86 variants, QuickJS 86/86, checksum-bound parent/candidate receipts.'
     exit 0
 fi
 
@@ -560,7 +562,7 @@ make_transition "$tmp/parent.tsv" "$tmp/candidate.tsv" "$tmp/transition.tsv"
 diff -u "$transition" "$tmp/transition.tsv"
 check_static_inputs
 if [[ "$mode" != full ]]; then
-    echo 'R3cq debugger-statement focused semantics pass: QuickJS 20/20, Oxide global 20/20, 10 negative admissions, 10 unchanged.'
+    echo 'R3cs future-reserved-word focused semantics pass: QuickJS 86/86, Oxide global 86/86, 32 negative admissions, 54 unchanged.'
     exit 0
 fi
 
@@ -570,7 +572,7 @@ fi
 verify_full_report "$candidate_full" "$(value candidate_profile_sha256)" candidate_full
 [[ "$(report_runnable "$candidate_full")" == "$(value candidate_full_runnable)" \
     && "$(report_count pass "$candidate_full")" == "$(value candidate_full_passes)" ]] \
-    || die 'R3cq candidate full outcome counts drifted'
+    || die 'R3cs candidate full outcome counts drifted'
 parent_full=$preferred_parent_full
 if [[ ! -f "$parent_full" || ! -f "${parent_full%.tsv}.jsonl" \
     || "$(sha "$parent_full")" != "$(value parent_full_tsv_sha256)" \
@@ -581,6 +583,6 @@ fi
 verify_full_report "$parent_full" "$(value parent_profile_sha256)" parent_full
 [[ "$(report_runnable "$parent_full")" == "$(value parent_full_runnable)" \
     && "$(report_count pass "$parent_full")" == "$(value parent_full_passes)" ]] \
-    || die 'R3cp parent full outcome counts drifted'
+    || die 'R3cr parent full outcome counts drifted'
 verify_full_join "$parent_full" "$candidate_full"
-echo 'R3cq debugger-statement full semantics pass: 102037 rows, 10 negative admissions, 102027 unchanged, zero pass regressions.'
+echo 'R3cs future-reserved-word full semantics pass: 102037 rows, 32 negative admissions, 102005 unchanged, zero pass regressions.'

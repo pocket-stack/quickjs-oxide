@@ -37,3 +37,6 @@ tests/test262-future-reserved-words-parent.tsv whitespace=-blank-at-eol
 tests/test262-future-reserved-words-candidate.tsv whitespace=-blank-at-eol
 tests/test262-future-reserved-words-scoped.tsv whitespace=-blank-at-eol
 tests/test262-future-reserved-words-transitions.tsv whitespace=-blank-at-eol
+tests/test262-future-reserved-words-global-parent.tsv whitespace=-blank-at-eol
+tests/test262-future-reserved-words-global-candidate.tsv whitespace=-blank-at-eol
+tests/test262-future-reserved-words-global-transitions.tsv whitespace=-blank-at-eol

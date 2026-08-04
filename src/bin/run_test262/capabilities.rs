@@ -426,6 +426,18 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-future-reserved-words-scoped.conf"
     ));
+    const FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-future-reserved-words-global-parent.conf"
+    ));
+    const FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-future-reserved-words-global-candidate.conf"
+    ));
+    const FUTURE_RESERVED_WORDS_GLOBAL_ADDED_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-future-reserved-words-global-added-negatives.txt"
+    ));
     const FUTURE_RESERVED_WORDS_NEGATIVE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-future-reserved-words-negative.txt"
@@ -972,6 +984,10 @@ mod tests {
             OxideProfile::parse(DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE).unwrap();
         let debugger_statement_global_candidate =
             OxideProfile::parse(DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let future_reserved_words_global_parent =
+            OxideProfile::parse(FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE).unwrap();
+        let future_reserved_words_global_candidate =
+            OxideProfile::parse(FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1515,7 +1531,61 @@ mod tests {
             debugger_statement_global_candidate.allows_async_execution(),
             debugger_statement_global_parent.allows_async_execution()
         );
-        assert_eq!(profile, debugger_statement_global_candidate);
+        assert_eq!(
+            future_reserved_words_global_parent,
+            debugger_statement_global_candidate
+        );
+        assert_eq!(
+            FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE.lines().count(),
+            1309
+        );
+        assert_eq!(
+            FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE
+                .lines()
+                .count(),
+            1334
+        );
+        assert_eq!(
+            future_reserved_words_global_parent
+                .audited_negative_tests
+                .len(),
+            1172
+        );
+        assert_eq!(
+            future_reserved_words_global_candidate
+                .audited_negative_tests
+                .len(),
+            1197
+        );
+        assert_eq!(
+            future_reserved_words_global_candidate.features,
+            future_reserved_words_global_parent.features
+        );
+        let expected_future_reserved_word_negatives = FUTURE_RESERVED_WORDS_GLOBAL_ADDED_NEGATIVES
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected_future_reserved_word_negatives.len(), 25);
+        assert_eq!(
+            future_reserved_words_global_candidate
+                .audited_negative_tests
+                .difference(&future_reserved_words_global_parent.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            expected_future_reserved_word_negatives
+        );
+        assert!(
+            future_reserved_words_global_parent
+                .audited_negative_tests
+                .difference(&future_reserved_words_global_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            future_reserved_words_global_candidate.allows_async_execution(),
+            future_reserved_words_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, future_reserved_words_global_candidate);
         assert_eq!(
             default_parameters_candidate
                 .features

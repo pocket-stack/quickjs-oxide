@@ -4,6 +4,46 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cs future-reserved-word negative-test global admission
+
+R3cs globally admits the 25 parse-negative paths / 32 variants authenticated
+by R3cr's scoped receipt. This is a profile and evidence milestone, not a new
+runtime change. Together with the activation and already-passing partitions,
+the complete future-reserved-word universe remains 56 paths / 86 variants.
+Oxide passes all 86 under the live global profile, and pinned QuickJS
+2026-06-04 independently passes all 86.
+
+The 124 feature tags and execution policy remain byte-identical. The audited
+negative section grows from 1,172 to 1,197 paths, moving the profile SHA-256
+from
+`40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e`
+to
+`ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a`.
+The added-path and added-variant-key hashes are
+`8bd18ff57c518d106de263d3b77ea56695fd6368e846afdabaaaab72033fd51f`
+and
+`d51615c929d874567d2a53789c0c671ebfc5c7792b55f51d170c6cbdcf16ff73`.
+The focused parent records 54 passes and 32 fail-closed negative variants; the
+candidate passes 86/86. Its exact join changes those 32 outcomes, leaves 54
+rows unchanged, and has no detail-only movement.
+
+Across the complete 102,037-row vector, the same 32 outcomes change, 102,005
+rows remain byte-identical, and no previous pass regresses. The canonical
+scoreboard is 65,384 passes / 65,497 runnable, while
+`unsupported-negative-provenance` falls from 3,424 to 3,392. Full candidate
+TSV/JSONL hashes are
+`1df77fd5d67b0ba585b3390cf0ce50a53f59226dfd57983edcc26d3c7a034dfe`
+and
+`257eef22e32ed8d5b1d6a837d07a82d7c1bf4263b996364000a1e98522f83138`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-future-reserved-words-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-future-reserved-words-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-future-reserved-words-global.sh --full
+```
+
 ## R3cr future-reserved-word runtime parity
 
 R3cr matches QuickJS 2026-06-04's Script/Eval treatment of the complete pinned
@@ -1580,7 +1620,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 124 reviewed feature tags and 1,172 exact
+  capability profile now admits 124 reviewed feature tags and 1,197 exact
   audited negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -1641,18 +1681,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent runtime,
-  host, feature-admission, and provenance milestones through R3cr advance the
-  current canonical measurement to 65,352 passes and 65,465 runnable variants:
-  64.05% raw, a 78.21% lower bound after the 18,475 pinned QuickJS target
-  exclusions, or 99.90% among the 65,419 variants with a non-unsupported
-  observed outcome. It records 13,788 `unsupported-feature` and 18,143 total
+  host, feature-admission, and provenance milestones through R3cs advance the
+  current canonical measurement to 65,384 passes and 65,497 runnable variants:
+  64.08% raw, a 78.25% lower bound after the 18,475 pinned QuickJS target
+  exclusions, or 99.90% among the 65,451 variants with a non-unsupported
+  observed outcome. It records 13,788 `unsupported-feature` and 18,111 total
   unsupported outcomes, 11 parse failures, 54 runtime failures, no harness
-  failures, and two timeouts. The exact R3cr join preserves all 102,037 keys
-  with one outcome change, 102,036 unchanged rows, and no previous-pass
+  failures, and two timeouts. The exact R3cs join preserves all 102,037 keys
+  with 32 outcome changes, 102,005 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `22203b1a0cdb51a76552ef4e999dde24c582f981f50fe85f9f8c12a0b17a6f7f`
+  `1df77fd5d67b0ba585b3390cf0ce50a53f59226dfd57983edcc26d3c7a034dfe`
   and
-  `c009cbc3c65fdd617d33b488b47fd80c10cb703b269e034025facce1e5b1a470`.
+  `257eef22e32ed8d5b1d6a837d07a82d7c1bf4263b996364000a1e98522f83138`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain

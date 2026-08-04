@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e";
+    "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -402,6 +402,12 @@ const TEST262_FUTURE_RESERVED_WORDS_ALREADY_PASS_SHA256: &str =
 const TEST262_FUTURE_RESERVED_WORDS_NEGATIVE_SHA256: &str =
     "20562d3c08a2ecb1e828ae3f6cb60eb48a1f5cb308f1957e2cac2359b2aa7dcc";
 const TEST262_FUTURE_RESERVED_WORDS_GLOBAL_NEGATIVE_PENDING_SHA256: &str =
+    "8bd18ff57c518d106de263d3b77ea56695fd6368e846afdabaaaab72033fd51f";
+const TEST262_FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "40e8669015c3ea00d2704b49e540947c0aa202fe22900b0dff84acb5da3b554e";
+const TEST262_FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
+const TEST262_FUTURE_RESERVED_WORDS_GLOBAL_ADDED_NEGATIVES_SHA256: &str =
     "8bd18ff57c518d106de263d3b77ea56695fd6368e846afdabaaaab72033fd51f";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
@@ -1067,6 +1073,8 @@ enum OxideProfileKind {
     DebuggerStatementGlobalParent,
     DebuggerStatementGlobalCandidate,
     FutureReservedWordsScoped,
+    FutureReservedWordsGlobalParent,
+    FutureReservedWordsGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1446,6 +1454,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-future-reserved-words-scoped.conf"),
             OxideProfileKind::FutureReservedWordsScoped,
+        ),
+        (
+            root.join("tests/test262-future-reserved-words-global-parent.conf"),
+            OxideProfileKind::FutureReservedWordsGlobalParent,
+        ),
+        (
+            root.join("tests/test262-future-reserved-words-global-candidate.conf"),
+            OxideProfileKind::FutureReservedWordsGlobalCandidate,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -3215,6 +3231,54 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 ),
             ],
         ),
+        OxideProfileKind::FutureReservedWordsGlobalParent => verify_tag_transition_profile(
+            options,
+            "future-reserved-word negative-test global admission",
+            "parent",
+            TEST262_FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-future-reserved-words.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-runtime-activation.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-already-pass.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-global-added-negatives.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_GLOBAL_ADDED_NEGATIVES_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::FutureReservedWordsGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "future-reserved-word negative-test global admission",
+            "candidate",
+            TEST262_FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-future-reserved-words.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-runtime-activation.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-already-pass.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-future-reserved-words-global-added-negatives.txt",
+                    TEST262_FUTURE_RESERVED_WORDS_GLOBAL_ADDED_NEGATIVES_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3649,6 +3713,8 @@ mod cli_tests {
         TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256, TEST262_EVAL_SCRIPT_PROFILE_SHA256,
+        TEST262_FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_FUTURE_RESERVED_WORDS_SCOPED_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
@@ -7624,6 +7690,33 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn future_reserved_words_global_profiles_require_their_pinned_manifests_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-future-reserved-words-global-parent.conf",
+                TEST262_FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-future-reserved-words-global-candidate.conf",
+                TEST262_FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &[
+                    "tests/test262-future-reserved-words.txt",
+                    "tests/test262-future-reserved-words-runtime-activation.txt",
+                    "tests/test262-future-reserved-words-already-pass.txt",
+                    "tests/test262-future-reserved-words-global-added-negatives.txt",
+                ],
+                "tests/test262-future-reserved-words-negative.txt",
+                "test/language/future-reserved-words/enum.js",
+            );
         }
     }
 
