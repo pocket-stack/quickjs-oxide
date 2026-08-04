@@ -1,0 +1,15 @@
+test/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-81.js
+test/built-ins/String/prototype/localeCompare/15.5.4.9_3.js
+test/built-ins/String/prototype/localeCompare/15.5.4.9_CE.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A10.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A11.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A1_T1.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A1_T2.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A6.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A7.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A8.js
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A9.js
+test/built-ins/String/prototype/localeCompare/name.js
+test/built-ins/String/prototype/localeCompare/not-a-constructor.js
+test/built-ins/String/prototype/localeCompare/this-value-not-obj-coercible.js
+test/staging/sm/misc/builtin-methods-reject-null-undefined-this.js

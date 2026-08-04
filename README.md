@@ -11,14 +11,15 @@ mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
 have QuickJS-shaped constructors, protocols, weak lifetimes, and ordered
 runtime jobs.
 `String.prototype.normalize` uses the pinned QuickJS Unicode 17 data for NFC,
-NFD, NFKC, and NFKD normalization.
+NFD, NFKC, and NFKD; `localeCompare` matches QuickJS's non-Intl NFC/code-point
+ordering.
 The 122-tag global Test262 profile admits `WeakMap`, `WeakSet`, `WeakRef`, and
 `FinalizationRegistry` alongside object rest, `DataView`, `Proxy`, optional
 chaining, Iterator Helpers, `globalThis`, default parameters, and the
 implemented binary-data and Promise surfaces through checksum-bound audits.
 Its Test262 host provides real reentrant GC, recursive realm creation, and
 defining-realm script evaluation. The last audited full vector is
-65,254/102,037 with 65,406 runnable variants.
+65,280/102,037 with 65,406 runnable variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -61,7 +62,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-create-realm.sh
 ./scripts/test-test262-eval-script.sh
 ./scripts/test-test262-realm-hosts-global.sh
-./scripts/test-test262-string-normalize.sh
+./scripts/test-test262-string-locale-compare.sh
 ./scripts/test-test262-current-global.sh
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh

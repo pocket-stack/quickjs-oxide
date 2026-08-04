@@ -18,3 +18,5 @@ tests/test262-realm-hosts-global-transitions.tsv whitespace=-blank-at-eol
 tests/test262-binary-data-global-transitions.tsv whitespace=-blank-at-eol
 tests/test262-string-normalize-parent.tsv whitespace=-blank-at-eol
 tests/test262-string-normalize-transitions.tsv whitespace=-blank-at-eol
+tests/test262-string-locale-compare-parent.tsv whitespace=-blank-at-eol
+tests/test262-string-locale-compare-transitions.tsv whitespace=-blank-at-eol

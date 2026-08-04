@@ -1,8 +1,63 @@
 # Implementation status
 
-Last audited: 2026-08-04. The completion definition remains
+Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
+
+## R3cl Unicode locale comparison
+
+R3cl completes QuickJS 2026-06-04's two-function Unicode String extension by
+adding `String.prototype.localeCompare` immediately after `normalize`. This is
+the pinned non-Intl implementation: it coerces the receiver and `that` in that
+order, never observes `locales` or `options`, NFC-normalizes both values with
+the shared Unicode 17 kernel, and compares UTF-32 code points. It returns the
+raw first code-point difference rather than reducing every result to -1 or 1;
+only a proper-prefix comparison returns +/-1. Valid surrogate pairs are
+decoded and lone surrogates remain code points with their code-unit values.
+The generic method has `length=1`, is not constructible, and preserves
+defining-realm conversion and allocation errors. This does not claim Intl
+collation parity; the pinned configuration excludes the ten `intl402`
+`localeCompare` paths.
+
+The checksum-bound gate contains all 13 direct paths plus two supplemental
+descriptor/nullish-receiver paths, for 15 paths / 30 variants. Pinned QuickJS
+and Oxide both pass 30/30. The R3ck parent had 26 `fail-runtime` outcomes and
+four outcome-level false passes; the exact focused join changes only those 26
+failures to passes. Parent TSV/JSONL SHA-256 values are
+`95b594ce9d6219b51681b77bab86e4b82ae79e4e2b6f839b36af489d5ff0f43c`
+and
+`ac8bc91d74eb602e2789b88f62ab1fde2e19a3cda8eca3e64c32c7173c38db4d`;
+candidate values are
+`677848008880a63d0c7decd351d96afc9c1668d9ca8c952f814e05ba1853b937`
+and
+`a4303ea1d66064561d0192d1828e81b5f96bec12fab2628e12ebc269199b1dc6`.
+The transition hashes to
+`5abf0cf81924a88204791b35eb990b8a5d0930cee03aabf6e33da399ae941e84`.
+
+The Test262 profile remains byte-identical at 122 tags and SHA-256
+`1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2`.
+The canonical 102,037-row join changes the same 26 outcomes, leaves 102,011
+rows byte-identical, and has zero prior-pass regressions. It records 65,280
+passes with 65,406 runnable variants; `fail-runtime` falls from 90 to 64. The
+full parent TSV/JSONL hashes are
+`f491512281647b752796da1abe8fcf559981b48a53270bf128e9b698ade60c3f`
+and
+`d65c1fbb9f17bc1666b2dbd0c228843a33147d4f762f7c18aa9491e883c3c59a`;
+the candidate hashes are
+`ef3b88f82d4e65f55b584731f1cf78e7b734baf467639a6e18028f405c77ee56`
+and
+`81d1071fe7dc47e0e2a874641bea28bc5b707d17690c764194231a838de75d66`.
+Allocator-failure recovery is covered, while byte-for-byte temporary
+allocation topology remains outside this semantic receipt.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-string-locale-compare.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-string-locale-compare.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-string-locale-compare.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
 
 ## R3ck Unicode string normalization
 
@@ -7558,8 +7613,8 @@ workstream. Build and architecture details live in
   (`js_string_CreateHTML`) and 46661-46674 (the thirteen prototype entries).
   Together with `length`, the conversion pair, `Symbol.iterator` and the
   `constructor` back-reference, the implemented String prototype now covers
-  46/53 own keys. This forty-six-key list is only the QuickJS-relative order
-  filtered to implemented keys, not a claim of full prototype parity. The
+  all 53/53 own keys. This fifty-three-key list is the complete pinned QuickJS
+  own-key table, not a claim that every allocation boundary has parity. The
   callable/constructible
   global `%String%` owns `length`, `name`, lazy `fromCharCode`, `fromCodePoint`
   and `raw`, then the prototype relationship in the pinned order and
@@ -7609,8 +7664,7 @@ workstream. Build and architecture details live in
   writes, fixed-name nullish reads, nullish writes, missing bindings, TDZ and
   VarRef descriptor reads, VM `ThrowReadOnly`, and reserved-identifier
   validation.
-  The remaining two String-prototype own keys (`normalize` and `localeCompare`),
-  Context-level observable
+  The remaining String parity gaps are Context-level observable
   `ToString`, borrowed C-pointer/refcount ownership, native atom
   diagnostics attached to not-yet-implemented private-field/module/
   global-var/function-declaration surfaces, exact byte-sidecar migration for the remaining

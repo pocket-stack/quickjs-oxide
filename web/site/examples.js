@@ -44,6 +44,17 @@ grown[0] + grown[1];`,
 bytes[0];`,
   },
   {
+    id: "unicode-strings",
+    label: "Unicode strings",
+    source: `var composed = "é";
+var decomposed = "e\\u0301";
+
+composed.localeCompare(decomposed) === 0 &&
+decomposed.normalize("NFC") === composed
+  ? 42
+  : 0;`,
+  },
+  {
     id: "class",
     label: "Class instance",
     source: `class Counter {

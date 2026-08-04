@@ -69,7 +69,6 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-test262-reflect.sh
 ./scripts/test-test262-date.sh
 ./scripts/test-test262-string-split.sh
-./scripts/test-test262-string-normalize.sh
 ./scripts/test-test262-regexp-core.sh
 ./scripts/run-test262-regexp-literals.sh
 ./scripts/run-test262-regexp-search.sh

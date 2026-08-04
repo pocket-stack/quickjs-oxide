@@ -1,0 +1,36 @@
+# Exhaustive R3cl String.prototype.localeCompare runtime transition.
+# parent_commit=a726358f9663d55cb136ba24e7a2779ecc353b6f
+# candidate_commit=66b1c81f594acb37b3d9e3ba49d3d3f58563b0db
+# oxide_profile_sha256=1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2
+# manifest_sha256=6fc68bb701d04bf9dce2d8c3d4ee5d52b433b2a9ad1ab53b853decfda39b8105
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-81.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot read property 'value' of undefined	pass	normal		
+test/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-81.js	strict			normal		fail-runtime	runtime	TypeError	cannot read property 'value' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/15.5.4.9_3.js	sloppy			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/15.5.4.9_3.js	strict			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/15.5.4.9_CE.js	sloppy			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/15.5.4.9_CE.js	strict			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A10.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A10.js	strict			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A11.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A11.js	strict			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A1_T1.js	sloppy			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A1_T1.js	strict			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A1_T2.js	sloppy			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A1_T2.js	strict			normal		fail-runtime	runtime	TypeError	not a function	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A6.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot read property 'prototype' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A6.js	strict			normal		fail-runtime	runtime	TypeError	cannot read property 'prototype' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A7.js	sloppy			normal		pass	normal			pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A7.js	strict			normal		pass	normal			pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A8.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A8.js	strict			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A9.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/S15.5.4.9_A9.js	strict			normal		fail-runtime	runtime	TypeError	cannot read property 'hasOwnProperty' of undefined	pass	normal		
+test/built-ins/String/prototype/localeCompare/name.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot convert to object	pass	normal		
+test/built-ins/String/prototype/localeCompare/name.js	strict			normal		fail-runtime	runtime	TypeError	cannot convert to object	pass	normal		
+test/built-ins/String/prototype/localeCompare/not-a-constructor.js	sloppy		Reflect.construct,arrow-function	normal		fail-runtime	runtime	Test262Error	isConstructor invoked with a non-function value	pass	normal		
+test/built-ins/String/prototype/localeCompare/not-a-constructor.js	strict		Reflect.construct,arrow-function	normal		fail-runtime	runtime	Test262Error	isConstructor invoked with a non-function value	pass	normal		
+test/built-ins/String/prototype/localeCompare/this-value-not-obj-coercible.js	sloppy			normal		fail-runtime	runtime	Test262Error	Expected SameValue(«"undefined"», «"function"») to be true	pass	normal		
+test/built-ins/String/prototype/localeCompare/this-value-not-obj-coercible.js	strict			normal		fail-runtime	runtime	Test262Error	Expected SameValue(«"undefined"», «"function"») to be true	pass	normal		
+test/staging/sm/misc/builtin-methods-reject-null-undefined-this.js	sloppy			normal		pass	normal			pass	normal		
+test/staging/sm/misc/builtin-methods-reject-null-undefined-this.js	strict			normal		pass	normal			pass	normal		

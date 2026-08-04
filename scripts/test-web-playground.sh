@@ -74,6 +74,7 @@ const expected = new Map([
   ["typed-array", { kind: "number", text: "42" }],
   ["resizable-array-buffer", { kind: "number", text: "42" }],
   ["uint8-codec", { kind: "number", text: "42" }],
+  ["unicode-strings", { kind: "number", text: "42" }],
   ["class", { kind: "number", text: "42" }],
   ["promise", { kind: "boolean", text: "true" }],
   ["weak-map", { kind: "number", text: "42" }],

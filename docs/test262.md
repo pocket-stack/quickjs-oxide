@@ -4,7 +4,59 @@ Test262 is now a pinned progress instrument, not yet a completion claim. The
 authoritative compatibility target remains QuickJS 2026-06-04; focused QuickJS
 differentials still decide exact behavior inside each implemented slice.
 
-Last audited: 2026-08-04.
+Last audited: 2026-08-05.
+
+## R3cl String.prototype.localeCompare runtime parity
+
+R3cl freezes every direct non-Intl `String.prototype.localeCompare` path in
+the pinned Test262 tree plus two supplemental descriptor/nullish-receiver
+paths: 15 paths / 30 variants. The 13 direct paths and 26 variant keys hash to
+`75762419fa0a204aed1fc697d20a12e7403c3db673540a41f29aedca6ad70825`
+and
+`c568684da620fa39a72387aca971d14b5ddc9a4dafc47dfb9de2ff8d271c7c0b`;
+the complete gate's path and key hashes are
+`6fc68bb701d04bf9dce2d8c3d4ee5d52b433b2a9ad1ab53b853decfda39b8105`
+and
+`605c6c4e9e80e8c4a12e2dc5d42a8477c0c2559b744dfda30ea85ea909a03d18`.
+Pinned QuickJS and Oxide both pass all 30 variants. The ten Intl402 paths stay
+configuration-excluded and are not part of this parity claim.
+
+The R3ck parent contains 26 `fail-runtime` outcomes and four outcome-level
+false passes. R3cl changes exactly those 26 failures to passes, with no detail
+changes and four unchanged rows. The focused parent TSV/JSONL hashes are
+`95b594ce9d6219b51681b77bab86e4b82ae79e4e2b6f839b36af489d5ff0f43c`
+and
+`ac8bc91d74eb602e2789b88f62ab1fde2e19a3cda8eca3e64c32c7173c38db4d`;
+candidate hashes are
+`677848008880a63d0c7decd351d96afc9c1668d9ca8c952f814e05ba1853b937`
+and
+`a4303ea1d66064561d0192d1828e81b5f96bec12fab2628e12ebc269199b1dc6`.
+The transition TSV hashes to
+`5abf0cf81924a88204791b35eb990b8a5d0930cee03aabf6e33da399ae941e84`.
+
+There is no localeCompare feature tag, so the 122-tag profile remains
+byte-identical at SHA-256
+`1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2`.
+The exact full-suite join changes the same 26 outcomes, leaves 102,011 rows
+unchanged, and has zero previous-pass regressions. The canonical vector is now
+65,280 passes and 65,406 runnable variants out of 102,037; `fail-runtime` is
+64. Full parent TSV/JSONL hashes are
+`f491512281647b752796da1abe8fcf559981b48a53270bf128e9b698ade60c3f`
+and
+`d65c1fbb9f17bc1666b2dbd0c228843a33147d4f762f7c18aa9491e883c3c59a`;
+candidate hashes are
+`ef3b88f82d4e65f55b584731f1cf78e7b734baf467639a6e18028f405c77ee56`
+and
+`81d1071fe7dc47e0e2a874641bea28bc5b707d17690c764194231a838de75d66`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-string-locale-compare.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-string-locale-compare.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-string-locale-compare.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
 
 ## R3ck String.prototype.normalize runtime parity
 

@@ -1,0 +1,2 @@
+test/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-81.js
+test/staging/sm/misc/builtin-methods-reject-null-undefined-this.js
