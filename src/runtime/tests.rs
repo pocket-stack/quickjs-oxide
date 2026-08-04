@@ -1905,6 +1905,7 @@ fn string_wrapper_exotic_indices_length_define_delete_and_order_match_quickjs() 
             "sup",
             "constructor",
             "normalize",
+            "localeCompare",
             "Symbol.iterator",
         ],
         "implemented-key filtered order, not the complete String prototype table"
@@ -2144,6 +2145,7 @@ fn string_method_slice_matches_quickjs_table_and_code_unit_rules() {
             "sup",
             "constructor",
             "normalize",
+            "localeCompare",
             "Symbol.iterator",
         ],
         "implemented entries must retain their pinned QuickJS table order"
@@ -2527,6 +2529,7 @@ fn string_conversion_core_brand_lookup_object_routes_and_overrides_match_quickjs
             "sup",
             "constructor",
             "normalize",
+            "localeCompare",
             "Symbol.iterator",
         ],
         "implemented-key filtered order, not the complete String prototype table"

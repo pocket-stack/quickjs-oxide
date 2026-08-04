@@ -334,8 +334,9 @@ impl Runtime {
         Ok(())
     }
 
-    /// Install the Unicode normalization intrinsic which QuickJS appends with
+    /// Install the two Unicode-aware intrinsics which QuickJS appends with
     /// `JS_AddIntrinsicStringNormalize` after its complete base String table.
+    /// Their physical order is observable after the `%String%` constructor.
     pub(in crate::runtime) fn initialize_string_normalize_intrinsic(
         &self,
         realm: ContextId,
@@ -348,6 +349,14 @@ impl Runtime {
             "normalize",
             0,
             0,
+        )?;
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeLocaleCompare,
+            "localeCompare",
+            1,
+            1,
         )
     }
 
@@ -1527,6 +1536,84 @@ impl Runtime {
                 }
             };
         Ok(Completion::Return(Value::String(normalized)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_localeCompare`. QuickJS's
+    /// non-Intl build deliberately ignores locales and options: it coerces
+    /// only the receiver and first argument, NFC-normalizes both to UTF-32,
+    /// then returns the raw first code-point difference (or +/-1 for a
+    /// proper-prefix ordering).
+    pub(in crate::runtime) fn call_string_prototype_locale_compare(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String localeCompare did not receive a generic invocation",
+            ));
+        };
+
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let that_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "String localeCompare that argv was not readable",
+        ))?;
+        let that = match self.native_to_js_string(realm, that_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let source = match crate::unicode_normalize::normalize_code_points(
+            &source,
+            crate::unicode_normalize::NormalizationForm::Nfc,
+        ) {
+            Ok(value) => value,
+            Err(JsStringError::OutOfMemory) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "out of memory",
+                )?));
+            }
+            Err(JsStringError::TooLong) => {
+                return Err(RuntimeError::Invariant(
+                    "NFC code-point normalization reported a string length limit",
+                ));
+            }
+        };
+        let that = match crate::unicode_normalize::normalize_code_points(
+            &that,
+            crate::unicode_normalize::NormalizationForm::Nfc,
+        ) {
+            Ok(value) => value,
+            Err(JsStringError::OutOfMemory) => {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "out of memory",
+                )?));
+            }
+            Err(JsStringError::TooLong) => {
+                return Err(RuntimeError::Invariant(
+                    "NFC code-point normalization reported a string length limit",
+                ));
+            }
+        };
+
+        let comparison = source
+            .iter()
+            .zip(&that)
+            .find_map(|(left, right)| (*left != *right).then_some(*left as i32 - *right as i32))
+            .unwrap_or_else(|| match source.len().cmp(&that.len()) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            });
+        Ok(Completion::Return(Value::Int(comparison)))
     }
 
     /// Rust port of pinned QuickJS `js_string_CreateHTML`. Receiver coercion

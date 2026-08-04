@@ -223,10 +223,15 @@ fn string_case_selectors_use_pinned_generic_magic_cproto() {
 }
 
 #[test]
-fn string_normalize_uses_pinned_generic_cproto_and_append_order() {
-    let descriptor = NativeFunctionId::StringPrototypeNormalize.descriptor();
-    assert_eq!(descriptor.cproto, NativeCProto::Generic);
-    assert!(!descriptor.cproto.default_is_constructor());
+fn string_unicode_intrinsics_use_pinned_generic_cproto_and_append_order() {
+    for target in [
+        NativeFunctionId::StringPrototypeNormalize,
+        NativeFunctionId::StringPrototypeLocaleCompare,
+    ] {
+        let descriptor = target.descriptor();
+        assert_eq!(descriptor.cproto, NativeCProto::Generic);
+        assert!(!descriptor.cproto.default_is_constructor());
+    }
 
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -234,6 +239,7 @@ fn string_normalize_uses_pinned_generic_cproto_and_append_order() {
     let sup = runtime.intern_property_key("sup").unwrap();
     let constructor = runtime.intern_property_key("constructor").unwrap();
     let normalize = runtime.intern_property_key("normalize").unwrap();
+    let locale_compare = runtime.intern_property_key("localeCompare").unwrap();
     {
         let state = runtime.0.state.borrow();
         let object = state.heap.object(prototype.object_id()).unwrap();
@@ -241,10 +247,16 @@ fn string_normalize_uses_pinned_generic_cproto_and_append_order() {
         let sup = usize::try_from(shape.find(sup.atom()).unwrap()).unwrap();
         let constructor = usize::try_from(shape.find(constructor.atom()).unwrap()).unwrap();
         let normalize = usize::try_from(shape.find(normalize.atom()).unwrap()).unwrap();
+        let locale_compare = usize::try_from(shape.find(locale_compare.atom()).unwrap()).unwrap();
         assert_eq!(constructor, sup + 1);
         assert_eq!(normalize, constructor + 1);
+        assert_eq!(locale_compare, normalize + 1);
         assert_eq!(
             shape.entries()[normalize].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert_eq!(
+            shape.entries()[locale_compare].flags,
             PropertyFlags::data(true, false, true),
         );
         assert!(matches!(
@@ -255,6 +267,16 @@ fn string_normalize_uses_pinned_generic_cproto_and_append_order() {
                 name: "normalize",
                 length: 0,
                 min_readable_args: 0,
+            })) if *realm == context.realm
+        ));
+        assert!(matches!(
+            object.slots.get(locale_compare),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::StringPrototypeLocaleCompare,
+                name: "localeCompare",
+                length: 1,
+                min_readable_args: 1,
             })) if *realm == context.realm
         ));
     }
@@ -269,6 +291,17 @@ fn string_normalize_uses_pinned_generic_cproto_and_append_order() {
             .eval("String.prototype.normalize.name+'|'+String.prototype.normalize.length")
             .unwrap(),
         Value::String(JsString::from_static("normalize|0")),
+    );
+    let Value::Object(function) = context.get_property(&prototype, &locale_compare).unwrap() else {
+        panic!("String.prototype.localeCompare did not materialize as a function");
+    };
+    assert!(runtime.as_callable(&function).unwrap().is_some());
+    assert!(!runtime.is_constructor(&function).unwrap());
+    assert_eq!(
+        context
+            .eval("String.prototype.localeCompare.name+'|'+String.prototype.localeCompare.length")
+            .unwrap(),
+        Value::String(JsString::from_static("localeCompare|1")),
     );
 }
 
@@ -331,6 +364,217 @@ fn string_normalize_matches_quickjs_forms_and_coercion_order() {
             )
             .unwrap(),
         Value::String(JsString::from_static("RangeError|bad normalization form",)),
+    );
+}
+
+#[test]
+fn string_locale_compare_matches_quickjs_normalized_code_point_order() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    for (source, expected) in [
+        (r#""a".localeCompare("c")"#, -2),
+        (r#""c".localeCompare("a")"#, 2),
+        (r#""a".localeCompare("aa")"#, -1),
+        (r#""aa".localeCompare("a")"#, 1),
+        (r#""é".localeCompare("e\u0301")"#, 0),
+        (r#""ﬁ".localeCompare("fi")"#, 64_155),
+        (
+            r#"String.fromCharCode(0xd800).localeCompare(String.fromCharCode(0xe000))"#,
+            -2_048,
+        ),
+        (
+            r#"String.fromCharCode(0xd800,0xdc00).localeCompare(String.fromCharCode(0xe000))"#,
+            8_192,
+        ),
+        (r#""undefined".localeCompare()"#, 0),
+        (r#"String.prototype.localeCompare.call(123,124)"#, -1),
+    ] {
+        assert_eq!(
+            context.eval(source).unwrap(),
+            Value::Int(expected),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn string_locale_compare_coerces_only_receiver_then_that() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var log="";
+                    var receiver={};
+                    receiver[Symbol.toPrimitive]=function(hint){
+                        log+="receiver:"+hint+",";
+                        return "e\u0301";
+                    };
+                    var that={};
+                    that[Symbol.toPrimitive]=function(hint){
+                        log+="that:"+hint+",";
+                        return "é";
+                    };
+                    var locales=new Proxy({}, {
+                        get:function(){throw new Error("locales was observed")}
+                    });
+                    var options=new Proxy({}, {
+                        get:function(){throw new Error("options was observed")}
+                    });
+                    var result=String.prototype.localeCompare.call(
+                        receiver,that,locales,options
+                    );
+                    return result+"|"+log;
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("0|receiver:string,that:string,")),
+    );
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var hits=0;
+                    var that={toString:function(){hits++;return "x"}};
+                    try { String.prototype.localeCompare.call(null,that); }
+                    catch (error) { return error.name+"|"+hits; }
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("TypeError|0")),
+    );
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var log="";
+                    var receiver={toString:function(){log+="receiver,";return "x"}};
+                    var that={toString:function(){log+="that,";throw "stop"}};
+                    try { String.prototype.localeCompare.call(receiver,that); }
+                    catch (error) { return error+"|"+log; }
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("stop|receiver,that,")),
+    );
+}
+
+#[test]
+fn string_locale_compare_errors_preserve_quickjs_realm_boundaries() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let prototype = defining.string_prototype().unwrap();
+    let key = runtime.intern_property_key("localeCompare").unwrap();
+    let Value::Object(function_object) = defining.get_property(&prototype, &key).unwrap() else {
+        panic!("String.prototype.localeCompare was not an object");
+    };
+    let function = runtime.as_callable(&function_object).unwrap().unwrap();
+    let Value::Object(defining_type_error) = defining.eval("TypeError.prototype").unwrap() else {
+        panic!("defining TypeError.prototype was not an object");
+    };
+    let Value::Object(defining_internal_error) = defining.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("defining InternalError.prototype was not an object");
+    };
+    let Value::Object(caller_type_error) = caller.eval("TypeError.prototype").unwrap() else {
+        panic!("caller TypeError.prototype was not an object");
+    };
+
+    for (this_value, arguments, label) in [
+        (
+            Value::Null,
+            vec![Value::String(JsString::from_static("x"))],
+            "null receiver",
+        ),
+        (
+            Value::String(JsString::from_static("x")),
+            vec![Value::Symbol(runtime.new_symbol(None).unwrap())],
+            "Symbol that",
+        ),
+    ] {
+        assert_eq!(
+            caller.call(&function, this_value, &arguments),
+            Err(RuntimeError::Exception),
+            "{label} did not throw",
+        );
+        let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+            panic!("{label} did not publish an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&error).unwrap(),
+            Some(defining_type_error.clone()),
+            "{label} used the caller realm",
+        );
+    }
+
+    crate::unicode_normalize::fail_next_normalize_reservation_for_test();
+    assert_eq!(
+        caller.call(
+            &function,
+            Value::String(JsString::from_static("a")),
+            &[Value::String(JsString::from_static("b"))],
+        ),
+        Err(RuntimeError::Exception),
+    );
+    let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+        panic!("localeCompare normalization OOM did not publish an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(defining_internal_error),
+        "localeCompare normalization OOM did not use the defining realm",
+    );
+
+    assert_eq!(
+        caller.construct(&function, &[]),
+        Err(RuntimeError::Exception),
+        "localeCompare unexpectedly constructed",
+    );
+    let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+        panic!("localeCompare constructor rejection did not publish an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(caller_type_error),
+        "pre-dispatch constructor rejection did not use the caller realm",
+    );
+}
+
+#[test]
+fn string_locale_compare_and_normalize_share_native_stack_budget() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var compare=String.prototype.localeCompare;
+                    var normalize=String.prototype.normalize;
+                    var depth=0;
+                    var receiver={toString:function(){
+                        depth++;
+                        if(depth%2)return normalize.call(receiver);
+                        return compare.call(receiver,"x");
+                    }};
+                    try { compare.call(receiver,"x"); }
+                    catch (error) { return error.name+"|"+error.message; }
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("InternalError|stack overflow")),
+    );
+    assert_eq!(
+        context.eval(r#""a".localeCompare("c")"#).unwrap(),
+        Value::Int(-2)
+    );
+    assert_eq!(
+        context.eval(r#""e\u0301".normalize()"#).unwrap(),
+        Value::String(JsString::from_static("é")),
     );
 }
 

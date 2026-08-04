@@ -767,6 +767,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypeNormalize => {
                 self.call_string_prototype_normalize(realm, invocation, arguments)
             }
+            NativeFunctionId::StringPrototypeLocaleCompare => {
+                self.call_string_prototype_locale_compare(realm, invocation, arguments)
+            }
             NativeFunctionId::StringPrototypeCreateHtml(selector) => {
                 self.call_string_prototype_create_html(realm, selector, invocation, arguments)
             }

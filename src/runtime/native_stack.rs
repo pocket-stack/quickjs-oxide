@@ -179,6 +179,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeNormalize
+            | NativeFunctionId::StringPrototypeLocaleCompare
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
             | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
@@ -256,6 +257,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeNormalize
+            | NativeFunctionId::StringPrototypeLocaleCompare
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
             | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
@@ -342,6 +344,7 @@ impl Runtime {
             | NativeFunctionId::StringPrototypeTrim(_)
             | NativeFunctionId::StringPrototypeCase(_)
             | NativeFunctionId::StringPrototypeNormalize
+            | NativeFunctionId::StringPrototypeLocaleCompare
             | NativeFunctionId::StringPrototypeCreateHtml(_)
             | NativeFunctionId::RegExp(RegExpNativeKind::Match)
             | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)
@@ -360,6 +363,7 @@ impl Runtime {
                     | NativeFunctionId::StringPrototypeTrim(_)
                     | NativeFunctionId::StringPrototypeCase(_)
                     | NativeFunctionId::StringPrototypeNormalize
+                    | NativeFunctionId::StringPrototypeLocaleCompare
                     | NativeFunctionId::StringPrototypeCreateHtml(_)
                     | NativeFunctionId::RegExp(RegExpNativeKind::Match)
                     | NativeFunctionId::RegExp(RegExpNativeKind::MatchAll)

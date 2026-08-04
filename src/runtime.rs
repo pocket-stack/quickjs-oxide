@@ -1007,7 +1007,7 @@ impl Runtime {
         )
         .expect("String constructor intrinsic initialization must succeed");
         self.initialize_string_normalize_intrinsic(realm, &string_prototype)
-            .expect("String normalization intrinsic initialization must succeed");
+            .expect("String Unicode intrinsic initialization must succeed");
         self.initialize_math_intrinsic(realm, &global_object)
             .expect("Math intrinsic initialization must succeed");
         self.initialize_reflect_intrinsic(realm, &global_object)

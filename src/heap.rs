@@ -6484,6 +6484,7 @@ pub enum NativeFunctionId {
     StringPrototypeTrim(StringTrimKind),
     StringPrototypeCase(StringCaseKind),
     StringPrototypeNormalize,
+    StringPrototypeLocaleCompare,
     StringPrototypeCreateHtml(StringCreateHtmlKind),
     IteratorConstructor,
     IteratorConcat,
@@ -6998,6 +6999,7 @@ impl NativeFunctionId {
             | Self::StringPrototypeSubrange(_)
             | Self::StringPrototypeRepeat
             | Self::StringPrototypeNormalize
+            | Self::StringPrototypeLocaleCompare
             | Self::IteratorConcat
             | Self::IteratorFrom
             | Self::IteratorConstructorAccessor
@@ -20310,6 +20312,7 @@ mod tests {
             NativeFunctionId::StringPrototypeSubrange(StringSubrangeKind::Slice),
             NativeFunctionId::StringPrototypeRepeat,
             NativeFunctionId::StringPrototypeNormalize,
+            NativeFunctionId::StringPrototypeLocaleCompare,
             NativeFunctionId::StringCodePointRange,
             NativeFunctionId::MathHypot,
             NativeFunctionId::MathRandom,

@@ -518,7 +518,7 @@ fn next_code_point(input: &JsString, index: &mut usize) -> u32 {
     }
 }
 
-fn normalize_code_points(
+pub(crate) fn normalize_code_points(
     input: &JsString,
     form: NormalizationForm,
 ) -> Result<Vec<u32>, JsStringError> {
