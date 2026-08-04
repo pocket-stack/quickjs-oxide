@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Reproduce the exhaustive WeakRef/FinalizationRegistry global admission.
+# Reproduce the focused WeakRef/FinalizationRegistry admission and authenticate
+# its historical full receipt through the current R3ch successor chain.
 
 set -euo pipefail
 export LC_ALL=C
@@ -9,6 +10,7 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-weak-ref-finalization-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-host-gc-global-baseline.txt
 parent=tests/test262-weak-ref-finalization-global-parent.conf
 candidate=tests/test262-weak-ref-finalization-global-candidate.conf
 successor_parent=tests/test262-host-gc-global-parent.conf
@@ -23,13 +25,12 @@ create_realm=tests/test262-weak-ref-finalization-create-realm-blockers.txt
 transition=tests/test262-weak-ref-finalization-global-transitions.tsv
 parent_report=target/test262-weak-ref-finalization-global-parent.tsv
 candidate_report=target/test262-weak-ref-finalization-global-candidate.tsv
-parent_full=target/test262-weak-ref-finalization-global-parent-full.tsv
-candidate_full=target/test262-weak-ref-finalization-global-candidate-full.tsv
+successor_parent_full=target/test262-host-gc-global-parent-full.tsv
+successor_candidate_full=target/test262-host-gc-global-candidate-full.tsv
 oracle_log=target/test262-weak-ref-finalization-global-quickjs.log
-baseline_draft=target/test262-weak-ref-finalization-global-baseline.draft.txt
-transition_draft=target/test262-weak-ref-finalization-global-transitions.draft.tsv
 workers=${TEST262_WORKERS:-8}
 full_workers=${TEST262_FULL_WORKERS:-2}
+reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
 
 quickjs=2026-06-04
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
@@ -53,21 +54,22 @@ for_of_keys_sha=446fe46a6dcb2c3b55272ff2545eb6d4197051cfc09b30fab7121f0a7ca8a521
 create_realm_sha=21948f4d14d8fd58cd020972aaefe9ed0e02c8d41f9a4ea839d9b1ccd74757f0
 create_realm_keys_sha=5ff830450906569e072bc03701c10edb9748124ee28a8a8fe08c788dd628416a
 all_keys_sha=69f0826f8f362d15c99b47e0fdd0aeb7dba2693f67abb255546f25cda026c797
-historical_parent_full_tsv_sha=e0b0be534f07a34bc7a9e18f4c3bae8c9360dd62c89176f96bf3234c5895b6ec
-historical_parent_full_jsonl_sha=8227cb6d19fc2f814bdb016308cf1003be6c91ebe01145ccc3c719f6e38ac6bf
 canonical_full_tsv_sha=c919dd56fc37f2946d729ee9a9a6958fc91c3f95366843ffae258953145e5a4f
 canonical_full_jsonl_sha=342c22edd7cfdc4edf2b5085455c8586095bb4abc5b59d55cc4657c5ff954459
 canonical_full_summary='fail-parse=11 fail-runtime=110 pass=64628 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=13866 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-eval-script=44 unsupported-host-gc=26 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3451 unsupported-parser=26 unsupported-runtime=23'
+successor_parent_full_tsv_sha=783bec120bdf5b1c76ab27d2fa8011a3a8a33d4a1362081b0432413d9191bbff
+successor_parent_full_jsonl_sha=2ad093b6670bb560543dd3618fc0ab76ceb52fbb07ca33d9e8db332e24a79718
+successor_parent_full_summary='fail-parse=11 fail-runtime=110 pass=64628 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=13892 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-eval-script=44 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3451 unsupported-parser=26 unsupported-runtime=23'
 successor_full_tsv_sha=8e5c370f57e8d7dcd813df7199c79d210bf82316e802219c6d8a982dab72ac58
 successor_full_jsonl_sha=f5270e02f19cfb1ab5fc7a5ba5020e15a1ee0cea947914d7656766af0e8a721e
 successor_full_summary='fail-parse=11 fail-runtime=110 pass=64654 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=13866 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-eval-script=44 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3451 unsupported-parser=26 unsupported-runtime=23'
 baseline_sha=d1758cc0bdcb82c06b63335f8becdd75496be6f100305afd70d9c58c9edf2e2d
+successor_baseline_sha=28d20acc469f482e0fb139db9b615f15bf5b2a1e93b16fd5c260627ecfe9a0ff
 
 usage() {
-    printf 'usage: %s [--check|--full|--bless]\n' "${0##*/}"
+    printf 'usage: %s [--check|--full]\n' "${0##*/}"
     printf '  --check  verify authenticated inputs and the pinned QuickJS oracle\n'
-    printf '  --full   additionally run and join both exact 102037-row profiles\n'
-    printf '  --bless  bootstrap reviewed focused/full receipt drafts under target/\n'
+    printf '  --full   replay the exact R3ch successor pair and verify the historical R3cg bridge\n'
 }
 
 mode=focused
@@ -75,7 +77,10 @@ case ${1-} in
     '') ;;
     --check) mode=check ;;
     --full) mode=full ;;
-    --bless) mode=bless ;;
+    --bless)
+        echo 'error: --bless is disabled because the pre-R3ch runtime state is historical and cannot be regenerated by the current runtime' >&2
+        exit 2
+        ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
 esac
@@ -84,6 +89,8 @@ esac
     || { echo 'error: invalid TEST262_WORKERS' >&2; exit 2; }
 [[ "$full_workers" =~ ^[1-9][0-9]*$ ]] \
     || { echo 'error: invalid TEST262_FULL_WORKERS' >&2; exit 2; }
+[[ "$reuse_full_reports" == false || "$reuse_full_reports" == true ]] \
+    || { echo 'error: TEST262_REUSE_FULL_REPORTS must be true or false' >&2; exit 2; }
 
 die() { echo "error: $*" >&2; exit 1; }
 sha() {
@@ -111,6 +118,7 @@ kv_value() {
 }
 value() { kv_value "$baseline" "$1"; }
 canonical_value() { kv_value "$canonical_baseline" "$1"; }
+successor_value() { kv_value "$successor_baseline" "$1"; }
 toml_test262_value() {
     awk -v wanted="$2" '
         $0 == "[test262]" { inside=1; next }
@@ -188,6 +196,43 @@ check_canonical_baseline_identity() {
         && "$(canonical_value summary)" == "$successor_full_summary" ]] \
         || die 'canonical Test262 full baseline does not identify the R3ch successor output'
 }
+check_successor_bridge_identity() {
+    check_file "$successor_baseline" 103 "$successor_baseline_sha"
+    [[ "$(successor_value quickjs)" == "$quickjs" \
+        && "$(successor_value test262)" == "$test262" \
+        && "$(successor_value schema)" == test262-canonical-classified-v2 \
+        && "$(successor_value timeout_ms)" == 30000 \
+        && "$(successor_value historical_parent_oxide_profile_sha256)" == "$candidate_sha" \
+        && "$(successor_value runtime_parent_oxide_profile)" == "$successor_parent" \
+        && "$(successor_value runtime_parent_oxide_profile_sha256)" == "$candidate_sha" \
+        && "$(successor_value candidate_oxide_profile)" == "$successor_candidate" \
+        && "$(successor_value candidate_oxide_profile_sha256)" == "$successor_sha" \
+        && "$(successor_value historical_full_tsv_sha256)" == "$canonical_full_tsv_sha" \
+        && "$(successor_value historical_full_jsonl_sha256)" == "$canonical_full_jsonl_sha" \
+        && "$(successor_value historical_full_summary)" == "$canonical_full_summary" \
+        && "$(successor_value runtime_parent_full_tsv_sha256)" == "$successor_parent_full_tsv_sha" \
+        && "$(successor_value runtime_parent_full_jsonl_sha256)" == "$successor_parent_full_jsonl_sha" \
+        && "$(successor_value runtime_parent_full_summary)" == "$successor_parent_full_summary" \
+        && "$(successor_value candidate_full_tsv_sha256)" == "$successor_full_tsv_sha" \
+        && "$(successor_value candidate_full_jsonl_sha256)" == "$successor_full_jsonl_sha" \
+        && "$(successor_value candidate_full_summary)" == "$successor_full_summary" \
+        && "$(successor_value historical_to_runtime_parent_changed)" == 28 \
+        && "$(successor_value historical_to_runtime_parent_outcome_changes)" == 26 \
+        && "$(successor_value historical_to_runtime_parent_detail_changes)" == 2 \
+        && "$(successor_value historical_to_runtime_parent_unchanged)" == 102009 \
+        && "$(successor_value historical_to_runtime_parent_pass_regressions)" == 0 \
+        && "$(successor_value runtime_parent_to_candidate_changed)" == 26 \
+        && "$(successor_value runtime_parent_to_candidate_outcome_changes)" == 26 \
+        && "$(successor_value runtime_parent_to_candidate_detail_changes)" == 0 \
+        && "$(successor_value runtime_parent_to_candidate_unchanged)" == 102011 \
+        && "$(successor_value runtime_parent_to_candidate_pass_regressions)" == 0 ]] \
+        || die 'R3ch successor baseline does not bridge the historical R3cg receipt'
+    [[ "$(value candidate_oxide_profile_sha256)" == "$candidate_sha" \
+        && "$(value candidate_full_tsv_sha256)" == "$canonical_full_tsv_sha" \
+        && "$(value candidate_full_jsonl_sha256)" == "$canonical_full_jsonl_sha" \
+        && "$(value candidate_full_summary)" == "$canonical_full_summary" ]] \
+        || die 'historical R3cg baseline does not identify the bridged candidate receipt'
+}
 check_authenticated_inputs() {
     check_file "$parent" 1269 "$parent_sha"
     check_file "$candidate" 1271 "$candidate_sha"
@@ -198,10 +243,9 @@ check_authenticated_inputs() {
     check_file "$for_of" 1 "$for_of_sha"
     check_file "$create_realm" 2 "$create_realm_sha"
     check_canonical_baseline_identity
-    if [[ "$mode" != bless ]]; then
-        check_file "$baseline" 82 "$baseline_sha"
-        check_file "$transition" 169 "$(value transition_receipt_sha256)"
-    fi
+    check_file "$baseline" 82 "$baseline_sha"
+    check_successor_bridge_identity
+    check_file "$transition" 169 "$(value transition_receipt_sha256)"
 }
 check_prepared_suite_identity() {
     local expected_status actual_status
@@ -475,16 +519,15 @@ check_report_receipt() {
         && "$(report_summary "$report")" == "$(value "${label}_summary")" ]] \
         || die "report receipt drifted: $label"
 }
-check_canonical_full_report() {
-    local report=$1
-    check_canonical_baseline_identity
-    [[ "$(lines <(report_rows "$report"))" == 102037 \
-        && "$(report_runnable "$report")" == 64800 \
-        && "$(report_count pass "$report")" == 64628 \
-        && "$(sha "$report")" == "$canonical_full_tsv_sha" \
-        && "$(sha "${report%.tsv}.jsonl")" == "$canonical_full_jsonl_sha" \
-        && "$(report_summary "$report")" == "$canonical_full_summary" ]] \
-        || die 'candidate full report does not match the historical R3cg receipt'
+check_successor_full_receipt() {
+    local report=$1 expected_tsv=$2 expected_json=$3 expected_summary=$4
+    local expected_runnable=$5 expected_passes=$6
+    [[ "$(sha "$report")" == "$expected_tsv" \
+        && "$(sha "${report%.tsv}.jsonl")" == "$expected_json" \
+        && "$(report_summary "$report")" == "$expected_summary" \
+        && "$(report_runnable "$report")" == "$expected_runnable" \
+        && "$(report_count pass "$report")" == "$expected_passes" ]] \
+        || die "R3ch successor full receipt drifted: $report"
 }
 run_report() {
     local profile=$1 report=$2 scope=$3 pool=$4
@@ -499,12 +542,11 @@ run_report() {
 }
 
 cd -- "$root"
-if [[ "$mode" != bless ]]; then
-    [[ -f "$baseline" ]] || die "missing gate baseline: $baseline"
-    while IFS=: read -r key expected; do
-        [[ "$(value "$key")" == "$expected" ]] \
-            || die "baseline identity drifted: $key"
-    done <<EOF
+[[ -f "$baseline" ]] || die "missing gate baseline: $baseline"
+while IFS=: read -r key expected; do
+    [[ "$(value "$key")" == "$expected" ]] \
+        || die "baseline identity drifted: $key"
+done <<EOF
 quickjs:$quickjs
 test262:$test262
 test262_patch_sha256:$patch_sha
@@ -570,7 +612,6 @@ parent_full_passes:64470
 candidate_full_runnable:64800
 candidate_full_passes:64628
 EOF
-fi
 check_authenticated_inputs
 for sorted in "$added_features" "$universe" "$activation" "$for_of" "$create_realm"; do
     sort -c "$sorted"
@@ -700,10 +741,8 @@ check_report_identity "$candidate_report" "$candidate_sha" 164 "$universe_keys_s
     && "$(report_summary "$candidate_report")" \
         == 'pass=158 unsupported-feature=2 unsupported-host-create-realm=4' ]] \
     || die 'focused report summaries drifted'
-if [[ "$mode" != bless ]]; then
-    check_report_receipt "$parent_report" parent_focused
-    check_report_receipt "$candidate_report" candidate_focused
-fi
+check_report_receipt "$parent_report" parent_focused
+check_report_receipt "$candidate_report" candidate_focused
 
 generated_transition=$tmp/transitions.tsv
 {
@@ -748,152 +787,51 @@ focused_counts=$(awk -F'\t' '
 ' "$tmp/classes" "$generated_transition") || die 'focused transition semantics drifted'
 [[ "$focused_counts" == 'activation=158 forof=2 realm=4 changed=160 outcome=158 detail=2 unchanged=4' ]] \
     || die "focused transition partition drifted: $focused_counts"
-if [[ "$mode" != bless ]]; then
-    [[ "$(sha "$generated_transition")" == "$(value transition_receipt_sha256)" ]] \
-        || die 'generated transition checksum drifted'
-    diff -u "$transition" "$generated_transition"
-fi
+[[ "$(sha "$generated_transition")" == "$(value transition_receipt_sha256)" ]] \
+    || die 'generated transition checksum drifted'
+diff -u "$transition" "$generated_transition"
 check_authenticated_inputs
 check_prepared_suite_identity
 
-run_full=false
-[[ "$mode" == full || "$mode" == bless ]] && run_full=true
-if "$run_full"; then
-    run_report "$parent" "$parent_full" full "$full_workers"
-    check_report_identity "$parent_full" "$parent_sha" 102037 "$all_keys_sha"
-    [[ "$(sha "$parent_full")" == "$historical_parent_full_tsv_sha" \
-        && "$(sha "${parent_full%.tsv}.jsonl")" == "$historical_parent_full_jsonl_sha" ]] \
-        || die 'authoritative previous-live parent full receipt drifted'
-    run_report "$candidate" "$candidate_full" full "$full_workers"
-    check_report_identity "$candidate_full" "$candidate_sha" 102037 "$all_keys_sha"
-    check_canonical_full_report "$candidate_full"
-    report_rows "$parent_report" >"$tmp/parent.focused"
+if [[ "$mode" == full ]]; then
+    if [[ "$reuse_full_reports" == false ]]; then
+        run_report "$successor_parent" "$successor_parent_full" full "$full_workers"
+        run_report "$successor_candidate" "$successor_candidate_full" full "$full_workers"
+    fi
+    check_report_identity "$successor_parent_full" "$candidate_sha" 102037 "$all_keys_sha"
+    check_successor_full_receipt "$successor_parent_full" \
+        "$successor_parent_full_tsv_sha" "$successor_parent_full_jsonl_sha" \
+        "$successor_parent_full_summary" 64800 64628
+    check_report_identity "$successor_candidate_full" "$successor_sha" 102037 "$all_keys_sha"
+    check_successor_full_receipt "$successor_candidate_full" \
+        "$successor_full_tsv_sha" "$successor_full_jsonl_sha" \
+        "$successor_full_summary" 64826 64654
+
     report_rows "$candidate_report" >"$tmp/candidate.focused"
     awk -F'\t' 'NR==FNR{w[$0]=1;next}!/^#/&&!($1=="path"&&$2=="variant")&&($1 in w)' \
-        "$derived" "$parent_full" >"$tmp/parent.full-focused"
+        "$derived" "$successor_parent_full" >"$tmp/successor-parent.full-focused"
     awk -F'\t' 'NR==FNR{w[$0]=1;next}!/^#/&&!($1=="path"&&$2=="variant")&&($1 in w)' \
-        "$derived" "$candidate_full" >"$tmp/candidate.full-focused"
-    diff -u "$tmp/parent.focused" "$tmp/parent.full-focused"
-    diff -u "$tmp/candidate.focused" "$tmp/candidate.full-focused"
-    { awk -F'\t' '{print $1 "\t" $2 "\tchanged"}' "$tmp/activation.keys";
-      awk -F'\t' '{print $1 "\t" $2 "\tchanged"}' "$tmp/for-of.keys";
-      awk -F'\t' '{print $1 "\t" $2 "\tdeferred"}' "$tmp/create-realm.keys"; } \
-        | sort >"$tmp/full.classes"
-    join_counts=$(awk -F'\t' -v classes="$tmp/full.classes" -v parent="$parent_full" '
-        FILENAME==classes{class[$1 FS $2]=$3;next}
+        "$derived" "$successor_candidate_full" >"$tmp/successor-candidate.full-focused"
+    diff -u "$tmp/candidate.focused" "$tmp/successor-parent.full-focused"
+    diff -u "$tmp/candidate.focused" "$tmp/successor-candidate.full-focused"
+
+    join_counts=$(awk -F'\t' -v parent="$successor_parent_full" '
         FILENAME==parent{if(!/^#/&&!($1=="path"&&$2=="variant")){old[$1 FS $2]=$0;before++}next}
         !/^#/&&!($1=="path"&&$2=="variant"){
             key=$1 FS $2;if(!(key in old))exit 2;split(old[key],a,FS)
             for(i=1;i<=6;i++)if(a[i]!=$i)exit 3
             different=old[key]!=$0;if(a[7]=="pass"&&$7!="pass")regress++
-            if(class[key]=="changed"){
-                if(!different)exit 4;changed++;if(a[7]!=$7)outcome++;else detail++
-            } else if(different)exit 5
+            if(different){changed++;if(a[7]!=$7)outcome++;else detail++}
             seen[key]=1
         }
-        END{for(key in old)if(!(key in seen))exit 6;printf "changed=%d outcome=%d detail=%d unchanged=%d regressions=%d",changed,outcome,detail,before-changed,regress}
-    ' "$tmp/full.classes" "$parent_full" "$candidate_full") \
-        || die 'full parent/candidate join drifted'
-    [[ "$join_counts" == 'changed=160 outcome=158 detail=2 unchanged=101877 regressions=0' ]] \
-        || die "full no-regression delta drifted: $join_counts"
+        END{for(key in old)if(!(key in seen))exit 4;printf "changed=%d outcome=%d detail=%d unchanged=%d regressions=%d",changed,outcome,detail,before-changed,regress}
+    ' "$successor_parent_full" "$successor_candidate_full") \
+        || die 'R3ch successor full join drifted'
+    [[ "$join_counts" == 'changed=26 outcome=26 detail=0 unchanged=102011 regressions=0' ]] \
+        || die "R3ch successor full no-regression delta drifted: $join_counts"
     check_authenticated_inputs
     check_prepared_suite_identity
-    if [[ "$mode" == full ]]; then
-        check_report_receipt "$parent_full" parent_full
-        check_report_receipt "$candidate_full" candidate_full
-        echo 'WeakRef/FinalizationRegistry global full gate passes: 102037 rows, 160 exact changes, no pass regression.'
-        exit 0
-    fi
-fi
-
-if [[ "$mode" == bless ]]; then
-    cp "$generated_transition" "$transition_draft"
-    {
-        echo '# Checksum-bound R3cg global admission for WeakRef and FinalizationRegistry.'
-        echo 'quickjs=2026-06-04'
-        echo "test262=$test262"
-        echo "test262_patch_sha256=$patch_sha"
-        echo "test262_config_sha256=$config_sha"
-        echo 'test262_metadata_records=53125'
-        echo "test262_metadata_sha256=$metadata_sha"
-        echo 'schema=test262-canonical-classified-v2'
-        echo 'mode=both'
-        echo 'timeout_ms=30000'
-        echo "live_oxide_profile=$live_profile"
-        echo "live_oxide_profile_sha256=$candidate_sha"
-        echo "canonical_full_baseline=$canonical_baseline"
-        echo
-        echo "parent_oxide_profile_sha256=$parent_sha"
-        echo "candidate_oxide_profile_sha256=$candidate_sha"
-        echo 'parent_features=99'
-        echo "parent_features_sha256=$parent_features_sha"
-        echo 'candidate_features=101'
-        echo "candidate_features_sha256=$candidate_features_sha"
-        echo 'added_features=2'
-        echo "added_features_sha256=$added_features_sha"
-        echo 'audited_negative_tests=1157'
-        echo "audited_negative_tests_sha256=$audited_negative_tests_sha"
-        echo
-        echo 'universe_paths=82'
-        echo "universe_sha256=$universe_sha"
-        echo 'universe_variants=164'
-        echo "universe_keys_sha256=$universe_keys_sha"
-        echo 'activation_paths=79'
-        echo "activation_sha256=$activation_sha"
-        echo 'activation_variants=158'
-        echo "activation_keys_sha256=$activation_keys_sha"
-        echo 'for_of_blocker_paths=1'
-        echo "for_of_blocker_sha256=$for_of_sha"
-        echo 'for_of_blocker_variants=2'
-        echo "for_of_blocker_keys_sha256=$for_of_keys_sha"
-        echo 'create_realm_blocker_paths=2'
-        echo "create_realm_blockers_sha256=$create_realm_sha"
-        echo 'create_realm_blocker_variants=4'
-        echo "create_realm_blockers_keys_sha256=$create_realm_keys_sha"
-        echo
-        echo 'parent_focused_variants=164'
-        echo "parent_focused_runnable=$(report_runnable "$parent_report")"
-        echo "parent_focused_passes=$(report_count pass "$parent_report")"
-        echo "parent_focused_unsupported_feature=$(report_count unsupported-feature "$parent_report")"
-        echo "parent_focused_unsupported_host_create_realm=$(report_count unsupported-host-create-realm "$parent_report")"
-        echo "parent_focused_tsv_sha256=$(sha "$parent_report")"
-        echo "parent_focused_jsonl_sha256=$(sha "${parent_report%.tsv}.jsonl")"
-        echo "parent_focused_summary=$(report_summary "$parent_report")"
-        echo 'candidate_focused_variants=164'
-        echo "candidate_focused_runnable=$(report_runnable "$candidate_report")"
-        echo "candidate_focused_passes=$(report_count pass "$candidate_report")"
-        echo "candidate_focused_unsupported_feature=$(report_count unsupported-feature "$candidate_report")"
-        echo "candidate_focused_unsupported_host_create_realm=$(report_count unsupported-host-create-realm "$candidate_report")"
-        echo "candidate_focused_tsv_sha256=$(sha "$candidate_report")"
-        echo "candidate_focused_jsonl_sha256=$(sha "${candidate_report%.tsv}.jsonl")"
-        echo "candidate_focused_summary=$(report_summary "$candidate_report")"
-        echo "transition_receipt_sha256=$(sha "$generated_transition")"
-        echo "transition_data_sha256=$(report_rows "$generated_transition" | sha /dev/stdin)"
-        echo 'focused_changed=160'
-        echo 'focused_outcome_changes=158'
-        echo 'focused_detail_changes=2'
-        echo 'focused_unchanged=4'
-        echo
-        echo 'full_variants=102037'
-        echo "full_keys_sha256=$all_keys_sha"
-        echo 'full_changed=160'
-        echo 'full_outcome_changes=158'
-        echo 'full_detail_changes=2'
-        echo 'full_unchanged=101877'
-        echo 'full_pass_regressions=0'
-        echo "parent_full_runnable=$(report_runnable "$parent_full")"
-        echo "parent_full_passes=$(report_count pass "$parent_full")"
-        echo "parent_full_tsv_sha256=$(sha "$parent_full")"
-        echo "parent_full_jsonl_sha256=$(sha "${parent_full%.tsv}.jsonl")"
-        echo "parent_full_summary=$(report_summary "$parent_full")"
-        echo "candidate_full_runnable=$(report_runnable "$candidate_full")"
-        echo "candidate_full_passes=$(report_count pass "$candidate_full")"
-        echo "candidate_full_tsv_sha256=$(sha "$candidate_full")"
-        echo "candidate_full_jsonl_sha256=$(sha "${candidate_full%.tsv}.jsonl")"
-        echo "candidate_full_summary=$(report_summary "$candidate_full")"
-    } >"$baseline_draft"
-    echo "Reviewed baseline draft: $baseline_draft"
-    echo "Reviewed transition draft: $transition_draft"
+    echo 'WeakRef/FinalizationRegistry historical full receipt is checksum-bridged; replayed R3ch successor pair has 26 exact changes and zero pass regressions.'
     exit 0
 fi
 
