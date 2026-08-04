@@ -549,8 +549,7 @@ run_report() {
 }
 
 bridge_r3ci_successor() {
-    [[ -f "$live_profile" && "$(sha "$live_profile")" == "$latest_sha" ]] \
-        || return 0
+    [[ -f "$live_profile" ]] || return 0
     check_file "$baseline" 82 "$baseline_sha"
     check_file "$parent" 1269 "$parent_sha"
     check_file "$candidate" 1271 "$candidate_sha"
@@ -566,13 +565,10 @@ bridge_r3ci_successor() {
     check_file "$latest_baseline" 121 "$latest_baseline_sha"
     check_file "$latest_parent" 1272 "$successor_sha"
     check_file "$latest_candidate" 1274 "$latest_sha"
-    check_file "$live_profile" 1274 "$latest_sha"
     cmp -s "$candidate" "$successor_parent" \
         || die 'R3cg candidate is not byte-identical to the R3ch parent'
     cmp -s "$successor_candidate" "$latest_parent" \
         || die 'R3ch candidate is not byte-identical to the R3ci parent'
-    cmp -s "$latest_candidate" "$live_profile" \
-        || die 'live Test262 profile is not byte-identical to the R3ci candidate'
     [[ "$(value candidate_oxide_profile_sha256)" == "$candidate_sha" \
         && "$(successor_value historical_parent_oxide_profile_sha256)" == "$candidate_sha" \
         && "$(successor_value candidate_oxide_profile_sha256)" == "$successor_sha" \
@@ -584,8 +580,21 @@ bridge_r3ci_successor() {
         && "$(latest_value historical_full_jsonl_sha256)" == "$(successor_value candidate_full_jsonl_sha256)" \
         && "$(latest_value runtime_parent_to_candidate_full_outcome_changes)" == 194 \
         && "$(latest_value runtime_parent_to_candidate_full_detail_changes)" == 340 \
-        && "$(latest_value runtime_parent_to_candidate_full_pass_regressions)" == 0 \
-        && "$(canonical_value runnable)" == "$(latest_value candidate_full_runnable)" \
+        && "$(latest_value runtime_parent_to_candidate_full_pass_regressions)" == 0 ]] \
+        || die 'R3ci successor chain does not checksum-bridge the historical R3cg receipt'
+    if [[ "$(sha "$live_profile")" != "$latest_sha" ]]; then
+        case $mode in
+            check) "$latest_gate" --check ;;
+            focused) "$latest_gate" ;;
+            full) "$latest_gate" --full ;;
+        esac
+        echo 'Historical R3cg WeakRef/FinalizationRegistry receipt is transitively checksum-bridged through the current successor chain.'
+        exit 0
+    fi
+    check_file "$live_profile" 1274 "$latest_sha"
+    cmp -s "$latest_candidate" "$live_profile" \
+        || die 'live Test262 profile is not byte-identical to the R3ci candidate'
+    [[ "$(canonical_value runnable)" == "$(latest_value candidate_full_runnable)" \
         && "$(canonical_value passes)" == "$(latest_value candidate_full_passes)" \
         && "$(canonical_value tsv_sha256)" == "$(latest_value candidate_full_tsv_sha256)" \
         && "$(canonical_value jsonl_sha256)" == "$(latest_value candidate_full_jsonl_sha256)" \

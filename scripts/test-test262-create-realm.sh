@@ -11,6 +11,7 @@ baseline=tests/test262-create-realm-baseline.txt
 live_profile=compat/test262-oxide.conf
 profile=tests/test262-create-realm.conf
 upstream=compat/upstream.toml
+current_global_gate=scripts/test-test262-current-global.sh
 universe=tests/test262-create-realm-universe.txt
 config_excluded=tests/test262-create-realm-config-excluded.txt
 config_skipped=tests/test262-create-realm-config-skipped-feature.txt
@@ -114,6 +115,20 @@ check_file() {
     [[ -f "$file" && "$(lines "$file")" == "$expected_lines" \
         && "$(sha "$file")" == "$expected_sha" ]] \
         || die "authenticated input drifted: $file"
+}
+check_current_live_profile() {
+    local actual_profile_sha
+    [[ -f "$live_profile" ]] || die "missing live Test262 profile: $live_profile"
+    actual_profile_sha=$(sha "$live_profile")
+    [[ "$(toml_test262_value "$upstream" oxide_profile)" == "$live_profile" \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" \
+            == "$actual_profile_sha" ]] \
+        || die 'compat/upstream.toml does not authenticate the current live profile'
+    if [[ "$actual_profile_sha" == "$live_profile_sha" ]]; then
+        check_file "$live_profile" 1274 "$live_profile_sha"
+    else
+        "$current_global_gate" --check >/dev/null
+    fi
 }
 report_rows() { awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")' "$1"; }
 report_keys() { report_rows "$1" | awk -F'\t' '{print $1 "\t" $2}' | sort; }
@@ -251,7 +266,6 @@ verify_report() {
 
 check_static_inputs() {
     check_file "$baseline" "$(value baseline_lines)" "$baseline_sha"
-    check_file "$live_profile" 1274 "$live_profile_sha"
     check_file "$profile" 16 "$profile_sha"
     check_file "$universe" "$(value universe_paths)" "$(value universe_sha256)"
     check_file "$config_excluded" "$(value config_excluded_paths)" \
@@ -271,6 +285,7 @@ check_static_inputs() {
     check_file "$quickjs_receipt" 10 "$(value quickjs_receipt_sha256)"
     check_file "$parent_report" 163 "$(value parent_tsv_sha256)"
     check_file "$parent_json" 154 "$(value parent_jsonl_sha256)"
+    check_current_live_profile
     for manifest in "$universe" "$config_excluded" "$config_skipped" \
             "$reason_only" "$oracle_envelope" "$supplemental_feature" \
             "$activation" "$core_sync" "$existing_host" "$async_paths"; do
@@ -302,7 +317,9 @@ check_static_inputs() {
         && "$(toml_test262_value "$upstream" config_sha256)" == "$config_sha" \
         && "$(toml_test262_value "$upstream" test_count)" == 53125 \
         && "$(toml_test262_value "$upstream" metadata_records_sha256)" == "$metadata_sha" \
-        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" == "$live_profile_sha" \
+        && "$(toml_test262_value "$upstream" oxide_profile)" == "$live_profile" \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" \
+            == "$(sha "$live_profile")" \
         && "$(toml_quickjs_value "$upstream" version)" == "$quickjs" \
         && "$(toml_quickjs_value "$upstream" source_sha256)" == "$quickjs_source_sha" ]] \
         || die 'compat/upstream.toml Test262 identity drifted'

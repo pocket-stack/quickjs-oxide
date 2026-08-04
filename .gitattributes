@@ -15,3 +15,4 @@ tests/test262-typed-array-global-r3bd-r3be-transitions.tsv whitespace=-blank-at-
 tests/test262-create-realm-transitions.tsv whitespace=-blank-at-eol
 tests/test262-eval-script-transitions.tsv whitespace=-blank-at-eol
 tests/test262-realm-hosts-global-transitions.tsv whitespace=-blank-at-eol
+tests/test262-binary-data-global-transitions.tsv whitespace=-blank-at-eol

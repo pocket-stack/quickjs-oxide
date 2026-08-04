@@ -4,6 +4,39 @@ Last audited: 2026-08-04. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cj binary-data Test262 admission
+
+R3cj globally admits the 18 residual metadata names for the implemented
+numeric binary-data surface: eight concrete `DataView.prototype` operations
+and ten concrete numeric TypedArray constructors. The profile grows from 104
+to 122 sorted features without changing the 1,157 audited negative paths or
+the async execution policy. Its SHA-256 is
+`1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2`.
+
+The metadata-derived inventory contains exactly 200 paths / 400 variants. Its
+193-path activation combines 141 paths already authenticated by the earlier
+DataView and TypedArray gates with 52 supplemental paths audited here. Pinned
+QuickJS and Oxide both pass all 386 activation variants, with no activation
+exclusions. Five paths / ten variants retain independent missing features and
+two paths / four variants remain pinned configuration skips.
+
+The complete parent/candidate join produces 386 new passes and ten detail-only
+reason refinements, leaves 101,641 rows byte-identical, and has zero prior-pass
+regressions. The canonical Test262 vector is now 65,234 passes with 65,406
+runnable variants out of 102,037. Its TSV/JSONL SHA-256 values are
+`acd43fe1eb9752246e9994c58c3f139ceff0c5e80416baea06757428e5ba6bba`
+and
+`c1a4bf7cc058a70b6b97475fccc92700403a19c63936c341ea3a6ebe79e4f34a`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-binary-data-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-binary-data-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-binary-data-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3ci recursive Test262 realm hosts
 
 R3ci implements QuickJS 2026-06-04's Test262-only `$262.createRealm` and
@@ -44,8 +77,8 @@ Three exact joins separate runtime installation from profile admission:
   row.
 
 The complete join changes exactly those 534 rows, leaves the other 101,503
-byte-identical, and has zero prior-pass regression. The canonical vector is
-now 64,848 passes with 65,020 runnable variants out of 102,037. Its TSV/JSONL
+byte-identical, and has zero prior-pass regression. The R3ci candidate vector
+was 64,848 passes with 65,020 runnable variants out of 102,037. Its TSV/JSONL
 SHA-256 values are
 `2f40849011fae4f96455225e467c817c6aeeaf3cc90722d357a1d8bdddbbf3bc`
 and

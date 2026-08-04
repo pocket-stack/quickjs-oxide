@@ -6,6 +6,57 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-04.
 
+## R3cj binary-data metadata admission
+
+R3cj admits the remaining Test262 metadata names for the implemented numeric
+binary-data surface: eight `DataView.prototype` read/write tags plus
+`Float16Array`, `Float32Array`, `Float64Array`, `Int8Array`, `Int16Array`,
+`Int32Array`, `Uint8Array`, `Uint8ClampedArray`, `Uint16Array`, and
+`Uint32Array`. The candidate adds exactly these 18 sorted features to the R3ci
+parent, growing the global profile from 104 to 122 entries. The parent and
+candidate SHA-256 values are
+`01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75`
+and
+`1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2`;
+their audited-negative and execution sections are byte-identical.
+
+The metadata-derived universe is exactly 200 paths / 400 variants. Its path
+and variant-key SHA-256 values are
+`180891c61576e604beec526e36928735380c31d431a3035cb343c9985ebc4c99`
+and
+`f0e8838e2b9aeba652199da01105eebd10518d4b29b5263fd07fcdfea3173582`.
+It partitions without overlap into:
+
+- 193 activation paths / 386 variants, comprising 141 paths authenticated by
+  prior DataView/TypedArray gates and 52 independently audited supplemental
+  paths;
+- 5 paths / 10 variants which retain other unsupported feature tags;
+- 2 paths / 4 variants skipped by the pinned Test262 configuration.
+
+There are no exclusions inside activation: pinned QuickJS and Oxide both pass
+all 386 variants. Across the complete focused universe, the parent has 396
+`unsupported-feature` selections and four config skips. The candidate turns
+386 selections into passes, narrows the other ten to their independent feature
+reasons, and leaves the four config skips unchanged.
+
+The exact 102,037-row parent/candidate join changes those same 396 rows: 386
+outcome changes, ten detail-only changes, 101,641 byte-identical rows, and zero
+previous-pass regressions. The canonical vector is now 65,234 passes and
+65,406 runnable variants, with 13,820 `unsupported-feature` selections. Its
+TSV/JSONL SHA-256 values are
+`acd43fe1eb9752246e9994c58c3f139ceff0c5e80416baea06757428e5ba6bba`
+and
+`c1a4bf7cc058a70b6b97475fccc92700403a19c63936c341ea3a6ebe79e4f34a`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-binary-data-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-binary-data-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-binary-data-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3ci createRealm and evalScript admission
 
 R3ci source-audits every direct `$262.createRealm` and `$262.evalScript` use in
@@ -44,8 +95,8 @@ then creates 194 passes and leaves 340 createRealm variants behind their exact
 independent feature reasons. The full join reports 534 changed rows, 101,503
 unchanged rows, and zero previous-pass regressions.
 
-The canonical full vector is 64,848 passes and 65,020 runnable variants out of
-102,037. It contains 14,206 `unsupported-feature` outcomes and no remaining
+The R3ci candidate full vector was 64,848 passes and 65,020 runnable variants
+out of 102,037. It contains 14,206 `unsupported-feature` outcomes and no remaining
 `unsupported-host-create-realm` or `unsupported-host-eval-script` outcomes.
 The TSV/JSONL SHA-256 values are
 `2f40849011fae4f96455225e467c817c6aeeaf3cc90722d357a1d8bdddbbf3bc`

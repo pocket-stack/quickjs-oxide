@@ -1,0 +1,5 @@
+test/built-ins/Array/prototype/flatMap/array-like-objects-nested.js
+test/built-ins/Array/prototype/flatMap/array-like-objects-typedarrays.js
+test/built-ins/Atomics/notify/non-int32-typedarray-throws.js
+test/built-ins/Atomics/wait/non-int32-typedarray-throws.js
+test/built-ins/SharedArrayBuffer/prototype/byteLength/this-has-no-typedarrayname-internal.js

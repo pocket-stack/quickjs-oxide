@@ -12,6 +12,7 @@ live_profile=compat/test262-oxide.conf
 staging_profile=tests/test262-realm-hosts-global-parent.conf
 profile=tests/test262-eval-script.conf
 upstream=compat/upstream.toml
+current_global_gate=scripts/test-test262-current-global.sh
 universe=tests/test262-eval-script-universe.txt
 activation=tests/test262-eval-script-activation.txt
 reason_only=tests/test262-eval-script-reason-only.txt
@@ -109,6 +110,20 @@ check_file() {
     [[ -f "$file" && "$(lines "$file")" == "$count" \
         && "$(sha "$file")" == "$digest" ]] \
         || die "authenticated input drifted: $file"
+}
+check_current_live_profile() {
+    local actual_profile_sha
+    [[ -f "$live_profile" ]] || die "missing live Test262 profile: $live_profile"
+    actual_profile_sha=$(sha "$live_profile")
+    [[ "$(toml_test262_value "$upstream" oxide_profile)" == "$live_profile" \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" \
+            == "$actual_profile_sha" ]] \
+        || die 'compat/upstream.toml does not authenticate the current live profile'
+    if [[ "$actual_profile_sha" == "$live_profile_sha" ]]; then
+        check_file "$live_profile" 1274 "$live_profile_sha"
+    else
+        "$current_global_gate" --check >/dev/null
+    fi
 }
 report_rows() { awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")' "$1"; }
 report_keys() { report_rows "$1" | awk -F'\t' '{print $1 "\t" $2}' | sort; }
@@ -240,7 +255,6 @@ verify_report() {
 
 check_inputs() {
     check_file "$baseline" 80 "$baseline_sha"
-    check_file "$live_profile" 1274 "$live_profile_sha"
     check_file "$staging_profile" 1272 "$staging_profile_sha"
     check_file "$profile" 8 "$profile_sha"
     check_file "$universe" 31 "$universe_sha"
@@ -251,6 +265,7 @@ check_inputs() {
     check_file "$parent_report" 55 "$parent_tsv_sha"
     check_file "$parent_json" 46 "$parent_json_sha"
     check_file "$transition" 49 "$transition_sha"
+    check_current_live_profile
     sort -c "$universe"
     sort -c "$activation"
     [[ -z "$(uniq -d "$universe")" && -z "$(uniq -d "$activation")" ]] \
@@ -278,13 +293,6 @@ check_inputs() {
         && "$(value transition_data_sha256)" == "$transition_data_sha" \
         && "$(value quickjs_receipt_sha256)" == "$oracle_receipt_sha" ]] \
         || die 'evalScript baseline identity drifted'
-    [[ "$(section "$live_profile" features | wc -l | tr -d '[:space:]')" == 104 \
-        && "$(section "$live_profile" audited-negative-tests | wc -l | tr -d '[:space:]')" == 1157 \
-        && "$(section "$live_profile" execution)" == async=true \
-        && "$(section "$live_profile" features \
-            | grep -Exc 'host-(create-realm|eval-script)-required')" == 2 \
-        && -z "$(section "$live_profile" features | grep -Fx cross-realm || true)" ]] \
-        || die 'live profile realm-host admission semantics drifted'
     [[ "$(section "$staging_profile" features | wc -l | tr -d '[:space:]')" == 102 \
         && "$(section "$staging_profile" audited-negative-tests | wc -l | tr -d '[:space:]')" == 1157 \
         && "$(section "$staging_profile" execution)" == async=true \
@@ -303,7 +311,8 @@ check_inputs() {
         && "$(toml_test262_value "$upstream" test_count)" == 53125 \
         && "$(toml_test262_value "$upstream" metadata_records_sha256)" == "$metadata_sha" \
         && "$(toml_test262_value "$upstream" oxide_profile)" == "$live_profile" \
-        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" == "$live_profile_sha" ]] \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" \
+            == "$(sha "$live_profile")" ]] \
         || die 'compat/upstream.toml Test262 identity drifted'
 }
 

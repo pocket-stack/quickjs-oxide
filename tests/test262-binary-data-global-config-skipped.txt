@@ -1,0 +1,2 @@
+test/built-ins/Atomics/waitAsync/bigint/non-bigint64-typedarray-throws.js
+test/built-ins/Atomics/waitAsync/non-int32-typedarray-throws.js

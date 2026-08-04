@@ -13,6 +13,7 @@ live_profile=compat/test262-oxide.conf
 global_parent=tests/test262-host-gc-global-parent.conf
 global_candidate=tests/test262-host-gc-global-candidate.conf
 upstream=compat/upstream.toml
+current_global_gate=scripts/test-test262-current-global.sh
 universe=tests/test262-host-gc-universe.txt
 activation=tests/test262-host-gc-activation.txt
 create_realm=tests/test262-host-gc-create-realm-deferred.txt
@@ -104,6 +105,20 @@ toml_test262_value() {
         }
         END{if(found!=1)exit 1}
     ' "$1"
+}
+check_current_live_profile() {
+    local actual_profile_sha
+    [[ -f "$live_profile" ]] || die "missing live Test262 profile: $live_profile"
+    actual_profile_sha=$(sha "$live_profile")
+    [[ "$(toml_test262_value "$upstream" oxide_profile)" == "$live_profile" \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" \
+            == "$actual_profile_sha" ]] \
+        || die 'compat/upstream.toml does not authenticate the current live profile'
+    if [[ "$actual_profile_sha" == "$live_profile_sha" ]]; then
+        check_file "$live_profile" 1274 "$live_profile_sha"
+    else
+        "$current_global_gate" --check >/dev/null
+    fi
 }
 report_rows() { awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")' "$1"; }
 report_keys() { report_rows "$1" | awk -F'\t' '{print $1 "\t" $2}' | sort; }
@@ -245,7 +260,6 @@ verify_report() {
 check_inputs() {
     check_file "$baseline" 68 "$baseline_sha"
     check_file "$profile" 6 "$profile_sha"
-    check_file "$live_profile" 1274 "$live_profile_sha"
     check_file "$global_parent" 1271 "$parent_profile_sha"
     check_file "$global_candidate" 1272 "$historical_candidate_sha"
     check_file "$universe" 15 "$universe_sha"
@@ -254,6 +268,7 @@ check_inputs() {
     check_file "$parent_report" 39 "$parent_tsv_sha"
     check_file "$parent_json" 30 "$parent_json_sha"
     check_file "$transition" 33 "$transition_sha"
+    check_current_live_profile
     for file in "$universe" "$activation" "$create_realm"; do sort -c "$file"; done
     [[ "$(value quickjs)" == "$quickjs" \
         && "$(value test262)" == "$test262" \
@@ -283,7 +298,8 @@ check_inputs() {
         && "$(toml_test262_value "$upstream" test_count)" == 53125 \
         && "$(toml_test262_value "$upstream" metadata_records_sha256)" == "$metadata_sha" \
         && "$(toml_test262_value "$upstream" oxide_profile)" == "$live_profile" \
-        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" == "$live_profile_sha" ]] \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" \
+            == "$(sha "$live_profile")" ]] \
         || die 'compat/upstream.toml Test262 identity drifted'
 }
 
@@ -436,4 +452,4 @@ counts=$(awk -F'\t' '
     || die "R3ci successor host-gc partition drifted: $counts"
 
 check_inputs
-echo 'Test262 host-gc gate passes: QuickJS 28/28; Oxide passes 26 and keeps 2 createRealm rows feature-gated in the R3ci successor runtime.'
+echo 'Test262 host-gc gate passes: QuickJS 28/28; Oxide passes 26 and keeps 2 createRealm rows feature-gated in the current runtime.'

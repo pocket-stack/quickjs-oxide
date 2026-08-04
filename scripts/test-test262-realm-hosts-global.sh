@@ -9,8 +9,12 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-realm-hosts-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-binary-data-global-baseline.txt
 parent=tests/test262-realm-hosts-global-parent.conf
 candidate=tests/test262-realm-hosts-global-candidate.conf
+successor_parent=tests/test262-binary-data-global-parent.conf
+successor_candidate=tests/test262-binary-data-global-candidate.conf
+successor_gate=scripts/test-test262-current-global.sh
 live_profile=compat/test262-oxide.conf
 upstream=compat/upstream.toml
 added_features=tests/test262-realm-hosts-global-added-features.txt
@@ -32,6 +36,13 @@ candidate_full=target/test262-realm-hosts-global-candidate-full.tsv
 workers=${TEST262_WORKERS:-8}
 full_workers=${TEST262_FULL_WORKERS:-2}
 reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
+
+candidate_sha=01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75
+successor_sha=1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2
+baseline_lines=121
+baseline_sha=04a27c431883633e93cbe4abdd6eb19683ca1dce58050ab9e38365437d5fb472
+successor_baseline_lines=95
+successor_baseline_sha=0d188b3b2c0f65417e02e4c3350077f94665cb6de6e7ac4fc453750e1cfa83d6
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -71,6 +82,11 @@ canonical_value() {
     awk -F= -v wanted="$1" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
         "$canonical_baseline"
+}
+successor_value() {
+    awk -F= -v wanted="$1" \
+        '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
+        "$successor_baseline"
 }
 header() {
     awk -F= -v wanted="# $2" \
@@ -168,6 +184,60 @@ transition_counts() {
         different=0;for(i=7;i<=10;i++)if($i!=$(i+4))different=1
         if(different){changed++;if($7!=$11)outcome++;else detail++}else unchanged++
     } END{printf "changed=%d outcome=%d detail=%d unchanged=%d",changed,outcome,detail,unchanged}' "$1"
+}
+
+bridge_r3cj_successor() {
+    [[ -f "$live_profile" ]] || return 0
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$parent" 1272 "$(value runtime_parent_oxide_profile_sha256)"
+    check_file "$candidate" 1274 "$candidate_sha"
+    check_file "$added_features" 2 "$(value added_features_sha256)"
+    check_file "$universe" 312 "$(value universe_sha256)"
+    check_file "$activation" 110 "$(value activation_sha256)"
+    check_file "$historical_parent" 600 "$(value historical_parent_focused_tsv_sha256)"
+    check_file "$transition" 594 "$(value formal_transition_sha256)"
+    check_file "$successor_baseline" "$successor_baseline_lines" "$successor_baseline_sha"
+    check_file "$successor_parent" 1274 "$candidate_sha"
+    check_file "$successor_candidate" 1292 "$successor_sha"
+    cmp -s "$candidate" "$successor_parent" \
+        || die 'R3ci candidate is not byte-identical to the R3cj parent'
+    [[ "$(value candidate_oxide_profile_sha256)" == "$candidate_sha" \
+        && "$(successor_value parent_oxide_profile_sha256)" == "$candidate_sha" \
+        && "$(successor_value candidate_oxide_profile_sha256)" == "$successor_sha" \
+        && "$(successor_value parent_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value parent_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value parent_full_summary)" == "$(value candidate_full_summary)" \
+        && "$(successor_value full_changed)" == 396 \
+        && "$(successor_value full_outcome_changed)" == 386 \
+        && "$(successor_value full_detail_only)" == 10 \
+        && "$(successor_value full_pass_regressions)" == 0 ]] \
+        || die 'R3cj successor does not checksum-bridge the historical R3ci receipt'
+    if [[ "$(sha "$live_profile")" != "$successor_sha" ]]; then
+        case $mode in
+            check) "$successor_gate" --check ;;
+            focused) "$successor_gate" ;;
+            full) "$successor_gate" --full ;;
+        esac
+        echo 'Historical R3ci realm-host receipt is transitively checksum-bridged through the current successor chain.'
+        exit 0
+    fi
+    check_file "$live_profile" 1292 "$successor_sha"
+    cmp -s "$successor_candidate" "$live_profile" \
+        || die 'live Test262 profile is not byte-identical to the R3cj candidate'
+    [[ "$(canonical_value runnable)" == "$(successor_value candidate_full_runnable)" \
+        && "$(canonical_value passes)" == "$(successor_value candidate_full_passes)" \
+        && "$(canonical_value tsv_sha256)" == "$(successor_value candidate_full_tsv_sha256)" \
+        && "$(canonical_value jsonl_sha256)" == "$(successor_value candidate_full_jsonl_sha256)" \
+        && "$(canonical_value summary)" == "$(successor_value candidate_full_summary)" \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" == "$successor_sha" ]] \
+        || die 'R3cj successor does not checksum-bridge the historical R3ci receipt'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3ci realm-host receipt is checksum-bridged through the replayed R3cj successor.'
+    exit 0
 }
 
 check_profiles() {
@@ -277,6 +347,7 @@ run_report() {
 }
 
 cd -- "$root"
+bridge_r3cj_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-realm-hosts-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 check_inputs

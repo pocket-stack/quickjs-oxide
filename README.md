@@ -10,13 +10,13 @@ mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
 `Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, and `FinalizationRegistry` also
 have QuickJS-shaped constructors, protocols, weak lifetimes, and ordered
 runtime jobs.
-The 104-tag global Test262 profile admits `WeakMap`, `WeakSet`, `WeakRef`, and
+The 122-tag global Test262 profile admits `WeakMap`, `WeakSet`, `WeakRef`, and
 `FinalizationRegistry` alongside object rest, `DataView`, `Proxy`, optional
 chaining, Iterator Helpers, `globalThis`, default parameters, and the
-implemented Promise surface through checksum-bound audits. Its Test262 host
-provides real reentrant GC, recursive realm creation, and defining-realm script
-evaluation. The last admitted full vector is 64,848/102,037 with 65,020
-runnable variants.
+implemented binary-data and Promise surfaces through checksum-bound audits.
+Its Test262 host provides real reentrant GC, recursive realm creation, and
+defining-realm script evaluation. The last admitted full vector is
+65,234/102,037 with 65,406 runnable variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -59,6 +59,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-create-realm.sh
 ./scripts/test-test262-eval-script.sh
 ./scripts/test-test262-realm-hosts-global.sh
+./scripts/test-test262-current-global.sh
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
 ```

@@ -382,6 +382,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-realm-hosts-global-candidate.conf"
     ));
+    const BINARY_DATA_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-binary-data-global-parent.conf"
+    ));
+    const BINARY_DATA_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-binary-data-global-candidate.conf"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -390,14 +398,28 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 104] = [
+    const EXPECTED_FEATURES: [&str; 122] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
         "ArrayBuffer",
         "BigInt",
         "DataView",
+        "DataView.prototype.getFloat32",
+        "DataView.prototype.getFloat64",
+        "DataView.prototype.getInt16",
+        "DataView.prototype.getInt32",
+        "DataView.prototype.getInt8",
+        "DataView.prototype.getUint16",
+        "DataView.prototype.getUint32",
+        "DataView.prototype.setUint8",
         "FinalizationRegistry",
+        "Float16Array",
+        "Float32Array",
+        "Float64Array",
+        "Int16Array",
+        "Int32Array",
+        "Int8Array",
         "Map",
         "Math.sumPrecise",
         "Object.fromEntries",
@@ -438,6 +460,10 @@ mod tests {
         "Symbol.toStringTag",
         "Symbol.unscopables",
         "TypedArray",
+        "Uint16Array",
+        "Uint32Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
         "WeakMap",
         "WeakRef",
         "WeakSet",
@@ -888,6 +914,10 @@ mod tests {
             OxideProfile::parse(REALM_HOSTS_GLOBAL_PARENT_PROFILE).unwrap();
         let realm_hosts_global_candidate =
             OxideProfile::parse(REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let binary_data_global_parent =
+            OxideProfile::parse(BINARY_DATA_GLOBAL_PARENT_PROFILE).unwrap();
+        let binary_data_global_candidate =
+            OxideProfile::parse(BINARY_DATA_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1151,7 +1181,8 @@ mod tests {
             weak_ref_finalization_global_candidate
         );
         assert_eq!(realm_hosts_global_parent, host_gc_global_candidate);
-        assert_eq!(profile, realm_hosts_global_candidate);
+        assert_eq!(binary_data_global_parent, realm_hosts_global_candidate);
+        assert_eq!(profile, binary_data_global_candidate);
         assert_eq!(
             data_view_global_candidate
                 .features
@@ -1297,6 +1328,48 @@ mod tests {
         assert_eq!(
             realm_hosts_global_candidate.allows_async_execution(),
             realm_hosts_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            binary_data_global_candidate
+                .features
+                .difference(&binary_data_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "DataView.prototype.getFloat32",
+                "DataView.prototype.getFloat64",
+                "DataView.prototype.getInt16",
+                "DataView.prototype.getInt32",
+                "DataView.prototype.getInt8",
+                "DataView.prototype.getUint16",
+                "DataView.prototype.getUint32",
+                "DataView.prototype.setUint8",
+                "Float16Array",
+                "Float32Array",
+                "Float64Array",
+                "Int16Array",
+                "Int32Array",
+                "Int8Array",
+                "Uint16Array",
+                "Uint32Array",
+                "Uint8Array",
+                "Uint8ClampedArray",
+            ]
+        );
+        assert!(
+            binary_data_global_parent
+                .features
+                .difference(&binary_data_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            binary_data_global_candidate.audited_negative_tests,
+            binary_data_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            binary_data_global_candidate.allows_async_execution(),
+            binary_data_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate
