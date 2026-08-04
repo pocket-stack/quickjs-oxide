@@ -4,6 +4,61 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cn Annex B HTML-like comments
+
+R3cn enables the existing typed lexer implementation of Annex B HTML-like
+line comments for Script and Eval roots. `<!--` begins a line comment wherever
+it is encountered; `-->` does so only at the start of the source or after a
+LineTerminator. Strict scripts retain the extension. The option remains off by
+default so a future Module root cannot accidentally inherit Script grammar.
+Direct and indirect eval use the same compiler boundary, while the existing
+QuickJS-shaped dynamic-Function wrapper supplies the line breaks that decide
+parameter/body behavior. No production code was added to `runtime.rs`.
+
+The exact pinned universe contains 19 paths / 32 variants: five runtime
+activation paths / ten variants, one already-passing Function boundary / two
+variants, ten negative Script paths / 17 variants, and three Module variants.
+Pinned QuickJS passes all 32. Under the unchanged global profile Oxide now
+passes 12, keeps 17 unaudited negatives fail-closed, and leaves all three
+module rows unsupported. A separate manifest-bound scoped profile audits only
+those ten negative paths and passes 29/32, with only modules excluded.
+
+The focused parent TSV/JSONL hashes are
+`241c5d403f78728a4c1caf5b11220f8c3d7224e6fef2ad56c91b9892df996224`
+and
+`31f272c60ee8261ee4e915715aa40474abd6fc3417c8e2ff3b3c9e31c57d3eb0`;
+the global candidate hashes are
+`5e434c45148a97ff8c94b68601e42c306eb50c57e28a32b450195b8e07261d67`
+and
+`32f41a3626ff7ed81209fa33b63457ff7634b81e9f17943a5e867ebab970bf03`.
+The exact transition has ten outcome changes and 22 unchanged rows. The
+scoped 29-pass TSV/JSONL hashes are
+`d0ff8ffe6899c5006d2068c351f9bc1a36d72c37994febd515fce246c74c7389`
+and
+`966843c8af0a76e43d4dcdc68a645fa541171929a5ec5779ba6be983e5f5982d`.
+
+The global profile remains byte-identical at 124 tags and SHA-256
+`ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb`.
+The actual 102,037-row join records the same ten repairs, 102,027 unchanged
+rows, and zero prior-pass regressions. The canonical vector is now 65,322
+passes / 65,438 runnable; `fail-runtime` falls from 64 to 54. Full parent
+TSV/JSONL hashes are
+`d404fdd6e1fa7e9f19703bbdbc49bd55fddb83b744d30254349087f0a26568d5`
+and
+`2196ac6f9ca0c6f251ae0ee8987ea5351c7be076188e5b81c82055f2b2d86188`;
+candidate hashes are
+`abd85c73e941a35a990069c619e1164d1a785f537057ff5f3e1b70ab434a0c07`
+and
+`691713498774972a6539dcd6506c66be0eb4aa397bc04141d55f86594c816e3f`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-html-comments-runtime.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-html-comments-runtime.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-html-comments-runtime.sh --full
+```
+
 ## R3cm Promise proposal tag admission
 
 R3cm globally admits the pinned Test262 `promise-try` and

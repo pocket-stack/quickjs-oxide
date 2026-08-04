@@ -22,3 +22,6 @@ tests/test262-string-locale-compare-parent.tsv whitespace=-blank-at-eol
 tests/test262-string-locale-compare-transitions.tsv whitespace=-blank-at-eol
 tests/test262-promise-try-with-resolvers-global-parent.tsv whitespace=-blank-at-eol
 tests/test262-promise-try-with-resolvers-global-transitions.tsv whitespace=-blank-at-eol
+tests/test262-html-comments-runtime-parent.tsv whitespace=-blank-at-eol
+tests/test262-html-comments-runtime-scoped.tsv whitespace=-blank-at-eol
+tests/test262-html-comments-runtime-transitions.tsv whitespace=-blank-at-eol

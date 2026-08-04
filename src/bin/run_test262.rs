@@ -359,6 +359,10 @@ const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_REASON_ONLY_SHA256: &str =
     "ed2f0516639e639078a048a779dd5147d2a0d226f97dc7fd63efc947bdbb5413";
 const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_MODULE_UNCHANGED_SHA256: &str =
     "ca26a1e9b4db6cba6bff448a34b6c25b9e8f95c4e25f4b7c9f967cae1b7538ef";
+const TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256: &str =
+    "039aef2612a7d3dd2cf5a5b59ba386a0ba52d5af23149b49e365652ce155a25a";
+const TEST262_HTML_COMMENTS_MANIFEST_SHA256: &str =
+    "cefee3d124372362a146cff066bd3da2609d66db3c50a60956bc4a63351948e6";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -1016,6 +1020,7 @@ enum OxideProfileKind {
     BinaryDataGlobalCandidate,
     PromiseTryWithResolversGlobalParent,
     PromiseTryWithResolversGlobalCandidate,
+    HtmlCommentsScoped,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1367,6 +1372,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-promise-try-with-resolvers-global-candidate.conf"),
             OxideProfileKind::PromiseTryWithResolversGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-html-comments-scoped.conf"),
+            OxideProfileKind::HtmlCommentsScoped,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -2975,6 +2984,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 ),
             ],
         ),
+        OxideProfileKind::HtmlCommentsScoped => verify_scoped_pinned_profile(
+            options,
+            "HTML-like comments runtime",
+            TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256,
+            "tests/test262-html-comments.txt",
+            TEST262_HTML_COMMENTS_MANIFEST_SHA256,
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3412,7 +3428,8 @@ mod cli_tests {
         TEST262_GLOBAL_THIS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_PARENT_PROFILE_SHA256, TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256, TEST262_HOST_GC_PROFILE_SHA256,
-        TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256, TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
+        TEST262_IDENTIFIER_REST_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_PROFILE_SHA256, TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
@@ -4003,6 +4020,10 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::PromiseTryWithResolversGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-html-comments-scoped.conf")).unwrap(),
+            OxideProfileKind::HtmlCommentsScoped
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -7178,6 +7199,51 @@ mod cli_tests {
                 "tests/test262-promise-race-try-with-resolvers.txt",
                 "test/built-ins/Promise/race/length.js",
             );
+        }
+    }
+
+    #[test]
+    fn html_comments_scoped_profile_requires_its_pinned_manifest() {
+        let profile = "tests/test262-html-comments-scoped.conf";
+        let arguments = [
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            profile,
+            "--manifest",
+            "tests/test262-html-comments.txt",
+            "--report",
+            "report.tsv",
+        ];
+        let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            [
+                "--test",
+                "test/annexB/language/comments/single-line-html-open.js",
+            ],
+            [
+                "--manifest",
+                "tests/test262-html-comments-runtime-activation.txt",
+            ],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
         }
     }
 

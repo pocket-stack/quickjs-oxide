@@ -1,0 +1,43 @@
+# quickjs-oxide Test262 outcome vector v2
+# quickjs=2026-06-04
+# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+# oxide_profile_sha256=039aef2612a7d3dd2cf5a5b59ba386a0ba52d5af23149b49e365652ce155a25a
+# profile=test262-canonical-classified-v2
+# mode=both
+path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
+test/annexB/built-ins/Function/createdynfn-html-close-comment-body.js	sloppy			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-html-close-comment-body.js	strict			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-html-close-comment-params.js	sloppy			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-html-close-comment-params.js	strict			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-html-open-comment-body.js	sloppy			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-html-open-comment-body.js	strict			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-html-open-comment-params.js	sloppy			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-html-open-comment-params.js	strict			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-no-line-terminator-html-close-comment-body.js	sloppy			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-no-line-terminator-html-close-comment-body.js	strict			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-no-line-terminator-html-close-comment-params.js	sloppy			normal		pass	normal		
+test/annexB/built-ins/Function/createdynfn-no-line-terminator-html-close-comment-params.js	strict			normal		pass	normal		
+test/annexB/language/comments/multi-line-html-close.js	sloppy			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/multi-line-html-close.js	strict			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-close-asi.js	sloppy			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-close-asi.js	strict			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-close-first-line-1.js	sloppy	raw		runtime	EvalError	pass	runtime	EvalError	This is not in a comment
+test/annexB/language/comments/single-line-html-close-first-line-2.js	sloppy	raw		runtime	EvalError	pass	runtime	EvalError	This is not in a comment
+test/annexB/language/comments/single-line-html-close-first-line-3.js	sloppy	raw		runtime	EvalError	pass	runtime	EvalError	This is not in a comment
+test/annexB/language/comments/single-line-html-close-unicode-separators.js	sloppy			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-close-unicode-separators.js	strict			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-close.js	sloppy			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-close.js	strict			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-open.js	sloppy			runtime	Test262Error	pass	runtime	Test262Error	
+test/annexB/language/comments/single-line-html-open.js	strict			runtime	Test262Error	pass	runtime	Test262Error	
+test/language/comments/multi-line-html-close-extra.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
+test/language/comments/multi-line-html-close-extra.js	strict			parse	SyntaxError	pass	parse	SyntaxError	expecting ';'
+test/language/comments/single-line-html-close-without-lt.js	sloppy			parse	SyntaxError	pass	parse	SyntaxError	unexpected token in expression: '>'
+test/language/comments/single-line-html-close-without-lt.js	strict			parse	SyntaxError	pass	parse	SyntaxError	unexpected token in expression: '>'
+test/language/module-code/comment-multi-line-html-close.js	sloppy	module		parse	SyntaxError	unsupported-module	selection	ExecutionMode	missing execution capabilities: module
+test/language/module-code/comment-single-line-html-close.js	sloppy	module		parse	SyntaxError	unsupported-module	selection	ExecutionMode	missing execution capabilities: module
+test/language/module-code/comment-single-line-html-open.js	sloppy	module		parse	SyntaxError	unsupported-module	selection	ExecutionMode	missing execution capabilities: module
+# summary pass=29 unsupported-module=3

@@ -31,8 +31,8 @@ use crate::heap::{
     quickjs_copies_defined_argument_count,
 };
 use crate::lexer::{
-    Identifier, Keyword, LexContext, LexError, LexErrorKind, Lexer, LexicalGoal, NumberKind,
-    NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
+    Identifier, Keyword, LexContext, LexError, LexErrorKind, Lexer, LexerOptions, LexicalGoal,
+    NumberKind, NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
 };
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
@@ -1875,7 +1875,16 @@ impl<'source> Parser<'source> {
                 )
             }
         };
-        let mut lexer = Lexer::new(source);
+        // QuickJS enables Annex B HTML comments for every Script and Eval
+        // parse, independently of strict mode. A future Module root must keep
+        // this option disabled (`allow_html_comments = !is_module`).
+        let mut lexer = Lexer::with_options(
+            source,
+            LexerOptions {
+                allow_html_comments: true,
+                ..LexerOptions::default()
+            },
+        );
         let first_token = lexer.next_token().map_err(lex_error)?;
         let source_span = first_token.span;
         let mut parser = Self {

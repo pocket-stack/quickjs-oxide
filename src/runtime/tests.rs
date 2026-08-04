@@ -6391,6 +6391,36 @@ fn function_constructor_intrinsic_and_dynamic_source_match_quickjs() {
 }
 
 #[test]
+fn function_constructor_html_comment_boundaries_match_quickjs_wrapper() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_eq!(
+        context
+            .eval(
+                r#"[
+                    typeof Function("-->"),
+                    (function () {
+                        try {
+                            Function("-->", "");
+                            return "missing";
+                        } catch (error) {
+                            return error.name;
+                        }
+                    })(),
+                    typeof Function("\n-->", ""),
+                    typeof Function("<!--"),
+                    typeof Function("<!--", "")
+                ].join("|")"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static(
+            "function|SyntaxError|function|function|function"
+        ))
+    );
+}
+
+#[test]
 fn function_constructor_uses_defining_realm_and_new_target_prototype() {
     let runtime = Runtime::new();
     let first = runtime.new_context();

@@ -2673,6 +2673,141 @@ mod tests {
     }
 
     #[test]
+    fn annex_b_html_comments_are_explicitly_option_gated() {
+        let disabled = Lexer::new("<!-- ignored").tokenize().unwrap();
+        assert!(matches!(
+            disabled[..4],
+            [
+                Token {
+                    kind: TokenKind::Punctuator(Punctuator::Less),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Punctuator(Punctuator::Not),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Punctuator(Punctuator::Decrement),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Identifier(_),
+                    ..
+                }
+            ]
+        ));
+
+        let options = LexerOptions {
+            allow_html_comments: true,
+            ..LexerOptions::default()
+        };
+        let enabled = Lexer::with_options("value<!-- ignored\nnext", options)
+            .tokenize()
+            .unwrap();
+        let identifiers = enabled
+            .iter()
+            .filter_map(|token| match &token.kind {
+                TokenKind::Identifier(identifier) => Some(identifier.value.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(identifiers, ["value", "next"]);
+        assert!(enabled[1].line_terminator_before);
+    }
+
+    #[test]
+    fn annex_b_html_close_comment_requires_a_line_boundary() {
+        let options = LexerOptions {
+            allow_html_comments: true,
+            ..LexerOptions::default()
+        };
+
+        for separator in ['\n', '\r', '\u{2028}', '\u{2029}'] {
+            let source = format!("head{separator}--> ignored{separator}tail");
+            let tokens = Lexer::with_options(&source, options).tokenize().unwrap();
+            let identifiers = tokens
+                .iter()
+                .filter_map(|token| match &token.kind {
+                    TokenKind::Identifier(identifier) => Some(identifier.value.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(identifiers, ["head", "tail"], "{separator:?}");
+            assert!(tokens[1].line_terminator_before, "{separator:?}");
+        }
+
+        for source in [
+            "--> ignored\nvalue",
+            "   --> ignored\nvalue",
+            "/* leading */ --> ignored\nvalue",
+            "0/*\n*/--> ignored\nvalue",
+        ] {
+            let tokens = Lexer::with_options(source, options)
+                .tokenize()
+                .unwrap_or_else(|error| {
+                    panic!("HTML close comment failed for {source:?}: {error}")
+                });
+            assert!(
+                !tokens.iter().any(|token| matches!(
+                    token.kind,
+                    TokenKind::Punctuator(Punctuator::Decrement | Punctuator::Greater)
+                )),
+                "HTML close comment was tokenized for {source:?}"
+            );
+            let identifiers = tokens
+                .iter()
+                .filter_map(|token| match &token.kind {
+                    TokenKind::Identifier(identifier) => Some(identifier.value.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(identifiers, ["value"], "{source:?}");
+        }
+
+        let postfix = Lexer::with_options("count-->0", options)
+            .tokenize()
+            .unwrap();
+        assert!(matches!(
+            postfix[..4],
+            [
+                Token {
+                    kind: TokenKind::Identifier(_),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Punctuator(Punctuator::Decrement),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Punctuator(Punctuator::Greater),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Number(_),
+                    ..
+                }
+            ]
+        ));
+
+        let no_line_boundary = Lexer::with_options("; --> ignored", options)
+            .tokenize()
+            .unwrap();
+        assert!(matches!(
+            no_line_boundary[1..3],
+            [
+                Token {
+                    kind: TokenKind::Punctuator(Punctuator::Decrement),
+                    ..
+                },
+                Token {
+                    kind: TokenKind::Punctuator(Punctuator::Greater),
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
     fn unicode_line_terminators_after_identifiers_feed_asi_metadata() {
         let tokens = Lexer::new("value\u{2028}++next\u{2029}--last")
             .tokenize()

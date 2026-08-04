@@ -18,8 +18,9 @@ The 124-tag global Test262 profile admits `WeakMap`, `WeakSet`, `WeakRef`, and
 chaining, Iterator Helpers, `globalThis`, default parameters, and the
 implemented binary-data and Promise surfaces through checksum-bound audits.
 Its Test262 host provides real reentrant GC, recursive realm creation, and
-defining-realm script evaluation. The last audited full vector is
-65,312/102,037 with 65,438 runnable variants.
+defining-realm script evaluation. Script and eval parsing also implement the
+Annex B HTML-comment forms. The last audited full vector is 65,322/102,037
+with 65,438 runnable variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -64,6 +65,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-realm-hosts-global.sh
 ./scripts/test-test262-string-locale-compare.sh
 ./scripts/test-test262-promise-try-with-resolvers-global.sh
+./scripts/test-test262-html-comments-runtime.sh
 ./scripts/test-test262-current-global.sh
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
