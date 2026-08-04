@@ -36,6 +36,7 @@ use metadata::{Metadata, parse_metadata};
 use report::{WorkerResult, report_row, write_report};
 use requirements::{
     generator_destructuring_source_needs_async_guard, missing_host_capability_hints,
+    supplemental_feature_hints,
 };
 use scheduler::run_bounded;
 
@@ -47,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f";
+    "01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -320,6 +321,24 @@ const TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990";
 const TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f";
+const TEST262_CREATE_REALM_PROFILE_SHA256: &str =
+    "7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30";
+const TEST262_CREATE_REALM_MANIFEST_SHA256: &str =
+    "36730e46721af8e85b8b0db55b303eff9216083c38beb6aba19a5336cb5c1208";
+const TEST262_CREATE_REALM_ORACLE_ENVELOPE_SHA256: &str =
+    "c7ab3de36741751baaa61f234552422a74860826527d0414fc4d34c56c4093f8";
+const TEST262_CREATE_REALM_UNIVERSE_SHA256: &str =
+    "51baaf9409286fd52aebb409c83700c2da4be506b588c9ea1dc7c32e9e5c7355";
+const TEST262_EVAL_SCRIPT_PROFILE_SHA256: &str =
+    "12e106bf0b0e3ea7ed24ee81ead260185864ab69ddead54559f7fe9aed65fc4e";
+const TEST262_EVAL_SCRIPT_MANIFEST_SHA256: &str =
+    "cb1dda026b6f952cb77f0dbcdf2127ebcde8397789a63e4b4d7fb341e5b52afe";
+const TEST262_REALM_HOSTS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f";
+const TEST262_REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75";
+const TEST262_REALM_HOSTS_GLOBAL_UNIVERSE_SHA256: &str =
+    "8262c45e99d6af8cd6cba3f883a91a8031ad94478bf847202b7081420a5ee371";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -773,8 +792,10 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             oxide_profile.allows_async_execution(),
         );
         execution::WORKER_HOST_CAPABILITIES.retain_missing(&mut missing_host);
+        let mut required_features = metadata.features.clone();
+        required_features.extend(supplemental_feature_hints(&relative, &source)?);
         let capability =
-            oxide_profile.classify(&relative, &metadata.features, metadata.negative.is_some());
+            oxide_profile.classify(&relative, &required_features, metadata.negative.is_some());
         let selection_result = if let Some((outcome, detail)) = &skip {
             Some(WorkerResult::failure(outcome, "selection", "", detail))
         } else if let Some(result) = missing_host_result(&missing_host) {
@@ -967,6 +988,10 @@ enum OxideProfileKind {
     HostGc,
     HostGcGlobalParent,
     HostGcGlobalCandidate,
+    CreateRealm,
+    EvalScript,
+    RealmHostsGlobalParent,
+    RealmHostsGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1288,6 +1313,22 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
             OxideProfileKind::HostGcGlobalCandidate,
         ),
         (
+            root.join("tests/test262-create-realm.conf"),
+            OxideProfileKind::CreateRealm,
+        ),
+        (
+            root.join("tests/test262-eval-script.conf"),
+            OxideProfileKind::EvalScript,
+        ),
+        (
+            root.join("tests/test262-realm-hosts-global-parent.conf"),
+            OxideProfileKind::RealmHostsGlobalParent,
+        ),
+        (
+            root.join("tests/test262-realm-hosts-global-candidate.conf"),
+            OxideProfileKind::RealmHostsGlobalCandidate,
+        ),
+        (
             root.join("tests/test262-symbol-protocols.conf"),
             OxideProfileKind::SymbolProtocols,
         ),
@@ -1372,6 +1413,20 @@ fn verify_scoped_pinned_profile(
     manifest_relative: &str,
     manifest_sha256: &str,
 ) -> Result<&'static str, String> {
+    verify_scoped_pinned_manifests(
+        options,
+        label,
+        profile_sha256,
+        &[(manifest_relative, manifest_sha256)],
+    )
+}
+
+fn verify_scoped_pinned_manifests(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+    manifests: &[(&str, &str)],
+) -> Result<&'static str, String> {
     verify_sha256(
         &options.oxide_profile,
         profile_sha256,
@@ -1391,20 +1446,34 @@ fn verify_scoped_pinned_profile(
             manifest.display()
         )
     })?;
-    let expected = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
-        .map_err(|error| format!("resolve pinned scoped {label} manifest: {error}"))?;
-    if actual != expected {
+    for (manifest_relative, manifest_sha256) in manifests {
+        let expected =
+            fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest_relative))
+                .map_err(|error| format!("resolve pinned scoped {label} manifest: {error}"))?;
+        if actual == expected {
+            verify_sha256(
+                manifest,
+                manifest_sha256,
+                &format!("scoped {label} Test262 manifest"),
+            )?;
+            return Ok(profile_sha256);
+        }
+    }
+    if let [(manifest_relative, _)] = manifests {
         return Err(format!(
             "the scoped {label} Test262 capability profile requires {manifest_relative}, found {}",
             manifest.display()
         ));
     }
-    verify_sha256(
-        manifest,
-        manifest_sha256,
-        &format!("scoped {label} Test262 manifest"),
-    )?;
-    Ok(profile_sha256)
+    let expected = manifests
+        .iter()
+        .map(|(relative, _)| *relative)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "the scoped {label} Test262 capability profile requires one of {expected}, found {}",
+        manifest.display()
+    ))
 }
 
 fn verify_scoped_derived_profile(
@@ -2728,6 +2797,64 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_HOST_GC_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::CreateRealm => verify_scoped_pinned_manifests(
+            options,
+            "$262.createRealm host hook",
+            TEST262_CREATE_REALM_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-create-realm-activation.txt",
+                    TEST262_CREATE_REALM_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-create-realm-oracle-envelope.txt",
+                    TEST262_CREATE_REALM_ORACLE_ENVELOPE_SHA256,
+                ),
+                (
+                    "tests/test262-create-realm-universe.txt",
+                    TEST262_CREATE_REALM_UNIVERSE_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::EvalScript => verify_scoped_pinned_profile(
+            options,
+            "$262.evalScript host hook",
+            TEST262_EVAL_SCRIPT_PROFILE_SHA256,
+            "tests/test262-eval-script-activation.txt",
+            TEST262_EVAL_SCRIPT_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::RealmHostsGlobalParent => verify_tag_transition_profile(
+            options,
+            "$262.createRealm/$262.evalScript global admission",
+            "parent",
+            TEST262_REALM_HOSTS_GLOBAL_PARENT_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-realm-hosts-global-universe.txt",
+                    TEST262_REALM_HOSTS_GLOBAL_UNIVERSE_SHA256,
+                ),
+                (
+                    "tests/test262-eval-script-activation.txt",
+                    TEST262_EVAL_SCRIPT_MANIFEST_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::RealmHostsGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "$262.createRealm/$262.evalScript global admission",
+            "candidate",
+            TEST262_REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-realm-hosts-global-universe.txt",
+                    TEST262_REALM_HOSTS_GLOBAL_UNIVERSE_SHA256,
+                ),
+                (
+                    "tests/test262-eval-script-activation.txt",
+                    TEST262_EVAL_SCRIPT_MANIFEST_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3128,7 +3255,7 @@ mod cli_tests {
     use std::path::Path;
 
     use super::{
-        Invocation, OxideProfileKind, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
+        CoordinatorOptions, Invocation, OxideProfileKind, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
         TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
         TEST262_ARRAY_BUFFER_PROFILE_SHA256, TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256,
@@ -3151,11 +3278,12 @@ mod cli_tests {
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256,
-        TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_CREATE_REALM_ORACLE_ENVELOPE_SHA256, TEST262_CREATE_REALM_PROFILE_SHA256,
+        TEST262_CREATE_REALM_UNIVERSE_SHA256, TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
-        TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256,
+        TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256, TEST262_EVAL_SCRIPT_PROFILE_SHA256,
         TEST262_GENERATOR_DESTRUCTURING_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_CANDIDATE_PROFILE_SHA256,
         TEST262_GLOBAL_THIS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -3180,7 +3308,8 @@ mod cli_tests {
         TEST262_PROMISE_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_PROMISE_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
-        TEST262_REGEXP_BUILTINS_PROFILE_SHA256,
+        TEST262_REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_REALM_HOSTS_GLOBAL_PARENT_PROFILE_SHA256, TEST262_REGEXP_BUILTINS_PROFILE_SHA256,
         TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256,
@@ -3195,7 +3324,8 @@ mod cli_tests {
         TEST262_WEAK_COLLECTIONS_PROFILE_SHA256,
         TEST262_WEAK_REF_FINALIZATION_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_WEAK_REF_FINALIZATION_GLOBAL_PARENT_PROFILE_SHA256, default_worker_count,
-        identify_oxide_profile, parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
+        identify_oxide_profile, parse_args, verify_oxide_profile, verify_scoped_pinned_manifests,
+        verify_scoped_pinned_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -3207,6 +3337,24 @@ mod cli_tests {
             Ok(_) => panic!("arguments unexpectedly parsed"),
             Err(error) => error,
         }
+    }
+
+    fn scoped_profile_options(profile: &str, manifest: &str) -> CoordinatorOptions {
+        let invocation = parse(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            profile,
+            "--manifest",
+            manifest,
+            "--report",
+            "report.tsv",
+        ])
+        .unwrap();
+        let Invocation::Coordinator(options) = invocation else {
+            panic!("coordinator arguments selected another invocation");
+        };
+        options
     }
 
     #[test]
@@ -3691,6 +3839,24 @@ mod cli_tests {
             OxideProfileKind::HostGcGlobalCandidate
         );
         assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-create-realm.conf")).unwrap(),
+            OxideProfileKind::CreateRealm
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-eval-script.conf")).unwrap(),
+            OxideProfileKind::EvalScript
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-realm-hosts-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::RealmHostsGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-realm-hosts-global-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::RealmHostsGlobalCandidate
+        );
+        assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
             OxideProfileKind::SymbolProtocols
         );
@@ -3811,6 +3977,119 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-host-gc.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_create_realm_profile_is_bound_to_its_three_pinned_manifests() {
+        for manifest in [
+            "tests/test262-create-realm-activation.txt",
+            "tests/test262-create-realm-oracle-envelope.txt",
+            "tests/test262-create-realm-universe.txt",
+        ] {
+            let options = scoped_profile_options("tests/test262-create-realm.conf", manifest);
+            assert_eq!(
+                verify_oxide_profile(&options).unwrap(),
+                TEST262_CREATE_REALM_PROFILE_SHA256
+            );
+        }
+
+        let options = scoped_profile_options(
+            "tests/test262-create-realm.conf",
+            "tests/test262-create-realm-activation.txt",
+        );
+        let tamper_error = verify_scoped_pinned_manifests(
+            &options,
+            "$262.createRealm host hook",
+            TEST262_CREATE_REALM_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-create-realm-activation.txt",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+                (
+                    "tests/test262-create-realm-oracle-envelope.txt",
+                    TEST262_CREATE_REALM_ORACLE_ENVELOPE_SHA256,
+                ),
+                (
+                    "tests/test262-create-realm-universe.txt",
+                    TEST262_CREATE_REALM_UNIVERSE_SHA256,
+                ),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            tamper_error.contains("manifest checksum mismatch"),
+            "unexpected manifest tamper error: {tamper_error}"
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/language/statements/empty/empty.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-create-realm.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_eval_script_profile_is_bound_to_its_pinned_universe() {
+        let options = scoped_profile_options(
+            "tests/test262-eval-script.conf",
+            "tests/test262-eval-script-activation.txt",
+        );
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_EVAL_SCRIPT_PROFILE_SHA256
+        );
+
+        let tamper_error = verify_scoped_pinned_profile(
+            &options,
+            "$262.evalScript host hook",
+            TEST262_EVAL_SCRIPT_PROFILE_SHA256,
+            "tests/test262-eval-script-activation.txt",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(
+            tamper_error.contains("manifest checksum mismatch"),
+            "unexpected manifest tamper error: {tamper_error}"
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/language/statements/empty/empty.js"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-eval-script.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {
@@ -6673,6 +6952,31 @@ mod cli_tests {
                 &["tests/test262-host-gc-universe.txt"],
                 "tests/test262-host-gc-activation.txt",
                 "test/staging/sm/extensions/ArrayBuffer-slice-arguments-detaching.js",
+            );
+        }
+    }
+
+    #[test]
+    fn realm_host_global_profiles_require_their_pinned_manifests_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-realm-hosts-global-parent.conf",
+                TEST262_REALM_HOSTS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-realm-hosts-global-candidate.conf",
+                TEST262_REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &[
+                    "tests/test262-realm-hosts-global-universe.txt",
+                    "tests/test262-eval-script-activation.txt",
+                ],
+                "tests/test262-realm-hosts-global-activation.txt",
+                "test/built-ins/ArrayBuffer/prototype/slice/detached-buffer.js",
             );
         }
     }

@@ -12,3 +12,6 @@ tests/test262-promise-global-transitions.tsv whitespace=-blank-at-eol
 tests/test262-resizable-arraybuffer-global-transitions.tsv whitespace=-blank-at-eol
 tests/test262-uint8array-codecs-global-transitions.tsv whitespace=-blank-at-eol
 tests/test262-typed-array-global-r3bd-r3be-transitions.tsv whitespace=-blank-at-eol
+tests/test262-create-realm-transitions.tsv whitespace=-blank-at-eol
+tests/test262-eval-script-transitions.tsv whitespace=-blank-at-eol
+tests/test262-realm-hosts-global-transitions.tsv whitespace=-blank-at-eol

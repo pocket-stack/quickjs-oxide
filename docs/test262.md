@@ -6,6 +6,65 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-04.
 
+## R3ci createRealm and evalScript admission
+
+R3ci source-audits every direct `$262.createRealm` and `$262.evalScript` use in
+the pinned Test262 tree. The two direct universes are disjoint and combine to
+312 paths / 589 variants. Their path and variant-key SHA-256 values are
+`8262c45e99d6af8cd6cba3f883a91a8031ad94478bf847202b7081420a5ee371`
+and
+`0432024eb336744a11b7de5fc3a960eccae9263e7dfbf3af51d2fba5103f15cd`.
+
+The `createRealm` universe partitions exactly into:
+
+- 79 activation paths / 150 variants, all passing in Oxide;
+- 174 paths / 340 variants which retain independent missing features;
+- 11 config-excluded paths / 22 variants;
+- 17 config-skipped paths / 33 variants.
+
+Pinned QuickJS passes the wider 80-path / 152-variant oracle envelope. The two
+variants outside formal activation are the source-audited Atomics
+cross-compartment staging test; both remain `unsupported-feature` because the
+global profile does not claim Atomics or SharedArrayBuffer. The separate
+`evalScript` universe is featureless apart from its synthetic host admission
+tag: all 31 paths / 44 variants pass in both engines.
+
+The global candidate adds only `host-create-realm-required` and
+`host-eval-script-required`, growing from 102 to 104 sorted features. Parent
+and candidate keep byte-identical audited-negative and execution sections.
+Their SHA-256 values are
+`c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f`
+and
+`01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75`.
+
+The runtime-only parent preserves the R3ch totals of 64,654 passes and 64,826
+runnable variants while moving 490 createRealm and 44 evalScript selections
+from host-capability outcomes to `unsupported-feature`. Admitting the two tags
+then creates 194 passes and leaves 340 createRealm variants behind their exact
+independent feature reasons. The full join reports 534 changed rows, 101,503
+unchanged rows, and zero previous-pass regressions.
+
+The canonical full vector is 64,848 passes and 65,020 runnable variants out of
+102,037. It contains 14,206 `unsupported-feature` outcomes and no remaining
+`unsupported-host-create-realm` or `unsupported-host-eval-script` outcomes.
+The TSV/JSONL SHA-256 values are
+`2f40849011fae4f96455225e467c817c6aeeaf3cc90722d357a1d8bdddbbf3bc`
+and
+`e6c18b7d9f6ef3f42bbf86ab396b91fb64773640e932581940f43cb9754509a1`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-create-realm.sh --check
+./scripts/test-test262-create-realm.sh
+./scripts/test-test262-eval-script.sh --check
+./scripts/test-test262-eval-script.sh
+./scripts/test-test262-realm-hosts-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-realm-hosts-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-realm-hosts-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3ch host-GC admission
 
 R3ch freezes every path in the pinned Test262 tree which declares

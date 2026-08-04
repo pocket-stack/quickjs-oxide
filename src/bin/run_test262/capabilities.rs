@@ -374,6 +374,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-host-gc-global-candidate.conf"
     ));
+    const REALM_HOSTS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-realm-hosts-global-parent.conf"
+    ));
+    const REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-realm-hosts-global-candidate.conf"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -382,7 +390,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 102] = [
+    const EXPECTED_FEATURES: [&str; 104] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -455,6 +463,8 @@ mod tests {
         "generators",
         "globalThis",
         "hashbang",
+        "host-create-realm-required",
+        "host-eval-script-required",
         "host-gc-required",
         "iterator-helpers",
         "iterator-sequencing",
@@ -874,6 +884,10 @@ mod tests {
         let host_gc_global_parent = OxideProfile::parse(HOST_GC_GLOBAL_PARENT_PROFILE).unwrap();
         let host_gc_global_candidate =
             OxideProfile::parse(HOST_GC_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let realm_hosts_global_parent =
+            OxideProfile::parse(REALM_HOSTS_GLOBAL_PARENT_PROFILE).unwrap();
+        let realm_hosts_global_candidate =
+            OxideProfile::parse(REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1136,7 +1150,8 @@ mod tests {
             host_gc_global_parent,
             weak_ref_finalization_global_candidate
         );
-        assert_eq!(profile, host_gc_global_candidate);
+        assert_eq!(realm_hosts_global_parent, host_gc_global_candidate);
+        assert_eq!(profile, realm_hosts_global_candidate);
         assert_eq!(
             data_view_global_candidate
                 .features
@@ -1259,6 +1274,29 @@ mod tests {
         assert_eq!(
             host_gc_global_candidate.allows_async_execution(),
             host_gc_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            realm_hosts_global_candidate
+                .features
+                .difference(&realm_hosts_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["host-create-realm-required", "host-eval-script-required"]
+        );
+        assert!(
+            realm_hosts_global_parent
+                .features
+                .difference(&realm_hosts_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            realm_hosts_global_candidate.audited_negative_tests,
+            realm_hosts_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            realm_hosts_global_candidate.allows_async_execution(),
+            realm_hosts_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate

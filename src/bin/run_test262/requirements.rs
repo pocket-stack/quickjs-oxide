@@ -10,15 +10,22 @@ use super::metadata::Metadata;
 /// implementation has actually published the corresponding hook.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct HostCapabilities {
+    pub create_realm: bool,
     pub detach_array_buffer: bool,
+    pub eval_script: bool,
     pub gc: bool,
+    pub global: bool,
 }
 
 impl HostCapabilities {
     pub(super) fn retain_missing(self, capabilities: &mut Vec<String>) {
-        capabilities.retain(|capability| {
-            !(self.detach_array_buffer && capability == "detach-array-buffer"
-                || self.gc && capability == "gc")
+        capabilities.retain(|capability| match capability.as_str() {
+            "create-realm" => !self.create_realm,
+            "detach-array-buffer" => !self.detach_array_buffer,
+            "eval-script" => !self.eval_script,
+            "gc" => !self.gc,
+            "global" => !self.global,
+            _ => true,
         });
     }
 }
@@ -116,6 +123,50 @@ pub(super) fn missing_host_capability_hints(
     }
 
     missing.into_iter().collect()
+}
+
+/// Return pinned source-audited feature requirements omitted by Test262
+/// metadata or deliberately staged behind an explicit host-admission tag.
+///
+/// `createRealm` and `evalScript` have no standard Test262 feature tag, so
+/// synthetic tags keep newly implemented worker hooks from silently changing
+/// the global conformance vector before their admission gates. The
+/// SpiderMonkey cross-compartment Atomics staging test additionally constructs
+/// a foreign `SharedArrayBuffer` and calls `Atomics` without declaring either
+/// feature. Keep that path override exact and fail closed if its audited source
+/// shape changes.
+pub(super) fn supplemental_feature_hints(path: &Path, source: &str) -> Result<Vec<String>, String> {
+    const ATOMICS_CROSS_REALM: &str = "test/staging/sm/Atomics/cross-compartment.js";
+
+    let tokens = source_tokens(source, false);
+    let members = member_names(&tokens);
+    let mut hints = BTreeSet::new();
+    if members.contains(&"createRealm") {
+        hints.insert("host-create-realm-required".to_owned());
+    }
+    if members.contains(&"evalScript") {
+        hints.insert("host-eval-script-required".to_owned());
+    }
+
+    if path == Path::new(ATOMICS_CROSS_REALM) {
+        let has_identifier = |wanted| {
+            tokens
+                .iter()
+                .any(|token| matches!(token, SourceToken::Identifier(name) if *name == wanted))
+        };
+        if !hints.contains("host-create-realm-required")
+            || !has_identifier("Atomics")
+            || !has_identifier("SharedArrayBuffer")
+        {
+            return Err(format!(
+                "supplemental feature audit drifted for {ATOMICS_CROSS_REALM}"
+            ));
+        }
+        hints.insert("Atomics".to_owned());
+        hints.insert("SharedArrayBuffer".to_owned());
+    }
+
+    Ok(hints.into_iter().collect())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -567,7 +618,7 @@ mod tests {
 
     use super::{
         HostCapabilities, generator_destructuring_source_needs_async_guard,
-        missing_host_capability_hints,
+        missing_host_capability_hints, supplemental_feature_hints,
     };
     use crate::metadata::Metadata;
 
@@ -818,20 +869,85 @@ mod tests {
     }
 
     #[test]
-    fn installed_hosts_remove_only_their_discovered_gaps() {
+    fn installed_hosts_remove_only_their_typed_discovered_gaps() {
         let metadata = metadata(&[], &[], &["detachArrayBuffer.js"]);
         let mut missing = missing_host_capability_hints(
             Path::new("test/example.js"),
-            "$262.detachArrayBuffer(buffer); $262.gc(); $262.createRealm();",
+            "$262.createRealm(); $262.detachArrayBuffer(buffer); $262.evalScript('0'); \
+             $262.gc(); $262.global; $262.agent; $262.IsHTMLDDA;",
             &metadata,
             false,
         );
         HostCapabilities {
+            create_realm: true,
             detach_array_buffer: true,
+            eval_script: true,
             gc: true,
+            global: true,
         }
         .retain_missing(&mut missing);
-        assert_eq!(missing, ["create-realm"]);
+        assert_eq!(missing, ["agent", "is-html-dda"]);
+    }
+
+    #[test]
+    fn disabled_typed_hosts_remain_missing() {
+        let mut missing = vec![
+            "create-realm".to_owned(),
+            "detach-array-buffer".to_owned(),
+            "eval-script".to_owned(),
+            "gc".to_owned(),
+            "global".to_owned(),
+        ];
+        HostCapabilities::default().retain_missing(&mut missing);
+        assert_eq!(
+            missing,
+            [
+                "create-realm",
+                "detach-array-buffer",
+                "eval-script",
+                "gc",
+                "global",
+            ]
+        );
+    }
+
+    #[test]
+    fn atomics_cross_realm_metadata_gap_is_source_audited_and_exact() {
+        let path = Path::new("test/staging/sm/Atomics/cross-compartment.js");
+        let source = r#"
+            const otherGlobal = $262.createRealm().global;
+            const buffer = new otherGlobal.SharedArrayBuffer(4);
+            Atomics.load(new otherGlobal.Int32Array(buffer), 0);
+        "#;
+        assert_eq!(
+            supplemental_feature_hints(path, source).unwrap(),
+            ["Atomics", "SharedArrayBuffer", "host-create-realm-required"]
+        );
+        assert_eq!(
+            supplemental_feature_hints(Path::new("test/example.js"), source).unwrap(),
+            ["host-create-realm-required"]
+        );
+        assert!(supplemental_feature_hints(path, "$262.createRealm(); Atomics.load;").is_err());
+    }
+
+    #[test]
+    fn realm_host_admission_tags_are_source_scoped_and_ignore_hidden_text() {
+        assert_eq!(
+            supplemental_feature_hints(
+                Path::new("test/example.js"),
+                "$262.evalScript('0'); $262.createRealm();"
+            )
+            .unwrap(),
+            ["host-create-realm-required", "host-eval-script-required"]
+        );
+        assert!(
+            supplemental_feature_hints(
+                Path::new("test/example.js"),
+                r#""$262.createRealm"; /* $262.evalScript */ 0;"#
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]

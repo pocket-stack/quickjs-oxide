@@ -5,10 +5,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use quickjs_oxide::{
-    CompileOptions, Context, DescriptorField, ErrorKind, OrdinaryPropertyDescriptor, Runtime,
-    RuntimeError, Value,
-};
+use quickjs_oxide::{CompileOptions, Context, ErrorKind, Runtime, RuntimeError, Value};
 
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
@@ -16,8 +13,11 @@ use super::requirements::HostCapabilities;
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
 pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
+    create_realm: true,
     detach_array_buffer: true,
+    eval_script: true,
     gc: true,
+    global: true,
 };
 
 const WORKER_HOST_FILENAME: &str = "<test262-worker-host>";
@@ -448,145 +448,9 @@ fn install_worker_host(
     context
         .execute(&function)
         .map_err(|error| worker_host_error(runtime, context, "execute", error))?;
-    install_test262_hosts(runtime, context)
-}
-
-fn install_test262_hosts(runtime: &Runtime, context: &mut Context) -> Result<(), String> {
-    let object_262 = match context.new_object() {
-        Ok(object) => object,
-        Err(error) => return Err(worker_host_error(runtime, context, "create $262", error)),
-    };
-    let detach_array_buffer = match context.new_detach_array_buffer_function() {
-        Ok(function) => function,
-        Err(error) => {
-            return Err(worker_host_error(
-                runtime,
-                context,
-                "create $262.detachArrayBuffer",
-                error,
-            ));
-        }
-    };
-    let detach_array_buffer_key = runtime
-        .intern_property_key("detachArrayBuffer")
-        .map_err(|error| format!("intern Test262 host detachArrayBuffer key: {error}"))?;
-    let defined = match context.define_own_property(
-        &object_262,
-        &detach_array_buffer_key,
-        &worker_host_data_property(Value::Object(detach_array_buffer.as_object().clone())),
-    ) {
-        Ok(defined) => defined,
-        Err(error) => {
-            return Err(worker_host_error(
-                runtime,
-                context,
-                "define $262.detachArrayBuffer",
-                error,
-            ));
-        }
-    };
-    if !defined {
-        return Err("Test262 worker host rejected $262.detachArrayBuffer".to_owned());
-    }
-
-    let code_point_range = match context.new_code_point_range_function() {
-        Ok(function) => function,
-        Err(error) => {
-            return Err(worker_host_error(
-                runtime,
-                context,
-                "create $262.codePointRange",
-                error,
-            ));
-        }
-    };
-    let code_point_range_key = runtime
-        .intern_property_key("codePointRange")
-        .map_err(|error| format!("intern Test262 host codePointRange key: {error}"))?;
-    let defined = match context.define_own_property(
-        &object_262,
-        &code_point_range_key,
-        &worker_host_data_property(Value::Object(code_point_range.as_object().clone())),
-    ) {
-        Ok(defined) => defined,
-        Err(error) => {
-            return Err(worker_host_error(
-                runtime,
-                context,
-                "define $262.codePointRange",
-                error,
-            ));
-        }
-    };
-    if !defined {
-        return Err("Test262 worker host rejected $262.codePointRange".to_owned());
-    }
-
-    let gc = match context.new_test262_gc_function() {
-        Ok(function) => function,
-        Err(error) => {
-            return Err(worker_host_error(runtime, context, "create $262.gc", error));
-        }
-    };
-    let gc_key = runtime
-        .intern_property_key("gc")
-        .map_err(|error| format!("intern Test262 host gc key: {error}"))?;
-    let defined = match context.define_own_property(
-        &object_262,
-        &gc_key,
-        &worker_host_data_property(Value::Object(gc.as_object().clone())),
-    ) {
-        Ok(defined) => defined,
-        Err(error) => {
-            return Err(worker_host_error(runtime, context, "define $262.gc", error));
-        }
-    };
-    if !defined {
-        return Err("Test262 worker host rejected $262.gc".to_owned());
-    }
-
-    let object_262_key = runtime
-        .intern_property_key("$262")
-        .map_err(|error| format!("intern Test262 host $262 key: {error}"))?;
-    let global = match context.global_object() {
-        Ok(global) => global,
-        Err(error) => {
-            return Err(worker_host_error(
-                runtime,
-                context,
-                "get Test262 global",
-                error,
-            ));
-        }
-    };
-    let defined = match context.define_own_property(
-        &global,
-        &object_262_key,
-        &worker_host_data_property(Value::Object(object_262)),
-    ) {
-        Ok(defined) => defined,
-        Err(error) => {
-            return Err(worker_host_error(
-                runtime,
-                context,
-                "define global $262",
-                error,
-            ));
-        }
-    };
-    if !defined {
-        return Err("Test262 worker host rejected global $262".to_owned());
-    }
-    Ok(())
-}
-
-fn worker_host_data_property(value: Value) -> OrdinaryPropertyDescriptor {
-    OrdinaryPropertyDescriptor {
-        value: DescriptorField::Present(value),
-        writable: DescriptorField::Present(true),
-        enumerable: DescriptorField::Present(true),
-        configurable: DescriptorField::Present(true),
-        ..OrdinaryPropertyDescriptor::new()
+    match context.install_test262_host() {
+        Ok(_) => Ok(()),
+        Err(error) => Err(worker_host_error(runtime, context, "install $262", error)),
     }
 }
 
@@ -1017,28 +881,48 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
 flags: [raw]
 ---*/
 if (typeof $262 !== "object" ||
+    typeof $262.createRealm !== "function" ||
     typeof $262.detachArrayBuffer !== "function" ||
+    typeof $262.evalScript !== "function" ||
     typeof $262.codePointRange !== "function" ||
-    typeof $262.gc !== "function") {
+    typeof $262.gc !== "function" ||
+    $262.global !== globalThis) {
     throw new Error("QuickJS Test262 host surface is missing");
 }
 var globalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "$262");
+var createRealmDescriptor = Object.getOwnPropertyDescriptor($262, "createRealm");
 var detachDescriptor = Object.getOwnPropertyDescriptor($262, "detachArrayBuffer");
+var evalScriptDescriptor = Object.getOwnPropertyDescriptor($262, "evalScript");
 var helperDescriptor = Object.getOwnPropertyDescriptor($262, "codePointRange");
 var gcDescriptor = Object.getOwnPropertyDescriptor($262, "gc");
+var hostGlobalDescriptor = Object.getOwnPropertyDescriptor($262, "global");
 if (!globalDescriptor.writable || !globalDescriptor.enumerable ||
-    !globalDescriptor.configurable || !detachDescriptor.writable ||
+    !globalDescriptor.configurable || !createRealmDescriptor.writable ||
+    !createRealmDescriptor.enumerable || !createRealmDescriptor.configurable ||
+    !detachDescriptor.writable ||
     !detachDescriptor.enumerable || !detachDescriptor.configurable ||
+    !evalScriptDescriptor.writable || !evalScriptDescriptor.enumerable ||
+    !evalScriptDescriptor.configurable ||
     !helperDescriptor.writable ||
     !helperDescriptor.enumerable || !helperDescriptor.configurable ||
     !gcDescriptor.writable || !gcDescriptor.enumerable ||
-    !gcDescriptor.configurable) {
+    !gcDescriptor.configurable || !hostGlobalDescriptor.writable ||
+    !hostGlobalDescriptor.enumerable || !hostGlobalDescriptor.configurable) {
     throw new Error("QuickJS host property flags changed");
+}
+if ($262.createRealm.name !== "createRealm" ||
+    $262.createRealm.length !== 0 ||
+    Object.getPrototypeOf($262.createRealm) !== Function.prototype) {
+    throw new Error("QuickJS createRealm function metadata changed");
 }
 if ($262.detachArrayBuffer.name !== "detachArrayBuffer" ||
     $262.detachArrayBuffer.length !== 1 ||
     Object.getPrototypeOf($262.detachArrayBuffer) !== Function.prototype) {
     throw new Error("QuickJS detachArrayBuffer function metadata changed");
+}
+if ($262.evalScript.name !== "evalScript" || $262.evalScript.length !== 1 ||
+    Object.getPrototypeOf($262.evalScript) !== Function.prototype) {
+    throw new Error("QuickJS evalScript function metadata changed");
 }
 if ($262.codePointRange.name !== "codePointRange" ||
     $262.codePointRange.length !== 2 ||
@@ -1050,6 +934,15 @@ if ($262.gc.name !== "gc" || $262.gc.length !== 0 ||
     throw new Error("QuickJS gc function metadata changed");
 }
 var constructorThrew = false;
+try {
+    new $262.createRealm();
+} catch (error) {
+    constructorThrew = error instanceof TypeError;
+}
+if (!constructorThrew) {
+    throw new Error("QuickJS createRealm became constructible");
+}
+constructorThrew = false;
 try {
     new $262.codePointRange(0, 1);
 } catch (error) {
@@ -1066,6 +959,15 @@ try {
 }
 if (!constructorThrew) {
     throw new Error("QuickJS detachArrayBuffer became constructible");
+}
+constructorThrew = false;
+try {
+    new $262.evalScript("0");
+} catch (error) {
+    constructorThrew = error instanceof TypeError;
+}
+if (!constructorThrew) {
+    throw new Error("QuickJS evalScript became constructible");
 }
 constructorThrew = false;
 try {
@@ -1087,6 +989,74 @@ var activeResult = (function activeFrame() {
 })();
 if (activeResult !== 42) {
     throw new Error("QuickJS gc released an active frame root");
+}
+
+var parentJobRan = false;
+Promise.resolve().then(function() { parentJobRan = true; });
+var child = $262.createRealm();
+if (parentJobRan) {
+    throw new Error("QuickJS createRealm drained the parent job queue");
+}
+if (typeof child !== "object" || child === $262 ||
+    child.global === globalThis || child.global === $262.global ||
+    child.global.Object === Object || child.global.Function === Function ||
+    child.global.TypeError === TypeError || child.global.Promise === Promise) {
+    throw new Error("QuickJS createRealm did not create distinct realm intrinsics");
+}
+if (child.global.$262 !== child || child.global.$262.global !== child.global ||
+    child.global.globalThis !== child.global ||
+    Object.getPrototypeOf(child) !== child.global.Object.prototype) {
+    throw new Error("QuickJS child $262/global relationship changed");
+}
+if (child.createRealm.name !== "createRealm" || child.createRealm.length !== 0 ||
+    Object.getPrototypeOf(child.createRealm) !== child.global.Function.prototype ||
+    child.evalScript.name !== "evalScript" || child.evalScript.length !== 1 ||
+    Object.getPrototypeOf(child.evalScript) !== child.global.Function.prototype) {
+    throw new Error("QuickJS child host function realm or metadata changed");
+}
+
+if ($262.evalScript("21 * 2") !== 42 ||
+    $262.evalScript("globalThis") !== globalThis ||
+    child.evalScript.call($262, "21 * 2") !== 42 ||
+    child.evalScript.call($262, "globalThis") !== child.global) {
+    throw new Error("QuickJS evalScript completion or defining realm changed");
+}
+var childObject = child.evalScript("({ answer: 42 })");
+if (childObject.answer !== 42 || childObject instanceof Object ||
+    !(childObject instanceof child.global.Object) ||
+    Object.getPrototypeOf(childObject) !== child.global.Object.prototype) {
+    throw new Error("QuickJS evalScript returned an object from the wrong realm");
+}
+var childError;
+try {
+    child.evalScript.call($262, "throw new TypeError('child realm')");
+} catch (error) {
+    childError = error;
+}
+if (!childError || childError instanceof TypeError ||
+    !(childError instanceof child.global.TypeError) ||
+    Object.getPrototypeOf(childError) !== child.global.TypeError.prototype) {
+    throw new Error("QuickJS evalScript threw an error from the wrong realm");
+}
+
+child.evalScript(
+    "globalThis.childJobRan = false; " +
+    "Promise.resolve().then(function() { childJobRan = true; });"
+);
+var grandchild = child.createRealm();
+if (grandchild === child || grandchild.global === child.global ||
+    grandchild.global.$262 !== grandchild ||
+    grandchild.global.$262.global !== grandchild.global ||
+    Object.getPrototypeOf(grandchild.createRealm) !==
+        grandchild.global.Function.prototype ||
+    Object.getPrototypeOf(grandchild.evalScript) !==
+        grandchild.global.Function.prototype) {
+    throw new Error("QuickJS recursive createRealm host installation changed");
+}
+$262.gc();
+child.gc();
+if (parentJobRan || child.global.childJobRan) {
+    throw new Error("QuickJS host hooks drained active Promise jobs");
 }
 
 var ordinary = {};

@@ -1,0 +1,157 @@
+# Scoped $262.createRealm host-hook admission transition.
+# before_oxide_profile_sha256=7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30
+# after_oxide_profile_sha256=7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30
+# manifest_sha256=c7ab3de36741751baaa61f234552422a74860826527d0414fc4d34c56c4093f8
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/BigInt/detached-buffer-throws-realm.js	sloppy		align-detached-buffer-semantics-with-web-reality,BigInt,TypedArray	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/BigInt/detached-buffer-throws-realm.js	strict		align-detached-buffer-semantics-with-web-reality,BigInt,TypedArray	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/detached-buffer-throws-realm.js	sloppy		align-detached-buffer-semantics-with-web-reality,TypedArray	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/detached-buffer-throws-realm.js	strict		align-detached-buffer-semantics-with-web-reality,TypedArray	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/harness/assert-throws-same-realm.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/harness/assert-throws-same-realm.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/harness/asyncHelpers-throwsAsync-same-realm.js	sloppy	async		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/harness/asyncHelpers-throwsAsync-same-realm.js	strict	async		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/change-array-by-copy-cross-compartment-create.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/change-array-by-copy-cross-compartment-create.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/change-array-by-copy-errors-from-correct-realm.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/change-array-by-copy-errors-from-correct-realm.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/from_realms.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/from_realms.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/isArray.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/isArray.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/species.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Array/species.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/ArrayBuffer/slice-species.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/ArrayBuffer/slice-species.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Atomics/cross-compartment.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics, SharedArrayBuffer
+test/staging/sm/Atomics/cross-compartment.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics, SharedArrayBuffer
+test/staging/sm/Date/constructor-one-Date-argument.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Date/constructor-one-Date-argument.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Date/defaultvalue.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Date/defaultvalue.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Error/AggregateError.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Error/AggregateError.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Function/arguments-iterator.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/from/wrap-functions-on-other-global.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/from/wrap-functions-on-other-global.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/from/wrap-new-global.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/from/wrap-new-global.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/every/error-from-correct-realm.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/every/error-from-correct-realm.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/find/error-from-correct-realm.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/find/error-from-correct-realm.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/forEach/error-from-correct-realm.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/forEach/error-from-correct-realm.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/iterator-helpers-from-other-global.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/iterator-helpers-from-other-global.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/lazy-methods-from-other-global.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/lazy-methods-from-other-global.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/reduce/error-from-correct-realm.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/reduce/error-from-correct-realm.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/some/error-from-correct-realm.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/some/error-from-correct-realm.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/toArray/create-in-current-realm.js	sloppy		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Iterator/prototype/toArray/create-in-current-realm.js	strict		iterator-helpers	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Promise/bug-1289040.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Promise/bug-1289040.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Proxy/proxy-with-revoked-arguments.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Proxy/proxy-with-revoked-arguments.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Reflect/apply.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Reflect/construct.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Reflect/construct.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Reflect/ownKeys.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Reflect/ownKeys.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Reflect/set.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Reflect/set.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/constructor-constructor.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/constructor-constructor.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/constructor-regexp.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/constructor-regexp.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/cross-compartment-getter.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/cross-compartment-getter.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/prototype-different-global.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/RegExp/prototype-different-global.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/String/iterator_edge_cases.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/String/iterator_edge_cases.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/String/matchAll.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/String/matchAll.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/String/replaceAll.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/String/replaceAll.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Symbol/realms.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Symbol/realms.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Symbol/toPrimitive.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Symbol/toPrimitive.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Symbol/well-known.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/Symbol/well-known.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/Tconstructor-fromTypedArray-byteLength.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/Tconstructor-fromTypedArray-byteLength.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/at.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/at.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/constructor-ArrayBuffer-species-wrap.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/constructor-ArrayBuffer-species-wrap.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/constructor-buffer-sequence.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/constructor-buffer-sequence.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/constructor-typedarray-species-other-global.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/constructor-typedarray-species-other-global.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/entries.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/entries.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/every-and-some.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/fill.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/fill.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/forEach.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/from_realms.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/from_realms.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/includes.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/includes.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/iterator-next-with-detached.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/iterator-next-with-detached.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/iterator.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/iterator.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/join.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/keys.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/keys.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/map-and-filter.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/of.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/of.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/reduce-and-reduceRight.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/reverse.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/reverse.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/set-wrapped.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/set-wrapped.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/slice-bitwise-same.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/slice-bitwise-same.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/slice-memcpy.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/slice-memcpy.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/slice.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/slice.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort-negative-nan.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort-negative-nan.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort_byteoffset.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort_byteoffset.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort_errors.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort_errors.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort_globals.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/sort_globals.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/toLocaleString.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/toLocaleString.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/toStringTag-cross-compartment.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/toStringTag-cross-compartment.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/values.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/TypedArray/values.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/class/extendBuiltinConstructors.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/class/extendBuiltinConstructors.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/class/newTargetCCW.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/class/newTargetCCW.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/class/superPropProxies.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/class/superPropProxies.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/extensions/cross-global-eval-is-indirect.js	sloppy	noStrict		normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/extensions/dataview.js	sloppy		host-gc-required	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/extensions/dataview.js	strict		host-gc-required	normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/extensions/new-cross-compartment.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/extensions/new-cross-compartment.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/object/setPrototypeOf-cross-realm-cycle.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/object/setPrototypeOf-cross-realm-cycle.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/regress/regress-636364.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/regress/regress-636364.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/syntax/yield-as-identifier.js	sloppy			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		
+test/staging/sm/syntax/yield-as-identifier.js	strict			normal		unsupported-host-create-realm	selection	HostCapability	missing execution capabilities: create-realm	pass	normal		

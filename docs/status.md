@@ -4,6 +4,69 @@ Last audited: 2026-08-04. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ci recursive Test262 realm hosts
+
+R3ci implements QuickJS 2026-06-04's Test262-only `$262.createRealm` and
+`$262.evalScript` hooks. A created realm is a new context in the same runtime;
+its returned `$262` object keeps that context alive and recursively exposes
+`createRealm`, `evalScript`, `detachArrayBuffer`, `gc`, `codePointRange`, and
+`global`. Host functions are non-constructible and defining-realm bound.
+`evalScript` preserves its realm's global and lexical state, returns the raw
+completion value, and does not implicitly drain pending jobs. The runtime gate
+also covers nested realms, exception prototypes, realm-specific intrinsics,
+job provenance, and collection after the last exported realm object dies.
+
+The source audit finds 281 direct `createRealm` paths / 545 variants. Pinned
+QuickJS passes the 80-path / 152-variant oracle envelope. Oxide passes the
+formally admitted 79 paths / 150 variants; the two excluded staging variants
+also require the still-unimplemented Atomics/SharedArrayBuffer surface. The
+remaining direct paths are kept visible as 340 reason-only variants, 22 config
+exclusions, and 33 config feature skips. The independent `evalScript` audit
+contains 31 paths / 44 variants, all of which pass in pinned QuickJS and Oxide.
+
+Global admission adds exactly `host-create-realm-required` and
+`host-eval-script-required` to the prior 102-feature profile. The 104-feature
+candidate retains all 1,157 audited negative paths and the same async policy;
+its SHA-256 is
+`01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75`.
+The exhaustive source union has 312 paths / 589 variants. It includes the
+entire direct host universe, not just the 110 activation paths, so the gate
+also authenticates every residual-feature diagnostic.
+
+Three exact joins separate runtime installation from profile admission:
+
+- historical R3ch to the current-runtime parent reclassifies 534 old host
+  selections as fail-closed feature gaps without changing pass or runnable
+  counts;
+- runtime parent to candidate adds 194 passes and changes only the remaining
+  feature detail on 340 variants; 55 config-selected variants are unchanged;
+- historical R3ch to candidate has 534 outcome changes and no other changed
+  row.
+
+The complete join changes exactly those 534 rows, leaves the other 101,503
+byte-identical, and has zero prior-pass regression. The canonical vector is
+now 64,848 passes with 65,020 runnable variants out of 102,037. Its TSV/JSONL
+SHA-256 values are
+`2f40849011fae4f96455225e467c817c6aeeaf3cc90722d357a1d8bdddbbf3bc`
+and
+`e6c18b7d9f6ef3f42bbf86ab396b91fb64773640e932581940f43cb9754509a1`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-create-realm.sh --check
+./scripts/test-test262-create-realm.sh
+./scripts/test-test262-eval-script.sh --check
+./scripts/test-test262-eval-script.sh
+./scripts/test-test262-realm-hosts-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-realm-hosts-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-realm-hosts-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+SharedArrayBuffer/Atomics, agent coordination, HTMLDDA, modules, and the broader
+engine surface remain explicit parity frontiers.
+
 ## R3ch reentrant Test262 host GC
 
 R3ch implements QuickJS 2026-06-04's Test262-only `js_gc` callback as a real

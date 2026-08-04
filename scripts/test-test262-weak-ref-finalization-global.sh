@@ -11,10 +11,14 @@ root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-weak-ref-finalization-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
 successor_baseline=tests/test262-host-gc-global-baseline.txt
+latest_baseline=tests/test262-realm-hosts-global-baseline.txt
 parent=tests/test262-weak-ref-finalization-global-parent.conf
 candidate=tests/test262-weak-ref-finalization-global-candidate.conf
 successor_parent=tests/test262-host-gc-global-parent.conf
 successor_candidate=tests/test262-host-gc-global-candidate.conf
+latest_parent=tests/test262-realm-hosts-global-parent.conf
+latest_candidate=tests/test262-realm-hosts-global-candidate.conf
+latest_gate=scripts/test-test262-host-gc-global.sh
 live_profile=compat/test262-oxide.conf
 upstream=compat/upstream.toml
 added_features=tests/test262-weak-ref-finalization-candidate-features.txt
@@ -40,6 +44,7 @@ metadata_sha=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
 parent_sha=3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef
 candidate_sha=8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990
 successor_sha=c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f
+latest_sha=01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75
 added_features_sha=0a462001d5a51db3b103ccdadfad17076941c5a5f7f163d767bedec5fc471406
 parent_features_sha=a892ce31bef675386670419a9410e6086c24f1edd9f8e14f6c793d8bfb07503b
 candidate_features_sha=82f8c1c3f217e45d3e02b60776bad5ec8268b8270a608990906802c38c8ce139
@@ -65,6 +70,7 @@ successor_full_jsonl_sha=f5270e02f19cfb1ab5fc7a5ba5020e15a1ee0cea947914d7656766a
 successor_full_summary='fail-parse=11 fail-runtime=110 pass=64654 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=13866 unsupported-host-agent=118 unsupported-host-can-block-false=4 unsupported-host-create-realm=490 unsupported-host-eval-script=44 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3451 unsupported-parser=26 unsupported-runtime=23'
 baseline_sha=d1758cc0bdcb82c06b63335f8becdd75496be6f100305afd70d9c58c9edf2e2d
 successor_baseline_sha=28d20acc469f482e0fb139db9b615f15bf5b2a1e93b16fd5c260627ecfe9a0ff
+latest_baseline_sha=04a27c431883633e93cbe4abdd6eb19683ca1dce58050ab9e38365437d5fb472
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -119,6 +125,7 @@ kv_value() {
 value() { kv_value "$baseline" "$1"; }
 canonical_value() { kv_value "$canonical_baseline" "$1"; }
 successor_value() { kv_value "$successor_baseline" "$1"; }
+latest_value() { kv_value "$latest_baseline" "$1"; }
 toml_test262_value() {
     awk -v wanted="$2" '
         $0 == "[test262]" { inside=1; next }
@@ -541,7 +548,61 @@ run_report() {
         --timeout-ms 30000 --allow-failures
 }
 
+bridge_r3ci_successor() {
+    [[ -f "$live_profile" && "$(sha "$live_profile")" == "$latest_sha" ]] \
+        || return 0
+    check_file "$baseline" 82 "$baseline_sha"
+    check_file "$parent" 1269 "$parent_sha"
+    check_file "$candidate" 1271 "$candidate_sha"
+    check_file "$added_features" 2 "$added_features_sha"
+    check_file "$universe" 82 "$universe_sha"
+    check_file "$activation" 79 "$activation_sha"
+    check_file "$for_of" 1 "$for_of_sha"
+    check_file "$create_realm" 2 "$create_realm_sha"
+    check_file "$transition" 169 "$(value transition_receipt_sha256)"
+    check_file "$successor_baseline" 103 "$successor_baseline_sha"
+    check_file "$successor_parent" 1271 "$candidate_sha"
+    check_file "$successor_candidate" 1272 "$successor_sha"
+    check_file "$latest_baseline" 121 "$latest_baseline_sha"
+    check_file "$latest_parent" 1272 "$successor_sha"
+    check_file "$latest_candidate" 1274 "$latest_sha"
+    check_file "$live_profile" 1274 "$latest_sha"
+    cmp -s "$candidate" "$successor_parent" \
+        || die 'R3cg candidate is not byte-identical to the R3ch parent'
+    cmp -s "$successor_candidate" "$latest_parent" \
+        || die 'R3ch candidate is not byte-identical to the R3ci parent'
+    cmp -s "$latest_candidate" "$live_profile" \
+        || die 'live Test262 profile is not byte-identical to the R3ci candidate'
+    [[ "$(value candidate_oxide_profile_sha256)" == "$candidate_sha" \
+        && "$(successor_value historical_parent_oxide_profile_sha256)" == "$candidate_sha" \
+        && "$(successor_value candidate_oxide_profile_sha256)" == "$successor_sha" \
+        && "$(successor_value historical_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value historical_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
+        && "$(latest_value historical_parent_oxide_profile_sha256)" == "$successor_sha" \
+        && "$(latest_value candidate_oxide_profile_sha256)" == "$latest_sha" \
+        && "$(latest_value historical_full_tsv_sha256)" == "$(successor_value candidate_full_tsv_sha256)" \
+        && "$(latest_value historical_full_jsonl_sha256)" == "$(successor_value candidate_full_jsonl_sha256)" \
+        && "$(latest_value runtime_parent_to_candidate_full_outcome_changes)" == 194 \
+        && "$(latest_value runtime_parent_to_candidate_full_detail_changes)" == 340 \
+        && "$(latest_value runtime_parent_to_candidate_full_pass_regressions)" == 0 \
+        && "$(canonical_value runnable)" == "$(latest_value candidate_full_runnable)" \
+        && "$(canonical_value passes)" == "$(latest_value candidate_full_passes)" \
+        && "$(canonical_value tsv_sha256)" == "$(latest_value candidate_full_tsv_sha256)" \
+        && "$(canonical_value jsonl_sha256)" == "$(latest_value candidate_full_jsonl_sha256)" \
+        && "$(canonical_value summary)" == "$(latest_value candidate_full_summary)" \
+        && "$(toml_test262_value "$upstream" oxide_profile_sha256)" == "$latest_sha" ]] \
+        || die 'R3ci successor chain does not checksum-bridge the historical R3cg receipt'
+    case $mode in
+        check) "$latest_gate" --check ;;
+        focused) "$latest_gate" ;;
+        full) "$latest_gate" --full ;;
+    esac
+    echo 'Historical R3cg WeakRef/FinalizationRegistry receipt is checksum-bridged through R3ch into the replayed R3ci successor.'
+    exit 0
+}
+
 cd -- "$root"
+bridge_r3ci_successor
 [[ -f "$baseline" ]] || die "missing gate baseline: $baseline"
 while IFS=: read -r key expected; do
     [[ "$(value "$key")" == "$expected" ]] \

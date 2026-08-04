@@ -29,7 +29,8 @@ patch_sha=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 config_sha=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 metadata_sha=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
 parent_profile_sha=8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990
-live_profile_sha=c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f
+live_profile_sha=01f936b9f5e0b920f10119a73f7e8ea52450863f113fff6542f3f241ed914d75
+historical_candidate_sha=c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f
 profile_sha=496a4bc7538454b8b14e361d922679d401a5be0ed3af4b2be0cdbf1a3761ed99
 profile_features_sha=ef3dd040cc4be53129ef57f369eb7bceaf46e51fa5ddd2c77b1677bbdf930fd8
 universe_sha=4ab5a2feb62b100afd4aa5e6afd9f418c415142a1678d1c2c1c9de9d1553c630
@@ -44,9 +45,11 @@ parent_tsv_sha=6bfffe4686469f4e129aba88bf18b0ac13d1c97ef9d31d8afc013c03dd33e917
 parent_json_sha=a3a354d2e1bd8bc030e7f4e96db94cfea5e33966c4481674639e82b4d16d3216
 candidate_tsv_sha=78ba543fd816f68a82ce264353478bc94dc4dfa067663d88d80a44fc51699211
 candidate_json_sha=a3ae18bfc094bb7957cf45adaa3efa42830163e2eed912f9b754f6fe60ee770e
+successor_candidate_tsv_sha=df68f77260e3ce6828b42948d0974eeda05e5056aa89434380f82bbff2d98ad5
+successor_candidate_json_sha=f3ef207701b629537b6f9529b9f3ee5de4387f1b448f482c1e2fb01e6bb6c45d
 transition_sha=a1bad8f21025d99ff186c1f4823d97f0624ccf3b62f42f4d461a9f6a7c9f0252
 transition_data_sha=d349016f4b72388e1324c32bee65b845538d524f276ed46cf177f155343649ee
-baseline_sha=a82f8b244f00f3ad77c8385e81f3726c68e1ab715bef7c5d92ebd2c415ce5fcc
+baseline_sha=ee07e73b49c52eadae7198ec80780923237ef4d42b282b967e379e923989833a
 
 usage() {
     printf 'usage: %s [--check]\n' "${0##*/}"
@@ -240,13 +243,11 @@ verify_report() {
 }
 
 check_inputs() {
-    check_file "$baseline" 63 "$baseline_sha"
+    check_file "$baseline" 68 "$baseline_sha"
     check_file "$profile" 6 "$profile_sha"
-    check_file "$live_profile" 1272 "$live_profile_sha"
+    check_file "$live_profile" 1274 "$live_profile_sha"
     check_file "$global_parent" 1271 "$parent_profile_sha"
-    check_file "$global_candidate" 1272 "$live_profile_sha"
-    cmp -s "$live_profile" "$global_candidate" \
-        || die 'live Test262 profile is not byte-identical to the admitted host-gc candidate'
+    check_file "$global_candidate" 1272 "$historical_candidate_sha"
     check_file "$universe" 15 "$universe_sha"
     check_file "$activation" 14 "$activation_sha"
     check_file "$create_realm" 1 "$create_realm_sha"
@@ -258,9 +259,15 @@ check_inputs() {
         && "$(value test262)" == "$test262" \
         && "$(value parent_oxide_profile_sha256)" == "$parent_profile_sha" \
         && "$(value live_oxide_profile_sha256)" == "$live_profile_sha" \
+        && "$(value historical_global_candidate_profile)" == "$global_candidate" \
+        && "$(value historical_global_candidate_profile_sha256)" == "$historical_candidate_sha" \
         && "$(value candidate_tsv_sha256)" == "$candidate_tsv_sha" \
         && "$(value candidate_jsonl_sha256)" == "$candidate_json_sha" \
-        && "$(value transition_sha256)" == "$transition_sha" ]] \
+        && "$(value successor_candidate_tsv_sha256)" == "$successor_candidate_tsv_sha" \
+        && "$(value successor_candidate_jsonl_sha256)" == "$successor_candidate_json_sha" \
+        && "$(value successor_candidate_summary)" == 'pass=26 unsupported-feature=2' \
+        && "$(value transition_sha256)" == "$transition_sha" \
+        && "$(value transition_data_sha256)" == "$transition_data_sha" ]] \
         || die 'focused baseline identity drifted'
     [[ "$(section "$profile" features | wc -l | tr -d '[:space:]')" == 1 \
         && "$(section "$profile" features | sha /dev/stdin)" == "$profile_features_sha" \
@@ -401,55 +408,32 @@ cmp -s "$report" "$repeat_report" \
     && cmp -s "${report%.tsv}.jsonl" "${repeat_report%.tsv}.jsonl" \
     || die 'focused host-gc receipts are not repeatable across worker counts'
 verify_report "$report" "${report%.tsv}.jsonl" "$profile_sha" \
-    "$candidate_tsv_sha" "$candidate_json_sha"
-[[ "$(report_summary "$report")" == 'pass=26 unsupported-host-create-realm=2' \
+    "$successor_candidate_tsv_sha" "$successor_candidate_json_sha"
+[[ "$(report_summary "$report")" == 'pass=26 unsupported-feature=2' \
     && "$(report_runnable "$report")" == 26 \
     && "$(report_count pass "$report")" == 26 \
-    && "$(report_count unsupported-host-create-realm "$report")" == 2 ]] \
-    || die 'candidate host-gc receipt semantics drifted'
+    && "$(report_count unsupported-feature "$report")" == 2 ]] \
+    || die 'R3ci successor host-gc receipt semantics drifted'
 
-generated=$tmp/transitions.tsv
-{
-    echo '# R3ch scoped $262.gc host-hook admission transition.'
-    echo "# before_oxide_profile_sha256=$parent_profile_sha"
-    echo "# after_oxide_profile_sha256=$profile_sha"
-    echo "# manifest_sha256=$universe_sha"
-    printf 'path\tvariant\tflags\tfeatures\texpected_phase\texpected_type\tbefore_outcome\tbefore_actual_phase\tbefore_actual_type\tbefore_detail\tafter_outcome\tafter_actual_phase\tafter_actual_type\tafter_detail\n'
-    awk -F'\t' 'BEGIN{OFS="\t"}
-        NR==FNR{if(!/^#/&&!($1=="path"&&$2=="variant"))old[$1 FS $2]=$0;next}
-        !/^#/&&!($1=="path"&&$2=="variant"){
-            split(old[$1 FS $2],a,FS)
-            print $1,$2,$3,$4,$5,$6,a[7],a[8],a[9],a[10],$7,$8,$9,$10
-        }' "$parent_report" "$report"
-} >"$generated"
-[[ "$(sha "$generated")" == "$transition_sha" \
-    && "$(report_rows "$generated" | sha /dev/stdin)" == "$transition_data_sha" ]] \
-    || die 'generated host-gc transition checksum drifted'
-diff -u "$transition" "$generated"
 counts=$(awk -F'\t' '
     NR==FNR{class[$0]="activation";next}
     FILENAME==ARGV[2]{class[$0]="create-realm";next}
     /^#/||($1=="path"&&$2=="variant"){next}
     {
-        kind=class[$1];different=0;for(i=7;i<=10;i++)if($i!=$(i+4))different=1
+        kind=class[$1]
         if(kind=="activation"){
-            if($7!="unsupported-host-gc"||$8!="selection"||$9!="HostCapability"||
-                $10!="missing execution capabilities: gc"||$11!="pass"||
-                $12!="normal"||$13!=""||$14!="")exit 2
+            if($7!="pass"||$8!="normal"||$9!=""||$10!="")exit 2
             activation++
         }else if(kind=="create-realm"){
-            if($7!="unsupported-host-create-realm"||$8!="selection"||$9!="HostCapability"||
-                $10!="missing execution capabilities: create-realm, gc"||
-                $11!="unsupported-host-create-realm"||$12!="selection"||
-                $13!="HostCapability"||$14!="missing execution capabilities: create-realm")exit 3
+            if($7!="unsupported-feature"||$8!="selection"||$9!="EngineCapability"||
+                $10!="quickjs-oxide does not declare Test262 feature support: host-create-realm-required")exit 3
             realm++
         }else exit 4
-        if(different){changed++;if($7!=$11)outcome++;else detail++}else unchanged++
     }
-    END{printf "activation=%d realm=%d changed=%d outcome=%d detail=%d unchanged=%d",activation,realm,changed,outcome,detail,unchanged}
-' "$activation" "$create_realm" "$generated") || die 'host-gc transition semantics drifted'
-[[ "$counts" == 'activation=26 realm=2 changed=28 outcome=26 detail=2 unchanged=0' ]] \
-    || die "host-gc transition partition drifted: $counts"
+    END{printf "activation=%d realm=%d",activation,realm}
+' "$activation" "$create_realm" "$report") || die 'R3ci successor host-gc semantics drifted'
+[[ "$counts" == 'activation=26 realm=2' ]] \
+    || die "R3ci successor host-gc partition drifted: $counts"
 
 check_inputs
-echo 'Test262 host-gc gate passes: QuickJS 28/28; Oxide 0/28 -> 26/28, with 2 createRealm host-priority rows retained and repeatable receipts.'
+echo 'Test262 host-gc gate passes: QuickJS 28/28; Oxide passes 26 and keeps 2 createRealm rows feature-gated in the R3ci successor runtime.'

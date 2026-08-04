@@ -102,6 +102,9 @@ QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 ./scripts/test-host-gc-reentrant-oracle.sh --check
 ./scripts/test-test262-host-gc.sh
 ./scripts/test-test262-host-gc-global.sh
+./scripts/test-test262-create-realm.sh
+./scripts/test-test262-eval-script.sh
+./scripts/test-test262-realm-hosts-global.sh
 ./scripts/test-test262-symbol-protocols.sh
 ./scripts/test-test262-array-binding-flat.sh
 ./scripts/test-test262-array-binding-nested.sh
