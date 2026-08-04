@@ -13,6 +13,11 @@ node_dir="${repo_root}/target/web-playground-node"
 
 cd "${repo_root}"
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "ripgrep (rg) is required for the playground anti-delegation gate" >&2
+  exit 1
+fi
+
 if ! grep -Fqx 'quickjs-oxide = { path = "../.." }' web/wasm/Cargo.toml; then
   echo "web wrapper must path-depend on the repository's quickjs-oxide crate" >&2
   exit 1
@@ -72,6 +77,7 @@ const expected = new Map([
   ["class", { kind: "number", text: "42" }],
   ["promise", { kind: "boolean", text: "true" }],
   ["weak-map", { kind: "number", text: "42" }],
+  ["weak-ref", { kind: "number", text: "42" }],
   ["array-pipeline", { kind: "number", text: "42" }],
 ]);
 

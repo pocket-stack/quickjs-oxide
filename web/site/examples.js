@@ -76,6 +76,14 @@ answers.set(key, answers.get(key) + 2);
 answers.get(key);`,
   },
   {
+    id: "weak-ref",
+    label: "WeakRef dereference",
+    source: `var target = { answer: 42 };
+var reference = new WeakRef(target);
+
+reference.deref().answer;`,
+  },
+  {
     id: "array-pipeline",
     label: "Array pipeline",
     source: `[3, 7, 11]

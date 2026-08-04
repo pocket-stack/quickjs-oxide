@@ -24,6 +24,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+
       - name: Install Rust and the WebAssembly target
         run: |
           rustup toolchain install stable --profile minimal
