@@ -375,6 +375,16 @@ const TEST262_HTML_COMMENTS_ALREADY_PASS_SHA256: &str =
     "4df0fa19cbed1b6a97e53d9fc3326db5ea2403ab9aa8ba4c99f1a0ec2fccee13";
 const TEST262_HTML_COMMENTS_MODULE_UNCHANGED_SHA256: &str =
     "81931fd362c33baf4a87190bbba12c3483826f7d532f41af99b373c3e7bbbdd4";
+const TEST262_DEBUGGER_STATEMENT_SCOPED_PROFILE_SHA256: &str =
+    "d27b119673ecb5b03e43f22a8da466f8cf251f7fc5bcfaf59911095687fb5120";
+const TEST262_DEBUGGER_STATEMENT_MANIFEST_SHA256: &str =
+    "2c16707fc0b9e5a73d1ba7114ae5fc7fbc6cf3bedf534e984a09f64f20c9a24b";
+const TEST262_DEBUGGER_STATEMENT_ACTIVATION_SHA256: &str =
+    "9b479760765f6d1f10157cf3e16e03d7f52d6d0f65c9231094983eb5dff4889b";
+const TEST262_DEBUGGER_STATEMENT_ALREADY_PASS_SHA256: &str =
+    "a7bda874232cecde93a93353beeec56f0bf905f9452eedf34aa5e3713b4956d7";
+const TEST262_DEBUGGER_STATEMENT_NEGATIVE_PENDING_SHA256: &str =
+    "67d1cf8f442e51b2c71e9b943ec87a297d866070f1899e671e57bf2d06feb25e";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -1035,6 +1045,7 @@ enum OxideProfileKind {
     HtmlCommentsScoped,
     HtmlCommentsGlobalParent,
     HtmlCommentsGlobalCandidate,
+    DebuggerStatementScoped,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1398,6 +1409,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-html-comments-global-candidate.conf"),
             OxideProfileKind::HtmlCommentsGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-debugger-statement-scoped.conf"),
+            OxideProfileKind::DebuggerStatementScoped,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -3069,6 +3084,29 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 ),
             ],
         ),
+        OxideProfileKind::DebuggerStatementScoped => verify_scoped_pinned_manifests(
+            options,
+            "debugger statement",
+            TEST262_DEBUGGER_STATEMENT_SCOPED_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-debugger-statement.txt",
+                    TEST262_DEBUGGER_STATEMENT_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-activation.txt",
+                    TEST262_DEBUGGER_STATEMENT_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-already-pass.txt",
+                    TEST262_DEBUGGER_STATEMENT_ALREADY_PASS_SHA256,
+                ),
+                (
+                    "tests/test262-debugger-statement-negative-pending.txt",
+                    TEST262_DEBUGGER_STATEMENT_NEGATIVE_PENDING_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3497,6 +3535,7 @@ mod cli_tests {
         TEST262_CREATE_REALM_ORACLE_ENVELOPE_SHA256, TEST262_CREATE_REALM_PROFILE_SHA256,
         TEST262_CREATE_REALM_UNIVERSE_SHA256, TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
+        TEST262_DEBUGGER_STATEMENT_SCOPED_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256, TEST262_EVAL_SCRIPT_PROFILE_SHA256,
@@ -4116,6 +4155,11 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::HtmlCommentsGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-debugger-statement-scoped.conf"))
+                .unwrap(),
+            OxideProfileKind::DebuggerStatementScoped
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -7364,6 +7408,44 @@ mod cli_tests {
                 "tests/test262-html-comments-negative-pending.txt",
                 "test/annexB/language/comments/single-line-html-open.js",
             );
+        }
+    }
+
+    #[test]
+    fn debugger_statement_scoped_profile_requires_an_exact_pinned_manifest() {
+        let profile = "tests/test262-debugger-statement-scoped.conf";
+        for manifest in [
+            "tests/test262-debugger-statement.txt",
+            "tests/test262-debugger-statement-activation.txt",
+            "tests/test262-debugger-statement-already-pass.txt",
+            "tests/test262-debugger-statement-negative-pending.txt",
+        ] {
+            let options = scoped_profile_options(profile, manifest);
+            assert_eq!(
+                verify_oxide_profile(&options).unwrap(),
+                TEST262_DEBUGGER_STATEMENT_SCOPED_PROFILE_SHA256
+            );
+        }
+
+        for selection in [
+            ["--test", "test/language/statements/debugger/statement.js"],
+            ["--manifest", "tests/test262-object-methods.txt"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let arguments = [
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                profile,
+                selection[0],
+                selection[1],
+                "--report",
+                "report.tsv",
+            ];
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
         }
     }
 

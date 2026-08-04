@@ -1,0 +1,4 @@
+test/language/expressions/assignment/member-expr-ident-name-debugger-escaped.js
+test/language/expressions/object/covered-ident-name-prop-name-literal-debugger-escaped.js
+test/language/expressions/object/ident-name-method-def-debugger-escaped.js
+test/language/expressions/object/ident-name-prop-name-literal-debugger-escaped.js

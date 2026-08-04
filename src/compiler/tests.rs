@@ -2192,6 +2192,67 @@ fn direct_and_indirect_eval_roots_enable_annex_b_html_comments() {
 }
 
 #[test]
+fn debugger_statement_is_an_asi_noop_that_preserves_eval_completion() {
+    for (source, expected) in [
+        ("40; debugger;", 40),
+        ("40; debugger", 40),
+        ("40; { debugger }", 40),
+        ("debugger\n42", 42),
+        ("debugger\r42", 42),
+        ("debugger\u{2028}42", 42),
+        ("debugger\u{2029}42", 42),
+        ("while (false) debugger; 42", 42),
+        ("if (true) debugger\n42", 42),
+        ("label: debugger\n42", 42),
+        (r#""use strict"; 40; debugger"#, 40),
+        ("\"use strict\"\ndebugger\n42", 42),
+    ] {
+        assert_eq!(
+            evaluate_in_context(source),
+            Value::Int(expected),
+            "{source:?}"
+        );
+    }
+
+    assert_eq!(
+        evaluate_in_context("(function () { debugger; return 42; })()"),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn debugger_remains_reserved_outside_statement_grammar() {
+    for (source, expected_message) in [
+        ("(debugger);", "unexpected token in expression: 'debugger'"),
+        ("debugger + 1;", "expecting ';'"),
+        ("var debugger = 1;", "variable name expected"),
+        ("let debugger = 1;", "expecting ';'"),
+        (r"deb\u0075gger;", "'debugger' is a reserved identifier"),
+        (r"deb\u0075gger: 42;", "'debugger' is a reserved identifier"),
+        (
+            r"var deb\u0075gger = 1;",
+            "'debugger' is a reserved identifier",
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
+        assert_eq!(error.message(), expected_message, "{source:?}");
+    }
+
+    assert_eq!(
+        evaluate_in_context(
+            r"({ debugger: 20 }).deb\u0075gger
+                + ({ deb\u0075gger() { return 22; } }).debugger()"
+        ),
+        Value::Int(42)
+    );
+    assert_eq!(
+        evaluate_in_context(r"class C { deb\u0075gger() { return 42; } } new C().debugger()"),
+        Value::Int(42)
+    );
+}
+
+#[test]
 fn ordinary_function_body_lexicals_execute_local_capture_and_constructor_paths() {
     assert_eq!(
         evaluate_in_context(

@@ -6,6 +6,37 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3cp debugger statement runtime parity
+
+R3cp freezes the complete pinned `debugger` statement cohort at ten paths / 20
+variants. Pinned QuickJS passes all 20. Its parser treats the statement as an
+ASI-terminated no-op: it consumes `debugger`, emits no bytecode, and therefore
+preserves a prior eval completion value. Oxide now matches that behavior while
+continuing to reject reserved-identifier uses and accept escaped
+IdentifierName property and method uses.
+
+The unchanged global profile records ten passes out of the 20 variants; the
+exact scoped profile audits the five negative paths and records 20/20 passes.
+The focused join repairs the two sloppy/strict statement variants and leaves
+the remaining 18 rows unchanged.
+
+Across all 102,037 variants, the same two outcomes change, 102,035 rows stay
+byte-identical, and no previous pass regresses. The canonical vector is now
+65,341 passes / 65,455 runnable; `unsupported-parser` falls from 26 to 24.
+Full candidate TSV/JSONL hashes are
+`362690ef82273724b8a5a24247e7529060051e63a5a43671d37e30909da0f779`
+and
+`b61846b93d222f52ded5dd28c1a849c566dceb7d855d49e3e2a8f899046cff13`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-debugger-statement.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-debugger-statement.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-debugger-statement.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3co HTML-like-comments negative provenance admission
 
 R3co admits the ten negative Script paths authenticated by the R3cn scoped

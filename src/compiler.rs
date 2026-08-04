@@ -2056,8 +2056,18 @@ impl<'source> Parser<'source> {
                 }
             }
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw_statement(),
+            TokenKind::Keyword(Keyword::Debugger) => self.parse_debugger_statement(),
             _ => self.parse_expression_statement(completion),
         }
+    }
+
+    /// QuickJS 2026-06-04 `js_parse_statement_or_decl(TOK_DEBUGGER)` has no
+    /// debugger hook: it advances past the keyword, applies ordinary ASI, and
+    /// emits no bytecode. In particular, an eval root keeps the last non-empty
+    /// statement completion instead of replacing it with `undefined`.
+    fn parse_debugger_statement(&mut self) -> Result<(), Error> {
+        self.advance()?;
+        self.consume_statement_terminator()
     }
 
     fn parse_hoistable_function_declaration(
@@ -6439,7 +6449,8 @@ impl<'source> Parser<'source> {
                 | Keyword::Case
                 | Keyword::Default
                 | Keyword::Catch
-                | Keyword::Finally),
+                | Keyword::Finally
+                | Keyword::Debugger),
             ) => {
                 return Err(self.syntax_here(format!(
                     "unexpected token in expression: '{}'",

@@ -4,6 +4,38 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cp debugger statement runtime parity
+
+R3cp implements QuickJS 2026-06-04's `debugger` statement semantics. QuickJS
+has no debugger hook in this path: parsing advances past the keyword, applies
+ordinary automatic semicolon insertion, and emits no bytecode. Oxide now does
+the same in Script, Eval, function bodies, labels, and single-statement
+contexts. Because the statement is a no-op, eval preserves the last non-empty
+completion value. `debugger` remains reserved outside statement grammar, while
+escaped IdentifierName property and method uses remain valid.
+
+The exhaustive pinned cohort contains ten paths / 20 variants, and pinned
+QuickJS passes all 20. Under the unchanged global profile Oxide passes ten
+variants; the exact scoped profile authenticates the five negative paths and
+passes all 20. The focused runtime transition repairs the two sloppy/strict
+`debugger`-statement variants and leaves the other 18 rows unchanged.
+
+Across the complete 102,037-row vector, exactly those two outcomes change,
+102,035 rows remain byte-identical, and no previous pass regresses. The
+canonical scoreboard is 65,341 passes / 65,455 runnable, while
+`unsupported-parser` falls from 26 to 24. Full candidate TSV/JSONL hashes are
+`362690ef82273724b8a5a24247e7529060051e63a5a43671d37e30909da0f779`
+and
+`b61846b93d222f52ded5dd28c1a849c566dceb7d855d49e3e2a8f899046cff13`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-debugger-statement.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-debugger-statement.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-debugger-statement.sh --full
+```
+
 ## R3co Annex B HTML-like-comment global admission
 
 R3co globally admits the ten negative Script paths / 17 variants whose parse
