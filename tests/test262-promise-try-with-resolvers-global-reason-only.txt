@@ -1,0 +1,2 @@
+test/built-ins/Promise/try/ctx-ctor.js
+test/built-ins/Promise/withResolvers/ctx-ctor.js

@@ -390,6 +390,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-binary-data-global-candidate.conf"
     ));
+    const PROMISE_TRY_WITH_RESOLVERS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-promise-try-with-resolvers-global-parent.conf"
+    ));
+    const PROMISE_TRY_WITH_RESOLVERS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-promise-try-with-resolvers-global-candidate.conf"
+    ));
     const DEFAULT_PARAMETERS_STRICT_BODY: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-default-parameters-strict-body.txt"
@@ -398,7 +406,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 122] = [
+    const EXPECTED_FEATURES: [&str; 124] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.includes",
@@ -503,6 +511,8 @@ mod tests {
         "object-spread",
         "optional-catch-binding",
         "optional-chaining",
+        "promise-try",
+        "promise-with-resolvers",
         "regexp-dotall",
         "regexp-duplicate-named-groups",
         "regexp-lookbehind",
@@ -918,6 +928,10 @@ mod tests {
             OxideProfile::parse(BINARY_DATA_GLOBAL_PARENT_PROFILE).unwrap();
         let binary_data_global_candidate =
             OxideProfile::parse(BINARY_DATA_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let promise_try_with_resolvers_global_parent =
+            OxideProfile::parse(PROMISE_TRY_WITH_RESOLVERS_GLOBAL_PARENT_PROFILE).unwrap();
+        let promise_try_with_resolvers_global_candidate =
+            OxideProfile::parse(PROMISE_TRY_WITH_RESOLVERS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1182,7 +1196,11 @@ mod tests {
         );
         assert_eq!(realm_hosts_global_parent, host_gc_global_candidate);
         assert_eq!(binary_data_global_parent, realm_hosts_global_candidate);
-        assert_eq!(profile, binary_data_global_candidate);
+        assert_eq!(
+            promise_try_with_resolvers_global_parent,
+            binary_data_global_candidate
+        );
+        assert_eq!(profile, promise_try_with_resolvers_global_candidate);
         assert_eq!(
             data_view_global_candidate
                 .features
@@ -1370,6 +1388,29 @@ mod tests {
         assert_eq!(
             binary_data_global_candidate.allows_async_execution(),
             binary_data_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            promise_try_with_resolvers_global_candidate
+                .features
+                .difference(&promise_try_with_resolvers_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["promise-try", "promise-with-resolvers"]
+        );
+        assert!(
+            promise_try_with_resolvers_global_parent
+                .features
+                .difference(&promise_try_with_resolvers_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            promise_try_with_resolvers_global_candidate.audited_negative_tests,
+            promise_try_with_resolvers_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            promise_try_with_resolvers_global_candidate.allows_async_execution(),
+            promise_try_with_resolvers_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate

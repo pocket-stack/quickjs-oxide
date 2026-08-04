@@ -6,6 +6,55 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3cm Promise.try and Promise.withResolvers admission
+
+R3cm adds exactly `promise-try` and `promise-with-resolvers` to the global
+profile, growing it from 122 to 124 feature tags. The parent and candidate
+profile SHA-256 values are
+`1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2`
+and
+`ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb`.
+Their audited-negative and execution sections are byte-identical.
+
+The complete metadata universe is 21 paths / 39 variants. Its path and key
+hashes are
+`5a6ee02c250ba64bc4869702634f6f858442d4543dec4aaccf9b8766f66b2dab`
+and
+`6bbc93692001799e4acdf3142397346b798359726a7cf67c1eea66e976b1bbb0`.
+It partitions without overlap into 16 activation paths / 32 variants, two
+class-dependent paths / four reason-only variants, and three top-level-await
+module paths / three variants. Pinned QuickJS passes all 39. Oxide passes the
+32 activation variants, keeps only `class` on the four reason-only rows, and
+leaves the module rows unchanged. The pre-existing broader Promise gate also
+remains 224/224 pass.
+
+The focused parent has `unsupported-feature=36 unsupported-module=3`; the
+candidate has `pass=32 unsupported-feature=4 unsupported-module=3`. Its exact
+transition contains 32 outcome changes, four detail-only changes, and three
+unchanged rows. The transition TSV SHA-256 is
+`73e918eec307ecc9294f0ac62201954413cc0f8532c010ab4d5dca12371f3e18`.
+
+Across all 102,037 variants, the same 36 rows change, 102,001 remain
+byte-identical, and no previous pass regresses. The canonical vector is now
+65,312 passes and 65,438 runnable variants; `unsupported-feature` falls to
+13,788. Full parent TSV/JSONL hashes are
+`ef3b88f82d4e65f55b584731f1cf78e7b734baf467639a6e18028f405c77ee56`
+and
+`81d1071fe7dc47e0e2a874641bea28bc5b707d17690c764194231a838de75d66`;
+candidate hashes are
+`d404fdd6e1fa7e9f19703bbdbc49bd55fddb83b744d30254349087f0a26568d5`
+and
+`2196ac6f9ca0c6f251ae0ee8987ea5351c7be076188e5b81c82055f2b2d86188`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-promise-try-with-resolvers-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-promise-try-with-resolvers-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-promise-try-with-resolvers-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cl String.prototype.localeCompare runtime parity
 
 R3cl freezes every direct non-Intl `String.prototype.localeCompare` path in

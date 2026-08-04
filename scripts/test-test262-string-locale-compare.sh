@@ -10,6 +10,8 @@ root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-string-locale-compare-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
 predecessor_baseline=tests/test262-string-normalize-baseline.txt
+successor_baseline=tests/test262-promise-try-with-resolvers-global-baseline.txt
+successor_gate=scripts/test-test262-promise-try-with-resolvers-global.sh
 upstream=compat/upstream.toml
 profile=compat/test262-oxide.conf
 universe=tests/test262-string-locale-compare-universe.txt
@@ -69,6 +71,7 @@ value_from() {
 value() { value_from "$baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
 predecessor_value() { value_from "$predecessor_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -259,6 +262,57 @@ check_manifests() {
     [[ -z "$(uniq -d "$tmp/gate.partition")" ]] || die 'localeCompare manifests overlap'
 }
 
+bridge_r3cm_successor() {
+    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
+        || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$successor_baseline" 117 \
+        2e553253d317438316a9cad9c9e8ea60f8bbe5db6809dee8c9530b9de3fba369
+    [[ -x "$successor_gate" ]] \
+        || die 'missing R3cm Promise proposal successor gate'
+    [[ "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" \
+            == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" \
+            == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" \
+            == "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value runtime_commit)" \
+            == 7c8f7c0fe82390b6aa4f24721b57df01b6ecde66 \
+        && "$(successor_value parent_profile_sha256)" \
+            == "$(value oxide_profile_sha256)" \
+        && "$(successor_value full_variants)" == "$(value full_variants)" \
+        && "$(successor_value full_keys_sha256)" == "$(value full_keys_sha256)" \
+        && "$(successor_value parent_full_runnable)" \
+            == "$(value anticipated_candidate_full_runnable)" \
+        && "$(successor_value parent_full_passes)" \
+            == "$(value anticipated_candidate_full_passes)" \
+        && "$(successor_value parent_full_tsv_sha256)" \
+            == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value parent_full_jsonl_sha256)" \
+            == "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value parent_full_summary)" \
+            == "$(value candidate_full_summary)" \
+        && "$(successor_value full_changed)" == 36 \
+        && "$(successor_value full_outcome_changed)" == 32 \
+        && "$(successor_value full_detail_only)" == 4 \
+        && "$(successor_value full_unchanged)" == 102001 \
+        && "$(successor_value full_pass_regressions)" == 0 ]] \
+        || die 'R3cm successor does not checksum-bridge the historical R3cl receipt'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3cl localeCompare receipt is checksum-bridged through the R3cm Promise proposal admission.'
+    exit 0
+}
+
 check_inputs() {
     check_file "$baseline" "$baseline_lines" "$baseline_sha"
     check_file "$predecessor_baseline" "$predecessor_baseline_lines" "$predecessor_baseline_sha"
@@ -334,6 +388,7 @@ verify_quickjs() {
 }
 
 cd -- "$root"
+bridge_r3cm_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-string-locale-compare.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 check_inputs

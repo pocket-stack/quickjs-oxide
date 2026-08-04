@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2";
+    "ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -347,6 +347,18 @@ const TEST262_BINARY_DATA_GLOBAL_UNIVERSE_SHA256: &str =
     "180891c61576e604beec526e36928735380c31d431a3035cb343c9985ebc4c99";
 const TEST262_BINARY_DATA_GLOBAL_ACTIVATION_SHA256: &str =
     "5e22576fac2bde0ed541662c1dfb521a9c13bec2fe35d672be7c33eeb348e363";
+const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "1e39c157e444f60f0a44f4fd373ad63147d814986cde5f08c4f5b33d8f5839a2";
+const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb";
+const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_UNIVERSE_SHA256: &str =
+    "5a6ee02c250ba64bc4869702634f6f858442d4543dec4aaccf9b8766f66b2dab";
+const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_ACTIVATION_SHA256: &str =
+    "68b7b256386d94f1c90826dca6b8a04ec2cd885fa4ac8c3ab9fd5db211a42015";
+const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_REASON_ONLY_SHA256: &str =
+    "ed2f0516639e639078a048a779dd5147d2a0d226f97dc7fd63efc947bdbb5413";
+const TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_MODULE_UNCHANGED_SHA256: &str =
+    "ca26a1e9b4db6cba6bff448a34b6c25b9e8f95c4e25f4b7c9f967cae1b7538ef";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -1002,6 +1014,8 @@ enum OxideProfileKind {
     RealmHostsGlobalCandidate,
     BinaryDataGlobalParent,
     BinaryDataGlobalCandidate,
+    PromiseTryWithResolversGlobalParent,
+    PromiseTryWithResolversGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1345,6 +1359,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-binary-data-global-candidate.conf"),
             OxideProfileKind::BinaryDataGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-promise-try-with-resolvers-global-parent.conf"),
+            OxideProfileKind::PromiseTryWithResolversGlobalParent,
+        ),
+        (
+            root.join("tests/test262-promise-try-with-resolvers-global-candidate.conf"),
+            OxideProfileKind::PromiseTryWithResolversGlobalCandidate,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -2905,6 +2927,54 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 ),
             ],
         ),
+        OxideProfileKind::PromiseTryWithResolversGlobalParent => verify_tag_transition_profile(
+            options,
+            "Promise.try/Promise.withResolvers global admission",
+            "parent",
+            TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_PARENT_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-promise-try-with-resolvers-global.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_UNIVERSE_SHA256,
+                ),
+                (
+                    "tests/test262-promise-try-with-resolvers-global-activation.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-promise-try-with-resolvers-global-reason-only.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_REASON_ONLY_SHA256,
+                ),
+                (
+                    "tests/test262-promise-try-with-resolvers-global-module-unchanged.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_MODULE_UNCHANGED_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::PromiseTryWithResolversGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "Promise.try/Promise.withResolvers global admission",
+            "candidate",
+            TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-promise-try-with-resolvers-global.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_UNIVERSE_SHA256,
+                ),
+                (
+                    "tests/test262-promise-try-with-resolvers-global-activation.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_ACTIVATION_SHA256,
+                ),
+                (
+                    "tests/test262-promise-try-with-resolvers-global-reason-only.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_REASON_ONLY_SHA256,
+                ),
+                (
+                    "tests/test262-promise-try-with-resolvers-global-module-unchanged.txt",
+                    TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_MODULE_UNCHANGED_SHA256,
+                ),
+            ],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3359,8 +3429,10 @@ mod cli_tests {
         TEST262_PROMISE_ANY_PROFILE_SHA256, TEST262_PROMISE_FINALLY_PROFILE_SHA256,
         TEST262_PROMISE_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_PROMISE_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256, TEST262_PROXY_PROFILE_SHA256,
-        TEST262_REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_PROMISE_RACE_TRY_WITH_RESOLVERS_PROFILE_SHA256,
+        TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_PROXY_PROFILE_SHA256, TEST262_REALM_HOSTS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_REALM_HOSTS_GLOBAL_PARENT_PROFILE_SHA256, TEST262_REGEXP_BUILTINS_PROFILE_SHA256,
         TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_RESIZABLE_ARRAYBUFFER_GLOBAL_PARENT_PROFILE_SHA256,
@@ -3917,6 +3989,20 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-binary-data-global-candidate.conf"))
                 .unwrap(),
             OxideProfileKind::BinaryDataGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-promise-try-with-resolvers-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::PromiseTryWithResolversGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-promise-try-with-resolvers-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::PromiseTryWithResolversGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -7064,6 +7150,33 @@ mod cli_tests {
                 ],
                 "tests/test262-binary-data-global-authenticated.txt",
                 "test/built-ins/DataView/prototype/getFloat32/length.js",
+            );
+        }
+    }
+
+    #[test]
+    fn promise_try_with_resolvers_global_profiles_require_their_pinned_manifests_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-promise-try-with-resolvers-global-parent.conf",
+                TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-promise-try-with-resolvers-global-candidate.conf",
+                TEST262_PROMISE_TRY_WITH_RESOLVERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &[
+                    "tests/test262-promise-try-with-resolvers-global.txt",
+                    "tests/test262-promise-try-with-resolvers-global-activation.txt",
+                    "tests/test262-promise-try-with-resolvers-global-reason-only.txt",
+                    "tests/test262-promise-try-with-resolvers-global-module-unchanged.txt",
+                ],
+                "tests/test262-promise-race-try-with-resolvers.txt",
+                "test/built-ins/Promise/race/length.js",
             );
         }
     }

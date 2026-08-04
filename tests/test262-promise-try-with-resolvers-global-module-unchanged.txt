@@ -1,0 +1,3 @@
+test/language/module-code/top-level-await/fulfillment-order.js
+test/language/module-code/top-level-await/rejection-order.js
+test/language/module-code/top-level-await/unobservable-global-async-evaluation-count-reset.js

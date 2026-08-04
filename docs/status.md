@@ -4,6 +4,57 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cm Promise proposal tag admission
+
+R3cm globally admits the pinned Test262 `promise-try` and
+`promise-with-resolvers` metadata tags. This milestone changes no runtime
+code: `Promise.try` and `Promise.withResolvers` were already implemented and
+covered by the earlier 112-path Promise static-method gate. Its frozen Oxide
+receipt remains 224/224 pass, with TSV/JSONL SHA-256 values
+`350e8f80d30a1942e44595c1e771b5e0008fd33aa2f93d6d2345e219d5bb6968`
+and
+`4058a876e0f05e0ff0b07d6ae6a5b4886ea9dca3ebbe178c758221aa371df6ca`.
+
+The metadata-derived global universe contains 21 paths / 39 variants. It
+partitions into 16 activation paths / 32 variants, two class-dependent paths /
+four reason-only variants, and three top-level-await module variants. Pinned
+QuickJS passes all 39. Under the candidate profile Oxide passes all 32
+activation variants; the class variants retain only their independent `class`
+reason, and the module variants remain byte-identical. The focused transition
+therefore has 32 outcome changes, four detail-only changes, and three
+unchanged rows. Parent TSV/JSONL hashes are
+`f1aea0fffe03dde4746c2012e63e68c4113d8f6f89fa22dacb01feec7d4f1d0a`
+and
+`65f8aba6981fd95d1fafa85cb3b1908cd3f4290af7673b53cb5269db247df296`;
+candidate hashes are
+`9b3b2b58d6c7d064b0917c18aac7037a1849fe2339700d994ec6870b464d3f5e`
+and
+`f7163c2edc7d100e953d4b7d1c186fa6ee34d7c4d1bf3e32123349b9235d3885`.
+
+The global profile grows from 122 to 124 sorted feature tags, with no change
+to audited negative paths or execution policy. Its SHA-256 is
+`ef17b52324782431adc1ddbabc81530de3e24fb436545202f248d850a1043dbb`.
+The exact 102,037-row join records 65,312 passes and 65,438 runnable variants:
+32 new passes, four reason refinements, 102,001 unchanged rows, and zero prior
+pass regressions. Full parent TSV/JSONL hashes are
+`ef3b88f82d4e65f55b584731f1cf78e7b734baf467639a6e18028f405c77ee56`
+and
+`81d1071fe7dc47e0e2a874641bea28bc5b707d17690c764194231a838de75d66`;
+candidate hashes are
+`d404fdd6e1fa7e9f19703bbdbc49bd55fddb83b744d30254349087f0a26568d5`
+and
+`2196ac6f9ca0c6f251ae0ee8987ea5351c7be076188e5b81c82055f2b2d86188`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-r3n-promise-static-oracle.sh --oxide target/debug/qjs
+./scripts/test-test262-promise-try-with-resolvers-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-promise-try-with-resolvers-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-promise-try-with-resolvers-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
 ## R3cl Unicode locale comparison
 
 R3cl completes QuickJS 2026-06-04's two-function Unicode String extension by
