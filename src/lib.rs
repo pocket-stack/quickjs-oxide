@@ -23,6 +23,7 @@ pub mod runtime;
 pub mod shape;
 mod unicode;
 mod unicode_case;
+mod unicode_normalize;
 mod unicode_property;
 mod uri;
 pub mod value;

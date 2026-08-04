@@ -764,6 +764,9 @@ impl Runtime {
             NativeFunctionId::StringPrototypeCase(selector) => {
                 self.call_string_prototype_case(realm, selector, invocation)
             }
+            NativeFunctionId::StringPrototypeNormalize => {
+                self.call_string_prototype_normalize(realm, invocation, arguments)
+            }
             NativeFunctionId::StringPrototypeCreateHtml(selector) => {
                 self.call_string_prototype_create_html(realm, selector, invocation, arguments)
             }

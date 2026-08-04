@@ -334,6 +334,23 @@ impl Runtime {
         Ok(())
     }
 
+    /// Install the Unicode normalization intrinsic which QuickJS appends with
+    /// `JS_AddIntrinsicStringNormalize` after its complete base String table.
+    pub(in crate::runtime) fn initialize_string_normalize_intrinsic(
+        &self,
+        realm: ContextId,
+        string_prototype: &ObjectRef,
+    ) -> Result<(), RuntimeError> {
+        self.define_native_builtin_auto_init(
+            string_prototype,
+            realm,
+            NativeFunctionId::StringPrototypeNormalize,
+            "normalize",
+            0,
+            0,
+        )
+    }
+
     /// Materialize and copy one canonical String method for a pinned
     /// `JS_ALIAS_DEF`. QuickJS explicitly forbids AutoInit for aliases: the
     /// property read instantiates the canonical function immediately, then the
@@ -1429,6 +1446,87 @@ impl Runtime {
             }
         };
         Ok(Completion::Return(Value::String(converted)))
+    }
+
+    /// Rust port of pinned QuickJS `js_string_normalize`. Receiver coercion
+    /// precedes form coercion, omitted and undefined forms select NFC, and the
+    /// accepted form spellings are exact ASCII matches.
+    pub(in crate::runtime) fn call_string_prototype_normalize(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        self.call_string_prototype_normalize_with_limit(
+            realm,
+            invocation,
+            arguments,
+            JsString::MAX_LEN,
+        )
+    }
+
+    fn call_string_prototype_normalize_with_limit(
+        &self,
+        realm: ContextId,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+        string_limit: usize,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "String normalize did not receive a generic invocation",
+            ));
+        };
+
+        let source = match self.native_to_string_check_object(realm, &this_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let form = if arguments.actual_arg_count == 0
+            || matches!(arguments.readable.first(), Some(Value::Undefined))
+        {
+            crate::unicode_normalize::NormalizationForm::Nfc
+        } else {
+            let form_value = arguments.readable.first().ok_or(RuntimeError::Invariant(
+                "String normalize form argv was not readable",
+            ))?;
+            let form = match self.native_to_js_string(realm, form_value)? {
+                NativeConversion::Value(value) => value,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            if form.utf16_units().eq("NFC".encode_utf16()) {
+                crate::unicode_normalize::NormalizationForm::Nfc
+            } else if form.utf16_units().eq("NFD".encode_utf16()) {
+                crate::unicode_normalize::NormalizationForm::Nfd
+            } else if form.utf16_units().eq("NFKC".encode_utf16()) {
+                crate::unicode_normalize::NormalizationForm::Nfkc
+            } else if form.utf16_units().eq("NFKD".encode_utf16()) {
+                crate::unicode_normalize::NormalizationForm::Nfkd
+            } else {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "bad normalization form",
+                )?));
+            }
+        };
+
+        let normalized =
+            match crate::unicode_normalize::normalize_with_limit(&source, form, string_limit) {
+                Ok(value) => value,
+                Err(error @ (JsStringError::TooLong | JsStringError::OutOfMemory)) => {
+                    let message = match error {
+                        JsStringError::TooLong => "string too long",
+                        JsStringError::OutOfMemory => "out of memory",
+                    };
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Internal,
+                        message,
+                    )?));
+                }
+            };
+        Ok(Completion::Return(Value::String(normalized)))
     }
 
     /// Rust port of pinned QuickJS `js_string_CreateHTML`. Receiver coercion

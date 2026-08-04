@@ -223,6 +223,286 @@ fn string_case_selectors_use_pinned_generic_magic_cproto() {
 }
 
 #[test]
+fn string_normalize_uses_pinned_generic_cproto_and_append_order() {
+    let descriptor = NativeFunctionId::StringPrototypeNormalize.descriptor();
+    assert_eq!(descriptor.cproto, NativeCProto::Generic);
+    assert!(!descriptor.cproto.default_is_constructor());
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let prototype = context.string_prototype().unwrap();
+    let sup = runtime.intern_property_key("sup").unwrap();
+    let constructor = runtime.intern_property_key("constructor").unwrap();
+    let normalize = runtime.intern_property_key("normalize").unwrap();
+    {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(prototype.object_id()).unwrap();
+        let shape = state.heap.shape(object.shape).unwrap();
+        let sup = usize::try_from(shape.find(sup.atom()).unwrap()).unwrap();
+        let constructor = usize::try_from(shape.find(constructor.atom()).unwrap()).unwrap();
+        let normalize = usize::try_from(shape.find(normalize.atom()).unwrap()).unwrap();
+        assert_eq!(constructor, sup + 1);
+        assert_eq!(normalize, constructor + 1);
+        assert_eq!(
+            shape.entries()[normalize].flags,
+            PropertyFlags::data(true, false, true),
+        );
+        assert!(matches!(
+            object.slots.get(normalize),
+            Some(PropertySlot::AutoInit(AutoInitProperty::NativeBuiltin {
+                realm,
+                target: NativeFunctionId::StringPrototypeNormalize,
+                name: "normalize",
+                length: 0,
+                min_readable_args: 0,
+            })) if *realm == context.realm
+        ));
+    }
+
+    let Value::Object(function) = context.get_property(&prototype, &normalize).unwrap() else {
+        panic!("String.prototype.normalize did not materialize as a function");
+    };
+    assert!(runtime.as_callable(&function).unwrap().is_some());
+    assert!(!runtime.is_constructor(&function).unwrap());
+    assert_eq!(
+        context
+            .eval("String.prototype.normalize.name+'|'+String.prototype.normalize.length")
+            .unwrap(),
+        Value::String(JsString::from_static("normalize|0")),
+    );
+}
+
+#[test]
+fn string_normalize_matches_quickjs_forms_and_coercion_order() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    for (source, expected) in [
+        (
+            r#"'\u1E9B\u0323'.normalize('NFC')"#,
+            [0x1e9b, 0x0323].as_slice(),
+        ),
+        (
+            r#"'\u1E9B\u0323'.normalize('NFD')"#,
+            [0x017f, 0x0323, 0x0307].as_slice(),
+        ),
+        (r#"'\u1E9B\u0323'.normalize('NFKC')"#, [0x1e69].as_slice()),
+        (
+            r#"'\u1E9B\u0323'.normalize('NFKD')"#,
+            [0x0073, 0x0323, 0x0307].as_slice(),
+        ),
+        (r#"'A\u030a'.normalize()"#, [0x00c5].as_slice()),
+        (
+            r#"String.fromCharCode(0xd800,0x0301).normalize('NFC')"#,
+            [0xd800, 0x0301].as_slice(),
+        ),
+    ] {
+        let Value::String(actual) = context.eval(source).unwrap() else {
+            panic!("{source} did not return a String");
+        };
+        assert_eq!(
+            actual.utf16_units().collect::<Vec<_>>(),
+            expected,
+            "{source}"
+        );
+    }
+
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    var log="";
+                    var receiver={toString:function(){log+="this,";return "A\u030a"}};
+                    var form={toString:function(){log+="form,";return "NFC"}};
+                    var value=String.prototype.normalize.call(receiver,form);
+                    return value+"|"+log;
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("Å|this,form,")),
+    );
+    assert_eq!(
+        context
+            .eval(
+                r#"(function(){
+                    try { return "x".normalize("bad"); }
+                    catch (error) { return error.name+"|"+error.message; }
+                })()"#,
+            )
+            .unwrap(),
+        Value::String(JsString::from_static("RangeError|bad normalization form",)),
+    );
+}
+
+#[test]
+fn string_normalize_limit_and_oom_use_internal_error_and_recover() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+
+    let arguments = NativeArguments {
+        actual_arg_count: 1,
+        readable: vec![Value::String(JsString::from_static("NFD"))],
+    };
+    let Completion::Throw(Value::Object(error)) = runtime
+        .call_string_prototype_normalize_with_limit(
+            defining.realm,
+            NativeInvocation::Call {
+                this_value: Value::String(JsString::try_from_utf8("ý").unwrap()),
+            },
+            &arguments,
+            1,
+        )
+        .unwrap()
+    else {
+        panic!("one-below-boundary normalization did not throw an Error object");
+    };
+    for (name, expected) in [("name", "InternalError"), ("message", "string too long")] {
+        let Value::String(value) = defining
+            .get_property(&error, &runtime.intern_property_key(name).unwrap())
+            .unwrap()
+        else {
+            panic!("small-limit normalization {name} was not a String");
+        };
+        assert_eq!(value, JsString::from_static(expected));
+    }
+    assert_eq!(
+        runtime
+            .call_string_prototype_normalize_with_limit(
+                defining.realm,
+                NativeInvocation::Call {
+                    this_value: Value::String(JsString::try_from_utf8("ý").unwrap()),
+                },
+                &arguments,
+                2,
+            )
+            .unwrap(),
+        Completion::Return(Value::String(
+            JsString::try_from_utf16([u16::from(b'y'), 0x0301]).unwrap(),
+        )),
+        "the exact normalization expansion boundary was rejected",
+    );
+
+    let prototype = defining.string_prototype().unwrap();
+    let key = runtime.intern_property_key("normalize").unwrap();
+    let Value::Object(function_object) = defining.get_property(&prototype, &key).unwrap() else {
+        panic!("String.prototype.normalize was not an object");
+    };
+    let function = runtime.as_callable(&function_object).unwrap().unwrap();
+    let Value::Object(defining_internal_error) = defining.eval("InternalError.prototype").unwrap()
+    else {
+        panic!("defining InternalError.prototype was not an object");
+    };
+
+    crate::unicode_normalize::fail_next_normalize_reservation_for_test();
+    assert_eq!(
+        caller.call(
+            &function,
+            Value::String(JsString::try_from_utf8("e\u{301}").unwrap()),
+            &[],
+        ),
+        Err(RuntimeError::Exception),
+    );
+    let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+        panic!("normalization reservation failure did not publish an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(defining_internal_error),
+        "normalization reservation OOM did not use the function's defining realm",
+    );
+    let Value::String(message) = caller
+        .get_property(&error, &runtime.intern_property_key("message").unwrap())
+        .unwrap()
+    else {
+        panic!("normalization reservation OOM message was not a String");
+    };
+    assert_eq!(message, JsString::from_static("out of memory"));
+    assert_eq!(
+        caller
+            .call(
+                &function,
+                Value::String(JsString::try_from_utf8("e\u{301}").unwrap()),
+                &[],
+            )
+            .unwrap(),
+        Value::String(JsString::try_from_utf8("é").unwrap()),
+        "runtime did not recover after normalization reservation OOM",
+    );
+}
+
+#[test]
+fn string_normalize_errors_preserve_quickjs_realm_boundaries() {
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let prototype = defining.string_prototype().unwrap();
+    let key = runtime.intern_property_key("normalize").unwrap();
+    let Value::Object(function_object) = defining.get_property(&prototype, &key).unwrap() else {
+        panic!("String.prototype.normalize was not an object");
+    };
+    let function = runtime.as_callable(&function_object).unwrap().unwrap();
+    let Value::Object(defining_range_error) = defining.eval("RangeError.prototype").unwrap() else {
+        panic!("defining RangeError.prototype was not an object");
+    };
+    let Value::Object(defining_type_error) = defining.eval("TypeError.prototype").unwrap() else {
+        panic!("defining TypeError.prototype was not an object");
+    };
+    let Value::Object(caller_type_error) = caller.eval("TypeError.prototype").unwrap() else {
+        panic!("caller TypeError.prototype was not an object");
+    };
+
+    for (this_value, arguments, expected_prototype, label) in [
+        (
+            Value::String(JsString::from_static("x")),
+            vec![Value::String(JsString::from_static("bad"))],
+            defining_range_error,
+            "invalid form",
+        ),
+        (
+            Value::Null,
+            Vec::new(),
+            defining_type_error.clone(),
+            "null receiver",
+        ),
+        (
+            Value::String(JsString::from_static("x")),
+            vec![Value::Symbol(runtime.new_symbol(None).unwrap())],
+            defining_type_error,
+            "Symbol form",
+        ),
+    ] {
+        assert_eq!(
+            caller.call(&function, this_value, &arguments),
+            Err(RuntimeError::Exception),
+            "{label} did not throw",
+        );
+        let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+            panic!("{label} did not publish an Error object");
+        };
+        assert_eq!(
+            runtime.get_prototype_of(&error).unwrap(),
+            Some(expected_prototype),
+            "{label} used the caller realm",
+        );
+    }
+
+    assert_eq!(
+        caller.construct(&function, &[]),
+        Err(RuntimeError::Exception),
+        "normalize unexpectedly constructed",
+    );
+    let Some(Value::Object(error)) = caller.take_exception().unwrap() else {
+        panic!("normalize constructor rejection did not publish an Error object");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&error).unwrap(),
+        Some(caller_type_error),
+        "pre-dispatch constructor rejection did not use the caller realm",
+    );
+}
+
+#[test]
 fn string_index_scan_is_utf16_exact_and_inclusive() {
     let source = JsString::try_from_utf16([0x61, 0xd83d, 0xde00, 0xd800, 0x61]).unwrap();
     let crossed = JsString::try_from_utf16([0xde00, 0xd800]).unwrap();
@@ -3367,15 +3647,59 @@ fn recursive_string_conversion_family_is_guarded_on_libtest_stack_and_recovers()
                     "case/trim alternation bypassed the shared fifth-frame guard for kind {kind}",
                 );
             }
+            context
+                .eval(
+                    r#"function mixedStringNormalizeRecurse(kind,depth){
+                        if(kind===0){
+                            var receiver=Object();
+                            receiver[Symbol.toPrimitive]=function(){
+                                if(depth!==0)mixedStringNormalizeRecurse(1,depth-1);
+                                return "A\u030a";
+                            };
+                            return String.prototype.normalize.call(receiver);
+                        }
+                        var form=Object();
+                        form[Symbol.toPrimitive]=function(){
+                            if(depth!==0)mixedStringNormalizeRecurse(0,depth-1);
+                            return "NFC";
+                        };
+                        return "A\u030a".normalize(form);
+                    }"#,
+                )
+                .unwrap();
+            for kind in 0..2 {
+                assert_eq!(
+                    context
+                        .eval(&format!("mixedStringNormalizeRecurse({kind},3)"))
+                        .unwrap(),
+                    Value::String(JsString::from_static("Å")),
+                    "the proven-safe normalize conversion chain was rejected for kind {kind}",
+                );
+                assert_eq!(
+                    context
+                        .eval(&format!(
+                            r#"(function(){{
+                                try{{mixedStringNormalizeRecurse({kind},4);return "missing"}}
+                                catch(error){{return error.name+":"+error.message}}
+                            }})()"#,
+                        ))
+                        .unwrap(),
+                    Value::String(JsString::from_static("InternalError:stack overflow")),
+                    "normalize conversion bypassed the shared fifth-frame guard for kind {kind}",
+                );
+            }
             assert_eq!(
                 context
                     .eval(
                         r#""abc".includes("b")+"|"+"abc".slice(1)+"|"+
                            "ab".repeat(2)+"|"+"a".padEnd(3,"x")+"|"+"a".padStart(3,"x")+"|"+
-                           " z ".trim()+"|"+"z".bold()+"|"+"AbΣ".toLocaleLowerCase()"#,
+                           " z ".trim()+"|"+"z".bold()+"|"+"AbΣ".toLocaleLowerCase()+"|"+
+                           "A\u030a".normalize()"#,
                     )
                     .unwrap(),
-                Value::String(JsString::from_static("true|bc|abab|axx|xxa|z|<b>z</b>|abς",)),
+                Value::String(JsString::from_static(
+                    "true|bc|abab|axx|xxa|z|<b>z</b>|abς|Å",
+                )),
                 "the runtime did not recover after mixed String-family overflow"
             );
         })
