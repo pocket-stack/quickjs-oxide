@@ -47,7 +47,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "f229cd652dd5b38ed3a0387a089eab974148d404bd166e8b4c0eb2cb0fa7a2c1";
+    "3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -300,6 +300,12 @@ const TEST262_WEAK_COLLECTIONS_PROFILE_SHA256: &str =
     "a23cfb3270eb40eb3839413f3dacaf75fee2cecaca9d1b0ecc40d2c6c3c804c1";
 const TEST262_WEAK_COLLECTIONS_MANIFEST_SHA256: &str =
     "6189cde88a7fcb15222d536d19f3e8172be66e35de24f47107e0c67910b92b7a";
+const TEST262_WEAK_COLLECTIONS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "f229cd652dd5b38ed3a0387a089eab974148d404bd166e8b4c0eb2cb0fa7a2c1";
+const TEST262_WEAK_COLLECTIONS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef";
+const TEST262_WEAK_COLLECTIONS_GLOBAL_MANIFEST_SHA256: &str =
+    "d0bd5c21db1165cd72618168ce5592b78a6909be5f2cd0813fa15ed6a3c17cc1";
 const TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256: &str =
     "ff674aafc4b1b61b0c40042f831b44c600b1f741e06b8c8c35863b876919aa7b";
 const TEST262_SYMBOL_PROTOCOLS_MANIFEST_SHA256: &str =
@@ -940,6 +946,8 @@ enum OxideProfileKind {
     Map,
     Set,
     WeakCollections,
+    WeakCollectionsGlobalParent,
+    WeakCollectionsGlobalCandidate,
     SymbolProtocols,
     GeneratorDestructuring,
     IteratorHelpers,
@@ -1231,6 +1239,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-weak-collections.conf"),
             OxideProfileKind::WeakCollections,
+        ),
+        (
+            root.join("tests/test262-weak-collections-global-parent.conf"),
+            OxideProfileKind::WeakCollectionsGlobalParent,
+        ),
+        (
+            root.join("tests/test262-weak-collections-global-candidate.conf"),
+            OxideProfileKind::WeakCollectionsGlobalCandidate,
         ),
         (
             root.join("tests/test262-symbol-protocols.conf"),
@@ -2606,6 +2622,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-weak-collections.txt",
             TEST262_WEAK_COLLECTIONS_MANIFEST_SHA256,
         ),
+        OxideProfileKind::WeakCollectionsGlobalParent => verify_tag_transition_profile(
+            options,
+            "weak collections global admission",
+            "parent",
+            TEST262_WEAK_COLLECTIONS_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-weak-collections-global-universe.txt",
+                TEST262_WEAK_COLLECTIONS_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::WeakCollectionsGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "weak collections global admission",
+            "candidate",
+            TEST262_WEAK_COLLECTIONS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-weak-collections-global-universe.txt",
+                TEST262_WEAK_COLLECTIONS_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::SymbolProtocols => {
             verify_sha256(
                 &options.oxide_profile,
@@ -3066,9 +3102,11 @@ mod cli_tests {
         TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256, TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256, TEST262_WEAK_COLLECTIONS_PROFILE_SHA256,
-        default_worker_count, identify_oxide_profile, parse_args, verify_oxide_profile,
-        verify_scoped_pinned_profile,
+        TEST262_UINT8ARRAY_CODECS_PROFILE_SHA256,
+        TEST262_WEAK_COLLECTIONS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_WEAK_COLLECTIONS_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_WEAK_COLLECTIONS_PROFILE_SHA256, default_worker_count, identify_oxide_profile,
+        parse_args, verify_oxide_profile, verify_scoped_pinned_profile,
     };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
@@ -3521,6 +3559,20 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-weak-collections.conf")).unwrap(),
             OxideProfileKind::WeakCollections
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-weak-collections-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::WeakCollectionsGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-weak-collections-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::WeakCollectionsGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-symbol-protocols.conf")).unwrap(),
@@ -6380,6 +6432,28 @@ mod cli_tests {
                 ],
                 "tests/test262-object-rest-binding.txt",
                 "test/language/statements/variable/dstr/obj-ptrn-rest-getter.js",
+            );
+        }
+    }
+
+    #[test]
+    fn weak_collections_global_profiles_require_their_pinned_universe_manifest() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-weak-collections-global-parent.conf",
+                TEST262_WEAK_COLLECTIONS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-weak-collections-global-candidate.conf",
+                TEST262_WEAK_COLLECTIONS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-weak-collections-global-universe.txt"],
+                "tests/test262-weak-collections.txt",
+                "test/built-ins/WeakMap/length.js",
             );
         }
     }

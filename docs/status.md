@@ -1,8 +1,46 @@
 # Implementation status
 
-Last audited: 2026-08-03. The completion definition remains
+Last audited: 2026-08-04. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
+
+## R3ce global WeakMap and WeakSet admission
+
+R3ce promotes exactly `WeakMap`, `WeakSet`, `symbols-as-weakmap-keys`, and
+`upsert` into the global Test262 profile after the R3cd runtime landed. The
+profile now contains 99 reviewed feature tags and the same 1,157 audited
+negative paths; its SHA-256 is
+`3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef`.
+This is a capability-boundary and evidence change, not a runtime shortcut.
+
+Pinned metadata derives a 154-path / 306-variant four-tag universe. Exactly
+147 paths / 292 variants become runnable and pass, while seven paths / 14
+variants remain fail-closed behind `WeakRef` and/or `FinalizationRegistry`.
+The established Weak collections certificate covers 117 activation paths / 233
+variants, the Map certificate covers another 26 / 52, and a disjoint four-path
+/ seven-variant supplement closes the activation set. Pinned QuickJS
+2026-06-04 independently passes all 306 variants.
+
+The exact 102,037-row join changes 292 outcomes from `unsupported-feature` to
+`pass`, changes only the remaining-feature detail on 14 rows, keeps the other
+101,731 rows byte-identical, and records zero previous-pass regression. The
+canonical vector is now 64,470 passes with 64,642 runnable variants and 14,024
+`unsupported-feature` outcomes. Its TSV/JSONL SHA-256 values are
+`e0b0be534f07a34bc7a9e18f4c3bae8c9360dd62c89176f96bf3234c5895b6ec`
+and
+`8227cb6d19fc2f814bdb016308cf1003be6c91ebe01145ccc3c719f6e38ac6bf`.
+
+Reproduce the evidence with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-weak-collections-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-weak-collections-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+WeakRef, FinalizationRegistry, host-GC observation, and cross-realm hooks remain
+explicit later frontiers. This admission advances the Feature Parity evidence;
+it is not a completion claim.
 
 ## R3cd WeakMap and WeakSet runtime
 

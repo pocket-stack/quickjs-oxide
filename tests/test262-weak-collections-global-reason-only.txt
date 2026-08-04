@@ -1,0 +1,7 @@
+test/built-ins/FinalizationRegistry/prototype/register/return-undefined-register-symbol.js
+test/built-ins/FinalizationRegistry/prototype/register/this-does-not-have-internal-target-throws.js
+test/built-ins/FinalizationRegistry/prototype/unregister/this-does-not-have-internal-cells-throws.js
+test/built-ins/FinalizationRegistry/prototype/unregister/unregister-symbol-token.js
+test/built-ins/WeakRef/prototype/deref/return-symbol-target.js
+test/built-ins/WeakRef/prototype/deref/this-does-not-have-internal-target-throws.js
+test/built-ins/WeakRef/returns-new-object-from-constructor-with-symbol-target.js

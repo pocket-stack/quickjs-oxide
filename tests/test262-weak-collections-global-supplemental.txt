@@ -1,0 +1,4 @@
+test/built-ins/Map/prototype/getOrInsert/does-not-have-mapdata-internal-slot-set.js
+test/built-ins/Map/prototype/getOrInsertComputed/check-callback-fn-args.js
+test/built-ins/Map/prototype/getOrInsertComputed/does-not-have-mapdata-internal-slot-set.js
+test/built-ins/Map/prototype/getOrInsertComputed/overwrites-mutation-from-callbackfn.js

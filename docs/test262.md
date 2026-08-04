@@ -4,7 +4,64 @@ Test262 is now a pinned progress instrument, not yet a completion claim. The
 authoritative compatibility target remains QuickJS 2026-06-04; focused QuickJS
 differentials still decide exact behavior inside each implemented slice.
 
-Last audited: 2026-08-03.
+Last audited: 2026-08-04.
+
+## R3ce global Weak collections admission
+
+R3ce admits the four implemented metadata tags `WeakMap`, `WeakSet`,
+`symbols-as-weakmap-keys`, and `upsert`. The parent and candidate profiles have
+SHA-256 values `f229cd652dd5b38ed3a0387a089eab974148d404bd166e8b4c0eb2cb0fa7a2c1`
+and `3b6c3316992b60644867d76799995ea7005c6c586438064072b017f7c3bd44ef`;
+their only difference is those four sorted feature entries. The live profile
+now has 99 feature tags, retains all 1,157 audited negative paths and the same
+async-execution policy, and is checksum-bound by both the runner and upstream
+manifest.
+
+The universe is regenerated from all 53,125 pinned metadata records rather
+than trusted from its checked-in list alone. Its 154 paths / 306 variants
+partition exactly into:
+
+- 147 paths / 292 activation variants, all passing in Oxide;
+- seven paths / 14 reason-only variants, still withheld by `WeakRef`,
+  `FinalizationRegistry`, or both.
+
+The universe path/key hashes are
+`d0bd5c21db1165cd72618168ce5592b78a6909be5f2cd0813fa15ed6a3c17cc1`
+and `2bf72c55541b84e9a4f0dac4a6eba4c6b073d5154801ae0cbce9d94a7472e319`.
+The activation key hash is
+`920d30c0e48f75ae77c39b89b32bf1b23d89cfce88ccb05a09ab51ffa430f184`;
+the residual key hash is
+`63086bdb2ec2f1beefff2d5473f660ef3e4595f9d38884f478158d83da79ac85`.
+Existing Weak collections and Map gates cover 233 and 52 activation variants;
+a frozen four-path / seven-variant supplement covers the rest. Pinned QuickJS
+2026-06-04 passes all 306 universe variants.
+
+The focused transition is exactly 306 `unsupported-feature` outcomes becoming
+292 passes plus 14 remaining `unsupported-feature` outcomes; its receipt
+SHA-256 is
+`7d18cef62b857b175c34529b9147da6404b95114b12440cfa1e36212ffa6cf31`.
+The complete join has 292 outcome changes, 14 diagnostic-only changes, 101,731
+unchanged rows, and no prior-pass regression. The new canonical vector is:
+
+- 64,470 pass and 64,642 runnable out of 102,037 variants;
+- 110 `fail-runtime`, 14,024 `unsupported-feature`, and 3,451
+  `unsupported-negative-provenance` outcomes;
+- TSV SHA-256
+  `e0b0be534f07a34bc7a9e18f4c3bae8c9360dd62c89176f96bf3234c5895b6ec`;
+- JSONL SHA-256
+  `8227cb6d19fc2f814bdb016308cf1003be6c91ebe01145ccc3c719f6e38ac6bf`.
+
+Reproduce the receipts with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-weak-collections-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-weak-collections-global.sh --full
+TEST262_WORKERS=2 ./scripts/test-test262-full.sh
+```
+
+The 14 residual variants intentionally make the next WeakRef /
+FinalizationRegistry frontier visible. This remains a progress certificate,
+not a whole-project Feature Parity claim.
 
 ## R3cd WeakMap and WeakSet runtime
 
