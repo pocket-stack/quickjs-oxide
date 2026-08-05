@@ -4,4 +4,4 @@
 set -euo pipefail
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-exec "$script_dir/test-test262-for-of-async-member.sh" "$@"
+exec "$script_dir/test-test262-math-atanh.sh" "$@"

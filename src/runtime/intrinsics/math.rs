@@ -257,6 +257,38 @@ fn quickjs_sign(value: f64) -> f64 {
     }
 }
 
+fn quickjs_atanh(value: f64) -> f64 {
+    let magnitude = value.abs();
+
+    // Match the fdlibm-shaped host implementation used by pinned QuickJS.
+    // Returning tiny inputs directly is both correctly rounded and preserves
+    // negative zero without asking the platform log1p implementation to do so.
+    if magnitude < f64::from_bits(0x3e30_0000_0000_0000) {
+        return value;
+    }
+    if magnitude > 1.0 || value.is_nan() {
+        return f64::NAN;
+    }
+    if magnitude == 1.0 {
+        return if value.is_sign_negative() {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+
+    // Form the positive-magnitude argument before restoring the sign. Rust's
+    // single-expression f64::atanh loses thousands of ULPs for x close to -1
+    // because 2*x/(1-x) rounds immediately next to log1p's singularity.
+    let result = if magnitude < 0.5 {
+        let twice = magnitude + magnitude;
+        0.5 * (twice + twice * magnitude / (1.0 - magnitude)).ln_1p()
+    } else {
+        0.5 * ((magnitude + magnitude) / (1.0 - magnitude)).ln_1p()
+    };
+    result.copysign(value)
+}
+
 fn float16_to_f64(value: u16) -> f64 {
     let mut magnitude = u32::from(value & 0x7fff);
     if magnitude >= 0x7c00 {
@@ -320,7 +352,7 @@ fn quickjs_unary(selector: MathUnaryKind, value: f64) -> f64 {
         MathUnaryKind::Tanh => value.tanh(),
         MathUnaryKind::Acosh => value.acosh(),
         MathUnaryKind::Asinh => value.asinh(),
-        MathUnaryKind::Atanh => value.atanh(),
+        MathUnaryKind::Atanh => quickjs_atanh(value),
         MathUnaryKind::Expm1 => value.exp_m1(),
         MathUnaryKind::Log1p => value.ln_1p(),
         MathUnaryKind::Log2 => value.log2(),

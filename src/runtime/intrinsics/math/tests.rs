@@ -8,6 +8,19 @@ fn sum(values: &[f64]) -> f64 {
     sum.result()
 }
 
+fn ordered_float_bits(value: f64) -> u64 {
+    let bits = value.to_bits();
+    if bits & SIGN_BIT == 0 {
+        bits | SIGN_BIT
+    } else {
+        !bits
+    }
+}
+
+fn ulp_distance(left: f64, right: f64) -> u64 {
+    ordered_float_bits(left).abs_diff(ordered_float_bits(right))
+}
+
 #[test]
 fn min_max_preserve_pinned_signed_zero_rules() {
     assert_eq!(quickjs_min(0.0, -0.0).to_bits(), (-0.0_f64).to_bits());
@@ -38,6 +51,74 @@ fn round_uses_ecmascript_ties_toward_positive_infinity() {
         assert_eq!(quickjs_round(value).to_bits(), value.to_bits());
     }
     assert!(quickjs_round(f64::NAN).is_nan());
+}
+
+#[test]
+fn atanh_preserves_ecmascript_domain_and_signed_zero_boundaries() {
+    for value in [
+        -0.0,
+        0.0,
+        f64::from_bits(1),
+        f64::from_bits(SIGN_BIT | 1),
+        f64::from_bits(0x3e2f_ffff_ffff_ffff),
+        f64::from_bits(0xbe2f_ffff_ffff_ffff),
+    ] {
+        assert_eq!(quickjs_atanh(value).to_bits(), value.to_bits(), "{value:?}");
+    }
+    assert_eq!(quickjs_atanh(-1.0), f64::NEG_INFINITY);
+    assert_eq!(quickjs_atanh(1.0), f64::INFINITY);
+    for value in [
+        f64::from_bits(1.0_f64.to_bits() + 1),
+        -f64::from_bits(1.0_f64.to_bits() + 1),
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ] {
+        assert!(quickjs_atanh(value).is_nan(), "{value:?}");
+    }
+}
+
+#[test]
+fn atanh_fdlibm_branches_stay_within_pinned_quickjs_tolerance() {
+    // These cover the former worst negative near-one failures, the 0.5
+    // branch, ordinary magnitudes, and the tiny-input boundary. Pinned
+    // Test262 allows two ULPs because QuickJS delegates log1p to host libm.
+    for (input, expected) in [
+        (-0.999_998_331_069_946_3, -6.998_237_084_679_027),
+        (-0.999_992_847_442_627, -6.270_592_097_465_752_5),
+        (-0.999_982_833_862_304_7, -5.832_855_225_378_502),
+        (-0.928_483_963_012_695_3, -1.647_283_871_876_074_7),
+        (-0.5, -0.549_306_144_334_054_8),
+        (-0.3, -0.309_519_604_203_111_7),
+        (f64::from_bits(0x3e30_0000_0000_0000), 2.0_f64.powi(-28)),
+        (0.000_01, 0.000_010_000_000_000_333_334),
+        (0.3, 0.309_519_604_203_111_7),
+        (0.5, 0.549_306_144_334_054_8),
+        (0.992_823_362_350_463_9, 2.813_238_353_909_419_2),
+    ] {
+        let actual = quickjs_atanh(input);
+        assert!(
+            ulp_distance(actual, expected) <= 2,
+            "atanh({input:?}) = {actual:?}, expected {expected:?}, distance={} ULP",
+            ulp_distance(actual, expected),
+        );
+    }
+}
+
+#[test]
+fn atanh_restores_the_sign_after_both_log1p_branches() {
+    for magnitude in [
+        f64::from_bits(0x3e30_0000_0000_0000),
+        f64::from_bits(0.5_f64.to_bits() - 1),
+        0.5,
+        f64::from_bits(1.0_f64.to_bits() - 1),
+    ] {
+        assert_eq!(
+            quickjs_atanh(-magnitude).to_bits(),
+            (quickjs_atanh(magnitude).to_bits() | SIGN_BIT),
+            "{magnitude:?}",
+        );
+    }
 }
 
 #[test]

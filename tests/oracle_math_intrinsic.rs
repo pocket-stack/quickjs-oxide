@@ -138,6 +138,41 @@ const VALUE_CASES: &[(&str, &str)] = &[
         })()"#,
     ),
     (
+        "atanh keeps pinned accuracy across its fdlibm branches",
+        r#"(function(){
+            var floats=new Float64Array(2),words=new Uint32Array(floats.buffer),little=true;
+            floats[0]=2;floats[1]=4;
+            if(Math.abs((words[3]-words[1])*4294967296+words[2]-words[0])===1048576)
+                little=false;
+            function distance(left,right){
+                floats[0]=left;floats[1]=right;
+                var leftHigh=words[little?1:0],leftLow=words[little?0:1];
+                var rightHigh=words[little?3:2],rightLow=words[little?2:3];
+                return Math.abs((rightHigh-leftHigh)*4294967296+rightLow-leftLow);
+            }
+            var vectors=[
+                [-0.9999983310699463,-6.998237084679027],
+                [-0.999992847442627,-6.2705920974657525],
+                [-0.9999828338623047,-5.832855225378502],
+                [-0.9284839630126953,-1.6472838718760747],
+                [-0.5,-0.5493061443340548],[-0.3,-0.3095196042031117],
+                [0.00001,0.000010000000000333334],
+                [0.3,0.3095196042031117],[0.5,0.5493061443340548],
+                [0.9928233623504639,2.8132383539094192]
+            ];
+            var result=[];
+            for(var index=0;index<vectors.length;index++)
+                result.push(distance(Math.atanh(vectors[index][0]),vectors[index][1])<=2);
+            result.push(1/Math.atanh(-0)===-Infinity);
+            result.push(1/Math.atanh(0)===Infinity);
+            result.push(Math.atanh(-1)===-Infinity);
+            result.push(Math.atanh(1)===Infinity);
+            result.push(Math.atanh(1.0000000000000002)!==Math.atanh(1.0000000000000002));
+            result.push(Math.atanh(Infinity)!==Math.atanh(Infinity));
+            return result;
+        })()"#,
+    ),
+    (
         "round implements ties toward positive infinity and large-number edges",
         r#"(function(){
             function show(x){

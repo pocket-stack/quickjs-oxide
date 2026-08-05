@@ -4,6 +4,50 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cy Math.atanh numerical parity
+
+R3cy replaces Rust's single-expression `f64::atanh` path with a
+QuickJS-compatible, fdlibm-shaped evaluation. Inputs below `2^-28` return
+directly, preserving tiny values and signed zero; the remaining finite domain
+uses separate `|x| < 0.5` and near-one `log1p` forms on the positive magnitude
+before restoring the input sign. Domain overflow, NaN, and the infinities at
+`+/-1` retain the ECMAScript boundaries. This avoids the thousands-of-ULPs
+loss that the previous negative near-one expression could introduce. Unit
+tests lock the branch boundaries, domain behavior, signed zero, and selected
+near-one values; the Math differential checks those values and special cases
+against pinned QuickJS.
+
+The exact Test262 manifest contains seven paths / 14 sloppy-and-strict
+variants and hashes to
+`ffd98f946fde17f8a0af13c9dd172c8aa2c476e96baaa9df86ae42ee5479b215`.
+Pinned QuickJS and the R3cy candidate pass 14/14; the checksum-bound R3cx
+parent records `pass=12 fail-runtime=2`. Candidate focused TSV/JSONL SHA-256
+values are
+`03129f451be73355a0b33d6d74930e63bea0a1a9f001a5a8c524b6654f761140`
+and
+`d7cd0e97acb5dcda64378dccff535c1cfae6271ed4cbd448d65737894b1d57c8`.
+The global profile remains byte-identical at 126 feature tags and SHA-256
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+
+The fresh two-worker 102,037-row join changes exactly the two
+`fail-runtime -> pass` outcomes, leaves 102,035 rows unchanged, has no
+detail-only movement, and records no previous-pass regression. The canonical
+vector is now 65,507 passes / 65,566 runnable, `fail-parse=9`, and
+`fail-runtime=48`. Full candidate TSV/JSONL SHA-256 values are
+`9009145c5b7033c4b4392022f97c73ab62efe4f78c4085e6b76a48f89a34ad76`
+and
+`edcd4d53c03e09c447eed001d0033a36ce85e0a2b510b63e0eedec9066c44e60`.
+
+Reproduce the frozen inputs and focused evidence with:
+
+```sh
+./scripts/test-test262-math-atanh.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-math-atanh.sh
+```
+
+Reproduce the complete exact join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-math-atanh.sh --full`.
+
 ## R3cx for-of async member lookahead
 
 R3cx matches QuickJS 2026-06-04's raw, non-committing
@@ -1902,18 +1946,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent milestones
-  through R3cx advance the current canonical measurement to 65,505 passes and
+  through R3cy advance the current canonical measurement to 65,507 passes and
   65,566 runnable variants: 64.20% raw, a 78.39% lower bound after the 18,475
   pinned QuickJS target exclusions, or 99.91% among the 65,566 variants with a
   non-unsupported observed outcome. It records 13,719 `unsupported-feature`
   and 17,996 total
-  unsupported outcomes, nine parse failures, 50 runtime failures, no harness
-  failures, and two timeouts. The exact R3cx join preserves all 102,037 keys
+  unsupported outcomes, nine parse failures, 48 runtime failures, no harness
+  failures, and two timeouts. The exact R3cy join preserves all 102,037 keys
   with two outcome changes, 102,035 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `687eec42e9611a377b37f68aa61cba263d2e8fe0dcf66d19b003f25b5a7746bb`
+  `9009145c5b7033c4b4392022f97c73ab62efe4f78c4085e6b76a48f89a34ad76`
   and
-  `9a8a8a645a890a3f56fb9f40001aa46f08b6b46009dd6a426873249a7611a46f`.
+  `edcd4d53c03e09c447eed001d0033a36ce85e0a2b510b63e0eedec9066c44e60`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
