@@ -225,39 +225,23 @@ impl Runtime {
             .ok_or(RuntimeError::Invariant(
                 "TypedArray.slice source range overflowed usize",
             ))?;
+        let source_access = self.snapshot_buffer_access(source.buffer)?;
+        let target_access = self.snapshot_buffer_access(target.buffer)?;
 
         // `slice_memcpy` copies overlapping ranges in increasing byte order.
         // With same-class aligned views, one element word at a time is
         // equivalent and lets earlier writes feed later reads as mandated.
-        if source.buffer == target.buffer
-            && source_start < target_start
-            && target_start < source_end
-        {
-            for index in 0..count {
-                let relative = index.checked_mul(width).ok_or(RuntimeError::Invariant(
-                    "TypedArray.slice overlap offset overflowed usize",
-                ))?;
-                let bytes = self.0.state.borrow().heap.read_array_buffer_word(
-                    source.buffer,
-                    source_start + relative,
-                    width,
-                )?;
-                self.0.state.borrow_mut().heap.write_array_buffer_word(
-                    target.buffer,
-                    target_start + relative,
-                    &bytes[..width],
-                )?;
-            }
-            return Ok(());
+        // Always using that path also covers distinct SharedArrayBuffer
+        // wrappers which alias one backing store without exposing backing
+        // identity through the runtime heap.
+        for index in 0..count {
+            let relative = index.checked_mul(width).ok_or(RuntimeError::Invariant(
+                "TypedArray.slice overlap offset overflowed usize",
+            ))?;
+            let bytes = self.read_buffer_word(&source_access, source_start + relative, width)?;
+            self.write_buffer_word(&target_access, target_start + relative, &bytes[..width])?;
         }
-
-        self.0.state.borrow_mut().heap.move_array_buffer_range(
-            source.buffer,
-            target.buffer,
-            source_start,
-            target_start,
-            byte_count,
-        )?;
+        debug_assert_eq!(source_start + byte_count, source_end);
         Ok(())
     }
 }

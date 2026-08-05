@@ -210,7 +210,7 @@ impl Runtime {
 
     /// Pinned QuickJS `JS_ToInt64`: number-hint coercion followed by its
     /// representation-level modulo-2^64 conversion.
-    fn native_to_int64(
+    pub(in crate::runtime) fn native_to_int64(
         &self,
         realm: ContextId,
         value: &Value,

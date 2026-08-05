@@ -758,6 +758,7 @@ impl Runtime {
             ObjectPayload::RegExp(_) => true,
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::SharedArrayBuffer(_)
             | ObjectPayload::DataView(_)
             | ObjectPayload::TypedArray(_)
             | ObjectPayload::Proxy(_)

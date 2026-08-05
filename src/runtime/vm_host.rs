@@ -2495,6 +2495,7 @@ impl VmHost for RuntimeVmHost {
             ObjectPayload::Proxy(_) => "object",
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::SharedArrayBuffer(_)
             | ObjectPayload::DataView(_)
             | ObjectPayload::TypedArray(_)
             | ObjectPayload::AsyncFunctionState(_)

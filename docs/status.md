@@ -4,6 +4,55 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dh SharedArrayBuffer core
+
+R3dh adds a distinct `%SharedArrayBuffer%` implementation rather than treating
+shared storage as an ArrayBuffer mode. Its constructor, `byteLength`,
+`maxByteLength`, `growable`, `grow`, `slice`, and `Symbol.species` behavior
+follow pinned QuickJS 2026-06-04, including QuickJS's wrapper-local grow length.
+Growable buffers reserve their maximum zero-filled capacity up front. Slice
+creates an independent fixed shared backing, while constructor and species
+subclass paths preserve realm and prototype behavior.
+
+DataView and all 12 TypedArray classes can create fixed or length-tracking
+views over the shared backing. The shared byte store uses safe synchronized
+access with no `unsafe`; runtime heap borrows are released before a backing
+lock is taken. This keeps coercions, property access, callbacks, and species
+construction outside byte transactions while retaining the existing
+ArrayBuffer behavior.
+
+The public `SharedBufferHandle` bridge lets a host export a genuine
+SharedArrayBuffer from one `Context` and import it into another runtime. The
+sendable handle contains no runtime `Value`, arena identity, or heap edge.
+Imported wrappers share bytes, keep independent wrapper-local visible lengths,
+and remain valid across runtime garbage collection.
+
+The pinned Test262 inventory contains 463 paths / 922 variants carrying the
+`SharedArrayBuffer` feature. R3dh authenticates a no-Atomics core of 221 paths /
+438 variants; Oxide and pinned QuickJS both pass all 438. Oxide's focused TSV
+and JSONL SHA-256 values are
+`03f445aa2978b001a7737bbd482e9b36d35182471b71961fa273d916d24450d8`
+and
+`b4d7ff88f0f9480eb81b068cdcaedcf3667aca70ab82e830d5ef7e5aafc01ad1`.
+
+This is deliberately a selection-only milestone. It does not add the
+`SharedArrayBuffer` tag to the global capability profile, so the 130-tag
+canonical vector remains 65,610 passes / 65,662 runnable. The remaining
+inventory is explicitly partitioned into 78 non-blocking Atomics paths / 156
+variants, 20 synchronous-wait paths without agents / 40 variants, 58 agent
+paths / 116 variants, and 86 `Atomics.waitAsync` paths / 172 variants. Shared
+Atomics, agent coordination, waiters, and `waitAsync` remain future milestones.
+
+The browser playground adds a no-Atomics SharedArrayBuffer example that grows
+the buffer, writes through TypedArray and DataView views, slices it, and
+returns 42 through the real WASM engine. Reproduce the focused evidence and
+the public-artifact smoke with:
+
+```sh
+./scripts/test-test262-shared-array-buffer-core.sh --check
+./scripts/test-web-playground.sh
+```
+
 ## R3dg implemented leaf built-in admission
 
 R3dg globally admits the already implemented `Error.isError`, `RegExp.escape`,
@@ -42,8 +91,8 @@ R3df admits the complete pinned `Atomics.pause` metadata tag without widening
 the shared-memory boundary. The runtime behavior was already implemented from
 QuickJS's `js_atomics_pause`: only `undefined` and integral Number values are
 accepted, objects are not coerced, the operation is a non-blocking CPU hint,
-and the result is `undefined`. SharedArrayBuffer, agents, waiters, and
-`Atomics.waitAsync` remain unsupported.
+and the result is `undefined`. At R3df, SharedArrayBuffer, agents, waiters, and
+`Atomics.waitAsync` were still unsupported.
 
 The old 126-tag global profile is frozen at SHA-256
 `7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
@@ -112,9 +161,10 @@ regenerates the complete 53,125-record metadata inventory, proves that the ledge
 
 The twelve already-frozen paths that really evaluate `SharedArrayBuffer`
 remain a disjoint deferred receipt. Pinned QuickJS passes all 24 variants;
-Oxide still has no shared backing-store implementation. This gate executes the
-deferred partition only in pinned QuickJS, so it is a small explicit frontier
-check rather than an Oxide pass receipt or the whole future shared-memory corpus.
+at R3de, Oxide had no shared backing-store implementation. This gate executes
+the deferred partition only in pinned QuickJS, so it is a small explicit
+frontier check rather than an Oxide pass receipt or the whole future
+shared-memory corpus.
 
 The exhaustive source audit classifies all 382 paths carrying `Atomics` or
 `Atomics.pause` metadata into five mutually exclusive groups. It is not an
@@ -2308,7 +2358,7 @@ workstream. Build and architecture details live in
   Unicode version, and Test262 commit are pinned in `compat/upstream.toml`.
 - The process-isolated Rust Test262 runner now saves a complete conservative
   outcome vector for all 102,037 sloppy/strict variants. A checksum-pinned
-  capability profile now admits 124 reviewed feature tags and 1,197 exact
+  capability profile now admits 130 reviewed feature tags and 1,197 exact
   audited negative-test paths. Those fail-closed canaries and the source/metadata host
   requirements keep unsupported grammar,
   features, modes, and `$262` hooks from becoming false passes. Bounded workers
@@ -2368,23 +2418,22 @@ workstream. Build and architecture details live in
   config skips explicit. R3bv then authenticates the complete
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
-  module boundaries. Those R3bw counts are historical; subsequent milestones
-  through R3cz advance the current canonical measurement to 65,509 passes and
-  65,566 runnable variants: 64.20% raw, a 78.40% lower bound after the 18,475
-  pinned QuickJS target exclusions, or 99.91% among the 65,566 variants with a
-  non-unsupported observed outcome. It records 13,719 `unsupported-feature`
-  and 17,996 total
-  unsupported outcomes, seven parse failures, 48 runtime failures, no harness
-  failures, and two timeouts. The exact R3cz join preserves all 102,037 keys
-  with two outcome changes, 102,035 unchanged rows, and no previous-pass
-  regression. Its full TSV/JSONL SHA-256 values are
-  `e2c3127f1d07909579e0f9cab108b70ebdaf5555646bd47cd2c1d63768ec6c1e`
+  module boundaries. Those R3bw counts are historical. Subsequent globally
+  admitted milestones through R3dg advance the current canonical measurement
+  to 65,610 passes and 65,662 runnable variants: 64.30% raw, a 78.52% lower
+  bound after the 18,475 pinned QuickJS target exclusions, or 99.92% among the
+  65,662 variants with a non-unsupported observed outcome. It records 13,623
+  `unsupported-feature` and 17,900 total unsupported outcomes, seven parse
+  failures, 43 runtime failures, no harness failures, and two timeouts. R3dh is
+  selection-only, so its SharedArrayBuffer core does not change this global
+  vector. The current full TSV/JSONL SHA-256 values are
+  `a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
   and
-  `c2d3379b16f6a39a99a1ba6f2d93d26b383dce1c287f8482517e2179546bdd1c`.
+  `dc37ed90322630e81fa4295daa57b8f81093719541076f84d4da27ef0d3c5d23`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
-  Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
-  explicit frontiers.
+  Modules, shared-memory Atomics, agents/waiters, `Atomics.waitAsync`, and
+  broad built-in coverage remain explicit frontiers.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -9399,9 +9448,9 @@ The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
 RegExp grammar, modules, remaining jobs/Promise/async and generator surfaces,
-SharedArrayBuffer/Atomics, WeakRef/finalization, bytecode version 5 and
-BJSON interoperability, `std`/`os`, workers, REPL/qjsc, and the complete Rust
-and C embedding APIs.
+shared-memory Atomics, agents/waiters, `Atomics.waitAsync`, remaining
+WeakRef/finalization edge cases, bytecode version 5 and BJSON interoperability,
+`std`/`os`, workers, REPL/qjsc, and the complete Rust and C embedding APIs.
 
 Code organization is also not final. Runtime white-box tests live in
 `runtime/tests.rs`, while the Array constructor, prototype, iterator, species,

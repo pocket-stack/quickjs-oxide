@@ -21,6 +21,7 @@ pub mod property;
 pub mod regexp;
 pub mod runtime;
 pub mod shape;
+pub mod shared_memory;
 pub(crate) mod source_text;
 mod unicode;
 mod unicode_case;

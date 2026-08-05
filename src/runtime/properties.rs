@@ -83,6 +83,7 @@ impl Runtime {
             ObjectPayload::Primitive(PrimitiveObjectData::String(value)) => Some(value.len()),
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::SharedArrayBuffer(_)
             | ObjectPayload::DataView(_)
             | ObjectPayload::TypedArray(_)
             | ObjectPayload::Proxy(_)
@@ -1299,6 +1300,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
                 | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Proxy(_)

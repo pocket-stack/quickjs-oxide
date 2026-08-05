@@ -8,7 +8,10 @@ slice is the ArrayBuffer/DataView/12-class TypedArray stack: resizable
 buffers, fixed and length-tracking views, transfers, iteration, search,
 mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
 QuickJS-shaped `Atomics` load/store/read-modify-write operations now work on
-ordinary ArrayBuffer-backed integer TypedArrays; shared memory remains separate.
+ordinary ArrayBuffer-backed integer TypedArrays. `SharedArrayBuffer` now has
+QuickJS-shaped construction, grow, slice, and species behavior, plus DataView
+and TypedArray views. A safe, sendable `SharedBufferHandle` can share its
+backing across runtimes without exposing heap identities.
 `Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, and `FinalizationRegistry` also
 have QuickJS-shaped constructors, protocols, weak lifetimes, and ordered
 runtime jobs.
@@ -33,14 +36,14 @@ so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
 full vector is 65,610 passes / 65,662 runnable / 102,037 total variants.
-Modules, SharedArrayBuffer, agents/waiters, shared-memory Atomics, and broad
+Modules, shared-memory Atomics, agents/waiters, `Atomics.waitAsync`, and broad
 built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
-`Atomics.pause + ArrayBuffer` example returns 42 through that build. The
+`SharedArrayBuffer views` example returns 42 through that build. The
 playground is a pre-parity milestone, not a Feature Parity claim.
 
 ## Try it

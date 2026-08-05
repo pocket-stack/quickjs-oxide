@@ -103,13 +103,8 @@ impl Runtime {
             let byte_count = count.checked_mul(width).ok_or(RuntimeError::Invariant(
                 "TypedArray.copyWithin byte count overflowed usize",
             ))?;
-            self.0.state.borrow_mut().heap.move_array_buffer_range(
-                current.snapshot.buffer,
-                current.snapshot.buffer,
-                source_start,
-                target_start,
-                byte_count,
-            )?;
+            let access = self.snapshot_buffer_access(current.snapshot.buffer)?;
+            self.move_buffer_range(&access, &access, source_start, target_start, byte_count)?;
         }
         Ok(Completion::Return(Value::Object(target)))
     }
@@ -197,12 +192,15 @@ impl Runtime {
                 .map_err(|_| RuntimeError::Invariant("TypedArray.fill start was negative"))?;
             let width = usize::from(element.byte_length());
             let byte_start = typed_array_absolute_byte_offset(current.snapshot, start)?;
-            self.0.state.borrow_mut().heap.fill_array_buffer_words(
-                current.snapshot.buffer,
-                byte_start,
-                &converted[..width],
-                count,
-            )?;
+            let byte_count = count.checked_mul(width).ok_or(RuntimeError::Invariant(
+                "TypedArray.fill byte count overflowed usize",
+            ))?;
+            let access = self.snapshot_buffer_access(current.snapshot.buffer)?;
+            self.with_buffer_range_mut(&access, byte_start, byte_count, |bytes| {
+                for target in bytes.chunks_exact_mut(width) {
+                    target.copy_from_slice(&converted[..width]);
+                }
+            })?;
         }
         Ok(Completion::Return(Value::Object(target)))
     }
@@ -235,12 +233,18 @@ impl Runtime {
             })?;
             let width = usize::from(current.snapshot.element.byte_length());
             let start = typed_array_absolute_byte_offset(current.snapshot, 0)?;
-            self.0.state.borrow_mut().heap.reverse_array_buffer_words(
-                current.snapshot.buffer,
-                start,
-                width,
-                count,
-            )?;
+            let byte_count = count.checked_mul(width).ok_or(RuntimeError::Invariant(
+                "TypedArray.reverse byte count overflowed usize",
+            ))?;
+            let access = self.snapshot_buffer_access(current.snapshot.buffer)?;
+            self.with_buffer_range_mut(&access, start, byte_count, |bytes| {
+                for left in 0..(count / 2) {
+                    let right = count - 1 - left;
+                    for byte in 0..width {
+                        bytes.swap(left * width + byte, right * width + byte);
+                    }
+                }
+            })?;
         }
         Ok(Completion::Return(Value::Object(target)))
     }

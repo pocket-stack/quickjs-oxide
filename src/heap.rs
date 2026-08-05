@@ -32,6 +32,7 @@ use crate::debug::Pc2LineTable;
 use crate::error::NativeErrorKind;
 use crate::regexp::CompiledRegExp;
 use crate::shape::{PropertyFlags, PropertyStorageKind, Shape, ShapeError};
+use crate::shared_memory::{SharedBufferHandle, SharedMemoryError};
 use crate::source_text::try_is_canonical_wtf8;
 use crate::value::JsString;
 
@@ -509,9 +510,18 @@ pub struct ArrayBufferRealmData {
     pub prototype: ObjectId,
 }
 
+/// Realm-local `%SharedArrayBuffer.prototype%` class root.
+///
+/// Shared wrappers may outlive and share backing stores across runtimes, but
+/// their JavaScript prototype identity remains owned by the importing realm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedArrayBufferRealmData {
+    pub prototype: ObjectId,
+}
+
 /// Realm-local `%DataView.prototype%` class root.
 ///
-/// DataView instances retain their backing ArrayBuffer directly. The realm
+/// DataView instances retain their backing ArrayBuffer-family object directly. The realm
 /// keeps only the original prototype identity used by constructor fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DataViewRealmData {
@@ -590,6 +600,9 @@ pub struct ContextData {
     /// Realm-local `%ArrayBuffer.prototype%` class root, attached after the
     /// public constructor/prototype cycle has been initialized and validated.
     pub array_buffer: Option<ArrayBufferRealmData>,
+    /// Realm-local `%SharedArrayBuffer.prototype%` class root, attached after
+    /// the public constructor/prototype cycle has been initialized.
+    pub shared_array_buffer: Option<SharedArrayBufferRealmData>,
     /// Realm-local `%DataView.prototype%` class root, attached after the
     /// public constructor/prototype cycle has been initialized and validated.
     pub data_view: Option<DataViewRealmData>,
@@ -671,6 +684,7 @@ impl ContextData {
             weak_set: None,
             weak_ref: None,
             array_buffer: None,
+            shared_array_buffer: None,
             data_view: None,
             typed_array: None,
             generator: None,
@@ -5052,6 +5066,16 @@ pub struct ArrayBufferData {
     pub detached: bool,
 }
 
+/// QuickJS `JS_CLASS_SHARED_ARRAY_BUFFER` wrapper-local state.
+///
+/// The handle owns no arena edge: it keeps the shared backing alive through
+/// `Arc`, while byte length and maximum length remain local to this wrapper.
+/// Cloning the handle therefore mirrors QuickJS's SAB structured-clone hook.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedArrayBufferData {
+    pub handle: SharedBufferHandle,
+}
+
 /// Borrow-free snapshot of one ArrayBuffer backing-store state.
 ///
 /// Runtime DataView operations use this value to finish observable validation
@@ -5062,6 +5086,10 @@ pub(crate) struct ArrayBufferState {
     pub max_byte_length: Option<u32>,
     pub detached: bool,
 }
+
+/// Common borrow-free state used by future ArrayBuffer and SharedArrayBuffer
+/// views. Shared buffers are never detached.
+pub(crate) type BufferState = ArrayBufferState;
 
 /// Shared ArrayBuffer-view layout carried by a genuine DataView.
 ///
@@ -5292,13 +5320,16 @@ pub enum ObjectPayload {
     /// payload introduces no arena edge. TypedArray/DataView objects retain
     /// the owning ArrayBuffer object in their own payloads.
     ArrayBuffer(ArrayBufferData),
-    /// `JS_CLASS_DATAVIEW`. The backing ArrayBuffer is a strong arena edge;
+    /// `JS_CLASS_SHARED_ARRAY_BUFFER`. The wrapper-local handle is a GC leaf;
+    /// its `Arc` backing may outlive this heap object or be sent to a worker.
+    SharedArrayBuffer(SharedArrayBufferData),
+    /// `JS_CLASS_DATAVIEW`. The backing ArrayBuffer-family object is a strong arena edge;
     /// detached and currently out-of-bounds views retain this structural
     /// payload and become observable errors only when accessed.
     DataView(ArrayBufferViewData),
     /// One of QuickJS's twelve fast integer-indexed TypedArray classes.
     ///
-    /// Element bytes remain owned by the branded ArrayBuffer. The durable view
+    /// Element bytes remain owned by the branded ArrayBuffer-family object. The durable view
     /// metadata survives detach and resizable-buffer OOB transitions so a view
     /// can recover when its backing store grows into range again.
     TypedArray(TypedArrayData),
@@ -5377,6 +5408,7 @@ pub enum ObjectKind {
     IteratorConcat,
     Proxy,
     ArrayBuffer,
+    SharedArrayBuffer,
     DataView,
     TypedArray,
     NativeFunction,
@@ -6173,6 +6205,19 @@ pub enum ArrayBufferNativeKind {
     TransferToFixedLength,
 }
 
+/// Typed handler family for pinned QuickJS's SharedArrayBuffer constructor,
+/// growable-buffer, slice, and species surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SharedArrayBufferNativeKind {
+    Constructor,
+    Species,
+    ByteLength,
+    MaxByteLength,
+    Growable,
+    Grow,
+    Slice,
+}
+
 /// Operation selector shared by the integer TypedArray Atomics kernel.
 ///
 /// The order mirrors pinned QuickJS's `AtomicsOpEnum`; retaining a typed
@@ -6458,6 +6503,7 @@ pub enum NativeFunctionId {
     WeakRef(WeakRefNativeKind),
     FinalizationRegistry(FinalizationRegistryNativeKind),
     ArrayBuffer(ArrayBufferNativeKind),
+    SharedArrayBuffer(SharedArrayBufferNativeKind),
     DataView(DataViewNativeKind),
     TypedArray(TypedArrayNativeKind),
     Atomics(AtomicsNativeKind),
@@ -7125,6 +7171,9 @@ impl NativeFunctionId {
                 | ArrayBufferNativeKind::Transfer
                 | ArrayBufferNativeKind::TransferToFixedLength,
             )
+            | Self::SharedArrayBuffer(
+                SharedArrayBufferNativeKind::Grow | SharedArrayBufferNativeKind::Slice,
+            )
             | Self::DataView(DataViewNativeKind::Get(_) | DataViewNativeKind::Set(_)) => {
                 NativeFunctionDescriptor {
                     cproto: NativeCProto::GenericMagic,
@@ -7186,6 +7235,7 @@ impl NativeFunctionId {
             | Self::WeakMap(WeakMapNativeKind::Constructor)
             | Self::WeakSet(WeakSetNativeKind::Constructor)
             | Self::ArrayBuffer(ArrayBufferNativeKind::Constructor)
+            | Self::SharedArrayBuffer(SharedArrayBufferNativeKind::Constructor)
             | Self::DataView(DataViewNativeKind::Constructor)
             | Self::Promise(PromiseNativeKind::Constructor)
             | Self::ProxyConstructor => NativeFunctionDescriptor {
@@ -7199,6 +7249,7 @@ impl NativeFunctionId {
             | Self::Map(MapNativeKind::Species | MapNativeKind::Size)
             | Self::Set(SetNativeKind::Species | SetNativeKind::Size)
             | Self::ArrayBuffer(ArrayBufferNativeKind::Species | ArrayBufferNativeKind::Detached)
+            | Self::SharedArrayBuffer(SharedArrayBufferNativeKind::Species)
             | Self::DataView(
                 DataViewNativeKind::Buffer
                 | DataViewNativeKind::ByteLength
@@ -7244,6 +7295,11 @@ impl NativeFunctionId {
                 ArrayBufferNativeKind::ByteLength
                 | ArrayBufferNativeKind::MaxByteLength
                 | ArrayBufferNativeKind::Resizable,
+            )
+            | Self::SharedArrayBuffer(
+                SharedArrayBufferNativeKind::ByteLength
+                | SharedArrayBufferNativeKind::MaxByteLength
+                | SharedArrayBufferNativeKind::Growable,
             ) => NativeFunctionDescriptor {
                 cproto: NativeCProto::GetterMagic,
             },
@@ -7904,6 +7960,27 @@ impl ObjectData {
                 max_byte_length,
                 detached: false,
             }),
+        }
+    }
+
+    /// Construct one genuine SharedArrayBuffer wrapper around a safe shared
+    /// backing handle. Cloned handles share bytes while retaining independent
+    /// wrapper-local length metadata.
+    #[must_use]
+    pub fn shared_array_buffer(
+        shape: ShapeId,
+        slots: Vec<PropertySlot>,
+        handle: SharedBufferHandle,
+    ) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::SharedArrayBuffer,
+            payload: ObjectPayload::SharedArrayBuffer(SharedArrayBufferData { handle }),
         }
     }
 
@@ -8659,6 +8736,7 @@ impl Heap {
             | ObjectPayload::IteratorConcat(_)
             | ObjectPayload::Proxy(_)
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::SharedArrayBuffer(_)
             | ObjectPayload::DataView(_)
             | ObjectPayload::TypedArray(_)
             | ObjectPayload::BoundFunction { .. }
@@ -9256,6 +9334,64 @@ impl Heap {
             unreachable!("context identity was validated before retaining ArrayBuffer roots")
         };
         context.array_buffer = Some(array_buffer);
+        Ok(())
+    }
+
+    /// Atomically publish the realm's `%SharedArrayBuffer.prototype%` class
+    /// root after validating its independent public constructor relationship.
+    pub(crate) fn attach_shared_array_buffer_intrinsics(
+        &mut self,
+        realm: ContextId,
+        constructor: ObjectId,
+        shared_array_buffer: SharedArrayBufferRealmData,
+    ) -> Result<(), HeapError> {
+        let context = self.context(realm)?;
+        if context.shared_array_buffer.is_some() {
+            return Err(HeapError::Invariant(
+                "context already has SharedArrayBuffer intrinsic roots",
+            ));
+        }
+        let object_prototype = context.object_prototype;
+
+        let constructor = self.object(constructor)?;
+        if !constructor.is_constructor
+            || !matches!(
+                constructor.payload,
+                ObjectPayload::NativeFunction {
+                    data: NativeFunctionData {
+                        target: NativeFunctionId::SharedArrayBuffer(
+                            SharedArrayBufferNativeKind::Constructor
+                        ),
+                        realm: Some(target_realm),
+                        ..
+                    },
+                    internal: None,
+                } if target_realm == realm
+            )
+        {
+            return Err(HeapError::Invariant(
+                "SharedArrayBuffer constructor root is not the realm's SharedArrayBuffer native",
+            ));
+        }
+
+        let prototype = self.object(shared_array_buffer.prototype)?;
+        if prototype.kind != ObjectKind::Ordinary
+            || !matches!(prototype.payload, ObjectPayload::Ordinary)
+            || self.shape(prototype.shape)?.prototype() != Some(object_prototype)
+        {
+            return Err(HeapError::Invariant(
+                "SharedArrayBuffer prototype is not an ordinary child of Object.prototype",
+            ));
+        }
+
+        let edges = [RawId::Object(shared_array_buffer.prototype)];
+        self.retain_edges_transactionally(&edges)?;
+
+        let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(realm))?.data
+        else {
+            unreachable!("context identity was validated before retaining SharedArrayBuffer roots")
+        };
+        context.shared_array_buffer = Some(shared_array_buffer);
         Ok(())
     }
 
@@ -10779,22 +10915,61 @@ impl Heap {
         }
     }
 
-    /// Snapshot one genuine ArrayBuffer's backing-store state without
-    /// exposing a borrow of its byte vector.
-    pub(crate) fn array_buffer_state(&self, id: ObjectId) -> Result<ArrayBufferState, HeapError> {
-        let ObjectPayload::ArrayBuffer(data) = &self.object(id)?.payload else {
+    /// Snapshot either ArrayBuffer class without exposing its backing store.
+    ///
+    /// This is the common view-validation leaf for future DataView and
+    /// TypedArray shared-buffer support. SharedArrayBuffers are never detached.
+    pub(crate) fn buffer_state(&self, id: ObjectId) -> Result<BufferState, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::ArrayBuffer(data) => {
+                let byte_length = u32::try_from(data.bytes.len()).map_err(|_| {
+                    HeapError::Invariant("ArrayBuffer byte length exceeds the supported range")
+                })?;
+                Ok(BufferState {
+                    byte_length,
+                    max_byte_length: data.max_byte_length,
+                    detached: data.detached,
+                })
+            }
+            ObjectPayload::SharedArrayBuffer(data) => Ok(BufferState {
+                byte_length: data.handle.byte_length(),
+                max_byte_length: data.handle.max_byte_length_option(),
+                detached: false,
+            }),
+            _ => Err(HeapError::Invariant(
+                "buffer state reached another object class",
+            )),
+        }
+    }
+
+    /// Clone the sendable backing handle of one genuine SharedArrayBuffer.
+    /// The returned wrapper has independent length metadata and no heap edge.
+    pub(crate) fn clone_shared_array_buffer_handle(
+        &self,
+        id: ObjectId,
+    ) -> Result<SharedBufferHandle, HeapError> {
+        let ObjectPayload::SharedArrayBuffer(data) = &self.object(id)?.payload else {
             return Err(HeapError::Invariant(
-                "ArrayBuffer state reached another object class",
+                "SharedArrayBuffer handle clone reached another object class",
             ));
         };
-        let byte_length = u32::try_from(data.bytes.len()).map_err(|_| {
-            HeapError::Invariant("ArrayBuffer byte length exceeds the supported range")
-        })?;
-        Ok(ArrayBufferState {
-            byte_length,
-            max_byte_length: data.max_byte_length,
-            detached: data.detached,
-        })
+        Ok(data.handle.clone())
+    }
+
+    /// Grow only the selected SharedArrayBuffer wrapper's visible length.
+    pub(crate) fn grow_shared_array_buffer(
+        &mut self,
+        id: ObjectId,
+        new_byte_length: u32,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::SharedArrayBuffer(data) = &mut self.object_mut(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "SharedArrayBuffer grow reached another object class",
+            ));
+        };
+        data.handle
+            .grow(new_byte_length)
+            .map_err(shared_memory_heap_error)
     }
 
     /// Borrow one validated live ArrayBuffer range only for a non-observable
@@ -11125,6 +11300,7 @@ impl Heap {
     }
 
     /// Fill a live ArrayBuffer range with repeated fixed-width machine words.
+    #[cfg(test)]
     pub(crate) fn fill_array_buffer_words(
         &mut self,
         buffer: ObjectId,
@@ -11160,6 +11336,7 @@ impl Heap {
     }
 
     /// Reverse fixed-width words in one live ArrayBuffer range in place.
+    #[cfg(test)]
     pub(crate) fn reverse_array_buffer_words(
         &mut self,
         buffer: ObjectId,
@@ -15138,6 +15315,10 @@ impl Heap {
                 | (ObjectKind::IteratorConcat, ObjectPayload::IteratorConcat(_))
                 | (ObjectKind::Proxy, ObjectPayload::Proxy(_))
                 | (ObjectKind::ArrayBuffer, ObjectPayload::ArrayBuffer(_))
+                | (
+                    ObjectKind::SharedArrayBuffer,
+                    ObjectPayload::SharedArrayBuffer(_)
+                )
                 | (ObjectKind::DataView, ObjectPayload::DataView(_))
                 | (ObjectKind::TypedArray, ObjectPayload::TypedArray(_))
                 | (
@@ -15204,11 +15385,33 @@ impl Heap {
                 ));
             }
         }
-        if let ObjectPayload::DataView(data) = &object.payload {
-            let ObjectPayload::ArrayBuffer(buffer) = &self.object(data.buffer)?.payload else {
+        if let ObjectPayload::SharedArrayBuffer(data) = &object.payload {
+            let byte_length = data.handle.byte_length();
+            let maximum = data.handle.max_byte_length_option();
+            if object.is_constructor
+                || byte_length > i32::MAX as u32
+                || maximum.is_some_and(|maximum| maximum < byte_length || maximum > i32::MAX as u32)
+                || data.handle.backing_capacity() != data.handle.max_byte_length()
+            {
                 return Err(HeapError::Invariant(
-                    "DataView backing object is not an ArrayBuffer",
+                    "SharedArrayBuffer has invalid wrapper or backing-store state",
                 ));
+            }
+        }
+        if let ObjectPayload::DataView(data) = &object.payload {
+            let (maximum, growable) = match &self.object(data.buffer)?.payload {
+                ObjectPayload::ArrayBuffer(buffer) => {
+                    (buffer.max_byte_length, buffer.max_byte_length.is_some())
+                }
+                ObjectPayload::SharedArrayBuffer(buffer) => (
+                    buffer.handle.max_byte_length_option(),
+                    buffer.handle.is_growable(),
+                ),
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "DataView backing object is not an ArrayBuffer or SharedArrayBuffer",
+                    ));
+                }
             };
             let structural_end = data
                 .fixed_byte_length
@@ -15219,8 +15422,8 @@ impl Heap {
                     .fixed_byte_length
                     .is_some_and(|byte_length| byte_length > i32::MAX as u32)
                 || structural_end.is_some_and(|byte_end| byte_end > i32::MAX as u64)
-                || (data.fixed_byte_length.is_none() && buffer.max_byte_length.is_none())
-                || buffer.max_byte_length.is_some_and(|maximum| {
+                || (data.fixed_byte_length.is_none() && !growable)
+                || maximum.is_some_and(|maximum| {
                     data.byte_offset > maximum
                         || structural_end.is_some_and(|byte_end| byte_end > u64::from(maximum))
                 })
@@ -15232,10 +15435,19 @@ impl Heap {
         }
         if let ObjectPayload::TypedArray(data) = &object.payload {
             let view = data.view;
-            let ObjectPayload::ArrayBuffer(buffer) = &self.object(view.buffer)?.payload else {
-                return Err(HeapError::Invariant(
-                    "TypedArray backing object is not an ArrayBuffer",
-                ));
+            let (maximum, growable) = match &self.object(view.buffer)?.payload {
+                ObjectPayload::ArrayBuffer(buffer) => {
+                    (buffer.max_byte_length, buffer.max_byte_length.is_some())
+                }
+                ObjectPayload::SharedArrayBuffer(buffer) => (
+                    buffer.handle.max_byte_length_option(),
+                    buffer.handle.is_growable(),
+                ),
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "TypedArray backing object is not an ArrayBuffer or SharedArrayBuffer",
+                    ));
+                }
             };
             let width = u32::from(data.element.byte_length());
             let structural_end = view
@@ -15248,8 +15460,8 @@ impl Heap {
                     byte_length > i32::MAX as u32 || byte_length % width != 0
                 })
                 || structural_end.is_some_and(|byte_end| byte_end > i32::MAX as u64)
-                || (view.fixed_byte_length.is_none() && buffer.max_byte_length.is_none())
-                || buffer.max_byte_length.is_some_and(|maximum| {
+                || (view.fixed_byte_length.is_none() && !growable)
+                || maximum.is_some_and(|maximum| {
                     view.byte_offset > maximum
                         || structural_end.is_some_and(|byte_end| byte_end > u64::from(maximum))
                 })
@@ -16299,6 +16511,21 @@ fn object_layout_edges(shape: ShapeId, slots: &[PropertySlot]) -> Vec<RawId> {
     edges
 }
 
+fn shared_memory_heap_error(error: SharedMemoryError) -> HeapError {
+    let message = match error {
+        SharedMemoryError::InvalidLength => "SharedArrayBuffer has an invalid length",
+        SharedMemoryError::Allocation => "SharedArrayBuffer backing allocation failed",
+        SharedMemoryError::NotGrowable => "SharedArrayBuffer wrapper is not growable",
+        SharedMemoryError::CannotShrink => "SharedArrayBuffer wrapper cannot shrink",
+        SharedMemoryError::RangeOverflow => "SharedArrayBuffer range overflowed",
+        SharedMemoryError::OutOfBounds => "SharedArrayBuffer range is out of bounds",
+        SharedMemoryError::InvalidWordLength => {
+            "SharedArrayBuffer word has an unsupported byte length"
+        }
+    };
+    HeapError::Invariant(message)
+}
+
 /// Build a smaller ArrayBuffer allocation without mutating the live source.
 ///
 /// QuickJS uses `realloc` for this transition. Constructing the replacement
@@ -16326,6 +16553,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
         | ObjectPayload::ArrayBuffer(_)
+        | ObjectPayload::SharedArrayBuffer(_)
         | ObjectPayload::GlobalObject { .. }
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
@@ -16436,6 +16664,7 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
         | ObjectPayload::ArrayBuffer(_)
+        | ObjectPayload::SharedArrayBuffer(_)
         | ObjectPayload::Error
         | ObjectPayload::StringIterator { .. }
         | ObjectPayload::WeakSet { .. }
@@ -16772,6 +17001,7 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
             .saturating_add(context.weak_set.map_or(0, |_| 1))
             .saturating_add(context.weak_ref.map_or(0, |_| 2))
             .saturating_add(context.array_buffer.map_or(0, |_| 1))
+            .saturating_add(context.shared_array_buffer.map_or(0, |_| 1))
             .saturating_add(context.data_view.map_or(0, |_| 1))
             .saturating_add(
                 context
@@ -16828,6 +17058,9 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
     }
     if let Some(array_buffer) = context.array_buffer {
         edges.push(RawId::Object(array_buffer.prototype));
+    }
+    if let Some(shared_array_buffer) = context.shared_array_buffer {
+        edges.push(RawId::Object(shared_array_buffer.prototype));
     }
     if let Some(data_view) = context.data_view {
         edges.push(RawId::Object(data_view.prototype));
@@ -17035,6 +17268,7 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         | ObjectPayload::Date(_)
         | ObjectPayload::RegExp(_)
         | ObjectPayload::ArrayBuffer(_)
+        | ObjectPayload::SharedArrayBuffer(_)
         | ObjectPayload::DataView(_)
         | ObjectPayload::TypedArray(_)
         | ObjectPayload::RegExpStringIterator { .. }
@@ -22267,6 +22501,94 @@ mod tests {
     }
 
     #[test]
+    fn shared_array_buffer_heap_leaf_shares_bytes_but_not_wrapper_growth() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let external = SharedBufferHandle::new(2, Some(8)).unwrap();
+        let object = heap
+            .allocate_object(ObjectData::shared_array_buffer(
+                shape,
+                Vec::new(),
+                external.clone(),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            heap.object(object).unwrap().kind,
+            ObjectKind::SharedArrayBuffer
+        );
+        assert_eq!(
+            heap.buffer_state(object),
+            Ok(BufferState {
+                byte_length: 2,
+                max_byte_length: Some(8),
+                detached: false,
+            })
+        );
+        heap.clone_shared_array_buffer_handle(object)
+            .unwrap()
+            .write_word(0, &[7, 9])
+            .unwrap();
+        assert_eq!(external.read_range(0, 2).unwrap(), [7, 9]);
+
+        let before_grow = heap.clone_shared_array_buffer_handle(object).unwrap();
+        heap.grow_shared_array_buffer(object, 6).unwrap();
+        assert_eq!(heap.buffer_state(object).unwrap().byte_length, 6);
+        assert_eq!(before_grow.byte_length(), 2);
+        assert_eq!(external.byte_length(), 2);
+        let after_grow = heap.clone_shared_array_buffer_handle(object).unwrap();
+        assert_eq!(after_grow.read_word(2, 4).unwrap(), [0; 8]);
+        assert!(after_grow.read_range(6, 1).is_err());
+
+        let slice = after_grow.slice(0, 2).unwrap();
+        assert_eq!(slice.read_range(0, 2).unwrap(), [7, 9]);
+        assert!(!slice.shares_backing_with(&external));
+        slice.write_range(0, &[1]).unwrap();
+        assert_eq!(external.read_range(0, 1).unwrap(), [7]);
+
+        assert_eq!(heap.release_shape(shape).unwrap(), HeapCleanup::default());
+        let cleanup = heap.release_object(object).unwrap();
+        assert_eq!(cleanup.finalized_objects, 1);
+        assert_eq!(cleanup.finalized_shapes, 1);
+        assert_eq!(external.read_range(0, 2).unwrap(), [7, 9]);
+    }
+
+    #[test]
+    fn shared_array_buffer_view_edge_remains_wrapper_local_to_gc() {
+        let mut heap = Heap::new();
+        let shape = empty_shape(&mut heap);
+        let handle = SharedBufferHandle::new(4, Some(8)).unwrap();
+        let buffer = heap
+            .allocate_object(ObjectData::shared_array_buffer(
+                shape,
+                Vec::new(),
+                handle.clone(),
+            ))
+            .unwrap();
+        let view = heap
+            .allocate_object(ObjectData::data_view(
+                shape,
+                Vec::new(),
+                ArrayBufferViewData {
+                    buffer,
+                    byte_offset: 1,
+                    fixed_byte_length: None,
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(heap.object_strong_count(buffer), Ok(2));
+        assert_eq!(heap.release_shape(shape).unwrap(), HeapCleanup::default());
+        assert_eq!(heap.release_object(buffer).unwrap(), HeapCleanup::default());
+        let cleanup = heap.release_object(view).unwrap();
+        assert_eq!(cleanup.finalized_objects, 2);
+        assert_eq!(cleanup.finalized_shapes, 1);
+
+        handle.write_word(0, &[3, 4, 5, 6]).unwrap();
+        assert_eq!(handle.read_range(0, 4).unwrap(), [3, 4, 5, 6]);
+    }
+
+    #[test]
     fn array_buffer_resize_failure_is_atomic_and_shrink_releases_capacity() {
         const INITIAL_LENGTH: usize = 64 * 1024;
         const SHRUNK_LENGTH: usize = 43;
@@ -22435,7 +22757,7 @@ mod tests {
                 },
             )),
             Err(HeapError::Invariant(
-                "DataView backing object is not an ArrayBuffer",
+                "DataView backing object is not an ArrayBuffer or SharedArrayBuffer",
             )),
         );
         assert_eq!(heap.object_strong_count(ordinary), Ok(ordinary_strong));
@@ -22534,7 +22856,7 @@ mod tests {
             HeapCleanup::default(),
         );
         assert_eq!(
-            heap.array_buffer_state(buffer),
+            heap.buffer_state(buffer),
             Ok(ArrayBufferState {
                 byte_length: 0,
                 max_byte_length: Some(16),
@@ -22578,7 +22900,7 @@ mod tests {
         heap.release_shape(shape).unwrap();
 
         assert_eq!(
-            heap.array_buffer_state(buffer),
+            heap.buffer_state(buffer),
             Ok(ArrayBufferState {
                 byte_length: 12,
                 max_byte_length: Some(20),
@@ -22783,7 +23105,7 @@ mod tests {
                 },
             )),
             Err(HeapError::Invariant(
-                "TypedArray backing object is not an ArrayBuffer",
+                "TypedArray backing object is not an ArrayBuffer or SharedArrayBuffer",
             )),
         );
         assert_eq!(

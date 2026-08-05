@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Authenticate the R3dh SharedArrayBuffer metadata universe and selection-only
-# core frontier. This gate intentionally does not claim an Oxide conformance
-# result before the SharedArrayBuffer semantics have been implemented.
+# Authenticate the R3dh SharedArrayBuffer metadata universe, selection-only
+# core frontier, Oxide pass vector, and pinned QuickJS oracle receipt.
 
 set -euo pipefail
 export LC_ALL=C
@@ -23,8 +22,8 @@ skip_unit_execution=${TEST262_SKIP_UNIT_EXECUTION:-false}
 
 usage() {
     printf 'usage: %s [--check]\n' "${0##*/}"
-    printf '  --check  authenticate the inventory, selection frontier, and QuickJS receipt\n'
-    printf '  default  same as --check; no Oxide pass receipt is blessed yet\n'
+    printf '  --check  authenticate the inventory and both engine receipts\n'
+    printf '  default  same as --check\n'
 }
 
 case ${1-} in
@@ -121,8 +120,8 @@ absolute_from_root() {
 }
 
 check_static_inputs() {
-    check_file "$baseline" 76 \
-        f7abcd887b3f7a1924a26ed1d232a8633cc9347f7557cb76d6050030cc1cfc5e
+    check_file "$baseline" 82 \
+        c386f99d7b14da071e8f684eb5e8883084ac7f9a64bb11c1921ef2ec001d5afe
     check_file "$ledger" "$(value universe_ledger_lines)" \
         "$(value universe_ledger_sha256)"
     check_file "$core" "$(value core_manifest_lines)" \
@@ -160,7 +159,7 @@ check_static_inputs() {
         && -z "$(section "$profile" audited-negative-tests)" \
         && -z "$(section "$profile" execution)" \
         && "$(value selection_only)" == true \
-        && "$(value oxide_focused_report)" == unblessed ]] \
+        && "$(value oxide_focused_report)" == authenticated ]] \
         || die 'selection-only profile identity drifted'
 }
 
@@ -435,13 +434,14 @@ expect_rejected_selection 'requires tests/test262-shared-array-buffer-core.txt' 
     --manifest "$tmp/no-wait-no-agent.txt"
 
 focused_report=$tmp/focused.tsv
+focused_json=${focused_report%.tsv}.jsonl
 focused_log=$tmp/focused.log
 "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
     --oxide-profile "$profile" --manifest "$core" --report "$focused_report" \
     --mode both --timeout-ms 30000 --workers "$workers" --allow-failures \
     >"$focused_log" 2>&1 \
     || { cat "$focused_log" >&2; die 'exact core selection was not accepted'; }
-[[ -f "$focused_report" && -f "${focused_report%.tsv}.jsonl" \
+[[ -f "$focused_report" && -f "$focused_json" \
     && "$(header "$focused_report" quickjs)" == "$(value quickjs)" \
     && "$(header "$focused_report" test262)" == "$(value test262)" \
     && "$(header "$focused_report" test262_patch_sha256)" \
@@ -458,7 +458,14 @@ focused_log=$tmp/focused.log
         == "$(value core_variants)" \
     && "$(report_keys "$focused_report" | sha /dev/stdin)" \
         == "$(value core_keys_sha256)" \
-    && "$(report_summary "$focused_report")" == "$(computed_summary "$focused_report")" ]] \
+    && "$(lines "$focused_report")" == "$(value oxide_focused_report_lines)" \
+    && "$(lines "$focused_json")" == "$(value oxide_focused_jsonl_lines)" \
+    && "$(sha "$focused_report")" == "$(value oxide_focused_tsv_sha256)" \
+    && "$(sha "$focused_json")" == "$(value oxide_focused_jsonl_sha256)" \
+    && "$(report_summary "$focused_report")" == "$(computed_summary "$focused_report")" \
+    && "$(report_summary "$focused_report")" == "$(value oxide_focused_summary)" \
+    && "$(report_rows "$focused_report" | awk -F'\t' '$7=="pass"{count++} END{print count+0}')" \
+        == "$(value oxide_focused_passes)" ]] \
     || die 'exact core selection report identity drifted'
 report_rows "$focused_report" | awk -F'\t' '$8=="selection"{exit 1}' \
     || die 'exact core profile left a row at the selection phase'
@@ -492,4 +499,4 @@ fi
 diff -u "$quickjs_receipt" "$tmp/quickjs-receipt.txt" \
     || die 'pinned QuickJS receipt projection drifted'
 
-echo 'R3dh SharedArrayBuffer frontier verified: 463 paths / 922 variants partitioned; exact core 221 / 438 accepted and executed with outcomes unblessed; pinned QuickJS 438 / 438.'
+echo 'R3dh SharedArrayBuffer frontier verified: 463 paths / 922 variants partitioned; Oxide exact core 438 / 438; pinned QuickJS 438 / 438.'

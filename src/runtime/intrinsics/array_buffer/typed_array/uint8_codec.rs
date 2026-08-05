@@ -195,12 +195,10 @@ impl Runtime {
         let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
         let length = usize::try_from(state.byte_length)
             .map_err(|_| RuntimeError::Invariant("Uint8Array byte length overflowed usize"))?;
-        let progress = self.0.state.borrow_mut().heap.with_array_buffer_range_mut(
-            state.snapshot.buffer,
-            start,
-            length,
-            |target| decode_base64(&source, target, alphabet, last_chunk),
-        )?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        let progress = self.with_buffer_range_mut(&access, start, length, |target| {
+            decode_base64(&source, target, alphabet, last_chunk)
+        })?;
         if progress.invalid {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -232,12 +230,9 @@ impl Runtime {
         let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
         let length = usize::try_from(state.byte_length)
             .map_err(|_| RuntimeError::Invariant("Uint8Array byte length overflowed usize"))?;
-        let progress = self.0.state.borrow_mut().heap.with_array_buffer_range_mut(
-            state.snapshot.buffer,
-            start,
-            length,
-            |target| decode_hex(&source, target),
-        )?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        let progress = self
+            .with_buffer_range_mut(&access, start, length, |target| decode_hex(&source, target))?;
         if progress.invalid {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -295,12 +290,10 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
-        let written = self.0.state.borrow().heap.with_array_buffer_range(
-            state.snapshot.buffer,
-            start,
-            length,
-            |source| encode_base64(source, &mut output, alphabet),
-        )?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        let written = self.with_buffer_range(&access, start, length, |source| {
+            encode_base64(source, &mut output, alphabet)
+        })?;
         debug_assert_eq!(written, output.len());
         if omit_padding {
             while output.last() == Some(&b'=') {
@@ -342,12 +335,10 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
-        self.0.state.borrow().heap.with_array_buffer_range(
-            state.snapshot.buffer,
-            start,
-            length,
-            |source| encode_hex(source, &mut output),
-        )?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        self.with_buffer_range(&access, start, length, |source| {
+            encode_hex(source, &mut output)
+        })?;
         Ok(Completion::Return(Value::String(
             JsString::from_owned_latin1(output),
         )))
@@ -606,12 +597,10 @@ impl Runtime {
         };
         let state = self.typed_array_state(&target)?;
         let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
-        self.0.state.borrow_mut().heap.with_array_buffer_range_mut(
-            state.snapshot.buffer,
-            start,
-            bytes.len(),
-            |target| target.copy_from_slice(bytes),
-        )?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        self.with_buffer_range_mut(&access, start, bytes.len(), |target| {
+            target.copy_from_slice(bytes)
+        })?;
         Ok(NativeConversion::Value(target))
     }
 

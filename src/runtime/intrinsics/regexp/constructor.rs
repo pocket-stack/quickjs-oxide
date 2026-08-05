@@ -255,6 +255,7 @@ impl Runtime {
             | ObjectPayload::Primitive(_)
             | ObjectPayload::Date(_)
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::SharedArrayBuffer(_)
             | ObjectPayload::DataView(_)
             | ObjectPayload::TypedArray(_)
             | ObjectPayload::GlobalObject { .. }

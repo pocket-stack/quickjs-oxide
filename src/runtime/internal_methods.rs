@@ -199,6 +199,7 @@ impl Runtime {
                 | ObjectPayload::Date(_)
                 | ObjectPayload::RegExp(_)
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
                 | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Array { .. }
@@ -676,7 +677,9 @@ impl Runtime {
         object: &ObjectRef,
     ) -> Result<NativeConversion<bool>, RuntimeError> {
         let Some(_) = self.proxy_snapshot_if_any(object)? else {
-            if self.typed_array_is_object(object)? && self.typed_array_has_rab_backing(object)? {
+            if self.typed_array_is_object(object)?
+                && self.typed_array_prevent_extensions_is_rejected(object)?
+            {
                 return Ok(NativeConversion::Value(false));
             }
             self.prevent_extensions(object)?;

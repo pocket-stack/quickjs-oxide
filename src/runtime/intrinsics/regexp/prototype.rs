@@ -117,6 +117,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
                 | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Proxy(_)
@@ -195,6 +196,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
                 | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Proxy(_)

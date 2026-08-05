@@ -8,6 +8,7 @@ mod arguments;
 mod async_from_sync_iterator;
 mod async_function;
 mod async_generator;
+mod buffer_access;
 mod bytecode_publish;
 mod class;
 mod class_fields;
@@ -1083,6 +1084,13 @@ impl Runtime {
             &global_object,
         )
         .expect("ArrayBuffer intrinsic initialization must succeed");
+        self.initialize_shared_array_buffer_intrinsic(
+            realm,
+            &function_prototype,
+            &object_prototype,
+            &global_object,
+        )
+        .expect("SharedArrayBuffer intrinsic initialization must succeed");
         self.initialize_typed_array_intrinsics(
             realm,
             &function_prototype,
@@ -4999,6 +5007,7 @@ impl Runtime {
                 }
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
                 | ObjectPayload::TypedArray(_)
                 | ObjectPayload::AsyncFunctionState(_)
@@ -5074,6 +5083,7 @@ impl Runtime {
             | ObjectPayload::Proxy(_) => Ok(None),
             ObjectPayload::Ordinary
             | ObjectPayload::ArrayBuffer(_)
+            | ObjectPayload::SharedArrayBuffer(_)
             | ObjectPayload::DataView(_)
             | ObjectPayload::TypedArray(_)
             | ObjectPayload::AsyncFunctionState(_)
@@ -6493,6 +6503,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
+                        | ObjectPayload::SharedArrayBuffer(_)
                         | ObjectPayload::DataView(_)
                         | ObjectPayload::TypedArray(_)
                         | ObjectPayload::Proxy(_)
@@ -6854,6 +6865,7 @@ impl Runtime {
                 ObjectPayload::Proxy(data) => (data.is_callable, None, FunctionKind::Normal),
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
                 | ObjectPayload::TypedArray(_)
                 | ObjectPayload::AsyncFunctionState(_)
@@ -7084,6 +7096,7 @@ impl Runtime {
                         | ObjectPayload::Proxy(_) => None,
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
+                        | ObjectPayload::SharedArrayBuffer(_)
                         | ObjectPayload::DataView(_)
                         | ObjectPayload::TypedArray(_)
                         | ObjectPayload::AsyncFunctionState(_)
@@ -7213,6 +7226,7 @@ impl Runtime {
                         }
                         ObjectPayload::Ordinary
                         | ObjectPayload::ArrayBuffer(_)
+                        | ObjectPayload::SharedArrayBuffer(_)
                         | ObjectPayload::DataView(_)
                         | ObjectPayload::TypedArray(_)
                         | ObjectPayload::Proxy(_)
@@ -7605,6 +7619,7 @@ impl Runtime {
                     }
                     ObjectPayload::Ordinary
                     | ObjectPayload::ArrayBuffer(_)
+                    | ObjectPayload::SharedArrayBuffer(_)
                     | ObjectPayload::DataView(_)
                     | ObjectPayload::TypedArray(_)
                     | ObjectPayload::Proxy(_)
@@ -8528,6 +8543,7 @@ impl Runtime {
                 ObjectPayload::GlobalObject { uninitialized_vars } => Some(uninitialized_vars),
                 ObjectPayload::Ordinary
                 | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
                 | ObjectPayload::TypedArray(_)
                 | ObjectPayload::Proxy(_)

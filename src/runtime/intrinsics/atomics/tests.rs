@@ -388,6 +388,47 @@ fn wait_notify_pause_and_lock_free_keep_the_non_shared_quickjs_contract() {
             check("notify class rejection",
                 capture(function(){return Atomics.notify(new Uint32Array(1),0,1)})===
                     "throw:TypeError:integer TypedArray expected");
+
+            var shared=new Int32Array(new SharedArrayBuffer(4));
+            log=[];
+            outcome=capture(function(){return Atomics.load(shared,{
+                valueOf:function(){log.push("shared index");return 0}
+            })});
+            check("shared load frontier",
+                outcome===
+                    "throw:TypeError:shared-memory Atomics are not implemented");
+            check("shared load no coercion",log.length===0);
+            log=[];
+            outcome=capture(function(){return Atomics.store(
+                shared,
+                {valueOf:function(){log.push("shared index");return 0}},
+                {valueOf:function(){log.push("shared value");return 1}}
+            )});
+            check("shared store frontier",
+                outcome===
+                    "throw:TypeError:shared-memory Atomics are not implemented");
+            check("shared store no coercion",log.length===0);
+            log=[];
+            outcome=capture(function(){return Atomics.wait(
+                shared,
+                {valueOf:function(){log.push("shared index");return 0}},
+                {valueOf:function(){log.push("shared expected");return 0}},
+                {valueOf:function(){log.push("shared timeout");return 0}}
+            )});
+            check("shared wait frontier",
+                outcome===
+                    "throw:TypeError:shared-memory Atomics are not implemented");
+            check("shared wait no coercion",log.length===0);
+            log=[];
+            outcome=capture(function(){return Atomics.notify(
+                shared,
+                {valueOf:function(){log.push("shared index");return 0}},
+                {valueOf:function(){log.push("shared count");return 1}}
+            )});
+            check("shared notify frontier",
+                outcome===
+                    "throw:TypeError:shared-memory Atomics are not implemented");
+            check("shared notify no coercion",log.length===0);
             return failures.length?failures.join(","):"ok";
         })()"#,
     );

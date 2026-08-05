@@ -47,7 +47,7 @@ pub(in crate::runtime) struct TypedArraySnapshot {
     pub element: TypedArrayElementKind,
 }
 
-/// Current view state derived from a snapshot and its backing ArrayBuffer.
+/// Current view state derived from a snapshot and its ArrayBuffer-family backing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::runtime) struct TypedArrayState {
     pub snapshot: TypedArraySnapshot,
@@ -598,7 +598,7 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("TypedArray constructor source"));
         }
 
-        if self.array_buffer_snapshot_if_branded(&source)?.is_some() {
+        if self.snapshot_buffer_access_if_branded(&source)?.is_some() {
             return self
                 .construct_typed_array_from_buffer(realm, element, new_target, &source, arguments);
         }
@@ -668,7 +668,7 @@ impl Runtime {
             None
         };
 
-        match self.new_typed_array_view_from_coerced(
+        match self.new_typed_array_constructor_view_from_coerced(
             realm,
             &prototype,
             element,
@@ -679,6 +679,94 @@ impl Runtime {
             NativeConversion::Value(target) => Ok(Completion::Return(Value::Object(target))),
             NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
         }
+    }
+
+    /// Finish the constructor's ArrayBuffer-family overload after prototype,
+    /// byteOffset, and length coercion have completed. The access token owns
+    /// all state needed to validate either backing class without carrying a
+    /// runtime borrow into a shared-backing mutex operation.
+    fn new_typed_array_constructor_view_from_coerced(
+        &self,
+        realm: ContextId,
+        prototype: &ObjectRef,
+        element: TypedArrayElementKind,
+        buffer: &ObjectRef,
+        byte_offset: u64,
+        requested_length: Option<u64>,
+    ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
+        let width = u64::from(element.byte_length());
+        if byte_offset % width != 0 {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Range,
+                "invalid offset",
+            )?));
+        }
+
+        let backing = self.snapshot_buffer_access(buffer.object_id())?.state;
+        if backing.detached {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "ArrayBuffer is detached",
+            )?));
+        }
+        let (byte_offset, fixed_byte_length) = if let Some(length) = requested_length {
+            let bytes = length.checked_mul(width).ok_or(RuntimeError::Invariant(
+                "ToIndex TypedArray byte length overflowed u64",
+            ))?;
+            let end = byte_offset
+                .checked_add(bytes)
+                .ok_or(RuntimeError::Invariant(
+                    "ToIndex TypedArray end offset overflowed u64",
+                ))?;
+            if end > u64::from(backing.byte_length) {
+                return Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "invalid length",
+                )?));
+            }
+            (
+                u32::try_from(byte_offset)
+                    .map_err(|_| RuntimeError::Invariant("validated byteOffset overflowed u32"))?,
+                Some(u32::try_from(bytes).map_err(|_| {
+                    RuntimeError::Invariant("validated TypedArray byte length overflowed u32")
+                })?),
+            )
+        } else {
+            if byte_offset > u64::from(backing.byte_length) {
+                return Ok(NativeConversion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Range,
+                    "invalid offset",
+                )?));
+            }
+            let byte_offset = u32::try_from(byte_offset)
+                .map_err(|_| RuntimeError::Invariant("validated byteOffset overflowed u32"))?;
+            let available = backing.byte_length - byte_offset;
+            let fixed_byte_length = if backing.max_byte_length.is_some() {
+                None
+            } else {
+                if u64::from(available) % width != 0 {
+                    return Ok(NativeConversion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Range,
+                        "invalid length",
+                    )?));
+                }
+                Some(available)
+            };
+            (byte_offset, fixed_byte_length)
+        };
+
+        Ok(NativeConversion::Value(self.new_typed_array_object(
+            prototype,
+            buffer,
+            byte_offset,
+            fixed_byte_length,
+            element,
+        )?))
     }
 
     fn construct_typed_array_from_typed_array(
@@ -1145,9 +1233,14 @@ impl Runtime {
                 u64::from(source_state.length) * u64::from(source_snapshot.element.byte_length()),
             )
             .map_err(|_| RuntimeError::Invariant("TypedArray set byte length overflowed usize"))?;
-            self.0.state.borrow_mut().heap.move_array_buffer_range(
-                source_snapshot.buffer,
-                target_snapshot.buffer,
+            // QuickJS uses memmove here so an overlapping same-backing source
+            // is cached. The family-neutral leaf preserves that rule for AB,
+            // SAB, and distinct SAB wrappers sharing one backing store.
+            let source_access = self.snapshot_buffer_access(source_snapshot.buffer)?;
+            let target_access = self.snapshot_buffer_access(target_snapshot.buffer)?;
+            self.move_buffer_range(
+                &source_access,
+                &target_access,
                 source_start,
                 target_start,
                 byte_count,
@@ -1547,12 +1640,7 @@ impl Runtime {
         &self,
         snapshot: TypedArraySnapshot,
     ) -> Result<TypedArrayState, RuntimeError> {
-        let buffer = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .array_buffer_state(snapshot.buffer)?;
+        let buffer = self.snapshot_buffer_access(snapshot.buffer)?.state;
         let width = u32::from(snapshot.element.byte_length());
         let byte_length = if buffer.detached || snapshot.byte_offset > buffer.byte_length {
             None
@@ -1608,11 +1696,29 @@ impl Runtime {
         Ok(NativeConversion::Value(state.length))
     }
 
-    pub(in crate::runtime) fn typed_array_has_rab_backing(
+    /// Match QuickJS's TypedArray-specific `JS_PreventExtensions` guard.
+    ///
+    /// Every length-tracking view is rejected. Fixed-length views are also
+    /// rejected over ordinary resizable ArrayBuffers because those buffers can
+    /// shrink and later regrow, but they are safe to make non-extensible over
+    /// growable SharedArrayBuffers, which cannot shrink.
+    pub(in crate::runtime) fn typed_array_prevent_extensions_is_rejected(
         &self,
         object: &ObjectRef,
     ) -> Result<bool, RuntimeError> {
-        Ok(self.typed_array_state(object)?.resizable)
+        let snapshot = self.typed_array_snapshot(object)?;
+        if snapshot.fixed_byte_length.is_none() {
+            return Ok(true);
+        }
+
+        let state = self.0.state.borrow();
+        match &state.heap.object(snapshot.buffer)?.payload {
+            ObjectPayload::ArrayBuffer(data) => Ok(data.max_byte_length.is_some()),
+            ObjectPayload::SharedArrayBuffer(_) => Ok(false),
+            _ => Err(RuntimeError::Invariant(
+                "TypedArray backing object is not an ArrayBuffer or SharedArrayBuffer",
+            )),
+        }
     }
 
     pub(in crate::runtime) fn typed_array_canonical_numeric_index(
@@ -1650,11 +1756,8 @@ impl Runtime {
         }
         let absolute = typed_array_absolute_byte_offset(state.snapshot, index)?;
         let width = usize::from(state.snapshot.element.byte_length());
-        let bytes = self.0.state.borrow().heap.read_array_buffer_word(
-            state.snapshot.buffer,
-            absolute,
-            width,
-        )?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        let bytes = self.read_buffer_word(&access, absolute, width)?;
         Ok(Some(typed_array_decode(state.snapshot.element, bytes)))
     }
 
@@ -1757,11 +1860,8 @@ impl Runtime {
         }
         let absolute = typed_array_absolute_byte_offset(state.snapshot, index)?;
         let width = usize::from(state.snapshot.element.byte_length());
-        self.0.state.borrow_mut().heap.write_array_buffer_word(
-            state.snapshot.buffer,
-            absolute,
-            &bytes[..width],
-        )?;
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        self.write_buffer_word(&access, absolute, &bytes[..width])?;
         Ok(true)
     }
 

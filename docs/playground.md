@@ -40,6 +40,12 @@ under `target/pages`; `web/site` remains the reviewable static source.
 If a local shared Cargo target is busy, set `CARGO_TARGET_DIR` to a separate
 build cache; the deployable tree still lands in `target/pages`.
 
+The smoke executes all 13 curated examples in the real WebAssembly engine.
+That set includes a no-Atomics `SharedArrayBuffer` example which grows a shared
+backing, writes through TypedArray and DataView views, slices it, and returns
+42. Shared-memory Atomics and agents are intentionally not part of this
+playground milestone.
+
 ## Deployment
 
 `.github/workflows/pages.yml` rebuilds the same artifact on `main`, runs the

@@ -129,12 +129,18 @@ impl Runtime {
             })?;
             let width = usize::from(target_state.snapshot.element.byte_length());
             let start = typed_array_absolute_byte_offset(target_state.snapshot, 0)?;
-            self.0.state.borrow_mut().heap.reverse_array_buffer_words(
-                target_state.snapshot.buffer,
-                start,
-                width,
-                count,
-            )?;
+            let byte_count = count.checked_mul(width).ok_or(RuntimeError::Invariant(
+                "TypedArray.toReversed byte count overflowed usize",
+            ))?;
+            let access = self.snapshot_buffer_access(target_state.snapshot.buffer)?;
+            self.with_buffer_range_mut(&access, start, byte_count, |bytes| {
+                for left in 0..(count / 2) {
+                    let right = count - 1 - left;
+                    for byte in 0..width {
+                        bytes.swap(left * width + byte, right * width + byte);
+                    }
+                }
+            })?;
         }
         Ok(Completion::Return(Value::Object(target)))
     }
@@ -198,12 +204,20 @@ impl Runtime {
                     ))?,
             )
             .map_err(|_| RuntimeError::Invariant("TypedArray copy byte length overflowed usize"))?;
-            self.0.state.borrow_mut().heap.copy_array_buffer_range(
-                source_snapshot.buffer,
-                target_state.snapshot.buffer,
-                usize::try_from(source_snapshot.byte_offset).map_err(|_| {
-                    RuntimeError::Invariant("TypedArray source byteOffset overflowed usize")
-                })?,
+            let source_start = usize::try_from(source_snapshot.byte_offset).map_err(|_| {
+                RuntimeError::Invariant("TypedArray source byteOffset overflowed usize")
+            })?;
+            let target_start =
+                usize::try_from(target_state.snapshot.byte_offset).map_err(|_| {
+                    RuntimeError::Invariant("TypedArray target byteOffset overflowed usize")
+                })?;
+            let source_access = self.snapshot_buffer_access(source_snapshot.buffer)?;
+            let target_access = self.snapshot_buffer_access(target_state.snapshot.buffer)?;
+            self.move_buffer_range(
+                &source_access,
+                &target_access,
+                source_start,
+                target_start,
                 byte_count,
             )?;
         } else {

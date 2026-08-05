@@ -1,9 +1,9 @@
 //! Pinned QuickJS `%Atomics%` operations over integer TypedArrays.
 //!
-//! This milestone deliberately implements QuickJS's useful non-shared
-//! behavior without introducing `SharedArrayBuffer`, agents, or `waitAsync`.
-//! The upstream runtime permits load/store/read-modify-write operations on an
-//! ordinary ArrayBuffer-backed integer TypedArray. `wait` rejects such a view
+//! The existing non-shared milestone deliberately implements QuickJS's useful
+//! behavior on ordinary ArrayBuffer-backed integer TypedArrays. Shared views
+//! are now recognized but remain explicitly rejected until the separately
+//! gated shared-Atomics and waiter milestones. `wait` rejects an ordinary view
 //! before coercing its remaining arguments, while `notify` performs its
 //! ordinary validation and coercions before returning zero.
 
@@ -200,8 +200,22 @@ impl Runtime {
             )?));
         }
 
-        // This milestone has no SharedArrayBuffer class. QuickJS performs
-        // this non-shared wait rejection before even its initial detach check.
+        let buffer_access = self.snapshot_buffer_access(snapshot.buffer)?;
+        if buffer_access.is_shared() {
+            // R3dh makes SharedArrayBuffer views usable throughout the binary
+            // data stack. Shared Atomics are the next independently gated
+            // milestone; reject them as JavaScript until their atomic/waiter
+            // kernels are installed rather than leaking an ordinary-buffer
+            // heap invariant through the public evaluator.
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "shared-memory Atomics are not implemented",
+            )?));
+        }
+
+        // QuickJS performs this non-shared wait rejection before even its
+        // initial detach check.
         if mode == AtomicAccessMode::Wait {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
@@ -210,12 +224,7 @@ impl Runtime {
             )?));
         }
 
-        let buffer = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .array_buffer_state(snapshot.buffer)?;
+        let buffer = buffer_access.state;
         if buffer.detached {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,

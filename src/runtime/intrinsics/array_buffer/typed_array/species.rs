@@ -220,7 +220,7 @@ impl Runtime {
                 "invalid offset",
             )?));
         }
-        let backing = self.array_buffer_snapshot(buffer)?;
+        let backing = self.snapshot_buffer_access(buffer.object_id())?.state;
         if backing.detached {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,

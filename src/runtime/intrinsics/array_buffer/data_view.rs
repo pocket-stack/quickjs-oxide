@@ -1,11 +1,11 @@
-//! `%DataView%` over the shared branded ArrayBuffer backing store.
+//! `%DataView%` over the ArrayBuffer-family backing stores.
 //!
 //! QuickJS uses the same `JSTypedArray` descriptor for DataView and concrete
 //! TypedArrays, but DataView itself is an ordinary (non integer-indexed
 //! exotic) object.  Oxide keeps that split explicit: the payload owns one
-//! traced ArrayBuffer edge and stores only byte offset plus fixed/tracking
-//! length metadata.  Every operation derives the current bounds from the
-//! backing store, so detach and resizable-buffer shrink/grow transitions
+//! traced ArrayBuffer-family edge and stores only byte offset plus
+//! fixed/tracking length metadata. Every operation derives the current bounds
+//! from the backing store, so detach and resizable/growable-buffer transitions
 //! cannot leave a cached pointer or element count stale.
 
 use crate::heap::{
@@ -40,13 +40,8 @@ struct DataViewSnapshot {
 }
 
 impl Runtime {
-    /// Install DataView immediately after the ArrayBuffer family.
-    ///
-    /// Pinned QuickJS eventually places SharedArrayBuffer and the twelve
-    /// concrete TypedArray constructors between these globals.  Those classes
-    /// are intentionally absent in this milestone; their later bootstrap is
-    /// inserted before this call so freshly created realms regain the final
-    /// upstream key order without changing the DataView implementation.
+    /// Install DataView after SharedArrayBuffer and the TypedArray family,
+    /// matching pinned QuickJS global key order.
     pub(in crate::runtime) fn initialize_data_view_intrinsic(
         &self,
         realm: ContextId,
@@ -203,12 +198,7 @@ impl Runtime {
             0
         };
 
-        let initial = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .array_buffer_state(buffer.object_id())?;
+        let initial = self.snapshot_buffer_access(buffer.object_id())?.state;
         if initial.detached {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -263,12 +253,7 @@ impl Runtime {
             NativeConversion::Value(prototype) => prototype,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let current = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .array_buffer_state(buffer.object_id())?;
+        let current = self.snapshot_buffer_access(buffer.object_id())?.state;
         if current.detached {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -316,7 +301,7 @@ impl Runtime {
             return Ok(Completion::Return(Value::Object(buffer)));
         }
 
-        let buffer = self.0.state.borrow().heap.array_buffer_state(view.buffer)?;
+        let buffer = self.snapshot_buffer_access(view.buffer)?.state;
         let Some(byte_length) = data_view_in_bounds_byte_length(view, buffer) else {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
@@ -487,20 +472,13 @@ impl Runtime {
         element: DataViewElementKind,
     ) -> Result<NativeConversion<[u8; 8]>, RuntimeError> {
         let width = data_view_element_width(element);
-        let buffer = {
-            let state = self.0.state.borrow();
-            state.heap.array_buffer_state(view.buffer)?
-        };
-        let absolute = match self.validate_data_view_access(realm, view, buffer, position, width)? {
-            NativeConversion::Value(absolute) => absolute,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let word =
-            self.0
-                .state
-                .borrow()
-                .heap
-                .read_array_buffer_word(view.buffer, absolute, width)?;
+        let access = self.snapshot_buffer_access(view.buffer)?;
+        let absolute =
+            match self.validate_data_view_access(realm, view, access.state, position, width)? {
+                NativeConversion::Value(absolute) => absolute,
+                NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+            };
+        let word = self.read_buffer_word(&access, absolute, width)?;
         Ok(NativeConversion::Value(word))
     }
 
@@ -513,19 +491,13 @@ impl Runtime {
         bytes: &[u8; 8],
     ) -> Result<NativeConversion<()>, RuntimeError> {
         let width = data_view_element_width(element);
-        let buffer = {
-            let state = self.0.state.borrow();
-            state.heap.array_buffer_state(view.buffer)?
-        };
-        let absolute = match self.validate_data_view_access(realm, view, buffer, position, width)? {
-            NativeConversion::Value(absolute) => absolute,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        self.0.state.borrow_mut().heap.write_array_buffer_word(
-            view.buffer,
-            absolute,
-            &bytes[..width],
-        )?;
+        let access = self.snapshot_buffer_access(view.buffer)?;
+        let absolute =
+            match self.validate_data_view_access(realm, view, access.state, position, width)? {
+                NativeConversion::Value(absolute) => absolute,
+                NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+            };
+        self.write_buffer_word(&access, absolute, &bytes[..width])?;
         Ok(NativeConversion::Value(()))
     }
 
@@ -533,7 +505,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         view: DataViewSnapshot,
-        buffer: crate::heap::ArrayBufferState,
+        buffer: crate::heap::BufferState,
         position: u64,
         width: usize,
     ) -> Result<NativeConversion<usize>, RuntimeError> {
@@ -605,13 +577,7 @@ impl Runtime {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("DataView ArrayBuffer"));
         }
-        let is_array_buffer = {
-            let state = self.0.state.borrow();
-            matches!(
-                state.heap.object(object.object_id())?.payload,
-                ObjectPayload::ArrayBuffer(_)
-            )
-        };
+        let is_array_buffer = self.snapshot_buffer_access_if_branded(object)?.is_some();
         if !is_array_buffer {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
@@ -752,7 +718,7 @@ impl Runtime {
 
 fn data_view_in_bounds_byte_length(
     view: DataViewSnapshot,
-    buffer: crate::heap::ArrayBufferState,
+    buffer: crate::heap::BufferState,
 ) -> Option<u32> {
     if buffer.detached || view.byte_offset > buffer.byte_length {
         return None;

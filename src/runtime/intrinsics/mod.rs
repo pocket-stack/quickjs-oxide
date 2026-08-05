@@ -18,6 +18,7 @@ mod reflect;
 mod regexp;
 mod replacement;
 mod set;
+mod shared_array_buffer;
 mod string;
 mod weak_collection;
 mod weak_ref;

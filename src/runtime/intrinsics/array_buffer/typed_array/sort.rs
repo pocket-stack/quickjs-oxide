@@ -9,6 +9,7 @@
 
 use std::cmp::Ordering;
 
+use crate::runtime::buffer_access::BufferAccessToken;
 use crate::runtime::intrinsics::array::{
     QuickJsSortAccessor, quickjs_rqsort_by, quickjs_rqsort_with,
 };
@@ -32,7 +33,8 @@ struct CustomTypedArraySortRaw<'a> {
 
 struct TypedArrayInPlaceSort<'a> {
     runtime: &'a Runtime,
-    snapshot: TypedArraySnapshot,
+    access: BufferAccessToken,
+    element: TypedArrayElementKind,
     start: usize,
     width: usize,
 }
@@ -54,20 +56,22 @@ impl QuickJsSortAccessor for TypedArrayInPlaceSort<'_> {
     fn compare(&mut self, left: usize, right: usize) -> Result<Ordering, RuntimeError> {
         let left_offset = self.offset(left)?;
         let right_offset = self.offset(right)?;
-        let state = self.runtime.0.state.borrow();
-        let left =
-            state
-                .heap
-                .read_array_buffer_word(self.snapshot.buffer, left_offset, self.width)?;
-        let right =
-            state
-                .heap
-                .read_array_buffer_word(self.snapshot.buffer, right_offset, self.width)?;
-        Ok(compare_typed_array_words(
-            self.snapshot.element,
-            &left,
-            &right,
-        ))
+        let range_start = left_offset.min(right_offset);
+        let range_length = left_offset
+            .max(right_offset)
+            .checked_sub(range_start)
+            .and_then(|length| length.checked_add(self.width))
+            .ok_or(RuntimeError::Invariant(
+                "TypedArray in-place sort comparison range overflowed usize",
+            ))?;
+        self.runtime
+            .with_buffer_range(&self.access, range_start, range_length, |bytes| {
+                let left =
+                    typed_array_sort_slice_word(bytes, left_offset - range_start, self.width)?;
+                let right =
+                    typed_array_sort_slice_word(bytes, right_offset - range_start, self.width)?;
+                Ok(compare_typed_array_words(self.element, &left, &right))
+            })?
     }
 
     fn swap(&mut self, left: usize, right: usize) -> Result<(), RuntimeError> {
@@ -76,26 +80,36 @@ impl QuickJsSortAccessor for TypedArrayInPlaceSort<'_> {
         }
         let left_offset = self.offset(left)?;
         let right_offset = self.offset(right)?;
-        let mut state = self.runtime.0.state.borrow_mut();
-        let left_word =
-            state
-                .heap
-                .read_array_buffer_word(self.snapshot.buffer, left_offset, self.width)?;
-        let right_word =
-            state
-                .heap
-                .read_array_buffer_word(self.snapshot.buffer, right_offset, self.width)?;
-        state.heap.write_array_buffer_word(
-            self.snapshot.buffer,
-            left_offset,
-            &right_word[..self.width],
-        )?;
-        state.heap.write_array_buffer_word(
-            self.snapshot.buffer,
-            right_offset,
-            &left_word[..self.width],
-        )?;
-        Ok(())
+        let range_start = left_offset.min(right_offset);
+        let range_length = left_offset
+            .max(right_offset)
+            .checked_sub(range_start)
+            .and_then(|length| length.checked_add(self.width))
+            .ok_or(RuntimeError::Invariant(
+                "TypedArray in-place sort swap range overflowed usize",
+            ))?;
+        self.runtime
+            .with_buffer_range_mut(&self.access, range_start, range_length, |bytes| {
+                let left = left_offset - range_start;
+                let right = right_offset - range_start;
+                let left_end = left.checked_add(self.width).ok_or(RuntimeError::Invariant(
+                    "TypedArray in-place sort left word overflowed usize",
+                ))?;
+                let right_end = right
+                    .checked_add(self.width)
+                    .ok_or(RuntimeError::Invariant(
+                        "TypedArray in-place sort right word overflowed usize",
+                    ))?;
+                if left_end > bytes.len() || right_end > bytes.len() {
+                    return Err(RuntimeError::Invariant(
+                        "TypedArray in-place sort word was out of bounds",
+                    ));
+                }
+                for byte in 0..self.width {
+                    bytes.swap(left + byte, right + byte);
+                }
+                Ok(())
+            })?
     }
 }
 
@@ -188,18 +202,17 @@ impl Runtime {
         }
         if comparator.is_none() {
             let width = usize::from(initial.snapshot.element.byte_length());
+            let count = usize::try_from(length)
+                .map_err(|_| RuntimeError::Invariant("TypedArray sort length overflowed usize"))?;
+            let access = self.snapshot_buffer_access(initial.snapshot.buffer)?;
             let mut accessor = TypedArrayInPlaceSort {
                 runtime: self,
-                snapshot: initial.snapshot,
+                access,
+                element: initial.snapshot.element,
                 start: typed_array_absolute_byte_offset(initial.snapshot, 0)?,
                 width,
             };
-            quickjs_rqsort_with(
-                usize::try_from(length).map_err(|_| {
-                    RuntimeError::Invariant("TypedArray sort length overflowed usize")
-                })?,
-                &mut accessor,
-            )?;
+            quickjs_rqsort_with(count, &mut accessor)?;
             return Ok(NativeConversion::Value(()));
         }
 
@@ -262,22 +275,10 @@ impl Runtime {
         })?;
         raw_bytes.resize(byte_count, 0);
         let start = typed_array_absolute_byte_offset(state.snapshot, 0)?;
-        let runtime_state = self.0.state.borrow();
-        for original_position in 0..count {
-            let offset = original_position
-                .checked_mul(width)
-                .and_then(|offset| start.checked_add(offset))
-                .ok_or(RuntimeError::Invariant(
-                    "TypedArray sort snapshot offset overflowed usize",
-                ))?;
-            let word =
-                runtime_state
-                    .heap
-                    .read_array_buffer_word(state.snapshot.buffer, offset, width)?;
-            let destination = original_position * width;
-            raw_bytes[destination..destination + width].copy_from_slice(&word[..width]);
-        }
-        drop(runtime_state);
+        let access = self.snapshot_buffer_access(state.snapshot.buffer)?;
+        self.with_buffer_range(&access, start, byte_count, |source| {
+            raw_bytes.copy_from_slice(source)
+        })?;
 
         let mut indices = Vec::new();
         indices.try_reserve_exact(count).map_err(|_| {
@@ -362,36 +363,60 @@ impl Runtime {
                 .map_err(|_| RuntimeError::Invariant("TypedArray sort length overflowed usize"))?,
         );
         let start = typed_array_absolute_byte_offset(current.snapshot, 0)?;
-        let mut runtime_state = self.0.state.borrow_mut();
-        for (index, source_index) in indices[..count].iter().copied().enumerate() {
-            let offset = index
-                .checked_mul(width)
-                .and_then(|offset| start.checked_add(offset))
-                .ok_or(RuntimeError::Invariant(
-                    "TypedArray sort write offset overflowed usize",
-                ))?;
-            let source_start = usize::try_from(source_index)
-                .ok()
-                .and_then(|index| index.checked_mul(width))
-                .ok_or(RuntimeError::Invariant(
-                    "TypedArray sort source offset overflowed usize",
-                ))?;
-            let source_end = source_start
-                .checked_add(width)
-                .ok_or(RuntimeError::Invariant(
-                    "TypedArray sort source end overflowed usize",
-                ))?;
-            let source = raw_bytes
-                .get(source_start..source_end)
-                .ok_or(RuntimeError::Invariant(
-                    "TypedArray sort source word was out of bounds",
-                ))?;
-            runtime_state
-                .heap
-                .write_array_buffer_word(current.snapshot.buffer, offset, source)?;
-        }
-        Ok(())
+        let byte_length = count.checked_mul(width).ok_or(RuntimeError::Invariant(
+            "TypedArray sort write byte length overflowed usize",
+        ))?;
+        let access = self.snapshot_buffer_access(current.snapshot.buffer)?;
+        self.with_buffer_range_mut(&access, start, byte_length, |target| {
+            for (destination, source_index) in target
+                .chunks_exact_mut(width)
+                .zip(indices[..count].iter().copied())
+            {
+                let source_start = usize::try_from(source_index)
+                    .ok()
+                    .and_then(|index| index.checked_mul(width))
+                    .ok_or(RuntimeError::Invariant(
+                        "TypedArray sort source offset overflowed usize",
+                    ))?;
+                let source_end = source_start
+                    .checked_add(width)
+                    .ok_or(RuntimeError::Invariant(
+                        "TypedArray sort source end overflowed usize",
+                    ))?;
+                let source =
+                    raw_bytes
+                        .get(source_start..source_end)
+                        .ok_or(RuntimeError::Invariant(
+                            "TypedArray sort source word was out of bounds",
+                        ))?;
+                destination.copy_from_slice(source);
+            }
+            Ok(())
+        })?
     }
+}
+
+fn typed_array_sort_slice_word(
+    bytes: &[u8],
+    byte_offset: usize,
+    width: usize,
+) -> Result<[u8; 8], RuntimeError> {
+    if !matches!(width, 1 | 2 | 4 | 8) {
+        return Err(RuntimeError::Invariant(
+            "TypedArray sort backing has an invalid element width",
+        ));
+    }
+    let end = byte_offset
+        .checked_add(width)
+        .ok_or(RuntimeError::Invariant(
+            "TypedArray sort backing word end overflowed usize",
+        ))?;
+    let source = bytes.get(byte_offset..end).ok_or(RuntimeError::Invariant(
+        "TypedArray sort backing word was out of bounds",
+    ))?;
+    let mut word = [0_u8; 8];
+    word[..width].copy_from_slice(source);
+    Ok(word)
 }
 
 fn custom_typed_array_sort_word(

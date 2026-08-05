@@ -147,74 +147,84 @@ impl Runtime {
     /// their tracked prefix is excluded from this check. TypedArray integer
     /// indices are virtual and therefore never occur in the ordinary shape.
     fn for_in_fast_array_count(&self, object: &ObjectRef) -> Result<Option<u32>, RuntimeError> {
-        let state = self.0.state.borrow();
-        let object_data = state.heap.object(object.object_id())?;
-        let fast_len = match &object_data.payload {
-            ObjectPayload::Array {
-                fast_len: Some(fast_len),
-            }
-            | ObjectPayload::Arguments {
-                fast_len: Some(fast_len),
-                ..
-            } => *fast_len,
-            ObjectPayload::TypedArray(data) => {
-                let buffer = state.heap.array_buffer_state(data.view.buffer)?;
-                let byte_length = if buffer.detached || data.view.byte_offset > buffer.byte_length {
-                    0
-                } else {
-                    match data.view.fixed_byte_length {
-                        Some(length)
-                            if data
-                                .view
-                                .byte_offset
-                                .checked_add(length)
-                                .is_none_or(|end| end > buffer.byte_length) =>
-                        {
-                            0
-                        }
-                        Some(length) => length,
-                        None => buffer.byte_length - data.view.byte_offset,
-                    }
-                };
-                byte_length / u32::from(data.element.byte_length())
-            }
-            ObjectPayload::Ordinary
-            | ObjectPayload::Proxy(_)
-            | ObjectPayload::RawJson
-            | ObjectPayload::Promise(_)
-            | ObjectPayload::Date(_)
-            | ObjectPayload::RegExp(_)
-            | ObjectPayload::ArrayBuffer(_)
-            | ObjectPayload::DataView(_)
-            | ObjectPayload::Array { fast_len: None }
-            | ObjectPayload::Arguments { fast_len: None, .. }
-            | ObjectPayload::ArrayIterator { .. }
-            | ObjectPayload::IteratorHelper(_)
-            | ObjectPayload::IteratorWrap(_)
-            | ObjectPayload::AsyncFromSyncIterator(_)
-            | ObjectPayload::IteratorConcat(_)
-            | ObjectPayload::Map { .. }
-            | ObjectPayload::MapIterator { .. }
-            | ObjectPayload::Set { .. }
-            | ObjectPayload::WeakMap { .. }
-            | ObjectPayload::WeakSet { .. }
-            | ObjectPayload::WeakRef { .. }
-            | ObjectPayload::FinalizationRegistry(_)
-            | ObjectPayload::SetIterator { .. }
-            | ObjectPayload::ForInIterator(_)
-            | ObjectPayload::Primitive(_)
-            | ObjectPayload::GlobalObject { .. }
-            | ObjectPayload::Error
-            | ObjectPayload::StringIterator { .. }
-            | ObjectPayload::RegExpStringIterator { .. }
-            | ObjectPayload::NativeFunction { .. }
-            | ObjectPayload::BoundFunction { .. }
-            | ObjectPayload::BytecodeFunction { .. }
-            | ObjectPayload::AsyncFunctionState(_)
-            | ObjectPayload::Generator { .. }
-            | ObjectPayload::AsyncGenerator(_) => return Ok(None),
+        let (dense_length, typed_array, shape_id) = {
+            let state = self.0.state.borrow();
+            let object_data = state.heap.object(object.object_id())?;
+            let (dense_length, typed_array) = match &object_data.payload {
+                ObjectPayload::Array {
+                    fast_len: Some(fast_len),
+                }
+                | ObjectPayload::Arguments {
+                    fast_len: Some(fast_len),
+                    ..
+                } => (Some(*fast_len), None),
+                ObjectPayload::TypedArray(data) => (None, Some(*data)),
+                ObjectPayload::Ordinary
+                | ObjectPayload::Proxy(_)
+                | ObjectPayload::RawJson
+                | ObjectPayload::Promise(_)
+                | ObjectPayload::Date(_)
+                | ObjectPayload::RegExp(_)
+                | ObjectPayload::ArrayBuffer(_)
+                | ObjectPayload::SharedArrayBuffer(_)
+                | ObjectPayload::DataView(_)
+                | ObjectPayload::Array { fast_len: None }
+                | ObjectPayload::Arguments { fast_len: None, .. }
+                | ObjectPayload::ArrayIterator { .. }
+                | ObjectPayload::IteratorHelper(_)
+                | ObjectPayload::IteratorWrap(_)
+                | ObjectPayload::AsyncFromSyncIterator(_)
+                | ObjectPayload::IteratorConcat(_)
+                | ObjectPayload::Map { .. }
+                | ObjectPayload::MapIterator { .. }
+                | ObjectPayload::Set { .. }
+                | ObjectPayload::WeakMap { .. }
+                | ObjectPayload::WeakSet { .. }
+                | ObjectPayload::WeakRef { .. }
+                | ObjectPayload::FinalizationRegistry(_)
+                | ObjectPayload::SetIterator { .. }
+                | ObjectPayload::ForInIterator(_)
+                | ObjectPayload::Primitive(_)
+                | ObjectPayload::GlobalObject { .. }
+                | ObjectPayload::Error
+                | ObjectPayload::StringIterator { .. }
+                | ObjectPayload::RegExpStringIterator { .. }
+                | ObjectPayload::NativeFunction { .. }
+                | ObjectPayload::BoundFunction { .. }
+                | ObjectPayload::BytecodeFunction { .. }
+                | ObjectPayload::AsyncFunctionState(_)
+                | ObjectPayload::Generator { .. }
+                | ObjectPayload::AsyncGenerator(_) => return Ok(None),
+            };
+            (dense_length, typed_array, object_data.shape)
         };
-        let shape = state.heap.shape(object_data.shape)?;
+
+        let fast_len = if let Some(data) = typed_array {
+            let buffer = self.snapshot_buffer_access(data.view.buffer)?.state;
+            let byte_length = if buffer.detached || data.view.byte_offset > buffer.byte_length {
+                0
+            } else {
+                match data.view.fixed_byte_length {
+                    Some(length)
+                        if data
+                            .view
+                            .byte_offset
+                            .checked_add(length)
+                            .is_none_or(|end| end > buffer.byte_length) =>
+                    {
+                        0
+                    }
+                    Some(length) => length,
+                    None => buffer.byte_length - data.view.byte_offset,
+                }
+            };
+            byte_length / u32::from(data.element.byte_length())
+        } else {
+            dense_length.expect("fast dense payload recorded its length")
+        };
+
+        let state = self.0.state.borrow();
+        let shape = state.heap.shape(shape_id)?;
         for entry in shape.entries() {
             if !entry.flags.enumerable {
                 continue;

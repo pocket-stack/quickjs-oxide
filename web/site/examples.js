@@ -46,6 +46,18 @@ grown[1] = 2;
 grown[0] + grown[1];`,
   },
   {
+    id: "shared-array-buffer",
+    label: "SharedArrayBuffer views",
+    source: `var buffer = new SharedArrayBuffer(2, { maxByteLength: 4 });
+var bytes = new Uint8Array(buffer);
+bytes[0] = 40;
+buffer.grow(4);
+new DataView(buffer).setUint8(1, 2);
+var copy = buffer.slice(0, 2);
+
+new Uint8Array(copy)[0] + new Uint8Array(copy)[1];`,
+  },
+  {
     id: "uint8-codec",
     label: "Uint8Array.fromHex",
     source: `var bytes = Uint8Array.fromHex("2a");

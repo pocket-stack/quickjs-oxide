@@ -1014,6 +1014,121 @@ fn integer_indexed_exotic_methods_handle_canonical_keys_and_receivers() {
 }
 
 #[test]
+fn variable_length_typed_array_extensibility_matches_quickjs_for_all_classes() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    assert_script(
+        &mut context,
+        r#"(function(){
+            var failures=[];
+            function check(label,condition){
+                if(!condition) failures.push(label);
+            }
+            function errorName(operation){
+                try{operation();return "none"}
+                catch(error){return error.name}
+            }
+
+            var constructors=[
+                Uint8ClampedArray,Int8Array,Uint8Array,Int16Array,Uint16Array,
+                Int32Array,Uint32Array,BigInt64Array,BigUint64Array,
+                Float16Array,Float32Array,Float64Array
+            ];
+            for(var i=0;i<constructors.length;i++){
+                var C=constructors[i];
+                var label=C.name;
+                var width=C.BYTES_PER_ELEMENT;
+
+                var fixedAb=new C(new ArrayBuffer(2*width));
+                var fixedSab=new C(new SharedArrayBuffer(2*width));
+                check(label+" fixed AB accepted",
+                    Reflect.preventExtensions(fixedAb)===true);
+                check(label+" fixed SAB accepted",
+                    Reflect.preventExtensions(fixedSab)===true);
+
+                var rab=new ArrayBuffer(4*width,{maxByteLength:8*width});
+                var rabFixed=new C(rab,0,4);
+                var rabTracking=new C(rab);
+                check(label+" RAB fixed Reflect rejection",
+                    Reflect.preventExtensions(rabFixed)===false);
+                check(label+" RAB fixed remains extensible",
+                    Object.isExtensible(rabFixed)===true);
+                check(label+" RAB tracking Object rejection",
+                    errorName(function(){Object.preventExtensions(rabTracking)})
+                        ==="TypeError");
+                check(label+" RAB tracking remains extensible",
+                    Object.isExtensible(rabTracking)===true);
+
+                var gsab=new SharedArrayBuffer(
+                    4*width,{maxByteLength:8*width}
+                );
+                var gsabFixedForReflect=new C(gsab,0,4);
+                var gsabFixedForObject=new C(gsab,2*width,2);
+                var gsabTrackingForReflect=new C(gsab);
+                var gsabTrackingForObject=new C(gsab,2*width);
+                check(label+" GSAB fixed Reflect accepted",
+                    Reflect.preventExtensions(gsabFixedForReflect)===true);
+                check(label+" GSAB fixed Reflect made non-extensible",
+                    Object.isExtensible(gsabFixedForReflect)===false);
+                check(label+" GSAB fixed Object accepted",
+                    errorName(function(){
+                        Object.preventExtensions(gsabFixedForObject)
+                    })==="none");
+                check(label+" GSAB fixed Object made non-extensible",
+                    Object.isExtensible(gsabFixedForObject)===false);
+                check(label+" GSAB tracking Reflect rejection",
+                    Reflect.preventExtensions(gsabTrackingForReflect)===false);
+                check(label+" GSAB tracking Reflect remains extensible",
+                    Object.isExtensible(gsabTrackingForReflect)===true);
+                check(label+" GSAB tracking Object rejection",
+                    errorName(function(){
+                        Object.preventExtensions(gsabTrackingForObject)
+                    })==="TypeError");
+                check(label+" GSAB tracking Object remains extensible",
+                    Object.isExtensible(gsabTrackingForObject)===true);
+
+                var sealGsab=new SharedArrayBuffer(
+                    4*width,{maxByteLength:8*width}
+                );
+                var nonzeroFixed=new C(sealGsab,0,4);
+                check(label+" GSAB nonzero fixed seal rejects indices",
+                    errorName(function(){Object.seal(nonzeroFixed)})
+                        ==="TypeError");
+                check(label+" GSAB nonzero fixed was prevented first",
+                    Object.isExtensible(nonzeroFixed)===false);
+
+                var zeroFixed=new C(sealGsab,2*width,0);
+                check(label+" GSAB zero fixed seal accepted",
+                    Object.seal(zeroFixed)===zeroFixed);
+                check(label+" GSAB zero fixed sealed",
+                    Object.isSealed(zeroFixed)===true);
+
+                var zeroGsab=new SharedArrayBuffer(
+                    0,{maxByteLength:8*width}
+                );
+                var zeroTracking=new C(zeroGsab);
+                check(label+" GSAB zero tracking seal rejected",
+                    errorName(function(){Object.seal(zeroTracking)})
+                        ==="TypeError");
+                check(label+" GSAB zero tracking remains extensible",
+                    Object.isExtensible(zeroTracking)===true);
+
+                var zeroRab=new ArrayBuffer(0,{maxByteLength:8*width});
+                var zeroRabFixed=new C(zeroRab,0,0);
+                check(label+" RAB zero fixed seal rejected",
+                    errorName(function(){Object.seal(zeroRabFixed)})
+                        ==="TypeError");
+                check(label+" RAB zero fixed remains extensible",
+                    Object.isExtensible(zeroRabFixed)===true);
+            }
+
+            return failures.length===0 ? "ok" : failures.join(",");
+        })()"#,
+    );
+}
+
+#[test]
 fn detach_and_resizable_buffer_dynamics_revalidate_accessors_and_iterators() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
