@@ -4,46 +4,49 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
-## R3dj bounded non-agent Atomics.wait selection
+## R3dj bounded non-agent Atomics.wait implementation
 
-R3dj defines the next runtime boundary without implementing it. A code-token
-scan of every JavaScript source in pinned Test262 finds 93 raw `Atomics.wait`
-member-reference paths. Executable code reduces that to 33 direct-call paths;
-57 agent paths and the three descriptor/length/name metadata paths are outside
-the selection. Every selected path runs in sloppy and strict mode, for 66
-variants. The earlier R3dh `SharedArrayBuffer` projection supplied only 20 / 40;
-the complete closure adds 13 / 26 source-audited spillovers, including two
-tests filed under `Atomics/notify` whose executable code calls `Atomics.wait`.
+R3dj implements synchronous `Atomics.wait` and real `Atomics.notify` waiter
+coordination. Wait locations use the shared backing allocation plus absolute
+byte offset, so distinct runtimes and Int32/BigInt64 views of the same address
+interoperate. A process-wide coordinator linearizes compare-and-register with
+FIFO notification, releases its lock while waiting, handles spurious wakeups,
+and gives timeout and notification races a single winner. Shared backing IDs
+cannot wrap and be reused. New runtimes retain QuickJS's default
+`can_block=false`; the Test262 worker opts in except for `CanBlockIsFalse`.
 
-This is a bounded validation frontier, not waiter parity. Seven paths reach a
-legal equal-value wait with a timeout that becomes zero or one millisecond and
-expect only `timed-out`. The other 26 finish before waiting through validation,
-coercion, or `CanBlockIsFalse`. There are no infinite waits, `not-equal`
-results, notifications, agent interactions, or cross-thread wakeups. Pinned
-QuickJS 2026-06-04 passes all 66 variants. Its release does not implement
-`Atomics.waitAsync`, so waitAsync is outside the parity target rather than a
-future quickjs-oxide parity milestone.
-
-The exact manifest and selection-only profile hash to
+The source audit finds 93 raw `Atomics.wait` paths: 33 bounded direct-call
+paths, 57 agent paths, and three descriptor/length/name metadata paths. Every
+selected path runs in sloppy and strict mode. Oxide and pinned QuickJS
+2026-06-04 both pass all 66 variants. The exact manifest and scoped profile
+hash to
 `38f69242c52bfda864397a6413dedad9eb3a60ca2c07683f857791300948348d`
 and
 `ae525546ca879c3f159d491df0a95e3df8bef438f70908057ab10c90ca1545e4`.
-The current runtime result is deliberately unblessed: 26 passes, 36 runtime
-failures, and four `CanBlockIsFalse` host-unsupported rows. Its 77-line TSV and
-68-line JSONL hash to
-`a06b866c0bb872ae41f017fc6a681b060981f851ff23878fd4ab79831c94b2bd`
+Oxide's 77-line TSV and 68-line JSONL hash to
+`b90662c8814a1e3db00338aadb84731d0721e349c9b2a76ddeb0b583cb0d667a`
 and
-`ab79b4718c0caf6e747853f93184d33b5108aee147d6414e49e2546be70bc8f9`.
-The global 130-tag Test262 vector is unchanged. Reproduce the source closure,
-fail-closed profile binding, current-worktree report, and QuickJS oracle with:
+`4845a5629ecdc6b26b3e9ea2724cee1215a07903dc9b5139f76406627ee5bf6d`.
+Native tests additionally prove finite timeout cleanup, FIFO/count behavior,
+spurious-wakeup handling, timeout/notify races, and an actual cross-runtime
+BigInt64 wait woken through an Int32 view. The global 130-tag Test262 vector is
+unchanged at 65,610 passes / 65,662 runnable / 102,037 total. Four rows move
+from `unsupported-host-can-block-false` to `unsupported-feature` because the
+host policy is now implemented while broad `Atomics` is not globally admitted.
+The current full TSV/JSONL hashes are
+`17370398c6a211d4657ad763a6e40f0cd198d72faa14b2995f7937ad52a0c6db`
+and
+`6e12d86318b2f1d7e5f684962a02585b1a91a4d7830d6e05ed38f80c766cc9a1`.
+
+This is not agent parity: the 57 `$262.agent` paths and their host protocol are
+still excluded, and the selected Test262 paths contain no notification wakeup
+or infinite wait. Pinned QuickJS has no `Atomics.waitAsync`, so waitAsync is
+outside this rewrite's parity target. Reproduce the authenticated boundary,
+native waiter proof, Oxide vector, and QuickJS oracle with:
 
 ```sh
 TEST262_WORKERS=8 ./scripts/test-test262-atomics-wait-nonagent-bounded.sh --check
 ```
-
-The gate binds the unchanged R3di runtime and this unblessed report on purpose.
-A later wait implementation must replace that receipt rather than inheriting a
-false green selection claim.
 
 ## R3di non-blocking shared Atomics
 
@@ -59,12 +62,11 @@ serializes independent buffers, so replacing that gate with narrower safe
 atomic primitives is an explicit performance debt, not a semantic gap. The
 ordinary ArrayBuffer extension remains unchanged.
 
-`Atomics.notify` now accepts shared Int32Array and BigInt64Array views, performs
-the complete index and count validation/coercion sequence, and returns zero
-because no waiter registry exists yet. `Atomics.wait` remains an explicit
-JavaScript TypeError frontier before its later argument coercions;
-agents and waiter coordination remain unimplemented. `Atomics.waitAsync` is
-also absent, matching an API that pinned QuickJS does not provide.
+At R3di, `Atomics.notify` accepted shared Int32Array and BigInt64Array views and
+completed validation/count coercion but returned zero because that milestone
+had no waiter registry. R3dj above supersedes that boundary with synchronous
+waiters and real notification. `Atomics.waitAsync` remains absent, matching an
+API that pinned QuickJS does not provide.
 
 The scoped Test262 selection contains 100 paths / 200 variants. It combines
 the 78 paths / 156 variants carrying the `SharedArrayBuffer` feature tag with
@@ -127,8 +129,9 @@ canonical vector remains 65,610 passes / 65,662 runnable. At R3dh the remaining
 inventory was explicitly partitioned into 78 non-blocking Atomics paths / 156
 variants, 20 synchronous-wait paths without agents / 40 variants, 58 agent
 paths / 116 variants, and 86 `Atomics.waitAsync` paths / 172 variants. Shared
-Atomics were still pending then; R3di above closes the non-blocking slice,
-while agent coordination and full waiter behavior remain future milestones.
+Atomics were still pending then; R3di closes the non-blocking slice and R3dj
+adds the bounded synchronous waiter core, while the Test262 agent host and
+agent-backed conformance remain future milestones.
 Pinned QuickJS does not provide `Atomics.waitAsync`, so that API is not a
 feature-parity milestone.
 
@@ -158,7 +161,7 @@ cross-realm support. Pinned QuickJS passes all 94 variants.
 The complete 102,037-variant join changes exactly those 94 manifest rows: 86
 outcomes become passes and eight rows change only diagnostic detail. All
 101,943 rows outside the manifest are unchanged, with zero pass regressions.
-The canonical vector is now 65,610 passes / 65,662 runnable, with
+At R3dg, the canonical vector became 65,610 passes / 65,662 runnable, with
 `unsupported-feature=13,623`. Candidate full TSV/JSONL SHA-256 values are
 `a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
 and
@@ -2511,18 +2514,20 @@ workstream. Build and architecture details live in
   admitted milestones through R3dg advance the current canonical measurement
   to 65,610 passes and 65,662 runnable variants: 64.30% raw, a 78.52% lower
   bound after the 18,475 pinned QuickJS target exclusions, or 99.92% among the
-  65,662 variants with a non-unsupported observed outcome. It records 13,623
+  65,662 variants with a non-unsupported observed outcome. R3dj keeps those
+  totals while reclassifying four rows, so the current vector records 13,627
   `unsupported-feature` and 17,900 total unsupported outcomes, seven parse
   failures, 43 runtime failures, no harness failures, and two timeouts. R3dh is
-  selection-only, so its SharedArrayBuffer core does not change this global
+  selection-only, so its SharedArrayBuffer core did not change this global
   vector. The current full TSV/JSONL SHA-256 values are
-  `a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
+  `17370398c6a211d4657ad763a6e40f0cd198d72faa14b2995f7937ad52a0c6db`
   and
-  `dc37ed90322630e81fa4295daa57b8f81093719541076f84d4da27ef0d3c5d23`.
+  `6e12d86318b2f1d7e5f684962a02585b1a91a4d7830d6e05ed38f80c766cc9a1`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
-  Modules, `Atomics.wait`, agents/waiters, `Atomics.waitAsync`, and broad
-  built-in coverage remain explicit frontiers.
+  Modules, the Test262 agent host and agent-backed waiter conformance, and
+  broad built-in coverage remain explicit frontiers. `Atomics.waitAsync` is
+  outside the pinned QuickJS parity target.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -9537,9 +9542,10 @@ The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
 RegExp grammar, modules, remaining jobs/Promise/async and generator surfaces,
-`Atomics.wait`, agents/waiters, `Atomics.waitAsync`, remaining
+the Test262 agent host and agent-backed waiter conformance, remaining
 WeakRef/finalization edge cases, bytecode version 5 and BJSON interoperability,
 `std`/`os`, workers, REPL/qjsc, and the complete Rust and C embedding APIs.
+`Atomics.waitAsync` is not part of the pinned QuickJS target.
 
 Code organization is also not final. Runtime white-box tests live in
 `runtime/tests.rs`, while the Array constructor, prototype, iterator, species,

@@ -31,6 +31,23 @@ fn print_result_exposes_the_completion_value_without_changing_eval_default() {
 }
 
 #[test]
+fn qjs_keeps_quickjs_default_non_blocking_host_policy() {
+    let output = qjs()
+        .args([
+            "-e",
+            "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 1, 0)",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "TypeError: cannot block in this thread\n    at wait (native)\n    at <eval> (<cmdline>:1:13)\n"
+    );
+}
+
+#[test]
 fn eval_executes_source_level_functions_and_formats_native_errors() {
     let function = qjs()
         .args(["-e", "(function(a, b) { return a + b; })(20, 22)"])

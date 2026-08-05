@@ -5,12 +5,11 @@
 //! first enters one process-wide sequencing gate and then the backing store,
 //! conservatively reproducing QuickJS's default C11 sequentially-consistent
 //! order even across distinct buffers. All observable coercion and
-//! revalidation work finishes before either lock is acquired. Blocking waiters
-//! remain a separate milestone: `wait` rejects before coercing its remaining
-//! arguments, while `notify` performs its full validation and coercions before
-//! returning zero when no waiter infrastructure exists.
+//! revalidation work finishes before either lock is acquired. Blocking waits
+//! use the same process-wide coordinator for their final comparison,
+//! registration, timeout race, and FIFO notification.
 
-use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::heap::{AtomicsNativeKind, AtomicsOperationKind, TypedArrayElementKind};
 use crate::runtime::buffer_access::BufferAccessToken;
@@ -20,22 +19,10 @@ use super::*;
 
 #[cfg(test)]
 mod tests;
-
-/// QuickJS uses the default C11 ordering for its atomic primitives, which is
-/// sequentially consistent across all atomic objects rather than merely
-/// linearizable per backing allocation. A process-wide gate is deliberately
-/// conservative, but gives that observable order without unsafe platform
-/// atomics. The fixed order is this gate first, then a buffer leaf's ordinary
-/// runtime borrow or shared-backing mutex.
-static ATOMICS_SEQ_CST_GATE: Mutex<()> = Mutex::new(());
+mod waiter;
 
 fn with_atomics_seq_cst<R>(operation: impl FnOnce() -> R) -> R {
-    // The gate protects no data of its own, so recovering from poison is safe:
-    // backing byte slices retain their independent structural invariants.
-    let _guard = ATOMICS_SEQ_CST_GATE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    operation()
+    waiter::with_seq_cst(operation)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,8 +173,9 @@ impl Runtime {
     ///
     /// `Notify` intentionally skips post-index detach/RAB revalidation, as
     /// upstream does before discovering that an ordinary ArrayBuffer has no
-    /// waiter list. This milestone's `Wait` frontier rejects either backing
-    /// before index, expected-value, or timeout coercion.
+    /// waiter list. `Wait` rejects an ordinary backing before index,
+    /// expected-value, or timeout coercion, while a shared backing continues
+    /// through the pinned wait sequence.
     fn atomics_get_access(
         &self,
         realm: ContextId,
@@ -224,20 +212,9 @@ impl Runtime {
         }
 
         let buffer_access = self.snapshot_buffer_access(snapshot.buffer)?;
-        if mode == AtomicAccessMode::Wait && buffer_access.is_shared() {
-            // The non-blocking shared-memory family is installed independently
-            // from the waiter registry and host can-block policy. Keep this a
-            // JavaScript frontier rather than entering an incomplete waiter.
-            return Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Type,
-                "shared-memory Atomics.wait is not implemented",
-            )?));
-        }
-
         // QuickJS performs this non-shared wait rejection before even its
         // initial detach check.
-        if mode == AtomicAccessMode::Wait {
+        if mode == AtomicAccessMode::Wait && !buffer_access.is_shared() {
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
@@ -565,7 +542,7 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        match self.atomics_get_access(
+        let access = match self.atomics_get_access(
             realm,
             arguments.readable.first().ok_or(RuntimeError::Invariant(
                 "Atomics.wait view was not readable",
@@ -575,11 +552,62 @@ impl Runtime {
             ))?,
             AtomicAccessMode::Wait,
         )? {
-            NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
-            NativeConversion::Value(_) => Err(RuntimeError::Invariant(
-                "non-shared Atomics.wait unexpectedly acquired an access",
-            )),
+            NativeConversion::Value(access) => access,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        let expected = match self.typed_array_convert_element(
+            realm,
+            access.snapshot.element,
+            arguments.readable.get(2).ok_or(RuntimeError::Invariant(
+                "Atomics.wait expected value was not readable",
+            ))?,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        let timeout = match self.native_to_number(
+            realm,
+            arguments.readable.get(3).ok_or(RuntimeError::Invariant(
+                "Atomics.wait timeout was not readable",
+            ))?,
+        )? {
+            NativeConversion::Value(value) => atomic_wait_timeout(value),
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        // QuickJS deliberately checks the host policy after every observable
+        // conversion, even when the current memory value would be unequal.
+        if !self.can_block() {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "cannot block in this thread",
+            )?));
         }
+
+        let width = usize::from(access.snapshot.element.byte_length());
+        let byte_offset = atomic_absolute_byte_offset(&access)?;
+        let backing_id = access
+            .buffer
+            .shared_backing_id()
+            .ok_or(RuntimeError::Invariant(
+                "Atomics.wait acquired a non-shared backing",
+            ))?;
+        let location = waiter::WaitLocation::new(backing_id, byte_offset);
+        let expected = atomic_decode_word(&expected[..width]);
+        let outcome = waiter::wait(location, timeout, || {
+            let bytes = self.read_buffer_word(&access.buffer, byte_offset, width)?;
+            Ok::<bool, RuntimeError>(atomic_decode_word(&bytes[..width]) == expected)
+        })?;
+        let result = match outcome {
+            waiter::WaitOutcome::NotEqual => "not-equal",
+            waiter::WaitOutcome::Ok => "ok",
+            waiter::WaitOutcome::TimedOut => "timed-out",
+        };
+        Ok(Completion::Return(Value::String(JsString::from_static(
+            result,
+        ))))
     }
 
     fn call_atomics_notify(
@@ -587,7 +615,7 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let _access = match self.atomics_get_access(
+        let access = match self.atomics_get_access(
             realm,
             arguments.readable.first().ok_or(RuntimeError::Invariant(
                 "Atomics.notify view was not readable",
@@ -601,22 +629,36 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
 
-        let count = arguments.readable.get(2).ok_or(RuntimeError::Invariant(
+        let count_value = arguments.readable.get(2).ok_or(RuntimeError::Invariant(
             "Atomics.notify count was not readable",
         ))?;
-        if !matches!(count, Value::Undefined) {
-            let number = match self.native_to_number(realm, count)? {
+        let count = if matches!(count_value, Value::Undefined) {
+            i32::MAX
+        } else {
+            let number = match self.native_to_number(realm, count_value)? {
                 NativeConversion::Value(value) => value,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-            let _count = atomic_to_int32_sat(number).clamp(0, i32::MAX);
-        }
+            atomic_to_int32_sat(number).clamp(0, i32::MAX)
+        };
 
-        // R3di intentionally has no waiter registry. Ordinary ArrayBuffers can
-        // never own one, and SharedArrayBuffers cannot acquire waiters while
-        // Atomics.wait remains an explicit frontier. The complete validation
-        // and count coercion above are still observable before returning zero.
-        Ok(Completion::Return(Value::Int(0)))
+        if count == 0 || !access.buffer.is_shared() {
+            return Ok(Completion::Return(Value::Int(0)));
+        }
+        let backing_id = access
+            .buffer
+            .shared_backing_id()
+            .ok_or(RuntimeError::Invariant(
+                "shared Atomics.notify lost its backing identity",
+            ))?;
+        let location = waiter::WaitLocation::new(backing_id, atomic_absolute_byte_offset(&access)?);
+        let notified = waiter::notify(
+            location,
+            usize::try_from(count).expect("clamped Atomics.notify count fits usize"),
+        );
+        let notified = i32::try_from(notified)
+            .map_err(|_| RuntimeError::Invariant("Atomics.notify waiter count overflowed i32"))?;
+        Ok(Completion::Return(Value::Int(notified)))
     }
 }
 
@@ -711,5 +753,17 @@ fn atomic_to_int32_sat(number: f64) -> i32 {
         i32::MAX
     } else {
         number as i32
+    }
+}
+
+fn atomic_wait_timeout(number: f64) -> Option<Duration> {
+    const INFINITE_THRESHOLD: f64 = 9_223_372_036_854_775_808.0; // 2^63
+
+    if number.is_nan() || number >= INFINITE_THRESHOLD {
+        None
+    } else if number < 0.0 {
+        Some(Duration::ZERO)
+    } else {
+        Some(Duration::from_millis(number as u64))
     }
 }

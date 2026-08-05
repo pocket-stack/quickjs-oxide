@@ -12,6 +12,7 @@ use super::metadata::Metadata;
 /// implementation has actually published the corresponding hook.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct HostCapabilities {
+    pub can_block_false: bool,
     pub create_realm: bool,
     pub detach_array_buffer: bool,
     pub eval_script: bool,
@@ -22,6 +23,7 @@ pub(super) struct HostCapabilities {
 impl HostCapabilities {
     pub(super) fn retain_missing(self, capabilities: &mut Vec<String>) {
         capabilities.retain(|capability| match capability.as_str() {
+            "can-block:false" => !self.can_block_false,
             "create-realm" => !self.create_realm,
             "detach-array-buffer" => !self.detach_array_buffer,
             "eval-script" => !self.eval_script,
@@ -989,7 +991,7 @@ mod tests {
 
     #[test]
     fn installed_hosts_remove_only_their_typed_discovered_gaps() {
-        let metadata = metadata(&[], &[], &["detachArrayBuffer.js"]);
+        let metadata = metadata(&["CanBlockIsFalse"], &[], &["detachArrayBuffer.js"]);
         let mut missing = missing_host_capability_hints(
             Path::new("test/example.js"),
             "$262.createRealm(); $262.detachArrayBuffer(buffer); $262.evalScript('0'); \
@@ -998,6 +1000,7 @@ mod tests {
             false,
         );
         HostCapabilities {
+            can_block_false: true,
             create_realm: true,
             detach_array_buffer: true,
             eval_script: true,
@@ -1011,6 +1014,7 @@ mod tests {
     #[test]
     fn disabled_typed_hosts_remain_missing() {
         let mut missing = vec![
+            "can-block:false".to_owned(),
             "create-realm".to_owned(),
             "detach-array-buffer".to_owned(),
             "eval-script".to_owned(),
@@ -1021,6 +1025,7 @@ mod tests {
         assert_eq!(
             missing,
             [
+                "can-block:false",
                 "create-realm",
                 "detach-array-buffer",
                 "eval-script",

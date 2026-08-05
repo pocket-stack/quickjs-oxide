@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Authenticate the R3dj selection-only non-agent bounded Atomics.wait frontier.
+# Authenticate the R3dj implemented non-agent bounded Atomics.wait frontier.
 #
-# This gate deliberately does not claim waiter, notification, agent, or
-# Atomics.waitAsync parity. It rebuilds the current-worktree runner and records
-# its unblessed selection vector against the source-derived 33-path boundary.
+# This gate proves the source-derived 33-path boundary, runtime host policy,
+# native cross-runtime waiter core, and the complete Oxide/QuickJS 66-variant
+# vectors. It deliberately does not claim Test262 agent or Atomics.waitAsync
+# parity.
 
 set -euo pipefail
 export LC_ALL=C
@@ -20,12 +21,13 @@ combined=tests/test262-atomics-wait-nonagent-bounded.txt
 ledger=tests/test262-atomics-wait-nonagent-bounded.tsv
 profile=tests/test262-atomics-wait-nonagent-bounded.conf
 quickjs_receipt=tests/test262-atomics-wait-nonagent-bounded-quickjs-receipt.txt
+canonical_baseline=tests/test262-full-baseline.txt
 upstream=compat/upstream.toml
 workers=${TEST262_WORKERS:-8}
 
 usage() {
     printf 'usage: %s [--check]\n' "${0##*/}"
-    printf '  --check  authenticate the R3dj selection-only frontier\n'
+    printf '  --check  authenticate the implemented R3dj frontier\n'
     printf '  default  same as --check\n'
 }
 
@@ -56,6 +58,11 @@ value() {
     awk -F= -v wanted="$1" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
         "$baseline"
+}
+canonical_value() {
+    awk -F= -v wanted="$1" \
+        '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
+        "$canonical_baseline"
 }
 section() {
     awk -v wanted="[$2]" \
@@ -121,8 +128,18 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3dj.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 generated_summary=$tmp/summary.txt
 
-check_file "$baseline" 128 \
-    86ed1626d7c5396b0511fe6b1f72785bed7a4bf4de188064181784a6906ef539
+check_file "$baseline" 137 \
+    3eac048bda22dccd8b5fb299bab5d5a1c541518c0c4b60dbbc042a58617f443d
+[[ "$(value canonical_baseline)" == "$canonical_baseline" ]] \
+    || die 'R3dj canonical baseline path drifted'
+check_file "$canonical_baseline" "$(value canonical_baseline_lines)" \
+    "$(value canonical_baseline_sha256)"
+[[ "$(canonical_value variants)" == "$(value canonical_variants)" \
+    && "$(canonical_value runnable)" == "$(value canonical_runnable)" \
+    && "$(canonical_value passes)" == "$(value canonical_passes)" \
+    && "$(canonical_value tsv_sha256)" == "$(value canonical_tsv_sha256)" \
+    && "$(canonical_value jsonl_sha256)" == "$(value canonical_jsonl_sha256)" ]] \
+    || die 'R3dj canonical full-vector bridge drifted'
 check_file "$sab_ledger" "$(value shared_array_buffer_universe_lines)" \
     "$(value shared_array_buffer_universe_sha256)"
 check_file "$atomics_ledger" "$(value atomics_universe_lines)" \
@@ -146,23 +163,26 @@ sort -u "$tagged" "$spillover" >"$tmp/static-combined.txt"
 diff -u "$combined" "$tmp/static-combined.txt" \
     || die 'combined manifest is not the exact tagged/spillover union'
 
-[[ "$(value milestone_kind)" == selection-only \
-    && "$(value oxide_focused_report)" == authenticated-unblessed \
-    && "$(value scope_semantics)" == validation-or-finite-timeout-only \
-    && "$(value waiter_parity)" == false \
-    && "$(value selection_runtime_tree)" == unchanged-from-parent \
+[[ "$(value milestone_kind)" == bounded-implementation \
+    && "$(value oxide_focused_report)" == authenticated-pass \
+    && "$(value scope_semantics)" == bounded-nonagent-synchronous-wait \
+    && "$(value waiter_core)" == native-cross-runtime \
+    && "$(value waiter_parity)" == bounded-only \
+    && "$(value implementation_runtime_tree)" == changed-from-base \
     && "$(value runner_source)" == current-worktree \
     && "$(value runner_override)" == forbidden \
     && "$(value agent_paths)" == excluded \
     && "$(value wait_async_paths)" == excluded \
-    && "$(value selection_only)" == true ]] \
-    || die 'R3dj selection-only boundary drifted'
+    && "$(value selection_only)" == false ]] \
+    || die 'R3dj implementation boundary drifted'
 
-parent_commit=$(value parent_commit)
-[[ "$(git rev-parse --verify "$parent_commit^{commit}" 2>/dev/null)" == "$parent_commit" ]] \
-    || die 'R3dj parent commit is unavailable'
-git diff --quiet "$parent_commit" -- src/runtime \
-    || die 'selection-only R3dj milestone contains runtime changes'
+implementation_base_commit=$(value implementation_base_commit)
+[[ "$(git rev-parse --verify "$implementation_base_commit^{commit}" 2>/dev/null)" \
+        == "$implementation_base_commit" ]] \
+    || die 'R3dj implementation base commit is unavailable'
+if git diff --quiet "$implementation_base_commit" -- src/runtime.rs src/runtime; then
+    die 'R3dj implementation contains no runtime changes from its selected boundary'
+fi
 
 scanner_source=$(value code_token_scanner)
 scanner_excerpt=$tmp/js-code-tokens.pl
@@ -193,11 +213,17 @@ check_file "$scanner_excerpt" "$(value code_token_scanner_lines)" \
         == "$(value scoped_profile_features_sha256)" \
     && -z "$(section "$profile" audited-negative-tests)" \
     && -z "$(section "$profile" execution)" ]] \
-    || die 'selection-only profile identity drifted'
+    || die 'bounded implementation profile identity drifted'
 
-cargo test --locked --quiet --bin run-test262 atomics_wait_nonagent_bounded
-cargo build --locked --release --quiet --bin run-test262
-runner=${CARGO_TARGET_DIR:-$root/target}/release/run-test262
+gate_target=$tmp/cargo-target
+CARGO_TARGET_DIR="$gate_target" cargo test --locked --quiet --lib \
+    runtime::intrinsics::atomics -- --test-threads=1
+CARGO_TARGET_DIR="$gate_target" cargo test --locked --quiet --lib \
+    can_block_policy_is_runtime_wide_and_isolated
+CARGO_TARGET_DIR="$gate_target" cargo test --locked --quiet --bin run-test262 \
+    atomics_wait_nonagent_bounded
+CARGO_TARGET_DIR="$gate_target" cargo build --locked --release --quiet --bin run-test262
+runner=$gate_target/release/run-test262
 [[ -x "$runner" ]] || die 'current-worktree Test262 runner is unavailable'
 
 suite=$("$script_dir/prepare-test262.sh")
@@ -296,7 +322,7 @@ expect_rejected_selection() {
     if "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
         --oxide-profile "$profile" "$@" --report "$tmp/rejected.tsv" \
         --mode both >"$rejection_log" 2>&1; then
-        die "selection-only profile unexpectedly accepted: $*"
+        die "bounded profile unexpectedly accepted an unpinned selection: $*"
     fi
     grep -Fq "$expected" "$rejection_log" \
         || { sed -n '1,120p' "$rejection_log" >&2; die "unexpected selection rejection: $*"; }
@@ -316,7 +342,7 @@ focused_json=${focused_report%.tsv}.jsonl
 focused_log=$tmp/focused.log
 "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
     --oxide-profile "$profile" --manifest "$combined" --report "$focused_report" \
-    --mode both --timeout-ms 30000 --workers "$workers" --allow-failures \
+    --mode both --timeout-ms 30000 --workers "$workers" \
     >"$focused_log" 2>&1 \
     || { sed -n '1,160p' "$focused_log" >&2; die 'exact R3dj selection failed'; }
 
@@ -343,7 +369,7 @@ focused_log=$tmp/focused.log
     && "$(sha "$focused_json")" == "$(value oxide_focused_jsonl_sha256)" \
     && "$(report_summary "$focused_report")" == "$(computed_summary "$focused_report")" \
     && "$(report_summary "$focused_report")" == "$(value oxide_focused_summary)" ]] \
-    || die 'unblessed R3dj Oxide report identity drifted'
+    || die 'authenticated R3dj Oxide report identity drifted'
 
 outcome_count() {
     report_rows "$focused_report" | awk -F'\t' -v wanted="$1" \
@@ -364,7 +390,7 @@ outcome_paths_sha() {
         == "$(value oxide_focused_unsupported_paths_sha256)" \
     && "$(report_rows "$focused_report" | awk -F'\t' '$8=="selection"{count++} END{print count+0}')" \
         == "$(value oxide_focused_unsupported_host_can_block_false)" ]] \
-    || die 'unblessed R3dj Oxide outcome vector drifted'
+    || die 'authenticated R3dj Oxide outcome vector drifted'
 
 quickjs_runner=$source_dir/run-test262
 [[ -x "$quickjs_runner" ]] || "${MAKE:-make}" -C "$source_dir" run-test262 >&2
@@ -404,7 +430,7 @@ fi
 diff -u "$quickjs_receipt" "$tmp/quickjs-receipt.txt" \
     || die 'pinned QuickJS R3dj receipt projection drifted'
 
-echo 'R3dj selection verified: full-suite source closure 93 raw -> 33 bounded / 57 agent / 3 metadata-only; Oxide unblessed pass=26 fail-runtime=36 unsupported-host=4; pinned QuickJS 66/66.'
+echo 'R3dj implementation verified: full-suite source closure 93 raw -> 33 bounded / 57 agent / 3 metadata-only; Oxide 66/66; pinned QuickJS 66/66; native cross-runtime waiter core passed.'
 exit 0
 
 : <<'__R3DJ_PERL_END__'

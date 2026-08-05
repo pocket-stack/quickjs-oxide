@@ -26,6 +26,18 @@ impl BufferAccessToken {
         matches!(&self.backing, BufferBackingToken::Shared(_))
     }
 
+    /// Stable process-local identity for a shared backing allocation.
+    ///
+    /// Unlike a heap object id, this remains equal across wrappers imported
+    /// into distinct runtimes and therefore forms the identity half of an
+    /// `Atomics.wait` location.
+    pub(in crate::runtime) fn shared_backing_id(&self) -> Option<u64> {
+        match &self.backing {
+            BufferBackingToken::Shared(handle) => Some(handle.backing_id()),
+            BufferBackingToken::Ordinary(_) => None,
+        }
+    }
+
     fn validate_range(&self, byte_offset: usize, byte_length: usize) -> Result<(), RuntimeError> {
         let byte_end = byte_offset
             .checked_add(byte_length)
@@ -443,6 +455,33 @@ mod tests {
             .with_buffer_range(&access, 1, 2, |bytes| observed.copy_from_slice(bytes))
             .unwrap();
         assert_eq!(observed, [3, 2]);
+    }
+
+    #[test]
+    fn shared_tokens_expose_backing_identity_across_runtime_wrappers() {
+        let first_runtime = Runtime::new();
+        let second_runtime = Runtime::new();
+        let handle = SharedBufferHandle::new(4, None).unwrap();
+        let first = new_shared_buffer(&first_runtime, handle.clone());
+        let second = new_shared_buffer(&second_runtime, handle);
+        let first_access = first_runtime
+            .snapshot_buffer_access(first.object_id())
+            .unwrap();
+        let second_access = second_runtime
+            .snapshot_buffer_access(second.object_id())
+            .unwrap();
+
+        assert_eq!(
+            first_access.shared_backing_id(),
+            second_access.shared_backing_id()
+        );
+        assert!(first_access.shared_backing_id().is_some());
+
+        let ordinary = new_ordinary_buffer(&first_runtime, vec![0; 4]);
+        let ordinary_access = first_runtime
+            .snapshot_buffer_access(ordinary.object_id())
+            .unwrap();
+        assert_eq!(ordinary_access.shared_backing_id(), None);
     }
 
     #[test]

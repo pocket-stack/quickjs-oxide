@@ -1,6 +1,7 @@
 use super::*;
 use crate::shared_memory::SharedBufferHandle;
 use std::sync::{Arc, Barrier, mpsc};
+use std::time::{Duration, Instant};
 
 fn eval_string(context: &mut Context, source: &str) -> String {
     let Value::String(value) = context.eval(source).unwrap() else {
@@ -37,6 +38,32 @@ fn publish_shared_buffer(
             )
             .unwrap()
     );
+}
+
+fn spawn_shared_waiter(
+    handle: SharedBufferHandle,
+    wait_source: &'static str,
+) -> (
+    std::thread::JoinHandle<()>,
+    mpsc::Receiver<()>,
+    mpsc::Receiver<Result<String, String>>,
+) {
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let runtime = Runtime::new();
+        runtime.set_can_block(true);
+        let mut context = runtime.new_context();
+        publish_shared_buffer(&runtime, &mut context, "__shared", handle);
+        ready_sender.send(()).unwrap();
+        let result = match context.eval(wait_source) {
+            Ok(Value::String(value)) => Ok(value.to_utf8_lossy()),
+            Ok(_) => Err("Atomics.wait returned a non-string value".to_owned()),
+            Err(error) => Err(format!("Atomics.wait failed: {error}")),
+        };
+        result_sender.send(result).unwrap();
+    });
+    (worker, ready_receiver, result_receiver)
 }
 
 #[test]
@@ -663,10 +690,22 @@ fn wait_notify_pause_and_lock_free_keep_the_non_shared_quickjs_contract() {
                 {valueOf:function(){log.push("shared expected");return 0}},
                 {valueOf:function(){log.push("shared timeout");return 0}}
             )});
-            check("shared wait frontier",
-                outcome===
-                    "throw:TypeError:shared-memory Atomics.wait is not implemented");
-            check("shared wait no coercion",log.length===0);
+            check("shared wait host policy",
+                outcome==="throw:TypeError:cannot block in this thread");
+            check("shared wait coercion order",
+                log.join(",")===
+                    "shared index,shared expected,shared timeout");
+            log=[];
+            outcome=capture(function(){return Atomics.wait(
+                shared,
+                {valueOf:function(){log.push("index");return 0}},
+                {valueOf:function(){log.push("expected");throw new RangeError("expected")}},
+                {valueOf:function(){log.push("timeout");return 0}}
+            )});
+            check("shared wait conversion error",
+                outcome==="throw:RangeError:expected");
+            check("shared wait conversion error order",
+                log.join(",")==="index,expected");
             log=[];
             outcome=capture(function(){return Atomics.notify(
                 shared,
@@ -679,6 +718,67 @@ fn wait_notify_pause_and_lock_free_keep_the_non_shared_quickjs_contract() {
             return failures.length?failures.join(","):"ok";
         })()"#,
     );
+}
+
+#[test]
+fn shared_wait_returns_not_equal_and_bounded_timeout_results() {
+    let runtime = Runtime::new();
+    runtime.set_can_block(true);
+    let mut context = runtime.new_context();
+    assert_script(
+        &mut context,
+        r#"(function(){
+            var failures=[];
+            function check(label,condition){if(!condition)failures.push(label)}
+            var buffer=new SharedArrayBuffer(8);
+            var ints=new Int32Array(buffer);
+            var bigints=new BigInt64Array(buffer);
+
+            check("int mismatch",
+                Atomics.wait(ints,0,1,Infinity)==="not-equal");
+            check("negative timeout",
+                Atomics.wait(ints,0,0,-1)==="timed-out");
+            check("zero timeout",
+                Atomics.wait(ints,0,0,false)==="timed-out");
+            check("bigint timeout",
+                Atomics.wait(bigints,0,0n,0)==="timed-out");
+            check("timeout cleanup",Atomics.notify(ints,0)===0);
+            return failures.length?failures.join(","):"ok";
+        })()"#,
+    );
+}
+
+#[test]
+fn bigint_wait_is_notified_by_int32_view_in_another_runtime() {
+    let handle = SharedBufferHandle::new(8, None).unwrap();
+    let (worker, ready, result) = spawn_shared_waiter(
+        handle.clone(),
+        "Atomics.wait(new BigInt64Array(__shared),0,0n,1500)",
+    );
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    publish_shared_buffer(&runtime, &mut context, "__shared", handle);
+    context
+        .eval("globalThis.__notifyView=new Int32Array(__shared)")
+        .unwrap();
+    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let notified = loop {
+        let Value::Int(count) = context.eval("Atomics.notify(__notifyView,0,1)").unwrap() else {
+            panic!("Atomics.notify returned a non-integer value");
+        };
+        if count == 1 || Instant::now() >= deadline {
+            break count;
+        }
+        std::thread::yield_now();
+    };
+    let outcome = result.recv_timeout(Duration::from_secs(2)).unwrap();
+    worker.join().unwrap();
+
+    assert_eq!(notified, 1, "worker never registered its waiter");
+    assert_eq!(outcome.unwrap(), "ok");
 }
 
 #[test]

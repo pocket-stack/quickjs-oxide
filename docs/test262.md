@@ -6,7 +6,7 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
-## R3dj exact bounded non-agent Atomics.wait selection
+## R3dj exact bounded non-agent Atomics.wait implementation
 
 R3dj derives the synchronous non-agent boundary from the complete pinned suite,
 not from the `SharedArrayBuffer` tag or the `Atomics/wait` directory. Across
@@ -28,21 +28,33 @@ and
 `274d406bae7a821f3e48a8ac2d8d49a8eae98dbfc04633127c66bc05ae546558`.
 Pinned QuickJS passes all 66 variants.
 
-This remains selection-only and unblessed. Seven paths exercise only zero- or
-one-millisecond timeouts; 26 paths finish before waiting. No test requires an
-infinite wait, `not-equal`, notification, or agent wakeup. The current-worktree
-Oxide runner records 26 passes, 36 runtime failures, and four
-`unsupported-host-can-block-false` rows. This is evidence of the starting
-point, not an implementation claim. The scoped profile accepts only the exact
-combined manifest and rejects `--all`, `--test`, tagged-only, spillover-only,
-and other manifests. The canonical global vector is unchanged. Runtime work is
-expected to fail this unblessed receipt until a later implementation milestone
-replaces it with a new authenticated vector.
+Oxide now passes all 66 variants. Its deterministic 77-line TSV and 68-line
+JSONL hash to
+`b90662c8814a1e3db00338aadb84731d0721e349c9b2a76ddeb0b583cb0d667a`
+and
+`4845a5629ecdc6b26b3e9ea2724cee1215a07903dc9b5139f76406627ee5bf6d`.
+The scoped profile accepts only the exact combined manifest and rejects
+`--all`, `--test`, tagged-only, spillover-only, and other manifests. The gate
+also runs the native waiter and host-policy tests before rebuilding the
+current-worktree release runner. The canonical global vector remains 65,610
+passes / 65,662 runnable / 102,037 total. Implementing the false host policy
+reclassifies four still-feature-blocked rows from
+`unsupported-host-can-block-false` to `unsupported-feature`; the current full
+TSV/JSONL hashes are
+`17370398c6a211d4657ad763a6e40f0cd198d72faa14b2995f7937ad52a0c6db`
+and
+`6e12d86318b2f1d7e5f684962a02585b1a91a4d7830d6e05ed38f80c766cc9a1`.
+
+This remains a bounded receipt. Seven paths exercise zero- or one-millisecond
+timeouts and 26 finish before blocking; none requires an infinite wait,
+`not-equal`, notification, or agent wakeup. Native tests separately cover
+those internal waiter branches, including a cross-runtime wakeup, but they do
+not replace the 57 excluded `$262.agent` paths.
 
 Pinned QuickJS 2026-06-04 has no `Atomics.waitAsync`; Test262 marks that feature
-as skipped in its QuickJS configuration. Accordingly waitAsync is recorded as
-outside the parity target, while agent-backed waiter/notify behavior remains a
-real future parity frontier.
+as skipped in its QuickJS configuration. Accordingly waitAsync is outside the
+parity target, while the Test262 agent host and agent-backed waiter behavior
+remain a real future parity frontier.
 
 ```sh
 TEST262_WORKERS=8 ./scripts/test-test262-atomics-wait-nonagent-bounded.sh --check
@@ -150,8 +162,8 @@ dependencies. Pinned QuickJS passes all 94 variants.
 
 The full transition joins all 102,037 variants. Exactly 94 manifest rows
 change: 86 outcome changes to pass and eight diagnostic-detail-only changes;
-zero rows outside the manifest change and there are zero pass regressions. The
-canonical result is 65,610 passes / 65,662 runnable, with
+zero rows outside the manifest change and there are zero pass regressions. At
+R3dg, the canonical result became 65,610 passes / 65,662 runnable, with
 `unsupported-feature=13,623`. Candidate full TSV/JSONL SHA-256 values are
 `a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
 and
@@ -2243,8 +2255,9 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, most `$262` host hooks, `Atomics.wait`, agents/waiters,
-`Atomics.waitAsync`, and many other broad built-ins remain absent. Proxy is
+surfaces. Modules, most `$262` host hooks, the Test262 agent host and
+agent-backed waiter cases, and many other broad built-ins remain absent.
+`Atomics.waitAsync` is outside the pinned QuickJS target. Proxy is
 measured by the checksum-bound
 R3am scoped gate and admitted globally by R3bh below.
 The pure ArrayBuffer core is measured by the checksum-bound R3an gate, its
@@ -2267,8 +2280,9 @@ R3br separately implements and authenticates the Uint8Array codec surface, and
 R3bs admits its feature tag globally. R3bt authenticates the complete
 resizable ArrayBuffer activation and spillover, and R3bu admits its feature
 tag globally. R3bv authenticates computed property names, and R3bw admits that
-feature globally. Modules, `Atomics.wait`, agents/waiters,
-`Atomics.waitAsync`, and broad built-ins remain explicit frontiers.
+feature globally. Modules, the Test262 agent host and agent-backed waiter
+cases, and broad built-ins remain explicit frontiers. `Atomics.waitAsync` is
+outside the pinned QuickJS target.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods
 by the R3ac gate. Public ordinary async class methods are measured by R3ad and
@@ -2308,14 +2322,13 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The current R3dg canonical summary, left
-unchanged by R3dh's selection-only SharedArrayBuffer core, is:
+every outcome in canonical order. The current R3dj canonical summary is:
 
 - 65,610 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 17,900 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
-  provenance, including 13,623 `unsupported-feature` variants;
+  provenance, including 13,627 `unsupported-feature` variants;
 - seven fail to parse, 43 fail at runtime, none fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
@@ -2387,11 +2400,12 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The current R3dg canonical full TSV/JSONL SHA-256 values, unchanged by R3dh,
-are
+The R3dg canonical full TSV/JSONL SHA-256 values, unchanged by R3dh and R3di,
+were
 `a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
 and
 `dc37ed90322630e81fa4295daa57b8f81093719541076f84d4da27ef0d3c5d23`.
+R3dj's current receipt above supersedes them only in host classification.
 
 ## Milestone policy
 

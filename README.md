@@ -3,44 +3,21 @@
 An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable but incomplete. Its strongest covered
-slice is the ArrayBuffer/DataView/12-class TypedArray stack: resizable
-buffers, fixed and length-tracking views, transfers, iteration, search,
-mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
-QuickJS-shaped `Atomics` load/store/add/sub/and/or/xor/exchange/compareExchange
-now work on integer TypedArrays backed by ordinary or shared buffers. Shared
-`notify` fully validates and coerces, then returns zero until waiters exist.
-`SharedArrayBuffer` also has QuickJS-shaped construction, grow, slice, species,
-DataView/TypedArray views, and a safe cross-runtime `SharedBufferHandle`.
-`Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, and `FinalizationRegistry` also
-have QuickJS-shaped constructors, protocols, weak lifetimes, and ordered
-runtime jobs.
-`String.prototype.normalize` uses the pinned QuickJS Unicode 17 data for NFC,
-NFD, NFKC, and NFKD; `localeCompare` matches QuickJS's non-Intl NFC/code-point
-ordering.
-The 130-tag global Test262 profile admits `Atomics.pause`,
-`Array.prototype.flat`/`flatMap`, `WeakMap`, `WeakSet`, `WeakRef`, and
-`FinalizationRegistry` alongside object rest, `DataView`, `Proxy`, optional
-chaining, Iterator Helpers, `globalThis`, default parameters, and audited
-binary-data and Promise surfaces through checksum-bound gates. Its latest
-admission adds `Error.isError`, `RegExp.escape`, and
-`TypedArray.prototype.at` without changing runtime semantics.
-Its Test262 host provides real reentrant GC, recursive realm creation, and
-defining-realm script evaluation. Script/eval parsing implements Annex B HTML
-comments and QuickJS's no-op `debugger` semantics. Their negative cohorts and
-the 25-path future-reserved negative cohort are globally admitted. Invalid
-`enum`, `export`, and `extends`, malformed `import()`, and Script/Eval
-`import.meta` are real syntax errors. Valid dynamic import remains typed
-Unsupported, deferred through parsing and identifier/private-name resolution
-so it cannot hide early errors. String inputs to direct and indirect `eval`
-follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
-strings, templates, RegExp literals, and saved debug source. The last audited
-full vector is 65,610 passes / 65,662 runnable / 102,037 total variants.
-Modules, agents/full waiter coordination, and broad built-in coverage remain
-incomplete; the bounded 33-path `Atomics.wait` frontier is selection-only.
-Pinned QuickJS has no `Atomics.waitAsync`; it is outside parity scope.
-Pinned QuickJS is only the test oracle; bookkeeping lives in the status
-documents.
+The `unsafe`-free engine is runnable, but it is not at Feature Parity yet. Its
+strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
+SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
+Unicode normalization, and a growing parser/VM surface.
+
+The latest milestone adds synchronous `Atomics.wait`, FIFO `notify`, bounded
+timeouts, QuickJS-compatible host blocking policy, and a safe cross-runtime
+shared-memory bridge. Oxide and pinned QuickJS both pass the exact 66-variant
+non-agent wait cohort. Test262 agents, modules, workers, broad built-ins, and
+the complete embedding/tooling surface remain unfinished. Pinned QuickJS has
+no `Atomics.waitAsync`, so it is outside this rewrite's parity target.
+
+The latest audited global vector is 65,610 passes / 65,662 runnable / 102,037
+total variants. Detailed implementation and Test262 bookkeeping lives in the
+status documents below, keeping this page focused on trying the engine.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The

@@ -94,6 +94,9 @@ struct RuntimeInner {
     state: RefCell<RuntimeState>,
     deferred_references: RefCell<VecDeque<DeferredRefOp>>,
     host_services: Rc<dyn HostServices>,
+    /// Embedder policy sampled by synchronous Atomics waits. QuickJS leaves
+    /// this disabled until a host explicitly opts in.
+    can_block: Cell<bool>,
     promise_rejection_tracker: RefCell<Option<HostPromiseRejectionTracker>>,
     /// Address marker captured at the outermost JavaScript/native call entry.
     /// Nested call guards compare against it using QuickJS's one-MiB host-stack
@@ -747,6 +750,7 @@ impl Runtime {
             }),
             deferred_references: RefCell::new(VecDeque::new()),
             host_services,
+            can_block: Cell::new(false),
             promise_rejection_tracker: RefCell::new(None),
             host_stack_top: Cell::new(None),
             proxy_method_depth: Cell::new(0),
@@ -765,6 +769,21 @@ impl Runtime {
     #[must_use]
     pub fn debug_info_mode(&self) -> DebugInfoMode {
         self.0.state.borrow().debug_info_mode
+    }
+
+    /// Set whether this runtime's host permits synchronous blocking operations.
+    ///
+    /// The setting is runtime-wide, so cloned handles and every context owned
+    /// by this runtime observe the same value. As in QuickJS, new runtimes
+    /// default to `false` and embedders must opt in explicitly.
+    pub fn set_can_block(&self, can_block: bool) {
+        self.0.can_block.set(can_block);
+    }
+
+    /// Return whether this runtime's host permits synchronous blocking.
+    #[must_use]
+    pub fn can_block(&self) -> bool {
+        self.0.can_block.get()
     }
 
     #[must_use]

@@ -8,12 +8,32 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Pinned QuickJS rejects ArrayBuffer lengths greater than `INT32_MAX`.
 pub const MAX_SHARED_ARRAY_BUFFER_BYTE_LENGTH: u32 = i32::MAX as u32;
 
 const SHARED_COPY_SCRATCH_BYTE_LENGTH: usize = 8 * 1024;
+
+/// Process-local identity source for shared backing stores.
+///
+/// Waiter locations must follow the allocation rather than any individual
+/// `SharedArrayBuffer` wrapper. A relaxed counter is sufficient because the
+/// value is only an identity token; synchronization of bytes and waiters is
+/// provided by their own mutexes.
+static NEXT_SHARED_BACKING_STORE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_shared_backing_store_id(source: &AtomicU64) -> Result<u64, SharedMemoryError> {
+    // Keep `u64::MAX` as an exhausted sentinel. Once reached, `fetch_update`
+    // leaves the counter unchanged, so catching an allocation error can never
+    // make a later backing reuse an identity that may still be live.
+    source
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| SharedMemoryError::Allocation)
+}
 
 /// Failure of a checked shared-backing-store operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +70,7 @@ impl Error for SharedMemoryError {}
 /// the creating wrapper. Only its bytes are mutable, and all access goes
 /// through `lock_bytes`.
 pub struct SharedBackingStore {
+    id: u64,
     capacity: u32,
     bytes: Mutex<Box<[u8]>>,
 }
@@ -58,6 +79,7 @@ impl fmt::Debug for SharedBackingStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SharedBackingStore")
+            .field("id", &self.id())
             .field("capacity", &self.capacity())
             .finish_non_exhaustive()
     }
@@ -72,6 +94,7 @@ impl SharedBackingStore {
             .map_err(|_| SharedMemoryError::Allocation)?;
         bytes.resize(capacity, 0);
         Ok(Self {
+            id: allocate_shared_backing_store_id(&NEXT_SHARED_BACKING_STORE_ID)?,
             capacity: u32::try_from(capacity).map_err(|_| SharedMemoryError::InvalidLength)?,
             bytes: Mutex::new(bytes.into_boxed_slice()),
         })
@@ -90,6 +113,12 @@ impl SharedBackingStore {
     #[must_use]
     pub const fn capacity(&self) -> u32 {
         self.capacity
+    }
+
+    /// Stable process-local identity of this backing allocation.
+    #[must_use]
+    pub(crate) const fn id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -171,6 +200,12 @@ impl SharedBufferHandle {
     #[must_use]
     pub fn backing_capacity(&self) -> u32 {
         self.backing.capacity()
+    }
+
+    /// Stable process-local identity shared by every wrapper over these bytes.
+    #[must_use]
+    pub(crate) fn backing_id(&self) -> u64 {
+        self.backing.id()
     }
 
     /// Whether two wrappers refer to the same shared bytes.
@@ -352,7 +387,8 @@ impl SharedBufferHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::{SharedBufferHandle, SharedMemoryError};
+    use super::{SharedBufferHandle, SharedMemoryError, allocate_shared_backing_store_id};
+    use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, Barrier};
 
     fn assert_send_sync<T: Send + Sync>() {}
@@ -406,6 +442,32 @@ mod tests {
 
         slice.write_range(0, &[9]).unwrap();
         assert_eq!(source.read_range(1, 1).unwrap(), [2]);
+    }
+
+    #[test]
+    fn backing_identity_follows_the_allocation_across_wrappers() {
+        let source = SharedBufferHandle::new(4, Some(8)).unwrap();
+        let clone = source.clone();
+        let independent = SharedBufferHandle::new(4, Some(8)).unwrap();
+        let slice = source.slice(0, 4).unwrap();
+
+        assert_eq!(source.backing_id(), clone.backing_id());
+        assert_ne!(source.backing_id(), independent.backing_id());
+        assert_ne!(source.backing_id(), slice.backing_id());
+    }
+
+    #[test]
+    fn exhausted_backing_identity_source_never_wraps_or_recovers() {
+        let source = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(allocate_shared_backing_store_id(&source), Ok(u64::MAX - 1));
+        assert_eq!(
+            allocate_shared_backing_store_id(&source),
+            Err(SharedMemoryError::Allocation)
+        );
+        assert_eq!(
+            allocate_shared_backing_store_id(&source),
+            Err(SharedMemoryError::Allocation)
+        );
     }
 
     #[test]

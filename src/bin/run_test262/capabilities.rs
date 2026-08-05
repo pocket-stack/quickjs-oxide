@@ -1873,7 +1873,7 @@ mod tests {
     }
 
     #[test]
-    fn atomics_wait_nonagent_bounded_profile_is_exact_and_selection_only() {
+    fn atomics_wait_nonagent_bounded_profile_is_exact() {
         let scoped = OxideProfile::parse(ATOMICS_WAIT_NONAGENT_BOUNDED_PROFILE).unwrap();
 
         assert_eq!(

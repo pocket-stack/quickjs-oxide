@@ -13,6 +13,7 @@ use super::requirements::HostCapabilities;
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
 pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
+    can_block_false: true,
     create_realm: true,
     detach_array_buffer: true,
     eval_script: true,
@@ -174,6 +175,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let async_test = metadata.is_async();
 
     let runtime = Runtime::new();
+    configure_runtime_can_block(&runtime, &metadata);
     let mut context = runtime.new_context();
     install_worker_host(&runtime, &mut context, async_test)?;
     // The progress baseline follows the pinned Test262 interpretation rather
@@ -315,6 +317,10 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         }
         Err(error) => Ok(engine_fault("engine-fault", "runtime", error, None)),
     }
+}
+
+fn configure_runtime_can_block(runtime: &Runtime, metadata: &Metadata) {
+    runtime.set_can_block(!metadata.flags.contains("CanBlockIsFalse"));
 }
 
 fn finish_async_test(
@@ -635,9 +641,31 @@ mod tests {
 
     use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError};
 
-    use super::{classify_async_print_log, classify_completion, run_worker};
+    use super::{
+        classify_async_print_log, classify_completion, configure_runtime_can_block, run_worker,
+    };
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
+
+    #[test]
+    fn worker_configures_can_block_from_test262_metadata() {
+        for (flag, expected) in [
+            (None, true),
+            (Some("CanBlockIsTrue"), true),
+            (Some("CanBlockIsFalse"), false),
+        ] {
+            let mut metadata = Metadata::default();
+            if let Some(flag) = flag {
+                metadata.flags.insert(flag.to_owned());
+            }
+            let runtime = Runtime::new();
+            assert!(!runtime.can_block(), "runtime default changed for {flag:?}");
+
+            configure_runtime_can_block(&runtime, &metadata);
+
+            assert_eq!(runtime.can_block(), expected, "flag {flag:?}");
+        }
+    }
 
     #[test]
     fn matching_negative_result_preserves_its_diagnostic_provenance() {
