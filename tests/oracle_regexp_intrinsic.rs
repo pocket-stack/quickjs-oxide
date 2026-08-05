@@ -386,6 +386,110 @@ const EXEC_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+// QuickJS loads the live RegExp bytecode and flags only after input ToString
+// and lastIndex ToLength have completed. Either conversion may therefore call
+// the legacy RegExp.prototype.compile and replace the program being executed.
+// These vectors pin that reentrancy boundary, including result allocation from
+// the replacement program's capture, named-group, and indices metadata.
+const EXEC_REENTRANT_COMPILE_CASES: &[(&str, &str, &str)] = &[
+    (
+        "RegExp exec observes a program compiled while converting its input",
+        r#"(function(){
+            var regexp=new RegExp("a"),input=Object();
+            input.toString=function(){regexp.compile("b");return "b"};
+            var match=regexp.exec(input);
+            return [match===null?"null":match[0],regexp.source,regexp.flags,
+                regexp.lastIndex].join(":");
+        })()"#,
+        "b:b::0",
+    ),
+    (
+        "RegExp exec observes a global flag compiled while converting its input",
+        r#"(function(){
+            var regexp=new RegExp("a"),input=Object();
+            input.toString=function(){regexp.compile("a","g");return "a"};
+            var match=regexp.exec(input);
+            return [match===null?"null":match[0],regexp.flags,regexp.lastIndex].join(":");
+        })()"#,
+        "a:g:1",
+    ),
+    (
+        "RegExp exec observes a program compiled while converting lastIndex",
+        r#"(function(){
+            var regexp=new RegExp("a"),index=Object();
+            index.valueOf=function(){regexp.compile("b");return 0};
+            regexp.lastIndex=index;
+            var match=regexp.exec("b");
+            return [match===null?"null":match[0],regexp.source,regexp.flags,
+                regexp.lastIndex].join(":");
+        })()"#,
+        "b:b::0",
+    ),
+    (
+        "RegExp exec observes a global flag compiled while converting lastIndex",
+        r#"(function(){
+            var regexp=new RegExp("a"),index=Object();
+            index.valueOf=function(){regexp.compile("a","g");return 0};
+            regexp.lastIndex=index;
+            var match=regexp.exec("a");
+            return [match===null?"null":match[0],regexp.flags,regexp.lastIndex].join(":");
+        })()"#,
+        "a:g:1",
+    ),
+    (
+        "RegExp exec honors removal of sticky while converting lastIndex",
+        r#"(function(){
+            var regexp=new RegExp("a","y"),index=Object();
+            index.valueOf=function(){
+                regexp.compile("a","");
+                regexp.lastIndex=9000;
+                return 0;
+            };
+            regexp.lastIndex=index;
+            var match=regexp.exec("a");
+            return [match===null?"null":match[0],regexp.flags,regexp.lastIndex].join(":");
+        })()"#,
+        "a::9000",
+    ),
+    (
+        "RegExp exec ignores an oversized converted index after sticky is removed",
+        r#"(function(){
+            var regexp=new RegExp("a","y"),index=Object();
+            index.valueOf=function(){
+                regexp.compile("a","");
+                regexp.lastIndex=9002;
+                return 9001;
+            };
+            regexp.lastIndex=index;
+            var match=regexp.exec("a");
+            return [match===null?"null":match[0],regexp.flags,regexp.lastIndex].join(":");
+        })()"#,
+        "a::9002",
+    ),
+    (
+        "RegExp exec builds captures groups and indices from the replacement program",
+        r#"(function(){
+            var regexp=new RegExp("a","d"),input=Object();
+            input.toString=function(){
+                regexp.compile("(?<letter>b)","d");
+                return "b";
+            };
+            var match=regexp.exec(input);
+            if(match===null)return "null:null";
+            var capture=match.length===2&&match[0]==="b"&&match[1]==="b"&&
+                match.groups.letter==="b"&&Object.getPrototypeOf(match.groups)===null?
+                match.groups.letter:"bad";
+            var spans=match.indices.length===2&&match.indices[0].join(",")==="0,1"&&
+                match.indices[1].join(",")==="0,1"&&
+                match.indices.groups.letter.join(",")==="0,1"&&
+                Object.getPrototypeOf(match.indices.groups)===null?
+                match.indices.groups.letter.join(","):"bad";
+            return capture+":"+spans;
+        })()"#,
+        "b:0,1",
+    ),
+];
+
 const CALLABLE_PROXY_EXEC_SOURCE: &str = r#"(function(){
     var log=[];
     var exec=new Proxy(function(value){
@@ -537,6 +641,48 @@ fn regexp_source_flags_and_accessors_match_pinned_quickjs() {
 #[test]
 fn regexp_exec_results_last_index_and_order_match_pinned_quickjs() {
     compare_cases("RegExp exec", EXEC_CASES);
+}
+
+#[test]
+fn regexp_exec_reentrant_compile_oracle_vectors_self_check() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP RegExp exec reentrant-compile oracle self-check: set QJS_ORACLE");
+        return;
+    };
+    for &(description, source, expected) in EXEC_REENTRANT_COMPILE_CASES {
+        assert_eq!(
+            observe_oracle(&oracle, source, description),
+            format!("return|string|{expected}"),
+            "pinned QuickJS RegExp exec reentrant-compile vector drifted for {description}",
+        );
+    }
+}
+
+#[test]
+fn regexp_exec_reentrant_compile_matches_pinned_quickjs() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP RegExp exec reentrant-compile differential: set QJS_ORACLE");
+        return;
+    };
+    let mut failures = Vec::new();
+    for &(description, source, expected) in EXEC_REENTRANT_COMPILE_CASES {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let oxide = observe_rust_eval(&runtime, &mut context, source, description);
+        let quickjs = observe_oracle(&oracle, source, description);
+        let pinned = format!("return|string|{expected}");
+        if quickjs != pinned || oxide != quickjs {
+            failures.push(format!(
+                "{description}\nsource: {source:?}\noxide: {oxide:?}\nquickjs: {quickjs:?}\npinned: {pinned:?}",
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "RegExp exec reentrant-compile behavior drifted in {} case(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n"),
+    );
 }
 
 #[test]

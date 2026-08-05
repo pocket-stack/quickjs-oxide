@@ -1,6 +1,6 @@
 //! Builtin and abstract RegExp execution.
 
-use crate::heap::{RegExpNativeKind, RegExpObjectData};
+use crate::heap::RegExpNativeKind;
 use crate::regexp::{ExecError, RegExpFlags, execute_with_interrupt};
 
 use super::super::super::*;
@@ -111,55 +111,7 @@ impl Runtime {
                 "RegExp object expected",
             )?));
         };
-        let compiled = {
-            let state = self.0.state.borrow();
-            match &state.heap.object(object.object_id())?.payload {
-                ObjectPayload::RegExp(RegExpObjectData::Compiled { program, .. }) => {
-                    Some((program.clone(), program.flags()))
-                }
-                ObjectPayload::RegExp(RegExpObjectData::Uninitialized) => {
-                    return Err(RuntimeError::Invariant(
-                        "observable RegExp object was not initialized",
-                    ));
-                }
-                ObjectPayload::Ordinary
-                | ObjectPayload::Proxy(_)
-                | ObjectPayload::RawJson
-                | ObjectPayload::Promise(_)
-                | ObjectPayload::Array { .. }
-                | ObjectPayload::Arguments { .. }
-                | ObjectPayload::ArrayIterator { .. }
-                | ObjectPayload::IteratorHelper(_)
-                | ObjectPayload::IteratorWrap(_)
-                | ObjectPayload::AsyncFromSyncIterator(_)
-                | ObjectPayload::IteratorConcat(_)
-                | ObjectPayload::Map { .. }
-                | ObjectPayload::MapIterator { .. }
-                | ObjectPayload::Set { .. }
-                | ObjectPayload::WeakMap { .. }
-                | ObjectPayload::WeakSet { .. }
-                | ObjectPayload::WeakRef { .. }
-                | ObjectPayload::FinalizationRegistry(_)
-                | ObjectPayload::SetIterator { .. }
-                | ObjectPayload::ForInIterator(_)
-                | ObjectPayload::Primitive(_)
-                | ObjectPayload::Date(_)
-                | ObjectPayload::ArrayBuffer(_)
-                | ObjectPayload::DataView(_)
-                | ObjectPayload::TypedArray(_)
-                | ObjectPayload::GlobalObject { .. }
-                | ObjectPayload::Error
-                | ObjectPayload::StringIterator { .. }
-                | ObjectPayload::RegExpStringIterator { .. }
-                | ObjectPayload::NativeFunction { .. }
-                | ObjectPayload::BoundFunction { .. }
-                | ObjectPayload::BytecodeFunction { .. }
-                | ObjectPayload::AsyncFunctionState(_)
-                | ObjectPayload::Generator { .. }
-                | ObjectPayload::AsyncGenerator(_) => None,
-            }
-        };
-        let Some((program, flags)) = compiled else {
+        if self.genuine_regexp(this_value)?.is_none() {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
@@ -177,6 +129,18 @@ impl Runtime {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
+
+        // QuickJS keeps the branded RegExp identity across both coercions, but
+        // reads `re->bytecode` only afterwards. Either conversion may call the
+        // legacy `compile()` method, so snapshot the current program and flags
+        // only after those observable calls have completed.
+        let current = self
+            .genuine_regexp(this_value)?
+            .ok_or(RuntimeError::Invariant(
+                "branded RegExp lost its compiled payload during exec coercion",
+            ))?;
+        let program = current.program;
+        let flags = program.flags();
         let updates_last_index =
             flags.contains(RegExpFlags::GLOBAL) || flags.contains(RegExpFlags::STICKY);
         let start = if updates_last_index { last_index } else { 0 };

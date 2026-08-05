@@ -4,6 +4,46 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cw RegExp exec recompilation ordering
+
+R3cw matches QuickJS 2026-06-04's observable `RegExpBuiltinExec` order: first
+validate the RegExp brand, then apply `ToString` to the input, then apply
+`ToLength` to `lastIndex`, and only afterwards read the current compiled
+bytecode and flags. Either coercion may reenter the legacy
+`RegExp.prototype.compile()` method and replace the program. Oxide therefore
+delays its program snapshot until both coercions have completed. A seven-vector
+QuickJS differential covering replacement programs and flags, sticky removal,
+captures, named groups, and match indices passes 7/7 in both engines.
+
+The pinned Test262 cohort contains two paths / four sloppy-and-strict variants.
+Pinned QuickJS and the R3cw candidate pass 4/4; the authenticated R3cv parent
+records four `fail-runtime` outcomes. The manifest SHA-256 is
+`2d272e6f86d0cb3f041e824008771750a833d30209971d6dbebc2c0598726aa3`;
+focused candidate TSV/JSONL SHA-256 values are
+`51bd65e7c991d8e371d263cf352cdd57dc2bb24e329b2032f4d28dd2eedafa10`
+and
+`86e7c93040d35347add9f1a209eb0de7d6dbf87f8d98ab9116f32a995319fb27`.
+The global profile remains byte-identical at 126 feature tags and SHA-256
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+
+The fresh two-worker 102,037-row join changes those same four outcomes, leaves
+102,033 rows byte-identical, has no detail-only movement, and records no
+previous-pass regression. Its non-cohort TSV and JSON row streams are both
+byte-identical. The canonical vector is 65,503 passes / 65,566 runnable;
+`fail-runtime` falls from 54 to 50 while all 17,996 unsupported outcomes remain
+unchanged. Full candidate TSV/JSONL SHA-256 values are
+`cd5aa3df85c45b72a8939d9c5778c70192b1dc3699eb3330ff8f7aff0ef1159f`
+and
+`709f49e182e1cfb83353c46251d5eb0bbc24109c3690532f2f4e348d64f1664f`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-regexp-exec-recompilation.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-regexp-exec-recompilation.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-regexp-exec-recompilation.sh --full
+```
+
 ## R3cv Array flat/flatMap global admission
 
 R3cv globally admits the already-implemented `Array.prototype.flat` and
@@ -1818,18 +1858,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent milestones
-  through R3cv advance the current canonical measurement to 65,499 passes and
-  65,566 runnable variants: 64.19% raw, a 78.38% lower bound after the 18,475
+  through R3cw advance the current canonical measurement to 65,503 passes and
+  65,566 runnable variants: 64.20% raw, a 78.39% lower bound after the 18,475
   pinned QuickJS target exclusions, or 99.90% among the 65,566 variants with a
   non-unsupported observed outcome. It records 13,719 `unsupported-feature`
   and 17,996 total
-  unsupported outcomes, 11 parse failures, 54 runtime failures, no harness
-  failures, and two timeouts. The exact R3cv join preserves all 102,037 keys
-  with 69 outcome changes, 101,968 unchanged rows, and no previous-pass
+  unsupported outcomes, 11 parse failures, 50 runtime failures, no harness
+  failures, and two timeouts. The exact R3cw join preserves all 102,037 keys
+  with four outcome changes, 102,033 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `4cec8ef8be4b432b6f754c07522e744af856bbd8c9ed32fb98fecfe41810c076`
+  `cd5aa3df85c45b72a8939d9c5778c70192b1dc3699eb3330ff8f7aff0ef1159f`
   and
-  `022ab0c11d55e70d2f08c7df7361a36b571bac91320f43d6edfe46e19dba4975`.
+  `709f49e182e1cfb83353c46251d5eb0bbc24109c3690532f2f4e348d64f1664f`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain

@@ -1,0 +1,2 @@
+test/staging/sm/RegExp/match-local-tolength-recompilation.js
+test/staging/sm/RegExp/replace-local-tolength-recompilation.js

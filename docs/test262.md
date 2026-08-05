@@ -6,6 +6,56 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3cw RegExp exec recompilation ordering
+
+R3cw freezes QuickJS 2026-06-04's observable `RegExpBuiltinExec` order: RegExp
+brand validation precedes input `ToString`, which precedes `lastIndex`
+`ToLength`; only after those calls does the engine read the current bytecode
+and flags. Because either coercion may call the legacy
+`RegExp.prototype.compile()`, Oxide now delays its program snapshot until both
+coercions have completed. The independent seven-vector QuickJS oracle covers
+replacement programs and global/sticky flags plus capture, named-group, and
+indices allocation from the replacement program; both engines pass 7/7.
+
+The exact manifest contains two paths / four sloppy-and-strict variants and
+hashes to
+`2d272e6f86d0cb3f041e824008771750a833d30209971d6dbebc2c0598726aa3`.
+Pinned QuickJS passes all four. The authenticated R3cv parent records
+`fail-runtime=4`, while the candidate records `pass=4`. Candidate focused
+TSV/JSONL SHA-256 values are
+`51bd65e7c991d8e371d263cf352cdd57dc2bb24e329b2032f4d28dd2eedafa10`
+and
+`86e7c93040d35347add9f1a209eb0de7d6dbf87f8d98ab9116f32a995319fb27`.
+The profile remains byte-identical at 126 tags and SHA-256
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+
+A fresh two-worker full replay changes the same four outcomes, leaves 102,033
+rows unchanged, has no detail-only movement, and records no previous-pass
+regression. Both non-cohort row streams are byte-identical: their TSV/JSON
+SHA-256 values are
+`6c2e3be458283298c2bc512c1c0b2f5ecf24a5ca1377abc6554d65286a951311`
+and
+`dfb69468f4eb79aacd032b88ec75f03f8d22558e2ea52ce7bba08cbc57b3e3df`.
+The canonical result is 65,503 passes / 65,566 runnable; `fail-runtime` falls
+from 54 to 50 and total unsupported remains 17,996. Full candidate TSV/JSONL
+SHA-256 values are
+`cd5aa3df85c45b72a8939d9c5778c70192b1dc3699eb3330ff8f7aff0ef1159f`
+and
+`709f49e182e1cfb83353c46251d5eb0bbc24109c3690532f2f4e348d64f1664f`.
+The complete residual candidate summary is `fail-parse=11`,
+`fail-runtime=50`, `skipped-config-exclude=6700`, `skipped-feature=11775`,
+`timeout=2`, `unsupported-feature=13719`, `unsupported-host-agent=118`,
+`unsupported-host-can-block-false=4`, `unsupported-host-is-html-dda=84`,
+`unsupported-module=679`, and `unsupported-negative-provenance=3392`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-regexp-exec-recompilation.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-regexp-exec-recompilation.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-regexp-exec-recompilation.sh --full
+```
+
 ## R3cv Array flat/flatMap global admission
 
 R3cv promotes the implemented `Array.prototype.flat` and
@@ -1674,30 +1724,30 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The current R3cv canonical summary is:
+every outcome in canonical order. The current R3cw canonical summary is:
 
-- 65,499 pass;
+- 65,503 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 17,996 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance, including 13,719 `unsupported-feature` variants;
-- 11 fail to parse, 54 fail at runtime, none fail in the harness, and two
+- 11 fail to parse, 50 fail at runtime, none fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admits 65,566 variants to execution. At R3cv all 65,566 produce a
+The runner admits 65,566 variants to execution. At R3cw all 65,566 produce a
 non-unsupported observed outcome; the runnable count can otherwise include
 typed parser/runtime frontiers or harness failures.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 64.19% (`65,499 / 102,037`);
-- conservative target-scope lower bound: 78.38%
-  (`65,499 / (102,037 - 18,475)`);
+- raw suite pass rate: 64.20% (`65,503 / 102,037`);
+- conservative target-scope lower bound: 78.39%
+  (`65,503 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 99.90%
-  (`65,499 / 65,566`).
+  (`65,503 / 65,566`).
 
-The 78.38% figure is the useful whole-project progress floor, not a claim that
-the engine is 78.38% conformant. The 99.90% conditional rate measures quality
+The 78.39% figure is the useful whole-project progress floor, not a claim that
+the engine is 78.39% conformant. The 99.90% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -1752,10 +1802,10 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The current R3cv canonical full TSV/JSONL SHA-256 values are
-`4cec8ef8be4b432b6f754c07522e744af856bbd8c9ed32fb98fecfe41810c076`
+The current R3cw canonical full TSV/JSONL SHA-256 values are
+`cd5aa3df85c45b72a8939d9c5778c70192b1dc3699eb3330ff8f7aff0ef1159f`
 and
-`022ab0c11d55e70d2f08c7df7361a36b571bac91320f43d6edfe46e19dba4975`.
+`709f49e182e1cfb83353c46251d5eb0bbc24109c3690532f2f4e348d64f1664f`.
 
 ## Milestone policy
 
@@ -8662,8 +8712,8 @@ R3bw then admits that tag globally: 439 outcomes change to `pass`, 456 rows
 change only their residual-capability detail, and 101,142 rows remain
 unchanged. That historical R3bw vector reached 59,507/102,037 passes with 60,026
 runnable variants, 18,618 `unsupported-feature` outcomes, and 23,585 total
-unsupported outcomes. Subsequent milestones through R3cv advance the current
-vector to 65,499/102,037 passes with 65,566 runnable variants, 13,719
+unsupported outcomes. Subsequent milestones through R3cw advance the current
+vector to 65,503/102,037 passes with 65,566 runnable variants, 13,719
 `unsupported-feature` outcomes, and 17,996 total unsupported outcomes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
