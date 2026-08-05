@@ -6,6 +6,48 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3dc Atomics metadata-gap classification
+
+R3dc corrects the classified vector without adding runtime functionality. Two
+SpiderMonkey Atomics staging fixtures omit feature metadata. Both supplemental
+rules are now exact-path and exact-source-SHA bound: the cross-compartment test
+requires `Atomics`, `SharedArrayBuffer`, and the already implemented realm
+host, while the detached-buffer test requires only `Atomics`. Source drift is
+a hard coordinator error. This prevents an absent `%Atomics%` intrinsic from
+being counted as an actionable runtime failure merely because the detach host
+is available.
+
+The exact manifest contains two paths / four variants and hashes to
+`4863dea8db26a20638b24f6a727a0a7f0a207585a4b966a855f10fa3ea1fcb18`.
+Pinned QuickJS passes all four. The authenticated R3db parent records
+`fail-runtime=2 unsupported-feature=2`; the candidate records
+`unsupported-feature=4`. Candidate focused TSV/JSONL SHA-256 values are
+`3eb9e15b57371dc9d8e6b6c89edc4bb62074ef893850b0d8a6c8b7d0da5d41c5`
+and
+`fbd94ab0292664901f42639050d14d4da273d4a1cab66588007f0de30ec224d4`.
+There are no pass changes.
+
+The fresh two-worker full transition keeps 65,512 passes, moves runnable from
+65,566 to 65,564, reduces `fail-runtime` from 45 to 43, and increases
+`unsupported-feature` from 13,719 to 13,721. Exactly two outcomes change; the
+other two cohort rows and all 102,033 non-cohort rows are byte-identical, with
+no detail-only change or pass regression. Candidate whole-corpus TSV/JSONL
+SHA-256 values are
+`35c329c649ecb75ec473bdaa42b361ad1173025893588f47f41a0270112872f1`
+and
+`f2811b3b7724123d8cb4a1b81c470f6c0b1f5f4c74d8ee26c76856c0c065861f`;
+this is now the canonical classified vector.
+
+Reproduce the frozen inputs and focused receipts with:
+
+```sh
+./scripts/test-test262-atomics-metadata-gaps.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-atomics-metadata-gaps.sh
+```
+
+Reproduce the complete join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-atomics-metadata-gaps.sh --full`.
+
 ## R3db sloppy direct-eval var BindingPattern references
 
 R3db freezes QuickJS's late scope selection for sloppy direct-eval `var`

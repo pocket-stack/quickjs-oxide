@@ -1,0 +1,2 @@
+test/staging/sm/Atomics/cross-compartment.js
+test/staging/sm/Atomics/detached-buffers.js

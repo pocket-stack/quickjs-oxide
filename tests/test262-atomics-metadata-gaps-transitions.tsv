@@ -1,0 +1,9 @@
+# Exhaustive R3dc Atomics metadata-gap classification transition.
+# parent_commit=00087b090e1397357647c5e85eaefbdc3d8abf26
+# oxide_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
+# manifest_sha256=4863dea8db26a20638b24f6a727a0a7f0a207585a4b966a855f10fa3ea1fcb18
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/staging/sm/Atomics/cross-compartment.js	sloppy			normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics, SharedArrayBuffer	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics, SharedArrayBuffer
+test/staging/sm/Atomics/cross-compartment.js	strict			normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics, SharedArrayBuffer	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics, SharedArrayBuffer
+test/staging/sm/Atomics/detached-buffers.js	sloppy			normal		fail-runtime	runtime	Test262Error	Expected a TypeError but got a ReferenceError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics
+test/staging/sm/Atomics/detached-buffers.js	strict			normal		fail-runtime	runtime	Test262Error	Expected a TypeError but got a ReferenceError	unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics

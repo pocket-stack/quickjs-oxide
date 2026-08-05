@@ -4,6 +4,60 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dc Atomics metadata-gap classification
+
+R3dc is an evidence correction, not an engine feature. Two SpiderMonkey
+staging tests use Atomics without declaring Test262 feature metadata. The
+cross-compartment fixture was already supplementally classified as requiring
+`Atomics` and `SharedArrayBuffer`; the detached-buffer fixture instead reached
+the runtime and reported two Oxide-only `ReferenceError` failures even though
+Oxide does not publish an `Atomics` global. Both overrides are now bound to the
+exact relative path and pinned source SHA-256. A checksum mismatch aborts the
+coordinator rather than silently changing selection. The cross-compartment
+rule additionally retains its `createRealm`, `Atomics`, and
+`SharedArrayBuffer` source-shape checks.
+
+The focused manifest contains two paths / four sloppy-and-strict variants and
+hashes to
+`4863dea8db26a20638b24f6a727a0a7f0a207585a4b966a855f10fa3ea1fcb18`.
+Pinned QuickJS passes 4/4. The authenticated R3db parent records the two
+cross-compartment variants as `unsupported-feature` and the two detached
+variants as `fail-runtime`; the candidate records all four as
+`unsupported-feature / selection / EngineCapability`, with no pass movement.
+Candidate focused TSV/JSONL SHA-256 values are
+`3eb9e15b57371dc9d8e6b6c89edc4bb62074ef893850b0d8a6c8b7d0da5d41c5`
+and
+`fbd94ab0292664901f42639050d14d4da273d4a1cab66588007f0de30ec224d4`.
+
+The fresh two-worker 102,037-row join changes exactly the two detached-buffer
+outcomes from `fail-runtime` to `unsupported-feature`. The other two cohort
+rows and all 102,033 non-cohort rows are byte-identical, with no detail-only
+movement or pass regression. Passes remain 65,512; runnable variants become
+65,564, `fail-parse=7`, `fail-runtime=43`, and `unsupported-feature=13,721`;
+the two JSON mega-array variants still time out. Full candidate TSV/JSONL
+SHA-256 values are
+`35c329c649ecb75ec473bdaa42b361ad1173025893588f47f41a0270112872f1`
+and
+`f2811b3b7724123d8cb4a1b81c470f6c0b1f5f4c74d8ee26c76856c0c065861f`.
+
+After this correction, every non-timeout failure left in the runnable vector
+is also present in pinned QuickJS. That says only that the current runnable
+slice has no known Oxide-only failure: 13,721 feature-unsupported variants,
+host/module exclusions, and unimplemented surfaces remain explicit, so this is
+not a Feature Parity claim. The next runtime target is the bounded non-shared
+ArrayBuffer Atomics core; shared backing stores, agents, and blocking waiters
+remain a separate architectural milestone.
+
+Reproduce the frozen inputs and focused evidence with:
+
+```sh
+./scripts/test-test262-atomics-metadata-gaps.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-atomics-metadata-gaps.sh
+```
+
+Reproduce the complete exact join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-atomics-metadata-gaps.sh --full`.
+
 ## R3db sloppy direct-eval var BindingPattern references
 
 R3db fixes a scope-isolation error in sloppy direct eval. A novel `var` name

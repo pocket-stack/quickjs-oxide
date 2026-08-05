@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use super::metadata::Metadata;
 
@@ -131,12 +133,17 @@ pub(super) fn missing_host_capability_hints(
 /// `createRealm` and `evalScript` have no standard Test262 feature tag, so
 /// synthetic tags keep newly implemented worker hooks from silently changing
 /// the global conformance vector before their admission gates. The
-/// SpiderMonkey cross-compartment Atomics staging test additionally constructs
-/// a foreign `SharedArrayBuffer` and calls `Atomics` without declaring either
-/// feature. Keep that path override exact and fail closed if its audited source
-/// shape changes.
+/// SpiderMonkey Atomics staging tests additionally omit feature metadata. The
+/// cross-compartment test constructs a foreign `SharedArrayBuffer`, while the
+/// detached-buffer test exercises non-shared `Atomics` operations. Keep these
+/// path overrides exact and fail closed if their audited source changes.
 pub(super) fn supplemental_feature_hints(path: &Path, source: &str) -> Result<Vec<String>, String> {
     const ATOMICS_CROSS_REALM: &str = "test/staging/sm/Atomics/cross-compartment.js";
+    const ATOMICS_CROSS_REALM_SHA256: &str =
+        "8b6770fe9be68c0deed01fdc484da4b80737f7068ef1c823dae3ea30de885f56";
+    const ATOMICS_DETACHED_BUFFERS: &str = "test/staging/sm/Atomics/detached-buffers.js";
+    const ATOMICS_DETACHED_BUFFERS_SHA256: &str =
+        "c7813d0121f03dc3c97e088afccca800220e494d27ae0b75d89464f41598ee12";
 
     let tokens = source_tokens(source, false);
     let members = member_names(&tokens);
@@ -148,25 +155,136 @@ pub(super) fn supplemental_feature_hints(path: &Path, source: &str) -> Result<Ve
         hints.insert("host-eval-script-required".to_owned());
     }
 
-    if path == Path::new(ATOMICS_CROSS_REALM) {
-        let has_identifier = |wanted| {
-            tokens
-                .iter()
-                .any(|token| matches!(token, SourceToken::Identifier(name) if *name == wanted))
-        };
-        if !hints.contains("host-create-realm-required")
-            || !has_identifier("Atomics")
-            || !has_identifier("SharedArrayBuffer")
-        {
-            return Err(format!(
-                "supplemental feature audit drifted for {ATOMICS_CROSS_REALM}"
-            ));
-        }
-        hints.insert("Atomics".to_owned());
-        hints.insert("SharedArrayBuffer".to_owned());
-    }
+    insert_atomics_cross_realm_feature_hints(
+        &mut hints,
+        path,
+        source,
+        &tokens,
+        ATOMICS_CROSS_REALM,
+        ATOMICS_CROSS_REALM_SHA256,
+    )?;
+
+    insert_exact_source_feature_hint(
+        &mut hints,
+        path,
+        source,
+        ATOMICS_DETACHED_BUFFERS,
+        ATOMICS_DETACHED_BUFFERS_SHA256,
+        "Atomics",
+    )?;
 
     Ok(hints.into_iter().collect())
+}
+
+fn insert_atomics_cross_realm_feature_hints(
+    hints: &mut BTreeSet<String>,
+    path: &Path,
+    source: &str,
+    tokens: &[SourceToken<'_>],
+    expected_path: &str,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    if !verify_exact_source_sha256(path, source, expected_path, expected_sha256)? {
+        return Ok(());
+    }
+    let has_identifier = |wanted| {
+        tokens
+            .iter()
+            .any(|token| matches!(token, SourceToken::Identifier(name) if *name == wanted))
+    };
+    if !hints.contains("host-create-realm-required")
+        || !has_identifier("Atomics")
+        || !has_identifier("SharedArrayBuffer")
+    {
+        return Err(format!(
+            "supplemental feature source shape drifted for {expected_path}"
+        ));
+    }
+    hints.insert("Atomics".to_owned());
+    hints.insert("SharedArrayBuffer".to_owned());
+    Ok(())
+}
+
+fn insert_exact_source_feature_hint(
+    hints: &mut BTreeSet<String>,
+    path: &Path,
+    source: &str,
+    expected_path: &str,
+    expected_sha256: &str,
+    feature: &str,
+) -> Result<(), String> {
+    if !verify_exact_source_sha256(path, source, expected_path, expected_sha256)? {
+        return Ok(());
+    }
+    hints.insert(feature.to_owned());
+    Ok(())
+}
+
+fn verify_exact_source_sha256(
+    path: &Path,
+    source: &str,
+    expected_path: &str,
+    expected_sha256: &str,
+) -> Result<bool, String> {
+    if path != Path::new(expected_path) {
+        return Ok(false);
+    }
+    let actual_sha256 = source_sha256(source)?;
+    if actual_sha256 != expected_sha256 {
+        return Err(format!(
+            "supplemental feature audit drifted for {expected_path}: expected source SHA-256 \
+             {expected_sha256}, found {actual_sha256}"
+        ));
+    }
+    Ok(true)
+}
+
+fn source_sha256(source: &str) -> Result<String, String> {
+    let commands: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
+    let mut unavailable = Vec::new();
+    for (program, arguments) in commands {
+        let mut child = match Command::new(program)
+            .args(arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                unavailable.push(program);
+                continue;
+            }
+            Err(error) => return Err(format!("hash Test262 source with {program}: {error}")),
+        };
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| format!("hash Test262 source with {program}: stdin unavailable"))?;
+            stdin
+                .write_all(source.as_bytes())
+                .map_err(|error| format!("hash Test262 source with {program}: {error}"))?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| format!("hash Test262 source with {program}: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "hash Test262 source with {program}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        return Ok(String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned());
+    }
+    Err(format!(
+        "cannot hash Test262 source: commands are unavailable: {}",
+        unavailable.join(", ")
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -618,7 +736,8 @@ mod tests {
 
     use super::{
         HostCapabilities, generator_destructuring_source_needs_async_guard,
-        missing_host_capability_hints, supplemental_feature_hints,
+        insert_atomics_cross_realm_feature_hints, insert_exact_source_feature_hint,
+        missing_host_capability_hints, source_sha256, source_tokens, supplemental_feature_hints,
     };
     use crate::metadata::Metadata;
 
@@ -913,21 +1032,102 @@ mod tests {
 
     #[test]
     fn atomics_cross_realm_metadata_gap_is_source_audited_and_exact() {
-        let path = Path::new("test/staging/sm/Atomics/cross-compartment.js");
-        let source = r#"
-            const otherGlobal = $262.createRealm().global;
-            const buffer = new otherGlobal.SharedArrayBuffer(4);
-            Atomics.load(new otherGlobal.Int32Array(buffer), 0);
-        "#;
+        const PATH: &str = "test/staging/sm/Atomics/cross-compartment.js";
+        const SOURCE: &str = "const otherGlobal = $262.createRealm().global; const buffer = new \
+                              otherGlobal.SharedArrayBuffer(4); Atomics.load(new \
+                              otherGlobal.Int32Array(buffer), 0);";
+        const SOURCE_SHA256: &str =
+            "3cb79dbb8554f721f371c78cad9fe21234dc9b249f27e15e372abacdd014cb47";
+
+        let mut hints = BTreeSet::from(["host-create-realm-required".to_owned()]);
+        insert_atomics_cross_realm_feature_hints(
+            &mut hints,
+            Path::new(PATH),
+            SOURCE,
+            &source_tokens(SOURCE, false),
+            PATH,
+            SOURCE_SHA256,
+        )
+        .unwrap();
         assert_eq!(
-            supplemental_feature_hints(path, source).unwrap(),
-            ["Atomics", "SharedArrayBuffer", "host-create-realm-required"]
+            hints,
+            BTreeSet::from([
+                "Atomics".to_owned(),
+                "SharedArrayBuffer".to_owned(),
+                "host-create-realm-required".to_owned(),
+            ])
         );
         assert_eq!(
-            supplemental_feature_hints(Path::new("test/example.js"), source).unwrap(),
+            supplemental_feature_hints(Path::new("test/example.js"), SOURCE).unwrap(),
             ["host-create-realm-required"]
         );
-        assert!(supplemental_feature_hints(path, "$262.createRealm(); Atomics.load;").is_err());
+
+        assert!(supplemental_feature_hints(Path::new(PATH), SOURCE).is_err());
+
+        let shape_drift = "$262.createRealm(); Atomics.load;";
+        let mut shape_hints = BTreeSet::from(["host-create-realm-required".to_owned()]);
+        assert!(
+            insert_atomics_cross_realm_feature_hints(
+                &mut shape_hints,
+                Path::new(PATH),
+                shape_drift,
+                &source_tokens(shape_drift, false),
+                PATH,
+                &source_sha256(shape_drift).unwrap(),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            shape_hints,
+            BTreeSet::from(["host-create-realm-required".to_owned()])
+        );
+    }
+
+    #[test]
+    fn atomics_detached_buffers_requirement_is_path_and_source_hash_bound() {
+        const PATH: &str = "test/staging/sm/Atomics/detached-buffers.js";
+        const SOURCE: &str = "abc";
+        const SOURCE_SHA256: &str =
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        let mut hints = BTreeSet::new();
+        insert_exact_source_feature_hint(
+            &mut hints,
+            Path::new(PATH),
+            SOURCE,
+            PATH,
+            SOURCE_SHA256,
+            "Atomics",
+        )
+        .unwrap();
+        assert_eq!(hints, BTreeSet::from(["Atomics".to_owned()]));
+
+        let mut wrong_path_hints = BTreeSet::new();
+        insert_exact_source_feature_hint(
+            &mut wrong_path_hints,
+            Path::new("test/example.js"),
+            SOURCE,
+            PATH,
+            SOURCE_SHA256,
+            "Atomics",
+        )
+        .unwrap();
+        assert!(wrong_path_hints.is_empty());
+
+        let mut drifted_source_hints = BTreeSet::new();
+        assert!(
+            insert_exact_source_feature_hint(
+                &mut drifted_source_hints,
+                Path::new(PATH),
+                "abd",
+                PATH,
+                SOURCE_SHA256,
+                "Atomics",
+            )
+            .is_err()
+        );
+        assert!(drifted_source_hints.is_empty());
+        assert!(supplemental_feature_hints(Path::new(PATH), SOURCE).is_err());
     }
 
     #[test]
