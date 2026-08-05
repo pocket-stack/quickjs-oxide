@@ -467,6 +467,10 @@ const TEST262_REGEXP_BUILTINS_PROFILE_SHA256: &str =
     "0214f6789a3276c4755fadde19477b70620184a6137d29eefef0975cfb379c15";
 const TEST262_REGEXP_BUILTINS_MANIFEST_SHA256: &str =
     "db6201093f57412de0d0cf16d4ff06f74512af3bc76d6f83c337474c7b982ab3";
+const TEST262_ATOMICS_NON_SHARED_CORE_PROFILE_SHA256: &str =
+    "c3db1670b6cd4e2b9b1e7bd812d2e580df4ea0d8f0ceee96c074378d14dc9a5b";
+const TEST262_ATOMICS_NON_SHARED_CORE_MANIFEST_SHA256: &str =
+    "5c8805da455cb66810646a709d847346c1c07b2710b46838da6006667f627aac";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -1098,6 +1102,7 @@ enum OxideProfileKind {
     OptionalChaining,
     Proxy,
     RegExpBuiltins,
+    AtomicsNonSharedCore,
 }
 
 fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
@@ -1538,6 +1543,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-regexp-builtins.conf"),
             OxideProfileKind::RegExpBuiltins,
+        ),
+        (
+            root.join("tests/test262-atomics-non-shared-core.conf"),
+            OxideProfileKind::AtomicsNonSharedCore,
         ),
     ];
     for (candidate, kind) in profiles {
@@ -3448,6 +3457,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-proxy.txt",
             TEST262_PROXY_MANIFEST_SHA256,
         ),
+        OxideProfileKind::AtomicsNonSharedCore => verify_scoped_pinned_profile(
+            options,
+            "non-shared Atomics core",
+            TEST262_ATOMICS_NON_SHARED_CORE_PROFILE_SHA256,
+            "tests/test262-atomics-non-shared-core.txt",
+            TEST262_ATOMICS_NON_SHARED_CORE_MANIFEST_SHA256,
+        ),
     }
 }
 
@@ -3727,6 +3743,7 @@ mod cli_tests {
         TEST262_ASYNC_GENERATOR_YIELD_STAR_PROFILE_SHA256,
         TEST262_ASYNC_OBJECT_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
+        TEST262_ATOMICS_NON_SHARED_CORE_PROFILE_SHA256,
         TEST262_BINARY_DATA_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_BINARY_DATA_GLOBAL_PARENT_PROFILE_SHA256, TEST262_CATCH_BINDING_PROFILE_SHA256,
         TEST262_CLASS_BASE_PROFILE_SHA256, TEST262_CLASS_DERIVED_PROFILE_SHA256,
@@ -4460,6 +4477,11 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-regexp-builtins.conf")).unwrap(),
             OxideProfileKind::RegExpBuiltins
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-atomics-non-shared-core.conf"))
+                .unwrap(),
+            OxideProfileKind::AtomicsNonSharedCore
         );
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
@@ -8045,6 +8067,41 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-regexp-builtins.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_atomics_non_shared_core_profile_is_bound_to_its_pinned_manifest() {
+        let options = scoped_profile_options(
+            "tests/test262-atomics-non-shared-core.conf",
+            "tests/test262-atomics-non-shared-core.txt",
+        );
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ATOMICS_NON_SHARED_CORE_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Atomics/add/descriptor.js"],
+            ["--manifest", "tests/test262-atomics-shared-deferred.txt"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-atomics-non-shared-core.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

@@ -242,6 +242,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/compat/test262-oxide.conf"
     ));
+    const ATOMICS_NON_SHARED_CORE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-atomics-non-shared-core.conf"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -1676,6 +1680,43 @@ mod tests {
             default_parameters_global_candidate.allows_async_execution(),
             default_parameters_candidate.allows_async_execution()
         );
+    }
+
+    #[test]
+    fn atomics_non_shared_core_profile_is_exact_and_selection_only() {
+        let global = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
+        let scoped = OxideProfile::parse(ATOMICS_NON_SHARED_CORE_PROFILE).unwrap();
+
+        assert_eq!(
+            scoped
+                .features
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "Array.prototype.includes",
+                "ArrayBuffer",
+                "Atomics",
+                "Atomics.pause",
+                "BigInt",
+                "Reflect.construct",
+                "SharedArrayBuffer",
+                "Symbol",
+                "Symbol.toStringTag",
+                "TypedArray",
+                "resizable-arraybuffer",
+            ]
+        );
+        assert_eq!(
+            scoped
+                .features
+                .difference(&global.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Atomics", "Atomics.pause", "SharedArrayBuffer"]
+        );
+        assert!(scoped.audited_negative_tests.is_empty());
+        assert!(!scoped.allows_async_execution());
     }
 
     #[test]

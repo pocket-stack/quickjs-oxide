@@ -6,6 +6,83 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3de exhaustive non-shared Atomics gate
+
+R3de replaces the temporary source probe with a runner-authenticated scoped
+profile and exact manifest. The source audit now exhausts the non-shared
+portion of the pinned metadata universe: 96 metadata paths neither evaluate
+`SharedArrayBuffer` nor carry its tag, one safe `isLockFree` path carries the
+tag without evaluating SAB, and one metadata-less SpiderMonkey detached-
+buffer path supplements them. Oxide and pinned QuickJS both pass all 98 paths
+/ 196 sloppy/strict variants.
+
+The manifest SHA-256 is
+`5c8805da455cb66810646a709d847346c1c07b2710b46838da6006667f627aac`;
+the selection-only profile SHA-256 is
+`c3db1670b6cd4e2b9b1e7bd812d2e580df4ea0d8f0ceee96c074378d14dc9a5b`.
+The runner binds those two exact files and rejects broad, single-test, or
+alternate-manifest selection. Against the unchanged global parent profile, all
+196 focused rows move from `unsupported-feature` to `pass`; no row outside the
+manifest can enter this gate. Candidate TSV/JSONL SHA-256 values are
+`0213b1e6484568dc2d350c8f551a62ad621fb4a9925b59134a80f9d77ff1d05a`
+and
+`d0c37816b7b0a8426eb9242e0df5ea27a92e9d877b0f345c21f18d6e52fb5c1d`.
+The 382-row / 764-variant ledger also freezes each metadata path's category,
+includes, flags, features, and source SHA-256. The gate regenerates all 53,125
+pinned metadata records, derives the exact `Atomics` / `Atomics.pause`
+projection, and verifies the ledger plus its source and category projections.
+
+The disjoint 12-path shared-deferred manifest remains unchanged at SHA-256
+`00b82b9589391b350ee77ee736c7e7c4637c19466465b4dfa4e53270cdbc02ee`.
+Pinned QuickJS passes its 24 variants. Oxide has no shared backing-store
+implementation, and the R3de gate does not execute this deferred partition in
+Oxide. It prevents the frontier from being folded into the green non-shared
+cohort, but is not an Oxide result receipt or an exhaustive SAB inventory.
+
+The exhaustive audit covers the 382 mutually exclusive paths carrying
+`Atomics` or `Atomics.pause` metadata. It is not the larger universe of every
+`SharedArrayBuffer`-only path:
+
+- 96: no SAB evaluation and no SAB feature tag;
+- 1: SAB metadata only, with no SAB evaluation;
+- 123: real SAB evaluation and no additional missing host requirement;
+- 61: real SAB evaluation plus a host requirement (59 agent paths and two
+  `CanBlock`-false paths);
+- 101: `Atomics.waitAsync`.
+
+The 184 non-`waitAsync` shared paths comprise 174 direct SAB constructions and
+ten calls through the pinned `testAtomics.js` non-view helper.
+
+The metadata-less detached-buffer and cross-compartment staging fixtures sit
+outside that count. The former is the 98th green path; the latter evaluates
+real SAB and also needs realm support.
+
+This partition makes the next progress measurement concrete. First admit the
+independent six-path / 12-variant `Atomics.pause` slice through its own exact
+global transition. Do not immediately admit broad `Atomics`. Its raw metadata
+closure is 119 paths / 238 variants: 90 / 180 are green and 29 / 58 hide real
+SAB or waiter dependencies. The runner's host-before-feature precedence swaps
+one member: `wait/good-views.js` is already host-preempted, while the
+metadata-less detached-buffer fixture has a supplemental `Atomics`
+requirement. The resulting precedence-aware transition planning set remains
+119 / 238, partitioned into 91 green paths / 182 variants and 28 hidden-shared
+paths / 56 variants. This is not yet a candidate transition report. A later
+broad gate must execute and freeze that set or implement the missing runtime,
+then account for reason-only rows. Neither namespace admission implies
+`SharedArrayBuffer`, agent, waiter, or `Atomics.waitAsync` support.
+
+R3de does not edit `compat/test262-oxide.conf`; the canonical complete report
+therefore remains byte-identical to R3dc at 65,512 passes, 65,564 runnable
+variants, seven parse failures, 43 runtime failures, and two timeouts.
+
+Reproduce the authenticated focused receipt with:
+
+```sh
+./scripts/test-test262-atomics-non-shared-core.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-atomics-non-shared-core.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-atomics-non-shared-core.sh --full
+```
+
 ## R3dd source-audited non-shared Atomics cohort
 
 R3dd adds the runtime namespace but deliberately does not enable broad
@@ -15,13 +92,14 @@ eleven method `not-a-constructor` paths whose argument expressions are
 evaluated before the constructor check. Those paths are now frozen in the
 12-line shared-memory deferred manifest instead of being mislabeled green.
 
-The corrected non-shared manifest contains 90 paths / 180 variants and hashes
-to
+The historical R3dd temporary-probe manifest contained 90 paths / 180 variants
+and then hashed to
 `e9ab48b9faa090e1bc2a58a1d62e2398bca0de88a28f34c53d3397442636a380`.
-It comprises 43 namespace/method metadata paths, 41 explicitly named
-non-shared paths, five remaining `pause`/`isLockFree` semantic paths, and the
-staging detached-buffer path. Oxide and pinned QuickJS pass 180/180. The
-candidate scoped-probe TSV/JSONL SHA-256 values are
+That snapshot comprised 43 namespace/method metadata paths, 41 explicitly
+named non-shared paths, five remaining `pause`/`isLockFree` semantic paths,
+and the staging detached-buffer path. Oxide and pinned QuickJS passed 180/180.
+R3de above supersedes it with the current 98-path manifest; the historical
+candidate scoped-probe TSV/JSONL SHA-256 values were
 `0d5b99acb171c079d91b89ca010c9061b2b552d1a1dfe530efaa554caa2335d4`
 and
 `baaf530b6697390a82e2751411b6cbfd7fa84dbb2c890248af37f9b06836a05f`;
@@ -30,12 +108,12 @@ the pinned QuickJS log SHA-256 is
 
 The deferred manifest hashes to
 `00b82b9589391b350ee77ee736c7e7c4637c19466465b4dfa4e53270cdbc02ee`.
-The two disjoint manifests reconstruct the original 102-path audit without
-erasing the SAB frontier. One green `isLockFree` path conservatively carries
-SAB metadata without evaluating SAB, so the temporary scoped profile exists
-only to select this audited cohort. It is not a global capability declaration.
-The canonical full Test262 vector therefore remains at R3dc until a separate
-global-admission gate proves its complete metadata intersection.
+At R3dd, the 90-path snapshot and deferred manifest reconstructed the original
+102-path audit without erasing the SAB frontier. One green `isLockFree` path
+conservatively carried SAB metadata without evaluating SAB, so the temporary
+scoped profile existed only to select that audited cohort. It was not a global
+capability declaration. R3de above is the current gate and retains the same
+global-profile boundary.
 
 ## R3dc Atomics metadata-gap classification
 

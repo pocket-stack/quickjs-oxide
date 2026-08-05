@@ -4,6 +4,79 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3de authenticated non-shared Atomics gate
+
+R3de turns R3dd's source probe into a fail-closed milestone gate. A complete
+source audit of the pinned Atomics metadata universe identifies 96 paths that
+neither evaluate `SharedArrayBuffer` nor carry its feature tag. The formal
+non-shared cohort adds the one `SharedArrayBuffer`-tagged `isLockFree` path
+whose source never evaluates that constructor, plus the metadata-less
+SpiderMonkey detached-buffer path. The resulting 98 paths / 196 sloppy/strict
+variants pass in both Oxide and pinned QuickJS.
+
+The runner recognizes the dedicated selection-only profile only when it is
+paired with the exact 98-line manifest. It rejects `--all`, `--test`, a
+different manifest, and either file after checksum drift. The profile and
+manifest SHA-256 values are
+`c3db1670b6cd4e2b9b1e7bd812d2e580df4ea0d8f0ceee96c074378d14dc9a5b`
+and
+`5c8805da455cb66810646a709d847346c1c07b2710b46838da6006667f627aac`.
+The authenticated parent records 196 `unsupported-feature` outcomes; the
+candidate records 196 passes, with every transition confined to the manifest.
+This scoped profile is evidence machinery, not a runtime capability claim.
+The committed 382-row / 764-variant Atomics metadata ledger records each
+path's category, includes, flags, features, and source SHA-256. The gate
+regenerates the complete 53,125-record metadata inventory, proves that the ledger is its exact
+`Atomics` / `Atomics.pause` projection, and rechecks every category and source.
+
+The twelve already-frozen paths that really evaluate `SharedArrayBuffer`
+remain a disjoint deferred receipt. Pinned QuickJS passes all 24 variants;
+Oxide still has no shared backing-store implementation. This gate executes the
+deferred partition only in pinned QuickJS, so it is a small explicit frontier
+check rather than an Oxide pass receipt or the whole future shared-memory corpus.
+
+The exhaustive source audit classifies all 382 paths carrying `Atomics` or
+`Atomics.pause` metadata into five mutually exclusive groups. It is not an
+inventory of every `SharedArrayBuffer`-only path in Test262:
+
+- 96 evaluate no SAB and carry no SAB tag;
+- one carries SAB metadata but never evaluates SAB;
+- 123 really evaluate SAB without an additional agent/host requirement;
+- 61 really evaluate SAB and also require an agent or host facility (59 agent
+  paths plus two `CanBlock`-false paths);
+- 101 exercise `Atomics.waitAsync`.
+
+Of the 184 non-`waitAsync` shared paths, 174 construct SAB directly and ten
+call the pinned `testAtomics.js` non-view helper that constructs it.
+
+The two metadata-less staging paths remain explicit outside those 382 rows:
+the detached-buffer test belongs to the green non-shared gate, while the
+cross-compartment test evaluates real SAB and also requires realm support.
+
+The next admission should therefore be staged rather than equated with shared
+memory completion. `Atomics.pause` has an independent six-path / 12-variant
+metadata slice and is the smallest global-profile step. Broad `Atomics` is not
+ready for the immediately following admission. Its raw metadata closure is 119
+paths / 238 variants: 90 / 180 are green and 29 / 58 hide real SAB or waiter
+dependencies. Runner precedence changes the members without changing the
+total: host selection already preempts `wait/good-views.js`, while the
+metadata-less detached-buffer path has a supplemental `Atomics` requirement.
+The resulting transition planning set is 91 green paths / 182 variants plus
+28 hidden-shared paths / 56 variants. This is a checksum-bound planning
+projection, not a candidate transition report; a later broad gate must execute
+and freeze it or first implement the missing runtime. SAB, agents, blocking
+waiters, and `Atomics.waitAsync` remain separate implementation milestones.
+R3de changes neither `compat/test262-oxide.conf` nor the canonical 102,037-row
+vector, which remains the R3dc 65,512-pass / 65,564-runnable measurement.
+
+Reproduce the scoped evidence with:
+
+```sh
+./scripts/test-test262-atomics-non-shared-core.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-atomics-non-shared-core.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-atomics-non-shared-core.sh --full
+```
+
 ## R3dd non-shared ArrayBuffer Atomics core
 
 R3dd publishes QuickJS's lazy, realm-local `%Atomics%` namespace after
@@ -29,11 +102,12 @@ stores and waiter coordination as a distinct future architecture.
 
 The pinned differential matrix passes in both engines; its stdout SHA-256 is
 `d5a393c1534768aec2bb3f8512bc5b01170a18c85e817e02acfd56140b2931d6`.
-A source audit corrected the focused Test262 boundary to 90 paths / 180
-sloppy-and-strict variants with manifest SHA-256
+The historical R3dd temporary probe corrected its focused Test262 boundary to
+90 paths / 180 sloppy-and-strict variants with then-current manifest SHA-256
 `e9ab48b9faa090e1bc2a58a1d62e2398bca0de88a28f34c53d3397442636a380`.
-Oxide and pinned QuickJS both pass 180/180. The candidate scoped-probe TSV and
-JSONL hashes are
+Oxide and pinned QuickJS both passed 180/180. R3de above supersedes that
+snapshot with the current 98-path manifest. The historical candidate
+scoped-probe TSV and JSONL hashes are
 `0d5b99acb171c079d91b89ca010c9061b2b552d1a1dfe530efaa554caa2335d4`
 and
 `baaf530b6697390a82e2751411b6cbfd7fa84dbb2c890248af37f9b06836a05f`;

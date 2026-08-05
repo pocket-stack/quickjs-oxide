@@ -40,6 +40,7 @@ test/built-ins/Atomics/notify/bigint/non-shared-bufferdata-count-evaluation-thro
 test/built-ins/Atomics/notify/bigint/non-shared-bufferdata-index-evaluation-throws.js
 test/built-ins/Atomics/notify/bigint/non-shared-bufferdata-non-shared-int-views-throws.js
 test/built-ins/Atomics/notify/bigint/non-shared-bufferdata-returns-0.js
+test/built-ins/Atomics/notify/bigint/null-bufferdata-throws.js
 test/built-ins/Atomics/notify/descriptor.js
 test/built-ins/Atomics/notify/length.js
 test/built-ins/Atomics/notify/name.js
@@ -47,6 +48,9 @@ test/built-ins/Atomics/notify/non-shared-bufferdata-count-evaluation-throws.js
 test/built-ins/Atomics/notify/non-shared-bufferdata-index-evaluation-throws.js
 test/built-ins/Atomics/notify/non-shared-bufferdata-non-shared-int-views-throws.js
 test/built-ins/Atomics/notify/non-shared-bufferdata-returns-0.js
+test/built-ins/Atomics/notify/not-a-typedarray-throws.js
+test/built-ins/Atomics/notify/not-an-object-throws.js
+test/built-ins/Atomics/notify/null-bufferdata-throws.js
 test/built-ins/Atomics/notify/retrieve-length-before-index-coercion-non-shared-detached.js
 test/built-ins/Atomics/notify/retrieve-length-before-index-coercion-non-shared-resize-to-zero.js
 test/built-ins/Atomics/notify/retrieve-length-before-index-coercion-non-shared.js
@@ -77,10 +81,14 @@ test/built-ins/Atomics/sub/name.js
 test/built-ins/Atomics/sub/non-shared-bufferdata.js
 test/built-ins/Atomics/sub/non-shared-int-views-throws.js
 test/built-ins/Atomics/wait/bigint/non-shared-bufferdata-throws.js
+test/built-ins/Atomics/wait/bigint/null-bufferdata-throws.js
 test/built-ins/Atomics/wait/descriptor.js
 test/built-ins/Atomics/wait/length.js
 test/built-ins/Atomics/wait/name.js
 test/built-ins/Atomics/wait/non-shared-bufferdata-throws.js
+test/built-ins/Atomics/wait/not-a-typedarray-throws.js
+test/built-ins/Atomics/wait/not-an-object-throws.js
+test/built-ins/Atomics/wait/null-bufferdata-throws.js
 test/built-ins/Atomics/xor/bigint/non-shared-bufferdata.js
 test/built-ins/Atomics/xor/descriptor.js
 test/built-ins/Atomics/xor/length.js
