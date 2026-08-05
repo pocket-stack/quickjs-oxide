@@ -254,6 +254,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-shared-atomics-nonblocking.conf"
     ));
+    const ATOMICS_WAIT_NONAGENT_BOUNDED_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-atomics-wait-nonagent-bounded.conf"
+    ));
     const ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-atomics-pause-global-parent.conf"
@@ -1861,6 +1865,38 @@ mod tests {
                 "Uint8Array",
                 "Uint8ClampedArray",
                 "arrow-function",
+                "resizable-arraybuffer",
+            ]
+        );
+        assert!(scoped.audited_negative_tests.is_empty());
+        assert!(!scoped.allows_async_execution());
+    }
+
+    #[test]
+    fn atomics_wait_nonagent_bounded_profile_is_exact_and_selection_only() {
+        let scoped = OxideProfile::parse(ATOMICS_WAIT_NONAGENT_BOUNDED_PROFILE).unwrap();
+
+        assert_eq!(
+            scoped
+                .features
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "ArrayBuffer",
+                "Atomics",
+                "BigInt",
+                "DataView",
+                "Float32Array",
+                "Float64Array",
+                "Int8Array",
+                "SharedArrayBuffer",
+                "Symbol",
+                "Symbol.toPrimitive",
+                "TypedArray",
+                "Uint16Array",
+                "Uint8Array",
+                "Uint8ClampedArray",
                 "resizable-arraybuffer",
             ]
         );

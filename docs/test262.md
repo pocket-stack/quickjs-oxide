@@ -6,6 +6,48 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dj exact bounded non-agent Atomics.wait selection
+
+R3dj derives the synchronous non-agent boundary from the complete pinned suite,
+not from the `SharedArrayBuffer` tag or the `Atomics/wait` directory. Across
+53,393 JavaScript files, 93 paths contain a raw `Atomics.wait` member reference.
+The R3di-equivalent code-token scanner finds 35 executable member-reference
+paths: 33 direct-call paths plus the non-call references in `length.js` and
+`name.js`. The full raw partition is 33 selected paths, 57 agent paths, and the
+three descriptor/length/name metadata paths. No selected path overlaps the 101
+raw `Atomics.waitAsync` paths, and every raw path maps back to the authenticated
+Atomics ledger.
+
+The exact 33-path / 66-variant manifest consists of the R3dh-tagged 20 / 40 and
+a disjoint source spillover of 13 / 26. The spillover includes two upstream
+files under `Atomics/notify` that actually invoke `Atomics.wait`. The combined
+manifest, source projection, and sloppy/strict key hashes are respectively
+`38f69242c52bfda864397a6413dedad9eb3a60ca2c07683f857791300948348d`,
+`42d1a6f2f80512985a3d893c306bbe0914da07869ad9270391c1a3b7be2b2033`,
+and
+`274d406bae7a821f3e48a8ac2d8d49a8eae98dbfc04633127c66bc05ae546558`.
+Pinned QuickJS passes all 66 variants.
+
+This remains selection-only and unblessed. Seven paths exercise only zero- or
+one-millisecond timeouts; 26 paths finish before waiting. No test requires an
+infinite wait, `not-equal`, notification, or agent wakeup. The current-worktree
+Oxide runner records 26 passes, 36 runtime failures, and four
+`unsupported-host-can-block-false` rows. This is evidence of the starting
+point, not an implementation claim. The scoped profile accepts only the exact
+combined manifest and rejects `--all`, `--test`, tagged-only, spillover-only,
+and other manifests. The canonical global vector is unchanged. Runtime work is
+expected to fail this unblessed receipt until a later implementation milestone
+replaces it with a new authenticated vector.
+
+Pinned QuickJS 2026-06-04 has no `Atomics.waitAsync`; Test262 marks that feature
+as skipped in its QuickJS configuration. Accordingly waitAsync is recorded as
+outside the parity target, while agent-backed waiter/notify behavior remains a
+real future parity frontier.
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-atomics-wait-nonagent-bounded.sh --check
+```
+
 ## R3di exact non-blocking shared Atomics selection
 
 R3di authenticates the complete pinned non-blocking shared Atomics closure
@@ -16,9 +58,9 @@ shared backing even though their metadata omits that tag. Their disjoint union
 is the exact 100-path / 200-variant selection.
 
 The source closure itself has 99 paths and overlaps the tagged projection in
-77. The tagged-only path is a metadata-only `isLockFree` check. One test filed
-under `Atomics/notify` actually calls `Atomics.wait`; the audit keeps it in the
-later wait milestone instead of allowing its directory name to widen R3di.
+77. The tagged-only path is a metadata-only `isLockFree` check. That scoped
+audit found one test filed under `Atomics/notify` which actually calls
+`Atomics.wait`; R3dj's full-suite closure above finds both such misfiled paths.
 
 The selection covers shared `load`, `store`, `add`, `sub`, `and`, `or`, `xor`,
 `exchange`, and `compareExchange`, plus adjacent `isLockFree` table checks and

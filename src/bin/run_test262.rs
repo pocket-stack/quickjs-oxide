@@ -479,6 +479,10 @@ const TEST262_SHARED_ATOMICS_NONBLOCKING_PROFILE_SHA256: &str =
     "ec33455551c3601859241870624b5017551aa04c8edbf8c9e899d4ef9b5332cc";
 const TEST262_SHARED_ATOMICS_NONBLOCKING_MANIFEST_SHA256: &str =
     "a9072513df3c730b87a84218a88755c229a8090e0100bc44bbd7d2550ac72dc0";
+const TEST262_ATOMICS_WAIT_NONAGENT_BOUNDED_PROFILE_SHA256: &str =
+    "ae525546ca879c3f159d491df0a95e3df8bef438f70908057ab10c90ca1545e4";
+const TEST262_ATOMICS_WAIT_NONAGENT_BOUNDED_MANIFEST_SHA256: &str =
+    "38f69242c52bfda864397a6413dedad9eb3a60ca2c07683f857791300948348d";
 const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
 const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -1125,6 +1129,7 @@ enum OxideProfileKind {
     AtomicsNonSharedCore,
     SharedArrayBufferCore,
     SharedAtomicsNonblocking,
+    AtomicsWaitNonagentBounded,
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
@@ -1580,6 +1585,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-shared-atomics-nonblocking.conf"),
             OxideProfileKind::SharedAtomicsNonblocking,
+        ),
+        (
+            root.join("tests/test262-atomics-wait-nonagent-bounded.conf"),
+            OxideProfileKind::AtomicsWaitNonagentBounded,
         ),
         (
             root.join("tests/test262-atomics-pause-global-parent.conf"),
@@ -3523,6 +3532,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-shared-atomics-nonblocking.txt",
             TEST262_SHARED_ATOMICS_NONBLOCKING_MANIFEST_SHA256,
         ),
+        OxideProfileKind::AtomicsWaitNonagentBounded => verify_scoped_pinned_profile(
+            options,
+            "non-agent bounded Atomics.wait frontier",
+            TEST262_ATOMICS_WAIT_NONAGENT_BOUNDED_PROFILE_SHA256,
+            "tests/test262-atomics-wait-nonagent-bounded.txt",
+            TEST262_ATOMICS_WAIT_NONAGENT_BOUNDED_MANIFEST_SHA256,
+        ),
         OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
             options,
             "Atomics.pause global admission",
@@ -3851,6 +3867,7 @@ mod cli_tests {
         TEST262_ATOMICS_NON_SHARED_CORE_PROFILE_SHA256,
         TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_ATOMICS_WAIT_NONAGENT_BOUNDED_PROFILE_SHA256,
         TEST262_BINARY_DATA_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_BINARY_DATA_GLOBAL_PARENT_PROFILE_SHA256, TEST262_CATCH_BINDING_PROFILE_SHA256,
         TEST262_CLASS_BASE_PROFILE_SHA256, TEST262_CLASS_DERIVED_PROFILE_SHA256,
@@ -8314,6 +8331,49 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-shared-atomics-nonblocking.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_atomics_wait_nonagent_bounded_profile_is_bound_to_its_exact_manifest() {
+        let options = scoped_profile_options(
+            "tests/test262-atomics-wait-nonagent-bounded.conf",
+            "tests/test262-atomics-wait-nonagent-bounded.txt",
+        );
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_ATOMICS_WAIT_NONAGENT_BOUNDED_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Atomics/wait/false-for-timeout.js"],
+            [
+                "--manifest",
+                "tests/test262-atomics-wait-nonagent-bounded-tagged.txt",
+            ],
+            [
+                "--manifest",
+                "tests/test262-atomics-wait-nonagent-bounded-spillover.txt",
+            ],
+            ["--manifest", "tests/test262-shared-array-buffer-core.txt"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-atomics-wait-nonagent-bounded.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

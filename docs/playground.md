@@ -44,7 +44,9 @@ The smoke executes all 14 curated examples in the real WebAssembly engine.
 The set retains a no-Atomics `SharedArrayBuffer` views example and adds a
 `Shared Atomics` example that stores 40, atomically adds 2, and loads 42 from
 the shared backing. `Atomics.wait`, `Atomics.waitAsync`, agents, and waiter
-coordination remain outside this playground milestone.
+coordination remain outside this playground milestone. R3dj inventories only a
+bounded non-agent wait selection; pinned QuickJS has no `waitAsync` parity
+target.
 
 ## Deployment
 

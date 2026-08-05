@@ -1,0 +1,18 @@
+# Pinned QuickJS oracle receipt for the R3dj non-agent bounded Atomics.wait frontier.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+tagged_manifest_sha256=fb4db552996640fbba6d295c4420cbd248fcbf360dcbc355cfbc8912894b4686
+spillover_manifest_sha256=356bdebfb1b9dce2c717a74b328d54ca212c1c45c0fa7b1406ef19276ff1283e
+combined_manifest_sha256=38f69242c52bfda864397a6413dedad9eb3a60ca2c07683f857791300948348d
+tagged_paths=20
+tagged_variants=40
+tagged_passes=40
+spillover_paths=13
+spillover_variants=26
+spillover_passes=26
+combined_paths=33
+combined_variants=66
+combined_passes=66
+failed=0
+skipped_feature=0
+result=pass

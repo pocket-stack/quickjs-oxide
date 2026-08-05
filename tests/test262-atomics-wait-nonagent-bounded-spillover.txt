@@ -1,0 +1,13 @@
+test/built-ins/Atomics/notify/bigint/non-bigint64-typedarray-throws.js
+test/built-ins/Atomics/notify/not-a-typedarray-throws.js
+test/built-ins/Atomics/wait/bigint/non-shared-bufferdata-throws.js
+test/built-ins/Atomics/wait/bigint/null-bufferdata-throws.js
+test/built-ins/Atomics/wait/non-int32-typedarray-throws.js
+test/built-ins/Atomics/wait/non-shared-bufferdata-throws.js
+test/built-ins/Atomics/wait/not-a-typedarray-throws.js
+test/built-ins/Atomics/wait/not-an-object-throws.js
+test/built-ins/Atomics/wait/null-bufferdata-throws.js
+test/built-ins/Atomics/wait/retrieve-length-before-index-coercion.js
+test/built-ins/Atomics/wait/validate-arraytype-before-index-coercion.js
+test/built-ins/Atomics/wait/validate-arraytype-before-timeout-coercion.js
+test/built-ins/Atomics/wait/validate-arraytype-before-value-coercion.js

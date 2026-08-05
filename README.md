@@ -36,10 +36,11 @@ so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
 full vector is 65,610 passes / 65,662 runnable / 102,037 total variants.
-Modules, `Atomics.wait`, `Atomics.waitAsync`, agents/waiters, and broad built-in
-coverage remain incomplete.
-Pinned QuickJS is the test oracle, never a product dependency; detailed
-bookkeeping lives in the status documents.
+Modules, agents/full waiter coordination, and broad built-in coverage remain
+incomplete; the bounded 33-path `Atomics.wait` frontier is selection-only.
+Pinned QuickJS has no `Atomics.waitAsync`; it is outside parity scope.
+Pinned QuickJS is only the test oracle; bookkeeping lives in the status
+documents.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
