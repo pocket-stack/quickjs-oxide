@@ -4,6 +4,62 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3da synchronous generator delegation stack budget
+
+R3da removes an Oxide-only early rejection from deep synchronous `yield*`
+chains. QuickJS's generator `next`/`return`/`throw` path resumes heap-owned
+generator state and checks the real C stack on call entry and resume. Oxide
+also has a real address-based stack guard, but it previously charged every
+`GeneratorPrototypeResume` the conservative eight-unit cost for an unknown
+callback-capable native. Ten nested resumes could therefore exhaust the
+80-unit logical budget before the real stack guard was reached. Generator
+resume now costs one nonzero unit: the address guard remains authoritative and
+mixed native recursion remains budgeted.
+
+A two-MiB native-stack test locks delegated result identity, a catchable deep
+overflow, complete active-frame unwinding, and reuse of the same Context after
+the exception. A sloppy/strict differential against pinned QuickJS additionally
+covers deep `next`, `return` through `finally`, and `throw` propagation. The
+Pages job repeats the native floor on Ubuntu, while the actual Node/WASM build
+checks a 20-level result and a catchable 1,000-level overflow without a WebAssembly
+trap.
+
+This milestone does not claim exact stack-threshold parity. The current
+optimized native build reaches roughly 72 delegated levels before its real
+host-stack guard, while pinned QuickJS reaches 509 under the same probe. Closing
+that implementation-depth gap requires an explicit VM call/resume trampoline;
+it remains part of the Feature Parity goal.
+
+The exact Test262 manifest contains one path / two sloppy-and-strict variants
+and hashes to
+`3f4494005a5d8089fd9a9063aed01bed2b408bc9ae119043606a33aa82d400dc`.
+Pinned QuickJS and the R3da candidate pass 2/2; the checksum-bound R3cz parent
+records `fail-runtime=2` with catchable `InternalError: stack overflow`.
+Candidate focused TSV/JSONL SHA-256 values are
+`9c6c195196450e147231924d1ec548e6c2257c42ed062b26cd3fad5753a92f46`
+and
+`de4c08027b27b12aa0acd00a7bc5ab386dbe218dfb11ef59a48048da4dcc4718`.
+
+The fresh two-worker 102,037-row join changes exactly those two
+`fail-runtime -> pass` outcomes, leaves 102,035 non-cohort rows byte-identical,
+has no detail-only movement, and records no previous-pass regression. The
+canonical vector is now 65,511 passes / 65,566 runnable, `fail-parse=7`, and
+`fail-runtime=46`; the two JSON mega-array variants still time out. Full
+candidate TSV/JSONL SHA-256 values are
+`b97744b88f1a46727b1073559d0640a09b61a9e0a32703dccc062f2d61387001`
+and
+`b28b8db0e45ba299ab2cc60e4b12f88856f864b8b3afd54c15d6f8c7e9f857d7`.
+
+Reproduce the frozen inputs and focused evidence with:
+
+```sh
+./scripts/test-test262-generator-yield-star-stack-budget.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-generator-yield-star-stack-budget.sh
+```
+
+Reproduce the complete exact join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-generator-yield-star-stack-budget.sh --full`.
+
 ## R3cz class-field initializer await context
 
 R3cz matches QuickJS 2026-06-04's

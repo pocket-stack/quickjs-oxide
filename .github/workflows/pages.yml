@@ -38,6 +38,11 @@ jobs:
       - name: Install matching wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
 
+      - name: Test the native generator stack-budget floor
+        run: >-
+          cargo test --locked --lib
+          generator_delegation_reaches_the_portable_floor_and_recovers_after_overflow
+
       - name: Build and test the real quickjs-oxide WebAssembly playground
         run: ./scripts/test-web-playground.sh
 

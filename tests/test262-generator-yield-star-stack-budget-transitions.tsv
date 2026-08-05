@@ -1,0 +1,7 @@
+# Exhaustive R3da generator yield-star stack-budget transition.
+# parent_commit=15f5755fa1bc79de4a811b1b472884b2397ed5b9
+# oxide_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
+# manifest_sha256=3f4494005a5d8089fd9a9063aed01bed2b408bc9ae119043606a33aa82d400dc
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/staging/sm/generators/delegating-yield-5.js	sloppy			normal		fail-runtime	runtime	InternalError	stack overflow	pass	normal		
+test/staging/sm/generators/delegating-yield-5.js	strict			normal		fail-runtime	runtime	InternalError	stack overflow	pass	normal		

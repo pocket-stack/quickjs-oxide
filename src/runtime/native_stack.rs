@@ -136,6 +136,13 @@ impl Runtime {
             NativeFunctionId::ArrayPrototypeJoin(_)
             | NativeFunctionId::ArrayPrototypeToString
             | NativeFunctionId::TypedArray(TypedArrayNativeKind::Join(_)) => 1_usize,
+            // QuickJS's JS_CFUNC_iterator_next path resumes heap-owned
+            // generator state and checks the actual C stack both on native
+            // entry and on generator resume. The default weight of eight
+            // rejects measured yield* chains before our address-based guard.
+            // Keep that guard authoritative while leaving one logical unit
+            // per visible native frame for mixed recursion.
+            NativeFunctionId::GeneratorPrototypeResume(_) => 1,
             NativeFunctionId::ArrayPrototypeSort
             | NativeFunctionId::ArrayPrototypeToSorted
             | NativeFunctionId::TypedArray(
@@ -423,6 +430,58 @@ mod tests {
             }
             nested_calls.push_str("f32()");
             assert_eq!(context.eval(&nested_calls).unwrap(), Value::Int(42));
+        });
+    }
+
+    #[test]
+    fn generator_delegation_reaches_the_portable_floor_and_recovers_after_overflow() {
+        on_two_mib_stack(|| {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            var expected=[{value:1},{value:34,done:true}],index=0;
+                            var delegate={
+                                next:function(){return expected[index++]},
+                                [Symbol.iterator]:function(){return this}
+                            };
+                            function* chain(depth){
+                                return yield* (depth?chain(depth-1):delegate)
+                            }
+                            var iterator=chain(10);
+                            var yielded=iterator.next();
+                            var completed=iterator.next();
+                            return (yielded===expected[0])+"|"+
+                                yielded.value+"|"+
+                                Object.hasOwn(yielded,"done")+"|"+
+                                completed.value+"|"+completed.done
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("true|1|false|34|true")),
+            );
+            assert_eq!(
+                context
+                    .eval(
+                        r#"(function(){
+                            function* chain(depth){
+                                return yield* (depth?chain(depth-1):[42])
+                            }
+                            try{
+                                chain(1000).next();
+                                return "missing"
+                            }catch(error){
+                                return error.name+":"+error.message
+                            }
+                        })()"#,
+                    )
+                    .unwrap(),
+                Value::String(JsString::from_static("InternalError:stack overflow")),
+            );
+            assert!(runtime.0.state.borrow().active_frames.is_empty());
+            assert_eq!(context.eval("6*7").unwrap(), Value::Int(42));
         });
     }
 

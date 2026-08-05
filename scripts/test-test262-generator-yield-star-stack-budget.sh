@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the R3cz class-field await context milestone.
+# Reproduce the R3da generator yield-star stack-budget milestone.
 
 set -euo pipefail
 export LC_ALL=C
@@ -7,37 +7,33 @@ export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-class-field-await-baseline.txt
-predecessor_baseline=tests/test262-math-atanh-baseline.txt
+baseline=tests/test262-generator-yield-star-stack-budget-baseline.txt
+predecessor_baseline=tests/test262-class-field-await-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
-successor_baseline=tests/test262-generator-yield-star-stack-budget-baseline.txt
-successor_gate=scripts/test-test262-generator-yield-star-stack-budget.sh
 upstream=compat/upstream.toml
 profile=compat/test262-oxide.conf
-manifest=tests/test262-class-field-await.txt
-parent_report=tests/test262-class-field-await-parent.tsv
-candidate_report=tests/test262-class-field-await-candidate.tsv
-transition=tests/test262-class-field-await-transitions.tsv
-parent_replay=target/test262-class-field-await-parent-replay.tsv
-candidate_replay=target/test262-class-field-await-candidate-replay.tsv
-preferred_parent_full=${TEST262_CLASS_FIELD_AWAIT_PARENT_FULL:-target/test262-math-atanh-full.tsv}
-generated_parent_full=target/test262-class-field-await-parent-full.tsv
-candidate_full=target/test262-class-field-await-full.tsv
-oracle_log=target/test262-class-field-await-quickjs.log
+manifest=tests/test262-generator-yield-star-stack-budget.txt
+parent_report=tests/test262-generator-yield-star-stack-budget-parent.tsv
+candidate_report=tests/test262-generator-yield-star-stack-budget-candidate.tsv
+transition=tests/test262-generator-yield-star-stack-budget-transitions.tsv
+parent_replay=target/test262-generator-yield-star-stack-budget-parent-replay.tsv
+candidate_replay=target/test262-generator-yield-star-stack-budget-candidate-replay.tsv
+preferred_parent_full=${TEST262_GENERATOR_YIELD_STAR_STACK_BUDGET_PARENT_FULL:-target/test262-class-field-await-full.tsv}
+generated_parent_full=target/test262-generator-yield-star-stack-budget-parent-full.tsv
+candidate_full=target/test262-generator-yield-star-stack-budget-full.tsv
+oracle_log=target/test262-generator-yield-star-stack-budget-quickjs.log
 workers=${TEST262_WORKERS:-2}
 full_workers=${TEST262_FULL_WORKERS:-2}
 reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
 runner_override=${TEST262_RUNNER:-}
-parent_runner_override=${TEST262_CLASS_FIELD_AWAIT_PARENT_RUNNER:-}
+parent_runner_override=${TEST262_GENERATOR_YIELD_STAR_STACK_BUDGET_PARENT_RUNNER:-}
 
 baseline_lines=84
-baseline_sha=b7e22ee00fad7c0e4fe25736d204d7627393ca806235514ee03f8981d4d06663
+baseline_sha=c0d9ddd3bec82f65b4e1b6cfcaff807d0744c3e7215e1bb122a30ef3dd47d760
 predecessor_lines=84
-predecessor_sha=9f10749909119be50133cc360e2a2b9e4856ca25cb9d20e9d02992b732dc835c
+predecessor_sha=b7e22ee00fad7c0e4fe25736d204d7627393ca806235514ee03f8981d4d06663
 canonical_lines=8
-canonical_sha=150a4b2ab8f40d639ea5be461c204347913ad6c048932d1d09a13673a201a913
-successor_lines=84
-successor_sha=c0d9ddd3bec82f65b4e1b6cfcaff807d0744c3e7215e1bb122a30ef3dd47d760
+canonical_sha=4a3f8eab0b4e882108b95c54743b9d4a6d6d7411d4d6de83915c24f2b9fbd899
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -191,7 +187,7 @@ verify_full_report() {
 make_transition() {
     local before=$1 after=$2 output=$3
     {
-        echo '# Exhaustive R3cz class-field await-context transition.'
+        echo '# Exhaustive R3da generator yield-star stack-budget transition.'
         echo "# parent_commit=$(value parent_commit)"
         echo "# oxide_profile_sha256=$(value profile_sha256)"
         echo "# manifest_sha256=$(value manifest_sha256)"
@@ -227,7 +223,7 @@ check_profile() {
         && "$(sha "$tmp/profile.audited-negative-tests")" == "$(value profile_audited_negative_tests_sha256)" \
         && "$(lines "$tmp/profile.execution")" == "$(value profile_execution_entries)" \
         && "$(sha "$tmp/profile.execution")" == "$(value profile_execution_sha256)" ]] \
-        || die 'R3cz runner profile inventory drifted'
+        || die 'R3da runner profile inventory drifted'
 }
 
 verify_parent_full_source() {
@@ -240,7 +236,7 @@ verify_parent_full_source() {
         return 0
     fi
     [[ -f "$preferred_parent_full" && -f "$parent_json" ]] \
-        || die 'R3cz predecessor full receipt is incomplete'
+        || die 'R3da predecessor full receipt is incomplete'
     verify_full_report "$preferred_parent_full" parent_full
     rows_for_paths "$manifest" "$preferred_parent_full" >"$tmp/parent.cohort"
     rows_without_paths "$manifest" "$preferred_parent_full" >"$tmp/parent.non-cohort"
@@ -254,7 +250,7 @@ verify_parent_full_source() {
         && "$(lines "$tmp/parent.non-cohort")" == "$(value full_non_cohort_rows)" \
         && "$(sha "$tmp/parent.non-cohort")" == "$(value full_non_cohort_rows_sha256)" \
         && "$(sha "$tmp/parent.non-cohort.json")" == "$(value full_non_cohort_json_rows_sha256)" ]] \
-        || die 'R3cz parent full partition drifted'
+        || die 'R3da parent full partition drifted'
     diff -u "$tmp/focused.parent" "$tmp/parent.cohort"
     diff -u "$tmp/focused.parent.json" "$tmp/parent.cohort.json"
 }
@@ -264,8 +260,8 @@ check_static_inputs() {
     check_file "$predecessor_baseline" "$predecessor_lines" "$predecessor_sha"
     check_file "$canonical_baseline" "$canonical_lines" "$canonical_sha"
     check_file "$manifest" "$(value manifest_paths)" "$(value manifest_sha256)"
-    sort -c "$manifest" || die 'R3cz manifest is not bytewise sorted'
-    [[ -z "$(uniq -d "$manifest")" ]] || die 'R3cz manifest contains duplicates'
+    sort -c "$manifest" || die 'R3da manifest is not bytewise sorted'
+    [[ -z "$(uniq -d "$manifest")" ]] || die 'R3da manifest contains duplicates'
     check_file "$parent_report" "$(value parent_focused_lines)" "$(value parent_focused_tsv_sha256)"
     check_file "${parent_report%.tsv}.jsonl" "$(value parent_focused_jsonl_lines)" "$(value parent_focused_jsonl_sha256)"
     check_file "$candidate_report" "$(value candidate_focused_lines)" "$(value candidate_focused_tsv_sha256)"
@@ -288,7 +284,7 @@ check_static_inputs() {
         && "$(toml_test262_value metadata_records_sha256)" == "$(value test262_metadata_sha256)" \
         && "$(toml_test262_value oxide_profile)" == "$profile" \
         && "$(toml_test262_value oxide_profile_sha256)" == "$(value profile_sha256)" ]] \
-        || die 'R3cz transition or runner input binding drifted'
+        || die 'R3da transition or runner input binding drifted'
 
     [[ "$(predecessor_value profile_sha256)" == "$(value profile_sha256)" \
         && "$(predecessor_value candidate_full_runnable)" == "$(value parent_full_runnable)" \
@@ -301,42 +297,42 @@ check_static_inputs() {
         && "$(canonical_value variants)" == "$(value full_variants)" \
         && "$(value candidate_full_runnable)" == "$(value parent_full_runnable)" \
         && "$(( $(value candidate_full_passes) - $(value parent_full_passes) ))" == 2 \
-        && "$(( $(value parent_full_fail_parse) - $(value candidate_full_fail_parse) ))" == 2 \
-        && "$(value candidate_full_fail_runtime)" == "$(value parent_full_fail_runtime)" \
+        && "$(value candidate_full_fail_parse)" == "$(value parent_full_fail_parse)" \
+        && "$(( $(value parent_full_fail_runtime) - $(value candidate_full_fail_runtime) ))" == 2 \
         && "$(value full_changed)" == 2 \
         && "$(value full_outcome_changed)" == 2 \
         && "$(value full_detail_only)" == 0 \
         && "$(value full_unchanged)" == 102035 \
         && "$(value full_pass_regressions)" == 0 ]] \
-        || die 'R3cz predecessor or full-vector anchors drifted'
+        || die 'R3da predecessor or full-vector anchors drifted'
 
     [[ "$(canonical_value runnable)" == "$(value candidate_full_runnable)" \
         && "$(canonical_value passes)" == "$(value candidate_full_passes)" \
         && "$(canonical_value tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
         && "$(canonical_value jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
         && "$(canonical_value summary)" == "$(value candidate_full_summary)" ]] \
-        || die 'canonical Test262 baseline does not identify the frozen R3cz candidate'
+        || die 'canonical Test262 baseline does not identify the frozen R3da candidate'
 
     verify_parent_full_source
 }
 
 verify_focused_semantics() {
     [[ "$(report_runnable "$parent_report")" == 2 \
-        && "$(report_count fail-parse "$parent_report")" == 2 \
+        && "$(report_count fail-runtime "$parent_report")" == 2 \
         && "$(report_runnable "$candidate_report")" == 2 \
         && "$(report_count pass "$candidate_report")" == 2 ]] \
-        || die 'R3cz focused outcome counts drifted'
+        || die 'R3da focused outcome counts drifted'
     awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")&&
-        !($1=="test/staging/sm/fields/await-identifier-script.js"&&
+        !($1=="test/staging/sm/generators/delegating-yield-5.js"&&
           $2~/^(sloppy|strict)$/&&$3==""&&$4==""&&$5=="normal"&&$6==""&&
-          $7=="fail-parse"&&$8=="parse"&&$9=="SyntaxError"&&
-          $10=="unexpected '\''await'\'' keyword"){exit 2}' \
-        "$parent_report" || die 'R3cz parent failure frontier drifted'
+          $7=="fail-runtime"&&$8=="runtime"&&$9=="InternalError"&&
+          $10=="stack overflow"){exit 2}' \
+        "$parent_report" || die 'R3da parent failure frontier drifted'
     awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")&&
-        !($1=="test/staging/sm/fields/await-identifier-script.js"&&
+        !($1=="test/staging/sm/generators/delegating-yield-5.js"&&
           $2~/^(sloppy|strict)$/&&$3==""&&$4==""&&$5=="normal"&&$6==""&&
           $7=="pass"&&$8=="normal"&&$9==""&&$10==""){exit 2}' \
-        "$candidate_report" || die 'R3cz candidate semantics drifted'
+        "$candidate_report" || die 'R3da candidate semantics drifted'
 }
 
 check_metadata() {
@@ -346,19 +342,18 @@ check_metadata() {
         || die 'pinned Test262 metadata drifted'
     local test_path metadata
     while IFS= read -r test_path; do
-        [[ -f "$suite/$test_path" ]] || die "pinned R3cz test is missing: $test_path"
+        [[ -f "$suite/$test_path" ]] || die "pinned R3da test is missing: $test_path"
         metadata=$(sed -n '/\/\*---/,/---\*\//p' "$suite/$test_path")
         ! grep -Eq '^(flags|negative|locale):' <<<"$metadata" \
-            || die "R3cz test gained selection-changing metadata: $test_path"
-        [[ "$test_path" == test/staging/sm/fields/await-identifier-script.js ]] \
-            || die "unexpected R3cz manifest path: $test_path"
+            || die "R3da test gained selection-changing metadata: $test_path"
+        [[ "$test_path" == test/staging/sm/generators/delegating-yield-5.js ]] \
+            || die "unexpected R3da manifest path: $test_path"
     done <"$manifest"
-    local fixture=$suite/test/staging/sm/fields/await-identifier-script.js
-    grep -Fq 'var await = 1;' "$fixture" \
-        && grep -Fq 'x = await;' "$fixture" \
-        && grep -Fq 'eval("async () => class { [await] = 1 };");' "$fixture" \
-        && grep -Fq 'eval("async () => class { x = await 1 };");' "$fixture" \
-        || die 'R3cz fixture no longer covers the class-field await boundaries'
+    local fixture=$suite/test/staging/sm/generators/delegating-yield-5.js
+    grep -Fq '// Test that a deep yield* chain re-yields received results without' "$fixture" \
+        && grep -Fq 'return yield* n ? yield_results(expected, n - 1) : results(expected);' "$fixture" \
+        && grep -Fq 'assert.deepEqual(expected, collect_results(yield_results(expected, 20)));' "$fixture" \
+        || die 'R3da fixture no longer covers deep synchronous yield-star delegation'
 }
 
 verify_quickjs() {
@@ -371,12 +366,12 @@ verify_quickjs() {
         ./run-test262 -m -c test262.conf -a -T "$workers" -f "${files[@]}") \
         >"$root/$oracle_log" 2>&1; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS could not execute the R3cz manifest'
+        die 'pinned QuickJS could not execute the R3da manifest'
     fi
     if grep -Eq '(^|[[:space:]])FAILED($|[[:space:]])|SKIPPED FEATURE' "$oracle_log" \
         || ! grep -Fq 'Average memory statistics for 2 tests:' "$oracle_log"; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS no longer passes the R3cz manifest'
+        die 'pinned QuickJS no longer passes the R3da manifest'
     fi
 }
 
@@ -421,7 +416,7 @@ reconstruct_parent_full() {
         {print}
         END{for(key in old)if(!(key in seen))exit 2}
     ' "$parent_report" "$candidate" >"$output" \
-        || die 'could not reconstruct the R3cz parent TSV'
+        || die 'could not reconstruct the R3da parent TSV'
     awk -v parent="${parent_report%.tsv}.jsonl" \
         -v summary="$(summary_json parent_full)" '
         function field(line,name,value){
@@ -439,7 +434,7 @@ reconstruct_parent_full() {
         {print}
         END{for(key in old)if(!(key in seen))exit 2}
     ' "${parent_report%.tsv}.jsonl" "$candidate_json" >"$output_json" \
-        || die 'could not reconstruct the R3cz parent JSONL'
+        || die 'could not reconstruct the R3da parent JSONL'
 }
 
 verify_full_join() {
@@ -469,7 +464,7 @@ verify_full_join() {
         && "$(sha "$tmp/candidate.cohort.json")" == "$(value full_candidate_cohort_json_rows_sha256)" \
         && "$(sha "$tmp/parent.non-cohort.json")" == "$(value full_non_cohort_json_rows_sha256)" \
         && "$(sha "$tmp/candidate.non-cohort.json")" == "$(value full_non_cohort_json_rows_sha256)" ]] \
-        || die 'R3cz full cohort partition drifted'
+        || die 'R3da full cohort partition drifted'
     diff -u "$tmp/focused.parent" "$tmp/parent.cohort"
     diff -u "$tmp/focused.candidate" "$tmp/candidate.cohort"
     diff -u "$tmp/parent.non-cohort" "$tmp/candidate.non-cohort"
@@ -488,53 +483,13 @@ verify_full_join() {
         }
         END{for(key in old)if(!(key in seen))exit 4
             printf "changed=%d outcome=%d detail=%d unchanged=%d regressions=%d",changed,outcome,detail,before-changed,regress}
-    ' "$parent" "$candidate") || die 'R3cz full exact join failed'
+    ' "$parent" "$candidate") || die 'R3da full exact join failed'
     expected="changed=$(value full_changed) outcome=$(value full_outcome_changed) detail=$(value full_detail_only) unchanged=$(value full_unchanged) regressions=$(value full_pass_regressions)"
-    [[ "$counts" == "$expected" ]] || die "R3cz full transition drifted: $counts"
-}
-
-bridge_r3da_successor() {
-    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
-        || return 0
-
-    check_file "$baseline" "$baseline_lines" "$baseline_sha"
-    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
-    [[ -x "$successor_gate" \
-        && "$(value_from "$successor_baseline" quickjs)" == "$(value quickjs)" \
-        && "$(value_from "$successor_baseline" test262)" == "$(value test262)" \
-        && "$(value_from "$successor_baseline" test262_patch_sha256)" == "$(value test262_patch_sha256)" \
-        && "$(value_from "$successor_baseline" test262_config_sha256)" == "$(value test262_config_sha256)" \
-        && "$(value_from "$successor_baseline" test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
-        && "$(value_from "$successor_baseline" schema)" == "$(value schema)" \
-        && "$(value_from "$successor_baseline" mode)" == "$(value mode)" \
-        && "$(value_from "$successor_baseline" timeout_ms)" == "$(value timeout_ms)" \
-        && "$(value_from "$successor_baseline" parent_commit)" == 15f5755fa1bc79de4a811b1b472884b2397ed5b9 \
-        && "$(value_from "$successor_baseline" profile_sha256)" == "$(value profile_sha256)" \
-        && "$(value_from "$successor_baseline" parent_full_runnable)" == "$(value candidate_full_runnable)" \
-        && "$(value_from "$successor_baseline" parent_full_passes)" == "$(value candidate_full_passes)" \
-        && "$(value_from "$successor_baseline" parent_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
-        && "$(value_from "$successor_baseline" parent_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
-        && "$(value_from "$successor_baseline" parent_full_summary)" == "$(value candidate_full_summary)" \
-        && "$(value_from "$successor_baseline" manifest_paths)" == 1 \
-        && "$(value_from "$successor_baseline" manifest_variants)" == 2 \
-        && "$(value_from "$successor_baseline" full_changed)" == 2 \
-        && "$(value_from "$successor_baseline" full_outcome_changed)" == 2 \
-        && "$(value_from "$successor_baseline" full_detail_only)" == 0 \
-        && "$(value_from "$successor_baseline" full_unchanged)" == 102035 \
-        && "$(value_from "$successor_baseline" full_pass_regressions)" == 0 ]] \
-        || die 'R3da successor does not checksum-bridge the historical R3cz receipt'
-    case $mode in
-        check) "$successor_gate" --check ;;
-        focused) "$successor_gate" ;;
-        full) "$successor_gate" --full ;;
-    esac
-    echo 'Historical R3cz class-field await-context receipt is checksum-bridged through the R3da generator yield-star stack-budget repair.'
-    exit 0
+    [[ "$counts" == "$expected" ]] || die "R3da full transition drifted: $counts"
 }
 
 cd -- "$root"
-bridge_r3da_successor
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-class-field-await.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-generator-yield-star-stack-budget.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
@@ -553,7 +508,7 @@ fi
 check_metadata
 verify_quickjs
 if [[ "$mode" == check ]]; then
-    echo 'R3cz inputs verified: 1 path, 2 variants, pinned QuickJS 2/2, unchanged runner profile, checksum-bound R3cy parent receipt.'
+    echo 'R3da inputs verified: 1 path, 2 variants, pinned QuickJS 2/2, unchanged runner profile, checksum-bound R3cz parent receipt.'
     exit 0
 fi
 
@@ -562,7 +517,7 @@ diff -u "$candidate_report" "$candidate_replay"
 diff -u "${candidate_report%.tsv}.jsonl" "${candidate_replay%.tsv}.jsonl"
 if [[ -n "$parent_runner_override" ]]; then
     [[ -x "$parent_runner_override" ]] \
-        || die "TEST262_CLASS_FIELD_AWAIT_PARENT_RUNNER is not executable: $parent_runner_override"
+        || die "TEST262_GENERATOR_YIELD_STAR_STACK_BUDGET_PARENT_RUNNER is not executable: $parent_runner_override"
     run_report "$parent_runner_override" "$parent_replay"
     diff -u "$parent_report" "$parent_replay"
     diff -u "${parent_report%.tsv}.jsonl" "${parent_replay%.tsv}.jsonl"
@@ -570,7 +525,7 @@ fi
 make_transition "$parent_report" "$candidate_replay" "$tmp/replayed-transition.tsv"
 diff -u "$transition" "$tmp/replayed-transition.tsv"
 if [[ "$mode" != full ]]; then
-    echo 'R3cz focused gate passes: parent fail-parse 2/2, candidate and QuickJS pass 2/2.'
+    echo 'R3da focused gate passes: parent stack-overflow 2/2, candidate and QuickJS pass 2/2.'
     exit 0
 fi
 
@@ -592,7 +547,7 @@ verify_full_report "$parent_full" parent_full
     && "$(report_count pass "$candidate_full")" == "$(value candidate_full_passes)" \
     && "$(report_count fail-parse "$candidate_full")" == "$(value candidate_full_fail_parse)" \
     && "$(report_count fail-runtime "$candidate_full")" == "$(value candidate_full_fail_runtime)" ]] \
-    || die 'R3cz full outcome counts drifted'
+    || die 'R3da full outcome counts drifted'
 verify_full_join "$parent_full" "$candidate_full"
 check_static_inputs
-echo 'R3cz full gate passes: 102037 rows, 2 class-field await-context repairs, 102035 byte-identical non-cohort rows, zero regressions.'
+echo 'R3da full gate passes: 102037 rows, 2 generator yield-star stack-budget repairs, 102035 byte-identical non-cohort rows, zero regressions.'

@@ -96,12 +96,49 @@ for (const example of examplesModule.EXAMPLES) {
   );
 }
 
+const deepYieldStar = evaluate(`
+  (function () {
+    function* chain(depth) {
+      return yield* (depth ? chain(depth - 1) : [42]);
+    }
+    return chain(20).next().value;
+  })()
+`);
+assert.deepEqual(
+  { ok: deepYieldStar.ok, kind: deepYieldStar.kind, text: deepYieldStar.text },
+  { ok: true, kind: "number", text: "42" },
+);
+
+const caughtYieldStarOverflow = evaluate(`
+  (function () {
+    function* chain(depth) {
+      return yield* (depth ? chain(depth - 1) : [42]);
+    }
+    var observed;
+    try {
+      chain(1000).next();
+      observed = "missing";
+    } catch (error) {
+      observed = error.name + ":" + error.message;
+    }
+    return observed + "|" + 6 * 7;
+  })()
+`);
+assert.deepEqual(
+  {
+    ok: caughtYieldStarOverflow.ok,
+    kind: caughtYieldStarOverflow.kind,
+    text: caughtYieldStarOverflow.text,
+  },
+  { ok: true, kind: "string", text: "InternalError:stack overflow|42" },
+);
+
 const syntaxError = evaluate("function () {");
 assert.equal(syntaxError.ok, false);
 assert.equal(syntaxError.kind, "exception");
 assert.match(syntaxError.text, /^SyntaxError:/);
 
 console.log(
-  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples passed; quickjs-oxide returned 42`,
+  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples passed; quickjs-oxide returned 42; deep yield-star overflow stayed catchable`,
 );
 NODE

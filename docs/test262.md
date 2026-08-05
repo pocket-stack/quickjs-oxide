@@ -6,6 +6,52 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3da synchronous generator delegation stack budget
+
+R3da freezes the first globally admitted repair for deep synchronous `yield*`.
+Oxide already checked the real host-stack address before native calls, but its
+secondary weighted guard classified every generator resume as an unknown
+callback-capable native. That default cost rejected a ten-level chain before
+the address guard. Synchronous generator resumes now retain a one-unit mixed
+recursion charge while the real stack guard remains authoritative. Native and
+Node/WASM tests prove successful finite delegation, catchable overflow,
+complete frame unwinding, and recovery; a pinned QuickJS differential covers
+result identity and `next`/`return`/`throw` propagation.
+
+The exact manifest contains one path / two sloppy-and-strict variants and
+hashes to
+`3f4494005a5d8089fd9a9063aed01bed2b408bc9ae119043606a33aa82d400dc`.
+Pinned QuickJS passes both. The authenticated R3cz parent records
+`fail-runtime=2`, while the candidate records `pass=2`. Candidate focused
+TSV/JSONL SHA-256 values are
+`9c6c195196450e147231924d1ec548e6c2257c42ed062b26cd3fad5753a92f46`
+and
+`de4c08027b27b12aa0acd00a7bc5ab386dbe218dfb11ef59a48048da4dcc4718`.
+
+The fresh two-worker full transition moves the complete vector to 65,511
+passes / 65,566 runnable, retains `fail-parse=7`, reduces `fail-runtime` from
+48 to 46, and leaves the other 102,035 rows byte-identical. It has no
+detail-only movement or previous-pass regression; the two JSON mega-array
+variants still time out. Candidate whole-corpus TSV/JSONL SHA-256 values are
+`b97744b88f1a46727b1073559d0640a09b61a9e0a32703dccc062f2d61387001`
+and
+`b28b8db0e45ba299ab2cc60e4b12f88856f864b8b3afd54c15d6f8c7e9f857d7`;
+this is now the canonical full vector.
+
+Reproduce the frozen inputs and focused receipts with:
+
+```sh
+./scripts/test-test262-generator-yield-star-stack-budget.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-generator-yield-star-stack-budget.sh
+```
+
+Reproduce the complete join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-generator-yield-star-stack-budget.sh --full`.
+
+The optimized native stack threshold is not yet QuickJS-equivalent (about 72
+delegated levels versus 509 in the pinned oracle probe). That requires a future
+VM resume trampoline and is not claimed by this receipt.
+
 ## R3cz class-field initializer await context
 
 R3cz freezes QuickJS 2026-06-04's lexer-context boundary for synthetic class
