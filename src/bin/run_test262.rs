@@ -475,6 +475,10 @@ const TEST262_SHARED_ARRAY_BUFFER_CORE_PROFILE_SHA256: &str =
     "597f06b80e8687ee0da50c309ce06d6989e8d888f41be5756d40a730f505d8ff";
 const TEST262_SHARED_ARRAY_BUFFER_CORE_MANIFEST_SHA256: &str =
     "160a70bf9ebd5695f582a9100d09db7df930e9001b592edd0f269fe434c4893c";
+const TEST262_SHARED_ATOMICS_NONBLOCKING_PROFILE_SHA256: &str =
+    "ec33455551c3601859241870624b5017551aa04c8edbf8c9e899d4ef9b5332cc";
+const TEST262_SHARED_ATOMICS_NONBLOCKING_MANIFEST_SHA256: &str =
+    "a9072513df3c730b87a84218a88755c229a8090e0100bc44bbd7d2550ac72dc0";
 const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
 const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -1120,6 +1124,7 @@ enum OxideProfileKind {
     RegExpBuiltins,
     AtomicsNonSharedCore,
     SharedArrayBufferCore,
+    SharedAtomicsNonblocking,
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
@@ -1571,6 +1576,10 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-shared-array-buffer-core.conf"),
             OxideProfileKind::SharedArrayBufferCore,
+        ),
+        (
+            root.join("tests/test262-shared-atomics-nonblocking.conf"),
+            OxideProfileKind::SharedAtomicsNonblocking,
         ),
         (
             root.join("tests/test262-atomics-pause-global-parent.conf"),
@@ -3507,6 +3516,13 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-shared-array-buffer-core.txt",
             TEST262_SHARED_ARRAY_BUFFER_CORE_MANIFEST_SHA256,
         ),
+        OxideProfileKind::SharedAtomicsNonblocking => verify_scoped_pinned_profile(
+            options,
+            "non-blocking shared Atomics closure",
+            TEST262_SHARED_ATOMICS_NONBLOCKING_PROFILE_SHA256,
+            "tests/test262-shared-atomics-nonblocking.txt",
+            TEST262_SHARED_ATOMICS_NONBLOCKING_MANIFEST_SHA256,
+        ),
         OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
             options,
             "Atomics.pause global admission",
@@ -3898,7 +3914,8 @@ mod cli_tests {
         TEST262_RESIZABLE_ARRAYBUFFER_PROFILE_SHA256,
         TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_REST_PARAMETERS_PARENT_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
-        TEST262_SHARED_ARRAY_BUFFER_CORE_PROFILE_SHA256, TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256,
+        TEST262_SHARED_ARRAY_BUFFER_CORE_PROFILE_SHA256,
+        TEST262_SHARED_ATOMICS_NONBLOCKING_PROFILE_SHA256, TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256,
         TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_PARENT_PROFILE_SHA256,
@@ -8254,6 +8271,49 @@ mod cli_tests {
                 "suite",
                 "--oxide-profile",
                 "tests/test262-shared-array-buffer-core.conf",
+            ];
+            arguments.push(selection[0]);
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn scoped_shared_atomics_nonblocking_profile_is_bound_to_its_exact_manifest() {
+        let options = scoped_profile_options(
+            "tests/test262-shared-atomics-nonblocking.conf",
+            "tests/test262-shared-atomics-nonblocking.txt",
+        );
+        assert_eq!(
+            verify_oxide_profile(&options).unwrap(),
+            TEST262_SHARED_ATOMICS_NONBLOCKING_PROFILE_SHA256
+        );
+
+        for selection in [
+            ["--all", ""],
+            ["--test", "test/built-ins/Atomics/add/good-views.js"],
+            [
+                "--manifest",
+                "tests/test262-shared-atomics-nonblocking-tagged.txt",
+            ],
+            [
+                "--manifest",
+                "tests/test262-shared-atomics-nonblocking-spillover.txt",
+            ],
+            ["--manifest", "tests/test262-shared-array-buffer-core.txt"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-shared-atomics-nonblocking.conf",
             ];
             arguments.push(selection[0]);
             if !selection[1].is_empty() {

@@ -1,0 +1,26 @@
+# source_ledger=tests/test262-atomics-universe.tsv
+# source_rule=shared-no-extra-host and code-only SAB evaluation without wait/waitAsync/host, minus tagged projection
+# excluded_wait_path=test/built-ins/Atomics/notify/bigint/non-bigint64-typedarray-throws.js
+path	category	variants	includes	flags	features	source_sha256
+test/built-ins/Atomics/add/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	cea7dd9ca3a4cb4df4443b5316288764827590b6f0e65e38317a69756ae8d538
+test/built-ins/Atomics/add/validate-arraytype-before-value-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	527b91c2c2334d8c329d2641c5902538baf6b4bb8305dafdcc5ac6bb08dad8df
+test/built-ins/Atomics/and/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	eb08ed9eac777a55ce18da0e8c04891ee8cb3397a133e7e2b05dbf587c1a2316
+test/built-ins/Atomics/and/validate-arraytype-before-value-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	304bb1750f9d2c3d9f89955f8b48d9fa6523efeed1c388842636013667256fe1
+test/built-ins/Atomics/compareExchange/validate-arraytype-before-expectedValue-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	dc987952973aed6ca3ece1ddb2a16728429bdd82e2efcb7ef61ab55de5299d8f
+test/built-ins/Atomics/compareExchange/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	23d03cb75f5c11791acf692e90ebd01651a51e7bc7a4651ac528f9fabada9ad5
+test/built-ins/Atomics/compareExchange/validate-arraytype-before-replacementValue-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	d05acf24e1026130d7b72e1cc51f6238605eb48de0957b5d22d42139398bdd6e
+test/built-ins/Atomics/exchange/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	9f8eaa397cedc22bee462c947fbb81f47fe5010cfbc653491e185f718cf772a0
+test/built-ins/Atomics/exchange/validate-arraytype-before-value-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	75fcd098fc0b5b9247aa2c39f0e1bbed8241e1b5b92468dc182d16ec992d5db4
+test/built-ins/Atomics/load/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	6011465d6a8b0bf40ea4ae69aee907e9c9d2e3f0d0acd0dc440c310ebffda14a
+test/built-ins/Atomics/notify/non-int32-typedarray-throws.js	shared-no-extra-host	sloppy,strict			Atomics,Float32Array,Float64Array,Int8Array,TypedArray,Uint16Array,Uint8Array,Uint8ClampedArray	10625a2a35a2a5c640bd822f8bae980bbbd9331b15c640ad27caadc8e749f0c2
+test/built-ins/Atomics/notify/retrieve-length-before-index-coercion.js	shared-no-extra-host	sloppy,strict			Atomics,TypedArray,resizable-arraybuffer	89a5ee473bc2d8cdbad5212c6617bb296f040973a90d7768c1e9e54a56508b64
+test/built-ins/Atomics/notify/validate-arraytype-before-count-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	5136df781f448cd3b13cbd39bc00872ce2867f5aa02dadd186b1855f64193d77
+test/built-ins/Atomics/notify/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	39826c4b4744c7cdc1628d2a18c04953e01bed29b36fd95dbd858c90478a525f
+test/built-ins/Atomics/or/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	9554f8ceb6120153369f179fad04de21920f78c6e5796a81bc3da31c151d5e32
+test/built-ins/Atomics/or/validate-arraytype-before-value-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	2fcc415f5aa8ce52cf6a16922cd3e47b6464c930e9c551d442c84fc9648c47c9
+test/built-ins/Atomics/store/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	5397e2b0cd26148056a91877742935b0f694eb6cc9d7b602d916de14ed9c1f3c
+test/built-ins/Atomics/store/validate-arraytype-before-value-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	33c988b8c6cc7f7b1a8b78107a0adf728d1dc4c7b619842014c7532872f349ec
+test/built-ins/Atomics/sub/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	366eb0de725a70c88a8a4924b2191e5266abc8e14ff12e46c3727255ac369b80
+test/built-ins/Atomics/sub/validate-arraytype-before-value-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	b0b9467c06d9f430ca02a90b93dd1f64aeeecb15a84913ef0fa233d59211f623
+test/built-ins/Atomics/xor/validate-arraytype-before-index-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	38a3b2f9aea7c6e26329a3046b504ad498d1a5b456e0ffbc5874674990a548d3
+test/built-ins/Atomics/xor/validate-arraytype-before-value-coercion.js	shared-no-extra-host	sloppy,strict	testTypedArray.js		Atomics,TypedArray	3c50336904800ff4725419e0c11547d48671999c8f82582b6fa0cadbad6760b9

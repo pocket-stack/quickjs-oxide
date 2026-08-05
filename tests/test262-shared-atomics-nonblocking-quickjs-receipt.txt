@@ -1,0 +1,20 @@
+# Pinned QuickJS oracle receipt for the R3di non-blocking shared Atomics closure.
+quickjs=2026-06-04
+test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+shared_array_buffer_universe_sha256=160ebfeb2e75c0290e46863a47c09f7f74f2fae50e9f421d050dc6604d49839e
+atomics_universe_sha256=0083756a20e53d050d059f9e06fcae6df0c7fe071527eb413a37a86a1aa5dfbb
+tagged_manifest_sha256=61f1f788f8eaca40727368c079109a4837efbebc7db9cb3f98ff3fd4b6a42f7e
+spillover_manifest_sha256=f4d71c29ea58ef1741fa27af75b33ac2c5e020e1ac86e50ae520609067f46c66
+combined_manifest_sha256=a9072513df3c730b87a84218a88755c229a8090e0100bc44bbd7d2550ac72dc0
+tagged_paths=78
+tagged_variants=156
+tagged_passes=156
+spillover_paths=22
+spillover_variants=44
+spillover_passes=44
+combined_paths=100
+combined_variants=200
+combined_passes=200
+failed=0
+skipped_feature=0
+result=pass
