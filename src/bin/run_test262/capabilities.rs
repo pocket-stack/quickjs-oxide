@@ -246,6 +246,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-atomics-non-shared-core.conf"
     ));
+    const SHARED_ARRAY_BUFFER_CORE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-shared-array-buffer-core.conf"
+    ));
     const ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-atomics-pause-global-parent.conf"
@@ -1787,6 +1791,40 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             vec!["Atomics", "Atomics.pause", "SharedArrayBuffer"]
+        );
+        assert!(scoped.audited_negative_tests.is_empty());
+        assert!(!scoped.allows_async_execution());
+    }
+
+    #[test]
+    fn shared_array_buffer_core_profile_is_exact_and_selection_only() {
+        let scoped = OxideProfile::parse(SHARED_ARRAY_BUFFER_CORE_PROFILE).unwrap();
+
+        assert_eq!(
+            scoped
+                .features
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "ArrayBuffer",
+                "BigInt",
+                "DataView",
+                "Int8Array",
+                "Reflect",
+                "Reflect.construct",
+                "SharedArrayBuffer",
+                "Symbol",
+                "Symbol.species",
+                "Symbol.toStringTag",
+                "TypedArray",
+                "align-detached-buffer-semantics-with-web-reality",
+                "arraybuffer-transfer",
+                "arrow-function",
+                "cross-realm",
+                "host-create-realm-required",
+                "resizable-arraybuffer",
+            ]
         );
         assert!(scoped.audited_negative_tests.is_empty());
         assert!(!scoped.allows_async_execution());
