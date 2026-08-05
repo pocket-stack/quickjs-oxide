@@ -17,6 +17,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      QUICKJS_OXIDE_COMMIT: ${{ github.sha }}
     permissions:
       contents: read
       pages: read
@@ -46,11 +48,20 @@ jobs:
       - name: Build and test the real quickjs-oxide WebAssembly playground
         run: ./scripts/test-web-playground.sh
 
+      - name: Install browser acceptance dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install the pinned Chromium browser
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Test the final Pages artifact in a real browser
+        run: npm run test:browser
+
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: target/pages
 
@@ -66,4 +77,4 @@ jobs:
     steps:
       - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

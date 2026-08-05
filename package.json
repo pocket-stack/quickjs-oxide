@@ -1,0 +1,13 @@
+{
+  "name": "quickjs-oxide-browser-acceptance",
+  "private": true,
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "test:browser": "node scripts/test-web-playground-browser.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

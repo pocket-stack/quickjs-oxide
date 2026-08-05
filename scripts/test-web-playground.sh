@@ -61,7 +61,7 @@ const wrapperPath = path.resolve(
   process.cwd(),
   "target/web-playground-node/quickjs_oxide_web.js",
 );
-const { evaluate } = require(wrapperPath);
+const { engine_metadata: engineMetadata, evaluate } = require(wrapperPath);
 
 const examplesPath = path.resolve(process.cwd(), "web/site/examples.js");
 const examplesSource = await readFile(examplesPath, "utf8");
@@ -76,6 +76,7 @@ const expected = new Map([
   ["resizable-array-buffer", { kind: "number", text: "42" }],
   ["shared-array-buffer", { kind: "number", text: "42" }],
   ["shared-atomics", { kind: "number", text: "42" }],
+  ["atomics-wait-policy", { kind: "number", text: "42" }],
   ["uint8-codec", { kind: "number", text: "42" }],
   ["unicode-strings", { kind: "number", text: "42" }],
   ["class", { kind: "number", text: "42" }],
@@ -91,6 +92,11 @@ for (const example of examplesModule.EXAMPLES) {
     expected.has(example.id),
     `missing expectation for playground example ${example.id}`,
   );
+  assert.deepEqual(
+    example.expected,
+    expected.get(example.id),
+    `displayed expectation drifted for playground example ${example.id}`,
+  );
   const result = evaluate(example.source);
   assert.deepEqual(
     { ok: result.ok, kind: result.kind, text: result.text },
@@ -98,6 +104,25 @@ for (const example of examplesModule.EXAMPLES) {
     `unexpected result for playground example ${example.id}`,
   );
 }
+
+const metadata = engineMetadata();
+assert.deepEqual(
+  {
+    engine: metadata.engine,
+    crateVersion: metadata.crateVersion,
+    quickjsTarget: metadata.quickjsTarget,
+    buildCommit: metadata.buildCommit,
+    canBlock: metadata.canBlock,
+  },
+  {
+    engine: "quickjs-oxide",
+    crateVersion: "0.0.1",
+    quickjsTarget: "QuickJS 2026-06-04",
+    buildCommit:
+      process.env.QUICKJS_OXIDE_COMMIT || process.env.GITHUB_SHA || "local",
+    canBlock: false,
+  },
+);
 
 const evalVarDestructuring = evaluate(`
   (function () {
@@ -157,6 +182,6 @@ assert.equal(syntaxError.kind, "exception");
 assert.match(syntaxError.text, /^SyntaxError:/);
 
 console.log(
-  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples passed; direct eval and quickjs-oxide returned 42; deep yield-star overflow stayed catchable`,
+  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples and build metadata passed; direct eval and quickjs-oxide returned 42; deep yield-star overflow stayed catchable`,
 );
 NODE

@@ -6,6 +6,7 @@ wasm_bindgen_version="0.2.126"
 wasm_target="wasm32-unknown-unknown"
 wasm_package="quickjs-oxide-web"
 wasm_stem="quickjs_oxide_web"
+build_commit="${QUICKJS_OXIDE_COMMIT:-${GITHUB_SHA:-local}}"
 pages_dir="${repo_root}/target/pages"
 site_dir="${repo_root}/web/site"
 cargo_target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"
@@ -46,7 +47,10 @@ if [[ ! -d "${site_dir}" ]]; then
 fi
 
 cd "${repo_root}"
-RUSTC="${stable_rustc}" RUSTDOC="${stable_rustdoc}" rustup run stable cargo build \
+QUICKJS_OXIDE_COMMIT="${build_commit}" \
+  RUSTC="${stable_rustc}" \
+  RUSTDOC="${stable_rustdoc}" \
+  rustup run stable cargo build \
   --locked \
   --profile web \
   --target "${wasm_target}" \

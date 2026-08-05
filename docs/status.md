@@ -4,6 +4,35 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dk verifiable public playground
+
+R3dk is a presentation and provenance milestone, not a Test262 admission. The
+public GitHub Pages playground runs the repository's Rust engine compiled to
+WebAssembly in a dedicated worker. Its WASM package exports the crate version,
+pinned QuickJS target, exact deployed commit, and `canBlock=false` host policy;
+the page displays those values, while the Pages workflow injects and links its
+trusted `github.sha`. Local builds without an injected identity are deliberately
+labelled `local`; caller-supplied local identities are provenance labels, not
+cryptographic attestations.
+
+All 15 curated examples carry a human description and expected result. The new
+`Atomics.wait host policy` example returns 42 only for the exact non-blocking
+TypeError boundary. The Node/WASM gate checks all examples against an
+independent expectation map and rejects browser-native evaluation. A second
+gate serves the final `target/pages` tree to Chromium, waits for the worker and
+engine, exercises both the default and wait-policy examples, verifies displayed
+provenance, and fails on console, page, worker, request, or HTTP errors.
+
+The canonical Test262 vector therefore remains 65,610 passes / 65,662 runnable
+/ 102,037 total variants. Reproduce the artifact and both execution gates with:
+
+```sh
+./scripts/test-web-playground.sh
+npm ci
+npx playwright install chromium
+npm run test:browser
+```
+
 ## R3dj bounded non-agent Atomics.wait implementation
 
 R3dj implements synchronous `Atomics.wait` and real `Atomics.notify` waiter

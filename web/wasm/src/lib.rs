@@ -1,10 +1,19 @@
 use js_sys::{Date, Math, Object, Reflect};
 use quickjs_oxide::value::number_to_string;
-use quickjs_oxide::{Context, HostServices, JsString, PropertyKey, Runtime, RuntimeError, Value};
+use quickjs_oxide::{
+    Context, HostServices, JsString, PropertyKey, QUICKJS_COMPAT_VERSION, QUICKJS_OXIDE_VERSION,
+    Runtime, RuntimeError, Value,
+};
 use wasm_bindgen::prelude::*;
 
 const PLAYGROUND_FILENAME: &str = "<playground>";
+const WEB_CAN_BLOCK: bool = false;
 const TWO_TO_THE_32: f64 = 4_294_967_296.0;
+
+const BUILD_COMMIT: &str = match option_env!("QUICKJS_OXIDE_COMMIT") {
+    Some(commit) => commit,
+    None => "local",
+};
 
 #[derive(Debug, Default)]
 struct WebHostServices;
@@ -85,8 +94,29 @@ pub fn evaluate(source: &str) -> JsValue {
     evaluate_with_engine(source).into_js()
 }
 
+/// Return provenance and host-policy metadata for this exact WebAssembly build.
+#[wasm_bindgen]
+pub fn engine_metadata() -> JsValue {
+    let object = Object::new();
+    set_result_field(&object, "engine", &JsValue::from_str("quickjs-oxide"));
+    set_result_field(
+        &object,
+        "crateVersion",
+        &JsValue::from_str(QUICKJS_OXIDE_VERSION),
+    );
+    set_result_field(
+        &object,
+        "quickjsTarget",
+        &JsValue::from_str(&format!("QuickJS {QUICKJS_COMPAT_VERSION}")),
+    );
+    set_result_field(&object, "buildCommit", &JsValue::from_str(BUILD_COMMIT));
+    set_result_field(&object, "canBlock", &JsValue::from_bool(WEB_CAN_BLOCK));
+    object.into()
+}
+
 fn evaluate_with_engine(source: &str) -> EvalResult {
     let runtime = Runtime::new_with_host_services(WebHostServices);
+    runtime.set_can_block(WEB_CAN_BLOCK);
     let mut context = runtime.new_context();
     let value = match context.eval_with_filename(source, PLAYGROUND_FILENAME) {
         Ok(value) => value,

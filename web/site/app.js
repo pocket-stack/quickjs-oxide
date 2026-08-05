@@ -2,14 +2,21 @@ import { DEFAULT_EXAMPLE_ID, EXAMPLES } from "./examples.js";
 
 const EXECUTION_TIMEOUT_MS = 2_000;
 const LOAD_TIMEOUT_MS = 15_000;
+const REPOSITORY_URL = "https://github.com/pocket-stack/quickjs-oxide";
 
 const elements = {
   editor: document.querySelector("#source-editor"),
   exampleSelect: document.querySelector("#example-select"),
+  exampleDescription: document.querySelector("#example-description"),
+  exampleExpected: document.querySelector("#example-expected"),
   resetButton: document.querySelector("#reset-button"),
   runButton: document.querySelector("#run-button"),
   runButtonLabel: document.querySelector("#run-button-label"),
   engineStatus: document.querySelector("#engine-status"),
+  engineVersion: document.querySelector("#engine-version"),
+  quickjsTarget: document.querySelector("#quickjs-target"),
+  hostPolicy: document.querySelector("#host-policy"),
+  buildCommit: document.querySelector("#build-commit"),
   statusLight: document.querySelector("#status-light"),
   sourceStat: document.querySelector("#source-stat"),
   offlineNotice: document.querySelector("#offline-notice"),
@@ -49,6 +56,29 @@ function setEngineState(state, label) {
     : loading
     ? "Loading…"
     : "Run";
+}
+
+function renderEngineMetadata(metadata) {
+  const commit = metadata.buildCommit.trim();
+  const isGitCommit = /^[0-9a-f]{7,64}$/iu.test(commit);
+
+  elements.engineVersion.textContent =
+    `${metadata.engine} v${metadata.crateVersion}`;
+  elements.quickjsTarget.textContent = metadata.quickjsTarget;
+  elements.hostPolicy.textContent =
+    `canBlock = ${metadata.canBlock} · blocking disabled`;
+  elements.buildCommit.textContent = commit;
+  elements.buildCommit.dataset.commit = commit;
+  elements.buildCommit.title = isGitCommit
+    ? `Open exact build commit ${commit}`
+    : "This package was built without a deployed commit identifier";
+  elements.buildCommit.href = isGitCommit
+    ? `${REPOSITORY_URL}/commit/${encodeURIComponent(commit)}`
+    : REPOSITORY_URL;
+  elements.buildCommit.setAttribute(
+    "aria-label",
+    isGitCommit ? `Open exact build commit ${commit}` : `${commit} build`,
+  );
 }
 
 function setResultState(state, label) {
@@ -281,6 +311,7 @@ function handleWorkerMessage(message) {
     loadTimer = null;
     workerReady = true;
     workerFailed = false;
+    renderEngineMetadata(message.metadata);
     setEngineState("ready", "Engine ready");
     return;
   }
@@ -362,8 +393,16 @@ function selectedExample() {
   );
 }
 
+function renderExampleContext(example) {
+  elements.exampleDescription.textContent = example.description;
+  elements.exampleExpected.textContent =
+    `${example.expected.text} · ${example.expected.kind}`;
+}
+
 function loadSelectedExample({ focus = true } = {}) {
-  elements.editor.value = selectedExample().source;
+  const example = selectedExample();
+  elements.editor.value = example.source;
+  renderExampleContext(example);
   updateSourceStat();
   showEmptyResult("Example loaded. Run it when you are ready.");
 
@@ -386,21 +425,6 @@ function updateSourceStat() {
   } · ${bytes} bytes`;
 }
 
-function insertIndent(event) {
-  if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey) {
-    return;
-  }
-
-  event.preventDefault();
-  const start = elements.editor.selectionStart;
-  const end = elements.editor.selectionEnd;
-  const source = elements.editor.value;
-  elements.editor.value = `${source.slice(0, start)}  ${source.slice(end)}`;
-  elements.editor.selectionStart = start + 2;
-  elements.editor.selectionEnd = start + 2;
-  updateSourceStat();
-}
-
 function initializeExamples() {
   for (const example of EXAMPLES) {
     const option = document.createElement("option");
@@ -420,8 +444,6 @@ elements.exampleSelect.addEventListener("change", () => {
 });
 elements.editor.addEventListener("input", updateSourceStat);
 elements.editor.addEventListener("keydown", (event) => {
-  insertIndent(event);
-
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
     runSource();

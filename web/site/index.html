@@ -8,6 +8,32 @@
       name="description"
       content="Run the in-progress quickjs-oxide JavaScript engine in your browser, compiled from Rust to WebAssembly."
     >
+    <link rel="canonical" href="https://pocket-stack.github.io/quickjs-oxide/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="quickjs-oxide">
+    <meta property="og:title" content="quickjs-oxide — JavaScript, rewritten in Rust">
+    <meta
+      property="og:description"
+      content="Run the pre-parity quickjs-oxide interpreter as real Rust WebAssembly in your browser."
+    >
+    <meta property="og:url" content="https://pocket-stack.github.io/quickjs-oxide/">
+    <meta
+      property="og:image"
+      content="https://pocket-stack.github.io/quickjs-oxide/og.png"
+    >
+    <meta property="og:image:width" content="1536">
+    <meta property="og:image:height" content="1024">
+    <meta property="og:image:alt" content="quickjs-oxide, JavaScript rewritten in Rust, targeting QuickJS 2026-06-04">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="quickjs-oxide — JavaScript, rewritten in Rust">
+    <meta
+      name="twitter:description"
+      content="Run the pre-parity quickjs-oxide interpreter as real Rust WebAssembly in your browser."
+    >
+    <meta
+      name="twitter:image"
+      content="https://pocket-stack.github.io/quickjs-oxide/og.png"
+    >
     <title>quickjs-oxide — Rust JavaScript engine playground</title>
     <link rel="stylesheet" href="./style.css">
     <script type="module" src="./app.js"></script>
@@ -59,12 +85,34 @@
 
         <dl class="hero-facts" aria-label="Playground facts">
           <div>
-            <dt>Runtime</dt>
-            <dd>Actual Rust WASM</dd>
+            <dt>Engine</dt>
+            <dd id="engine-version">loading metadata…</dd>
+          </div>
+          <div>
+            <dt>Compatibility target</dt>
+            <dd id="quickjs-target">loading metadata…</dd>
+          </div>
+          <div>
+            <dt>Host policy</dt>
+            <dd>
+              <code id="host-policy">loading metadata…</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Build commit</dt>
+            <dd>
+              <a
+                id="build-commit"
+                href="https://github.com/pocket-stack/quickjs-oxide"
+                rel="noreferrer"
+                data-commit=""
+                title="Build metadata is loading"
+              >loading metadata…</a>
+            </dd>
           </div>
           <div>
             <dt>Execution</dt>
-            <dd>Dedicated worker</dd>
+            <dd>Dedicated worker · actual Rust WASM</dd>
           </div>
           <div>
             <dt>Time budget</dt>
@@ -106,10 +154,29 @@
 
               <label class="example-picker">
                 <span>Example</span>
-                <select id="example-select" aria-label="Choose an example">
+                <select
+                  id="example-select"
+                  aria-label="Choose an example"
+                  aria-describedby="example-description example-expected"
+                >
                 </select>
               </label>
             </header>
+
+            <div
+              id="example-context"
+              class="example-context"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <p id="example-description"></p>
+              <dl>
+                <div>
+                  <dt>Expected result</dt>
+                  <dd id="example-expected"></dd>
+                </div>
+              </dl>
+            </div>
 
             <div class="editor-shell">
               <div class="editor-gutter" aria-hidden="true">
@@ -118,7 +185,7 @@
               <textarea
                 id="source-editor"
                 aria-label="JavaScript source"
-                aria-describedby="editor-help"
+                aria-describedby="editor-help example-description example-expected"
                 autocomplete="off"
                 autocapitalize="off"
                 spellcheck="false"
@@ -220,6 +287,10 @@
               Feature parity with pinned QuickJS remains the destination. Some
               programs will fail today; those failures are useful, visible
               checkpoints—not hidden fallbacks.
+            </p>
+            <p>
+              The engine version, compatibility target, host policy, and build
+              commit shown above are reported by the loaded WASM package.
             </p>
           </div>
         </div>

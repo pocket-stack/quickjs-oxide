@@ -21,8 +21,10 @@ status documents below, keeping this page focused on trying the engine.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
-`Shared Atomics` example returns 42 through that build. The
-playground is a pre-parity milestone, not a Feature Parity claim.
+page reports its exact build commit, QuickJS target, and non-blocking browser
+host policy. Curated examples include a function returning 42 and the
+`Atomics.wait` host-policy boundary. The playground is a pre-parity milestone,
+not a Feature Parity claim.
 
 ## Try it
 
@@ -51,6 +53,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-current-global.sh --check  # latest frozen receipt
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
+npm ci && npx playwright install chromium && npm run test:browser
 ```
 
 Historical focused gates and their checksum-bound receipts are indexed in the

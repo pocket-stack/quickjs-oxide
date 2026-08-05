@@ -7,6 +7,29 @@ const PACKAGE_WASM = "./pkg/quickjs_oxide_web_bg.wasm";
 
 let initialized = false;
 
+function readEngineMetadata() {
+  if (typeof wasm_bindgen.engine_metadata !== "function") {
+    throw new TypeError(
+      "The WASM package did not expose the expected engine_metadata function.",
+    );
+  }
+
+  const metadata = wasm_bindgen.engine_metadata();
+  const validStrings = metadata &&
+    typeof metadata.engine === "string" &&
+    typeof metadata.crateVersion === "string" &&
+    typeof metadata.quickjsTarget === "string" &&
+    typeof metadata.buildCommit === "string";
+
+  if (!validStrings || metadata.canBlock !== false) {
+    throw new TypeError(
+      "The WASM package returned invalid engine metadata or an unsafe browser host policy.",
+    );
+  }
+
+  return metadata;
+}
+
 function serializeError(error, fallbackName = "Error") {
   if (error && typeof error === "object") {
     return {
@@ -45,8 +68,9 @@ async function initialize() {
       );
     }
 
+    const metadata = readEngineMetadata();
     initialized = true;
-    self.postMessage({ type: "ready" });
+    self.postMessage({ type: "ready", metadata });
   } catch (error) {
     self.postMessage({
       type: "load-error",

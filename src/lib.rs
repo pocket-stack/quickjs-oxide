@@ -49,6 +49,9 @@ pub use runtime::{
 };
 pub use value::{JsString, JsStringError, Value};
 
+/// The version of this quickjs-oxide engine crate.
+pub const QUICKJS_OXIDE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The exact upstream release whose observable behavior is the compatibility
 /// baseline for this crate.
 pub const QUICKJS_COMPAT_VERSION: &str = "2026-06-04";

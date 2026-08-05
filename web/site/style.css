@@ -259,10 +259,23 @@ select {
 }
 
 .hero-facts dd {
+  min-width: 0;
   margin: 0;
   color: var(--ink);
   font-size: 0.82rem;
   font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.hero-facts code,
+.hero-facts a {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.hero-facts a {
+  color: var(--acid);
+  text-underline-offset: 0.2em;
 }
 
 .offline-notice {
@@ -393,7 +406,9 @@ select {
 }
 
 .panel {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
   background: var(--panel);
 }
 
@@ -446,9 +461,49 @@ select {
   box-shadow: 0 0 0 3px rgb(200 255 99 / 14%);
 }
 
+.example-context {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.8rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: rgb(255 255 255 / 1.2%);
+}
+
+.example-context > p {
+  max-width: 580px;
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.example-context dl {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.example-context dt {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.example-context dd {
+  margin: 0.18rem 0 0;
+  color: var(--acid);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+}
+
 .editor-shell {
   position: relative;
   display: grid;
+  flex: 1 1 auto;
   min-height: 430px;
   grid-template-columns: 50px minmax(0, 1fr);
   background:
@@ -551,6 +606,7 @@ kbd {
 }
 
 .result-region {
+  flex: 1 1 auto;
   min-height: 430px;
   padding: clamp(1.25rem, 3vw, 2rem);
   background:
@@ -922,6 +978,12 @@ kbd {
 
   .example-picker select {
     max-width: min(70vw, 260px);
+  }
+
+  .example-context {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.65rem;
   }
 
   .editor-shell {
