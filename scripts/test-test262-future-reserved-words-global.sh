@@ -9,6 +9,8 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-future-reserved-words-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-regexp-v-character-class-escapes-baseline.txt
+successor_gate=scripts/test-test262-regexp-v-character-class-escapes.sh
 upstream=compat/upstream.toml
 live_profile=compat/test262-oxide.conf
 parent_profile=tests/test262-future-reserved-words-global-parent.conf
@@ -69,6 +71,7 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -522,7 +525,52 @@ verify_focused_semantics() {
     done
 }
 
+bridge_r3ct_successor() {
+    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
+        || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    [[ -f "$successor_baseline" && -x "$successor_gate" \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" == 8843e5ce382602afc1a5eb585c49dd7627b7109d \
+        && "$(successor_value profile_sha256)" == "$(value candidate_profile_sha256)" \
+        && "$(successor_value manifest_sha256)" == 45a7ee70a325e4f175c4cb3d021d9ba73180c2106058f694a0ff2ca40da36bc6 \
+        && "$(successor_value parent_full_runnable)" == "$(value candidate_full_runnable)" \
+        && "$(successor_value parent_full_passes)" == "$(value candidate_full_passes)" \
+        && "$(successor_value parent_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value parent_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value parent_full_summary)" == "$(value candidate_full_summary)" \
+        && "$(( $(successor_value candidate_full_passes) - $(successor_value parent_full_passes) ))" == 24 \
+        && "$(successor_value candidate_full_runnable)" == "$(successor_value parent_full_runnable)" \
+        && "$(successor_value full_changed)" == 24 \
+        && "$(successor_value full_outcome_changed)" == 24 \
+        && "$(successor_value full_detail_only)" == 0 \
+        && "$(successor_value full_unchanged)" == 102013 \
+        && "$(successor_value full_pass_regressions)" == 0 \
+        && "$(canonical_value runnable)" == "$(successor_value candidate_full_runnable)" \
+        && "$(canonical_value passes)" == "$(successor_value candidate_full_passes)" \
+        && "$(canonical_value tsv_sha256)" == "$(successor_value candidate_full_tsv_sha256)" \
+        && "$(canonical_value jsonl_sha256)" == "$(successor_value candidate_full_jsonl_sha256)" \
+        && "$(canonical_value summary)" == "$(successor_value candidate_full_summary)" ]] \
+        || die 'R3ct successor does not checksum-bridge the historical R3cs receipt'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3cs admission is checksum-bridged through the R3ct RegExp v runtime milestone.'
+    exit 0
+}
+
 cd -- "$root"
+bridge_r3ct_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-future-reserved-word-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 check_static_inputs

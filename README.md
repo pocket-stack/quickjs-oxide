@@ -24,7 +24,7 @@ the 25-path future-reserved negative cohort are globally admitted. Invalid
 `enum`, `export`, and `extends`, malformed `import()`, and Script/Eval
 `import.meta` are real syntax errors. Valid dynamic import remains typed
 Unsupported, deferred through parsing and identifier/private-name resolution
-so it cannot hide early errors. The last audited full vector is 65,384 passes
+so it cannot hide early errors. The last audited full vector is 65,408 passes
 / 65,497 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
@@ -73,7 +73,7 @@ cargo test --locked --workspace --all-targets
 ./scripts/test-test262-html-comments-runtime.sh
 ./scripts/test-test262-debugger-statement.sh
 ./scripts/test-test262-debugger-statement-global.sh
-./scripts/test-test262-future-reserved-words.sh
+./scripts/test-test262-regexp-v-character-class-escapes.sh
 ./scripts/test-test262-future-reserved-words-global.sh
 ./scripts/test-test262-current-global.sh
 ./scripts/test-test262-full.sh

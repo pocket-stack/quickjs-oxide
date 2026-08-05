@@ -4,6 +4,51 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ct basic RegExp v CharacterClassEscape runtime
+
+R3ct opens a deliberately narrow first `v`-flag runtime slice, following the
+pinned QuickJS `unicode_sets` path through its basic class-atom construction.
+The six `d`, `D`, `s`, `S`, `w`, and `W` escapes now work as atoms and inside
+simple classes, including anchors, ordinary quantifiers, Unicode-width
+matching, complements, and `iv` folding. Set operations, nested sets,
+properties, strings, groups, disjunction, literals, and dot remain typed
+`Unsupported`; malformed syntax inside the admitted slice remains a real
+`SyntaxError`.
+
+The complete pinned `CharacterClassEscapes` directory contains 12 paths / 24
+sloppy-and-strict variants. Pinned QuickJS passes all 24. Oxide's authenticated
+parent records 24 `unsupported-parser` outcomes, while the candidate passes
+24/24. The manifest SHA-256 is
+`45a7ee70a325e4f175c4cb3d021d9ba73180c2106058f694a0ff2ca40da36bc6`;
+focused candidate TSV/JSONL hashes are
+`b3db379e2fb33ac9a2042e35e81758c7dd76f6351cc944ec0660b79582922710`
+and
+`4acd63c554f26a10132139d21b45473b4e38646754545857258405e64436bbfa`.
+
+The live Test262 profile remains byte-identical at
+`ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a`.
+In particular, `regexp-v-flag` is not admitted globally: these generated tests
+omit that metadata tag, and broader `v` grammar remains fail-closed. The exact
+102,037-row join changes only the same 24 outcomes, leaves 102,013 rows
+byte-identical, and records no previous-pass regression. The canonical vector
+is 65,408 passes / 65,497 runnable, and the residual `unsupported-parser`
+category falls from 24 to zero. Full TSV/JSONL hashes are
+`908f7e0a9dca5a0b7f7c4a154ecffce425a0998cf1c0e7c8830dbe35850599d7`
+and
+`9a128f5e3a901ddb50bb9e98a080dfe1355ec0d6ddad9fa9d6fc09c7501e7eb7`.
+
+A release/2-worker recovery receipt additionally replays all 15
+resource-sensitive paths / 30 variants exposed by a rejected high-contention
+debug probe. All 30 pass and are byte-identical to their R3cs parent rows;
+this keeps scheduler noise outside the canonical join. Reproduce the evidence
+with:
+
+```sh
+./scripts/test-test262-regexp-v-character-class-escapes.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-regexp-v-character-class-escapes.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-regexp-v-character-class-escapes.sh --full
+```
+
 ## R3cs future-reserved-word negative-test global admission
 
 R3cs globally admits the 25 parse-negative paths / 32 variants authenticated
@@ -28,9 +73,9 @@ candidate passes 86/86. Its exact join changes those 32 outcomes, leaves 54
 rows unchanged, and has no detail-only movement.
 
 Across the complete 102,037-row vector, the same 32 outcomes change, 102,005
-rows remain byte-identical, and no previous pass regresses. The canonical
-scoreboard is 65,384 passes / 65,497 runnable, while
-`unsupported-negative-provenance` falls from 3,424 to 3,392. Full candidate
+rows remain byte-identical, and no previous pass regresses. The R3cs
+scoreboard was 65,384 passes / 65,497 runnable, while
+`unsupported-negative-provenance` fell from 3,424 to 3,392. Full candidate
 TSV/JSONL hashes are
 `1df77fd5d67b0ba585b3390cf0ce50a53f59226dfd57983edcc26d3c7a034dfe`
 and
@@ -1680,19 +1725,19 @@ workstream. Build and architecture details live in
   config skips explicit. R3bv then authenticates the complete
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
-  module boundaries. Those R3bw counts are historical; subsequent runtime,
-  host, feature-admission, and provenance milestones through R3cs advance the
-  current canonical measurement to 65,384 passes and 65,497 runnable variants:
-  64.08% raw, a 78.25% lower bound after the 18,475 pinned QuickJS target
-  exclusions, or 99.90% among the 65,451 variants with a non-unsupported
-  observed outcome. It records 13,788 `unsupported-feature` and 18,111 total
+  module boundaries. Those R3bw counts are historical; subsequent milestones
+  through R3ct advance the current canonical measurement to 65,408 passes and
+  65,497 runnable variants: 64.10% raw, a 78.27% lower bound after the 18,475
+  pinned QuickJS target exclusions, or 99.90% among the 65,475 variants with a
+  non-unsupported observed outcome. It records 13,788 `unsupported-feature`
+  and 18,087 total
   unsupported outcomes, 11 parse failures, 54 runtime failures, no harness
-  failures, and two timeouts. The exact R3cs join preserves all 102,037 keys
-  with 32 outcome changes, 102,005 unchanged rows, and no previous-pass
+  failures, and two timeouts. The exact R3ct join preserves all 102,037 keys
+  with 24 outcome changes, 102,013 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `1df77fd5d67b0ba585b3390cf0ce50a53f59226dfd57983edcc26d3c7a034dfe`
+  `908f7e0a9dca5a0b7f7c4a154ecffce425a0998cf1c0e7c8830dbe35850599d7`
   and
-  `257eef22e32ed8d5b1d6a837d07a82d7c1bf4263b996364000a1e98522f83138`.
+  `9a128f5e3a901ddb50bb9e98a080dfe1355ec0d6ddad9fa9d6fc09c7501e7eb7`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
@@ -6488,9 +6533,11 @@ workstream. Build and architecture details live in
   owned bytecode root are also required before environments may escape the
   current synchronous call. R1w does not claim any of those later semantics.
 
-  Advanced grammar still fails closed: Unicode set/string properties, all
-  `v`-mode execution, and unported Annex-B control escapes return typed
-  unsupported errors. Pattern group nesting is temporarily capped at 256 with
+  Advanced grammar still fails closed: Unicode set/string properties, set
+  operations, and unported Annex-B control escapes return typed unsupported
+  errors. R3ct opens only the basic `d`, `D`, `s`, `S`, `w`, and `W`
+  CharacterClassEscape slice in `v` mode; adjacent `v` grammar remains
+  fail-closed. Pattern group nesting is temporarily capped at 256 with
   a catchable `stack overflow`
   compile error so adversarial input cannot overflow the Rust stack; a later
   iterative parser/compiler must replace that conservative resource frontier

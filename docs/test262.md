@@ -6,6 +6,71 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3ct basic RegExp v CharacterClassEscape runtime
+
+R3ct implements the first deliberately bounded `v`-flag slice by following
+QuickJS 2026-06-04's `unicode_sets` class-atom path for `d`, `D`, `s`, `S`,
+`w`, and `W`. Those six escapes work as consuming atoms and inside simple
+classes, with anchors, ordinary quantifiers, complements, Unicode code-point
+width, and `iv` case folding. Adjacent `v` grammar remains fail-closed: set
+operations, nested sets, properties, strings, groups, disjunction, literals,
+and dot return typed `Unsupported`. Malformed syntax within the narrow slice
+continues to return `SyntaxError` with QuickJS-compatible priority.
+
+The frozen universe is the complete pinned
+`test/built-ins/RegExp/CharacterClassEscapes` directory: 12 paths / 24
+sloppy-and-strict variants. Its path manifest and exact variant keys hash to
+`45a7ee70a325e4f175c4cb3d021d9ba73180c2106058f694a0ff2ca40da36bc6`
+and
+`e14024023a6e7ab1f266b464a31bdd835c1aaeab3ef8b1306ad508d37c1fd34c`.
+Pinned QuickJS passes 24/24. The authenticated Oxide parent records
+`unsupported-parser=24`; its TSV/JSONL hashes are
+`cfadcf29b6c4000f67d0949c627d7c3130e7b31772a1463e3e1f330b9e76873d`
+and
+`77261b872e8addbd97363556a60f2a3721571010875c2d77b56df63481776684`.
+The actual candidate passes 24/24, with focused TSV/JSONL hashes
+`b3db379e2fb33ac9a2042e35e81758c7dd76f6351cc944ec0660b79582922710`
+and
+`4acd63c554f26a10132139d21b45473b4e38646754545857258405e64436bbfa`.
+
+No capability admission is hidden in this result. The live profile remains
+byte-identical at
+`ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a`:
+its 124 features still omit `regexp-v-flag`, while the upstream-generated
+cohort requests only the already-admitted `String.fromCodePoint`. The gate
+derives all 12 paths from the pinned directory and asserts that metadata
+boundary explicitly.
+
+The exact full join changes those same 24 outcomes, leaves the other 102,013
+rows byte-identical, and has zero detail-only changes or previous-pass
+regressions. The canonical vector is 65,408 passes / 65,497 runnable;
+`unsupported-parser` falls from 24 to zero. Full candidate TSV/JSONL hashes
+are
+`908f7e0a9dca5a0b7f7c4a154ecffce425a0998cf1c0e7c8830dbe35850599d7`
+and
+`9a128f5e3a901ddb50bb9e98a080dfe1355ec0d6ddad9fa9d6fc09c7501e7eb7`.
+
+The landing audit rejected an eight-worker debug probe because scheduler
+contention produced 28 extra timeouts and two stack-overflow failures. Its
+complete diff isolated 15 resource-sensitive paths / 30 variants. A release
+runner replayed that exact manifest with the canonical two-worker policy;
+all 30 passed and their row stream was byte-identical to the R3cs parent. The
+recovery manifest, TSV, and JSONL hashes are
+`be6fbae575fd0d759269ed8805870fa26d8e58eaf14029d9805f2e8454fcc476`,
+`e9e9e0e0959df5ccd4a6e58ee45de93c5befc828dffd657ca628d16e9ed4b575`,
+and
+`a430d6a04b85af752e95fc194500bf9aea36a36ba8a7a865638796ddd3b3b054`.
+The normal full gate still performs a complete release/two-worker replay; the
+partitioned recovery is a frozen landing receipt, not a weaker default.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-regexp-v-character-class-escapes.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-regexp-v-character-class-escapes.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-regexp-v-character-class-escapes.sh --full
+```
+
 ## R3cs future-reserved-word negative provenance admission
 
 R3cs admits the 25 parse-negative paths / 32 variants authenticated by R3cr's
@@ -36,8 +101,8 @@ and
 The exact focused join changes 32 outcomes and leaves 54 rows unchanged.
 
 Across all 102,037 variants, those same 32 outcomes change, 102,005 rows stay
-byte-identical, and no previous pass regresses. The canonical vector is now
-65,384 passes / 65,497 runnable; `unsupported-negative-provenance` falls from
+byte-identical, and no previous pass regresses. At R3cs, the canonical vector
+was 65,384 passes / 65,497 runnable; `unsupported-negative-provenance` fell from
 3,424 to 3,392. Full candidate TSV/JSONL hashes are
 `1df77fd5d67b0ba585b3390cf0ce50a53f59226dfd57983edcc26d3c7a034dfe`
 and
@@ -1512,11 +1577,11 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The current R3cs canonical summary is:
+every outcome in canonical order. The current R3ct canonical summary is:
 
-- 65,384 pass;
+- 65,408 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 18,111 are classified as unsupported because of a feature, mode, host
+- 18,087 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance, including 13,788 `unsupported-feature` variants;
 - 11 fail to parse, 54 fail at runtime, none fail in the harness, and two
@@ -1528,14 +1593,14 @@ than an observed non-unsupported outcome.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 64.08% (`65,384 / 102,037`);
-- conservative target-scope lower bound: 78.25%
-  (`65,384 / (102,037 - 18,475)`);
+- raw suite pass rate: 64.10% (`65,408 / 102,037`);
+- conservative target-scope lower bound: 78.27%
+  (`65,408 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 99.90%
-  (`65,384 / 65,451`).
+  (`65,408 / 65,475`).
 
-The 78.25% figure is the useful whole-project progress floor, not a claim that
-the engine is 78.25% conformant. The 99.90% conditional rate measures quality
+The 78.27% figure is the useful whole-project progress floor, not a claim that
+the engine is 78.27% conformant. The 99.90% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -1590,10 +1655,10 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The current R3cs canonical full TSV/JSONL SHA-256 values are
-`1df77fd5d67b0ba585b3390cf0ce50a53f59226dfd57983edcc26d3c7a034dfe`
+The current R3ct canonical full TSV/JSONL SHA-256 values are
+`908f7e0a9dca5a0b7f7c4a154ecffce425a0998cf1c0e7c8830dbe35850599d7`
 and
-`257eef22e32ed8d5b1d6a837d07a82d7c1bf4263b996364000a1e98522f83138`.
+`9a128f5e3a901ddb50bb9e98a080dfe1355ec0d6ddad9fa9d6fc09c7501e7eb7`.
 
 ## Milestone policy
 
@@ -8500,9 +8565,9 @@ R3bw then admits that tag globally: 439 outcomes change to `pass`, 456 rows
 change only their residual-capability detail, and 101,142 rows remain
 unchanged. That historical R3bw vector reached 59,507/102,037 passes with 60,026
 runnable variants, 18,618 `unsupported-feature` outcomes, and 23,585 total
-unsupported outcomes. Subsequent milestones through R3cs advance the current
-vector to 65,384/102,037 passes with 65,497 runnable variants, 13,788
-`unsupported-feature` outcomes, and 18,111 total unsupported outcomes.
+unsupported outcomes. Subsequent milestones through R3ct advance the current
+vector to 65,408/102,037 passes with 65,497 runnable variants, 13,788
+`unsupported-feature` outcomes, and 18,087 total unsupported outcomes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS
