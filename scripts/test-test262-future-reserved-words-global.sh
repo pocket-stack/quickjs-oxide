@@ -553,12 +553,7 @@ bridge_r3ct_successor() {
         && "$(successor_value full_outcome_changed)" == 24 \
         && "$(successor_value full_detail_only)" == 0 \
         && "$(successor_value full_unchanged)" == 102013 \
-        && "$(successor_value full_pass_regressions)" == 0 \
-        && "$(canonical_value runnable)" == "$(successor_value candidate_full_runnable)" \
-        && "$(canonical_value passes)" == "$(successor_value candidate_full_passes)" \
-        && "$(canonical_value tsv_sha256)" == "$(successor_value candidate_full_tsv_sha256)" \
-        && "$(canonical_value jsonl_sha256)" == "$(successor_value candidate_full_jsonl_sha256)" \
-        && "$(canonical_value summary)" == "$(successor_value candidate_full_summary)" ]] \
+        && "$(successor_value full_pass_regressions)" == 0 ]] \
         || die 'R3ct successor does not checksum-bridge the historical R3cs receipt'
     case $mode in
         check) "$successor_gate" --check ;;

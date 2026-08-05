@@ -24,8 +24,10 @@ the 25-path future-reserved negative cohort are globally admitted. Invalid
 `enum`, `export`, and `extends`, malformed `import()`, and Script/Eval
 `import.meta` are real syntax errors. Valid dynamic import remains typed
 Unsupported, deferred through parsing and identifier/private-name resolution
-so it cannot hide early errors. The last audited full vector is 65,408 passes
-/ 65,497 runnable / 102,037 total variants.
+so it cannot hide early errors. String inputs to direct and indirect `eval`
+follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
+strings, templates, RegExp literals, and saved debug source. The last audited
+full vector is 65,430 passes / 65,497 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -52,33 +54,21 @@ cargo run --quiet --bin qjs -- --print-result -e \
 - [Implementation status and milestone ledger](docs/status.md)
 - [Pinned Test262 progress baseline](docs/test262.md)
 - [Parity acceptance contract](docs/parity.md)
+- [Playground build and trust boundary](docs/playground.md)
 - [Pinned upstream release](compat/upstream.toml)
 
 ## Verify
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-weak-collections.sh
-./scripts/test-test262-weak-collections-global.sh
-./scripts/test-test262-weak-ref-finalization.sh
-./scripts/test-test262-weak-ref-finalization-global.sh
-./scripts/test-host-gc-reentrant-oracle.sh --oxide
-./scripts/test-test262-host-gc.sh
-./scripts/test-test262-host-gc-global.sh
-./scripts/test-test262-create-realm.sh
-./scripts/test-test262-eval-script.sh
-./scripts/test-test262-realm-hosts-global.sh
-./scripts/test-test262-string-locale-compare.sh
-./scripts/test-test262-promise-try-with-resolvers-global.sh
-./scripts/test-test262-html-comments-runtime.sh
-./scripts/test-test262-debugger-statement.sh
-./scripts/test-test262-debugger-statement-global.sh
-./scripts/test-test262-regexp-v-character-class-escapes.sh
-./scripts/test-test262-future-reserved-words-global.sh
-./scripts/test-test262-current-global.sh
+./scripts/test-test262-eval-wtf8-source.sh
+./scripts/test-test262-current-global.sh --check
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
 ```
+
+Historical focused gates and their checksum-bound receipts are indexed in the
+status documents above.
 
 ## License
 

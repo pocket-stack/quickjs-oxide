@@ -1,8 +1,9 @@
 use super::*;
-use crate::compiler::{EvalCompileContext, compile_unlinked_eval_with_filename};
+use crate::compiler::{EvalCompileContext, compile_unlinked_eval_source_with_filename};
 use crate::heap::{
     EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding, EvalVariableEnvironment,
 };
+use crate::source_text::SourceText;
 use crate::vm::DirectEvalInvocation;
 
 impl Runtime {
@@ -414,22 +415,14 @@ impl Runtime {
         self.call_internal(realm, &callable, this_value, &[])
     }
 
-    fn eval_source_text(source: &JsString) -> Result<String, RuntimeError> {
-        if !source.is_well_formed() {
-            return Err(RuntimeError::Engine(Error::new(
-                ErrorKind::Unsupported,
-                "eval source containing an unpaired UTF-16 surrogate is not implemented yet",
-            )));
-        }
-        // The well-formedness check makes this conversion exact despite the
-        // helper's historical name.
-        Ok(source.to_utf8_lossy())
+    fn eval_source_text(source: &JsString) -> Result<SourceText, RuntimeError> {
+        SourceText::try_from_js_string(source).map_err(RuntimeError::from)
     }
 
     fn compile_eval_in_realm(
         &self,
         realm: ContextId,
-        source: &str,
+        source: &SourceText,
         filename: &str,
         context: EvalCompileContext,
     ) -> Result<Compilation, RuntimeError> {
@@ -437,7 +430,8 @@ impl Runtime {
         let debug_info = self.debug_info_mode();
         let expected = context.clone();
         let function =
-            match compile_unlinked_eval_with_filename(source, filename, debug_info, context) {
+            match compile_unlinked_eval_source_with_filename(source, filename, debug_info, context)
+            {
                 Ok(function) => function,
                 Err(error) => {
                     let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
@@ -445,7 +439,7 @@ impl Runtime {
                     };
                     let explicit_location = if error.kind() == ErrorKind::Syntax {
                         if let Some(span) = error.span() {
-                            let position = QuickJsSourceLocator::new(source)
+                            let position = QuickJsSourceLocator::new(source.carrier())
                                 .locate_byte_offset(span.start.byte_offset)
                                 .map_err(|_| {
                                     RuntimeError::Invariant(

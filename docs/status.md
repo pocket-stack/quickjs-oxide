@@ -4,6 +4,53 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cu dynamic eval WTF-8 source preservation
+
+R3cu makes String inputs to direct and indirect `eval` follow QuickJS
+2026-06-04's reversible WTF-8 source-text semantics. Lone UTF-16 surrogates
+cross the Rust `str` parser seam through a same-width marked carrier without
+becoming U+FFFD or colliding with genuine private-use code points. String
+literals, cooked and raw templates, RegExp literals, and saved debug source
+recover the original UTF-16 units; debug source is retained as canonical
+WTF-8, comments retain their tokenization, and identifier diagnostics retain
+their locations. `Function.prototype.toString` therefore reproduces the exact
+evaluated function source. Valid surrogate pairs retain their ordinary
+canonical UTF-8 spelling. Dynamic `Function` and the Test262 host's
+`$262.evalScript` remain separately typed frontiers.
+
+The frozen pinned cohort contains 11 paths / 22 sloppy-and-strict variants.
+Pinned QuickJS and the R3cu candidate both pass 22/22; the authenticated R3ct
+parent records 22 `unsupported-runtime` outcomes. The manifest SHA-256 is
+`3e4f73f980aae940fe3f81df608e5f32154d851c632535a58de89de728b31f2d`.
+Focused candidate TSV/JSONL SHA-256 values are
+`515e3b7056e86958fe3b7e265f717ce301e95245ed907f35cbeae7d5ff8c3859`
+and
+`3f36b9aa435cd8c29b58f6cb9f65a8a6b4a57fbb66ec588deacf13c6e1de6dca`.
+
+The live 124-tag profile remains byte-identical at
+`ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a`.
+The exact 102,037-row R3ct-to-R3cu join changes those same 22 outcomes,
+leaves 102,015 rows byte-identical, and records no detail-only change or
+previous-pass regression. The canonical vector is 65,430 passes / 65,497
+runnable; `unsupported-runtime` falls from 22 to zero. Full candidate
+TSV/JSONL SHA-256 values are
+`8cbb90ce01fcc2c887871d7de02cfb62a6588ff807e8604e27700823b99d5820`
+and
+`10cb9ef6db26da8150cf8f23222b0aad02ac7cee9326aab18ef56ca0ab272aa4`.
+The residual classification is `fail-parse=11`, `fail-runtime=54`,
+`skipped-config-exclude=6700`, `skipped-feature=11775`, `timeout=2`,
+`unsupported-feature=13788`, `unsupported-host-agent=118`,
+`unsupported-host-can-block-false=4`, `unsupported-host-is-html-dda=84`,
+`unsupported-module=679`, and `unsupported-negative-provenance=3392`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-eval-wtf8-source.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-eval-wtf8-source.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-eval-wtf8-source.sh --full
+```
+
 ## R3ct basic RegExp v CharacterClassEscape runtime
 
 R3ct opens a deliberately narrow first `v`-flag runtime slice, following the
@@ -1726,18 +1773,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent milestones
-  through R3ct advance the current canonical measurement to 65,408 passes and
-  65,497 runnable variants: 64.10% raw, a 78.27% lower bound after the 18,475
-  pinned QuickJS target exclusions, or 99.90% among the 65,475 variants with a
+  through R3cu advance the current canonical measurement to 65,430 passes and
+  65,497 runnable variants: 64.12% raw, a 78.30% lower bound after the 18,475
+  pinned QuickJS target exclusions, or 99.90% among the 65,497 variants with a
   non-unsupported observed outcome. It records 13,788 `unsupported-feature`
-  and 18,087 total
+  and 18,065 total
   unsupported outcomes, 11 parse failures, 54 runtime failures, no harness
-  failures, and two timeouts. The exact R3ct join preserves all 102,037 keys
-  with 24 outcome changes, 102,013 unchanged rows, and no previous-pass
+  failures, and two timeouts. The exact R3cu join preserves all 102,037 keys
+  with 22 outcome changes, 102,015 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `908f7e0a9dca5a0b7f7c4a154ecffce425a0998cf1c0e7c8830dbe35850599d7`
+  `8cbb90ce01fcc2c887871d7de02cfb62a6588ff807e8604e27700823b99d5820`
   and
-  `9a128f5e3a901ddb50bb9e98a080dfe1355ec0d6ddad9fa9d6fc09c7501e7eb7`.
+  `10cb9ef6db26da8150cf8f23222b0aad02ac7cee9326aab18ef56ca0ab272aa4`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain

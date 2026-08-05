@@ -13780,6 +13780,28 @@ fn debug_draft(debug: UnlinkedFunctionDebug) -> UnlinkedFunction {
 }
 
 #[test]
+fn publication_accepts_canonical_wtf8_debug_source() {
+    let runtime = Runtime::new();
+    let context = runtime.new_context();
+    let source = vec![b'(', 0xed, 0xa0, 0x80, 0xee, 0x80, 0x80, b')'];
+    let function = runtime
+        .publish_unlinked_function(
+            context.realm,
+            debug_draft(UnlinkedFunctionDebug {
+                filename: JsString::from_static("wtf8.js"),
+                pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
+                source: Some(source.clone().into_boxed_slice()),
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(
+        runtime.test_function_debug_source(&function).unwrap(),
+        Some(source)
+    );
+}
+
+#[test]
 fn publication_rejects_malformed_debug_pc_order_range_source_and_position() {
     let runtime = Runtime::new();
     let context = runtime.new_context();
@@ -13818,6 +13840,18 @@ fn publication_rejects_malformed_debug_pc_order_range_source_and_position() {
             filename: JsString::from_static("utf8.js"),
             pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
             source: Some(vec![0xff].into_boxed_slice()),
+        },
+        UnlinkedFunctionDebug {
+            filename: JsString::from_static("cesu8.js"),
+            pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
+            // CESU-8 for U+1F600 is not canonical when QuickJS's eval/source
+            // conversion runs with `cesu8 = false`.
+            source: Some(vec![0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80].into_boxed_slice()),
+        },
+        UnlinkedFunctionDebug {
+            filename: JsString::from_static("overlong.js"),
+            pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
+            source: Some(vec![0xc0, 0x80].into_boxed_slice()),
         },
         UnlinkedFunctionDebug {
             filename: JsString::from_static("position.js"),

@@ -1,0 +1,27 @@
+# Exhaustive R3cu eval WTF-8 source transition.
+# parent_commit=803d3e78f1e5c985f27bf1a4e84389bb17da090f
+# oxide_profile_sha256=ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a
+# manifest_sha256=3e4f73f980aae940fe3f81df608e5f32154d851c632535a58de89de728b31f2d
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/annexB/built-ins/RegExp/RegExp-trailing-escape-BMP.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/annexB/built-ins/RegExp/RegExp-trailing-escape-BMP.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/comments/S7.4_A5.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/comments/S7.4_A5.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/comments/S7.4_A6.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/comments/S7.4_A6.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A1.1_T2.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A1.1_T2.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A1.4_T2.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A1.4_T2.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A2.1_T2.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A2.1_T2.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A2.4_T2.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/S7.8.5_A2.4_T2.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/named-groups/invalid-lone-surrogate-groupname.js	sloppy		regexp-named-groups	normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/language/literals/regexp/named-groups/invalid-lone-surrogate-groupname.js	strict		regexp-named-groups	normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/staging/sm/RegExp/unicode-class-raw.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/staging/sm/RegExp/unicode-class-raw.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/staging/sm/RegExp/unicode-raw.js	sloppy			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		
+test/staging/sm/RegExp/unicode-raw.js	strict			normal		unsupported-runtime	runtime	Unsupported	eval source containing an unpaired UTF-16 surrogate is not implemented yet	pass	normal		

@@ -6892,11 +6892,8 @@ impl Runtime {
             )?));
         }
         if let Some(source) = source {
-            let source = std::str::from_utf8(&source).map_err(|_| {
-                RuntimeError::Invariant("published function source was not valid UTF-8")
-            })?;
-            return Ok(Completion::Return(Value::String(JsString::try_from_utf8(
-                source,
+            return Ok(Completion::Return(Value::String(JsString::try_from_bytes(
+                &source,
             )?)));
         }
 

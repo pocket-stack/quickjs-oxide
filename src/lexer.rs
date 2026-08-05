@@ -23,7 +23,9 @@
 
 use std::fmt;
 use std::iter::FusedIterator;
+use std::ops::Range;
 
+use crate::source_text::SourceText;
 use crate::value::{JsString as RuntimeJsString, JsStringError};
 
 const TEMPLATE_QUOTE: char = '\u{0060}';
@@ -388,6 +390,12 @@ impl JsString {
         Ok(())
     }
 
+    fn push_code_unit_with_limit(&mut self, unit: u16, limit: usize) -> Result<(), JsStringError> {
+        RuntimeJsString::checked_length_with_limit(self.utf16.len(), 1, limit)?;
+        self.utf16.push(unit);
+        Ok(())
+    }
+
     pub fn push_code_point(&mut self, value: u32) -> Result<(), JsStringError> {
         self.push_code_point_with_limit(value, RuntimeJsString::MAX_LEN)
     }
@@ -539,6 +547,7 @@ impl std::error::Error for LexError {}
 #[derive(Clone)]
 pub struct Lexer<'a> {
     source: &'a str,
+    source_text: Option<&'a SourceText>,
     offset: usize,
     line: u32,
     column: u32,
@@ -556,6 +565,26 @@ impl<'a> Lexer<'a> {
     pub fn with_options(source: &'a str, options: LexerOptions) -> Self {
         Self {
             source,
+            source_text: None,
+            offset: 0,
+            line: 1,
+            column: 1,
+            options,
+            eof_emitted: false,
+            failed: false,
+            string_limit: RuntimeJsString::MAX_LEN,
+        }
+    }
+
+    /// Scan one reversible dynamic-source carrier.
+    ///
+    /// This remains crate-private so the public lexer continues to accept
+    /// ordinary Rust UTF-8 source. The side table is consulted only when a
+    /// token's semantic value must preserve a lone UTF-16 surrogate.
+    pub(crate) fn with_source_text(source: &'a SourceText, options: LexerOptions) -> Self {
+        Self {
+            source: source.carrier(),
+            source_text: Some(source),
             offset: 0,
             line: 1,
             column: 1,
@@ -684,6 +713,35 @@ impl<'a> Lexer<'a> {
         self.source
             .get(self.offset..)
             .is_some_and(|rest| rest.starts_with(text))
+    }
+
+    fn lone_surrogate_at(&self, byte_offset: usize) -> Option<u16> {
+        self.source_text
+            .and_then(|source| source.lone_surrogate_at(byte_offset))
+    }
+
+    fn semantic_utf16_units(&self, range: Range<usize>) -> Option<Vec<u16>> {
+        if let Some(source) = self.source_text {
+            return source
+                .slice(range)
+                .map(|slice| slice.semantic_utf16_units().collect());
+        }
+        self.source
+            .get(range)
+            .map(|source| source.encode_utf16().collect())
+    }
+
+    pub(crate) fn source_range_to_js_string(
+        &self,
+        range: Range<usize>,
+    ) -> Result<Option<RuntimeJsString>, JsStringError> {
+        if let Some(source) = self.source_text {
+            return source.try_range_to_js_string(range);
+        }
+        self.source
+            .get(range)
+            .map(RuntimeJsString::try_from_utf8)
+            .transpose()
     }
 
     /// Advances one scalar value, treating CRLF as one logical character.
@@ -1286,10 +1344,17 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            let lone_surrogate = self.lone_surrogate_at(self.offset);
             self.bump_char();
-            value
-                .push_char_with_limit(ch, self.string_limit)
-                .map_err(|_| self.string_too_long(start))?;
+            if let Some(unit) = lone_surrogate {
+                value
+                    .push_code_unit_with_limit(unit, self.string_limit)
+                    .map_err(|_| self.string_too_long(start))?;
+            } else {
+                value
+                    .push_char_with_limit(ch, self.string_limit)
+                    .map_err(|_| self.string_too_long(start))?;
+            }
         }
     }
 
@@ -1376,8 +1441,11 @@ impl<'a> Lexer<'a> {
                 Ok(EscapeValue::legacy(ch as u32))
             }
             _ => {
+                let lone_surrogate = self.lone_surrogate_at(self.offset);
                 self.bump_char();
-                Ok(EscapeValue::code_point(ch as u32))
+                Ok(EscapeValue::code_point(
+                    lone_surrogate.map(u32::from).unwrap_or(ch as u32),
+                ))
             }
         }
     }
@@ -1560,9 +1628,9 @@ impl<'a> Lexer<'a> {
                     self.bump_char();
                     self.bump_char();
                 }
-                append_template_raw_source(
+                self.append_template_raw_source(
                     &mut raw_value,
-                    &self.source[escape_start..self.offset],
+                    escape_start..self.offset,
                     self.string_limit,
                 )
                 .map_err(|_| self.string_too_long(start))?;
@@ -1587,22 +1655,46 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            let lone_surrogate = self.lone_surrogate_at(self.offset);
             self.bump_char();
-            raw_value
-                .push_char_with_limit(if ch == '\r' { '\n' } else { ch }, self.string_limit)
-                .map_err(|_| self.string_too_long(start))?;
-            if let Some(output) = cooked.as_mut() {
-                if ch == '\r' {
+            if let Some(unit) = lone_surrogate {
+                raw_value
+                    .push_code_unit_with_limit(unit, self.string_limit)
+                    .map_err(|_| self.string_too_long(start))?;
+                if let Some(output) = cooked.as_mut() {
                     output
-                        .push_char_with_limit('\n', self.string_limit)
+                        .push_code_unit_with_limit(unit, self.string_limit)
                         .map_err(|_| self.string_too_long(start))?;
-                } else {
-                    output
-                        .push_char_with_limit(ch, self.string_limit)
-                        .map_err(|_| self.string_too_long(start))?;
+                }
+            } else {
+                raw_value
+                    .push_char_with_limit(if ch == '\r' { '\n' } else { ch }, self.string_limit)
+                    .map_err(|_| self.string_too_long(start))?;
+                if let Some(output) = cooked.as_mut() {
+                    if ch == '\r' {
+                        output
+                            .push_char_with_limit('\n', self.string_limit)
+                            .map_err(|_| self.string_too_long(start))?;
+                    } else {
+                        output
+                            .push_char_with_limit(ch, self.string_limit)
+                            .map_err(|_| self.string_too_long(start))?;
+                    }
                 }
             }
         }
+    }
+
+    fn append_template_raw_source(
+        &self,
+        value: &mut JsString,
+        range: Range<usize>,
+        limit: usize,
+    ) -> Result<(), JsStringError> {
+        let units = self
+            .semantic_utf16_units(range)
+            .expect("template raw range is a trusted source slice");
+        append_template_raw_units(value, units, limit)
     }
 
     fn scan_regexp(
@@ -1905,20 +1997,20 @@ fn radix_value(radix: NumericRadix) -> u32 {
     }
 }
 
-fn append_template_raw_source(
+fn append_template_raw_units(
     value: &mut JsString,
-    source: &str,
+    units: impl IntoIterator<Item = u16>,
     limit: usize,
 ) -> Result<(), JsStringError> {
-    let mut chars = source.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
+    let mut units = units.into_iter().peekable();
+    while let Some(unit) = units.next() {
+        if unit == u16::from(b'\r') {
+            if units.peek() == Some(&u16::from(b'\n')) {
+                units.next();
             }
-            value.push_char_with_limit('\n', limit)?;
+            value.push_code_unit_with_limit(u16::from(b'\n'), limit)?;
         } else {
-            value.push_char_with_limit(ch, limit)?;
+            value.push_code_unit_with_limit(unit, limit)?;
         }
     }
     Ok(())
@@ -2381,6 +2473,66 @@ mod tests {
                 .unwrap_err()
                 .kind,
             LexErrorKind::LineTerminatorInRegExp
+        );
+    }
+
+    #[test]
+    fn reversible_source_text_restores_string_template_and_regexp_values() {
+        let string_source = SourceText::try_from_utf16([
+            u16::from(b'\''),
+            0xd800,
+            0xe000,
+            u16::from(b'\\'),
+            0xdfff,
+            u16::from(b'\''),
+        ])
+        .unwrap();
+        let string = Lexer::with_source_text(&string_source, LexerOptions::default())
+            .next_token()
+            .unwrap();
+        let TokenKind::String(string) = string.kind else {
+            panic!("expected reversible String token");
+        };
+        assert_eq!(string.value.utf16, [0xd800, 0xe000, 0xdfff]);
+
+        let template_source = SourceText::try_from_utf16([
+            u16::from(b'`'),
+            0xd800,
+            u16::from(b'\\'),
+            0xdfff,
+            u16::from(b'`'),
+        ])
+        .unwrap();
+        let template = Lexer::with_source_text(&template_source, LexerOptions::default())
+            .next_token()
+            .unwrap();
+        let TokenKind::Template(template) = template.kind else {
+            panic!("expected reversible Template token");
+        };
+        assert_eq!(template.raw_value.utf16, [0xd800, 0x5c, 0xdfff]);
+        assert_eq!(template.cooked.unwrap().utf16, [0xd800, 0xdfff]);
+
+        let regexp_source = SourceText::try_from_utf16([
+            u16::from(b'/'),
+            0xd800,
+            0xe000,
+            u16::from(b'\\'),
+            0xdfff,
+            u16::from(b'/'),
+        ])
+        .unwrap();
+        let mut lexer = Lexer::with_source_text(&regexp_source, LexerOptions::default());
+        let regexp = lexer.next_token_with_goal(LexicalGoal::RegExp).unwrap();
+        let TokenKind::RegExp(regexp) = regexp.kind else {
+            panic!("expected reversible RegExp token");
+        };
+        let pattern = lexer
+            .source_range_to_js_string(1..1 + regexp.pattern.len())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pattern.utf16_units().collect::<Vec<_>>(),
+            [0xd800, 0xe000, 0x5c, 0xdfff]
         );
     }
 

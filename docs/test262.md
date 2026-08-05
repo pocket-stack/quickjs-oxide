@@ -6,6 +6,55 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3cu dynamic eval WTF-8 source preservation
+
+R3cu freezes the pinned Test262 surface that sends raw lone UTF-16 surrogates
+through direct or indirect String `eval`. The engine now carries that source
+through parsing and compilation with a reversible same-width carrier, then
+retains saved debug metadata as QuickJS-compatible canonical WTF-8. String and
+template values, RegExp patterns, and `Function.prototype.toString` preserve
+the original UTF-16 units, while comment tokenization and identifier error
+locations remain stable. A real U+E000 remains distinct from the internal
+carrier, and valid surrogate pairs retain canonical UTF-8. Dynamic `Function`
+and the Test262 host's `$262.evalScript` are outside this milestone and remain
+typed frontiers.
+
+The exact manifest contains 11 paths / 22 sloppy-and-strict variants and
+hashes to
+`3e4f73f980aae940fe3f81df608e5f32154d851c632535a58de89de728b31f2d`.
+Pinned QuickJS passes all 22. The authenticated R3ct parent records
+`unsupported-runtime=22`, while the R3cu candidate records `pass=22`.
+Candidate focused TSV/JSONL SHA-256 values are
+`515e3b7056e86958fe3b7e265f717ce301e95245ed907f35cbeae7d5ff8c3859`
+and
+`3f36b9aa435cd8c29b58f6cb9f65a8a6b4a57fbb66ec588deacf13c6e1de6dca`.
+The focused join changes all 22 outcomes, has no detail-only movement, and
+records no regression.
+
+The global profile remains byte-identical: 124 admitted feature tags, 1,197
+audited negative paths, and SHA-256
+`ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a`.
+Across the complete 102,037-row vector, the same 22 outcomes change and the
+other 102,015 rows remain byte-identical. The canonical result is 65,430
+passes / 65,497 runnable; `unsupported-runtime` falls from 22 to zero. No
+previous pass regresses. Full candidate TSV/JSONL SHA-256 values are
+`8cbb90ce01fcc2c887871d7de02cfb62a6588ff807e8604e27700823b99d5820`
+and
+`10cb9ef6db26da8150cf8f23222b0aad02ac7cee9326aab18ef56ca0ab272aa4`.
+The complete residual candidate summary is `fail-parse=11`,
+`fail-runtime=54`, `skipped-config-exclude=6700`, `skipped-feature=11775`,
+`timeout=2`, `unsupported-feature=13788`, `unsupported-host-agent=118`,
+`unsupported-host-can-block-false=4`, `unsupported-host-is-html-dda=84`,
+`unsupported-module=679`, and `unsupported-negative-provenance=3392`.
+
+Reproduce the receipts with:
+
+```sh
+./scripts/test-test262-eval-wtf8-source.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-eval-wtf8-source.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-eval-wtf8-source.sh --full
+```
+
 ## R3ct basic RegExp v CharacterClassEscape runtime
 
 R3ct implements the first deliberately bounded `v`-flag slice by following
@@ -1577,30 +1626,30 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The current R3ct canonical summary is:
+every outcome in canonical order. The current R3cu canonical summary is:
 
-- 65,408 pass;
+- 65,430 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 18,087 are classified as unsupported because of a feature, mode, host
+- 18,065 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance, including 13,788 `unsupported-feature` variants;
 - 11 fail to parse, 54 fail at runtime, none fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admits 65,497 variants to execution. That count includes variants
-which then report a typed parser/runtime frontier or harness failure rather
-than an observed non-unsupported outcome.
+The runner admits 65,497 variants to execution. At R3cu all 65,497 produce a
+non-unsupported observed outcome; the runnable count can otherwise include
+typed parser/runtime frontiers or harness failures.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 64.10% (`65,408 / 102,037`);
-- conservative target-scope lower bound: 78.27%
-  (`65,408 / (102,037 - 18,475)`);
+- raw suite pass rate: 64.12% (`65,430 / 102,037`);
+- conservative target-scope lower bound: 78.30%
+  (`65,430 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 99.90%
-  (`65,408 / 65,475`).
+  (`65,430 / 65,497`).
 
-The 78.27% figure is the useful whole-project progress floor, not a claim that
-the engine is 78.27% conformant. The 99.90% conditional rate measures quality
+The 78.30% figure is the useful whole-project progress floor, not a claim that
+the engine is 78.30% conformant. The 99.90% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -1655,10 +1704,10 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The current R3ct canonical full TSV/JSONL SHA-256 values are
-`908f7e0a9dca5a0b7f7c4a154ecffce425a0998cf1c0e7c8830dbe35850599d7`
+The current R3cu canonical full TSV/JSONL SHA-256 values are
+`8cbb90ce01fcc2c887871d7de02cfb62a6588ff807e8604e27700823b99d5820`
 and
-`9a128f5e3a901ddb50bb9e98a080dfe1355ec0d6ddad9fa9d6fc09c7501e7eb7`.
+`10cb9ef6db26da8150cf8f23222b0aad02ac7cee9326aab18ef56ca0ab272aa4`.
 
 ## Milestone policy
 
@@ -8565,9 +8614,9 @@ R3bw then admits that tag globally: 439 outcomes change to `pass`, 456 rows
 change only their residual-capability detail, and 101,142 rows remain
 unchanged. That historical R3bw vector reached 59,507/102,037 passes with 60,026
 runnable variants, 18,618 `unsupported-feature` outcomes, and 23,585 total
-unsupported outcomes. Subsequent milestones through R3ct advance the current
-vector to 65,408/102,037 passes with 65,497 runnable variants, 13,788
-`unsupported-feature` outcomes, and 18,087 total unsupported outcomes.
+unsupported outcomes. Subsequent milestones through R3cu advance the current
+vector to 65,430/102,037 passes with 65,497 runnable variants, 13,788
+`unsupported-feature` outcomes, and 18,065 total unsupported outcomes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.
 Test262 remains the project scoreboard, while focused QuickJS

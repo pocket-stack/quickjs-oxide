@@ -21,6 +21,7 @@ pub mod property;
 pub mod regexp;
 pub mod runtime;
 pub mod shape;
+pub(crate) mod source_text;
 mod unicode;
 mod unicode_case;
 mod unicode_normalize;

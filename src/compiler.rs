@@ -34,6 +34,7 @@ use crate::lexer::{
     Identifier, Keyword, LexContext, LexError, LexErrorKind, Lexer, LexerOptions, LexicalGoal,
     NumberKind, NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
 };
+use crate::source_text::SourceText;
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
@@ -258,6 +259,7 @@ pub(crate) fn compile_unlinked_script_with_filename(
 /// This deliberately does not reuse the ordinary Script root. QuickJS gives
 /// eval its own body environment and, for direct eval, attaches that root to
 /// the active caller's VarRefs only while publishing and executing it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn compile_unlinked_eval_with_filename(
     source: &str,
     filename: &str,
@@ -265,6 +267,23 @@ pub(crate) fn compile_unlinked_eval_with_filename(
     context: EvalCompileContext,
 ) -> Result<UnlinkedFunction, Error> {
     let mut tree = Parser::parse_eval(source, JsString::try_from_utf8(filename)?, context)?;
+    resolve_identifiers(&mut tree)?;
+    if let Some(error) = tree.pending_unsupported.take() {
+        return Err(error);
+    }
+    lower_unlinked_tree(tree, debug_info)
+}
+
+/// Compile dynamic eval source whose carrier may represent lone UTF-16
+/// surrogates. Public Rust `&str` compilation remains on the ordinary wrapper
+/// above; only JavaScript String eval uses this reversible internal boundary.
+pub(crate) fn compile_unlinked_eval_source_with_filename(
+    source: &SourceText,
+    filename: &str,
+    debug_info: DebugInfoMode,
+    context: EvalCompileContext,
+) -> Result<UnlinkedFunction, Error> {
+    let mut tree = Parser::parse_eval_source(source, JsString::try_from_utf8(filename)?, context)?;
     resolve_identifiers(&mut tree)?;
     if let Some(error) = tree.pending_unsupported.take() {
         return Err(error);
@@ -1764,7 +1783,7 @@ fn install_eval_external_bindings(
 #[derive(Debug)]
 struct FunctionTree {
     functions: Vec<FunctionIr>,
-    source: Box<str>,
+    source: SourceText,
     filename: JsString,
     pending_unsupported: Option<Error>,
 }
@@ -1811,19 +1830,34 @@ enum RootCompileContext {
 
 impl<'source> Parser<'source> {
     fn parse(source: &'source str, filename: JsString) -> Result<FunctionTree, Error> {
-        Self::parse_root(source, filename, RootCompileContext::Script)
+        Self::parse_root(source, None, filename, RootCompileContext::Script)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn parse_eval(
         source: &'source str,
         filename: JsString,
         context: EvalCompileContext,
     ) -> Result<FunctionTree, Error> {
-        Self::parse_root(source, filename, RootCompileContext::Eval(context))
+        Self::parse_root(source, None, filename, RootCompileContext::Eval(context))
+    }
+
+    fn parse_eval_source(
+        source: &'source SourceText,
+        filename: JsString,
+        context: EvalCompileContext,
+    ) -> Result<FunctionTree, Error> {
+        Self::parse_root(
+            source.carrier(),
+            Some(source),
+            filename,
+            RootCompileContext::Eval(context),
+        )
     }
 
     fn parse_root(
         source: &'source str,
+        source_text: Option<&'source SourceText>,
         filename: JsString,
         context: RootCompileContext,
     ) -> Result<FunctionTree, Error> {
@@ -1892,13 +1926,14 @@ impl<'source> Parser<'source> {
         // QuickJS enables Annex B HTML comments for every Script and Eval
         // parse, independently of strict mode. A future Module root must keep
         // this option disabled (`allow_html_comments = !is_module`).
-        let mut lexer = Lexer::with_options(
-            source,
-            LexerOptions {
-                allow_html_comments: true,
-                ..LexerOptions::default()
-            },
-        );
+        let lexer_options = LexerOptions {
+            allow_html_comments: true,
+            ..LexerOptions::default()
+        };
+        let mut lexer = match source_text {
+            Some(source) => Lexer::with_source_text(source, lexer_options),
+            None => Lexer::with_options(source, lexer_options),
+        };
         let first_token = lexer.next_token().map_err(lex_error)?;
         let source_span = first_token.span;
         let mut parser = Self {
@@ -1948,7 +1983,9 @@ impl<'source> Parser<'source> {
         parser.parse_script_body()?;
         Ok(FunctionTree {
             functions: parser.functions,
-            source: source.into(),
+            source: source_text
+                .cloned()
+                .unwrap_or_else(|| SourceText::from_utf8(source)),
             filename,
             pending_unsupported: parser.pending_unsupported,
         })
@@ -6557,7 +6594,19 @@ impl<'source> Parser<'source> {
                 // next token. Preserve that diagnostic precedence and retain
                 // the resulting program in immutable bytecode so evaluation
                 // only allocates a fresh branded object.
-                let pattern = JsString::try_from_utf8(literal.pattern)?;
+                let pattern_start = token
+                    .span
+                    .start
+                    .byte_offset
+                    .checked_add(1)
+                    .ok_or_else(|| Error::internal("regexp source range overflowed"))?;
+                let pattern_end = pattern_start
+                    .checked_add(literal.pattern.len())
+                    .ok_or_else(|| Error::internal("regexp source range overflowed"))?;
+                let pattern = self
+                    .lexer
+                    .source_range_to_js_string(pattern_start..pattern_end)?
+                    .ok_or_else(|| Error::internal("regexp source range is invalid"))?;
                 let flags = JsString::try_from_utf8(literal.flags)?;
                 let program = crate::regexp::compile(&pattern, &flags).map_err(|error| {
                     let kind = crate::regexp::javascript_compile_error_kind(&error);
@@ -15321,13 +15370,14 @@ fn fold_quickjs_constant_branches(code: &mut [Instruction]) {
 }
 
 fn build_unlinked_debug(
-    source: &str,
+    source: &SourceText,
     filename: JsString,
     definition: SourceOffset,
     source_range: Option<Range<SourceOffset>>,
     pc_sites: &[Option<SourceOffset>],
 ) -> Result<UnlinkedFunctionDebug, Error> {
-    let locator = QuickJsSourceLocator::new(source);
+    let carrier = source.carrier();
+    let locator = QuickJsSourceLocator::new(carrier);
     let definition = locator
         .locate(definition)
         .map_err(|error| Error::internal(error.to_string()))?;
@@ -15356,13 +15406,17 @@ fn build_unlinked_debug(
             let start = range.start.as_usize();
             let end = range.end.as_usize();
             if start > end
-                || end > source.len()
-                || !source.is_char_boundary(start)
-                || !source.is_char_boundary(end)
+                || end > carrier.len()
+                || !carrier.is_char_boundary(start)
+                || !carrier.is_char_boundary(end)
             {
                 return Err(Error::internal("function source range is invalid"));
             }
-            Ok(source.as_bytes()[start..end].to_vec().into_boxed_slice())
+            source
+                .try_range_to_wtf8_bytes(start..end)
+                .map_err(|_| Error::from(JsStringError::OutOfMemory))?
+                .map(Vec::into_boxed_slice)
+                .ok_or_else(|| Error::internal("function source range is invalid"))
         })
         .transpose()?;
 
