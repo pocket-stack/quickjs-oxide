@@ -52,6 +52,7 @@ const IMPLEMENTED_GLOBALS: &[&str] = &[
     "WeakMap",
     "WeakSet",
     "ArrayBuffer",
+    "SharedArrayBuffer",
     "Uint8ClampedArray",
     "Int8Array",
     "Uint8Array",
@@ -86,7 +87,7 @@ var implemented = [
     "TypeError", "URIError", "InternalError", "AggregateError", "Array", "Object", "Function", "Iterator", "parseInt",
     "parseFloat", "isNaN", "isFinite", "decodeURI", "decodeURIComponent",
     "encodeURI", "encodeURIComponent", "escape", "unescape", "Infinity",
-    "NaN", "undefined", "eval", "Number", "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt", "Date", "RegExp", "JSON", "Proxy", "Map", "Set", "WeakMap", "WeakSet", "ArrayBuffer", "Uint8ClampedArray", "Int8Array", "Uint8Array", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "BigInt64Array", "BigUint64Array", "Float16Array", "Float32Array", "Float64Array", "DataView", "Atomics", "Promise", "WeakRef", "FinalizationRegistry"
+    "NaN", "undefined", "eval", "Number", "Boolean", "String", "Math", "Reflect", "Symbol", "globalThis", "BigInt", "Date", "RegExp", "JSON", "Proxy", "Map", "Set", "WeakMap", "WeakSet", "ArrayBuffer", "SharedArrayBuffer", "Uint8ClampedArray", "Int8Array", "Uint8Array", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "BigInt64Array", "BigUint64Array", "Float16Array", "Float32Array", "Float64Array", "DataView", "Atomics", "Promise", "WeakRef", "FinalizationRegistry"
 ];
 var keys = Reflect.ownKeys(root);
 var firstSymbol = keys.findIndex(function(key) { return typeof key === "symbol"; });
@@ -195,7 +196,7 @@ print("reconnect=" + [
 
 const EXPECTED_OBSERVATIONS: &[&str] = &[
     "initial=true|101|true|true",
-    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,AggregateError,Array,Object,Function,Iterator,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,eval,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt,Date,RegExp,JSON,Proxy,Map,Set,WeakMap,WeakSet,ArrayBuffer,Uint8ClampedArray,Int8Array,Uint8Array,Int16Array,Uint16Array,Int32Array,Uint32Array,BigInt64Array,BigUint64Array,Float16Array,Float32Array,Float64Array,DataView,Atomics,Promise,WeakRef,FinalizationRegistry|true|true",
+    "keys=Error,EvalError,RangeError,ReferenceError,SyntaxError,TypeError,URIError,InternalError,AggregateError,Array,Object,Function,Iterator,parseInt,parseFloat,isNaN,isFinite,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,unescape,Infinity,NaN,undefined,eval,Number,Boolean,String,Math,Reflect,Symbol,globalThis,BigInt,Date,RegExp,JSON,Proxy,Map,Set,WeakMap,WeakSet,ArrayBuffer,SharedArrayBuffer,Uint8ClampedArray,Int8Array,Uint8Array,Int16Array,Uint16Array,Int32Array,Uint32Array,BigInt64Array,BigUint64Array,Float16Array,Float32Array,Float64Array,DataView,Atomics,Promise,WeakRef,FinalizationRegistry|true|true",
     "assignment=17|101",
     "delete=true|true|undefined",
     "strict-missing=ReferenceError:'globalThis' is not defined:true|true",
@@ -397,9 +398,23 @@ fn rust_observations() -> Vec<String> {
         .map(|(_, key)| key.clone())
         .chain(std::iter::once(tag.clone()))
         .collect::<Vec<_>>();
+    assert_eq!(
+        keys, expected_keys,
+        "implemented global own-key inventory changed"
+    );
+    let first_symbol = keys
+        .iter()
+        .position(|candidate| candidate == &tag)
+        .unwrap_or(keys.len());
+    let strings_before_symbols = keys[..first_symbol]
+        .iter()
+        .all(|candidate| candidate != &tag)
+        && keys[first_symbol..]
+            .iter()
+            .all(|candidate| candidate == &tag);
     observations.push(format!(
         "keys={implemented}|{}|{}",
-        keys == expected_keys,
+        strings_before_symbols,
         keys.last() == Some(&tag),
     ));
 
