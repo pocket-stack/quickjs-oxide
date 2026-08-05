@@ -6,6 +6,44 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dl global SharedArrayBuffer and Atomics admission
+
+R3dl globally admits the implemented `SharedArrayBuffer` and `Atomics` tags.
+The exact parent has 130 reviewed feature tags and hashes to
+`280264ae035da45cd0e2727b981e64380496ed75af3216208616dfee82d0459a`;
+the 132-tag candidate/live profile adds only those two tags and hashes to
+`47cf8351f7844340bbbff3ba9bb781faf552f8f27d0dd6cca2e35dbf9ad48232`.
+
+The authenticated universe contains 445 paths / 886 sloppy-and-strict
+variants. Its exact partition is 435 activation paths / 866 variants, six
+already admitted `Atomics.pause` paths / 12 variants, and four retained
+cross-realm paths / eight variants. The parent records 12 passes and 874
+`unsupported-feature` outcomes; the candidate records 878 passes and eight
+cross-realm `unsupported-feature` outcomes. The join therefore has 866 pass
+gains, eight diagnostic-only changes, 12 unchanged rows, and zero regressions.
+Pinned QuickJS 2026-06-04 passes all 886 variants.
+
+The complete join changes only those 874 rows. It reaches 66,476 passes /
+66,528 runnable / 102,037 total variants and reduces `unsupported-feature`
+from 13,627 to 12,761; every other outcome count is unchanged. Two independent
+release-mode full runs are byte-identical. The canonical TSV/JSONL SHA-256
+values are
+`501b64ed5c8367f33408225d956a262619163adf52baadf28f02811d14f3eae9`
+and
+`610e16ba65a0239556842efec7a745ba2885c72dfb3b8447c2578b8767ef7d40`.
+
+This admission leaves the Test262 `$262.agent` host as the next shared-memory
+frontier: its exact 59-path / 118-variant cohort remains classified as
+`unsupported-host-agent`, while pinned QuickJS passes all 118. The pinned
+QuickJS release has no `Atomics.waitAsync`, so that API remains outside the
+parity target.
+
+```sh
+./scripts/test-test262-shared-atomics-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-shared-atomics-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-shared-atomics-global.sh --full
+```
+
 ## R3dj exact bounded non-agent Atomics.wait implementation
 
 R3dj derives the synchronous non-agent boundary from the complete pinned suite,
@@ -2231,8 +2269,8 @@ classified vector. R3bp later performs that global admission above.
 - Test262 commit: `5c8206929d81b2d3d727ca6aac56c18358c8d790`
 - QuickJS patch SHA-256: `f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3`
 - QuickJS config SHA-256: `79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b`
-- quickjs-oxide 130-tag capability profile SHA-256:
-  `280264ae035da45cd0e2727b981e64380496ed75af3216208616dfee82d0459a`
+- quickjs-oxide 132-tag capability profile SHA-256:
+  `47cf8351f7844340bbbff3ba9bb781faf552f8f27d0dd6cca2e35dbf9ad48232`
 - 53,125 non-fixture metadata records SHA-256:
   `a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a`
 
@@ -2322,30 +2360,30 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The current R3dj canonical summary is:
+every outcome in canonical order. The current R3dl canonical summary is:
 
-- 65,610 pass;
+- 66,476 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
-- 17,900 are classified as unsupported because of a feature, mode, host
+- 17,034 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
-  provenance, including 13,627 `unsupported-feature` variants;
+  provenance, including 12,761 `unsupported-feature` variants;
 - seven fail to parse, 43 fail at runtime, none fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admits 65,662 variants to execution. All 65,662 produce a
+The runner admits 66,528 variants to execution. All 66,528 produce a
 non-unsupported observed outcome; the runnable count can otherwise include
 typed parser/runtime frontiers or harness failures.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 64.30% (`65,610 / 102,037`);
-- conservative target-scope lower bound: 78.52%
-  (`65,610 / (102,037 - 18,475)`);
+- raw suite pass rate: 65.15% (`66,476 / 102,037`);
+- conservative target-scope lower bound: 79.55%
+  (`66,476 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 99.92%
-  (`65,610 / 65,662`).
+  (`66,476 / 66,528`).
 
-The 78.52% figure is the useful whole-project progress floor, not a claim that
-the engine is 78.52% conformant. The 99.92% conditional rate measures quality
+The 79.55% figure is the useful whole-project progress floor, not a claim that
+the engine is 79.55% conformant. The 99.92% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -2373,7 +2411,7 @@ class slice, exposes adjacent derived/class-element and missing-intrinsic
 frontiers, and again keeps the runnable count fixed. R3f adds 545 passes by
 opening synchronous heritage/derived construction, while 88 adjacent variants
 move from parser/harness frontiers to honest missing-intrinsic, optional-chain,
-or pinned-target-error outcomes. The capability profile currently admits 130
+or pinned-target-error outcomes. The capability profile currently admits 132
 reviewed Test262 feature tags and 1,197 reviewed
 negative-test paths; all other feature-tagged or
 negative-provenance cases fail closed. Expanding that profile as implementation
@@ -2400,12 +2438,12 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The R3dg canonical full TSV/JSONL SHA-256 values, unchanged by R3dh and R3di,
-were
-`a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
+Two independent R3dl full runs are byte-identical. Their canonical TSV/JSONL
+SHA-256 values are
+`501b64ed5c8367f33408225d956a262619163adf52baadf28f02811d14f3eae9`
 and
-`dc37ed90322630e81fa4295daa57b8f81093719541076f84d4da27ef0d3c5d23`.
-R3dj's current receipt above supersedes them only in host classification.
+`610e16ba65a0239556842efec7a745ba2885c72dfb3b8447c2578b8767ef7d40`.
+They supersede the R3dj receipt as the current complete vector.
 
 ## Milestone policy
 

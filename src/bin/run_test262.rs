@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "280264ae035da45cd0e2727b981e64380496ed75af3216208616dfee82d0459a";
+    "47cf8351f7844340bbbff3ba9bb781faf552f8f27d0dd6cca2e35dbf9ad48232";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -495,6 +495,12 @@ const TEST262_ERROR_REGEXP_TYPEDARRAY_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "280264ae035da45cd0e2727b981e64380496ed75af3216208616dfee82d0459a";
 const TEST262_ERROR_REGEXP_TYPEDARRAY_GLOBAL_MANIFEST_SHA256: &str =
     "9fca0f3c6dbb4a36d6e1e3d12fff75503aafecb2f7a2fcd1606fc2fa0060c7c1";
+const TEST262_SHARED_ATOMICS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "280264ae035da45cd0e2727b981e64380496ed75af3216208616dfee82d0459a";
+const TEST262_SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "47cf8351f7844340bbbff3ba9bb781faf552f8f27d0dd6cca2e35dbf9ad48232";
+const TEST262_SHARED_ATOMICS_GLOBAL_MANIFEST_SHA256: &str =
+    "c89bf36101fc9f369f703d9f27faecdda9c520463d08f78b1484c170d12d17e5";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -1133,6 +1139,8 @@ enum OxideProfileKind {
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
+    SharedAtomicsGlobalParent,
+    SharedAtomicsGlobalCandidate,
 }
 
 fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
@@ -1601,6 +1609,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-error-regexp-typedarray-global-candidate.conf"),
             OxideProfileKind::ErrorRegExpTypedArrayGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-shared-atomics-global-parent.conf"),
+            OxideProfileKind::SharedAtomicsGlobalParent,
+        ),
+        (
+            root.join("tests/test262-shared-atomics-global-candidate.conf"),
+            OxideProfileKind::SharedAtomicsGlobalCandidate,
         ),
     ];
     for (candidate, kind) in profiles {
@@ -3580,9 +3596,35 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "Error.isError, RegExp.escape, and TypedArray.prototype.at global admission",
             "candidate",
             TEST262_ERROR_REGEXP_TYPEDARRAY_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-error-regexp-typedarray-global.txt",
+                    TEST262_ERROR_REGEXP_TYPEDARRAY_GLOBAL_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-shared-atomics-global.txt",
+                    TEST262_SHARED_ATOMICS_GLOBAL_MANIFEST_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::SharedAtomicsGlobalParent => verify_tag_transition_profile(
+            options,
+            "SharedArrayBuffer and Atomics global admission",
+            "parent",
+            TEST262_SHARED_ATOMICS_GLOBAL_PARENT_PROFILE_SHA256,
             &[(
-                "tests/test262-error-regexp-typedarray-global.txt",
-                TEST262_ERROR_REGEXP_TYPEDARRAY_GLOBAL_MANIFEST_SHA256,
+                "tests/test262-shared-atomics-global.txt",
+                TEST262_SHARED_ATOMICS_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::SharedAtomicsGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "SharedArrayBuffer and Atomics global admission",
+            "candidate",
+            TEST262_SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-shared-atomics-global.txt",
+                TEST262_SHARED_ATOMICS_GLOBAL_MANIFEST_SHA256,
             )],
         ),
     }
@@ -3932,6 +3974,8 @@ mod cli_tests {
         TEST262_REST_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_REST_PARAMETERS_PARENT_PROFILE_SHA256, TEST262_SET_PROFILE_SHA256,
         TEST262_SHARED_ARRAY_BUFFER_CORE_PROFILE_SHA256,
+        TEST262_SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_SHARED_ATOMICS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_SHARED_ATOMICS_NONBLOCKING_PROFILE_SHA256, TEST262_SYMBOL_PROTOCOLS_PROFILE_SHA256,
         TEST262_TYPED_ARRAY_CORE_PROFILE_SHA256,
         TEST262_UINT8ARRAY_CODECS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -4629,6 +4673,18 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::ErrorRegExpTypedArrayGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-shared-atomics-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::SharedAtomicsGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-shared-atomics-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::SharedAtomicsGlobalCandidate
         );
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
@@ -8468,6 +8524,7 @@ mod cli_tests {
                 "--manifest",
                 "tests/test262-error-regexp-typedarray-global.txt",
             ],
+            ["--manifest", "tests/test262-shared-atomics-global.txt"],
             ["--all", ""],
         ] {
             let mut arguments = vec![
@@ -8510,6 +8567,61 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_atomics_global_profiles_require_exact_manifest_or_all() {
+        for (profile, expected_sha256) in [
+            (
+                "tests/test262-shared-atomics-global-parent.conf",
+                TEST262_SHARED_ATOMICS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-shared-atomics-global-candidate.conf",
+                TEST262_SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                ["--manifest", "tests/test262-shared-atomics-global.txt"],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_sha256);
+            }
+
+            for selection in [
+                ["--test", "test/built-ins/Atomics/add/descriptor.js"],
+                [
+                    "--manifest",
+                    "tests/test262-atomics-wait-nonagent-bounded.txt",
+                ],
+                ["--manifest", "tests/test262-shared-array-buffer-core.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let arguments = [
+                    "--suite",
+                    "suite",
+                    "--oxide-profile",
+                    profile,
+                    selection[0],
+                    selection[1],
+                    "--report",
+                    "report.tsv",
+                ];
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
         }
     }
 

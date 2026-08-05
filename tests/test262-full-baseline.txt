@@ -1,8 +1,8 @@
 schema=test262-canonical-classified-v2
 timeout_ms=30000
 variants=102037
-runnable=65662
-passes=65610
-tsv_sha256=17370398c6a211d4657ad763a6e40f0cd198d72faa14b2995f7937ad52a0c6db
-jsonl_sha256=6e12d86318b2f1d7e5f684962a02585b1a91a4d7830d6e05ed38f80c766cc9a1
-summary=fail-parse=7 fail-runtime=43 pass=65610 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=13627 unsupported-host-agent=118 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3392
+runnable=66528
+passes=66476
+tsv_sha256=501b64ed5c8367f33408225d956a262619163adf52baadf28f02811d14f3eae9
+jsonl_sha256=610e16ba65a0239556842efec7a745ba2885c72dfb3b8447c2578b8767ef7d40
+summary=fail-parse=7 fail-runtime=43 pass=66476 skipped-config-exclude=6700 skipped-feature=11775 timeout=2 unsupported-feature=12761 unsupported-host-agent=118 unsupported-host-is-html-dda=84 unsupported-module=679 unsupported-negative-provenance=3392

@@ -270,6 +270,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-error-regexp-typedarray-global-candidate.conf"
     ));
+    const SHARED_ATOMICS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-shared-atomics-global-parent.conf"
+    ));
+    const SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-shared-atomics-global-candidate.conf"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -478,13 +486,14 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 130] = [
+    const EXPECTED_FEATURES: [&str; 132] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
         "Array.prototype.flatMap",
         "Array.prototype.includes",
         "ArrayBuffer",
+        "Atomics",
         "Atomics.pause",
         "BigInt",
         "DataView",
@@ -519,6 +528,7 @@ mod tests {
         "Reflect.setPrototypeOf",
         "RegExp.escape",
         "Set",
+        "SharedArrayBuffer",
         "String.fromCodePoint",
         "String.prototype.at",
         "String.prototype.endsWith",
@@ -1028,6 +1038,10 @@ mod tests {
             OxideProfile::parse(ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE).unwrap();
         let error_regexp_typedarray_global_candidate =
             OxideProfile::parse(ERROR_REGEXP_TYPEDARRAY_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let shared_atomics_global_parent =
+            OxideProfile::parse(SHARED_ATOMICS_GLOBAL_PARENT_PROFILE).unwrap();
+        let shared_atomics_global_candidate =
+            OxideProfile::parse(SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1694,11 +1708,35 @@ mod tests {
             error_regexp_typedarray_global_candidate.allows_async_execution(),
             atomics_pause_global_candidate.allows_async_execution()
         );
-        assert_eq!(profile, error_regexp_typedarray_global_candidate);
         assert_eq!(
-            CHECKED_IN_PROFILE,
-            ERROR_REGEXP_TYPEDARRAY_GLOBAL_CANDIDATE_PROFILE
+            shared_atomics_global_parent,
+            error_regexp_typedarray_global_candidate
         );
+        assert_eq!(
+            shared_atomics_global_candidate
+                .features
+                .difference(&shared_atomics_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Atomics", "SharedArrayBuffer"]
+        );
+        assert!(
+            shared_atomics_global_parent
+                .features
+                .difference(&shared_atomics_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            shared_atomics_global_candidate.audited_negative_tests,
+            shared_atomics_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            shared_atomics_global_candidate.allows_async_execution(),
+            shared_atomics_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, shared_atomics_global_candidate);
+        assert_eq!(CHECKED_IN_PROFILE, SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE);
         assert_eq!(
             default_parameters_candidate
                 .features

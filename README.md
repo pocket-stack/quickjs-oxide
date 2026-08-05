@@ -8,14 +8,16 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-The latest milestone adds synchronous `Atomics.wait`, FIFO `notify`, bounded
-timeouts, QuickJS-compatible host blocking policy, and a safe cross-runtime
-shared-memory bridge. Oxide and pinned QuickJS both pass the exact 66-variant
-non-agent wait cohort. Test262 agents, modules, workers, broad built-ins, and
-the complete embedding/tooling surface remain unfinished. Pinned QuickJS has
-no `Atomics.waitAsync`, so it is outside this rewrite's parity target.
+The latest conformance milestone globally admits the implemented
+`SharedArrayBuffer` and `Atomics` surfaces. Its exact 886-variant gate adds 866
+passes with no regression; Oxide and pinned QuickJS both pass every variant
+that is not intentionally retained behind cross-realm support. The next
+shared-memory frontier is the Test262 `$262.agent` host (59 paths / 118
+variants). Modules, workers, broad built-ins, and the complete
+embedding/tooling surface also remain unfinished. Pinned QuickJS has no
+`Atomics.waitAsync`, so it is outside this rewrite's parity target.
 
-The latest audited global vector is 65,610 passes / 65,662 runnable / 102,037
+The latest audited global vector is 66,476 passes / 66,528 runnable / 102,037
 total variants. Detailed implementation and Test262 bookkeeping lives in the
 status documents below, keeping this page focused on trying the engine.
 

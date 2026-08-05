@@ -59,11 +59,6 @@ value() {
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
         "$baseline"
 }
-canonical_value() {
-    awk -F= -v wanted="$1" \
-        '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
-        "$canonical_baseline"
-}
 section() {
     awk -v wanted="[$2]" \
         '$0==wanted{inside=1;next} /^\[/{inside=0} inside&&NF&&$1!~/^#/{print}' \
@@ -132,14 +127,20 @@ check_file "$baseline" 137 \
     3eac048bda22dccd8b5fb299bab5d5a1c541518c0c4b60dbbc042a58617f443d
 [[ "$(value canonical_baseline)" == "$canonical_baseline" ]] \
     || die 'R3dj canonical baseline path drifted'
-check_file "$canonical_baseline" "$(value canonical_baseline_lines)" \
-    "$(value canonical_baseline_sha256)"
-[[ "$(canonical_value variants)" == "$(value canonical_variants)" \
-    && "$(canonical_value runnable)" == "$(value canonical_runnable)" \
-    && "$(canonical_value passes)" == "$(value canonical_passes)" \
-    && "$(canonical_value tsv_sha256)" == "$(value canonical_tsv_sha256)" \
-    && "$(canonical_value jsonl_sha256)" == "$(value canonical_jsonl_sha256)" ]] \
-    || die 'R3dj canonical full-vector bridge drifted'
+# R3dj is an implementation receipt, not a permanent global admission. Its
+# authenticated baseline records the historical full-vector snapshot exactly;
+# the live canonical baseline may legitimately advance in later milestones.
+[[ "$(value canonical_baseline_lines)" == 8 \
+    && "$(value canonical_baseline_sha256)" == \
+        8c9b69ff622518433e88cedfa4735d0b9e0a02df2723dd15883ac9be74bbd01e \
+    && "$(value canonical_variants)" == 102037 \
+    && "$(value canonical_runnable)" == 65662 \
+    && "$(value canonical_passes)" == 65610 \
+    && "$(value canonical_tsv_sha256)" == \
+        17370398c6a211d4657ad763a6e40f0cd198d72faa14b2995f7937ad52a0c6db \
+    && "$(value canonical_jsonl_sha256)" == \
+        6e12d86318b2f1d7e5f684962a02585b1a91a4d7830d6e05ed38f80c766cc9a1 ]] \
+    || die 'R3dj historical canonical full-vector snapshot drifted'
 check_file "$sab_ledger" "$(value shared_array_buffer_universe_lines)" \
     "$(value shared_array_buffer_universe_sha256)"
 check_file "$atomics_ledger" "$(value atomics_universe_lines)" \

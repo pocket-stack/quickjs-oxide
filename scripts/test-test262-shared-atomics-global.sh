@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the R3dg global Error.isError, RegExp.escape, and TypedArray.prototype.at admission.
+# Reproduce the R3dl global SharedArrayBuffer and Atomics admission.
 
 set -euo pipefail
 export LC_ALL=C
@@ -7,39 +7,40 @@ export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-error-regexp-typedarray-global-baseline.txt
-predecessor_baseline=tests/test262-atomics-pause-global-baseline.txt
-successor_baseline=tests/test262-shared-atomics-global-baseline.txt
-successor_gate=scripts/test-test262-shared-atomics-global.sh
+baseline=tests/test262-shared-atomics-global-baseline.txt
+predecessor_baseline=tests/test262-error-regexp-typedarray-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
 upstream=compat/upstream.toml
 live_profile=compat/test262-oxide.conf
-parent_profile=tests/test262-atomics-pause-global-candidate.conf
-candidate_profile=tests/test262-error-regexp-typedarray-global-candidate.conf
-added_features=tests/test262-error-regexp-typedarray-global-added-features.txt
-manifest=tests/test262-error-regexp-typedarray-global.txt
-parent_report=tests/test262-error-regexp-typedarray-global-parent.tsv
-candidate_report=tests/test262-error-regexp-typedarray-global-candidate.tsv
-transition=tests/test262-error-regexp-typedarray-global-transitions.tsv
-parent_replay=target/test262-error-regexp-typedarray-global-parent-replay.tsv
-candidate_replay=target/test262-error-regexp-typedarray-global-candidate-replay.tsv
-parent_full=target/test262-atomics-pause-global-candidate-full.tsv
-candidate_full=target/test262-error-regexp-typedarray-global-candidate-full.tsv
-oracle_log=target/test262-error-regexp-typedarray-global-quickjs.log
+parent_profile=tests/test262-shared-atomics-global-parent.conf
+candidate_profile=tests/test262-shared-atomics-global-candidate.conf
+added_features=tests/test262-shared-atomics-global-added-features.txt
+manifest=tests/test262-shared-atomics-global.txt
+activation=tests/test262-shared-atomics-global-activation.txt
+already_admitted=tests/test262-atomics-pause-global.txt
+cross_realm_retained=tests/test262-shared-atomics-global-cross-realm-retained.txt
+sab_universe=tests/test262-shared-array-buffer-universe.tsv
+atomics_universe=tests/test262-atomics-universe.tsv
+parent_report=tests/test262-shared-atomics-global-parent.tsv
+candidate_report=tests/test262-shared-atomics-global-candidate.tsv
+transition=tests/test262-shared-atomics-global-transitions.tsv
+parent_replay=target/test262-shared-atomics-global-parent-replay.tsv
+candidate_replay=target/test262-shared-atomics-global-candidate-replay.tsv
+parent_full=target/test262-full.tsv
+candidate_full=target/test262-shared-atomics-global-candidate-full.tsv
+oracle_log=target/test262-shared-atomics-global-quickjs.log
 workers=${TEST262_WORKERS:-8}
 full_workers=${TEST262_FULL_WORKERS:-2}
 reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
 runner_override=${TEST262_RUNNER:-}
 
-baseline_lines=104
-baseline_sha=f6e0d79990666e6a4b0bce35d20cbe1c69cbe0fe8b79cb00a864071e5cb9b311
-successor_lines=131
-successor_sha=537c03e9f3f0eeb8f43249af5e1f2774bd0f0fc11d446ac3d60319b49510f6ab
+baseline_lines=131
+baseline_sha=537c03e9f3f0eeb8f43249af5e1f2774bd0f0fc11d446ac3d60319b49510f6ab
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
     printf '  --check  authenticate profiles, focused receipts, metadata, and QuickJS\n'
-    printf '  default  additionally replay the exact 47-path / 94-variant transition\n'
+    printf '  default  additionally replay the exact 445-path / 886-variant transition\n'
     printf '  --full   additionally replay and join the authenticated 102037-row reports\n'
 }
 
@@ -73,7 +74,6 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 predecessor_value() { value_from "$predecessor_baseline" "$1"; }
-successor_value() { value_from "$successor_baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
@@ -196,7 +196,7 @@ verify_full_report() {
 make_transition() {
     local before=$1 after=$2 output=$3
     {
-        echo '# Exhaustive R3dg three-tag global admission transition.'
+        echo '# Exhaustive R3dl SharedArrayBuffer and Atomics global admission transition.'
         echo "# parent_commit=$(value parent_commit)"
         echo "# parent_profile_sha256=$(value parent_profile_sha256)"
         echo "# candidate_profile_sha256=$(value candidate_profile_sha256)"
@@ -237,7 +237,7 @@ check_profiles() {
     check_file "$live_profile" "$(value candidate_profile_lines)" \
         "$(value candidate_profile_sha256)"
     cmp -s "$candidate_profile" "$live_profile" \
-        || die 'live profile is not byte-identical to the R3dg candidate'
+        || die 'live profile is not byte-identical to the R3dl candidate'
 
     local section
     for section in features audited-negative-tests execution; do
@@ -253,10 +253,10 @@ check_profiles() {
         && "$(sha "$tmp/parent.audited-negative-tests")" == "$(value audited_negative_tests_sha256)" \
         && "$(lines "$tmp/parent.execution")" == "$(value execution_entries)" \
         && "$(sha "$tmp/parent.execution")" == "$(value execution_sha256)" ]] \
-        || die 'R3dg profile inventory drifted'
+        || die 'R3dl profile inventory drifted'
     diff -u "$added_features" "$tmp/added.features"
     [[ -z "$(comm -23 "$tmp/parent.features" "$tmp/candidate.features")" ]] \
-        || die 'R3dg candidate removed a parent feature'
+        || die 'R3dl candidate removed a parent feature'
     diff -u "$tmp/parent.audited-negative-tests" "$tmp/candidate.audited-negative-tests"
     diff -u "$tmp/parent.execution" "$tmp/candidate.execution"
 }
@@ -265,63 +265,106 @@ check_manifest_and_metadata() {
     check_file "$added_features" "$(value added_features_count)" \
         "$(value added_features_sha256)"
     check_file "$manifest" "$(value manifest_paths)" "$(value manifest_sha256)"
-    sort -c "$manifest" || die 'R3dg manifest is not bytewise sorted'
-    [[ -z "$(uniq -d "$manifest")" ]] || die 'R3dg manifest contains duplicates'
+    check_file "$activation" "$(value activation_paths)" \
+        "$(value activation_sha256)"
+    check_file "$already_admitted" "$(value already_admitted_paths)" \
+        "$(value already_admitted_sha256)"
+    check_file "$cross_realm_retained" "$(value cross_realm_retained_paths)" \
+        "$(value cross_realm_retained_sha256)"
+    check_file tests/test262-atomics-non-shared-core.txt \
+        "$(value atomics_non_shared_core_paths)" \
+        "$(value atomics_non_shared_core_sha256)"
+    check_file tests/test262-shared-array-buffer-core.txt \
+        "$(value shared_array_buffer_core_paths)" \
+        "$(value shared_array_buffer_core_sha256)"
+    check_file tests/test262-shared-atomics-nonblocking.txt \
+        "$(value shared_atomics_nonblocking_paths)" \
+        "$(value shared_atomics_nonblocking_sha256)"
+    check_file tests/test262-atomics-wait-nonagent-bounded.txt \
+        "$(value atomics_wait_nonagent_bounded_paths)" \
+        "$(value atomics_wait_nonagent_bounded_sha256)"
+    check_file "$sab_universe" "$(value shared_array_buffer_universe_lines)" \
+        "$(value shared_array_buffer_universe_sha256)"
+    check_file "$atomics_universe" "$(value atomics_universe_lines)" \
+        "$(value atomics_universe_sha256)"
+
+    local file path source staging_cross=test/staging/sm/Atomics/cross-compartment.js
+    for file in "$manifest" "$activation" "$already_admitted" \
+        "$cross_realm_retained"; do
+        sort -c "$file" || die "R3dl manifest is not bytewise sorted: $file"
+        [[ -z "$(uniq -d "$file")" ]] \
+            || die "R3dl manifest contains duplicates: $file"
+    done
+
+    sort -u tests/test262-atomics-non-shared-core.txt \
+        tests/test262-shared-array-buffer-core.txt \
+        tests/test262-shared-atomics-nonblocking.txt \
+        tests/test262-atomics-wait-nonagent-bounded.txt \
+        >"$tmp/authenticated-union.txt"
+    [[ "$(lines "$tmp/authenticated-union.txt")" == \
+        "$(value authenticated_union_paths)" ]] \
+        || die 'R3dl authenticated milestone union drifted'
+    { cat "$tmp/authenticated-union.txt"; echo "$staging_cross"; } \
+        | sort -u >"$tmp/reconstructed-universe.txt"
+    [[ "$(( $(lines "$tmp/reconstructed-universe.txt") - \
+        $(lines "$tmp/authenticated-union.txt") ))" == \
+        "$(value staging_spillover_paths)" ]] \
+        || die 'R3dl staging spillover cardinality drifted'
+    diff -u "$manifest" "$tmp/reconstructed-universe.txt"
+
+    sort -u "$activation" "$already_admitted" "$cross_realm_retained" \
+        >"$tmp/partition.txt"
+    diff -u "$manifest" "$tmp/partition.txt"
+    [[ -z "$(comm -12 "$activation" "$already_admitted")" \
+        && -z "$(comm -12 "$activation" "$cross_realm_retained")" \
+        && -z "$(comm -12 "$already_admitted" "$cross_realm_retained")" \
+        && "$(printf 'activation=%s already-admitted=%s cross-realm-retained=%s' \
+            "$(lines "$activation")" "$(lines "$already_admitted")" \
+            "$(lines "$cross_realm_retained")")" == "$(value manifest_partition)" ]] \
+        || die 'R3dl admission partition drifted'
+    grep -Fxq "$staging_cross" "$activation" \
+        || die 'R3dl staging Atomics spillover left the activation partition'
+    [[ -z "$(comm -12 "$tmp/authenticated-union.txt" \
+        <(printf '%s\n' "$staging_cross"))" ]] \
+        || die 'R3dl staging spillover became part of an earlier milestone manifest'
 
     "$runner" --suite "$suite" --validate-metadata "$tmp/metadata.bin" >/dev/null
     [[ "$(lines "$tmp/metadata.bin")" == "$(value test262_metadata_records)" \
         && "$(sha "$tmp/metadata.bin")" == "$(value test262_metadata_sha256)" ]] \
         || die 'pinned Test262 metadata drifted'
     tr '\0' '\t' <"$tmp/metadata.bin" >"$tmp/metadata.tsv"
+    awk -F'\t' 'NR==FNR{wanted[$1]=1;next} $1 in wanted{print $1}' \
+        "$tmp/authenticated-union.txt" "$tmp/metadata.tsv" | sort -u \
+        >"$tmp/metadata-union.txt"
+    diff -u "$tmp/authenticated-union.txt" "$tmp/metadata-union.txt"
     awk -F'\t' '
         function has(list,value){return index("," list ",","," value ",")!=0}
-        function admitted(value){
-            return value=="Error.isError"||value=="RegExp.escape"||
-                value=="TypedArray.prototype.at"
-        }
-        NR==FNR{supported[$0]=1;next}
-        has($4,"Error.isError")||has($4,"RegExp.escape")||
-            has($4,"TypedArray.prototype.at"){
-            if($3!=""||$5!=""||$6!="")bad=1
+        NR==FNR{wanted[$1]=1;next}
+        $1 in wanted{
+            if(!has($4,"SharedArrayBuffer")||!has($4,"cross-realm"))exit 2
             print $1
-            if(has($4,"Error.isError"))tag_error++
-            if(has($4,"RegExp.escape"))tag_regexp++
-            if(has($4,"TypedArray.prototype.at"))tag_typedarray++
-            dependencies=""
-            n=split($4,a,",")
-            for(i=1;i<=n;i++)if(a[i]!=""){
-                features[a[i]]=1
-                if(!admitted(a[i])&&!(a[i] in supported))
-                    dependencies=dependencies (dependencies?", ":"") a[i]
-            }
-            if(dependencies=="")activation++
-            else{
-                if(dependencies!="class"&&dependencies!="cross-realm")bad=1
-                print $1 "\t" dependencies > dependency_output
-                retained++
-            }
         }
-        END{
-            if(bad)exit 2
-            for(feature in features)print feature > features_output
-            print "Error.isError=" tag_error > counts_output
-            print "RegExp.escape=" tag_regexp >> counts_output
-            print "TypedArray.prototype.at=" tag_typedarray >> counts_output
-            print "activation=" activation >> counts_output
-            print "dependency-retained=" retained >> counts_output
-        }
-    ' features_output="$tmp/metadata.features.unsorted" \
-        dependency_output="$tmp/dependencies.tsv" counts_output="$tmp/tag-counts.txt" \
-        "$tmp/parent.features" "$tmp/metadata.tsv" | sort -u >"$tmp/metadata.paths" \
-        || die 'R3dg metadata envelope gained flags, negatives, or unknown dependencies'
-    sort -u "$tmp/metadata.features.unsorted" >"$tmp/metadata.features"
-    diff -u "$manifest" "$tmp/metadata.paths"
-    [[ "$(lines "$tmp/metadata.features")" == "$(value manifest_metadata_features)" \
-        && "$(sha "$tmp/metadata.features")" == "$(value manifest_metadata_features_sha256)" \
-        && "$(lines "$tmp/dependencies.tsv")" == "$(value dependency_paths)" \
-        && "$(cut -f1 "$tmp/dependencies.tsv" | sha /dev/stdin)" == "$(value dependency_paths_sha256)" \
-        && "$(tr '\n' ' ' <"$tmp/tag-counts.txt" | sed 's/ $//')" == "$(value manifest_partition)" ]] \
-        || die 'R3dg metadata closure or dependency partition drifted'
+    ' "$cross_realm_retained" "$tmp/metadata.tsv" | sort -u \
+        >"$tmp/cross-realm-metadata.txt" \
+        || die 'R3dl cross-realm retained metadata drifted'
+    diff -u "$cross_realm_retained" "$tmp/cross-realm-metadata.txt"
+
+    check_file "$suite/$staging_cross" 114 \
+        "$(value staging_cross_compartment_sha256)"
+    check_file "$suite/harness/testAtomics.js" 123 \
+        "$(value test_atomics_harness_sha256)"
+    check_file "$suite/harness/atomicsHelper.js" 328 \
+        "$(value atomics_helper_harness_sha256)"
+    grep -Fq '$262.createRealm' "$suite/$staging_cross" \
+        && grep -Fq 'SharedArrayBuffer' "$suite/$staging_cross" \
+        && grep -Fq 'Atomics' "$suite/$staging_cross" \
+        || die 'R3dl staging Atomics spillover source shape drifted'
+
+    while IFS= read -r path; do
+        source=$suite/$path
+        ! grep -Eq 'Atomics[[:space:]]*\.[[:space:]]*waitAsync|\$262[[:space:]]*\.[[:space:]]*agent' \
+            "$source" || die "R3dl universe leaked agent or waitAsync source: $path"
+    done <"$manifest"
 }
 
 check_receipts() {
@@ -337,34 +380,50 @@ check_receipts() {
     verify_report "$candidate_report" "$(value candidate_profile_sha256)" candidate
 
     [[ "$(report_runnable "$parent_report")" == "$(value parent_runnable)" \
+        && "$(report_count pass "$parent_report")" == "$(value parent_passes)" \
         && "$(report_count unsupported-feature "$parent_report")" == "$(value parent_unsupported_feature)" \
         && "$(report_runnable "$candidate_report")" == "$(value candidate_runnable)" \
         && "$(report_count pass "$candidate_report")" == "$(value candidate_passes)" \
         && "$(report_count unsupported-feature "$candidate_report")" == "$(value candidate_unsupported_feature)" ]] \
-        || die 'R3dg focused outcome counts drifted'
-    awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant"){
+        || die 'R3dl focused outcome counts drifted'
+
+    rows_for_paths "$activation" "$parent_report" >"$tmp/parent.activation"
+    rows_for_paths "$activation" "$candidate_report" >"$tmp/candidate.activation"
+    rows_for_paths "$already_admitted" "$parent_report" >"$tmp/parent.prepass"
+    rows_for_paths "$already_admitted" "$candidate_report" >"$tmp/candidate.prepass"
+    rows_for_paths "$cross_realm_retained" "$parent_report" >"$tmp/parent.cross-realm"
+    rows_for_paths "$cross_realm_retained" "$candidate_report" >"$tmp/candidate.cross-realm"
+    [[ "$(lines "$tmp/parent.activation")" == "$(value activation_variants)" \
+        && "$(lines "$tmp/candidate.activation")" == "$(value activation_variants)" \
+        && "$(lines "$tmp/parent.prepass")" == "$(value already_admitted_variants)" \
+        && "$(lines "$tmp/candidate.prepass")" == "$(value already_admitted_variants)" \
+        && "$(lines "$tmp/parent.cross-realm")" == "$(value cross_realm_retained_variants)" \
+        && "$(lines "$tmp/candidate.cross-realm")" == "$(value cross_realm_retained_variants)" ]] \
+        || die 'R3dl focused report partition drifted'
+
+    awk -F'\t' '{
         if($2!~/^(sloppy|strict)$/||$7!="unsupported-feature"||$8!="selection"||
            $9!="EngineCapability"||
            $10!~/^quickjs-oxide does not declare Test262 feature support: /||
-           $10!~/(Error.isError|RegExp.escape|TypedArray.prototype.at)/)exit 2
-    }' "$parent_report" || die 'R3dg parent selection frontier drifted'
-    awk -F'\t' 'BEGIN{OFS="\t"}
-        NR==FNR{dependency[$1]=$2;next}
-        !/^#/&&!($1=="path"&&$2=="variant"){
-            if($2!~/^(sloppy|strict)$/)exit 2
-            if($1 in dependency){
-                expected="quickjs-oxide does not declare Test262 feature support: " dependency[$1]
-                if($7!="unsupported-feature"||$8!="selection"||
-                   $9!="EngineCapability"||$10!=expected)exit 3
-                retained++
-            }else{
-                if($7!="pass"||$8!="normal"||$9!=""||$10!="")exit 4
-                activated++
-            }
-        }
-        END{if(activated!=86||retained!=8)exit 5}
-    ' "$tmp/dependencies.tsv" "$candidate_report" \
-        || die 'R3dg candidate activation or narrowed dependency diagnostics drifted'
+           $10!~/(Atomics|SharedArrayBuffer)/)exit 2
+    }' "$tmp/parent.activation" \
+        || die 'R3dl parent activation frontier drifted'
+    awk -F'\t' '{if($7!="pass"||$8!="normal"||$9!=""||$10!="")exit 2}' \
+        "$tmp/candidate.activation" \
+        || die 'R3dl candidate activation outcomes drifted'
+    awk -F'\t' '{if($7!="pass"||$8!="normal"||$9!=""||$10!="")exit 2}' \
+        "$tmp/parent.prepass" "$tmp/candidate.prepass" \
+        || die 'R3dl already-admitted Atomics.pause rows drifted'
+    awk -F'\t' '{
+        if($7!="unsupported-feature"||$8!="selection"||$9!="EngineCapability"||
+           $10!="quickjs-oxide does not declare Test262 feature support: SharedArrayBuffer, cross-realm")exit 2
+    }' "$tmp/parent.cross-realm" \
+        || die 'R3dl parent cross-realm diagnostics drifted'
+    awk -F'\t' '{
+        if($7!="unsupported-feature"||$8!="selection"||$9!="EngineCapability"||
+           $10!="quickjs-oxide does not declare Test262 feature support: cross-realm")exit 2
+    }' "$tmp/candidate.cross-realm" \
+        || die 'R3dl candidate cross-realm retention drifted'
 
     check_file "$transition" "$(value transition_lines)" "$(value transition_sha256)"
     [[ "$(header "$transition" parent_commit)" == "$(value parent_commit)" \
@@ -374,7 +433,7 @@ check_receipts() {
         && "$(report_rows "$transition" | sha /dev/stdin)" == "$(value transition_data_sha256)" \
         && "$(transition_counts "$transition")" == \
             "changed=$(value transition_changed) outcome=$(value transition_outcome_changed) detail=$(value transition_detail_only) unchanged=$(value transition_unchanged) gains=$(value transition_pass_gains) regressions=$(value transition_pass_regressions)" ]] \
-        || die 'R3dg focused transition drifted'
+        || die 'R3dl focused transition drifted'
 }
 
 check_history_and_upstream() {
@@ -385,12 +444,6 @@ check_history_and_upstream() {
         && "$(predecessor_value candidate_features_sha256)" == "$(value parent_features_sha256)" \
         && "$(predecessor_value full_variants)" == "$(value full_variants)" \
         && "$(predecessor_value full_keys_sha256)" == "$(value full_keys_sha256)" \
-        && "$(predecessor_value candidate_full_runnable)" == "$(value parent_full_runnable)" \
-        && "$(predecessor_value candidate_full_passes)" == "$(value parent_full_passes)" \
-        && "$(predecessor_value candidate_full_unsupported_feature)" == "$(value parent_full_unsupported_feature)" \
-        && "$(predecessor_value candidate_full_tsv_sha256)" == "$(value parent_full_tsv_sha256)" \
-        && "$(predecessor_value candidate_full_jsonl_sha256)" == "$(value parent_full_jsonl_sha256)" \
-        && "$(predecessor_value candidate_full_summary)" == "$(value parent_full_summary)" \
         && "$(toml_test262_value repository)" == https://github.com/tc39/test262.git \
         && "$(toml_test262_value commit)" == "$(value test262)" \
         && "$(toml_test262_value patch_sha256)" == "$(value test262_patch_sha256)" \
@@ -399,11 +452,11 @@ check_history_and_upstream() {
         && "$(toml_test262_value metadata_records_sha256)" == "$(value test262_metadata_sha256)" \
         && "$(toml_test262_value oxide_profile)" == "$live_profile" \
         && "$(toml_test262_value oxide_profile_sha256)" == "$(value candidate_profile_sha256)" ]] \
-        || die 'R3dg predecessor or upstream bridge drifted'
+        || die 'R3dl predecessor or upstream bridge drifted'
 
-    check_file "$canonical_baseline" "$(value canonical_baseline_lines)" \
-        "$(value canonical_baseline_sha256)"
     if full_receipt_is_blessed; then
+        check_file "$canonical_baseline" "$(value canonical_baseline_lines)" \
+            "$(value canonical_candidate_sha256)"
         [[ "$(canonical_value schema)" == "$(value schema)" \
             && "$(canonical_value timeout_ms)" == "$(value timeout_ms)" \
             && "$(canonical_value variants)" == "$(value full_variants)" \
@@ -412,38 +465,58 @@ check_history_and_upstream() {
             && "$(canonical_value tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
             && "$(canonical_value jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
             && "$(canonical_value summary)" == "$(value candidate_full_summary)" ]] \
-            || die 'R3dg candidate is not the canonical full vector'
+            || die 'R3dl candidate is not the canonical full vector'
     else
+        check_file "$canonical_baseline" "$(value canonical_baseline_lines)" \
+            "$(value canonical_parent_sha256)"
         [[ "$(canonical_value runnable)" == "$(value parent_full_runnable)" \
             && "$(canonical_value passes)" == "$(value parent_full_passes)" \
             && "$(canonical_value tsv_sha256)" == "$(value parent_full_tsv_sha256)" \
             && "$(canonical_value jsonl_sha256)" == "$(value parent_full_jsonl_sha256)" \
             && "$(canonical_value summary)" == "$(value parent_full_summary)" ]] \
-            || die 'unblessed R3dg gate is not based on the R3df canonical vector'
+            || die 'unblessed R3dl gate is not based on the R3dj canonical vector'
     fi
 }
 
 verify_fail_closed_selection() {
-    local common=(--suite "$suite" --config "$source_dir/test262.conf"
-        --oxide-profile "$root/$candidate_profile" --report "$tmp/rejected.tsv"
-        --mode both --timeout-ms "$(value timeout_ms)" --workers 1 --allow-failures)
-    "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
-        --oxide-profile "$root/$candidate_profile" --manifest "$root/$manifest" \
-        --report "$tmp/positive.tsv" --mode both \
-        --timeout-ms "$(value timeout_ms)" --workers 1 --allow-failures >/dev/null
-    cmp -s "$candidate_report" "$tmp/positive.tsv" \
-        && cmp -s "${candidate_report%.tsv}.jsonl" "$tmp/positive.jsonl" \
-        || die 'R3dg runner failed the exact positive profile handshake'
-    for rejected in tests/test262-atomics-pause-global.txt \
-        tests/test262-atomics-shared-deferred.txt Cargo.toml; do
-        if "$runner" "${common[@]}" --manifest "$root/$rejected" >/dev/null 2>&1; then
-            die "R3dg candidate accepted a non-R3dg manifest: $rejected"
+    local profile label expected rejected
+    for label in parent candidate; do
+        if [[ "$label" == parent ]]; then
+            profile=$parent_profile
+            expected=$parent_report
+        else
+            profile=$candidate_profile
+            expected=$candidate_report
+        fi
+        "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
+            --oxide-profile "$root/$profile" --manifest "$root/$manifest" \
+            --report "$tmp/$label-positive.tsv" --mode both \
+            --timeout-ms "$(value timeout_ms)" --workers 1 --allow-failures \
+            >/dev/null
+        cmp -s "$expected" "$tmp/$label-positive.tsv" \
+            && cmp -s "${expected%.tsv}.jsonl" "$tmp/$label-positive.jsonl" \
+            || die "R3dl runner failed the exact $label profile handshake"
+
+        for rejected in "$activation" "$already_admitted" \
+            "$cross_realm_retained" \
+            tests/test262-atomics-wait-nonagent-bounded.txt Cargo.toml; do
+            if "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
+                --oxide-profile "$root/$profile" --manifest "$root/$rejected" \
+                --report "$tmp/rejected.tsv" --mode both \
+                --timeout-ms "$(value timeout_ms)" --workers 1 --allow-failures \
+                >/dev/null 2>&1; then
+                die "R3dl $label profile accepted a non-R3dl manifest: $rejected"
+            fi
+        done
+        if "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
+            --oxide-profile "$root/$profile" \
+            --test test/built-ins/Atomics/add/descriptor.js \
+            --report "$tmp/rejected.tsv" --mode both \
+            --timeout-ms "$(value timeout_ms)" --workers 1 --allow-failures \
+            >/dev/null 2>&1; then
+            die "R3dl $label profile accepted --test"
         fi
     done
-    if "$runner" "${common[@]}" --test test/built-ins/Error/isError/errors.js \
-        >/dev/null 2>&1; then
-        die 'R3dg candidate accepted --test'
-    fi
 }
 
 verify_quickjs() {
@@ -456,13 +529,13 @@ verify_quickjs() {
         ./run-test262 -m -c test262.conf -a -T "$workers" -f "${files[@]}") \
         >"$root/$oracle_log" 2>&1; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS could not execute the R3dg manifest'
+        die 'pinned QuickJS could not execute the R3dl manifest'
     fi
     if grep -Eq '(^|[[:space:]])FAILED($|[[:space:]])|SKIPPED FEATURE' "$oracle_log" \
         || ! grep -Fq "Average memory statistics for $(value quickjs_variants) tests:" \
             "$oracle_log"; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS no longer passes all R3dg variants'
+        die 'pinned QuickJS no longer passes all R3dl variants'
     fi
 }
 
@@ -479,10 +552,10 @@ replay_focused() {
     run_focused_report "$candidate_profile" "$candidate_replay"
     cmp -s "$parent_report" "$parent_replay" \
         && cmp -s "${parent_report%.tsv}.jsonl" "${parent_replay%.tsv}.jsonl" \
-        || die 'R3dg parent focused replay drifted'
+        || die 'R3dl parent focused replay drifted'
     cmp -s "$candidate_report" "$candidate_replay" \
         && cmp -s "${candidate_report%.tsv}.jsonl" "${candidate_replay%.tsv}.jsonl" \
-        || die 'R3dg candidate focused replay drifted'
+        || die 'R3dl candidate focused replay drifted'
     make_transition "$parent_replay" "$candidate_replay" "$tmp/replayed-transition.tsv"
     diff -u "$transition" "$tmp/replayed-transition.tsv"
 }
@@ -514,7 +587,7 @@ verify_full_join() {
         && "$(lines "$tmp/candidate.scope")" == "$(value full_scope_rows)" \
         && "$(lines "$tmp/parent.outside")" == "$(value full_outside_rows)" \
         && "$(lines "$tmp/candidate.outside")" == "$(value full_outside_rows)" ]] \
-        || die 'R3dg full partition row counts drifted'
+        || die 'R3dl full partition row counts drifted'
     diff -u "$tmp/focused.parent" "$tmp/parent.scope"
     diff -u "$tmp/focused.candidate" "$tmp/candidate.scope"
     diff -u "$tmp/focused.parent.json" "$tmp/parent.scope.json"
@@ -538,14 +611,14 @@ verify_full_join() {
         }
         END{for(key in old)if(!(key in seen))exit 5
             printf "changed=%d outcome=%d detail=%d unchanged=%d regressions=%d",changed,outcome,detail,before-changed,regress}
-    ' "$parent_full" "$candidate_full") || die 'R3dg exact full join failed'
+    ' "$parent_full" "$candidate_full") || die 'R3dl exact full join failed'
     expected="changed=$(value full_changed) outcome=$(value full_outcome_changed) detail=$(value full_detail_only) unchanged=$(value full_unchanged) regressions=$(value full_pass_regressions)"
-    [[ "$counts" == "$expected" ]] || die "R3dg full transition drifted: $counts"
+    [[ "$counts" == "$expected" ]] || die "R3dl full transition drifted: $counts"
 }
 
 replay_full() {
     full_receipt_is_blessed \
-        || die 'R3dg full hashes are explicitly PENDING_FULL; run and bless the full receipts first'
+        || die 'R3dl full hashes are explicitly PENDING_FULL; run and bless the full receipts first'
     if [[ "$reuse_full_reports" == false \
         || ! -f "$parent_full" || ! -f "${parent_full%.tsv}.jsonl" \
         || "$(sha "$parent_full")" != "$(value parent_full_tsv_sha256)" \
@@ -566,82 +639,12 @@ replay_full() {
         && "$(report_runnable "$candidate_full")" == "$(value candidate_full_runnable)" \
         && "$(report_count pass "$candidate_full")" == "$(value candidate_full_passes)" \
         && "$(report_count unsupported-feature "$candidate_full")" == "$(value candidate_full_unsupported_feature)" ]] \
-        || die 'R3dg full outcome counts drifted'
+        || die 'R3dl full outcome counts drifted'
     verify_full_join
 }
 
-bridge_r3dl_successor() {
-    [[ "$(toml_test262_value oxide_profile_sha256)" != \
-        "$(value candidate_profile_sha256)" ]] || return 0
-
-    check_file "$baseline" "$baseline_lines" "$baseline_sha"
-    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
-    [[ -x "$successor_gate" \
-        && "$(successor_value milestone_kind)" == global-profile-admission \
-        && "$(successor_value quickjs)" == "$(value quickjs)" \
-        && "$(successor_value test262)" == "$(value test262)" \
-        && "$(successor_value test262_patch_sha256)" == \
-            "$(value test262_patch_sha256)" \
-        && "$(successor_value test262_config_sha256)" == \
-            "$(value test262_config_sha256)" \
-        && "$(successor_value test262_metadata_sha256)" == \
-            "$(value test262_metadata_sha256)" \
-        && "$(successor_value schema)" == "$(value schema)" \
-        && "$(successor_value mode)" == "$(value mode)" \
-        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
-        && "$(successor_value parent_commit)" == \
-            ccc700d5c51655eb5388fa083d7c62b61571d7d5 \
-        && "$(successor_value predecessor_baseline)" == "$baseline" \
-        && "$(successor_value predecessor_baseline_lines)" == "$baseline_lines" \
-        && "$(successor_value predecessor_baseline_sha256)" == "$baseline_sha" \
-        && "$(successor_value parent_profile_sha256)" == \
-            "$(value candidate_profile_sha256)" \
-        && "$(successor_value candidate_profile_sha256)" == \
-            "$(toml_test262_value oxide_profile_sha256)" \
-        && "$(successor_value full_variants)" == "$(value full_variants)" \
-        && "$(successor_value full_keys_sha256)" == \
-            "$(value full_keys_sha256)" \
-        && "$(successor_value parent_full_runnable)" == 65662 \
-        && "$(successor_value parent_full_passes)" == 65610 \
-        && "$(successor_value parent_full_unsupported_feature)" == 13627 \
-        && "$(successor_value parent_full_tsv_sha256)" == \
-            17370398c6a211d4657ad763a6e40f0cd198d72faa14b2995f7937ad52a0c6db \
-        && "$(successor_value parent_full_jsonl_sha256)" == \
-            6e12d86318b2f1d7e5f684962a02585b1a91a4d7830d6e05ed38f80c766cc9a1 \
-        && "$(successor_value manifest_paths)" == 445 \
-        && "$(successor_value manifest_variants)" == 886 \
-        && "$(successor_value activation_variants)" == 866 \
-        && "$(successor_value already_admitted_variants)" == 12 \
-        && "$(successor_value cross_realm_retained_variants)" == 8 \
-        && "$(( $(successor_value candidate_full_runnable) - \
-            $(successor_value parent_full_runnable) ))" == 866 \
-        && "$(( $(successor_value candidate_full_passes) - \
-            $(successor_value parent_full_passes) ))" == 866 \
-        && "$(( $(successor_value parent_full_unsupported_feature) - \
-            $(successor_value candidate_full_unsupported_feature) ))" == 866 \
-        && "$(successor_value transition_outcome_changed)" == 866 \
-        && "$(successor_value transition_detail_only)" == 8 \
-        && "$(successor_value transition_unchanged)" == 12 \
-        && "$(successor_value transition_pass_regressions)" == 0 \
-        && "$(successor_value full_changed)" == 874 \
-        && "$(successor_value full_outcome_changed)" == 866 \
-        && "$(successor_value full_detail_only)" == 8 \
-        && "$(successor_value full_unchanged)" == 101163 \
-        && "$(successor_value full_pass_regressions)" == 0 ]] \
-        || die 'R3dg successor bridge to R3dl drifted'
-
-    case $mode in
-        check) "$successor_gate" --check ;;
-        focused) "$successor_gate" ;;
-        full) TEST262_REUSE_FULL_REPORTS="$reuse_full_reports" \
-            "$successor_gate" --full ;;
-    esac
-    exit 0
-}
-
 cd -- "$root"
-bridge_r3dl_successor
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3dg.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3dl.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
@@ -676,7 +679,7 @@ case $mode in
 esac
 
 if [[ "$mode" == full ]]; then
-    printf 'R3dg three-tag full: 86 new passes, 8 narrowed diagnostics, zero regressions\n'
+    printf 'R3dl SharedArrayBuffer/Atomics full: 866 new passes, 8 retained cross-realm diagnostics, zero regressions\n'
 else
-    printf 'R3dg three-tag focused: 86/86 activated pass, 8 dependency-retained diagnostics\n'
+    printf 'R3dl SharedArrayBuffer/Atomics focused: 866/866 activated pass, 12 parent passes retained, 8 cross-realm diagnostics retained\n'
 fi

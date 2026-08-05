@@ -4,6 +4,37 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dl global SharedArrayBuffer and Atomics admission
+
+R3dl globally admits the already implemented `SharedArrayBuffer` and `Atomics`
+surfaces. The live profile grows from 130 to 132 reviewed feature tags and
+hashes to
+`47cf8351f7844340bbbff3ba9bb781faf552f8f27d0dd6cca2e35dbf9ad48232`.
+The authenticated admission universe contains 445 paths / 886 variants: 435 /
+866 activate and pass, the six `Atomics.pause` paths / 12 variants remain
+passes, and four cross-realm paths / eight variants remain fail-closed. Pinned
+QuickJS passes all 886 variants. The exact Oxide join records 866 pass gains,
+eight diagnostic-only changes, 12 unchanged rows, and zero regressions.
+
+The complete 102,037-variant join reaches 66,476 passes / 66,528 runnable and
+reduces `unsupported-feature` to 12,761; every other outcome count is
+unchanged. Two independent release-mode full runs are byte-identical. The
+canonical TSV/JSONL SHA-256 values are
+`501b64ed5c8367f33408225d956a262619163adf52baadf28f02811d14f3eae9`
+and
+`610e16ba65a0239556842efec7a745ba2885c72dfb3b8447c2578b8767ef7d40`.
+The next shared-memory parity frontier is the 59-path / 118-variant Test262
+`$262.agent` host; pinned QuickJS passes that entire cohort. `Atomics.waitAsync`
+remains outside the pinned QuickJS target.
+
+Reproduce the checksum-bound profile, focused differential, and full join with:
+
+```sh
+./scripts/test-test262-shared-atomics-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-shared-atomics-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-shared-atomics-global.sh --full
+```
+
 ## R3dk verifiable public playground
 
 R3dk is a presentation and provenance milestone, not a Test262 admission. The
@@ -2540,23 +2571,23 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical. Subsequent globally
-  admitted milestones through R3dg advance the current canonical measurement
-  to 65,610 passes and 65,662 runnable variants: 64.30% raw, a 78.52% lower
-  bound after the 18,475 pinned QuickJS target exclusions, or 99.92% among the
-  65,662 variants with a non-unsupported observed outcome. R3dj keeps those
-  totals while reclassifying four rows, so the current vector records 13,627
-  `unsupported-feature` and 17,900 total unsupported outcomes, seven parse
-  failures, 43 runtime failures, no harness failures, and two timeouts. R3dh is
-  selection-only, so its SharedArrayBuffer core did not change this global
-  vector. The current full TSV/JSONL SHA-256 values are
-  `17370398c6a211d4657ad763a6e40f0cd198d72faa14b2995f7937ad52a0c6db`
+  admitted milestones through R3dl advance the current measurement to 66,476
+  passes and 66,528 runnable variants: 65.15% raw, a 79.55% lower bound after
+  the 18,475 pinned QuickJS target exclusions, or 99.92% among the 66,528
+  variants with a non-unsupported observed outcome. R3dl globally admits the
+  previously scoped SharedArrayBuffer and Atomics implementation, so the
+  current vector records 12,761 `unsupported-feature` and 17,034 total
+  unsupported outcomes, seven parse failures, 43 runtime failures, no harness
+  failures, and two timeouts. Two independent full runs are byte-identical; the
+  canonical TSV/JSONL SHA-256 values are
+  `501b64ed5c8367f33408225d956a262619163adf52baadf28f02811d14f3eae9`
   and
-  `6e12d86318b2f1d7e5f684962a02585b1a91a4d7830d6e05ed38f80c766cc9a1`.
+  `610e16ba65a0239556842efec7a745ba2885c72dfb3b8447c2578b8767ef7d40`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
-  Modules, the Test262 agent host and agent-backed waiter conformance, and
-  broad built-in coverage remain explicit frontiers. `Atomics.waitAsync` is
-  outside the pinned QuickJS parity target.
+  Modules, the 59-path / 118-variant Test262 `$262.agent` host and its
+  agent-backed waiter conformance, and broad built-in coverage remain explicit
+  frontiers. `Atomics.waitAsync` is outside the pinned QuickJS parity target.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
