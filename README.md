@@ -15,11 +15,13 @@ runtime jobs.
 `String.prototype.normalize` uses the pinned QuickJS Unicode 17 data for NFC,
 NFD, NFKC, and NFKD; `localeCompare` matches QuickJS's non-Intl NFC/code-point
 ordering.
-The 127-tag global Test262 profile admits `Atomics.pause`,
+The 130-tag global Test262 profile admits `Atomics.pause`,
 `Array.prototype.flat`/`flatMap`, `WeakMap`, `WeakSet`, `WeakRef`, and
 `FinalizationRegistry` alongside object rest, `DataView`, `Proxy`, optional
 chaining, Iterator Helpers, `globalThis`, default parameters, and audited
-binary-data and Promise surfaces through checksum-bound gates.
+binary-data and Promise surfaces through checksum-bound gates. Its latest
+admission adds `Error.isError`, `RegExp.escape`, and
+`TypedArray.prototype.at` without changing runtime semantics.
 Its Test262 host provides real reentrant GC, recursive realm creation, and
 defining-realm script evaluation. Script/eval parsing implements Annex B HTML
 comments and QuickJS's no-op `debugger` semantics. Their negative cohorts and
@@ -30,7 +32,7 @@ Unsupported, deferred through parsing and identifier/private-name resolution
 so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
-full vector is 65,524 passes / 65,576 runnable / 102,037 total variants.
+full vector is 65,610 passes / 65,662 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer, agents/waiters, shared-memory Atomics, and broad
 built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed

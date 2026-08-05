@@ -1,0 +1,3 @@
+Error.isError
+RegExp.escape
+TypedArray.prototype.at

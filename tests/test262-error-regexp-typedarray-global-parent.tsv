@@ -1,0 +1,105 @@
+# quickjs-oxide Test262 outcome vector v2
+# quickjs=2026-06-04
+# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+# oxide_profile_sha256=00265570870a778f2fded16969311eac5707b9c6d4fcd4068640700d637e9ff0
+# profile=test262-canonical-classified-v2
+# mode=both
+path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
+test/built-ins/Error/isError/bigints.js	sloppy		Error.isError,BigInt	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/bigints.js	strict		Error.isError,BigInt	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/error-subclass.js	sloppy		Error.isError,class	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError, class
+test/built-ins/Error/isError/error-subclass.js	strict		Error.isError,class	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError, class
+test/built-ins/Error/isError/errors-other-realm.js	sloppy		Error.isError,cross-realm	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError, cross-realm
+test/built-ins/Error/isError/errors-other-realm.js	strict		Error.isError,cross-realm	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError, cross-realm
+test/built-ins/Error/isError/errors.js	sloppy		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/errors.js	strict		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/fake-errors.js	sloppy		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/fake-errors.js	strict		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/is-a-constructor.js	sloppy		Error.isError,Reflect.construct	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/is-a-constructor.js	strict		Error.isError,Reflect.construct	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/name.js	sloppy		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/name.js	strict		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/non-error-objects-other-realm.js	sloppy		Error.isError,cross-realm	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError, cross-realm
+test/built-ins/Error/isError/non-error-objects-other-realm.js	strict		Error.isError,cross-realm	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError, cross-realm
+test/built-ins/Error/isError/non-error-objects.js	sloppy		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/non-error-objects.js	strict		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/primitives.js	sloppy		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/primitives.js	strict		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/prop-desc.js	sloppy		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/prop-desc.js	strict		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/symbols.js	sloppy		Error.isError,Symbol	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/Error/isError/symbols.js	strict		Error.isError,Symbol	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/built-ins/RegExp/escape/cross-realm.js	sloppy		RegExp.escape,cross-realm	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape, cross-realm
+test/built-ins/RegExp/escape/cross-realm.js	strict		RegExp.escape,cross-realm	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape, cross-realm
+test/built-ins/RegExp/escape/escaped-control-characters.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-control-characters.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-lineterminator.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-lineterminator.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-otherpunctuators.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-otherpunctuators.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-solidus-character-mixed.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-solidus-character-mixed.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-solidus-character-simple.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-solidus-character-simple.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-surrogates.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-surrogates.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-syntax-characters-mixed.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-syntax-characters-mixed.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-syntax-characters-simple.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-syntax-characters-simple.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-utf16encodecodepoint.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-utf16encodecodepoint.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-whitespace.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/escaped-whitespace.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/initial-char-escape.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/initial-char-escape.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/is-function.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/is-function.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/length.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/length.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/name.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/name.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/non-string-inputs.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/non-string-inputs.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/not-a-constructor.js	sloppy		RegExp.escape,Reflect.construct	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/not-a-constructor.js	strict		RegExp.escape,Reflect.construct	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/not-escaped-underscore.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/not-escaped-underscore.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/not-escaped.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/not-escaped.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/prop-desc.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/RegExp/escape/prop-desc.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/built-ins/TypedArray/prototype/at/BigInt/return-abrupt-from-this-out-of-bounds.js	sloppy		ArrayBuffer,BigInt,TypedArray,TypedArray.prototype.at,arrow-function,resizable-arraybuffer	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/BigInt/return-abrupt-from-this-out-of-bounds.js	strict		ArrayBuffer,BigInt,TypedArray,TypedArray.prototype.at,arrow-function,resizable-arraybuffer	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/index-argument-tointeger.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/index-argument-tointeger.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/index-non-numeric-argument-tointeger-invalid.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/index-non-numeric-argument-tointeger-invalid.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/index-non-numeric-argument-tointeger.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/index-non-numeric-argument-tointeger.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/length.js	sloppy		TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/length.js	strict		TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/name.js	sloppy		TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/name.js	strict		TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/prop-desc.js	sloppy		TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/prop-desc.js	strict		TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/return-abrupt-from-this-out-of-bounds.js	sloppy		TypedArray,TypedArray.prototype.at,resizable-arraybuffer	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/return-abrupt-from-this-out-of-bounds.js	strict		TypedArray,TypedArray.prototype.at,resizable-arraybuffer	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/return-abrupt-from-this.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/return-abrupt-from-this.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-item-relative-index.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-item-relative-index.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-item.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-item.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-undefined-for-holes-in-sparse-arrays.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-undefined-for-holes-in-sparse-arrays.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-undefined-for-out-of-range-index.js	sloppy		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/built-ins/TypedArray/prototype/at/returns-undefined-for-out-of-range-index.js	strict		TypedArray,TypedArray.prototype.at	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: TypedArray.prototype.at
+test/staging/built-ins/RegExp/escape/surrogate-pair.js	sloppy		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/staging/built-ins/RegExp/escape/surrogate-pair.js	strict		RegExp.escape	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: RegExp.escape
+test/staging/sm/Error/isError.js	sloppy		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+test/staging/sm/Error/isError.js	strict		Error.isError	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Error.isError
+# summary unsupported-feature=94

@@ -6,6 +6,37 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3dg implemented leaf built-in admission
+
+R3dg adds `Error.isError`, `RegExp.escape`, and
+`TypedArray.prototype.at` to the global capability profile without changing
+runtime semantics. The resulting 130-tag candidate/live profile hashes to
+`280264ae035da45cd0e2727b981e64380496ed75af3216208616dfee82d0459a`.
+
+The exact cohort is 47 paths / 94 sloppy-and-strict variants. Oxide's
+candidate produces 86 passes and retains eight `unsupported-feature`
+diagnostics: two for the missing `class` prerequisite and six for cross-realm
+dependencies. Pinned QuickJS passes all 94 variants.
+
+The full transition joins all 102,037 variants. Exactly 94 manifest rows
+change: 86 outcome changes to pass and eight diagnostic-detail-only changes;
+zero rows outside the manifest change and there are zero pass regressions. The
+canonical result is 65,610 passes / 65,662 runnable, with
+`unsupported-feature=13,623`. Candidate full TSV/JSONL SHA-256 values are
+`a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
+and
+`dc37ed90322630e81fa4295daa57b8f81093719541076f84d4da27ef0d3c5d23`.
+
+Reproduce the authenticated transition with:
+
+```sh
+./scripts/test-test262-error-regexp-typedarray-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-error-regexp-typedarray-global.sh
+TEST262_REUSE_FULL_REPORTS=true \
+  TEST262_FULL_WORKERS=8 \
+  ./scripts/test-test262-error-regexp-typedarray-global.sh --full
+```
+
 ## R3df global `Atomics.pause` admission
 
 R3df moves the complete pinned `Atomics.pause` tag into the live capability

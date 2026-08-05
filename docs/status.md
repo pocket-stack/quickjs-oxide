@@ -4,6 +4,38 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dg implemented leaf built-in admission
+
+R3dg globally admits the already implemented `Error.isError`, `RegExp.escape`,
+and `TypedArray.prototype.at` metadata tags. This milestone changes no runtime
+semantics: it only widens the authenticated global profile from 127 to 130
+tags. The candidate and live profiles are byte-identical and hash to
+`280264ae035da45cd0e2727b981e64380496ed75af3216208616dfee82d0459a`.
+
+The exact manifest contains 47 paths / 94 sloppy-and-strict variants. Oxide's
+candidate records 86 passes plus eight retained `unsupported-feature`
+diagnostics: two variants still require `class`, and six still require
+cross-realm support. Pinned QuickJS passes all 94 variants.
+
+The complete 102,037-variant join changes exactly those 94 manifest rows: 86
+outcomes become passes and eight rows change only diagnostic detail. All
+101,943 rows outside the manifest are unchanged, with zero pass regressions.
+The canonical vector is now 65,610 passes / 65,662 runnable, with
+`unsupported-feature=13,623`. Candidate full TSV/JSONL SHA-256 values are
+`a3b097fe77a996bc1272a9576c39f509c60ee9c3644e667ab4f0d4c141f72e32`
+and
+`dc37ed90322630e81fa4295daa57b8f81093719541076f84d4da27ef0d3c5d23`.
+
+Reproduce this admission with:
+
+```sh
+./scripts/test-test262-error-regexp-typedarray-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-error-regexp-typedarray-global.sh
+TEST262_REUSE_FULL_REPORTS=true \
+  TEST262_FULL_WORKERS=8 \
+  ./scripts/test-test262-error-regexp-typedarray-global.sh --full
+```
+
 ## R3df global `Atomics.pause` admission
 
 R3df admits the complete pinned `Atomics.pause` metadata tag without widening
