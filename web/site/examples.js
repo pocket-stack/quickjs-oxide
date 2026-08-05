@@ -58,6 +58,15 @@ var copy = buffer.slice(0, 2);
 new Uint8Array(copy)[0] + new Uint8Array(copy)[1];`,
   },
   {
+    id: "shared-atomics",
+    label: "Shared Atomics",
+    source: `var counter = new Int32Array(new SharedArrayBuffer(4));
+Atomics.store(counter, 0, 40);
+Atomics.add(counter, 0, 2);
+
+Atomics.load(counter, 0);`,
+  },
+  {
     id: "uint8-codec",
     label: "Uint8Array.fromHex",
     source: `var bytes = Uint8Array.fromHex("2a");

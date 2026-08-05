@@ -4,7 +4,55 @@ Test262 is now a pinned progress instrument, not yet a completion claim. The
 authoritative compatibility target remains QuickJS 2026-06-04; focused QuickJS
 differentials still decide exact behavior inside each implemented slice.
 
-Last audited: 2026-08-05.
+Last audited: 2026-08-06.
+
+## R3di exact non-blocking shared Atomics selection
+
+R3di authenticates the complete pinned non-blocking shared Atomics closure
+without admitting a broad feature tag. The `SharedArrayBuffer`-tagged
+projection contains 78 paths / 156 variants. A source audit finds another 22
+paths / 44 variants which exercise the same implemented operations with real
+shared backing even though their metadata omits that tag. Their disjoint union
+is the exact 100-path / 200-variant selection.
+
+The source closure itself has 99 paths and overlaps the tagged projection in
+77. The tagged-only path is a metadata-only `isLockFree` check. One test filed
+under `Atomics/notify` actually calls `Atomics.wait`; the audit keeps it in the
+later wait milestone instead of allowing its directory name to widen R3di.
+
+The selection covers shared `load`, `store`, `add`, `sub`, `and`, `or`, `xor`,
+`exchange`, and `compareExchange`, plus adjacent `isLockFree` table checks and
+`notify` validation when there are no registered waiters. Pinned QuickJS
+2026-06-04 independently passes all 200 variants with no failure or feature
+skip. Synchronous `wait`, `waitAsync`, agent cases, and host-blocking behavior
+remain outside the selection.
+
+The R3di profile is selection-only and is accepted only with the exact
+combined manifest; the runner rejects `--all`, `--test`, and a different
+manifest. It does not add `SharedArrayBuffer` or broad `Atomics` to the global
+capability profile. The canonical complete vector therefore stays at 65,610
+passes / 65,662 runnable / 102,037 total variants.
+
+Oxide passes all 200 selected variants with no other outcome. Two focused runs
+are byte-identical. The authenticated 211-line TSV has SHA-256
+`e265924c5773626f73f5396803a8b3e19e5650bad49efe04a390dfa77b86548a`;
+the 202-line JSONL has SHA-256
+`9a012e1be03b8f752efc15a1250548388c1c0c41f6443e44ec8be4f98842fb34`.
+The 100-path combined manifest hashes to
+`a9072513df3c730b87a84218a88755c229a8090e0100bc44bbd7d2550ac72dc0`,
+and the scoped profile hashes to
+`ec33455551c3601859241870624b5017551aa04c8edbf8c9e899d4ef9b5332cc`.
+
+Reproduce the checksum-bound inventory, fail-closed selection checks, focused
+Oxide run, and pinned QuickJS differential with:
+
+```sh
+TEST262_WORKERS=8 ./scripts/test-test262-shared-atomics-nonblocking.sh --check
+```
+
+Because this is an implementation receipt, the gate rejects
+`TEST262_RUNNER` overrides and builds the release runner from the current
+worktree before producing the authenticated reports.
 
 ## R3dh authenticated SharedArrayBuffer core
 
@@ -32,12 +80,12 @@ into the green result:
 - 58 / 116 require agents, excluding `waitAsync`;
 - 86 / 172 cover `Atomics.waitAsync`, including its agent cases.
 
-R3dh does not globally admit the `SharedArrayBuffer` tag. The live global
+R3dh did not globally admit the `SharedArrayBuffer` tag. The live global
 profile therefore remains at 130 tags and the canonical complete vector stays
 65,610 passes / 65,662 runnable / 102,037 total variants. This focused pass is
 evidence for the implemented constructor, grow/slice/species, and shared-view
-slice; it is not evidence for shared Atomics, agents, waiters, or `waitAsync`,
-and it is not a Feature Parity claim.
+slice; it is not evidence for the R3di shared Atomics slice, agents, waiters,
+or `waitAsync`, and it is not a Feature Parity claim.
 
 Reproduce the authenticated inventory, fail-closed selection checks, Oxide
 receipt, and pinned QuickJS differential with:
@@ -2153,9 +2201,9 @@ intended early `SyntaxError`, rather than because class parsing is absent.
 
 This 193/193 result is a runner smoke baseline, not a project-wide 100%
 estimate. The sample was selected from already implemented synchronous
-surfaces. Modules, most `$262` host hooks, shared-memory Atomics,
-agents/waiters, `Atomics.waitAsync`, and many other broad built-ins remain
-absent. Proxy is measured by the checksum-bound
+surfaces. Modules, most `$262` host hooks, `Atomics.wait`, agents/waiters,
+`Atomics.waitAsync`, and many other broad built-ins remain absent. Proxy is
+measured by the checksum-bound
 R3am scoped gate and admitted globally by R3bh below.
 The pure ArrayBuffer core is measured by the checksum-bound R3an gate, its
 DataView layer by R3ao, and the shared 12-class TypedArray kernel by R3ap.
@@ -2177,7 +2225,7 @@ R3br separately implements and authenticates the Uint8Array codec surface, and
 R3bs admits its feature tag globally. R3bt authenticates the complete
 resizable ArrayBuffer activation and spillover, and R3bu admits its feature
 tag globally. R3bv authenticates computed property names, and R3bw admits that
-feature globally. Modules, shared-memory Atomics, agents/waiters,
+feature globally. Modules, `Atomics.wait`, agents/waiters,
 `Atomics.waitAsync`, and broad built-ins remain explicit frontiers.
 Ordinary async functions/jobs are measured by the scoped R3ab-refreshed R3z
 gate, async arrows by the R3ab gate, and ordinary async object-literal methods

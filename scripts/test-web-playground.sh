@@ -75,6 +75,7 @@ const expected = new Map([
   ["atomics-non-shared", { kind: "number", text: "42" }],
   ["resizable-array-buffer", { kind: "number", text: "42" }],
   ["shared-array-buffer", { kind: "number", text: "42" }],
+  ["shared-atomics", { kind: "number", text: "42" }],
   ["uint8-codec", { kind: "number", text: "42" }],
   ["unicode-strings", { kind: "number", text: "42" }],
   ["class", { kind: "number", text: "42" }],

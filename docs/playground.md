@@ -40,11 +40,11 @@ under `target/pages`; `web/site` remains the reviewable static source.
 If a local shared Cargo target is busy, set `CARGO_TARGET_DIR` to a separate
 build cache; the deployable tree still lands in `target/pages`.
 
-The smoke executes all 13 curated examples in the real WebAssembly engine.
-That set includes a no-Atomics `SharedArrayBuffer` example which grows a shared
-backing, writes through TypedArray and DataView views, slices it, and returns
-42. Shared-memory Atomics and agents are intentionally not part of this
-playground milestone.
+The smoke executes all 14 curated examples in the real WebAssembly engine.
+The set retains a no-Atomics `SharedArrayBuffer` views example and adds a
+`Shared Atomics` example that stores 40, atomically adds 2, and loads 42 from
+the shared backing. `Atomics.wait`, `Atomics.waitAsync`, agents, and waiter
+coordination remain outside this playground milestone.
 
 ## Deployment
 

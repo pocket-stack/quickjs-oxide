@@ -1,13 +1,19 @@
 //! Pinned QuickJS `%Atomics%` operations over integer TypedArrays.
 //!
-//! The existing non-shared milestone deliberately implements QuickJS's useful
-//! behavior on ordinary ArrayBuffer-backed integer TypedArrays. Shared views
-//! are now recognized but remain explicitly rejected until the separately
-//! gated shared-Atomics and waiter milestones. `wait` rejects an ordinary view
-//! before coercing its remaining arguments, while `notify` performs its
-//! ordinary validation and coercions before returning zero.
+//! QuickJS's useful ordinary-ArrayBuffer behavior is preserved alongside
+//! shared-memory load/store/read-modify-write operations. Every memory access
+//! first enters one process-wide sequencing gate and then the backing store,
+//! conservatively reproducing QuickJS's default C11 sequentially-consistent
+//! order even across distinct buffers. All observable coercion and
+//! revalidation work finishes before either lock is acquired. Blocking waiters
+//! remain a separate milestone: `wait` rejects before coercing its remaining
+//! arguments, while `notify` performs its full validation and coercions before
+//! returning zero when no waiter infrastructure exists.
+
+use std::sync::Mutex;
 
 use crate::heap::{AtomicsNativeKind, AtomicsOperationKind, TypedArrayElementKind};
+use crate::runtime::buffer_access::BufferAccessToken;
 
 use super::array_buffer::typed_array::TypedArraySnapshot;
 use super::*;
@@ -15,16 +21,33 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
+/// QuickJS uses the default C11 ordering for its atomic primitives, which is
+/// sequentially consistent across all atomic objects rather than merely
+/// linearizable per backing allocation. A process-wide gate is deliberately
+/// conservative, but gives that observable order without unsafe platform
+/// atomics. The fixed order is this gate first, then a buffer leaf's ordinary
+/// runtime borrow or shared-backing mutex.
+static ATOMICS_SEQ_CST_GATE: Mutex<()> = Mutex::new(());
+
+fn with_atomics_seq_cst<R>(operation: impl FnOnce() -> R) -> R {
+    // The gate protects no data of its own, so recovering from poison is safe:
+    // backing byte slices retain their independent structural invariants.
+    let _guard = ATOMICS_SEQ_CST_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AtomicAccessMode {
-    Ordinary,
+    Operation,
     Notify,
     Wait,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AtomicAccess {
     snapshot: TypedArraySnapshot,
+    buffer: BufferAccessToken,
     index: u64,
 }
 
@@ -163,8 +186,8 @@ impl Runtime {
     ///
     /// `Notify` intentionally skips post-index detach/RAB revalidation, as
     /// upstream does before discovering that an ordinary ArrayBuffer has no
-    /// waiter list. `Wait` rejects the non-shared backing store before index,
-    /// expected-value, or timeout coercion.
+    /// waiter list. This milestone's `Wait` frontier rejects either backing
+    /// before index, expected-value, or timeout coercion.
     fn atomics_get_access(
         &self,
         realm: ContextId,
@@ -187,7 +210,7 @@ impl Runtime {
             )?));
         };
         let valid_element = match mode {
-            AtomicAccessMode::Ordinary => atomic_element_is_integer(snapshot.element),
+            AtomicAccessMode::Operation => atomic_element_is_integer(snapshot.element),
             AtomicAccessMode::Notify | AtomicAccessMode::Wait => {
                 atomic_element_is_waitable(snapshot.element)
             }
@@ -201,16 +224,14 @@ impl Runtime {
         }
 
         let buffer_access = self.snapshot_buffer_access(snapshot.buffer)?;
-        if buffer_access.is_shared() {
-            // R3dh makes SharedArrayBuffer views usable throughout the binary
-            // data stack. Shared Atomics are the next independently gated
-            // milestone; reject them as JavaScript until their atomic/waiter
-            // kernels are installed rather than leaking an ordinary-buffer
-            // heap invariant through the public evaluator.
+        if mode == AtomicAccessMode::Wait && buffer_access.is_shared() {
+            // The non-blocking shared-memory family is installed independently
+            // from the waiter registry and host can-block policy. Keep this a
+            // JavaScript frontier rather than entering an incomplete waiter.
             return Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
-                "shared-memory Atomics are not implemented",
+                "shared-memory Atomics.wait is not implemented",
             )?));
         }
 
@@ -248,7 +269,7 @@ impl Runtime {
             )?));
         }
 
-        if mode == AtomicAccessMode::Ordinary {
+        if mode == AtomicAccessMode::Operation {
             let current = self.typed_array_state_from_snapshot(snapshot)?;
             if current.out_of_bounds {
                 return Ok(NativeConversion::Throw(self.new_native_error(
@@ -266,14 +287,18 @@ impl Runtime {
             }
         }
 
-        Ok(NativeConversion::Value(AtomicAccess { snapshot, index }))
+        Ok(NativeConversion::Value(AtomicAccess {
+            snapshot,
+            buffer: buffer_access,
+            index,
+        }))
     }
 
     /// Revalidate after operand coercion, which may detach or resize.
     fn atomics_revalidate_after_value(
         &self,
         realm: ContextId,
-        access: AtomicAccess,
+        access: &AtomicAccess,
     ) -> Result<NativeConversion<()>, RuntimeError> {
         let current = self.typed_array_state_from_snapshot(access.snapshot)?;
         if current.out_of_bounds {
@@ -308,14 +333,18 @@ impl Runtime {
             .readable
             .get(1)
             .ok_or(RuntimeError::Invariant("Atomics index was not readable"))?;
-        let access =
-            match self.atomics_get_access(realm, typed_array, index, AtomicAccessMode::Ordinary)? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
+        let access = match self.atomics_get_access(
+            realm,
+            typed_array,
+            index,
+            AtomicAccessMode::Operation,
+        )? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
 
         if operation == AtomicsOperationKind::Load {
-            return Ok(Completion::Return(self.atomics_load(access)?));
+            return Ok(Completion::Return(self.atomics_load(&access)?));
         }
 
         let operand = match self.typed_array_convert_element(
@@ -344,26 +373,22 @@ impl Runtime {
             None
         };
 
-        match self.atomics_revalidate_after_value(realm, access)? {
+        match self.atomics_revalidate_after_value(realm, &access)? {
             NativeConversion::Value(()) => {}
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         }
         Ok(Completion::Return(self.atomics_modify(
-            access,
+            &access,
             operation,
             operand,
             replacement,
         )?))
     }
 
-    fn atomics_load(&self, access: AtomicAccess) -> Result<Value, RuntimeError> {
+    fn atomics_load(&self, access: &AtomicAccess) -> Result<Value, RuntimeError> {
         let width = usize::from(access.snapshot.element.byte_length());
         let offset = atomic_absolute_byte_offset(access)?;
-        let bytes = self.0.state.borrow().heap.read_array_buffer_word(
-            access.snapshot.buffer,
-            offset,
-            width,
-        )?;
+        let bytes = with_atomics_seq_cst(|| self.read_buffer_word(&access.buffer, offset, width))?;
         Ok(atomic_decode_value(
             access.snapshot.element,
             atomic_decode_word(&bytes[..width]),
@@ -372,7 +397,7 @@ impl Runtime {
 
     fn atomics_modify(
         &self,
-        access: AtomicAccess,
+        access: &AtomicAccess,
         operation: AtomicsOperationKind,
         operand: [u8; 8],
         replacement: Option<[u8; 8]>,
@@ -380,12 +405,21 @@ impl Runtime {
         let width = usize::from(access.snapshot.element.byte_length());
         let offset = atomic_absolute_byte_offset(access)?;
         let operand = atomic_decode_word(&operand[..width]);
-        let replacement = replacement.map(|bytes| atomic_decode_word(&bytes[..width]));
-        let old = self.0.state.borrow_mut().heap.with_array_buffer_range_mut(
-            access.snapshot.buffer,
-            offset,
-            width,
-            |bytes| {
+        let replacement = match replacement {
+            Some(bytes) => atomic_decode_word(&bytes[..width]),
+            None if operation == AtomicsOperationKind::CompareExchange => {
+                return Err(RuntimeError::Invariant(
+                    "Atomics.compareExchange reached its byte leaf without a replacement",
+                ));
+            }
+            None => 0,
+        };
+        // All JavaScript calls, conversions, allocations, and live-state
+        // checks have completed before this leaf. The global gate establishes
+        // one SC order across buffers; the nested backing lock makes this
+        // read-modify-write indivisible without caching a raw pointer.
+        let old = with_atomics_seq_cst(|| {
+            self.with_buffer_range_mut(&access.buffer, offset, width, |bytes| {
                 let old = atomic_decode_word(bytes);
                 let next = match operation {
                     AtomicsOperationKind::Add => old.wrapping_add(operand),
@@ -396,7 +430,7 @@ impl Runtime {
                     AtomicsOperationKind::Exchange => operand,
                     AtomicsOperationKind::CompareExchange => {
                         if old == operand {
-                            replacement.expect("compareExchange has a replacement")
+                            replacement
                         } else {
                             old
                         }
@@ -407,8 +441,8 @@ impl Runtime {
                 };
                 atomic_encode_word(bytes, next);
                 old
-            },
-        )?;
+            })
+        })?;
         Ok(atomic_decode_value(access.snapshot.element, old))
     }
 
@@ -425,7 +459,7 @@ impl Runtime {
             arguments.readable.get(1).ok_or(RuntimeError::Invariant(
                 "Atomics.store index was not readable",
             ))?,
-            AtomicAccessMode::Ordinary,
+            AtomicAccessMode::Operation,
         )? {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -463,18 +497,14 @@ impl Runtime {
                 ));
             }
         };
-        match self.atomics_revalidate_after_value(realm, access)? {
+        match self.atomics_revalidate_after_value(realm, &access)? {
             NativeConversion::Value(()) => {}
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         }
 
         let width = usize::from(access.snapshot.element.byte_length());
-        let offset = atomic_absolute_byte_offset(access)?;
-        self.0.state.borrow_mut().heap.write_array_buffer_word(
-            access.snapshot.buffer,
-            offset,
-            &bytes[..width],
-        )?;
+        let offset = atomic_absolute_byte_offset(&access)?;
+        with_atomics_seq_cst(|| self.write_buffer_word(&access.buffer, offset, &bytes[..width]))?;
         Ok(Completion::Return(stored_value))
     }
 
@@ -557,7 +587,7 @@ impl Runtime {
         realm: ContextId,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        match self.atomics_get_access(
+        let _access = match self.atomics_get_access(
             realm,
             arguments.readable.first().ok_or(RuntimeError::Invariant(
                 "Atomics.notify view was not readable",
@@ -567,9 +597,9 @@ impl Runtime {
             ))?,
             AtomicAccessMode::Notify,
         )? {
-            NativeConversion::Value(_) => {}
+            NativeConversion::Value(access) => access,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        }
+        };
 
         let count = arguments.readable.get(2).ok_or(RuntimeError::Invariant(
             "Atomics.notify count was not readable",
@@ -582,8 +612,10 @@ impl Runtime {
             let _count = atomic_to_int32_sat(number).clamp(0, i32::MAX);
         }
 
-        // An ordinary ArrayBuffer can never own a QuickJS waiter list. The
-        // coercions above remain observable even though the result is zero.
+        // R3di intentionally has no waiter registry. Ordinary ArrayBuffers can
+        // never own one, and SharedArrayBuffers cannot acquire waiters while
+        // Atomics.wait remains an explicit frontier. The complete validation
+        // and count coercion above are still observable before returning zero.
         Ok(Completion::Return(Value::Int(0)))
     }
 }
@@ -609,7 +641,7 @@ const fn atomic_element_is_waitable(element: TypedArrayElementKind) -> bool {
     )
 }
 
-fn atomic_absolute_byte_offset(access: AtomicAccess) -> Result<usize, RuntimeError> {
+fn atomic_absolute_byte_offset(access: &AtomicAccess) -> Result<usize, RuntimeError> {
     let relative = access
         .index
         .checked_mul(u64::from(access.snapshot.element.byte_length()))

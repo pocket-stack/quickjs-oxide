@@ -40,6 +40,8 @@ esac
     || { echo 'error: invalid Test262 worker count' >&2; exit 2; }
 [[ "$skip_unit_execution" == false || "$skip_unit_execution" == true ]] \
     || { echo 'error: TEST262_SKIP_UNIT_EXECUTION must be true or false' >&2; exit 2; }
+[[ -z "$runner_override" ]] \
+    || { echo 'error: authenticated R3di gate does not accept TEST262_RUNNER' >&2; exit 2; }
 
 die() { echo "error: $*" >&2; exit 1; }
 sha() {
@@ -108,8 +110,64 @@ header() {
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
         "$1"
 }
+json_metadata_string() {
+    awk -v wanted="$2" '
+        NR==1 {
+            prefix="\"" wanted "\":\""
+            start=index($0,prefix)
+            if(!start)exit 1
+            rest=substr($0,start+length(prefix))
+            finish=index(rest,"\"")
+            if(!finish)exit 1
+            print substr(rest,1,finish-1)
+            found++
+        }
+        END{if(found!=1)exit 1}
+    ' "$1"
+}
+json_metadata_schema() {
+    awk '
+        NR==1&&match($0,/"schema":[0-9]+/){
+            value=substr($0,RSTART,RLENGTH)
+            sub(/^"schema":/,"",value)
+            print value
+            found++
+        }
+        END{if(found!=1)exit 1}
+    ' "$1"
+}
 report_rows() { awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")' "$1"; }
 report_keys() { report_rows "$1" | awk -F'\t' '{print $1 "\t" $2}' | sort; }
+report_outcome_count() {
+    report_rows "$1" | awk -F'\t' -v wanted="$2" '$7==wanted{count++} END{print count+0}'
+}
+report_other_outcome_count() {
+    report_rows "$1" | awk -F'\t' -v wanted="$2" '$7!=wanted{count++} END{print count+0}'
+}
+json_outcome_count() {
+    awk -v wanted="$2" '
+        /^\{"kind":"result",/{
+            if(!match($0,/"outcome":"[^"]*"/))exit 2
+            value=substr($0,RSTART,RLENGTH)
+            sub(/^"outcome":"/,"",value)
+            sub(/"$/,"",value)
+            if(value==wanted)count++
+        }
+        END{print count+0}
+    ' "$1"
+}
+json_other_outcome_count() {
+    awk -v wanted="$2" '
+        /^\{"kind":"result",/{
+            if(!match($0,/"outcome":"[^"]*"/))exit 2
+            value=substr($0,RSTART,RLENGTH)
+            sub(/^"outcome":"/,"",value)
+            sub(/"$/,"",value)
+            if(value!=wanted)count++
+        }
+        END{print count+0}
+    ' "$1"
+}
 json_report_keys() {
     local report=$1
     awk -v report="$report" '
@@ -156,16 +214,9 @@ computed_summary() {
     report_rows "$1" | awk -F'\t' '{print $7}' | sort | uniq -c | awk '
         {out=out (NR==1?"":" ") $2 "=" $1} END{print out}'
 }
-absolute_from_root() {
-    case $1 in
-        /*) printf '%s\n' "$1" ;;
-        *) printf '%s/%s\n' "$root" "$1" ;;
-    esac
-}
-
 check_static_inputs() {
-    check_file "$baseline" 87 \
-        5c6c4546b113340023ef22e792a3cebb6c0f9988166e64145aea9e4de37a41f7
+    check_file "$baseline" 95 \
+        a52b33e96d9bae60d8ad192f3e316c1917c259df6743f7baaca7ef66dcfe086b
     check_file "$sab_ledger" "$(value shared_array_buffer_universe_lines)" \
         "$(value shared_array_buffer_universe_sha256)"
     check_file "$atomics_ledger" "$(value atomics_universe_lines)" \
@@ -181,7 +232,19 @@ check_static_inputs() {
         "$(value scoped_profile_sha256)"
     check_file "$quickjs_receipt" "$(value quickjs_receipt_lines)" \
         "$(value quickjs_receipt_sha256)"
-    [[ "$(value global_profile)" == "$live_profile" \
+    [[ "$(value milestone_kind)" == scoped-implementation-receipt \
+        && "$(value oxide_focused_report)" == authenticated \
+        && "$(value implementation_parent_commit)" \
+            == e578f8761c0d46c643f6e5b76167a48c256ef08e \
+        && "$(git rev-parse --verify "$(value implementation_parent_commit)^{commit}" 2>/dev/null)" \
+            == "$(value implementation_parent_commit)" \
+        && "$(value oxide_focused_rows)" == "$(value combined_variants)" \
+        && "$(value oxide_focused_report_lines)" == 211 \
+        && "$(value oxide_focused_jsonl_lines)" == 202 \
+        && "$(value oxide_focused_summary)" == pass=200 \
+        && "$(value oxide_focused_passes)" == "$(value combined_variants)" \
+        && "$(value oxide_focused_other_outcomes)" == 0 \
+        && "$(value global_profile)" == "$live_profile" \
         && "$(value source_nonblocking_host_requirements)" == none \
         && "$(value tagged_metadata_only_path)" \
             == test/built-ins/Atomics/isLockFree/bigint/expected-return-value.js \
@@ -247,7 +310,7 @@ check_static_inputs() {
         && -z "$(section "$profile" audited-negative-tests)" \
         && -z "$(section "$profile" execution)" \
         && "$(value selection_only)" == true \
-        && "$(value oxide_focused_report)" == unblessed ]] \
+        && "$(value oxide_focused_report)" == authenticated ]] \
         || die 'selection-only profile identity drifted'
 }
 
@@ -262,13 +325,9 @@ if [[ "$skip_unit_execution" == true ]]; then
 else
     cargo test --locked --quiet --bin run-test262 shared_atomics_nonblocking
 fi
-if [[ -n "$runner_override" ]]; then
-    runner=$(absolute_from_root "$runner_override")
-    [[ -x "$runner" ]] || die "TEST262_RUNNER is not executable: $runner"
-else
-    cargo build --locked --release --quiet --bin run-test262
-    runner=$root/target/release/run-test262
-fi
+cargo build --locked --release --quiet --bin run-test262
+runner=${CARGO_TARGET_DIR:-$root/target}/release/run-test262
+[[ -x "$runner" ]] || die "current-worktree Test262 runner is not executable: $runner"
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
 
@@ -824,8 +883,12 @@ focused_log=$tmp/focused.log
     >"$focused_log" 2>&1 \
     || { tail -n 100 "$focused_log" >&2; die 'exact combined selection was not accepted'; }
 json_report_keys "$focused_json" >"$focused_json_keys" \
-    || die 'unblessed Oxide JSONL report is malformed'
+    || die 'authenticated Oxide JSONL report is malformed'
+expected_json_summary=$(printf '{"kind":"summary","outcomes":{"pass":%s}}' \
+    "$(value oxide_focused_passes)")
 [[ -f "$focused_report" && -f "$focused_json" \
+    && "$(head -n 1 "$focused_report")" == '# quickjs-oxide Test262 outcome vector v2' \
+    && "$(json_metadata_schema "$focused_json")" == 2 \
     && "$(header "$focused_report" quickjs)" == "$(value quickjs)" \
     && "$(header "$focused_report" test262)" == "$(value test262)" \
     && "$(header "$focused_report" test262_patch_sha256)" \
@@ -838,18 +901,46 @@ json_report_keys "$focused_json" >"$focused_json_keys" \
         == "$(value scoped_profile_sha256)" \
     && "$(header "$focused_report" profile)" == test262-canonical-classified-v2 \
     && "$(header "$focused_report" mode)" == both \
+    && "$(json_metadata_string "$focused_json" quickjs)" \
+        == "$(header "$focused_report" quickjs)" \
+    && "$(json_metadata_string "$focused_json" test262)" \
+        == "$(header "$focused_report" test262)" \
+    && "$(json_metadata_string "$focused_json" test262_patch_sha256)" \
+        == "$(header "$focused_report" test262_patch_sha256)" \
+    && "$(json_metadata_string "$focused_json" test262_config_sha256)" \
+        == "$(header "$focused_report" test262_config_sha256)" \
+    && "$(json_metadata_string "$focused_json" test262_metadata_sha256)" \
+        == "$(header "$focused_report" test262_metadata_sha256)" \
+    && "$(json_metadata_string "$focused_json" oxide_profile_sha256)" \
+        == "$(header "$focused_report" oxide_profile_sha256)" \
+    && "$(json_metadata_string "$focused_json" profile)" \
+        == "$(header "$focused_report" profile)" \
+    && "$(json_metadata_string "$focused_json" mode)" \
+        == "$(header "$focused_report" mode)" \
     && "$(report_rows "$focused_report" | wc -l | tr -d '[:space:]')" \
         == "$(value oxide_focused_rows)" \
     && "$(report_keys "$focused_report" | sha /dev/stdin)" \
         == "$(value combined_keys_sha256)" \
     && "$(lines "$focused_json_keys")" == "$(value combined_variants)" \
     && "$(sha "$focused_json_keys")" == "$(value combined_keys_sha256)" \
-    && "$(lines "$focused_report")" == "$(( $(value combined_variants) + 11 ))" \
-    && "$(lines "$focused_json")" == "$(( $(value combined_variants) + 2 ))" \
-    && "$(report_summary "$focused_report")" == "$(computed_summary "$focused_report")" ]] \
-    || die 'unblessed Oxide focused report shape drifted'
+    && "$(lines "$focused_report")" == "$(value oxide_focused_report_lines)" \
+    && "$(lines "$focused_json")" == "$(value oxide_focused_jsonl_lines)" \
+    && "$(sha "$focused_report")" == "$(value oxide_focused_tsv_sha256)" \
+    && "$(sha "$focused_json")" == "$(value oxide_focused_jsonl_sha256)" \
+    && "$(report_summary "$focused_report")" == "$(computed_summary "$focused_report")" \
+    && "$(report_summary "$focused_report")" == "$(value oxide_focused_summary)" \
+    && "$(report_outcome_count "$focused_report" pass)" \
+        == "$(value oxide_focused_passes)" \
+    && "$(report_other_outcome_count "$focused_report" pass)" \
+        == "$(value oxide_focused_other_outcomes)" \
+    && "$(json_outcome_count "$focused_json" pass)" \
+        == "$(value oxide_focused_passes)" \
+    && "$(json_other_outcome_count "$focused_json" pass)" \
+        == "$(value oxide_focused_other_outcomes)" \
+    && "$(tail -n 1 "$focused_json")" == "$expected_json_summary" ]] \
+    || die 'authenticated Oxide focused report identity drifted'
 cmp -s <(report_keys "$focused_report") "$focused_json_keys" \
-    || die 'unblessed Oxide TSV and JSONL result keys diverged'
+    || die 'authenticated Oxide TSV and JSONL result keys diverged'
 report_rows "$focused_report" | awk -F'\t' '$8=="selection"{exit 1}' \
     || die 'exact R3di profile left a row at the selection phase'
 
@@ -918,4 +1009,4 @@ quickjs_combined_actual=$((quickjs_tagged_actual + quickjs_spillover_actual))
 diff -u "$quickjs_receipt" "$tmp/quickjs-receipt.txt" \
     || die 'pinned QuickJS receipt projection drifted'
 
-echo "R3di selection gate verified: tagged 78 / 156; source spillover 22 / 44; combined 100 / 200; Oxide unblessed $(report_summary "$focused_report"); pinned QuickJS 200 / 200."
+echo "R3di implementation gate verified: tagged 78 / 156; source spillover 22 / 44; combined 100 / 200; authenticated Oxide $(report_summary "$focused_report"); pinned QuickJS 200 / 200."

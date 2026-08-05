@@ -1,4 +1,6 @@
 use super::*;
+use crate::shared_memory::SharedBufferHandle;
+use std::sync::{Arc, Barrier, mpsc};
 
 fn eval_string(context: &mut Context, source: &str) -> String {
     let Value::String(value) = context.eval(source).unwrap() else {
@@ -9,6 +11,32 @@ fn eval_string(context: &mut Context, source: &str) -> String {
 
 fn assert_script(context: &mut Context, source: &str) {
     assert_eq!(eval_string(context, source), "ok");
+}
+
+fn publish_shared_buffer(
+    runtime: &Runtime,
+    context: &mut Context,
+    name: &str,
+    handle: SharedBufferHandle,
+) {
+    let imported = context.import_shared_array_buffer(handle).unwrap();
+    let global = context.global_object().unwrap();
+    let key = runtime.intern_property_key(name).unwrap();
+    assert!(
+        context
+            .define_own_property(
+                &global,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(Value::Object(imported)),
+                    writable: DescriptorField::Present(true),
+                    enumerable: DescriptorField::Present(true),
+                    configurable: DescriptorField::Present(true),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )
+            .unwrap()
+    );
 }
 
 #[test]
@@ -204,6 +232,229 @@ fn integer_typed_array_operations_return_old_values_and_wrap_in_place() {
 }
 
 #[test]
+fn shared_integer_typed_array_operations_linearize_each_machine_word() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_script(
+        &mut context,
+        r#"(function(){
+            var failures=[];
+            function check(label,condition){if(!condition)failures.push(label)}
+            var classes=[
+                Int8Array,Uint8Array,Int16Array,Uint16Array,
+                Int32Array,Uint32Array,BigInt64Array,BigUint64Array
+            ];
+            for(var i=0;i<classes.length;i++){
+                var C=classes[i], big=i>=6;
+                var a=new C(new SharedArrayBuffer(C.BYTES_PER_ELEMENT));
+                function value(n){return big?BigInt(n):n}
+                check(C.name+" store return",Atomics.store(a,0,value(5))===value(5));
+                check(C.name+" load",Atomics.load(a,0)===value(5));
+                check(C.name+" add",Atomics.add(a,0,value(3))===value(5));
+                check(C.name+" and",Atomics.and(a,0,value(6))===value(8));
+                check(C.name+" or",Atomics.or(a,0,value(10))===value(0));
+                check(C.name+" xor",Atomics.xor(a,0,value(3))===value(10));
+                check(C.name+" sub",Atomics.sub(a,0,value(4))===value(9));
+                check(C.name+" exchange",Atomics.exchange(a,0,value(7))===value(5));
+                check(C.name+" compare miss",
+                    Atomics.compareExchange(a,0,value(6),value(11))===value(7));
+                check(C.name+" compare hit",
+                    Atomics.compareExchange(a,0,value(7),value(11))===value(7));
+                check(C.name+" final",Atomics.load(a,0)===value(11));
+            }
+
+            var small=new Int8Array(new SharedArrayBuffer(1));
+            check("store full return",Atomics.store(small,0,257.9)===257);
+            check("store narrow bits",small[0]===1);
+            var unsigned=new BigUint64Array(new SharedArrayBuffer(8));
+            check("big store full return",Atomics.store(unsigned,0,-1n)===-1n);
+            check("big store narrow bits",unsigned[0]===18446744073709551615n);
+            return failures.length?failures.join(","):"ok";
+        })()"#,
+    );
+}
+
+#[test]
+fn shared_access_coercions_observe_old_length_and_revalidate_before_locking() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_script(
+        &mut context,
+        r#"(function(){
+            var failures=[],log=[];
+            function check(label,condition){if(!condition)failures.push(label)}
+            function capture(operation){
+                try{return "return:"+String(operation())}
+                catch(error){return "throw:"+error.name+":"+error.message}
+            }
+
+            var buffer=new SharedArrayBuffer(0,{maxByteLength:4});
+            var array=new Int32Array(buffer);
+            var outcome=capture(function(){return Atomics.load(array,{
+                valueOf:function(){log.push("index");buffer.grow(4);return 0}
+            })});
+            check("old length error",outcome==="throw:RangeError:out-of-bound access");
+            check("old length order",log.join(",")==="index");
+            check("grown tracking length",array.length===1);
+
+            buffer=new SharedArrayBuffer(4,{maxByteLength:8});
+            array=new Int32Array(buffer);array[0]=5;log=[];
+            outcome=capture(function(){return Atomics.add(array,0,{
+                valueOf:function(){log.push("value");buffer.grow(8);return 2}
+            })});
+            check("grow during value",outcome==="return:5");
+            check("value order",log.join(",")==="value");
+            check("grown write",array.length===2 && array[0]===7);
+
+            log=[];
+            outcome=capture(function(){return Atomics.compareExchange(
+                array,0,
+                {valueOf:function(){log.push("expected");return 7}},
+                {valueOf:function(){log.push("replacement");return 9}}
+            )});
+            check("compare result",outcome==="return:7" && array[0]===9);
+            check("compare order",log.join(",")==="expected,replacement");
+            return failures.length?failures.join(","):"ok";
+        })()"#,
+    );
+}
+
+#[test]
+fn shared_add_is_atomic_across_two_runtime_threads() {
+    const ITERATIONS: u32 = 2_000;
+
+    let handle = SharedBufferHandle::new(4, None).unwrap();
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let mut start_senders = Vec::new();
+    let mut workers = Vec::new();
+    for _ in 0..2 {
+        let worker_handle = handle.clone();
+        let worker_ready = ready_sender.clone();
+        let (start_sender, start_receiver) = mpsc::channel();
+        start_senders.push(start_sender);
+        workers.push(std::thread::spawn(move || {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            publish_shared_buffer(&runtime, &mut context, "__shared", worker_handle);
+
+            worker_ready.send(()).unwrap();
+            drop(worker_ready);
+            start_receiver.recv().unwrap();
+            context
+                .eval(&format!(
+                    "var __view=new Int32Array(__shared);\
+                     for(var __index=0;__index<{ITERATIONS};__index++)\
+                         Atomics.add(__view,0,1);"
+                ))
+                .unwrap();
+        }));
+    }
+
+    drop(ready_sender);
+    for _ in 0..2 {
+        ready_receiver.recv().unwrap();
+    }
+    for start_sender in start_senders {
+        start_sender.send(()).unwrap();
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let bytes = handle.read_word(0, 4).unwrap();
+    assert_eq!(
+        u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        2 * ITERATIONS,
+    );
+}
+
+#[test]
+fn distinct_shared_backings_follow_one_sequentially_consistent_order() {
+    const ITERATIONS: usize = 512;
+
+    let first = SharedBufferHandle::new(4, None).unwrap();
+    let second = SharedBufferHandle::new(4, None).unwrap();
+    let rendezvous = Arc::new(Barrier::new(3));
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let mut workers = Vec::new();
+
+    for (worker_id, own, other) in [
+        (0, first.clone(), second.clone()),
+        (1, second.clone(), first.clone()),
+    ] {
+        let worker_rendezvous = Arc::clone(&rendezvous);
+        let worker_ready = ready_sender.clone();
+        let worker_result = result_sender.clone();
+        workers.push(std::thread::spawn(move || {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            publish_shared_buffer(&runtime, &mut context, "__own", own);
+            publish_shared_buffer(&runtime, &mut context, "__other", other);
+            context
+                .eval(
+                    "var __ownView=new Int32Array(__own);\
+                     var __otherView=new Int32Array(__other);\
+                     function __seqCstStep(){\
+                         Atomics.store(__ownView,0,1);\
+                         return Atomics.load(__otherView,0);\
+                     }",
+                )
+                .unwrap();
+            worker_ready.send(()).unwrap();
+
+            for _ in 0..ITERATIONS {
+                worker_rendezvous.wait();
+                let observed = match context.eval("__seqCstStep()") {
+                    Ok(Value::Int(value)) => Ok(value),
+                    Ok(_) => Err("SC litmus returned a non-integer value".to_owned()),
+                    Err(error) => Err(format!("SC litmus evaluation failed: {error}")),
+                };
+                worker_result.send((worker_id, observed)).unwrap();
+                worker_rendezvous.wait();
+            }
+        }));
+    }
+
+    drop(ready_sender);
+    drop(result_sender);
+    for _ in 0..2 {
+        ready_receiver.recv().unwrap();
+    }
+
+    let zero = 0_u32.to_ne_bytes();
+    let mut failures = Vec::new();
+    for iteration in 0..ITERATIONS {
+        first.write_word(0, &zero).unwrap();
+        second.write_word(0, &zero).unwrap();
+        rendezvous.wait();
+        rendezvous.wait();
+
+        let mut observed = [None, None];
+        for _ in 0..2 {
+            let (worker_id, result) = result_receiver.recv().unwrap();
+            match result {
+                Ok(value) => observed[worker_id] = Some(value),
+                Err(error) => failures.push(error),
+            }
+        }
+        if observed == [Some(0), Some(0)] {
+            failures.push(format!(
+                "iteration {iteration} observed the store-buffering outcome (0, 0)"
+            ));
+        }
+    }
+
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "cross-backing SC failures: {}",
+        failures.join(", ")
+    );
+}
+
+#[test]
 fn store_returns_the_full_converted_value_while_writing_narrow_bits() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -394,20 +645,17 @@ fn wait_notify_pause_and_lock_free_keep_the_non_shared_quickjs_contract() {
             outcome=capture(function(){return Atomics.load(shared,{
                 valueOf:function(){log.push("shared index");return 0}
             })});
-            check("shared load frontier",
-                outcome===
-                    "throw:TypeError:shared-memory Atomics are not implemented");
-            check("shared load no coercion",log.length===0);
+            check("shared load",outcome==="return:0");
+            check("shared load order",log.join(",")==="shared index");
             log=[];
             outcome=capture(function(){return Atomics.store(
                 shared,
                 {valueOf:function(){log.push("shared index");return 0}},
                 {valueOf:function(){log.push("shared value");return 1}}
             )});
-            check("shared store frontier",
-                outcome===
-                    "throw:TypeError:shared-memory Atomics are not implemented");
-            check("shared store no coercion",log.length===0);
+            check("shared store",outcome==="return:1" && shared[0]===1);
+            check("shared store order",
+                log.join(",")==="shared index,shared value");
             log=[];
             outcome=capture(function(){return Atomics.wait(
                 shared,
@@ -417,7 +665,7 @@ fn wait_notify_pause_and_lock_free_keep_the_non_shared_quickjs_contract() {
             )});
             check("shared wait frontier",
                 outcome===
-                    "throw:TypeError:shared-memory Atomics are not implemented");
+                    "throw:TypeError:shared-memory Atomics.wait is not implemented");
             check("shared wait no coercion",log.length===0);
             log=[];
             outcome=capture(function(){return Atomics.notify(
@@ -425,10 +673,9 @@ fn wait_notify_pause_and_lock_free_keep_the_non_shared_quickjs_contract() {
                 {valueOf:function(){log.push("shared index");return 0}},
                 {valueOf:function(){log.push("shared count");return 1}}
             )});
-            check("shared notify frontier",
-                outcome===
-                    "throw:TypeError:shared-memory Atomics are not implemented");
-            check("shared notify no coercion",log.length===0);
+            check("shared notify",outcome==="return:0");
+            check("shared notify order",
+                log.join(",")==="shared index,shared count");
             return failures.length?failures.join(","):"ok";
         })()"#,
     );

@@ -1,6 +1,6 @@
-# R3di selection-only non-blocking shared Atomics inventory and oracle receipt.
-milestone_kind=scoped-evidence-only
-oxide_focused_report=unblessed
+# Authenticated R3di non-blocking shared Atomics inventory and implementation receipt.
+milestone_kind=scoped-implementation-receipt
+oxide_focused_report=authenticated
 quickjs=2026-06-04
 quickjs_source_sha256=b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a
 test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
@@ -11,6 +11,7 @@ test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96
 patched_atomics_helper_sha256=71cc033935cf3b9f4f05ef26f359eae4b26e77f64f8d0cfc3e3068b0782f505d
 patched_regexp_utils_sha256=a036d4c675dfd6e6baa838d0cd1db608aa8f3aa8e6eac7e58d68db80bafb2ad7
 parent_commit=3a99b710736f897a5cb5583c06cf6b36c8b254d7
+implementation_parent_commit=e578f8761c0d46c643f6e5b76167a48c256ef08e
 
 global_profile=compat/test262-oxide.conf
 global_profile_lines=1340
@@ -76,6 +77,13 @@ scoped_profile_features=17
 scoped_profile_features_sha256=1b3d8a0a91dc18f4e4655f9e2ca3fc49fa50b66390b78ea2848c1cb05faaf4b5
 selection_only=true
 oxide_focused_rows=200
+oxide_focused_report_lines=211
+oxide_focused_jsonl_lines=202
+oxide_focused_tsv_sha256=e265924c5773626f73f5396803a8b3e19e5650bad49efe04a390dfa77b86548a
+oxide_focused_jsonl_sha256=9a012e1be03b8f752efc15a1250548388c1c0c41f6443e44ec8be4f98842fb34
+oxide_focused_summary=pass=200
+oxide_focused_passes=200
+oxide_focused_other_outcomes=0
 
 quickjs_receipt=tests/test262-shared-atomics-nonblocking-quickjs-receipt.txt
 quickjs_receipt_lines=20

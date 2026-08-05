@@ -1,8 +1,52 @@
 # Implementation status
 
-Last audited: 2026-08-05. The completion definition remains
+Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
+
+## R3di non-blocking shared Atomics
+
+R3di extends the existing QuickJS-shaped Atomics implementation to integer
+TypedArrays backed by `SharedArrayBuffer`. `load`, `store`, `add`, `sub`,
+`and`, `or`, `xor`, `exchange`, and `compareExchange` preserve the pinned
+validation, coercion, narrowing, return-value, and grow/revalidation order.
+After observable JavaScript work has completed, every shared load, store, and
+read-modify-write operation takes a process-global sequential-consistency gate
+and then the target backing lock. This conservatively reproduces the
+cross-buffer order of QuickJS's C11 `seq_cst` atomics without `unsafe`. It also
+serializes independent buffers, so replacing that gate with narrower safe
+atomic primitives is an explicit performance debt, not a semantic gap. The
+ordinary ArrayBuffer extension remains unchanged.
+
+`Atomics.notify` now accepts shared Int32Array and BigInt64Array views, performs
+the complete index and count validation/coercion sequence, and returns zero
+because no waiter registry exists yet. `Atomics.wait` remains an explicit
+JavaScript TypeError frontier before its later argument coercions;
+`Atomics.waitAsync`, agents, and waiter coordination remain unimplemented.
+
+The scoped Test262 selection contains 100 paths / 200 variants. It combines
+the 78 paths / 156 variants carrying the `SharedArrayBuffer` feature tag with
+a disjoint 22-path / 44-variant source-audited spillover whose metadata omits
+that tag. Oxide and pinned QuickJS 2026-06-04 both pass all 200 variants. Two
+Oxide runs are byte-identical: the 211-line focused TSV hashes to
+`e265924c5773626f73f5396803a8b3e19e5650bad49efe04a390dfa77b86548a`,
+and the 202-line JSONL hashes to
+`9a012e1be03b8f752efc15a1250548388c1c0c41f6443e44ec8be4f98842fb34`.
+The exact combined manifest and selection-only profile hash to
+`a9072513df3c730b87a84218a88755c229a8090e0100bc44bbd7d2550ac72dc0`
+and
+`ec33455551c3601859241870624b5017551aa04c8edbf8c9e899d4ef9b5332cc`.
+This milestone does not globally admit `SharedArrayBuffer` or broad `Atomics`,
+so the canonical 130-tag vector remains unchanged.
+
+The browser playground adds a `Shared Atomics` example which stores 40,
+atomically adds 2, and loads 42 through the real WASM engine. Reproduce the
+scoped inventory/oracle checks and browser smoke with:
+
+```sh
+./scripts/test-test262-shared-atomics-nonblocking.sh --check
+./scripts/test-web-playground.sh
+```
 
 ## R3dh SharedArrayBuffer core
 
@@ -37,11 +81,12 @@ and
 
 This is deliberately a selection-only milestone. It does not add the
 `SharedArrayBuffer` tag to the global capability profile, so the 130-tag
-canonical vector remains 65,610 passes / 65,662 runnable. The remaining
-inventory is explicitly partitioned into 78 non-blocking Atomics paths / 156
+canonical vector remains 65,610 passes / 65,662 runnable. At R3dh the remaining
+inventory was explicitly partitioned into 78 non-blocking Atomics paths / 156
 variants, 20 synchronous-wait paths without agents / 40 variants, 58 agent
 paths / 116 variants, and 86 `Atomics.waitAsync` paths / 172 variants. Shared
-Atomics, agent coordination, waiters, and `waitAsync` remain future milestones.
+Atomics were still pending then; R3di above closes the non-blocking slice,
+while agent coordination, waiters, and `waitAsync` remain future milestones.
 
 The browser playground adds a no-Atomics SharedArrayBuffer example that grows
 the buffer, writes through TypedArray and DataView views, slices it, and
@@ -2432,8 +2477,8 @@ workstream. Build and architecture details live in
   `dc37ed90322630e81fa4295daa57b8f81093719541076f84d4da27ef0d3c5d23`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
-  Modules, shared-memory Atomics, agents/waiters, `Atomics.waitAsync`, and
-  broad built-in coverage remain explicit frontiers.
+  Modules, `Atomics.wait`, agents/waiters, `Atomics.waitAsync`, and broad
+  built-in coverage remain explicit frontiers.
   The fixed smoke now
   passes all 193 variants with no unsupported result. See
   `docs/test262.md` for the denominators and why none of these figures is a
@@ -9448,7 +9493,7 @@ The remaining parity surface also includes the full grammar/opcode set, the
 Unicode 17 normalization/script/property tables beyond the implemented
 identifier, case-conversion, `Cased` and `Case_Ignorable` data, the advanced
 RegExp grammar, modules, remaining jobs/Promise/async and generator surfaces,
-shared-memory Atomics, agents/waiters, `Atomics.waitAsync`, remaining
+`Atomics.wait`, agents/waiters, `Atomics.waitAsync`, remaining
 WeakRef/finalization edge cases, bytecode version 5 and BJSON interoperability,
 `std`/`os`, workers, REPL/qjsc, and the complete Rust and C embedding APIs.
 
