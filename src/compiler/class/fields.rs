@@ -16,7 +16,50 @@ pub(super) struct ClassElementState {
     static_computed_count: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ClassFieldInitializerParent {
+    function: FunctionId,
+    lex_context: LexContext,
+}
+
 impl<'source> Parser<'source> {
+    fn class_field_initializer_lex_context(mut context: LexContext) -> LexContext {
+        // QuickJS parses every public/private, instance/static field
+        // initializer in the shared normal-method child created by
+        // js_parse_function_class_fields_init(). Class strictness and the
+        // module grammar parameter survive that boundary, while an enclosing
+        // generator/async function must not classify `yield`/`await` for the
+        // synthetic child.
+        context.strict = true;
+        context.generator = false;
+        context.async_function = false;
+        context
+    }
+
+    pub(super) fn enter_class_field_initializer(
+        &mut self,
+        child: FunctionId,
+    ) -> ClassFieldInitializerParent {
+        let parent = ClassFieldInitializerParent {
+            function: self.current_function,
+            lex_context: self.lexer.context(),
+        };
+        self.current_function = child;
+        self.set_future_lex_context(Self::class_field_initializer_lex_context(
+            parent.lex_context,
+        ));
+        parent
+    }
+
+    pub(super) fn leave_class_field_initializer(&mut self, parent: ClassFieldInitializerParent) {
+        self.current_function = parent.function;
+        // The current lookahead was already scanned before this restoration.
+        // QuickJS likewise changes cur_func before parsing an initializer and
+        // restores it at the field terminator without reparsing the token, so
+        // restore only the future context.
+        self.set_future_lex_context(parent.lex_context);
+    }
+
     pub(super) fn ensure_class_initializer(
         &mut self,
         elements: &mut ClassElementState,
@@ -99,7 +142,6 @@ impl<'source> Parser<'source> {
             return Err(Error::syntax("invalid field name", source_span(span)));
         }
 
-        let parent = self.current_function;
         let child = self.ensure_class_initializer(elements, is_static, span)?;
         let computed_binding = match &key {
             ClassPropertyKey::Fixed { .. } => None,
@@ -128,7 +170,7 @@ impl<'source> Parser<'source> {
             }
         };
 
-        self.current_function = child;
+        let parent = self.enter_class_field_initializer(child);
         self.emit_instruction(Instruction::PushThis)?;
         if let Some(hidden) = &computed_binding {
             self.emit_identifier(hidden.clone(), span, IdentifierAccess::Get)?;
@@ -161,7 +203,7 @@ impl<'source> Parser<'source> {
             }
         }
         self.emit_instruction(Instruction::Drop)?;
-        self.current_function = parent;
+        self.leave_class_field_initializer(parent);
         self.anonymous_function_definition = None;
         self.consume_statement_terminator()
     }
@@ -201,5 +243,29 @@ impl<'source> Parser<'source> {
         self.emit(IrOp::MakeClosure(constant))?;
         self.emit_instruction(Instruction::RunClassStaticInitializer)?;
         Ok(Some(start))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_initializer_context_preserves_module_but_resets_outer_function_kind() {
+        let parent = LexContext {
+            strict: false,
+            module: true,
+            generator: true,
+            async_function: true,
+        };
+        assert_eq!(
+            Parser::<'static>::class_field_initializer_lex_context(parent),
+            LexContext {
+                strict: true,
+                module: true,
+                generator: false,
+                async_function: false,
+            }
+        );
     }
 }

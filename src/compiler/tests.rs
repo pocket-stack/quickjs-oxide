@@ -6,9 +6,9 @@ use crate::bytecode::{
 use crate::debug::DebugInfoMode;
 use crate::error::ErrorKind;
 use crate::heap::{
-    ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind,
-    EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalKind, EvalRootBinding,
-    EvalScopeKind, EvalVariableEnvironment, FunctionKind as BytecodeFunctionKind,
+    ClassInitializerKind, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
+    ConstructorKind, EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalKind,
+    EvalRootBinding, EvalScopeKind, EvalVariableEnvironment, FunctionKind as BytecodeFunctionKind,
     ParameterDefaultSource, validate_parameter_bytecode_layout,
 };
 
@@ -745,6 +745,107 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
         let error = compile_unlinked_script(source).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
         assert_eq!(error.message(), "invalid method name", "{source:?}");
+    }
+}
+
+#[test]
+fn class_field_initializers_reset_async_lexing_to_the_normal_hidden_child() {
+    let source = r#"
+        var aw\u0061it = 40;
+        async function build() {
+            class Fields {
+                instance = await + 1;
+                static staticField = await + 2;
+                #private = await + 3;
+                static #staticPrivate = await + 4;
+                arrow = () => await + 5;
+                static escaped = aw\u0061it + 6;
+                [await Promise.resolve("computed")] = 47;
+                read() { return this.#private; }
+                static read() { return this.#staticPrivate; }
+            }
+            return Fields;
+        }
+    "#;
+    let tree = Parser::parse(source, JsString::from_static("<class-field-await-test>"))
+        .expect("class field await IdentifierReferences should compile");
+
+    let initializers = tree
+        .functions
+        .iter()
+        .filter(|function| {
+            matches!(
+                function.class_initializer_kind,
+                Some(ClassInitializerKind::InstanceFields | ClassInitializerKind::StaticElements)
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(initializers.len(), 2);
+    assert!(initializers.iter().all(|function| {
+        function.kind == FunctionKind::Method
+            && function.execution_kind == BytecodeFunctionKind::Normal
+            && function.strict
+            && function
+                .ops
+                .iter()
+                .all(|operation| !matches!(operation.op, super::IrOp::Bytecode(Instruction::Await)))
+    }));
+
+    let build = tree
+        .functions
+        .iter()
+        .find(|function| {
+            function.function_name.as_deref() == Some("build")
+                && function.execution_kind == BytecodeFunctionKind::Async
+        })
+        .expect("outer async function");
+    assert_eq!(
+        build
+            .ops
+            .iter()
+            .filter(|operation| matches!(operation.op, super::IrOp::Bytecode(Instruction::Await)))
+            .count(),
+        1,
+        "the computed key should retain the outer async context"
+    );
+
+    let field_arrow = tree
+        .functions
+        .iter()
+        .find(|function| function.kind == FunctionKind::Arrow)
+        .expect("field initializer arrow");
+    assert_eq!(field_arrow.execution_kind, BytecodeFunctionKind::Normal);
+    assert!(
+        field_arrow
+            .ops
+            .iter()
+            .all(|operation| !matches!(operation.op, super::IrOp::Bytecode(Instruction::Await)))
+    );
+}
+
+#[test]
+fn class_field_await_context_diagnostics_keep_neighboring_boundaries() {
+    for (source, expected) in [
+        (
+            "async function build(){ return class { [await] = 1; }; }",
+            "unexpected token in expression: ']'",
+        ),
+        (
+            "async function build(){ return class { field = await 1; }; }",
+            "expecting ';'",
+        ),
+        (
+            "async function build(){ return class { static { await; } }; }",
+            "unexpected 'await' keyword",
+        ),
+        (
+            "class Fields { static { await; } }",
+            "'await' is not allowed in a class static block",
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
+        assert_eq!(error.message(), expected, "{source:?}");
     }
 }
 

@@ -159,9 +159,8 @@ impl<'source> Parser<'source> {
             source_offset(span)?,
         )?;
 
-        let parent = self.current_function;
         let child = self.ensure_class_initializer(elements, is_static, span)?;
-        self.current_function = child;
+        let parent = self.enter_class_field_initializer(child);
         self.emit_instruction(Instruction::PushThis)?;
 
         if self.consume_punctuator(Punctuator::Equal)? {
@@ -186,7 +185,7 @@ impl<'source> Parser<'source> {
             source_offset(span)?,
         )?;
         self.emit_instruction(Instruction::Drop)?;
-        self.current_function = parent;
+        self.leave_class_field_initializer(parent);
         self.anonymous_function_definition = None;
         self.consume_statement_terminator()
     }

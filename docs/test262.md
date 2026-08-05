@@ -6,6 +6,54 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3cz class-field initializer await context
+
+R3cz freezes QuickJS 2026-06-04's lexer-context boundary for synthetic class
+field initializer functions. Public/private, instance/static initializers are
+strict normal-method children which preserve the parent's module grammar
+parameter but do not inherit an enclosing function's async/generator flags.
+Computed keys are parsed before that child boundary and therefore retain the
+enclosing context. This lets raw `await` remain an IdentifierReference in a
+Script field initializer nested in an async function without weakening the
+computed-key, static-block, or Module early errors. Compiler tests cover the
+neighboring diagnostic boundaries, and a sloppy/strict runtime matrix matches
+pinned QuickJS across all four field shapes, escaped `await`, a synchronous
+arrow, and an async computed key.
+
+The exact manifest contains one path / two sloppy-and-strict variants and
+hashes to
+`beea6c8fc86db377966dbe2454b23ef7c227bf07f66661d676b4cb1f323e7c3a`.
+Pinned QuickJS passes both. The authenticated R3cy parent records
+`fail-parse=2`, while the candidate records `pass=2`. Candidate focused
+TSV/JSONL SHA-256 values are
+`9312266f78a2734f1d83349c0d6d264b0eb1098ea8a1e921cf23ad49e895bafd`
+and
+`40a12b019d865c41f066d0c5f7330cabcd551604797e82bb6f2a3c15e5d00087`.
+The focused transition changes two outcomes, has no detail-only movement, and
+records no previous-pass regression. The live profile remains byte-identical
+at SHA-256
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+
+The fresh two-worker full transition moves the complete vector to 65,509
+passes / 65,566 runnable, reduces `fail-parse` from 9 to 7, retains
+`fail-runtime=48`, and leaves the other 102,035 rows byte-identical. It has no
+detail-only movement or previous-pass regression; the two JSON mega-array
+variants still time out. Candidate whole-corpus TSV/JSONL SHA-256 values are
+`e2c3127f1d07909579e0f9cab108b70ebdaf5555646bd47cd2c1d63768ec6c1e`
+and
+`c2d3379b16f6a39a99a1ba6f2d93d26b383dce1c287f8482517e2179546bdd1c`;
+this is now the canonical full vector.
+
+Reproduce the frozen inputs and focused receipts with:
+
+```sh
+./scripts/test-test262-class-field-await.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-class-field-await.sh
+```
+
+Reproduce the complete join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-class-field-await.sh --full`.
+
 ## R3cy Math.atanh numerical parity
 
 R3cy replaces the previous `f64::atanh` call with a QuickJS-compatible,
@@ -1818,30 +1866,30 @@ passing because they happened to throw a `SyntaxError`.
 ## Complete classified vector
 
 The pinned suite expands to 102,037 sloppy/strict variants. The runner emits
-every outcome in canonical order. The current R3cy canonical summary is:
+every outcome in canonical order. The current R3cz canonical summary is:
 
-- 65,507 pass;
+- 65,509 pass;
 - 18,475 are outside the pinned QuickJS target configuration;
 - 17,996 are classified as unsupported because of a feature, mode, host
   capability, parser/runtime/harness frontier, or unaudited negative-test
   provenance, including 13,719 `unsupported-feature` variants;
-- nine fail to parse, 48 fail at runtime, none fail in the harness, and two
+- seven fail to parse, 48 fail at runtime, none fail in the harness, and two
   time out; there are no crashes or runner/engine infrastructure faults.
 
-The runner admits 65,566 variants to execution. At R3cy all 65,566 produce a
+The runner admits 65,566 variants to execution. At R3cz all 65,566 produce a
 non-unsupported observed outcome; the runnable count can otherwise include
 typed parser/runtime frontiers or harness failures.
 
 Three rates answer different questions:
 
-- raw suite pass rate: 64.20% (`65,507 / 102,037`);
-- conservative target-scope lower bound: 78.39%
-  (`65,507 / (102,037 - 18,475)`);
+- raw suite pass rate: 64.20% (`65,509 / 102,037`);
+- conservative target-scope lower bound: 78.40%
+  (`65,509 / (102,037 - 18,475)`);
 - pass rate among variants with a non-unsupported observed outcome: 99.91%
-  (`65,507 / 65,566`).
+  (`65,509 / 65,566`).
 
-The 78.39% figure is the useful whole-project progress floor, not a claim that
-the engine is 78.39% conformant. The 99.91% conditional rate measures quality
+The 78.40% figure is the useful whole-project progress floor, not a claim that
+the engine is 78.40% conformant. The 99.91% conditional rate measures quality
 only on the currently exposed frontier and must not be read as overall
 completion. It can move in either direction as classification improves: R2p
 lowers it slightly by admitting 204 real, independent non-Symbol frontiers that
@@ -1896,10 +1944,10 @@ time out. Focused gates and the generic runner retain their existing parallel
 defaults. The current byte expectations use a fixed
 `TZ=America/Los_Angeles`; the hash gate therefore requires a Unix-like zoneinfo
 installation, and Windows still lacks the corresponding IANA-zone backend.
-The current R3cy canonical full TSV/JSONL SHA-256 values are
-`9009145c5b7033c4b4392022f97c73ab62efe4f78c4085e6b76a48f89a34ad76`
+The current R3cz canonical full TSV/JSONL SHA-256 values are
+`e2c3127f1d07909579e0f9cab108b70ebdaf5555646bd47cd2c1d63768ec6c1e`
 and
-`edcd4d53c03e09c447eed001d0033a36ce85e0a2b510b63e0eedec9066c44e60`.
+`c2d3379b16f6a39a99a1ba6f2d93d26b383dce1c287f8482517e2179546bdd1c`.
 
 ## Milestone policy
 
@@ -8806,8 +8854,8 @@ R3bw then admits that tag globally: 439 outcomes change to `pass`, 456 rows
 change only their residual-capability detail, and 101,142 rows remain
 unchanged. That historical R3bw vector reached 59,507/102,037 passes with 60,026
 runnable variants, 18,618 `unsupported-feature` outcomes, and 23,585 total
-unsupported outcomes. Subsequent milestones through R3cy advance the current
-vector to 65,507/102,037 passes with 65,566 runnable variants, 13,719
+unsupported outcomes. Subsequent milestones through R3cz advance the current
+vector to 65,509/102,037 passes with 65,566 runnable variants, 13,719
 `unsupported-feature` outcomes, and 17,996 total unsupported outcomes.
 The generated Unicode code-point property corpus now passes; properties of
 strings remain coupled to `v` mode.

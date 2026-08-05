@@ -4,6 +4,52 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cz class-field initializer await context
+
+R3cz matches QuickJS 2026-06-04's
+`js_parse_function_class_fields_init()` lexer-context boundary. Public/private,
+instance/static field initializers are parsed in a synthetic normal-method
+child: strict mode and the parent's module grammar parameter survive that
+boundary, while the child must not inherit an enclosing async/generator
+function's lexer flags. Computed keys remain in the enclosing
+context because QuickJS parses them before entering the initializer child.
+Oxide now switches both the compiler function and future lexer context at that
+same boundary, then restores the parent without rescanning the already-read
+field terminator. Compiler canaries and the QuickJS differential cover raw and
+escaped `await`, synchronous arrows, all four field shapes, computed keys, and
+neighboring static-block diagnostics.
+
+The exact Test262 manifest contains one path / two sloppy-and-strict variants
+and hashes to
+`beea6c8fc86db377966dbe2454b23ef7c227bf07f66661d676b4cb1f323e7c3a`.
+Pinned QuickJS and the R3cz candidate pass 2/2; the checksum-bound R3cy parent
+records `fail-parse=2`. Candidate focused TSV/JSONL SHA-256 values are
+`9312266f78a2734f1d83349c0d6d264b0eb1098ea8a1e921cf23ad49e895bafd`
+and
+`40a12b019d865c41f066d0c5f7330cabcd551604797e82bb6f2a3c15e5d00087`.
+The global profile remains byte-identical at 126 feature tags and SHA-256
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+
+The fresh two-worker 102,037-row join changes exactly the two
+`fail-parse -> pass` outcomes, leaves 102,035 non-cohort rows byte-identical,
+has no detail-only movement, and records no previous-pass regression. The
+canonical vector is now 65,509 passes / 65,566 runnable, `fail-parse=7`, and
+`fail-runtime=48`; the two JSON mega-array variants still time out. Full
+candidate TSV/JSONL SHA-256 values are
+`e2c3127f1d07909579e0f9cab108b70ebdaf5555646bd47cd2c1d63768ec6c1e`
+and
+`c2d3379b16f6a39a99a1ba6f2d93d26b383dce1c287f8482517e2179546bdd1c`.
+
+Reproduce the frozen inputs and focused evidence with:
+
+```sh
+./scripts/test-test262-class-field-await.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-class-field-await.sh
+```
+
+Reproduce the complete exact join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-class-field-await.sh --full`.
+
 ## R3cy Math.atanh numerical parity
 
 R3cy replaces Rust's single-expression `f64::atanh` path with a
@@ -1946,18 +1992,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent milestones
-  through R3cy advance the current canonical measurement to 65,507 passes and
-  65,566 runnable variants: 64.20% raw, a 78.39% lower bound after the 18,475
+  through R3cz advance the current canonical measurement to 65,509 passes and
+  65,566 runnable variants: 64.20% raw, a 78.40% lower bound after the 18,475
   pinned QuickJS target exclusions, or 99.91% among the 65,566 variants with a
   non-unsupported observed outcome. It records 13,719 `unsupported-feature`
   and 17,996 total
-  unsupported outcomes, nine parse failures, 48 runtime failures, no harness
-  failures, and two timeouts. The exact R3cy join preserves all 102,037 keys
+  unsupported outcomes, seven parse failures, 48 runtime failures, no harness
+  failures, and two timeouts. The exact R3cz join preserves all 102,037 keys
   with two outcome changes, 102,035 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `9009145c5b7033c4b4392022f97c73ab62efe4f78c4085e6b76a48f89a34ad76`
+  `e2c3127f1d07909579e0f9cab108b70ebdaf5555646bd47cd2c1d63768ec6c1e`
   and
-  `edcd4d53c03e09c447eed001d0033a36ce85e0a2b510b63e0eedec9066c44e60`.
+  `c2d3379b16f6a39a99a1ba6f2d93d26b383dce1c287f8482517e2179546bdd1c`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain

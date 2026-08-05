@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the R3cy Math.atanh milestone.
+# Reproduce the R3cz class-field await context milestone.
 
 set -euo pipefail
 export LC_ALL=C
@@ -7,37 +7,33 @@ export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-math-atanh-baseline.txt
-predecessor_baseline=tests/test262-for-of-async-member-baseline.txt
+baseline=tests/test262-class-field-await-baseline.txt
+predecessor_baseline=tests/test262-math-atanh-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
-successor_baseline=tests/test262-class-field-await-baseline.txt
-successor_gate=scripts/test-test262-class-field-await.sh
 upstream=compat/upstream.toml
 profile=compat/test262-oxide.conf
-manifest=tests/test262-math-atanh.txt
-parent_report=tests/test262-math-atanh-parent.tsv
-candidate_report=tests/test262-math-atanh-candidate.tsv
-transition=tests/test262-math-atanh-transitions.tsv
-parent_replay=target/test262-math-atanh-parent-replay.tsv
-candidate_replay=target/test262-math-atanh-candidate-replay.tsv
-preferred_parent_full=${TEST262_MATH_ATANH_PARENT_FULL:-target/test262-for-of-async-member-full.tsv}
-generated_parent_full=target/test262-math-atanh-parent-full.tsv
-candidate_full=target/test262-math-atanh-full.tsv
-oracle_log=target/test262-math-atanh-quickjs.log
+manifest=tests/test262-class-field-await.txt
+parent_report=tests/test262-class-field-await-parent.tsv
+candidate_report=tests/test262-class-field-await-candidate.tsv
+transition=tests/test262-class-field-await-transitions.tsv
+parent_replay=target/test262-class-field-await-parent-replay.tsv
+candidate_replay=target/test262-class-field-await-candidate-replay.tsv
+preferred_parent_full=${TEST262_CLASS_FIELD_AWAIT_PARENT_FULL:-target/test262-math-atanh-full.tsv}
+generated_parent_full=target/test262-class-field-await-parent-full.tsv
+candidate_full=target/test262-class-field-await-full.tsv
+oracle_log=target/test262-class-field-await-quickjs.log
 workers=${TEST262_WORKERS:-2}
 full_workers=${TEST262_FULL_WORKERS:-2}
 reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
 runner_override=${TEST262_RUNNER:-}
-parent_runner_override=${TEST262_MATH_ATANH_PARENT_RUNNER:-}
+parent_runner_override=${TEST262_CLASS_FIELD_AWAIT_PARENT_RUNNER:-}
 
 baseline_lines=84
-baseline_sha=9f10749909119be50133cc360e2a2b9e4856ca25cb9d20e9d02992b732dc835c
+baseline_sha=b7e22ee00fad7c0e4fe25736d204d7627393ca806235514ee03f8981d4d06663
 predecessor_lines=84
-predecessor_sha=e8f9fb867fe1a5b9e6da2e5874c94b08d204df8fff074c6a19686bc739b5556a
+predecessor_sha=9f10749909119be50133cc360e2a2b9e4856ca25cb9d20e9d02992b732dc835c
 canonical_lines=8
-canonical_sha=f1ca27c5e87111c05e42f273080ccdadd775ff47f03e5fa70ab62bead6e8535c
-successor_lines=84
-successor_sha=b7e22ee00fad7c0e4fe25736d204d7627393ca806235514ee03f8981d4d06663
+canonical_sha=150a4b2ab8f40d639ea5be461c204347913ad6c048932d1d09a13673a201a913
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -191,7 +187,7 @@ verify_full_report() {
 make_transition() {
     local before=$1 after=$2 output=$3
     {
-        echo '# Exhaustive R3cy Math.atanh transition.'
+        echo '# Exhaustive R3cz class-field await-context transition.'
         echo "# parent_commit=$(value parent_commit)"
         echo "# oxide_profile_sha256=$(value profile_sha256)"
         echo "# manifest_sha256=$(value manifest_sha256)"
@@ -227,7 +223,7 @@ check_profile() {
         && "$(sha "$tmp/profile.audited-negative-tests")" == "$(value profile_audited_negative_tests_sha256)" \
         && "$(lines "$tmp/profile.execution")" == "$(value profile_execution_entries)" \
         && "$(sha "$tmp/profile.execution")" == "$(value profile_execution_sha256)" ]] \
-        || die 'R3cy runner profile inventory drifted'
+        || die 'R3cz runner profile inventory drifted'
 }
 
 verify_parent_full_source() {
@@ -240,7 +236,7 @@ verify_parent_full_source() {
         return 0
     fi
     [[ -f "$preferred_parent_full" && -f "$parent_json" ]] \
-        || die 'R3cy predecessor full receipt is incomplete'
+        || die 'R3cz predecessor full receipt is incomplete'
     verify_full_report "$preferred_parent_full" parent_full
     rows_for_paths "$manifest" "$preferred_parent_full" >"$tmp/parent.cohort"
     rows_without_paths "$manifest" "$preferred_parent_full" >"$tmp/parent.non-cohort"
@@ -254,7 +250,7 @@ verify_parent_full_source() {
         && "$(lines "$tmp/parent.non-cohort")" == "$(value full_non_cohort_rows)" \
         && "$(sha "$tmp/parent.non-cohort")" == "$(value full_non_cohort_rows_sha256)" \
         && "$(sha "$tmp/parent.non-cohort.json")" == "$(value full_non_cohort_json_rows_sha256)" ]] \
-        || die 'R3cy parent full partition drifted'
+        || die 'R3cz parent full partition drifted'
     diff -u "$tmp/focused.parent" "$tmp/parent.cohort"
     diff -u "$tmp/focused.parent.json" "$tmp/parent.cohort.json"
 }
@@ -264,8 +260,8 @@ check_static_inputs() {
     check_file "$predecessor_baseline" "$predecessor_lines" "$predecessor_sha"
     check_file "$canonical_baseline" "$canonical_lines" "$canonical_sha"
     check_file "$manifest" "$(value manifest_paths)" "$(value manifest_sha256)"
-    sort -c "$manifest" || die 'R3cy manifest is not bytewise sorted'
-    [[ -z "$(uniq -d "$manifest")" ]] || die 'R3cy manifest contains duplicates'
+    sort -c "$manifest" || die 'R3cz manifest is not bytewise sorted'
+    [[ -z "$(uniq -d "$manifest")" ]] || die 'R3cz manifest contains duplicates'
     check_file "$parent_report" "$(value parent_focused_lines)" "$(value parent_focused_tsv_sha256)"
     check_file "${parent_report%.tsv}.jsonl" "$(value parent_focused_jsonl_lines)" "$(value parent_focused_jsonl_sha256)"
     check_file "$candidate_report" "$(value candidate_focused_lines)" "$(value candidate_focused_tsv_sha256)"
@@ -279,7 +275,7 @@ check_static_inputs() {
         && "$(header "$transition" oxide_profile_sha256)" == "$(value profile_sha256)" \
         && "$(header "$transition" manifest_sha256)" == "$(value manifest_sha256)" \
         && "$(report_rows "$transition" | sha /dev/stdin)" == "$(value transition_data_sha256)" \
-        && "$(transition_counts "$transition")" == "changed=2 outcome=2 detail=0 unchanged=12 regressions=0" \
+        && "$(transition_counts "$transition")" == "changed=2 outcome=2 detail=0 unchanged=0 regressions=0" \
         && "$(toml_test262_value repository)" == https://github.com/tc39/test262.git \
         && "$(toml_test262_value commit)" == "$(value test262)" \
         && "$(toml_test262_value patch_sha256)" == "$(value test262_patch_sha256)" \
@@ -288,7 +284,7 @@ check_static_inputs() {
         && "$(toml_test262_value metadata_records_sha256)" == "$(value test262_metadata_sha256)" \
         && "$(toml_test262_value oxide_profile)" == "$profile" \
         && "$(toml_test262_value oxide_profile_sha256)" == "$(value profile_sha256)" ]] \
-        || die 'R3cy transition or runner input binding drifted'
+        || die 'R3cz transition or runner input binding drifted'
 
     [[ "$(predecessor_value profile_sha256)" == "$(value profile_sha256)" \
         && "$(predecessor_value candidate_full_runnable)" == "$(value parent_full_runnable)" \
@@ -299,46 +295,44 @@ check_static_inputs() {
         && "$(canonical_value schema)" == "$(value schema)" \
         && "$(canonical_value timeout_ms)" == "$(value timeout_ms)" \
         && "$(canonical_value variants)" == "$(value full_variants)" \
-        && "$(canonical_value runnable)" == "$(value candidate_full_runnable)" \
-        && "$(canonical_value passes)" == "$(value candidate_full_passes)" \
-        && "$(canonical_value tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
-        && "$(canonical_value jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
-        && "$(canonical_value summary)" == "$(value candidate_full_summary)" \
         && "$(value candidate_full_runnable)" == "$(value parent_full_runnable)" \
         && "$(( $(value candidate_full_passes) - $(value parent_full_passes) ))" == 2 \
-        && "$(value candidate_full_fail_parse)" == "$(value parent_full_fail_parse)" \
-        && "$(( $(value parent_full_fail_runtime) - $(value candidate_full_fail_runtime) ))" == 2 \
+        && "$(( $(value parent_full_fail_parse) - $(value candidate_full_fail_parse) ))" == 2 \
+        && "$(value candidate_full_fail_runtime)" == "$(value parent_full_fail_runtime)" \
         && "$(value full_changed)" == 2 \
         && "$(value full_outcome_changed)" == 2 \
         && "$(value full_detail_only)" == 0 \
         && "$(value full_unchanged)" == 102035 \
         && "$(value full_pass_regressions)" == 0 ]] \
-        || die 'R3cy predecessor, canonical, or full-vector anchors drifted'
+        || die 'R3cz predecessor or full-vector anchors drifted'
+
+    [[ "$(canonical_value runnable)" == "$(value candidate_full_runnable)" \
+        && "$(canonical_value passes)" == "$(value candidate_full_passes)" \
+        && "$(canonical_value tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
+        && "$(canonical_value jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
+        && "$(canonical_value summary)" == "$(value candidate_full_summary)" ]] \
+        || die 'canonical Test262 baseline does not identify the frozen R3cz candidate'
 
     verify_parent_full_source
 }
 
 verify_focused_semantics() {
-    [[ "$(report_runnable "$parent_report")" == 14 \
-        && "$(report_count pass "$parent_report")" == 12 \
-        && "$(report_count fail-runtime "$parent_report")" == 2 \
-        && "$(report_runnable "$candidate_report")" == 14 \
-        && "$(report_count pass "$candidate_report")" == 14 ]] \
-        || die 'R3cy focused outcome counts drifted'
-    awk -F'\t' \
-        '!/^#/&&!($1=="path"&&$2=="variant"){
-          common=($2~/^(sloppy|strict)$/&&$3==""&&$5=="normal"&&$6=="")
-          if($1=="test/staging/sm/Math/atanh-approx.js")
-            ok=(common&&$7=="fail-runtime"&&$8=="runtime"&&$9=="Error"&&
-                $10=="got -6.998237084679375, expected a number near -6.998237084679027 (relative error: 392)")
-          else ok=(common&&$7=="pass"&&$8=="normal"&&$9==""&&$10=="")
-          if(!ok)exit 2
-        }' \
-        "$parent_report" || die 'R3cy parent failure frontier drifted'
+    [[ "$(report_runnable "$parent_report")" == 2 \
+        && "$(report_count fail-parse "$parent_report")" == 2 \
+        && "$(report_runnable "$candidate_report")" == 2 \
+        && "$(report_count pass "$candidate_report")" == 2 ]] \
+        || die 'R3cz focused outcome counts drifted'
     awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")&&
-        !($2~/^(sloppy|strict)$/&&$3==""&&$5=="normal"&&$6==""&&
+        !($1=="test/staging/sm/fields/await-identifier-script.js"&&
+          $2~/^(sloppy|strict)$/&&$3==""&&$4==""&&$5=="normal"&&$6==""&&
+          $7=="fail-parse"&&$8=="parse"&&$9=="SyntaxError"&&
+          $10=="unexpected '\''await'\'' keyword"){exit 2}' \
+        "$parent_report" || die 'R3cz parent failure frontier drifted'
+    awk -F'\t' '!/^#/&&!($1=="path"&&$2=="variant")&&
+        !($1=="test/staging/sm/fields/await-identifier-script.js"&&
+          $2~/^(sloppy|strict)$/&&$3==""&&$4==""&&$5=="normal"&&$6==""&&
           $7=="pass"&&$8=="normal"&&$9==""&&$10==""){exit 2}' \
-        "$candidate_report" || die 'R3cy candidate semantics drifted'
+        "$candidate_report" || die 'R3cz candidate semantics drifted'
 }
 
 check_metadata() {
@@ -348,19 +342,19 @@ check_metadata() {
         || die 'pinned Test262 metadata drifted'
     local test_path metadata
     while IFS= read -r test_path; do
-        [[ -f "$suite/$test_path" ]] || die "pinned R3cy test is missing: $test_path"
+        [[ -f "$suite/$test_path" ]] || die "pinned R3cz test is missing: $test_path"
         metadata=$(sed -n '/\/\*---/,/---\*\//p' "$suite/$test_path")
         ! grep -Eq '^(flags|negative|locale):' <<<"$metadata" \
-            || die "R3cy test gained selection-changing metadata: $test_path"
-        grep -Eq 'Math\.atanh|"atanh"' "$suite/$test_path" \
-            || die "R3cy test no longer exercises Math.atanh: $test_path"
+            || die "R3cz test gained selection-changing metadata: $test_path"
+        [[ "$test_path" == test/staging/sm/fields/await-identifier-script.js ]] \
+            || die "unexpected R3cz manifest path: $test_path"
     done <"$manifest"
-    grep -Fq 'assertNear(Math.atanh(x), y, sloppy_tolerance)' \
-        "$suite/test/staging/sm/Math/atanh-approx.js" \
-        || die 'R3cy approximate fixture no longer checks the numerical vector'
-    grep -Fq 'assert.sameValue(Math.atanh(-0), -0)' \
-        "$suite/test/staging/sm/Math/atanh-exact.js" \
-        || die 'R3cy exact fixture no longer checks signed zero'
+    local fixture=$suite/test/staging/sm/fields/await-identifier-script.js
+    grep -Fq 'var await = 1;' "$fixture" \
+        && grep -Fq 'x = await;' "$fixture" \
+        && grep -Fq 'eval("async () => class { [await] = 1 };");' "$fixture" \
+        && grep -Fq 'eval("async () => class { x = await 1 };");' "$fixture" \
+        || die 'R3cz fixture no longer covers the class-field await boundaries'
 }
 
 verify_quickjs() {
@@ -373,12 +367,12 @@ verify_quickjs() {
         ./run-test262 -m -c test262.conf -a -T "$workers" -f "${files[@]}") \
         >"$root/$oracle_log" 2>&1; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS could not execute the R3cy manifest'
+        die 'pinned QuickJS could not execute the R3cz manifest'
     fi
     if grep -Eq '(^|[[:space:]])FAILED($|[[:space:]])|SKIPPED FEATURE' "$oracle_log" \
-        || ! grep -Fq 'Average memory statistics for 14 tests:' "$oracle_log"; then
+        || ! grep -Fq 'Average memory statistics for 2 tests:' "$oracle_log"; then
         tail -n 100 "$oracle_log" >&2
-        die 'pinned QuickJS no longer passes the R3cy manifest'
+        die 'pinned QuickJS no longer passes the R3cz manifest'
     fi
 }
 
@@ -423,7 +417,7 @@ reconstruct_parent_full() {
         {print}
         END{for(key in old)if(!(key in seen))exit 2}
     ' "$parent_report" "$candidate" >"$output" \
-        || die 'could not reconstruct the R3cy parent TSV'
+        || die 'could not reconstruct the R3cz parent TSV'
     awk -v parent="${parent_report%.tsv}.jsonl" \
         -v summary="$(summary_json parent_full)" '
         function field(line,name,value){
@@ -441,7 +435,7 @@ reconstruct_parent_full() {
         {print}
         END{for(key in old)if(!(key in seen))exit 2}
     ' "${parent_report%.tsv}.jsonl" "$candidate_json" >"$output_json" \
-        || die 'could not reconstruct the R3cy parent JSONL'
+        || die 'could not reconstruct the R3cz parent JSONL'
 }
 
 verify_full_join() {
@@ -471,7 +465,7 @@ verify_full_join() {
         && "$(sha "$tmp/candidate.cohort.json")" == "$(value full_candidate_cohort_json_rows_sha256)" \
         && "$(sha "$tmp/parent.non-cohort.json")" == "$(value full_non_cohort_json_rows_sha256)" \
         && "$(sha "$tmp/candidate.non-cohort.json")" == "$(value full_non_cohort_json_rows_sha256)" ]] \
-        || die 'R3cy full cohort partition drifted'
+        || die 'R3cz full cohort partition drifted'
     diff -u "$tmp/focused.parent" "$tmp/parent.cohort"
     diff -u "$tmp/focused.candidate" "$tmp/candidate.cohort"
     diff -u "$tmp/parent.non-cohort" "$tmp/candidate.non-cohort"
@@ -490,53 +484,13 @@ verify_full_join() {
         }
         END{for(key in old)if(!(key in seen))exit 4
             printf "changed=%d outcome=%d detail=%d unchanged=%d regressions=%d",changed,outcome,detail,before-changed,regress}
-    ' "$parent" "$candidate") || die 'R3cy full exact join failed'
+    ' "$parent" "$candidate") || die 'R3cz full exact join failed'
     expected="changed=$(value full_changed) outcome=$(value full_outcome_changed) detail=$(value full_detail_only) unchanged=$(value full_unchanged) regressions=$(value full_pass_regressions)"
-    [[ "$counts" == "$expected" ]] || die "R3cy full transition drifted: $counts"
-}
-
-bridge_r3cz_successor() {
-    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
-        || return 0
-
-    check_file "$baseline" "$baseline_lines" "$baseline_sha"
-    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
-    [[ -x "$successor_gate" \
-        && "$(value_from "$successor_baseline" quickjs)" == "$(value quickjs)" \
-        && "$(value_from "$successor_baseline" test262)" == "$(value test262)" \
-        && "$(value_from "$successor_baseline" test262_patch_sha256)" == "$(value test262_patch_sha256)" \
-        && "$(value_from "$successor_baseline" test262_config_sha256)" == "$(value test262_config_sha256)" \
-        && "$(value_from "$successor_baseline" test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
-        && "$(value_from "$successor_baseline" schema)" == "$(value schema)" \
-        && "$(value_from "$successor_baseline" mode)" == "$(value mode)" \
-        && "$(value_from "$successor_baseline" timeout_ms)" == "$(value timeout_ms)" \
-        && "$(value_from "$successor_baseline" parent_commit)" == 93ea4fc31b38f170c7cdfbeba316fe1715b11084 \
-        && "$(value_from "$successor_baseline" profile_sha256)" == "$(value profile_sha256)" \
-        && "$(value_from "$successor_baseline" parent_full_runnable)" == "$(value candidate_full_runnable)" \
-        && "$(value_from "$successor_baseline" parent_full_passes)" == "$(value candidate_full_passes)" \
-        && "$(value_from "$successor_baseline" parent_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
-        && "$(value_from "$successor_baseline" parent_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
-        && "$(value_from "$successor_baseline" parent_full_summary)" == "$(value candidate_full_summary)" \
-        && "$(value_from "$successor_baseline" manifest_paths)" == 1 \
-        && "$(value_from "$successor_baseline" manifest_variants)" == 2 \
-        && "$(value_from "$successor_baseline" full_changed)" == 2 \
-        && "$(value_from "$successor_baseline" full_outcome_changed)" == 2 \
-        && "$(value_from "$successor_baseline" full_detail_only)" == 0 \
-        && "$(value_from "$successor_baseline" full_unchanged)" == 102035 \
-        && "$(value_from "$successor_baseline" full_pass_regressions)" == 0 ]] \
-        || die 'R3cz successor does not checksum-bridge the historical R3cy receipt'
-    case $mode in
-        check) "$successor_gate" --check ;;
-        focused) "$successor_gate" ;;
-        full) "$successor_gate" --full ;;
-    esac
-    echo 'Historical R3cy Math.atanh receipt is checksum-bridged through the R3cz class-field await-context repair.'
-    exit 0
+    [[ "$counts" == "$expected" ]] || die "R3cz full transition drifted: $counts"
 }
 
 cd -- "$root"
-bridge_r3cz_successor
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-math-atanh.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-class-field-await.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 suite=$("$script_dir/prepare-test262.sh")
 source_dir=$(dirname -- "$suite")
@@ -555,7 +509,7 @@ fi
 check_metadata
 verify_quickjs
 if [[ "$mode" == check ]]; then
-    echo 'R3cy inputs verified: 7 paths, 14 variants, pinned QuickJS 14/14, unchanged runner profile, checksum-bound R3cx parent receipt.'
+    echo 'R3cz inputs verified: 1 path, 2 variants, pinned QuickJS 2/2, unchanged runner profile, checksum-bound R3cy parent receipt.'
     exit 0
 fi
 
@@ -564,7 +518,7 @@ diff -u "$candidate_report" "$candidate_replay"
 diff -u "${candidate_report%.tsv}.jsonl" "${candidate_replay%.tsv}.jsonl"
 if [[ -n "$parent_runner_override" ]]; then
     [[ -x "$parent_runner_override" ]] \
-        || die "TEST262_MATH_ATANH_PARENT_RUNNER is not executable: $parent_runner_override"
+        || die "TEST262_CLASS_FIELD_AWAIT_PARENT_RUNNER is not executable: $parent_runner_override"
     run_report "$parent_runner_override" "$parent_replay"
     diff -u "$parent_report" "$parent_replay"
     diff -u "${parent_report%.tsv}.jsonl" "${parent_replay%.tsv}.jsonl"
@@ -572,7 +526,7 @@ fi
 make_transition "$parent_report" "$candidate_replay" "$tmp/replayed-transition.tsv"
 diff -u "$transition" "$tmp/replayed-transition.tsv"
 if [[ "$mode" != full ]]; then
-    echo 'R3cy focused gate passes: parent pass 12/14, candidate and QuickJS pass 14/14.'
+    echo 'R3cz focused gate passes: parent fail-parse 2/2, candidate and QuickJS pass 2/2.'
     exit 0
 fi
 
@@ -594,7 +548,7 @@ verify_full_report "$parent_full" parent_full
     && "$(report_count pass "$candidate_full")" == "$(value candidate_full_passes)" \
     && "$(report_count fail-parse "$candidate_full")" == "$(value candidate_full_fail_parse)" \
     && "$(report_count fail-runtime "$candidate_full")" == "$(value candidate_full_fail_runtime)" ]] \
-    || die 'R3cy full outcome counts drifted'
+    || die 'R3cz full outcome counts drifted'
 verify_full_join "$parent_full" "$candidate_full"
 check_static_inputs
-echo 'R3cy full gate passes: 102037 rows, 2 Math.atanh repairs, 102023 byte-identical non-cohort rows, zero regressions.'
+echo 'R3cz full gate passes: 102037 rows, 2 class-field await-context repairs, 102035 byte-identical non-cohort rows, zero regressions.'

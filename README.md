@@ -28,7 +28,7 @@ Unsupported, deferred through parsing and identifier/private-name resolution
 so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
-full vector is 65,507 passes / 65,566 runnable / 102,037 total variants.
+full vector is 65,509 passes / 65,566 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -62,8 +62,7 @@ cargo run --quiet --bin qjs -- --print-result -e \
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-regexp-exec-recompilation.sh
-./scripts/test-test262-current-global.sh --check
+./scripts/test-test262-current-global.sh --check  # latest frozen receipt
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
 ```
