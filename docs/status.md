@@ -4,6 +4,55 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3df global `Atomics.pause` admission
+
+R3df admits the complete pinned `Atomics.pause` metadata tag without widening
+the shared-memory boundary. The runtime behavior was already implemented from
+QuickJS's `js_atomics_pause`: only `undefined` and integral Number values are
+accepted, objects are not coerced, the operation is a non-blocking CPU hint,
+and the result is `undefined`. SharedArrayBuffer, agents, waiters, and
+`Atomics.waitAsync` remain unsupported.
+
+The old 126-tag global profile is frozen at SHA-256
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+The candidate and live profiles are byte-identical, contain 127 tags, and hash
+to
+`00265570870a778f2fded16969311eac5707b9c6d4fcd4068640700d637e9ff0`;
+their only feature delta is `Atomics.pause`. The runner permits the candidate
+only with the exact six-path manifest or `--all`. The frozen parent additionally
+permits the exact R3dc and R3de manifests so those historical gates remain
+replayable, while arbitrary manifests and single-test selection stay rejected.
+
+The manifest hashes to
+`72252a61f2d3c97626b544a1ac1a2a31191149a535227b16a8fa798c91e0d69c`.
+Its 12 sloppy/strict variants move from 12 `unsupported-feature` outcomes to
+12 passes in Oxide; pinned QuickJS also passes all 12. The exact focused
+transition hashes to
+`d8a49b050c5dd0a665008576d34f6968654c28cc32af146e0993edac59e1fdee`.
+
+The fresh release-mode, two-worker full run joins all 102,037 variants. Exactly
+those 12 outcomes change to pass, the other 102,025 rows are byte-identical,
+and there are no detail-only changes or regressions. The canonical vector is
+now 65,524 passes / 65,576 runnable, with `unsupported-feature=13,709`;
+the seven parse failures, 43 runtime failures, and two timeouts are unchanged.
+Candidate TSV/JSONL SHA-256 values are
+`205ec5ef4ec03dfea59a8ff424e776406a83c1bf0c4070e68f42127331f0e6aa`
+and
+`627f4ccdea5825f382d9d5500a4e578fa5b38cf5bd7422525d8fb19b48065e86`.
+The R3dc → R3de → R3df successor chain authenticates the historical parent
+receipts before delegating to the current gate.
+
+The browser playground's `Atomics.pause + ArrayBuffer` example executes the
+real WASM engine and still returns 42. Reproduce this milestone with:
+
+```sh
+./scripts/test-test262-atomics-pause-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-atomics-pause-global.sh
+TEST262_REUSE_FULL_REPORTS=true \
+  TEST262_FULL_WORKERS=2 ./scripts/test-test262-atomics-pause-global.sh --full
+./scripts/test-web-playground.sh
+```
+
 ## R3de authenticated non-shared Atomics gate
 
 R3de turns R3dd's source probe into a fail-closed milestone gate. A complete
@@ -53,10 +102,9 @@ The two metadata-less staging paths remain explicit outside those 382 rows:
 the detached-buffer test belongs to the green non-shared gate, while the
 cross-compartment test evaluates real SAB and also requires realm support.
 
-The next admission should therefore be staged rather than equated with shared
-memory completion. `Atomics.pause` has an independent six-path / 12-variant
-metadata slice and is the smallest global-profile step. Broad `Atomics` is not
-ready for the immediately following admission. Its raw metadata closure is 119
+R3df above admits the independent six-path / 12-variant `Atomics.pause` slice
+without equating it with shared-memory completion. Broad `Atomics` is not ready
+for the immediately following admission. Its raw metadata closure is 119
 paths / 238 variants: 90 / 180 are green and 29 / 58 hide real SAB or waiter
 dependencies. Runner precedence changes the members without changing the
 total: host selection already preempts `wait/good-views.js`, while the
@@ -66,8 +114,9 @@ The resulting transition planning set is 91 green paths / 182 variants plus
 projection, not a candidate transition report; a later broad gate must execute
 and freeze it or first implement the missing runtime. SAB, agents, blocking
 waiters, and `Atomics.waitAsync` remain separate implementation milestones.
-R3de changes neither `compat/test262-oxide.conf` nor the canonical 102,037-row
-vector, which remains the R3dc 65,512-pass / 65,564-runnable measurement.
+At R3de, `compat/test262-oxide.conf` and the canonical 102,037-row vector did
+not move. Its 65,512-pass / 65,564-runnable report is now the authenticated
+parent of R3df rather than the current canonical vector.
 
 Reproduce the scoped evidence with:
 
@@ -123,7 +172,7 @@ selection-only; the global Test262 profile still declares neither `Atomics`,
 does not move in this runtime milestone. Global admission remains a separate
 checksum-bound evidence step, and shared-memory semantics remain unfinished.
 
-The browser playground includes an `Atomics on ArrayBuffer` example whose real
+The browser playground includes an `Atomics.pause + ArrayBuffer` example whose real
 WASM build returns 42. Reproduce the direct differential with:
 
 ```sh

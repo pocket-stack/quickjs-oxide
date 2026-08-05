@@ -6,6 +6,44 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3df global `Atomics.pause` admission
+
+R3df moves the complete pinned `Atomics.pause` tag into the live capability
+profile. The 126-tag parent profile hashes to
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`;
+the 127-tag candidate/live profile adds only `Atomics.pause` and hashes to
+`00265570870a778f2fded16969311eac5707b9c6d4fcd4068640700d637e9ff0`.
+The runner binds both identities to an exact transition contract rather than
+accepting arbitrary files.
+
+The six-path manifest hashes to
+`72252a61f2d3c97626b544a1ac1a2a31191149a535227b16a8fa798c91e0d69c`.
+All 12 sloppy/strict parent rows are `unsupported-feature`; all 12 candidate
+rows pass, as do all 12 variants in pinned QuickJS. The focused transition has
+12 outcome changes, zero detail-only changes, and zero regressions; its whole
+TSV hashes to
+`d8a49b050c5dd0a665008576d34f6968654c28cc32af146e0993edac59e1fdee`.
+
+A fresh release-mode run with two workers authenticates the complete 102,037
+variant join. The 12 manifest rows become passes and all 102,025 other rows
+remain byte-identical. The canonical result is 65,524 passes / 65,576 runnable,
+with `unsupported-feature` reduced from 13,721 to 13,709. Candidate full
+TSV/JSONL SHA-256 values are
+`205ec5ef4ec03dfea59a8ff424e776406a83c1bf0c4070e68f42127331f0e6aa`
+and
+`627f4ccdea5825f382d9d5500a4e578fa5b38cf5bd7422525d8fb19b48065e86`.
+No other outcome count changes. This admission does not claim SharedArrayBuffer,
+agent, waiter, or `Atomics.waitAsync` support.
+
+Reproduce the authenticated transition with:
+
+```sh
+./scripts/test-test262-atomics-pause-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-atomics-pause-global.sh
+TEST262_REUSE_FULL_REPORTS=true \
+  TEST262_FULL_WORKERS=2 ./scripts/test-test262-atomics-pause-global.sh --full
+```
+
 ## R3de exhaustive non-shared Atomics gate
 
 R3de replaces the temporary source probe with a runner-authenticated scoped
@@ -57,9 +95,8 @@ The metadata-less detached-buffer and cross-compartment staging fixtures sit
 outside that count. The former is the 98th green path; the latter evaluates
 real SAB and also needs realm support.
 
-This partition makes the next progress measurement concrete. First admit the
-independent six-path / 12-variant `Atomics.pause` slice through its own exact
-global transition. Do not immediately admit broad `Atomics`. Its raw metadata
+R3df above admits the independent six-path / 12-variant `Atomics.pause` slice
+through its own exact global transition. Broad `Atomics` remains deferred. Its raw metadata
 closure is 119 paths / 238 variants: 90 / 180 are green and 29 / 58 hide real
 SAB or waiter dependencies. The runner's host-before-feature precedence swaps
 one member: `wait/good-views.js` is already host-preempted, while the
@@ -71,9 +108,10 @@ broad gate must execute and freeze that set or implement the missing runtime,
 then account for reason-only rows. Neither namespace admission implies
 `SharedArrayBuffer`, agent, waiter, or `Atomics.waitAsync` support.
 
-R3de does not edit `compat/test262-oxide.conf`; the canonical complete report
-therefore remains byte-identical to R3dc at 65,512 passes, 65,564 runnable
-variants, seven parse failures, 43 runtime failures, and two timeouts.
+At R3de, `compat/test262-oxide.conf` did not move and the complete report stayed
+byte-identical to R3dc at 65,512 passes, 65,564 runnable variants, seven parse
+failures, 43 runtime failures, and two timeouts. That report is now R3df's
+authenticated parent, not the current canonical vector.
 
 Reproduce the authenticated focused receipt with:
 
@@ -112,8 +150,8 @@ At R3dd, the 90-path snapshot and deferred manifest reconstructed the original
 102-path audit without erasing the SAB frontier. One green `isLockFree` path
 conservatively carried SAB metadata without evaluating SAB, so the temporary
 scoped profile existed only to select that audited cohort. It was not a global
-capability declaration. R3de above is the current gate and retains the same
-global-profile boundary.
+capability declaration. R3de superseded that scoped probe, and R3df now
+authenticates both as historical predecessors of the live global profile.
 
 ## R3dc Atomics metadata-gap classification
 
@@ -144,8 +182,8 @@ no detail-only change or pass regression. Candidate whole-corpus TSV/JSONL
 SHA-256 values are
 `35c329c649ecb75ec473bdaa42b361ad1173025893588f47f41a0270112872f1`
 and
-`f2811b3b7724123d8cb4a1b81c470f6c0b1f5f4c74d8ee26c76856c0c065861f`;
-this is now the canonical classified vector.
+`f2811b3b7724123d8cb4a1b81c470f6c0b1f5f4c74d8ee26c76856c0c065861f`.
+This was the R3dc/R3de canonical vector and is now R3df's authenticated parent.
 
 Reproduce the frozen inputs and focused receipts with:
 

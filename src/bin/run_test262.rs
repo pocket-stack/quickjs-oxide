@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
+    "00265570870a778f2fded16969311eac5707b9c6d4fcd4068640700d637e9ff0";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -471,6 +471,14 @@ const TEST262_ATOMICS_NON_SHARED_CORE_PROFILE_SHA256: &str =
     "c3db1670b6cd4e2b9b1e7bd812d2e580df4ea0d8f0ceee96c074378d14dc9a5b";
 const TEST262_ATOMICS_NON_SHARED_CORE_MANIFEST_SHA256: &str =
     "5c8805da455cb66810646a709d847346c1c07b2710b46838da6006667f627aac";
+const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
+const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "00265570870a778f2fded16969311eac5707b9c6d4fcd4068640700d637e9ff0";
+const TEST262_ATOMICS_PAUSE_GLOBAL_MANIFEST_SHA256: &str =
+    "72252a61f2d3c97626b544a1ac1a2a31191149a535227b16a8fa798c91e0d69c";
+const TEST262_ATOMICS_METADATA_GAPS_MANIFEST_SHA256: &str =
+    "4863dea8db26a20638b24f6a727a0a7f0a207585a4b966a855f10fa3ea1fcb18";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -1103,6 +1111,8 @@ enum OxideProfileKind {
     Proxy,
     RegExpBuiltins,
     AtomicsNonSharedCore,
+    AtomicsPauseGlobalParent,
+    AtomicsPauseGlobalCandidate,
 }
 
 fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
@@ -1547,6 +1557,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-atomics-non-shared-core.conf"),
             OxideProfileKind::AtomicsNonSharedCore,
+        ),
+        (
+            root.join("tests/test262-atomics-pause-global-parent.conf"),
+            OxideProfileKind::AtomicsPauseGlobalParent,
+        ),
+        (
+            root.join("tests/test262-atomics-pause-global-candidate.conf"),
+            OxideProfileKind::AtomicsPauseGlobalCandidate,
         ),
     ];
     for (candidate, kind) in profiles {
@@ -3464,6 +3482,36 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "tests/test262-atomics-non-shared-core.txt",
             TEST262_ATOMICS_NON_SHARED_CORE_MANIFEST_SHA256,
         ),
+        OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
+            options,
+            "Atomics.pause global admission",
+            "parent",
+            TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256,
+            &[
+                (
+                    "tests/test262-atomics-pause-global.txt",
+                    TEST262_ATOMICS_PAUSE_GLOBAL_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-atomics-non-shared-core.txt",
+                    TEST262_ATOMICS_NON_SHARED_CORE_MANIFEST_SHA256,
+                ),
+                (
+                    "tests/test262-atomics-metadata-gaps.txt",
+                    TEST262_ATOMICS_METADATA_GAPS_MANIFEST_SHA256,
+                ),
+            ],
+        ),
+        OxideProfileKind::AtomicsPauseGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "Atomics.pause global admission",
+            "candidate",
+            TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-atomics-pause-global.txt",
+                TEST262_ATOMICS_PAUSE_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
     }
 }
 
@@ -3744,6 +3792,8 @@ mod cli_tests {
         TEST262_ASYNC_OBJECT_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_PRIVATE_CLASS_METHOD_CORE_PROFILE_SHA256,
         TEST262_ATOMICS_NON_SHARED_CORE_PROFILE_SHA256,
+        TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_BINARY_DATA_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_BINARY_DATA_GLOBAL_PARENT_PROFILE_SHA256, TEST262_CATCH_BINDING_PROFILE_SHA256,
         TEST262_CLASS_BASE_PROFILE_SHA256, TEST262_CLASS_DERIVED_PROFILE_SHA256,
@@ -4482,6 +4532,18 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-atomics-non-shared-core.conf"))
                 .unwrap(),
             OxideProfileKind::AtomicsNonSharedCore
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-atomics-pause-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::AtomicsPauseGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-atomics-pause-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AtomicsPauseGlobalCandidate
         );
 
         let error = identify_oxide_profile(Path::new("Cargo.toml")).unwrap_err();
@@ -8112,6 +8174,65 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn atomics_pause_global_profiles_require_the_exact_manifest_or_all() {
+        for (profile, expected_hash, allows_historical_replays) in [
+            (
+                "tests/test262-atomics-pause-global-parent.conf",
+                TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256,
+                true,
+            ),
+            (
+                "tests/test262-atomics-pause-global-candidate.conf",
+                TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256,
+                false,
+            ),
+        ] {
+            for selection in [
+                ["--manifest", "tests/test262-atomics-pause-global.txt"],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+            }
+
+            for historical_manifest in [
+                "tests/test262-atomics-non-shared-core.txt",
+                "tests/test262-atomics-metadata-gaps.txt",
+            ] {
+                let options = scoped_profile_options(profile, historical_manifest);
+                if allows_historical_replays {
+                    assert_eq!(verify_oxide_profile(&options).unwrap(), expected_hash);
+                } else {
+                    assert!(verify_oxide_profile(&options).is_err());
+                }
+            }
+
+            for selection in [
+                ["--test", "test/built-ins/Atomics/pause/descriptor.js"],
+                ["--manifest", "tests/test262-atomics-shared-deferred.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                arguments.push(selection[1]);
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
         }
     }
 

@@ -4,4 +4,4 @@
 set -euo pipefail
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-exec "$script_dir/test-test262-atomics-non-shared-core.sh" "$@"
+exec "$script_dir/test-test262-atomics-pause-global.sh" "$@"

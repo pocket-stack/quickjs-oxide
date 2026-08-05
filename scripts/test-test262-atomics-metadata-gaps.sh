@@ -9,9 +9,12 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-atomics-metadata-gaps-baseline.txt
 predecessor_baseline=tests/test262-eval-var-destructuring-baseline.txt
+successor_baseline=tests/test262-atomics-non-shared-core-baseline.txt
+successor_gate=scripts/test-test262-atomics-non-shared-core.sh
 canonical_baseline=tests/test262-full-baseline.txt
 upstream=compat/upstream.toml
-profile=compat/test262-oxide.conf
+live_profile=compat/test262-oxide.conf
+historical_profile=tests/test262-atomics-pause-global-parent.conf
 manifest=tests/test262-atomics-metadata-gaps.txt
 parent_report=tests/test262-atomics-metadata-gaps-parent.tsv
 candidate_report=tests/test262-atomics-metadata-gaps-candidate.tsv
@@ -33,6 +36,8 @@ baseline_lines=106
 baseline_sha=cc6169a0ee5e5a69c647a405b9d9c334471130b7d5c4267845a419bcca49f6a9
 predecessor_lines=84
 predecessor_sha=d737e9150361ddb8b46ae334cd5e09deec11ae1904a77365adf356a6cd1665b5
+successor_lines=133
+successor_sha=3ba60debc3bd6fec6339a0d61f1b9ffca7f00176067a32eff42e62da95790e6b
 canonical_lines=8
 canonical_sha=3b59afb90b22434a6ae2fcdec94b67b3c7c3b74142d3cc73e5c315c9aa50e5a3
 
@@ -73,6 +78,7 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 predecessor_value() { value_from "$predecessor_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
@@ -232,9 +238,10 @@ transition_counts() {
 }
 
 check_profile() {
-    check_file "$profile" "$(value profile_lines)" "$(value profile_sha256)"
+    check_file "$historical_profile" "$(value profile_lines)" \
+        "$(value profile_sha256)"
     for section in features audited-negative-tests execution; do
-        profile_section "$section" "$profile" >"$tmp/profile.$section"
+        profile_section "$section" "$historical_profile" >"$tmp/profile.$section"
     done
     [[ "$(lines "$tmp/profile.features")" == "$(value profile_features)" \
         && "$(sha "$tmp/profile.features")" == "$(value profile_features_sha256)" \
@@ -305,7 +312,8 @@ check_static_inputs() {
         && "$(toml_test262_value config_sha256)" == "$(value test262_config_sha256)" \
         && "$(toml_test262_value test_count)" == "$(value test262_metadata_records)" \
         && "$(toml_test262_value metadata_records_sha256)" == "$(value test262_metadata_sha256)" \
-        && "$(toml_test262_value oxide_profile)" == "$profile" \
+        && "$(value profile)" == "$live_profile" \
+        && "$(toml_test262_value oxide_profile)" == "$live_profile" \
         && "$(toml_test262_value oxide_profile_sha256)" == "$(value profile_sha256)" ]] \
         || die 'R3dc transition or runner input binding drifted'
 
@@ -436,15 +444,17 @@ verify_quickjs() {
 }
 
 run_report() {
-    local selected_runner=$1 selected_cwd=$2 output=$3
+    local selected_runner=$1 selected_cwd=$2 selected_profile=$3 output=$4
     local timeout_ms
     timeout_ms=$(value timeout_ms)
     [[ -d "$selected_cwd" ]] || die "runner source root is missing: $selected_cwd"
-    check_file "$selected_cwd/$profile" "$(value profile_lines)" "$(value profile_sha256)"
+    check_file "$selected_cwd/$selected_profile" "$(value profile_lines)" \
+        "$(value profile_sha256)"
     (
         cd -- "$selected_cwd"
         "$selected_runner" --suite "$suite" --config "$source_dir/test262.conf" \
-            --oxide-profile "$selected_cwd/$profile" --manifest "$root/$manifest" \
+            --oxide-profile "$selected_cwd/$selected_profile" \
+            --manifest "$root/$manifest" \
             --report "$root/$output" --mode both --timeout-ms "$timeout_ms" \
             --workers "$workers" --allow-failures >/dev/null
     )
@@ -452,7 +462,8 @@ run_report() {
 
 run_full_report() {
     "$runner" --suite "$suite" --config "$source_dir/test262.conf" \
-        --oxide-profile "$root/$profile" --all --report "$root/$candidate_full" \
+        --oxide-profile "$root/$historical_profile" --all \
+        --report "$root/$candidate_full" \
         --mode both --timeout-ms "$(value timeout_ms)" --workers "$full_workers" \
         --allow-failures >/dev/null
 }
@@ -572,7 +583,67 @@ verify_full_join() {
     [[ "$counts" == "$expected" ]] || die "R3dc full transition drifted: $counts"
 }
 
+bridge_r3de_successor() {
+    [[ -f "$canonical_baseline" ]] \
+        || die 'canonical Test262 baseline is missing'
+    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
+        || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
+    [[ -x "$successor_gate" \
+        && "$(successor_value milestone_kind)" == scoped-evidence-only \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" == \
+            "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" == \
+            "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" == \
+            "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" == \
+            0b2eaad8774234a88927f6123d54b4b47acc2c55 \
+        && "$(successor_value global_profile_sha256)" == \
+            "$(value profile_sha256)" \
+        && "$(successor_value full_variants)" == "$(value full_variants)" \
+        && "$(successor_value full_keys_sha256)" == \
+            "$(value full_keys_sha256)" \
+        && "$(successor_value full_runnable)" == \
+            "$(value candidate_full_runnable)" \
+        && "$(successor_value full_passes)" == \
+            "$(value candidate_full_passes)" \
+        && "$(successor_value full_tsv_sha256)" == \
+            "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value full_jsonl_sha256)" == \
+            "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value full_summary)" == \
+            "$(value candidate_full_summary)" \
+        && "$(successor_value core_paths)" == 98 \
+        && "$(successor_value core_variants)" == 196 \
+        && "$(successor_value transition_changed)" == 196 \
+        && "$(successor_value transition_outcome_changed)" == 196 \
+        && "$(successor_value transition_detail_only)" == 0 \
+        && "$(successor_value transition_unchanged)" == 0 \
+        && "$(successor_value transition_pass_gains)" == 196 \
+        && "$(successor_value transition_pass_regressions)" == 0 ]] \
+        || die 'R3dc successor bridge to R3de drifted'
+
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full)
+            TEST262_REUSE_FULL_REPORT="$reuse_full_reports" \
+                "$successor_gate" --full
+            ;;
+    esac
+    exit 0
+}
+
 cd -- "$root"
+bridge_r3de_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-atomics-metadata-gaps.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 suite=$("$script_dir/prepare-test262.sh")
@@ -596,7 +667,7 @@ if [[ "$mode" == check ]]; then
     exit 0
 fi
 
-run_report "$runner" "$root" "$candidate_replay"
+run_report "$runner" "$root" "$historical_profile" "$candidate_replay"
 diff -u "$candidate_report" "$candidate_replay"
 diff -u "${candidate_report%.tsv}.jsonl" "${candidate_replay%.tsv}.jsonl"
 replayed_parent=$parent_report
@@ -605,7 +676,7 @@ if [[ -n "$parent_runner_override" ]]; then
     parent_cwd=$(absolute_from_root "$parent_cwd_override")
     [[ -x "$parent_runner" ]] \
         || die "TEST262_ATOMICS_METADATA_GAPS_PARENT_RUNNER is not executable: $parent_runner_override"
-    run_report "$parent_runner" "$parent_cwd" "$parent_replay"
+    run_report "$parent_runner" "$parent_cwd" "$live_profile" "$parent_replay"
     diff -u "$parent_report" "$parent_replay"
     diff -u "${parent_report%.tsv}.jsonl" "${parent_replay%.tsv}.jsonl"
     replayed_parent=$parent_replay

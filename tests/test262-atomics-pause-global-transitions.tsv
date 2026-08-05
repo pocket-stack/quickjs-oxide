@@ -1,0 +1,18 @@
+# Exhaustive R3df Atomics.pause global admission transition.
+# parent_commit=47269de786646367c1beaa6adc7fb8ca591e4e9c
+# parent_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
+# candidate_profile_sha256=00265570870a778f2fded16969311eac5707b9c6d4fcd4068640700d637e9ff0
+# manifest_sha256=72252a61f2d3c97626b544a1ac1a2a31191149a535227b16a8fa798c91e0d69c
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/built-ins/Atomics/pause/descriptor.js	sloppy		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/descriptor.js	strict		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/length.js	sloppy		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/length.js	strict		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/name.js	sloppy		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/name.js	strict		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/non-integral-iterationnumber-throws.js	sloppy		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/non-integral-iterationnumber-throws.js	strict		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/not-a-constructor.js	sloppy		Reflect.construct,Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/not-a-constructor.js	strict		Reflect.construct,Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/returns-undefined.js	sloppy		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		
+test/built-ins/Atomics/pause/returns-undefined.js	strict		Atomics.pause	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: Atomics.pause	pass	normal		

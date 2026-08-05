@@ -246,6 +246,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-atomics-non-shared-core.conf"
     ));
+    const ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-atomics-pause-global-parent.conf"
+    ));
+    const ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-atomics-pause-global-candidate.conf"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -454,13 +462,14 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 126] = [
+    const EXPECTED_FEATURES: [&str; 127] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
         "Array.prototype.flatMap",
         "Array.prototype.includes",
         "ArrayBuffer",
+        "Atomics.pause",
         "BigInt",
         "DataView",
         "DataView.prototype.getFloat32",
@@ -994,6 +1003,10 @@ mod tests {
             OxideProfile::parse(FUTURE_RESERVED_WORDS_GLOBAL_PARENT_PROFILE).unwrap();
         let future_reserved_words_global_candidate =
             OxideProfile::parse(FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let atomics_pause_global_parent =
+            OxideProfile::parse(ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE).unwrap();
+        let atomics_pause_global_candidate =
+            OxideProfile::parse(ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE).unwrap();
         assert_eq!(optional_chaining_profile, iterator_helpers_global_parent);
         assert_eq!(optional_chaining_profile.audited_negative_tests.len(), 828);
         assert!(previously_audited_negatives.iter().all(|path| {
@@ -1592,7 +1605,7 @@ mod tests {
             future_reserved_words_global_parent.allows_async_execution()
         );
         assert_eq!(
-            profile
+            atomics_pause_global_parent
                 .features
                 .difference(&future_reserved_words_global_candidate.features)
                 .map(String::as_str)
@@ -1602,18 +1615,43 @@ mod tests {
         assert!(
             future_reserved_words_global_candidate
                 .features
-                .difference(&profile.features)
+                .difference(&atomics_pause_global_parent.features)
                 .next()
                 .is_none()
         );
         assert_eq!(
-            profile.audited_negative_tests,
+            atomics_pause_global_parent.audited_negative_tests,
             future_reserved_words_global_candidate.audited_negative_tests
         );
         assert_eq!(
-            profile.allows_async_execution(),
+            atomics_pause_global_parent.allows_async_execution(),
             future_reserved_words_global_candidate.allows_async_execution()
         );
+        assert_eq!(
+            atomics_pause_global_candidate
+                .features
+                .difference(&atomics_pause_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Atomics.pause"]
+        );
+        assert!(
+            atomics_pause_global_parent
+                .features
+                .difference(&atomics_pause_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            atomics_pause_global_candidate.audited_negative_tests,
+            atomics_pause_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            atomics_pause_global_candidate.allows_async_execution(),
+            atomics_pause_global_parent.allows_async_execution()
+        );
+        assert_eq!(profile, atomics_pause_global_candidate);
+        assert_eq!(CHECKED_IN_PROFILE, ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE);
         assert_eq!(
             default_parameters_candidate
                 .features
@@ -1684,7 +1722,7 @@ mod tests {
 
     #[test]
     fn atomics_non_shared_core_profile_is_exact_and_selection_only() {
-        let global = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
+        let historical_global = OxideProfile::parse(ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE).unwrap();
         let scoped = OxideProfile::parse(ATOMICS_NON_SHARED_CORE_PROFILE).unwrap();
 
         assert_eq!(
@@ -1710,7 +1748,7 @@ mod tests {
         assert_eq!(
             scoped
                 .features
-                .difference(&global.features)
+                .difference(&historical_global.features)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             vec!["Atomics", "Atomics.pause", "SharedArrayBuffer"]

@@ -15,11 +15,11 @@ runtime jobs.
 `String.prototype.normalize` uses the pinned QuickJS Unicode 17 data for NFC,
 NFD, NFKC, and NFKD; `localeCompare` matches QuickJS's non-Intl NFC/code-point
 ordering.
-The 126-tag global Test262 profile admits `Array.prototype.flat`/`flatMap`,
-`WeakMap`, `WeakSet`, `WeakRef`, and `FinalizationRegistry` alongside object
-rest, `DataView`, `Proxy`, optional chaining, Iterator Helpers, `globalThis`,
-default parameters, and audited binary-data and Promise surfaces through
-checksum-bound gates.
+The 127-tag global Test262 profile admits `Atomics.pause`,
+`Array.prototype.flat`/`flatMap`, `WeakMap`, `WeakSet`, `WeakRef`, and
+`FinalizationRegistry` alongside object rest, `DataView`, `Proxy`, optional
+chaining, Iterator Helpers, `globalThis`, default parameters, and audited
+binary-data and Promise surfaces through checksum-bound gates.
 Its Test262 host provides real reentrant GC, recursive realm creation, and
 defining-realm script evaluation. Script/eval parsing implements Annex B HTML
 comments and QuickJS's no-op `debugger` semantics. Their negative cohorts and
@@ -30,7 +30,7 @@ Unsupported, deferred through parsing and identifier/private-name resolution
 so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
-full vector is 65,512 passes / 65,564 runnable / 102,037 total variants.
+full vector is 65,524 passes / 65,576 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer, agents/waiters, shared-memory Atomics, and broad
 built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -38,8 +38,8 @@ bookkeeping lives in the status documents.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
-`Atomics on ArrayBuffer` example returns 42 through that build. The playground
-is a pre-parity milestone, not a Feature Parity claim.
+`Atomics.pause + ArrayBuffer` example returns 42 through that build. The
+playground is a pre-parity milestone, not a Feature Parity claim.
 
 ## Try it
 

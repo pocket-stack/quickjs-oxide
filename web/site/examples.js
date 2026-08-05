@@ -26,12 +26,12 @@ values[0] + values[1] + values[2];`,
   },
   {
     id: "atomics-non-shared",
-    label: "Atomics on ArrayBuffer",
+    label: "Atomics.pause + ArrayBuffer",
     source: `var counter = new Int32Array(new ArrayBuffer(4));
 Atomics.store(counter, 0, 40);
 Atomics.add(counter, 0, 2);
 
-Atomics.load(counter, 0);`,
+Atomics.pause(42) === undefined ? Atomics.load(counter, 0) : 0;`,
   },
   {
     id: "resizable-array-buffer",
