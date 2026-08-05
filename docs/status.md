@@ -4,6 +4,51 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cv Array flat/flatMap global admission
+
+R3cv globally admits the already-implemented `Array.prototype.flat` and
+`Array.prototype.flatMap` surfaces. This is a profile and evidence milestone,
+not a new runtime widening: the parent profile kept both metadata tags
+fail-closed, while the candidate adds exactly those two tags and leaves the
+1,197 audited negative paths and execution policy byte-identical. The profile
+therefore grows from 124 to 126 feature tags. Parent and candidate profile
+SHA-256 values are
+`ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a`
+and
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+
+The complete pinned metadata universe contains 35 paths / 69 variants. Pinned
+QuickJS 2026-06-04 passes all 69. The authenticated R3cu parent records 69
+`unsupported-feature` outcomes, while the R3cv candidate passes 69/69. The
+manifest SHA-256 is
+`867fe0a1303259a449e12d367c5c67d4409218c6ac0eb41a1a335326d89f1c6e`;
+focused candidate TSV/JSONL SHA-256 values are
+`02030ecd7daac3a3656d9bec6966145e2fd955d0e6c977bd4993faf38110aa7e`
+and
+`92507f9130e7bfb1b231d1ad40cbc622463858fb9707847540724257480ecefd`.
+
+The exact 102,037-row R3cu-to-R3cv join changes those same 69 outcomes, leaves
+101,968 rows byte-identical, has no detail-only movement, and records no
+previous-pass regression. The canonical vector is 65,499 passes / 65,566
+runnable; `unsupported-feature` falls from 13,788 to 13,719. Full candidate
+TSV/JSONL SHA-256 values are
+`4cec8ef8be4b432b6f754c07522e744af856bbd8c9ed32fb98fecfe41810c076`
+and
+`022ab0c11d55e70d2f08c7df7361a36b571bac91320f43d6edfe46e19dba4975`.
+The residual classification is `fail-parse=11`, `fail-runtime=54`,
+`skipped-config-exclude=6700`, `skipped-feature=11775`, `timeout=2`,
+`unsupported-feature=13719`, `unsupported-host-agent=118`,
+`unsupported-host-can-block-false=4`, `unsupported-host-is-html-dda=84`,
+`unsupported-module=679`, and `unsupported-negative-provenance=3392`.
+
+Reproduce the evidence with:
+
+```sh
+./scripts/test-test262-array-flatten-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-array-flatten-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-array-flatten-global.sh --full
+```
+
 ## R3cu dynamic eval WTF-8 source preservation
 
 R3cu makes String inputs to direct and indirect `eval` follow QuickJS
@@ -1773,18 +1818,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent milestones
-  through R3cu advance the current canonical measurement to 65,430 passes and
-  65,497 runnable variants: 64.12% raw, a 78.30% lower bound after the 18,475
-  pinned QuickJS target exclusions, or 99.90% among the 65,497 variants with a
-  non-unsupported observed outcome. It records 13,788 `unsupported-feature`
-  and 18,065 total
+  through R3cv advance the current canonical measurement to 65,499 passes and
+  65,566 runnable variants: 64.19% raw, a 78.38% lower bound after the 18,475
+  pinned QuickJS target exclusions, or 99.90% among the 65,566 variants with a
+  non-unsupported observed outcome. It records 13,719 `unsupported-feature`
+  and 17,996 total
   unsupported outcomes, 11 parse failures, 54 runtime failures, no harness
-  failures, and two timeouts. The exact R3cu join preserves all 102,037 keys
-  with 22 outcome changes, 102,015 unchanged rows, and no previous-pass
+  failures, and two timeouts. The exact R3cv join preserves all 102,037 keys
+  with 69 outcome changes, 101,968 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `8cbb90ce01fcc2c887871d7de02cfb62a6588ff807e8604e27700823b99d5820`
+  `4cec8ef8be4b432b6f754c07522e744af856bbd8c9ed32fb98fecfe41810c076`
   and
-  `10cb9ef6db26da8150cf8f23222b0aad02ac7cee9326aab18ef56ca0ab272aa4`.
+  `022ab0c11d55e70d2f08c7df7361a36b571bac91320f43d6edfe46e19dba4975`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain

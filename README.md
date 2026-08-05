@@ -13,10 +13,11 @@ runtime jobs.
 `String.prototype.normalize` uses the pinned QuickJS Unicode 17 data for NFC,
 NFD, NFKC, and NFKD; `localeCompare` matches QuickJS's non-Intl NFC/code-point
 ordering.
-The 124-tag global Test262 profile admits `WeakMap`, `WeakSet`, `WeakRef`, and
-`FinalizationRegistry` alongside object rest, `DataView`, `Proxy`, optional
-chaining, Iterator Helpers, `globalThis`, default parameters, and the
-implemented binary-data and Promise surfaces through checksum-bound audits.
+The 126-tag global Test262 profile admits `Array.prototype.flat`/`flatMap`,
+`WeakMap`, `WeakSet`, `WeakRef`, and `FinalizationRegistry` alongside object
+rest, `DataView`, `Proxy`, optional chaining, Iterator Helpers, `globalThis`,
+default parameters, and audited binary-data and Promise surfaces through
+checksum-bound gates.
 Its Test262 host provides real reentrant GC, recursive realm creation, and
 defining-realm script evaluation. Script/eval parsing implements Annex B HTML
 comments and QuickJS's no-op `debugger` semantics. Their negative cohorts and
@@ -27,7 +28,7 @@ Unsupported, deferred through parsing and identifier/private-name resolution
 so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
-full vector is 65,430 passes / 65,497 runnable / 102,037 total variants.
+full vector is 65,499 passes / 65,566 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
@@ -61,7 +62,7 @@ cargo run --quiet --bin qjs -- --print-result -e \
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-eval-wtf8-source.sh
+./scripts/test-test262-array-flatten-global.sh
 ./scripts/test-test262-current-global.sh --check
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh

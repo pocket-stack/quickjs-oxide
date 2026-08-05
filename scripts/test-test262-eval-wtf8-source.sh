@@ -10,6 +10,8 @@ root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-eval-wtf8-source-baseline.txt
 predecessor_baseline=tests/test262-regexp-v-character-class-escapes-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-array-flatten-global-baseline.txt
+successor_gate=scripts/test-test262-array-flatten-global.sh
 upstream=compat/upstream.toml
 profile=compat/test262-oxide.conf
 manifest=tests/test262-eval-wtf8-source.txt
@@ -36,6 +38,8 @@ predecessor_lines=83
 predecessor_sha=4605dcdb55debc98b89ff60253f79e4c4f649b738c83a813f85dc46197cfb738
 canonical_lines=8
 canonical_sha=40970d176b261b7e14bddac96a71aa4b5a8d320e9075c7db98780ed84902d362
+successor_lines=92
+successor_sha=e0cfd8b8250308e5f2658372c4703bf114b411a983db0d8d297b06175d68754f
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -74,6 +78,7 @@ value_from() {
 value() { value_from "$baseline" "$1"; }
 predecessor_value() { value_from "$predecessor_baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -514,7 +519,46 @@ verify_full_join() {
     [[ "$counts" == "$expected" ]] || die "R3cu full transition drifted: $counts"
 }
 
+bridge_r3cv_successor() {
+    [[ -f "$profile" ]] || return 0
+    [[ "$(sha "$profile")" != "$(value profile_sha256)" ]] || return 0
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
+    [[ -x "$successor_gate" \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" == 798e8888dc4a29bce8ddd83674d94cd83628671c \
+        && "$(successor_value parent_profile_sha256)" == "$(value profile_sha256)" \
+        && "$(successor_value parent_full_runnable)" == "$(value candidate_full_runnable)" \
+        && "$(successor_value parent_full_passes)" == "$(value candidate_full_passes)" \
+        && "$(successor_value parent_full_tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value parent_full_jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value parent_full_summary)" == "$(value candidate_full_summary)" \
+        && "$(successor_value manifest_paths)" == 35 \
+        && "$(successor_value manifest_variants)" == 69 \
+        && "$(successor_value full_changed)" == 69 \
+        && "$(successor_value full_outcome_changed)" == 69 \
+        && "$(successor_value full_detail_only)" == 0 \
+        && "$(successor_value full_unchanged)" == 101968 \
+        && "$(successor_value full_pass_regressions)" == 0 ]] \
+        || die 'R3cv successor does not checksum-bridge the historical R3cu receipt'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3cu eval receipt is checksum-bridged through the R3cv Array flatten admission.'
+    exit 0
+}
+
 cd -- "$root"
+bridge_r3cv_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-eval-wtf8.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 suite=$("$script_dir/prepare-test262.sh")

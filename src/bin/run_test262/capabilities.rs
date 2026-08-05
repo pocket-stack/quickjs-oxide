@@ -450,9 +450,11 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 124] = [
+    const EXPECTED_FEATURES: [&str; 126] = [
         "AggregateError",
         "Array.prototype.at",
+        "Array.prototype.flat",
+        "Array.prototype.flatMap",
         "Array.prototype.includes",
         "ArrayBuffer",
         "BigInt",
@@ -1585,7 +1587,29 @@ mod tests {
             future_reserved_words_global_candidate.allows_async_execution(),
             future_reserved_words_global_parent.allows_async_execution()
         );
-        assert_eq!(profile, future_reserved_words_global_candidate);
+        assert_eq!(
+            profile
+                .features
+                .difference(&future_reserved_words_global_candidate.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Array.prototype.flat", "Array.prototype.flatMap"]
+        );
+        assert!(
+            future_reserved_words_global_candidate
+                .features
+                .difference(&profile.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            profile.audited_negative_tests,
+            future_reserved_words_global_candidate.audited_negative_tests
+        );
+        assert_eq!(
+            profile.allows_async_execution(),
+            future_reserved_words_global_candidate.allows_async_execution()
+        );
         assert_eq!(
             default_parameters_candidate
                 .features

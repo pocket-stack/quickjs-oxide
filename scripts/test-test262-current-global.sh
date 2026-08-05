@@ -4,4 +4,4 @@
 set -euo pipefail
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-exec "$script_dir/test-test262-binary-data-global.sh" "$@"
+exec "$script_dir/test-test262-array-flatten-global.sh" "$@"

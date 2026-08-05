@@ -48,7 +48,13 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
+    "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
+const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
+const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
+const TEST262_ARRAY_FLATTEN_GLOBAL_MANIFEST_SHA256: &str =
+    "867fe0a1303259a449e12d367c5c67d4409218c6ac0eb41a1a335326d89f1c6e";
 const TEST262_AGGREGATE_ERROR_PROFILE_SHA256: &str =
     "ad9e38f7b1b42445a848ee01437e925fc23f5525276bc45dd15c5ae7a1454d7a";
 const TEST262_AGGREGATE_ERROR_MANIFEST_SHA256: &str =
@@ -984,6 +990,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OxideProfileKind {
     Global,
+    ArrayFlattenGlobalParent,
+    ArrayFlattenGlobalCandidate,
     AggregateError,
     ArgumentSpread,
     AsyncFunctionCore,
@@ -1104,6 +1112,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("compat/test262-oxide.conf"),
             OxideProfileKind::Global,
+        ),
+        (
+            root.join("tests/test262-array-flatten-global-parent.conf"),
+            OxideProfileKind::ArrayFlattenGlobalParent,
+        ),
+        (
+            root.join("tests/test262-array-flatten-global-candidate.conf"),
+            OxideProfileKind::ArrayFlattenGlobalCandidate,
         ),
         (
             root.join("tests/test262-aggregate-error.conf"),
@@ -2047,6 +2063,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             )?;
             Ok(TEST262_OXIDE_PROFILE_SHA256)
         }
+        OxideProfileKind::ArrayFlattenGlobalParent => verify_tag_transition_profile(
+            options,
+            "Array.prototype.flat/flatMap global admission",
+            "parent",
+            TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-array-flatten-global.txt",
+                TEST262_ARRAY_FLATTEN_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::ArrayFlattenGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "Array.prototype.flat/flatMap global admission",
+            "candidate",
+            TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-array-flatten-global.txt",
+                TEST262_ARRAY_FLATTEN_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::AggregateError => verify_scoped_pinned_profile(
             options,
             "AggregateError",
@@ -3904,6 +3940,18 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("compat/test262-oxide.conf")).unwrap(),
             OxideProfileKind::Global
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-array-flatten-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::ArrayFlattenGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-array-flatten-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ArrayFlattenGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-aggregate-error.conf")).unwrap(),

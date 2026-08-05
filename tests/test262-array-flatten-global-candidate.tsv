@@ -1,0 +1,80 @@
+# quickjs-oxide Test262 outcome vector v2
+# quickjs=2026-06-04
+# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+# oxide_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
+# profile=test262-canonical-classified-v2
+# mode=both
+path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
+test/built-ins/Array/prototype/flat/array-like-objects.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/array-like-objects.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/bound-function-call.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/bound-function-call.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/empty-array-elements.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/empty-array-elements.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/empty-object-elements.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/empty-object-elements.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/length.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/length.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/name.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/name.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/non-numeric-depth-should-not-throw.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/non-numeric-depth-should-not-throw.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/non-object-ctor-throws.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/non-object-ctor-throws.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/null-undefined-elements.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/null-undefined-elements.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/null-undefined-input-throws.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/null-undefined-input-throws.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/positive-infinity.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/positive-infinity.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/prop-desc.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/prop-desc.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/proxy-access-count.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/proxy-access-count.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/symbol-object-create-null-depth-throws.js	sloppy		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flat/symbol-object-create-null-depth-throws.js	strict		Array.prototype.flat	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects-nested.js	sloppy		Array.prototype.flatMap,Int32Array	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects-nested.js	strict		Array.prototype.flatMap,Int32Array	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects-poisoned-length.js	sloppy		Array.prototype.flatMap,Symbol.toPrimitive	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects-poisoned-length.js	strict		Array.prototype.flatMap,Symbol.toPrimitive	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects-typedarrays.js	sloppy		Array.prototype.flatMap,Int32Array	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects-typedarrays.js	strict		Array.prototype.flatMap,Int32Array	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/array-like-objects.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/bound-function-argument.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/bound-function-argument.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/depth-always-one.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/depth-always-one.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/length.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/length.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/mapperfunction-throws.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/mapperfunction-throws.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/name.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/name.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/non-callable-argument-throws.js	sloppy		Array.prototype.flatMap,Symbol	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/non-callable-argument-throws.js	strict		Array.prototype.flatMap,Symbol	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/not-a-constructor.js	sloppy		Reflect.construct,Array.prototype.flatMap,arrow-function	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/not-a-constructor.js	strict		Reflect.construct,Array.prototype.flatMap,arrow-function	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/prop-desc.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/prop-desc.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/proxy-access-count.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/proxy-access-count.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-non-object.js	sloppy		Array.prototype.flatMap,Symbol	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-non-object.js	strict		Array.prototype.flatMap,Symbol	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species-bad-throws.js	sloppy		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species-bad-throws.js	strict		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species-custom-ctor-poisoned-throws.js	sloppy		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species-custom-ctor-poisoned-throws.js	strict		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species-custom-ctor.js	sloppy		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species-custom-ctor.js	strict		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species.js	sloppy		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-ctor-object-species.js	strict		Array.prototype.flatMap,Symbol,Symbol.species	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-null-undefined-throws.js	sloppy		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/this-value-null-undefined-throws.js	strict		Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/flatMap/thisArg-argument.js	strict	onlyStrict	Array.prototype.flatMap	normal		pass	normal		
+test/built-ins/Array/prototype/methods-called-as-functions.js	sloppy		Symbol,Symbol.isConcatSpreadable,Symbol.iterator,Symbol.species,Array.prototype.flat,Array.prototype.flatMap,Array.prototype.includes	normal		pass	normal		
+test/built-ins/Array/prototype/methods-called-as-functions.js	strict		Symbol,Symbol.isConcatSpreadable,Symbol.iterator,Symbol.species,Array.prototype.flat,Array.prototype.flatMap,Array.prototype.includes	normal		pass	normal		
+# summary pass=69
