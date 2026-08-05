@@ -14674,7 +14674,7 @@ fn dynamic_identifier_reference_len(
     syntactic_with: bool,
     fallback_readonly: bool,
 ) -> Result<usize, Error> {
-    let global_reference = global_reference_index(access, fallback);
+    let global_reference = global_reference_index(access, late_sources, fallback);
     let fallback_access = match access {
         IdentifierReferenceAccess::Prepare | IdentifierReferenceAccess::Set => {
             IdentifierAccess::Set
@@ -14721,7 +14721,19 @@ fn dynamic_identifier_reference_len(
 /// the global reference before the RHS, including TDZ/readonly checks and the
 /// missing-global sentinel.  Calls deliberately keep the ordinary
 /// `undefined, GetVar` shape because `OP_scope_get_ref` is not an lvalue.
-fn global_reference_index(access: IdentifierReferenceAccess, fallback: &IrOp) -> Option<u16> {
+fn global_reference_index(
+    access: IdentifierReferenceAccess,
+    late_sources: &[DynamicEnvironmentSource],
+    fallback: &IrOp,
+) -> Option<u16> {
+    // A GlobalSet fallback is not yet a prepared global Reference while an
+    // imported eval/with environment remains to be tested. QuickJS leaves an
+    // undefined sentinel on the stack in this case and runs scope_put_var
+    // after the RHS; only a path with no late environment may use the compact
+    // GlobalReference/PutRefValue pair.
+    if !late_sources.is_empty() {
+        return None;
+    }
     match (access, fallback) {
         (
             IdentifierReferenceAccess::Prepare | IdentifierReferenceAccess::Set,
@@ -14884,7 +14896,7 @@ fn emit_dynamic_identifier_reference(
         .checked_add(emitted)
         .and_then(|target| u32::try_from(target).ok())
         .ok_or_else(|| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
-    let global_reference = global_reference_index(access, &fallback);
+    let global_reference = global_reference_index(access, late_sources, &fallback);
     let mut first = true;
 
     match access {

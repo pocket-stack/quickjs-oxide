@@ -1,0 +1,7 @@
+# Exhaustive R3db eval-var destructuring transition.
+# parent_commit=0117f8df458e56bda6be9e5d56ab450e73da022f
+# oxide_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
+# manifest_sha256=cdaad046146fc09292816cd7638ab2b3e8e9f41778f2b459ec8a7fab93b338ed
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/staging/sm/Function/function-name-binding.js	sloppy			normal		fail-runtime	runtime	TypeError	cannot read property 'name' of undefined	pass	normal		
+test/staging/sm/Function/function-name-binding.js	strict			normal		pass	normal			pass	normal		

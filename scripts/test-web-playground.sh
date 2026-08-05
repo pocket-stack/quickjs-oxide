@@ -96,6 +96,21 @@ for (const example of examplesModule.EXAMPLES) {
   );
 }
 
+const evalVarDestructuring = evaluate(`
+  (function () {
+    eval("var { answer = function () { return 42; } } = {};");
+    return answer.name === "answer" ? answer() : 0;
+  })()
+`);
+assert.deepEqual(
+  {
+    ok: evalVarDestructuring.ok,
+    kind: evalVarDestructuring.kind,
+    text: evalVarDestructuring.text,
+  },
+  { ok: true, kind: "number", text: "42" },
+);
+
 const deepYieldStar = evaluate(`
   (function () {
     function* chain(depth) {
@@ -139,6 +154,6 @@ assert.equal(syntaxError.kind, "exception");
 assert.match(syntaxError.text, /^SyntaxError:/);
 
 console.log(
-  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples passed; quickjs-oxide returned 42; deep yield-star overflow stayed catchable`,
+  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples passed; direct eval and quickjs-oxide returned 42; deep yield-star overflow stayed catchable`,
 );
 NODE

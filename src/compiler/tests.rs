@@ -6692,6 +6692,77 @@ fn sloppy_direct_eval_keeps_source_ordered_dynamic_declarations() {
 }
 
 #[test]
+fn eval_destructuring_novel_vars_retest_the_dynamic_environment_before_global_fallback() {
+    let bindings = vec![EvalRootBinding {
+        name: JsString::from_static(EVAL_VARIABLE_OBJECT_LOCAL_NAME),
+        scope: 0,
+        is_lexical: false,
+        is_const: false,
+        kind: ClosureVariableKind::EvalVariableObject,
+        is_catch_parameter: false,
+    }];
+    let eval = compile_unlinked_eval_with_filename(
+        "var { x = 41 } = {}; var [y = 42] = [];",
+        "<eval>",
+        DebugInfoMode::Full,
+        EvalCompileContext::direct(false, bindings),
+    )
+    .unwrap();
+
+    assert_eq!(
+        eval.code()
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::DefineEvalVariable { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        eval.code()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction,
+                Instruction::HasDynamicBinding {
+                    source: DynamicEnvironmentSource::Eval(EvalVariableSource::Closure(0)),
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(
+        eval.code()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction,
+                Instruction::PutDynamicBinding {
+                    source: DynamicEnvironmentSource::Eval(EvalVariableSource::Closure(0)),
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+    assert!(
+        !eval
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::GlobalReference(_)))
+    );
+}
+
+#[test]
+fn sloppy_direct_eval_initializes_novel_destructured_var_bindings() {
+    assert_eq!(
+        evaluate_in_context("(function(){eval('var {x=41}={}');return x})()"),
+        Value::Int(41)
+    );
+    assert_eq!(
+        evaluate_in_context("(function(){eval('var [x=42]=[]');return x})()"),
+        Value::Int(42)
+    );
+}
+
+#[test]
 fn eval_redeclaration_throw_precedes_global_and_dynamic_value_writes() {
     let caller_lexical = EvalRootBinding {
         name: JsString::from_static("x"),

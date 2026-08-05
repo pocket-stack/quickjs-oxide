@@ -6,6 +6,50 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3db sloppy direct-eval var BindingPattern references
+
+R3db freezes QuickJS's late scope selection for sloppy direct-eval `var`
+BindingPatterns. The eval declaration prelude already creates a novel name on
+the caller's eval-variable object. Its Reference must nevertheless retain that
+object as a late candidate until the final Set: getters, iterator steps,
+defaults, and rest-copy callbacks may delete the binding and force the write to
+the global fallback. The old global-Reference shortcut bypassed the late
+candidate even when it still existed, leaking ordinary destructured values to
+the realm global. The shared shortcut now requires an empty `late_sources`
+list. A pinned QuickJS matrix covers the normal and delete/retarget branches,
+NamedEvaluation, repeated eval, and exact property/iterator ordering.
+
+The exact manifest contains one path / two sloppy-and-strict variants and
+hashes to
+`cdaad046146fc09292816cd7638ab2b3e8e9f41778f2b459ec8a7fab93b338ed`.
+Pinned QuickJS and the candidate pass both. The authenticated R3da parent
+records `fail-runtime=1 pass=1`; the candidate records `pass=2`. Candidate
+focused TSV/JSONL SHA-256 values are
+`8f6e7e62dbf384d3da4d35b490ad637446c26e2a57488d4d41e05b155c128ccb`
+and
+`622cbe1eac81740d7cd71acdf2a589aae8f52b14a361ca2c48899c7532888965`.
+
+The fresh two-worker full transition moves the complete vector to 65,512
+passes / 65,566 runnable, retains `fail-parse=7`, reduces `fail-runtime` from
+46 to 45, and leaves the strict cohort row plus all 102,035 non-cohort rows
+byte-identical. It has no detail-only movement or previous-pass regression;
+the two JSON mega-array variants still time out. Candidate whole-corpus
+TSV/JSONL SHA-256 values are
+`9cfd1c1f807b10581b2964e9a6d48a3fd4cbc92ebbecf15d359a9a21fc55680e`
+and
+`bf0755551c28dec28cc180a492512849faeb4aeae068202b185d041493d6c0c0`;
+this is now the canonical full vector.
+
+Reproduce the frozen inputs and focused receipts with:
+
+```sh
+./scripts/test-test262-eval-var-destructuring.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-eval-var-destructuring.sh
+```
+
+Reproduce the complete join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-eval-var-destructuring.sh --full`.
+
 ## R3da synchronous generator delegation stack budget
 
 R3da freezes the first globally admitted repair for deep synchronous `yield*`.

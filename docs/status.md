@@ -4,6 +4,64 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3db sloppy direct-eval var BindingPattern references
+
+R3db fixes a scope-isolation error in sloppy direct eval. A novel `var` name
+inside an object, array, nested, or rest BindingPattern was correctly declared
+on the caller's eval-variable object, but its final value was written to the
+realm global instead. The compiler kept the eval object as a late scope
+candidate and a global write as fallback; the global-Reference shortcut
+incorrectly ignored that pending candidate. The shortcut is now legal only
+when `late_sources` is empty, so the final Set performs QuickJS's late
+`HasDynamicBinding -> PutDynamicBinding -> global fallback` selection.
+
+This is deliberately not an early snapshot of the eval object. Pinned QuickJS
+re-resolves the target after iterator, computed-key, getter, default, and rest
+callbacks. If one of those callbacks deletes the eval binding, the final write
+falls through to the global. The differential matrix locks both ordinary
+eval-object writes and these delete/retarget cases, as well as anonymous
+function, generator, async function, arrow, async arrow, and class names,
+repeated eval, existing caller bindings, IteratorClose, and evaluation order.
+The Pages Node/WASM smoke executes the same direct-eval NamedEvaluation path
+and requires the real Rust engine to return 42.
+
+The exact Test262 manifest contains one path / two sloppy-and-strict variants
+and hashes to
+`cdaad046146fc09292816cd7638ab2b3e8e9f41778f2b459ec8a7fab93b338ed`.
+Pinned QuickJS and the R3db candidate pass 2/2. The checksum-bound R3da parent
+records one sloppy `fail-runtime` (`TypeError: cannot read property 'name' of
+undefined`) while its strict variant already passes. Candidate focused
+TSV/JSONL SHA-256 values are
+`8f6e7e62dbf384d3da4d35b490ad637446c26e2a57488d4d41e05b155c128ccb`
+and
+`622cbe1eac81740d7cd71acdf2a589aae8f52b14a361ca2c48899c7532888965`.
+
+The fresh two-worker 102,037-row join changes exactly the sloppy
+`fail-runtime -> pass` outcome. The strict cohort row and all 102,035
+non-cohort rows are byte-identical; there is no detail-only movement or
+previous-pass regression. The canonical vector is now 65,512 passes / 65,566
+runnable, `fail-parse=7`, and `fail-runtime=45`; the two JSON mega-array
+variants still time out. Full candidate TSV/JSONL SHA-256 values are
+`9cfd1c1f807b10581b2964e9a6d48a3fd4cbc92ebbecf15d359a9a21fc55680e`
+and
+`bf0755551c28dec28cc180a492512849faeb4aeae068202b185d041493d6c0c0`.
+
+The standing pinned-oracle classification now leaves two known actionable
+QuickJS deltas in the runnable vector, both from the unimplemented Atomics
+surface; the other 50 non-timeout failures are also present in pinned QuickJS.
+This is a progress measure, not a parity claim: excluded and unsupported
+features remain tracked by the profile and parity contract.
+
+Reproduce the frozen inputs and focused evidence with:
+
+```sh
+./scripts/test-test262-eval-var-destructuring.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-eval-var-destructuring.sh
+```
+
+Reproduce the complete exact join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-eval-var-destructuring.sh --full`.
+
 ## R3da synchronous generator delegation stack budget
 
 R3da removes an Oxide-only early rejection from deep synchronous `yield*`
