@@ -1097,6 +1097,8 @@ impl Runtime {
             &global_object,
         )
         .expect("DataView intrinsic initialization must succeed");
+        self.initialize_atomics_intrinsic(realm, &global_object)
+            .expect("Atomics intrinsic initialization must succeed");
         self.initialize_promise_intrinsic(
             realm,
             &function_prototype,

@@ -523,6 +523,9 @@ impl Runtime {
             NativeFunctionId::TypedArray(kind) => {
                 self.call_typed_array_native(realm, kind, invocation, arguments)
             }
+            NativeFunctionId::Atomics(kind) => {
+                self.call_atomics_native(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::AsyncFunctionResume(kind) => {
                 self.call_async_function_resume(realm, kind, invocation, arguments)
             }

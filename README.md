@@ -4,9 +4,11 @@ An independent Rust rewrite of QuickJS, targeting semantic feature parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
 The `unsafe`-free engine is runnable but incomplete. Its strongest covered
-slice is the shared ArrayBuffer/DataView/12-class TypedArray stack: resizable
+slice is the ArrayBuffer/DataView/12-class TypedArray stack: resizable
 buffers, fixed and length-tracking views, transfers, iteration, search,
 mutation, sorting, species behavior, and the six Uint8Array base64/hex codecs.
+QuickJS-shaped `Atomics` load/store/read-modify-write operations now work on
+ordinary ArrayBuffer-backed integer TypedArrays; shared memory remains separate.
 `Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, and `FinalizationRegistry` also
 have QuickJS-shaped constructors, protocols, weak lifetimes, and ordered
 runtime jobs.
@@ -29,14 +31,15 @@ so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
 full vector is 65,512 passes / 65,564 runnable / 102,037 total variants.
-Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
-incomplete.
+Modules, SharedArrayBuffer, agents/waiters, shared-memory Atomics, and broad
+built-in coverage remain incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed
 bookkeeping lives in the status documents.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
-playground is a pre-parity milestone, not a Feature Parity claim.
+`Atomics on ArrayBuffer` example returns 42 through that build. The playground
+is a pre-parity milestone, not a Feature Parity claim.
 
 ## Try it
 

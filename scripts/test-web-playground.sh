@@ -72,6 +72,7 @@ const expected = new Map([
   ["return-42", { kind: "number", text: "42" }],
   ["default-parameters", { kind: "number", text: "42" }],
   ["typed-array", { kind: "number", text: "42" }],
+  ["atomics-non-shared", { kind: "number", text: "42" }],
   ["resizable-array-buffer", { kind: "number", text: "42" }],
   ["uint8-codec", { kind: "number", text: "42" }],
   ["unicode-strings", { kind: "number", text: "42" }],

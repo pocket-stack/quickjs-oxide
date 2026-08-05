@@ -6,6 +6,37 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-05.
 
+## R3dd source-audited non-shared Atomics cohort
+
+R3dd adds the runtime namespace but deliberately does not enable broad
+`Atomics` metadata in the global profile. A first 102-path audit exposed a
+selection mistake: twelve tests really evaluate `SharedArrayBuffer`, including
+eleven method `not-a-constructor` paths whose argument expressions are
+evaluated before the constructor check. Those paths are now frozen in the
+12-line shared-memory deferred manifest instead of being mislabeled green.
+
+The corrected non-shared manifest contains 90 paths / 180 variants and hashes
+to
+`e9ab48b9faa090e1bc2a58a1d62e2398bca0de88a28f34c53d3397442636a380`.
+It comprises 43 namespace/method metadata paths, 41 explicitly named
+non-shared paths, five remaining `pause`/`isLockFree` semantic paths, and the
+staging detached-buffer path. Oxide and pinned QuickJS pass 180/180. The
+candidate scoped-probe TSV/JSONL SHA-256 values are
+`0d5b99acb171c079d91b89ca010c9061b2b552d1a1dfe530efaa554caa2335d4`
+and
+`baaf530b6697390a82e2751411b6cbfd7fa84dbb2c890248af37f9b06836a05f`;
+the pinned QuickJS log SHA-256 is
+`7a033067036e950e1dd60e7fa91a98d7b2ed51a0a6ce0c0eeec84895d531f6d9`.
+
+The deferred manifest hashes to
+`00b82b9589391b350ee77ee736c7e7c4637c19466465b4dfa4e53270cdbc02ee`.
+The two disjoint manifests reconstruct the original 102-path audit without
+erasing the SAB frontier. One green `isLockFree` path conservatively carries
+SAB metadata without evaluating SAB, so the temporary scoped profile exists
+only to select this audited cohort. It is not a global capability declaration.
+The canonical full Test262 vector therefore remains at R3dc until a separate
+global-admission gate proves its complete metadata intersection.
+
 ## R3dc Atomics metadata-gap classification
 
 R3dc corrects the classified vector without adding runtime functionality. Two

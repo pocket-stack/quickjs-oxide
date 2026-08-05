@@ -4,6 +4,60 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dd non-shared ArrayBuffer Atomics core
+
+R3dd publishes QuickJS's lazy, realm-local `%Atomics%` namespace after
+`DataView` and before `Promise`. Its table order, descriptors, function
+metadata, non-constructor behavior, and `Symbol.toStringTag` match pinned
+QuickJS. The implementation lives in a dedicated intrinsic module rather than
+growing the runtime coordinator.
+
+All eight integer TypedArray classes now support `load`, `store`, the six
+read-modify-write operations, and `compareExchange` over ordinary
+ArrayBuffer-backed storage. Validation freezes the old view length before
+`ToIndex`, then revalidates at the same post-index and post-value boundaries as
+QuickJS. Number and BigInt truncation, narrow wrapping, old-value decoding, and
+the full untruncated `store` return value are preserved. `wait` rejects a
+non-shared view before later argument coercions; `notify` still performs the
+observable index/count coercions and returns zero. `isLockFree` and `pause`
+retain QuickJS's saturated and raw-number rules.
+
+The backing-store transaction is callback-free and contains no `unsafe`, host
+atomic primitive, thread, or lock. That is sufficient for an ordinary
+ArrayBuffer in the current single-agent runtime while leaving shared backing
+stores and waiter coordination as a distinct future architecture.
+
+The pinned differential matrix passes in both engines; its stdout SHA-256 is
+`d5a393c1534768aec2bb3f8512bc5b01170a18c85e817e02acfd56140b2931d6`.
+A source audit corrected the focused Test262 boundary to 90 paths / 180
+sloppy-and-strict variants with manifest SHA-256
+`e9ab48b9faa090e1bc2a58a1d62e2398bca0de88a28f34c53d3397442636a380`.
+Oxide and pinned QuickJS both pass 180/180. The candidate scoped-probe TSV and
+JSONL hashes are
+`0d5b99acb171c079d91b89ca010c9061b2b552d1a1dfe530efaa554caa2335d4`
+and
+`baaf530b6697390a82e2751411b6cbfd7fa84dbb2c890248af37f9b06836a05f`;
+the pinned QuickJS log hashes to
+`7a033067036e950e1dd60e7fa91a98d7b2ed51a0a6ce0c0eeec84895d531f6d9`.
+
+Twelve paths from the broader audit really evaluate `SharedArrayBuffer` and
+are frozen separately in `test262-atomics-shared-deferred.txt`, SHA-256
+`00b82b9589391b350ee77ee736c7e7c4637c19466465b4dfa4e53270cdbc02ee`.
+They are not hidden inside the green non-shared count. The scoped probe was
+selection-only; the global Test262 profile still declares neither `Atomics`,
+`Atomics.pause`, nor `SharedArrayBuffer`, so the canonical 102,037-row vector
+does not move in this runtime milestone. Global admission remains a separate
+checksum-bound evidence step, and shared-memory semantics remain unfinished.
+
+The browser playground includes an `Atomics on ArrayBuffer` example whose real
+WASM build returns 42. Reproduce the direct differential with:
+
+```sh
+QJS_ORACLE=target/oracle/quickjs-2026-06-04/qjs \
+  cargo test --locked --test oracle_atomics_non_shared -- --nocapture
+./scripts/test-web-playground.sh
+```
+
 ## R3dc Atomics metadata-gap classification
 
 R3dc is an evidence correction, not an engine feature. Two SpiderMonkey

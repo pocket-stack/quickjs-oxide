@@ -345,6 +345,9 @@ impl Runtime {
                 AutoInitProperty::Json { realm } => {
                     Value::Object(self.instantiate_json_intrinsic(realm)?)
                 }
+                AutoInitProperty::Atomics { realm } => {
+                    Value::Object(self.instantiate_atomics_intrinsic(realm)?)
+                }
                 #[cfg(test)]
                 AutoInitProperty::FailureProbe { .. } => {
                     return Err(RuntimeError::Invariant("autoinit failure probe"));

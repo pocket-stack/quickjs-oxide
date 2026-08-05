@@ -359,6 +359,10 @@ pub enum AutoInitProperty {
     Json {
         realm: ContextId,
     },
+    /// QuickJS `JS_OBJECT_DEF` payload for the realm's global `Atomics` object.
+    Atomics {
+        realm: ContextId,
+    },
     #[cfg(test)]
     FailureProbe {
         realm: ContextId,
@@ -6169,6 +6173,33 @@ pub enum ArrayBufferNativeKind {
     TransferToFixedLength,
 }
 
+/// Operation selector shared by the integer TypedArray Atomics kernel.
+///
+/// The order mirrors pinned QuickJS's `AtomicsOpEnum`; retaining a typed
+/// selector avoids exposing the upstream integer `magic` values to dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AtomicsOperationKind {
+    Add,
+    And,
+    Or,
+    Sub,
+    Xor,
+    Exchange,
+    CompareExchange,
+    Load,
+}
+
+/// Typed handler family for pinned QuickJS's `%Atomics%` namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AtomicsNativeKind {
+    Operation(AtomicsOperationKind),
+    Store,
+    IsLockFree,
+    Pause,
+    Wait,
+    Notify,
+}
+
 /// Element format selected by one DataView get/set native.
 ///
 /// The discriminants stay typed instead of relying on QuickJS's integer
@@ -6429,6 +6460,7 @@ pub enum NativeFunctionId {
     ArrayBuffer(ArrayBufferNativeKind),
     DataView(DataViewNativeKind),
     TypedArray(TypedArrayNativeKind),
+    Atomics(AtomicsNativeKind),
     Promise(PromiseNativeKind),
     AsyncFunctionResume(AsyncFunctionResumeKind),
     AsyncGeneratorResume(AsyncGeneratorResumeKind),
@@ -6928,6 +6960,13 @@ impl NativeFunctionId {
                 | FinalizationRegistryNativeKind::Unregister,
             )
             | Self::ArrayBuffer(ArrayBufferNativeKind::IsView)
+            | Self::Atomics(
+                AtomicsNativeKind::Store
+                | AtomicsNativeKind::IsLockFree
+                | AtomicsNativeKind::Pause
+                | AtomicsNativeKind::Wait
+                | AtomicsNativeKind::Notify,
+            )
             | Self::TypedArray(
                 TypedArrayNativeKind::From
                 | TypedArrayNativeKind::Of
@@ -7091,6 +7130,9 @@ impl NativeFunctionId {
                     cproto: NativeCProto::GenericMagic,
                 }
             }
+            Self::Atomics(AtomicsNativeKind::Operation(_)) => NativeFunctionDescriptor {
+                cproto: NativeCProto::GenericMagic,
+            },
             Self::TypedArray(
                 TypedArrayNativeKind::Iterator(_)
                 | TypedArrayNativeKind::Iteration(_)
@@ -16691,7 +16733,8 @@ fn property_slot_edges(slot: &PropertySlot) -> Vec<RawId> {
             | AutoInitProperty::ArrayUnscopables { realm }
             | AutoInitProperty::Math { realm }
             | AutoInitProperty::Reflect { realm }
-            | AutoInitProperty::Json { realm },
+            | AutoInitProperty::Json { realm }
+            | AutoInitProperty::Atomics { realm },
         ) => vec![RawId::Context(*realm)],
         #[cfg(test)]
         PropertySlot::AutoInit(AutoInitProperty::FailureProbe { realm }) => {

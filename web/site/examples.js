@@ -25,6 +25,15 @@ answer();`,
 values[0] + values[1] + values[2];`,
   },
   {
+    id: "atomics-non-shared",
+    label: "Atomics on ArrayBuffer",
+    source: `var counter = new Int32Array(new ArrayBuffer(4));
+Atomics.store(counter, 0, 40);
+Atomics.add(counter, 0, 2);
+
+Atomics.load(counter, 0);`,
+  },
+  {
     id: "resizable-array-buffer",
     label: "Resizable ArrayBuffer",
     source: `var buffer = new ArrayBuffer(1, { maxByteLength: 4 });
