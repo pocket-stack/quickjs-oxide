@@ -4,6 +4,50 @@ Last audited: 2026-08-05. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3cx for-of async member lookahead
+
+R3cx matches QuickJS 2026-06-04's raw, non-committing
+`simple_next_token(..., FALSE)` lookahead for `async of` in an ordinary for-of
+head. The probe skips ordinary whitespace and JavaScript comments, but it is
+deliberately not a normal lexer pass: Annex B HTML comments are left for the
+real lexer and a backslash after raw `of` preserves QuickJS's scanner boundary.
+Bare, unescaped `async` followed by that raw `of` probe remains a syntax error,
+while complete member targets such as `async.x`, `async["x"]`, and `async.of`
+parse normally. Compiler canaries cover block/line comments and newlines,
+escaped and parenthesized `async`, the raw `of\u0061` continuation, both HTML
+comment forms, and invalid call/optional-chain targets. The QuickJS
+differential covers the accepted member and HTML-comment behavior.
+
+The exact Test262 manifest contains one path / two sloppy-and-strict variants
+and hashes to
+`a4d8c570908bb500728aca7dad45b0e064d9f43394e5d8e9bece95be74bc40a5`.
+Pinned QuickJS and the R3cx candidate pass 2/2; the checksum-bound R3cw parent
+records `fail-parse=2`. Candidate focused TSV/JSONL SHA-256 values are
+`1f1a5c30dde9ede5f58635ec2d3a15396dc988c9b2c378f5bd5db4fc6135a3e6`
+and
+`d343db38f5fdfc8ffc46b2a06acd04507e58692ab3879ea3451a6b5f3e9b5cc4`.
+The global profile remains byte-identical at 126 feature tags and SHA-256
+`7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775`.
+
+The fresh two-worker 102,037-row join changes exactly those two
+`fail-parse -> pass` outcomes, leaves 102,035 non-cohort rows byte-identical,
+has no detail-only movement, and records no previous-pass regression. The
+canonical vector is now 65,505 passes / 65,566 runnable, `fail-parse=9`, and
+`fail-runtime=50`. Full candidate TSV/JSONL SHA-256 values are
+`687eec42e9611a377b37f68aa61cba263d2e8fe0dcf66d19b003f25b5a7746bb`
+and
+`9a8a8a645a890a3f56fb9f40001aa46f08b6b46009dd6a426873249a7611a46f`.
+
+Reproduce the frozen inputs and focused evidence with:
+
+```sh
+./scripts/test-test262-for-of-async-member.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-for-of-async-member.sh
+```
+
+Reproduce the complete exact join with
+`TEST262_FULL_WORKERS=2 ./scripts/test-test262-for-of-async-member.sh --full`.
+
 ## R3cw RegExp exec recompilation ordering
 
 R3cw matches QuickJS 2026-06-04's observable `RegExpBuiltinExec` order: first
@@ -1858,18 +1902,18 @@ workstream. Build and architecture details live in
   `computed-property-names` universe against pinned QuickJS, and R3bw admits
   that tag globally while preserving its residual class-field, config, and
   module boundaries. Those R3bw counts are historical; subsequent milestones
-  through R3cw advance the current canonical measurement to 65,503 passes and
+  through R3cx advance the current canonical measurement to 65,505 passes and
   65,566 runnable variants: 64.20% raw, a 78.39% lower bound after the 18,475
-  pinned QuickJS target exclusions, or 99.90% among the 65,566 variants with a
+  pinned QuickJS target exclusions, or 99.91% among the 65,566 variants with a
   non-unsupported observed outcome. It records 13,719 `unsupported-feature`
   and 17,996 total
-  unsupported outcomes, 11 parse failures, 50 runtime failures, no harness
-  failures, and two timeouts. The exact R3cw join preserves all 102,037 keys
-  with four outcome changes, 102,033 unchanged rows, and no previous-pass
+  unsupported outcomes, nine parse failures, 50 runtime failures, no harness
+  failures, and two timeouts. The exact R3cx join preserves all 102,037 keys
+  with two outcome changes, 102,035 unchanged rows, and no previous-pass
   regression. Its full TSV/JSONL SHA-256 values are
-  `cd5aa3df85c45b72a8939d9c5778c70192b1dc3699eb3330ff8f7aff0ef1159f`
+  `687eec42e9611a377b37f68aa61cba263d2e8fe0dcf66d19b003f25b5a7746bb`
   and
-  `709f49e182e1cfb83353c46251d5eb0bbc24109c3690532f2f4e348d64f1664f`.
+  `9a8a8a645a890a3f56fb9f40001aa46f08b6b46009dd6a426873249a7611a46f`.
   The cumulative TypedArray scoped gate still passes 2,254 paths / 4,463
   variants in both engines.
   Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain

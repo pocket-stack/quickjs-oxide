@@ -28,7 +28,7 @@ Unsupported, deferred through parsing and identifier/private-name resolution
 so it cannot hide early errors. String inputs to direct and indirect `eval`
 follow QuickJS-compatible WTF-8 semantics, preserving lone UTF-16 surrogates in
 strings, templates, RegExp literals, and saved debug source. The last audited
-full vector is 65,503 passes / 65,566 runnable / 102,037 total variants.
+full vector is 65,505 passes / 65,566 runnable / 102,037 total variants.
 Modules, SharedArrayBuffer/Atomics, and broad built-in coverage remain
 incomplete.
 Pinned QuickJS is the test oracle, never a product dependency; detailed

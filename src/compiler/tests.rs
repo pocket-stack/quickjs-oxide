@@ -1521,8 +1521,43 @@ fn for_await_requires_the_contextual_keyword_and_an_of_head() {
         "async function f(values){ var async; for await (async of values) {} }",
     )
     .expect("for-await should accept an `async` assignment target");
+    for source in [
+        "function f(values){ var async; for (async of values) {} }",
+        "function f(values){ var async; for (async /* comment */ of values) {} }",
+        "function f(values){ var async; for (async\n of values) {} }",
+        "function f(values){ var async; for (async // comment\n of values) {} }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().message(),
+            "'for of' expression cannot start with 'async'",
+            "{source:?}"
+        );
+    }
+    for source in [
+        "function f(values){ var async; for ((async) of values) {} }",
+        r"function f(values){ var \u0061sync; for (\u0061sync of values) {} }",
+        "function f(values){ var async={}; for (async.value of values) {} }",
+        "function f(values,key){ var async={}; for (async[key] of values) {} }",
+        "function f(values){ var async={of:0}; for (async.of of values) {} }",
+        "function f(){ var async=0; for (async <!-- comment\n of [1]) {} }",
+        "function f(){ var async=0; for (async\n --> comment\n of [2]) {} }",
+    ] {
+        compile_unlinked_script(source).unwrap_or_else(|error| {
+            panic!("valid async member target rejected {source:?}: {error}")
+        });
+    }
+    for source in [
+        "function f(values){ for (async() of values) {} }",
+        "function f(values){ for (async?.value of values) {} }",
+    ] {
+        assert_eq!(
+            compile_unlinked_script(source).unwrap_err().kind(),
+            ErrorKind::Syntax,
+            "invalid async target unexpectedly compiled: {source:?}"
+        );
+    }
     assert_eq!(
-        compile_unlinked_script("function f(values){ var async; for (async of values) {} }",)
+        compile_unlinked_script(r"for (async of\u0061 of [1]) {}")
             .unwrap_err()
             .message(),
         "'for of' expression cannot start with 'async'"

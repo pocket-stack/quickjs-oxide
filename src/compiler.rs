@@ -33,6 +33,7 @@ use crate::heap::{
 use crate::lexer::{
     Identifier, Keyword, LexContext, LexError, LexErrorKind, Lexer, LexerOptions, LexicalGoal,
     NumberKind, NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
+    quickjs_simple_lookahead_is_of,
 };
 use crate::source_text::SourceText;
 use crate::value::{JsString, JsStringError, Value};
@@ -2912,19 +2913,23 @@ impl<'source> Parser<'source> {
             }
             _ => None,
         };
-        self.parse_left_hand_side_expression()?;
-        if self.current_ir().last_optional_chain.is_some() {
-            return Err(self.syntax_here("invalid for in/of left hand-side"));
-        }
+        // Mirror QuickJS's pre-LHS `token_is_pseudo_keyword(async)` plus
+        // `peek_token(FALSE) == TOK_OF` ambiguity guard. Looking ahead from
+        // the raw token boundary rejects only the bare `async of` pair;
+        // `async.value` and `async[key]` proceed through ordinary member-LHS
+        // parsing.
         if let Some(async_span) = async_span
-            && iteration_kind == ForIterationKind::Of
             && !is_for_await
-            && self.is_for_of_keyword()
+            && self.next_token_is_for_of_keyword()
         {
             return Err(Error::syntax(
                 "'for of' expression cannot start with 'async'",
                 source_span(async_span),
             ));
+        }
+        self.parse_left_hand_side_expression()?;
+        if self.current_ir().last_optional_chain.is_some() {
+            return Err(self.syntax_here("invalid for in/of left hand-side"));
         }
         if let Some(target) = self.take_tail_identifier_reference()? {
             self.validate_identifier_assignment_target(&target)?;
@@ -7646,6 +7651,16 @@ impl<'source> Parser<'source> {
             TokenKind::Identifier(identifier)
                 if identifier.value == "of" && !identifier.has_escape
         )
+    }
+
+    /// QuickJS `peek_token(FALSE) == TOK_OF` from an already-consumed
+    /// pseudo-keyword. This simplified, non-committing lookahead skips trivia
+    /// but does not let an escaped spelling act as the contextual delimiter.
+    fn next_token_is_for_of_keyword(&self) -> bool {
+        self.lexer
+            .source()
+            .get(self.current().span.end.byte_offset..)
+            .is_some_and(quickjs_simple_lookahead_is_of)
     }
 
     /// Non-committing delimiter probe for a semicolon-free for head. It selects

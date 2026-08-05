@@ -1948,6 +1948,45 @@ pub(crate) fn quickjs_simple_lookahead_has_line_terminator(mut source: &str) -> 
     }
 }
 
+/// Reproduce the `TOK_OF` branch of QuickJS `simple_next_token(..., FALSE)`.
+/// This is intentionally a raw scanner rather than a normal Lexer pass:
+/// Annex B HTML comments are not trivia here, and a backslash immediately
+/// after raw `of` is not decoded as an IdentifierPart by `match_identifier`.
+pub(crate) fn quickjs_simple_lookahead_is_of(mut source: &str) -> bool {
+    loop {
+        let Some(ch) = source.chars().next() else {
+            return false;
+        };
+        if source.starts_with("//") {
+            let Some(end) = source
+                .as_bytes()
+                .iter()
+                .position(|byte| matches!(byte, b'\r' | b'\n'))
+            else {
+                return false;
+            };
+            source = &source[end..];
+        } else if source.starts_with("/*") {
+            let Some(end) = source[2..].find("*/") else {
+                return false;
+            };
+            source = &source[2 + end + 2..];
+        } else if is_line_terminator(ch) || is_js_whitespace(ch) {
+            source = &source[ch.len_utf8()..];
+        } else {
+            break;
+        }
+    }
+
+    let Some(after) = source.strip_prefix("of") else {
+        return false;
+    };
+    after
+        .chars()
+        .next()
+        .is_none_or(|ch| !is_identifier_continue(ch))
+}
+
 fn is_js_whitespace(ch: char) -> bool {
     matches!(
         ch,
@@ -3005,6 +3044,32 @@ mod tests {
                 !quickjs_simple_lookahead_has_line_terminator(source),
                 "{source:?}"
             );
+        }
+    }
+
+    #[test]
+    fn quickjs_simple_of_lookahead_keeps_raw_scanner_boundaries() {
+        for source in [
+            "of",
+            " of",
+            "\nof",
+            "// comment\nof",
+            "/* comment */of",
+            r"of\u0061",
+            "of<",
+        ] {
+            assert!(quickjs_simple_lookahead_is_of(source), "{source:?}");
+        }
+        for source in [
+            "other",
+            "ofx",
+            "of\u{200c}",
+            "of\u{200d}",
+            "<!-- comment\nof",
+            "--> comment\nof",
+            "// comment\u{2028}of",
+        ] {
+            assert!(!quickjs_simple_lookahead_is_of(source), "{source:?}");
         }
     }
 

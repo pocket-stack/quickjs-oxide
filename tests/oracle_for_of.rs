@@ -40,6 +40,14 @@ const VALUE_CASES: &[(&str, &str)] = &[
         "(function(){var value='',s='';for(value of 'ab')s+=value;return s+'|'+value})()",
     ),
     (
+        "async-named fixed and computed member assignment targets",
+        "(function(){var async={x:0,k:0,of:0};for(async.x of [1]){}for(async['k'] of [2]){}for(async.of of [3]){}return async.x+'|'+async.k+'|'+async.of})()",
+    ),
+    (
+        "async ambiguity probe leaves Annex B HTML comments to the real lexer",
+        "(function(){var async=0;for(async <!-- comment\n of [1]){}for(async\n --> comment\n of [2]){}return async})()",
+    ),
+    (
         "let binding receives a fresh captured cell",
         "(function(){var f,g,i=0;for(let value of 'ab'){i++;if(i===1)f=function(){return value};else g=function(){return value}}return f()+'|'+g()+'|'+(f()!==g())})()",
     ),
