@@ -8,15 +8,15 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-The latest conformance milestone globally admits the base Test262 `class`
-feature after auditing its complete 4,768-path / 9,374-variant universe. Pinned
-QuickJS passes all 9,311 variants it runs and config-skips 63; Oxide gains 816
-global passes while finer class, decorator, and private-element features stay
-fail-closed. Modules, broad built-ins, and the complete embedding/tooling
-surface remain unfinished, so the full Feature Parity goal is unchanged.
+The latest conformance milestone globally admits Test262 `cross-realm` after
+auditing its complete 201-path / 394-variant universe. Pinned QuickJS passes
+all 338 runnable variants and skips 56 by feature or configuration; Oxide gains
+323 global passes while 15 private-class or `regexp-v` co-feature variants stay
+fail-closed. This is a profile-only admission: runtime and host hooks do not
+change, and the full Feature Parity goal remains unchanged.
 
-The latest audited global vector is 67,490 passes / 67,542 runnable / 102,037
-total variants, with 816 pass gains and zero regressions. Detailed hashes,
+The latest audited global vector is 67,813 passes / 67,865 runnable / 102,037
+total variants, with 323 pass gains and zero regressions. Detailed hashes,
 partitions, and historical bookkeeping live in the status documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**

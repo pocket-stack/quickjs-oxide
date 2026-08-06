@@ -1,8 +1,54 @@
 # Implementation status
 
-Last audited: 2026-08-06. The completion definition remains
+Last audited: 2026-08-07. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
+
+## R3du global cross-realm admission
+
+R3du promotes the Test262 `cross-realm` feature into the live global profile.
+This is a profile-only admission: the runtime, existing `$262.createRealm`
+host hook, 1,251 audited negative paths, execution policy, and agent allowlist
+do not change. The parent and promoted profile SHA-256 values are
+`a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8`
+and
+`4fc0f253f5146025732b7b89b8c0547fa4a268f671373078980b4d07de15860d`.
+
+The exhaustive pinned universe contains 201 paths / 394 variants. Its path
+manifest and ordered variant-key SHA-256 values are
+`dbff48284d8659486931a76fac06705efd94e118e6531b4f3f6a5df052654986`
+and
+`f794b9260cc1314d534c1faa47b45364c4fa8d29f89197ebc341ade164c34897`.
+Pinned QuickJS 2026-06-04 passes all 173 runnable paths / 338 variants in two
+independent runs. The disjoint skip partition contains 18 paths / 36 variants
+skipped by feature and 10 paths / 20 variants excluded by configuration; six
+Intl paths matching both rules are canonically classified as config-excluded.
+
+The parent reports 338 `unsupported-feature` outcomes. The candidate converts
+162 paths / 323 variants to passes and retains 15 variants behind independent
+co-feature tags: 13 private-class variants and two `regexp-v` variants. All 56
+pinned QuickJS skips remain unchanged. The exact focused transition therefore
+has 323 outcome gains, 15 reason-only changes, 56 unchanged rows, and zero pass
+regressions.
+
+Across the full 102,037-variant vector, only those 338 expected rows change;
+101,699 rows are unchanged. Two candidate replays are byte-identical. The
+canonical vector is now 67,813 passes / 67,865 runnable, and its TSV and JSONL
+SHA-256 values are
+`dbc3eb642f2e26e91cd811abae0aad185714ba3c9a08fcf6cbb505217923d169`
+and
+`350a2c9293d6d559b197dc530f2d32af2c43f1ebc9ef09e8b0d1efcea7fc7394`.
+
+The gate authenticates the pinned upstream, parent commit and baseline,
+profile-only delta, complete metadata/source ledger, host-hook inventory,
+QuickJS runnable and skip partitions, focused reports, and independent full
+candidate reports. R3du remains a pre-parity admission milestone.
+
+```sh
+./scripts/test-test262-cross-realm-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-cross-realm-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-cross-realm-global.sh --full
+```
 
 ## R3dt global base-class admission
 

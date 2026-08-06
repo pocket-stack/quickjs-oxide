@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8";
+    "4fc0f253f5146025732b7b89b8c0547fa4a268f671373078980b4d07de15860d";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -341,6 +341,12 @@ const TEST262_CLASS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8";
 const TEST262_CLASS_GLOBAL_MANIFEST_SHA256: &str =
     "a92e0bd5ab869839868a734308cb43d1fed369deef5d08d015b025d4b6acde17";
+const TEST262_CROSS_REALM_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8";
+const TEST262_CROSS_REALM_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "4fc0f253f5146025732b7b89b8c0547fa4a268f671373078980b4d07de15860d";
+const TEST262_CROSS_REALM_GLOBAL_MANIFEST_SHA256: &str =
+    "dbff48284d8659486931a76fac06705efd94e118e6531b4f3f6a5df052654986";
 const TEST262_CREATE_REALM_PROFILE_SHA256: &str =
     "7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30";
 const TEST262_CREATE_REALM_MANIFEST_SHA256: &str =
@@ -1003,6 +1009,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::IsHtmlDdaGlobalCandidate
                     | OxideProfileKind::ClassGlobalParent
                     | OxideProfileKind::ClassGlobalCandidate
+                    | OxideProfileKind::CrossRealmGlobalParent
+                    | OxideProfileKind::CrossRealmGlobalCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1238,6 +1246,8 @@ enum OxideProfileKind {
     IsHtmlDdaGlobalCandidate,
     ClassGlobalParent,
     ClassGlobalCandidate,
+    CrossRealmGlobalParent,
+    CrossRealmGlobalCandidate,
     CreateRealm,
     EvalScript,
     RealmHostsGlobalParent,
@@ -1629,6 +1639,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-class-global-candidate.conf"),
             OxideProfileKind::ClassGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-cross-realm-global-parent.conf"),
+            OxideProfileKind::CrossRealmGlobalParent,
+        ),
+        (
+            root.join("tests/test262-cross-realm-global-candidate.conf"),
+            OxideProfileKind::CrossRealmGlobalCandidate,
         ),
         (
             root.join("tests/test262-create-realm.conf"),
@@ -3713,6 +3731,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_CLASS_GLOBAL_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::CrossRealmGlobalParent => verify_tag_transition_profile(
+            options,
+            "cross-realm global admission",
+            "parent",
+            TEST262_CROSS_REALM_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-cross-realm-global-universe.txt",
+                TEST262_CROSS_REALM_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::CrossRealmGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "cross-realm global admission",
+            "candidate",
+            TEST262_CROSS_REALM_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-cross-realm-global-universe.txt",
+                TEST262_CROSS_REALM_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::CreateRealm => verify_scoped_pinned_manifests(
             options,
             "$262.createRealm host hook",
@@ -4730,7 +4768,9 @@ mod cli_tests {
         TEST262_COMPUTED_PROPERTY_NAMES_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_COMPUTED_PROPERTY_NAMES_PARENT_PROFILE_SHA256,
         TEST262_CREATE_REALM_ORACLE_ENVELOPE_SHA256, TEST262_CREATE_REALM_PROFILE_SHA256,
-        TEST262_CREATE_REALM_UNIVERSE_SHA256, TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_CREATE_REALM_UNIVERSE_SHA256, TEST262_CROSS_REALM_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_CROSS_REALM_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_DATA_VIEW_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DATA_VIEW_GLOBAL_PARENT_PROFILE_SHA256, TEST262_DATA_VIEW_PROFILE_SHA256,
         TEST262_DEBUGGER_STATEMENT_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DEBUGGER_STATEMENT_GLOBAL_PARENT_PROFILE_SHA256,
@@ -5393,6 +5433,16 @@ mod cli_tests {
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-class-global-candidate.conf")).unwrap(),
             OxideProfileKind::ClassGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-cross-realm-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::CrossRealmGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-cross-realm-global-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::CrossRealmGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-create-realm.conf")).unwrap(),
@@ -8783,6 +8833,28 @@ mod cli_tests {
                 &["tests/test262-class-global-universe.txt"],
                 "tests/test262-class-global-activation.txt",
                 "test/annexB/language/statements/class/subclass/superclass-emulates-undefined.js",
+            );
+        }
+    }
+
+    #[test]
+    fn cross_realm_global_profiles_require_the_exact_universe_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-cross-realm-global-parent.conf",
+                TEST262_CROSS_REALM_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-cross-realm-global-candidate.conf",
+                TEST262_CROSS_REALM_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-cross-realm-global-universe.txt"],
+                "tests/test262-cross-realm-global-activation.txt",
+                "test/built-ins/AggregateError/proto-from-ctor-realm.js",
             );
         }
     }

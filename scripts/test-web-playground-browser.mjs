@@ -558,7 +558,7 @@ async function runAcceptance(url, serverErrors) {
     );
     assert.match(
       (await page.locator("#frozen-global-vector").textContent()) || "",
-      /67,490 passes\s*\/\s*67,542 runnable\s*\/\s*102,037 total[\s\S]*base class admission \+816 global passes[\s\S]*finer class features\s*remain gated[\s\S]*pre-parity/,
+      /67,813 passes\s*\/\s*67,865 runnable\s*\/\s*102,037 total[\s\S]*cross-realm \+323 global passes[\s\S]*15 private-class or regexp-v\s*co-feature variants remain gated[\s\S]*pre-parity/,
     );
 
     assert.ok(

@@ -262,10 +262,12 @@ function validatePageAndBuildLabel(page, wasm, expectedCommit) {
     'id="frozen-global-vector"',
     'id="parity-contract-link"',
     'id="test262-progress-link"',
-    "67,490 passes / 67,542 runnable / 102,037 total",
-    "base class admission +816 global passes",
-    "finer class features",
-    "remain gated",
+    "function that returns 42",
+    "real quickjs-oxide Rust interpreter compiled to WebAssembly",
+    "67,813 passes / 67,865 runnable / 102,037 total",
+    "cross-realm +323 global passes",
+    "15 private-class or regexp-v",
+    "co-feature variants remain gated",
     "pre-parity",
   ];
   const missingPageMarker = requiredPageMarkers.find(

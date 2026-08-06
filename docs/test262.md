@@ -4,7 +4,54 @@ Test262 is now a pinned progress instrument, not yet a completion claim. The
 authoritative compatibility target remains QuickJS 2026-06-04; focused QuickJS
 differentials still decide exact behavior inside each implemented slice.
 
-Last audited: 2026-08-06.
+Last audited: 2026-08-07.
+
+## R3du global cross-realm admission
+
+R3du freezes the complete Test262 universe carrying `cross-realm`: 201 paths /
+394 variants. The path manifest, ordered variant keys, metadata projection,
+and source-ledger rows hash to
+`dbff48284d8659486931a76fac06705efd94e118e6531b4f3f6a5df052654986`,
+`f794b9260cc1314d534c1faa47b45364c4fa8d29f89197ebc341ade164c34897`,
+`520b2382a56ec16ab37ed5d6fc15c5be051646e27815552b39af30667c8432ec`,
+and
+`12cf853edfca03bd3ee809f6bc2569084e4d09e56e29edd31903c96676c47ecc`.
+
+Pinned QuickJS 2026-06-04 runs and passes 173 paths / 338 variants twice; its
+runnable manifest and variant keys hash to
+`a9a29ffbf8da06bd44004857f0dcc177e5fe9739726df61ad6f57a16b397277a`
+and
+`237b433e19843e4f9b224939d9662a1137d5d0904b99e4e2eceda9e9838e115c`.
+The other 56 variants form a disjoint canonical skip partition: 18 paths / 36
+variants are skipped by feature and 10 paths / 20 variants by configuration.
+Six Intl paths match both upstream rules, with config exclusion taking
+precedence; no skipped variant is counted as an implementation pass.
+
+The candidate profile adds exactly `cross-realm`. The runtime, host-hook
+implementation and allowlists, audited negatives, and execution policy remain
+unchanged. The parent and candidate profile SHA-256 values are
+`a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8`
+and
+`4fc0f253f5146025732b7b89b8c0547fa4a268f671373078980b4d07de15860d`.
+The focused parent has 338 `unsupported-feature` outcomes; the candidate gains
+323 passes and retains 15 independently gated variants—13 requiring private
+class features and two requiring `regexp-v`. The 15 retained rows change only
+their unsupported-feature detail, and all 56 QuickJS skips are unchanged.
+
+Two full candidate replays are byte-identical. The complete join records 323
+pass gains, 15 detail-only changes, 101,699 unchanged rows, and zero
+regressions across all 102,037 variants. The canonical baseline is now 67,813
+passes / 67,865 runnable. Its TSV and JSONL SHA-256 values are
+`dbc3eb642f2e26e91cd811abae0aad185714ba3c9a08fcf6cbb505217923d169`
+and
+`350a2c9293d6d559b197dc530f2d32af2c43f1ebc9ef09e8b0d1efcea7fc7394`.
+The admission remains a progress instrument, not a Feature Parity claim.
+
+```sh
+./scripts/test-test262-cross-realm-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-cross-realm-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-cross-realm-global.sh --full
+```
 
 ## R3dt global base-class admission
 

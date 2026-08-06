@@ -379,6 +379,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-class-global-added-negatives.txt"
     ));
+    const CROSS_REALM_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-cross-realm-global-parent.conf"
+    ));
+    const CROSS_REALM_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-cross-realm-global-candidate.conf"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -587,7 +595,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 134] = [
+    const EXPECTED_FEATURES: [&str; 135] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
@@ -680,6 +688,7 @@ mod tests {
         "coalesce-expression",
         "computed-property-names",
         "const",
+        "cross-realm",
         "default-parameters",
         "destructuring-binding",
         "error-cause",
@@ -1895,8 +1904,6 @@ mod tests {
             .audited_negative_tests
             .extend(CLASS_GLOBAL_ADDED_NEGATIVES.lines().map(str::to_owned));
         assert_eq!(class_global_candidate, expected_class_global_candidate);
-        assert_eq!(profile, class_global_candidate);
-        assert_eq!(CHECKED_IN_PROFILE, CLASS_GLOBAL_CANDIDATE_PROFILE);
         assert_eq!(
             class_global_candidate
                 .features
@@ -1920,6 +1927,47 @@ mod tests {
         assert_eq!(
             class_global_candidate.allows_async_execution(),
             class_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            CROSS_REALM_GLOBAL_PARENT_PROFILE,
+            CLASS_GLOBAL_CANDIDATE_PROFILE
+        );
+        let cross_realm_global_parent =
+            OxideProfile::parse(CROSS_REALM_GLOBAL_PARENT_PROFILE).unwrap();
+        let cross_realm_global_candidate =
+            OxideProfile::parse(CROSS_REALM_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        assert_eq!(cross_realm_global_parent, class_global_candidate);
+        let mut expected_cross_realm_global_candidate = cross_realm_global_parent.clone();
+        assert!(
+            expected_cross_realm_global_candidate
+                .features
+                .insert("cross-realm".to_owned())
+        );
+        assert_eq!(
+            cross_realm_global_candidate,
+            expected_cross_realm_global_candidate
+        );
+        assert_eq!(profile, cross_realm_global_candidate);
+        assert_eq!(CHECKED_IN_PROFILE, CROSS_REALM_GLOBAL_CANDIDATE_PROFILE);
+        assert_eq!(
+            cross_realm_global_candidate
+                .features
+                .difference(&cross_realm_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["cross-realm"]
+        );
+        assert_eq!(
+            cross_realm_global_candidate.audited_negative_tests,
+            cross_realm_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            cross_realm_global_candidate.host_agent_tests,
+            cross_realm_global_parent.host_agent_tests
+        );
+        assert_eq!(
+            cross_realm_global_candidate.allows_async_execution(),
+            cross_realm_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate

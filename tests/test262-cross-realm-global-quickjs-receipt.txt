@@ -1,0 +1,16 @@
+# Pinned QuickJS R3du cross-realm oracle receipt.
+quickjs=2026-06-04
+universe_paths=201
+universe_variants=394
+feature_skipped_paths=18
+feature_skipped_variants=36
+config_excluded_paths=10
+config_excluded_variants=20
+runnable_paths=173
+executed_variants=338
+passes=338
+failures=0
+replays=2
+replay_status=passed-twice
+log_lines=21
+log_sha256=75c6e5a7cd2cd9797a2d15144513690bd78350522756fd62c7adc314a9c9b322
