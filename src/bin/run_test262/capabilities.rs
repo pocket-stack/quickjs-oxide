@@ -395,6 +395,18 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-implemented-leaves-global-candidate.conf"
     ));
+    const DESTRUCTURING_ASSIGNMENT_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-destructuring-assignment-global-parent.conf"
+    ));
+    const DESTRUCTURING_ASSIGNMENT_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-destructuring-assignment-global-candidate.conf"
+    ));
+    const DESTRUCTURING_ASSIGNMENT_GLOBAL_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-destructuring-assignment-global-negative.txt"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -603,7 +615,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 143] = [
+    const EXPECTED_FEATURES: [&str; 144] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
@@ -701,6 +713,7 @@ mod tests {
         "const",
         "cross-realm",
         "default-parameters",
+        "destructuring-assignment",
         "destructuring-binding",
         "error-cause",
         "exponentiation",
@@ -2018,11 +2031,6 @@ mod tests {
             implemented_leaves_global_candidate,
             expected_implemented_leaves_global_candidate
         );
-        assert_eq!(profile, implemented_leaves_global_candidate);
-        assert_eq!(
-            CHECKED_IN_PROFILE,
-            IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE
-        );
         assert_eq!(
             implemented_leaves_global_candidate
                 .features
@@ -2049,6 +2057,85 @@ mod tests {
         assert_eq!(
             implemented_leaves_global_candidate.allows_async_execution(),
             implemented_leaves_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            DESTRUCTURING_ASSIGNMENT_GLOBAL_PARENT_PROFILE,
+            IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE
+        );
+        let destructuring_assignment_global_parent =
+            OxideProfile::parse(DESTRUCTURING_ASSIGNMENT_GLOBAL_PARENT_PROFILE).unwrap();
+        let destructuring_assignment_global_candidate =
+            OxideProfile::parse(DESTRUCTURING_ASSIGNMENT_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        assert_eq!(
+            destructuring_assignment_global_parent,
+            implemented_leaves_global_candidate
+        );
+        let mut expected_destructuring_assignment_global_candidate =
+            destructuring_assignment_global_parent.clone();
+        assert!(
+            expected_destructuring_assignment_global_candidate
+                .features
+                .insert("destructuring-assignment".to_owned())
+        );
+        expected_destructuring_assignment_global_candidate
+            .audited_negative_tests
+            .extend(
+                DESTRUCTURING_ASSIGNMENT_GLOBAL_NEGATIVES
+                    .lines()
+                    .map(str::to_owned),
+            );
+        assert_eq!(
+            destructuring_assignment_global_candidate,
+            expected_destructuring_assignment_global_candidate
+        );
+        assert_eq!(profile, destructuring_assignment_global_candidate);
+        assert_eq!(
+            CHECKED_IN_PROFILE,
+            DESTRUCTURING_ASSIGNMENT_GLOBAL_CANDIDATE_PROFILE
+        );
+        assert_eq!(
+            destructuring_assignment_global_candidate
+                .features
+                .difference(&destructuring_assignment_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["destructuring-assignment"]
+        );
+        assert!(
+            destructuring_assignment_global_parent
+                .features
+                .difference(&destructuring_assignment_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            destructuring_assignment_global_candidate
+                .audited_negative_tests
+                .difference(&destructuring_assignment_global_parent.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            DESTRUCTURING_ASSIGNMENT_GLOBAL_NEGATIVES
+                .lines()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            DESTRUCTURING_ASSIGNMENT_GLOBAL_NEGATIVES.lines().count(),
+            90
+        );
+        assert!(
+            destructuring_assignment_global_parent
+                .audited_negative_tests
+                .difference(&destructuring_assignment_global_candidate.audited_negative_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            destructuring_assignment_global_candidate.host_agent_tests,
+            destructuring_assignment_global_parent.host_agent_tests
+        );
+        assert_eq!(
+            destructuring_assignment_global_candidate.allows_async_execution(),
+            destructuring_assignment_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate

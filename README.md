@@ -8,15 +8,15 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-The latest conformance milestone globally admits eight already-implemented
-Test262 leaf features: `Array.prototype.values`, `Object.is`, `caller`,
-`for-of`, `json-superset`, `proxy-missing-checks`, `stable-array-sort`, and
-`stable-typedarray-sort`. Their complete union is 46 paths / 69 variants:
-pinned QuickJS passes 69/69, while Oxide gains 65 global passes and keeps four
-`destructuring-assignment` co-feature variants fail-closed. This is a
-profile-only admission; the full Feature Parity goal remains unchanged.
+The latest conformance milestone globally admits the already-implemented
+Test262 `destructuring-assignment` feature plus an exact 90-path audited
+parse-negative allowlist. Its raw universe is 141 paths / 217 variants; the
+137-path / 213-variant activation passes in pinned QuickJS and Oxide, adding
+213 global passes with zero regressions. Four `flags: [module]` variants stay
+fail-closed behind module support. This is a profile-only admission; the full
+Feature Parity goal remains unchanged.
 
-The latest audited global vector is 67,878 passes / 67,930 runnable / 102,037
+The latest audited global vector is 68,091 passes / 68,143 runnable / 102,037
 total variants. Detailed hashes, partitions, and historical bookkeeping live
 in the status documents below.
 

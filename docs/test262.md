@@ -6,6 +6,36 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-07.
 
+## R3dw global destructuring-assignment admission
+
+R3dw freezes the complete Test262 `destructuring-assignment` universe at 141
+paths / 217 variants. The gate binds the raw universe, ordered activation and
+retained partitions, complete metadata and source ledgers, and the exact
+profile transition. The candidate adds one feature name plus exactly 90
+audited parse-negative paths; runtime, parser, VM, host hooks, and execution
+policy remain byte-identical.
+
+The activation contains 137 paths / 213 variants: 47 normal paths / 49
+variants and 90 negative paths / 164 variants. Each negative is authenticated
+against the pinned parse phase and expected `SyntaxError`. The other four raw
+variants carry `flags: [module]` and exercise `import.meta`, so they remain
+`unsupported-module` instead of being counted as destructuring passes.
+
+Pinned QuickJS 2026-06-04 passes all 217 raw variants and all 213 activation
+variants. Oxide gains all 213 activation passes with zero regressions and
+leaves the four module outcomes unchanged. The full-vector acceptance join is
+required to change exactly those 213 rows and preserve the other 101,824 of
+102,037 variants. Independent candidates A and B both report a byte-identical
+68,091 passes / 68,143 runnable, and the final gate requires both full-vector
+replays to match before the receipt is promoted. This remains a progress
+instrument, not a Feature Parity claim.
+
+```sh
+./scripts/test-test262-destructuring-assignment-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-destructuring-assignment-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-destructuring-assignment-global.sh --full
+```
+
 ## R3dv global implemented-leaf admission
 
 R3dv freezes the complete 46-path / 69-variant union carrying any of these

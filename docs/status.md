@@ -4,6 +4,38 @@ Last audited: 2026-08-07. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dw global destructuring-assignment admission
+
+R3dw promotes the already-implemented Test262 `destructuring-assignment`
+feature into the live global profile and adds exactly 90 source- and
+metadata-authenticated parse-negative paths to the audited allowlist. This is
+a profile-only admission: runtime, parser, VM, host hooks, and execution policy
+do not change.
+
+The raw feature universe contains 141 paths / 217 variants. Four
+`flags: [module]` parse-negative variants also use `import.meta`; they remain
+`unsupported-module` and are excluded from activation. The resulting 137-path
+/ 213-variant activation splits into 47 normal paths / 49 variants and 90
+negative paths / 164 variants. Every negative row is pinned to its expected
+parse phase and `SyntaxError` type.
+
+Pinned QuickJS 2026-06-04 passes all 217 raw-universe variants and all 213
+activation variants. Oxide converts the complete activation to 213 passes,
+keeps the four module variants unchanged, and records zero regressions. The
+full-vector acceptance join is required to change exactly those 213 activation
+rows while preserving the other 101,824 rows. Independent candidates A and B
+both report a byte-identical 68,091 passes / 68,143 runnable / 102,037 total
+variants. The gate authenticates the universe, activation and module
+partitions, metadata/source ledgers, QuickJS receipt, focused transition, and
+both full-vector replays before promotion. R3dw remains a pre-parity admission
+milestone.
+
+```sh
+./scripts/test-test262-destructuring-assignment-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-destructuring-assignment-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-destructuring-assignment-global.sh --full
+```
+
 ## R3dv global implemented-leaf admission
 
 R3dv promotes eight already-implemented Test262 features into the live global

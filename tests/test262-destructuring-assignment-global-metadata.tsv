@@ -1,0 +1,141 @@
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-break-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-case-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-catch-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-class-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-const-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-continue-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-debugger-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-default-escaped-ext.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-default-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-default.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-delete-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-do-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-else-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-enum-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-export-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-extends-escaped-ext.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-extends-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-extends.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-finally-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-for-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-function-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-if-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-implements-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-import-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-in-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-instanceof-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-interface-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-let-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-new-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-package-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-private-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-protected-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-public-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-return-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-static-escaped.js		generated,onlyStrict	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-super-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-switch-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-this-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-throw-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-try-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-typeof-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-var-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-void-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-while-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/arrow-function/dstr/syntax-error-ident-ref-with-escaped.js		generated	arrow-function,destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-break-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-case-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-catch-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-class-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-const-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-continue-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-debugger-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-default-escaped-ext.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-default-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-default.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-delete-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-do-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-else-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-enum-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-export-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-extends-escaped-ext.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-extends-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-extends.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-finally-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-for-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-function-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-if-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-implements-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-import-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-in-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-instanceof-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-interface-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-let-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-new-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-package-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-private-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-protected-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-public-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-return-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-static-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-super-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-switch-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-this-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-throw-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-try-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-typeof-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-var-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-void-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-while-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/ident-name-prop-name-literal-with-escaped.js		generated,noStrict	destructuring-assignment		
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-break-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-case-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-catch-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-class-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-const-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-continue-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-debugger-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-default-escaped-ext.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-default-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-default.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-delete-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-do-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-else-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-enum-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-export-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-extends-escaped-ext.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-extends-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-extends.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-finally-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-for-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-function-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-if-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-implements-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-import-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-in-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-instanceof-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-interface-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-let-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-new-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-package-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-private-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-protected-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-public-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-return-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-static-escaped.js		generated,onlyStrict	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-super-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-switch-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-this-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-throw-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-try-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-typeof-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-var-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-void-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-while-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/assignment/dstr/syntax-error-ident-ref-with-escaped.js		generated	destructuring-assignment	parse	SyntaxError
+test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js		module	import.meta,destructuring-assignment	parse	SyntaxError
+test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js		module	import.meta,destructuring-assignment	parse	SyntaxError
+test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js		module	import.meta,destructuring-assignment	parse	SyntaxError
+test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js		module	import.meta,destructuring-assignment,object-rest	parse	SyntaxError
+test/language/statements/for-of/body-dstr-assign-error.js			destructuring-assignment,for-of,Symbol.iterator		
+test/language/statements/for-of/body-dstr-assign.js			destructuring-assignment,for-of		

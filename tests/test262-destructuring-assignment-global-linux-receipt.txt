@@ -1,0 +1,20 @@
+# R3dw Linux arm64 Rust 1.97 reproducibility receipt.
+image=rust:1.97-bookworm
+image_id=sha256:14bc9c5966e7b3a385794b3d5389a8765668342025fbcc7b2e3d2866ac4bd8c3
+os=Linux
+arch=aarch64
+rustc=rustc 1.97.1 (8bab26f4f 2026-07-14)
+cargo=cargo 1.97.1 (c980f4866 2026-06-30)
+quickjs_raw_log_sha256=53cd6af51028d769599c47ae3d1f9e48dd3f49d26351f70bce4e08b687a21b88
+quickjs_activation_log_sha256=fc71ab883c9ac3ee537642c8dcb2b8afbfc7452d97cf4c134a42e4866e56e011
+parent_runnable=67930
+parent_passes=67878
+parent_tsv_sha256=4a083c9749c511c72f93190fdd4a07b5a663d9c65b938eb650bdcd8df6244b6f
+parent_jsonl_sha256=3b97beabde5d1eb2a78a716996a8590b5b5c5115a4b6187116decaa1bb9ca29d
+candidate_runnable=68143
+candidate_passes=68091
+candidate_tsv_sha256=85a6d37eb7dc42d0a83bde87bd5796b99d132498d79a6c87cf064b277ff335da
+candidate_jsonl_sha256=a1f842c8213ef7cc2d2035b9e253ff7f2b407cba02befb3ebd116a60d59799d6
+candidate_replays=2
+candidate_replay_status=passed-twice
+native_parity=byte-identical

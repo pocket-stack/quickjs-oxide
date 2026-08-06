@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "715839a7403d087af41aa2643688e61dc0710897235afa2a99c5418ea1b095d0";
+    "2dd4cd0b07ac8124b4176fa769b924027230d4386098c2f9b1e991d3d9c0ff54";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -353,6 +353,12 @@ const TEST262_IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "715839a7403d087af41aa2643688e61dc0710897235afa2a99c5418ea1b095d0";
 const TEST262_IMPLEMENTED_LEAVES_GLOBAL_MANIFEST_SHA256: &str =
     "1386a7ea11cfce00663af8bf031cf07b0d668f66964f972d9ad2eb62b7c5729e";
+const TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "715839a7403d087af41aa2643688e61dc0710897235afa2a99c5418ea1b095d0";
+const TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "2dd4cd0b07ac8124b4176fa769b924027230d4386098c2f9b1e991d3d9c0ff54";
+const TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_MANIFEST_SHA256: &str =
+    "92e543680ca826dccb564f694430ee0a1183ab5680d85f9ce03875ad92ba143e";
 const TEST262_CREATE_REALM_PROFILE_SHA256: &str =
     "7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30";
 const TEST262_CREATE_REALM_MANIFEST_SHA256: &str =
@@ -1019,6 +1025,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::CrossRealmGlobalCandidate
                     | OxideProfileKind::ImplementedLeavesGlobalParent
                     | OxideProfileKind::ImplementedLeavesGlobalCandidate
+                    | OxideProfileKind::DestructuringAssignmentGlobalParent
+                    | OxideProfileKind::DestructuringAssignmentGlobalCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1258,6 +1266,8 @@ enum OxideProfileKind {
     CrossRealmGlobalCandidate,
     ImplementedLeavesGlobalParent,
     ImplementedLeavesGlobalCandidate,
+    DestructuringAssignmentGlobalParent,
+    DestructuringAssignmentGlobalCandidate,
     CreateRealm,
     EvalScript,
     RealmHostsGlobalParent,
@@ -1665,6 +1675,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-implemented-leaves-global-candidate.conf"),
             OxideProfileKind::ImplementedLeavesGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-destructuring-assignment-global-parent.conf"),
+            OxideProfileKind::DestructuringAssignmentGlobalParent,
+        ),
+        (
+            root.join("tests/test262-destructuring-assignment-global-candidate.conf"),
+            OxideProfileKind::DestructuringAssignmentGlobalCandidate,
         ),
         (
             root.join("tests/test262-create-realm.conf"),
@@ -3789,6 +3807,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_IMPLEMENTED_LEAVES_GLOBAL_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::DestructuringAssignmentGlobalParent => verify_tag_transition_profile(
+            options,
+            "destructuring-assignment global admission",
+            "parent",
+            TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-destructuring-assignment-global-universe.txt",
+                TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::DestructuringAssignmentGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "destructuring-assignment global admission",
+            "candidate",
+            TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-destructuring-assignment-global-universe.txt",
+                TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::CreateRealm => verify_scoped_pinned_manifests(
             options,
             "$262.createRealm host hook",
@@ -4816,6 +4854,8 @@ mod cli_tests {
         TEST262_DEFAULT_PARAMETERS_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_DEFAULT_PARAMETERS_PARENT_PROFILE_SHA256,
+        TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_ERROR_REGEXP_TYPEDARRAY_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_EVAL_SCRIPT_PROFILE_SHA256,
         TEST262_FUTURE_RESERVED_WORDS_GLOBAL_CANDIDATE_PROFILE_SHA256,
@@ -5497,6 +5537,20 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::ImplementedLeavesGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-destructuring-assignment-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::DestructuringAssignmentGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-destructuring-assignment-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::DestructuringAssignmentGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-create-realm.conf")).unwrap(),
@@ -8931,6 +8985,28 @@ mod cli_tests {
                 &["tests/test262-implemented-leaves-global-universe.txt"],
                 "tests/test262-implemented-leaves-global-activation.txt",
                 "test/built-ins/Object/is/not-a-constructor.js",
+            );
+        }
+    }
+
+    #[test]
+    fn destructuring_assignment_global_profiles_require_the_exact_universe_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-destructuring-assignment-global-parent.conf",
+                TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-destructuring-assignment-global-candidate.conf",
+                TEST262_DESTRUCTURING_ASSIGNMENT_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-destructuring-assignment-global-universe.txt"],
+                "tests/test262-destructuring-assignment-global-activation.txt",
+                "test/language/statements/for-of/body-dstr-assign.js",
             );
         }
     }
