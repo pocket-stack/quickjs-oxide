@@ -4,6 +4,38 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dn global Test262 agent broadcast cohort A admission
+
+R3dn now promotes the 15-path / 30-variant fixed-shared-buffer broadcast
+cohort into the live Test262 profile. The promotion changes only the
+`[host-agent-tests]` allowlist: the 132 feature tags, 1,197 audited negative
+paths, and execution policy remain byte-identical to R3dm. The live profile
+hash is
+`f48a059f97fb7fdb1e2b883221756fa47343de3b4b06f85923eef81c3d98a955`.
+
+The global focused transition records 30 pass gains, 86 unchanged retained
+agent diagnostics, and zero regressions. Two independent release-mode full
+runs are byte-identical. Against the R3dm canonical parent, both exact joins
+change only the 30 activated rows; all 102,007 outside-cohort TSV and JSON
+result rows remain byte-identical, with no detail-only movement and no
+previous-pass regression.
+
+The canonical vector is therefore 66,508 passes / 66,560 runnable / 102,037
+total variants. `unsupported-host-agent` falls from 116 to 86 while every
+other summary category is unchanged. The canonical TSV/JSONL SHA-256 values
+are
+`de511db69ffd4a3912487251a6d1a7b2327b649464dde53ae590a04ab0212f86`
+and
+`6ad3f1e044d105fadad35be0626f004041d0566f7dd3eb021d7e434d37ef2363`.
+
+Reproduce the scoped and global receipts with:
+
+```sh
+./scripts/test-test262-agent-broadcast-a.sh --check
+./scripts/test-test262-agent-broadcast-a-global.sh --check
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-broadcast-a-global.sh --full
+```
+
 ## R3dn scoped Test262 agent broadcast cohort A
 
 R3dn implements the pinned QuickJS `$262.agent.broadcast` /

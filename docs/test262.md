@@ -6,6 +6,44 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dn global agent broadcast cohort A admission
+
+After the scoped implementation receipt below was frozen, R3dn promoted only
+its 15 source- and metadata-authenticated paths into the global
+`[host-agent-tests]` allowlist. The R3dm parent profile hashes to
+`37cb029eda8e3abe97a17c93c1c3fe95e6aaed330de09d41b5941e9a6c3784f8`;
+the candidate/live profile preserves all 132 feature tags, 1,197 audited
+negative paths, and the execution policy, adds exactly those 15 agent paths,
+and hashes to
+`f48a059f97fb7fdb1e2b883221756fa47343de3b4b06f85923eef81c3d98a955`.
+
+The global focused parent reports 116 `unsupported-host-agent` outcomes. The
+candidate reports 30 passes and 86 unchanged unsupported outcomes. Its
+TSV/JSONL hashes are
+`18343ae78609b2787b9f977977a9c4258a2b74652dcaeba1466377bcc74ab173`
+and
+`2e951bf8c4bb8ad773bbeb244cb3cec940ebf4f0b7231d2b8c5da8d95f0d57e0`;
+the exact transition hashes to
+`8d43e059c9d4fe23ed30705bedcb823316bef9e816c1a6fdc4b3ca02eb789e3d`.
+
+Two independent release-mode, two-worker complete runs are byte-identical.
+Each exact join changes only the 30 activated variants from
+`unsupported-host-agent` to `pass`: all 102,007 outside-cohort TSV rows and
+JSON result rows are byte-identical, with no detail-only movement and no
+previous-pass regression. The canonical vector is now 66,508 passes / 66,560
+runnable / 102,037 total variants, with 86 `unsupported-host-agent` outcomes.
+Its TSV/JSONL SHA-256 values are
+`de511db69ffd4a3912487251a6d1a7b2327b649464dde53ae590a04ab0212f86`
+and
+`6ad3f1e044d105fadad35be0626f004041d0566f7dd3eb021d7e434d37ef2363`.
+
+```sh
+./scripts/test-test262-agent-broadcast-a.sh --check
+./scripts/test-test262-agent-broadcast-a-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-agent-broadcast-a-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-broadcast-a-global.sh --full
+```
+
 ## R3dn scoped agent broadcast cohort A
 
 R3dn stages the first authenticated `broadcast` / `receiveBroadcast` slice
@@ -38,9 +76,8 @@ Twenty deterministic single-worker replays cover 600 activated variants with
 
 This admission is deliberately limited to fixed `SharedArrayBuffer` backing.
 Ordinary `ArrayBuffer`, growable shared buffers, and the 43 wake-order,
-timeout, and FIFO paths remain fail-closed pending their own audits. The R3dm
-102,037-variant vector therefore remains canonical until a separate R3dn
-global full-run gate is completed.
+timeout, and FIFO paths remain fail-closed pending their own audits. The global
+admission above preserves that boundary and promotes only this exact cohort.
 
 ```sh
 ./scripts/test-test262-agent-broadcast-a.sh --check

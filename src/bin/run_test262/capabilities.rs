@@ -1775,8 +1775,19 @@ mod tests {
                 .host_agent_tests
                 .insert("test/built-ins/Atomics/wait/good-views.js".to_owned())
         );
-        assert_eq!(profile, agent_stage_a_global_candidate);
-        assert_eq!(CHECKED_IN_PROFILE, AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE);
+        assert_eq!(
+            agent_stage_a_global_candidate,
+            OxideProfile::parse(AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE).unwrap()
+        );
+        let mut agent_broadcast_a_global_candidate = agent_stage_a_global_candidate;
+        agent_broadcast_a_global_candidate
+            .host_agent_tests
+            .extend(AGENT_BROADCAST_A_ACTIVATION.lines().map(str::to_owned));
+        assert_eq!(profile, agent_broadcast_a_global_candidate);
+        assert_eq!(
+            CHECKED_IN_PROFILE,
+            AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE
+        );
         assert_eq!(
             default_parameters_candidate
                 .features
@@ -2201,7 +2212,11 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(activation.len(), 15);
-        assert_eq!(global_parent, live);
+        assert_eq!(
+            global_parent,
+            OxideProfile::parse(AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE).unwrap()
+        );
+        assert_eq!(global_candidate, live);
         for (baseline, admitted) in [(&parent, &candidate), (&global_parent, &global_candidate)] {
             assert_eq!(admitted.features, baseline.features);
             assert_eq!(

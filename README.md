@@ -8,14 +8,14 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-The latest conformance milestone adds an opt-in, QuickJS-shaped Test262
-`$262.agent` host and globally admits its first source-audited test: one path /
-two variants now pass, while the other 58 paths / 116 variants remain
-fail-closed for later agent coordination work. Modules, broad built-ins, and
-the complete embedding/tooling surface also remain unfinished. Pinned QuickJS
-has no `Atomics.waitAsync`, so it is outside this rewrite's parity target.
+The latest conformance milestone globally admits 15 source-audited Test262
+`$262.agent.broadcast` / `receiveBroadcast` paths: all 30 variants pass, while
+the other 43 paths / 86 variants remain fail-closed for later agent
+coordination work. Modules, broad built-ins, and the complete embedding/tooling
+surface also remain unfinished. Pinned QuickJS has no `Atomics.waitAsync`, so
+it is outside this rewrite's parity target.
 
-The latest audited global vector is 66,478 passes / 66,530 runnable / 102,037
+The latest audited global vector is 66,508 passes / 66,560 runnable / 102,037
 total variants, with zero regressions from the prior milestone. Detailed
 implementation and Test262 bookkeeping live in the status documents below.
 

@@ -19,7 +19,7 @@ config_sha256 = "79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897
 test_count = 53125
 metadata_records_sha256 = "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a"
 oxide_profile = "compat/test262-oxide.conf"
-oxide_profile_sha256 = "37cb029eda8e3abe97a17c93c1c3fe95e6aaed330de09d41b5941e9a6c3784f8"
+oxide_profile_sha256 = "f48a059f97fb7fdb1e2b883221756fa47343de3b4b06f85923eef81c3d98a955"
 expected_errors = "test262_errors.txt"
 
 [test262_es5]
