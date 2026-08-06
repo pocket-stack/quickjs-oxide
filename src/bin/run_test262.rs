@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe";
+    "02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -327,6 +327,14 @@ const TEST262_HOST_GC_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "8be6c2a3892a62d89ed17df3f3d3b54e9e84fda8ef6be2bcdaa7d49044593990";
 const TEST262_HOST_GC_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "c671ae022251a9a0f7d17cc851db7506d825c34854c69adedc6475d3da0f389f";
+const TEST262_IS_HTML_DDA_SCOPED_PROFILE_SHA256: &str =
+    "0cc6bb596188cf3b244f8f223663a2bd881bae9a90f73d456f1d9ded4295f118";
+const TEST262_IS_HTML_DDA_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe";
+const TEST262_IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4";
+const TEST262_IS_HTML_DDA_MANIFEST_SHA256: &str =
+    "36adfbe3ebab8b0ba9d5a109ba7f5175cafff1971dfbc5fc762ad168dbfdb0a5";
 const TEST262_CREATE_REALM_PROFILE_SHA256: &str =
     "7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30";
 const TEST262_CREATE_REALM_MANIFEST_SHA256: &str =
@@ -985,6 +993,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::AgentFifoWakeOrderCandidate
                     | OxideProfileKind::AgentWakeFifoGlobalParent
                     | OxideProfileKind::AgentWakeFifoGlobalCandidate
+                    | OxideProfileKind::IsHtmlDdaGlobalParent
+                    | OxideProfileKind::IsHtmlDdaGlobalCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1215,6 +1225,9 @@ enum OxideProfileKind {
     HostGc,
     HostGcGlobalParent,
     HostGcGlobalCandidate,
+    IsHtmlDdaScoped,
+    IsHtmlDdaGlobalParent,
+    IsHtmlDdaGlobalCandidate,
     CreateRealm,
     EvalScript,
     RealmHostsGlobalParent,
@@ -1586,6 +1599,18 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-host-gc-global-candidate.conf"),
             OxideProfileKind::HostGcGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-is-html-dda-scoped.conf"),
+            OxideProfileKind::IsHtmlDdaScoped,
+        ),
+        (
+            root.join("tests/test262-is-html-dda-global-parent.conf"),
+            OxideProfileKind::IsHtmlDdaGlobalParent,
+        ),
+        (
+            root.join("tests/test262-is-html-dda-global-candidate.conf"),
+            OxideProfileKind::IsHtmlDdaGlobalCandidate,
         ),
         (
             root.join("tests/test262-create-realm.conf"),
@@ -3623,6 +3648,33 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_HOST_GC_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::IsHtmlDdaScoped => verify_scoped_pinned_profile(
+            options,
+            "$262.IsHTMLDDA host semantics",
+            TEST262_IS_HTML_DDA_SCOPED_PROFILE_SHA256,
+            "tests/test262-is-html-dda-universe.txt",
+            TEST262_IS_HTML_DDA_MANIFEST_SHA256,
+        ),
+        OxideProfileKind::IsHtmlDdaGlobalParent => verify_tag_transition_profile(
+            options,
+            "$262.IsHTMLDDA global admission",
+            "parent",
+            TEST262_IS_HTML_DDA_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-is-html-dda-universe.txt",
+                TEST262_IS_HTML_DDA_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::IsHtmlDdaGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "$262.IsHTMLDDA global admission",
+            "candidate",
+            TEST262_IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-is-html-dda-universe.txt",
+                TEST262_IS_HTML_DDA_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::CreateRealm => verify_scoped_pinned_manifests(
             options,
             "$262.createRealm host hook",
@@ -4662,6 +4714,9 @@ mod cli_tests {
         TEST262_HTML_COMMENTS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
         TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_IS_HTML_DDA_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_IS_HTML_DDA_SCOPED_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_ITERATOR_HELPERS_PROFILE_SHA256, TEST262_ITERATOR_SEQUENCING_PROFILE_SHA256,
@@ -5277,6 +5332,20 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-host-gc-global-candidate.conf"))
                 .unwrap(),
             OxideProfileKind::HostGcGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-is-html-dda-scoped.conf")).unwrap(),
+            OxideProfileKind::IsHtmlDdaScoped
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-is-html-dda-global-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::IsHtmlDdaGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-is-html-dda-global-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::IsHtmlDdaGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-create-realm.conf")).unwrap(),
@@ -8590,6 +8659,59 @@ mod cli_tests {
                 "tests/test262-host-gc-activation.txt",
                 "test/staging/sm/extensions/ArrayBuffer-slice-arguments-detaching.js",
             );
+        }
+    }
+
+    #[test]
+    fn is_html_dda_profiles_are_bound_to_the_exact_universe() {
+        let scoped = scoped_profile_options(
+            "tests/test262-is-html-dda-scoped.conf",
+            "tests/test262-is-html-dda-universe.txt",
+        );
+        assert_eq!(
+            verify_oxide_profile(&scoped).unwrap(),
+            TEST262_IS_HTML_DDA_SCOPED_PROFILE_SHA256
+        );
+
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-is-html-dda-global-parent.conf",
+                TEST262_IS_HTML_DDA_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-is-html-dda-global-candidate.conf",
+                TEST262_IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-is-html-dda-universe.txt"],
+                "tests/test262-is-html-dda-activation.txt",
+                "test/annexB/language/expressions/typeof/emulates-undefined.js",
+            );
+        }
+
+        for selection in [
+            ["--all", ""],
+            ["--manifest", "tests/test262-is-html-dda-activation.txt"],
+            ["--manifest", "Cargo.toml"],
+        ] {
+            let mut arguments = vec![
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "tests/test262-is-html-dda-scoped.conf",
+                selection[0],
+            ];
+            if !selection[1].is_empty() {
+                arguments.push(selection[1]);
+            }
+            arguments.extend(["--report", "report.tsv"]);
+            let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                panic!("coordinator arguments selected another invocation");
+            };
+            assert!(verify_oxide_profile(&options).is_err());
         }
     }
 

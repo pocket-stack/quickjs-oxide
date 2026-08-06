@@ -6038,7 +6038,7 @@ impl Runtime {
         ] {
             match self.native_get_present_property(realm, &object, name)? {
                 NativeConversion::Value(Some(value)) => {
-                    *target = DescriptorField::Present(value.to_boolean());
+                    *target = DescriptorField::Present(self.value_to_boolean(&value)?);
                 }
                 NativeConversion::Value(None) => {}
                 NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
@@ -6053,7 +6053,7 @@ impl Runtime {
         }
         match self.native_get_present_property(realm, &object, "writable")? {
             NativeConversion::Value(Some(value)) => {
-                descriptor.writable = DescriptorField::Present(value.to_boolean());
+                descriptor.writable = DescriptorField::Present(self.value_to_boolean(&value)?);
             }
             NativeConversion::Value(None) => {}
             NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
@@ -7052,7 +7052,7 @@ impl Runtime {
                     std::slice::from_ref(&candidate),
                 )? {
                     Completion::Return(value) => {
-                        Completion::Return(Value::Bool(value.to_boolean()))
+                        Completion::Return(Value::Bool(self.value_to_boolean(&value)?))
                     }
                     Completion::Throw(value) => Completion::Throw(value),
                 },
@@ -7310,7 +7310,7 @@ impl Runtime {
                         std::slice::from_ref(&candidate),
                     )? {
                         Completion::Return(value) => {
-                            Completion::Return(Value::Bool(value.to_boolean()))
+                            Completion::Return(Value::Bool(self.value_to_boolean(&value)?))
                         }
                         Completion::Throw(value) => Completion::Throw(value),
                     },
@@ -7410,7 +7410,7 @@ impl Runtime {
             return Ok(Completion::Return(Value::BigInt(value)));
         }
         let value = match kind {
-            PrimitiveKind::Boolean => Value::Bool(argument.to_boolean()),
+            PrimitiveKind::Boolean => Value::Bool(self.value_to_boolean(argument)?),
             PrimitiveKind::Number if arguments.actual_arg_count == 0 => Value::Int(0),
             PrimitiveKind::Number => {
                 let value = match self.native_to_number_constructor_value(realm, argument)? {
@@ -8499,6 +8499,47 @@ impl Runtime {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Return whether `value` carries QuickJS's identity-local Annex B
+    /// `is_HTMLDDA` object bit.
+    pub(crate) fn value_is_html_dda(&self, value: &Value) -> Result<bool, RuntimeError> {
+        let Value::Object(object) = value else {
+            return Ok(false);
+        };
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("IsHTMLDDA value"));
+        }
+        Ok(self
+            .0
+            .state
+            .borrow()
+            .heap
+            .object(object.object_id())?
+            .is_html_dda)
+    }
+
+    /// Apply ECMAScript `ToBoolean`, including QuickJS's Annex B falsy
+    /// `is_HTMLDDA` object exception.
+    pub(crate) fn value_to_boolean(&self, value: &Value) -> Result<bool, RuntimeError> {
+        if self.value_is_html_dda(value)? {
+            Ok(false)
+        } else {
+            Ok(value.to_boolean_primitive())
+        }
+    }
+
+    /// Mirror `JS_SetIsHTMLDDA` for a runtime-owned object.
+    fn set_object_is_html_dda(&self, object: &ObjectRef) -> Result<(), RuntimeError> {
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("IsHTMLDDA object"));
+        }
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .set_object_is_html_dda(object.object_id())?;
+        Ok(())
     }
 
     fn root_raw_value(&self, value: &RawValue) -> Result<Value, RuntimeError> {

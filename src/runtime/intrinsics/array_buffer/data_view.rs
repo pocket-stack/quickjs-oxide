@@ -354,7 +354,10 @@ impl Runtime {
             NativeConversion::Value(position) => position,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let little_endian = arguments.readable.get(1).is_some_and(Value::to_boolean);
+        let little_endian = match arguments.readable.get(1) {
+            Some(value) => self.value_to_boolean(value)?,
+            None => false,
+        };
         let bytes = match self.data_view_read_word(realm, view, position, element)? {
             NativeConversion::Value(bytes) => bytes,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
@@ -402,7 +405,10 @@ impl Runtime {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let little_endian = arguments.readable.get(2).is_some_and(Value::to_boolean);
+        let little_endian = match arguments.readable.get(2) {
+            Some(value) => self.value_to_boolean(value)?,
+            None => false,
+        };
         let bytes = data_view_encode(element, converted, little_endian);
         match self.data_view_write_word(realm, view, position, element, &bytes)? {
             NativeConversion::Value(()) => Ok(Completion::Return(Value::Undefined)),

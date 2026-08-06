@@ -50,8 +50,8 @@ impl Runtime {
         let global_object = ObjectRef::from_borrowed_handle(self.clone(), global_object)?;
 
         // Match pinned run-test262's ordinary `$262` object and C/W/E
-        // JS_SetPropertyStr property shape. Agent and IsHTMLDDA remain separate
-        // optional host capabilities and are intentionally absent here.
+        // JS_SetPropertyStr property shape. Agent remains an optional session
+        // binding; IsHTMLDDA is installed for every Test262 realm below.
         let object_262 = self.new_object(Some(&object_prototype))?;
         let detach_array_buffer = self.new_native_builtin(
             &function_prototype,
@@ -120,6 +120,21 @@ impl Runtime {
             &object_262,
             "createRealm",
             Value::Object(create_realm.as_object().clone()),
+        )?;
+
+        let is_html_dda = self.new_native_builtin(
+            &function_prototype,
+            realm,
+            NativeFunctionId::Test262IsHtmlDda,
+            0,
+            "IsHTMLDDA",
+            0,
+        )?;
+        self.set_object_is_html_dda(is_html_dda.as_object())?;
+        self.define_test262_host_property(
+            &object_262,
+            "IsHTMLDDA",
+            Value::Object(is_html_dda.as_object().clone()),
         )?;
 
         let gc = self.new_native_builtin(
@@ -199,6 +214,18 @@ impl Runtime {
         let object_262 = child.install_test262_host()?;
         drop(child);
         Ok(Completion::Return(Value::Object(object_262)))
+    }
+
+    pub(in crate::runtime) fn call_test262_is_html_dda(
+        &self,
+        invocation: NativeInvocation,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "Test262 IsHTMLDDA received a constructor invocation",
+            ));
+        };
+        Ok(Completion::Return(Value::Null))
     }
 }
 

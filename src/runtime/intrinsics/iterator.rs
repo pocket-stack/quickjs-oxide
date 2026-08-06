@@ -538,10 +538,15 @@ impl Runtime {
         let constructor = ObjectRef::from_borrowed_handle(self.clone(), constructor)?;
         let constructor = CallableRef::from_validated_object(constructor);
         match self.ordinary_is_instance_of(realm, &constructor, iterator.clone())? {
-            Completion::Return(value) if value.to_boolean() => Ok(Completion::Return(iterator)),
-            Completion::Return(_) => Ok(Completion::Return(Value::Object(
-                self.new_iterator_wrap(realm, &iterator, &next)?,
-            ))),
+            Completion::Return(value) => {
+                if self.value_to_boolean(&value)? {
+                    Ok(Completion::Return(iterator))
+                } else {
+                    Ok(Completion::Return(Value::Object(
+                        self.new_iterator_wrap(realm, &iterator, &next)?,
+                    )))
+                }
+            }
             Completion::Throw(value) => Ok(Completion::Throw(value)),
         }
     }
@@ -705,7 +710,7 @@ impl Runtime {
 
         let done_key = self.intern_property_key("done")?;
         let done = match self.get_property_in_realm(realm, &result, &done_key)? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
         };
         if done {
@@ -908,13 +913,14 @@ impl Runtime {
             index = index.wrapping_add(1);
 
             let early = match kind {
-                IteratorConsumerKind::Every if !selected.to_boolean() => Some(Value::Bool(false)),
-                IteratorConsumerKind::Some if selected.to_boolean() => Some(Value::Bool(true)),
-                IteratorConsumerKind::Find if selected.to_boolean() => Some(item),
-                IteratorConsumerKind::Every
-                | IteratorConsumerKind::Some
-                | IteratorConsumerKind::Find
-                | IteratorConsumerKind::ForEach => None,
+                IteratorConsumerKind::Every => {
+                    (!self.value_to_boolean(&selected)?).then_some(Value::Bool(false))
+                }
+                IteratorConsumerKind::Some => self
+                    .value_to_boolean(&selected)?
+                    .then_some(Value::Bool(true)),
+                IteratorConsumerKind::Find => self.value_to_boolean(&selected)?.then_some(item),
+                IteratorConsumerKind::ForEach => None,
             };
             if let Some(value) = early {
                 return Ok(match self.iterator_close_normal(realm, &source)? {
@@ -1354,7 +1360,7 @@ impl Runtime {
                 }
             };
             index = index.wrapping_add(1);
-            if selected.to_boolean() {
+            if self.value_to_boolean(&selected)? {
                 return Ok(HelperStep::Result { value, done: false });
             }
         }

@@ -1,0 +1,90 @@
+# Test262 IsHTMLDDA scoped closure transition (global candidate to exact-universe candidate).
+# parent_commit=de52c950c9cf5ad8aea562005e89a96bc02d45c5
+# before_oxide_profile_sha256=02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4
+# after_oxide_profile_sha256=0cc6bb596188cf3b244f8f223663a2bd881bae9a90f73d456f1d9ded4295f118
+# universe_sha256=36adfbe3ebab8b0ba9d5a109ba7f5175cafff1971dfbc5fc762ad168dbfdb0a5
+path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
+test/annexB/built-ins/Array/from/iterator-method-emulates-undefined.js	sloppy		Symbol.iterator,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/Array/from/iterator-method-emulates-undefined.js	strict		Symbol.iterator,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/Object/is/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/Object/is/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/match/custom-matcher-emulates-undefined.js	sloppy		Symbol.match,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/match/custom-matcher-emulates-undefined.js	strict		Symbol.match,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/matchAll/custom-matcher-emulates-undefined.js	sloppy		Symbol.matchAll,String.prototype.matchAll,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/matchAll/custom-matcher-emulates-undefined.js	strict		Symbol.matchAll,String.prototype.matchAll,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/replace/custom-replacer-emulates-undefined.js	sloppy		Symbol.replace,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/replace/custom-replacer-emulates-undefined.js	strict		Symbol.replace,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/replaceAll/custom-replacer-emulates-undefined.js	sloppy		Symbol.replace,String.prototype.replaceAll,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/replaceAll/custom-replacer-emulates-undefined.js	strict		Symbol.replace,String.prototype.replaceAll,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/search/custom-searcher-emulates-undefined.js	sloppy		Symbol.search,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/search/custom-searcher-emulates-undefined.js	strict		Symbol.search,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/split/custom-splitter-emulates-undefined.js	sloppy		Symbol.split,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/String/prototype/split/custom-splitter-emulates-undefined.js	strict		Symbol.split,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/TypedArrayConstructors/from/iterator-method-emulates-undefined.js	sloppy		Symbol.iterator,TypedArray,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/built-ins/TypedArrayConstructors/from/iterator-method-emulates-undefined.js	strict		Symbol.iterator,TypedArray,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/assignment/dstr/array-pattern-emulates-undefined.js	sloppy		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/assignment/dstr/array-pattern-emulates-undefined.js	strict		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/assignment/dstr/object-pattern-emulates-undefined.js	sloppy		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/assignment/dstr/object-pattern-emulates-undefined.js	strict		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/coalesce/emulates-undefined.js	sloppy		IsHTMLDDA,coalesce-expression	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/coalesce/emulates-undefined.js	strict		IsHTMLDDA,coalesce-expression	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/conditional/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/conditional/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/does-not-equals/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/does-not-equals/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/equals/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/equals/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-and/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-and/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-assignment/emulates-undefined-and.js	sloppy		IsHTMLDDA,logical-assignment-operators	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-assignment/emulates-undefined-and.js	strict		IsHTMLDDA,logical-assignment-operators	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-assignment/emulates-undefined-coalesce.js	sloppy		IsHTMLDDA,logical-assignment-operators	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-assignment/emulates-undefined-coalesce.js	strict		IsHTMLDDA,logical-assignment-operators	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-assignment/emulates-undefined-or.js	sloppy		IsHTMLDDA,logical-assignment-operators	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-assignment/emulates-undefined-or.js	strict		IsHTMLDDA,logical-assignment-operators	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-not/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-not/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-or/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/logical-or/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/strict-does-not-equals/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/strict-does-not-equals/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/strict-equals/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/strict-equals/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/typeof/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/typeof/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/yield/star-iterable-return-emulates-undefined-throws-when-called.js	sloppy		generators,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/yield/star-iterable-return-emulates-undefined-throws-when-called.js	strict		generators,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/yield/star-iterable-throw-emulates-undefined-throws-when-called.js	sloppy		generators,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/expressions/yield/star-iterable-throw-emulates-undefined-throws-when-called.js	strict		generators,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/class/subclass/superclass-emulates-undefined.js	sloppy		class,IsHTMLDDA	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: class	pass	normal		
+test/annexB/language/statements/class/subclass/superclass-emulates-undefined.js	strict		class,IsHTMLDDA	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: class	pass	normal		
+test/annexB/language/statements/class/subclass/superclass-prototype-emulates-undefined.js	sloppy		class,IsHTMLDDA	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: class	pass	normal		
+test/annexB/language/statements/class/subclass/superclass-prototype-emulates-undefined.js	strict		class,IsHTMLDDA	normal		unsupported-feature	selection	EngineCapability	quickjs-oxide does not declare Test262 feature support: class	pass	normal		
+test/annexB/language/statements/const/dstr/array-pattern-emulates-undefined.js	sloppy		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/const/dstr/array-pattern-emulates-undefined.js	strict		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/const/dstr/object-pattern-emulates-undefined.js	sloppy		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/const/dstr/object-pattern-emulates-undefined.js	strict		destructuring-binding,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/for-await-of/iterator-close-return-emulates-undefined-throws-when-called.js	sloppy	async	async-iteration,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/for-await-of/iterator-close-return-emulates-undefined-throws-when-called.js	strict	async	async-iteration,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/for-of/iterator-close-return-emulates-undefined-throws-when-called.js	sloppy		generators,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/for-of/iterator-close-return-emulates-undefined-throws-when-called.js	strict		generators,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/function/default-parameters-emulates-undefined.js	sloppy		default-parameters,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/function/default-parameters-emulates-undefined.js	strict		default-parameters,IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/if/emulated-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/if/emulated-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/switch/emulates-undefined.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/annexB/language/statements/switch/emulates-undefined.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/every/coerce-result-to-boolean.js	sloppy		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/every/coerce-result-to-boolean.js	strict		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/filter/coerce-result-to-boolean.js	sloppy		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/filter/coerce-result-to-boolean.js	strict		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/find/coerce-result-to-boolean.js	sloppy		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/find/coerce-result-to-boolean.js	strict		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/some/coerce-result-to-boolean.js	sloppy		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Iterator/prototype/some/coerce-result-to-boolean.js	strict		IsHTMLDDA,iterator-helpers	normal		pass	normal			pass	normal		
+test/staging/sm/Reflect/defineProperty.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/staging/sm/Reflect/defineProperty.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/staging/sm/expressions/nullish-coalescing.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/staging/sm/expressions/nullish-coalescing.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/staging/sm/generators/yield-star-throw-htmldda.js	sloppy		IsHTMLDDA	normal		pass	normal			pass	normal		
+test/staging/sm/generators/yield-star-throw-htmldda.js	strict		IsHTMLDDA	normal		pass	normal			pass	normal		

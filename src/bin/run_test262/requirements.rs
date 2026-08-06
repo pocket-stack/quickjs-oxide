@@ -19,6 +19,7 @@ pub(super) struct HostCapabilities {
     pub eval_script: bool,
     pub gc: bool,
     pub global: bool,
+    pub is_html_dda: bool,
 }
 
 impl HostCapabilities {
@@ -31,6 +32,7 @@ impl HostCapabilities {
             "eval-script" => !self.eval_script,
             "gc" => !self.gc,
             "global" => !self.global,
+            "is-html-dda" => !self.is_html_dda,
             _ => true,
         });
     }
@@ -1648,9 +1650,10 @@ mod tests {
             eval_script: true,
             gc: true,
             global: true,
+            is_html_dda: true,
         }
         .retain_missing(&mut missing);
-        assert_eq!(missing, ["agent", "is-html-dda"]);
+        assert_eq!(missing, ["agent"]);
     }
 
     #[test]

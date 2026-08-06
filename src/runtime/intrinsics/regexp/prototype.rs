@@ -275,7 +275,7 @@ impl Runtime {
                 Completion::Return(value) => value,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-            if value.to_boolean() {
+            if self.value_to_boolean(&value)? {
                 output.push(character);
             }
         }

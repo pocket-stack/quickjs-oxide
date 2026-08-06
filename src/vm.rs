@@ -265,6 +265,8 @@ pub(crate) trait VmHost {
     /// this as bytecode execution (rather than a compile failure) lets direct
     /// global eval instantiate its declaration records first, as QuickJS does.
     fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error>;
+    fn to_boolean(&mut self, value: &Value) -> Result<bool, Error>;
+    fn is_html_dda(&mut self, value: &Value) -> Result<bool, Error>;
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error>;
     fn box_primitive(&mut self, value: Value) -> Result<Value, Error>;
     fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error>;
@@ -1052,7 +1054,35 @@ impl VmHost for DetachedHost<'_> {
         Ok(Error::from_native_message(ErrorKind::Syntax, message))
     }
 
+    fn to_boolean(&mut self, value: &Value) -> Result<bool, Error> {
+        let Value::Object(object) = value else {
+            return Ok(value.to_boolean_primitive());
+        };
+        object
+            .runtime()
+            .value_to_boolean(value)
+            .map_err(|error| Error::internal(error.to_string()))
+    }
+
+    fn is_html_dda(&mut self, value: &Value) -> Result<bool, Error> {
+        let Value::Object(object) = value else {
+            return Ok(false);
+        };
+        object
+            .runtime()
+            .value_is_html_dda(value)
+            .map_err(|error| Error::internal(error.to_string()))
+    }
+
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
+        if let Value::Object(object) = value
+            && object
+                .runtime()
+                .value_is_html_dda(value)
+                .map_err(|error| Error::internal(error.to_string()))?
+        {
+            return Ok("undefined");
+        }
         Ok(value.type_of())
     }
 
@@ -3086,7 +3116,7 @@ impl VmActivation {
             }
             Instruction::Not => {
                 let value = self.pop()?;
-                self.stack.push(Value::Bool(!value.to_boolean()));
+                self.stack.push(Value::Bool(!host.to_boolean(&value)?));
             }
             Instruction::TypeOf => {
                 let value = self.pop()?;
@@ -4083,12 +4113,14 @@ impl VmActivation {
                 }
             }
             Instruction::IfFalse(target) => {
-                if !self.pop()?.to_boolean() {
+                let value = self.pop()?;
+                if !host.to_boolean(&value)? {
                     self.pc = checked_target(*target, code.len())?;
                 }
             }
             Instruction::IfTrue(target) => {
-                if self.pop()?.to_boolean() {
+                let value = self.pop()?;
+                if host.to_boolean(&value)? {
                     self.pc = checked_target(*target, code.len())?;
                 }
             }
@@ -4853,6 +4885,11 @@ fn abstract_equal(
 ) -> Result<OperationOutcome<bool>, Error> {
     loop {
         if left.strict_equal(&right) {
+            return Ok(OperationOutcome::Value(true));
+        }
+        if (matches!(right, Value::Null | Value::Undefined) && host.is_html_dda(&left)?)
+            || (matches!(left, Value::Null | Value::Undefined) && host.is_html_dda(&right)?)
+        {
             return Ok(OperationOutcome::Value(true));
         }
         match (&left, &right) {

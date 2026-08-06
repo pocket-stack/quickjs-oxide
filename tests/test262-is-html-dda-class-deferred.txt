@@ -1,0 +1,2 @@
+test/annexB/language/statements/class/subclass/superclass-emulates-undefined.js
+test/annexB/language/statements/class/subclass/superclass-prototype-emulates-undefined.js

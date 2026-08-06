@@ -615,7 +615,7 @@ impl Runtime {
             &method,
             &[Value::Object(rooted.target.clone()), prototype_value],
         )? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         if !accepted {
@@ -658,7 +658,7 @@ impl Runtime {
             &method,
             &[Value::Object(rooted.target.clone())],
         )? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         let target = match self.internal_is_extensible(realm, &rooted.target)? {
@@ -698,7 +698,7 @@ impl Runtime {
             &method,
             &[Value::Object(rooted.target.clone())],
         )? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         if result {
@@ -765,7 +765,7 @@ impl Runtime {
             &method,
             &[Value::Object(rooted.target.clone()), key_value],
         )? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         if result {
@@ -1192,7 +1192,7 @@ impl Runtime {
                 receiver,
             ],
         )? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         if !result {
@@ -1418,7 +1418,7 @@ impl Runtime {
                 Value::Object(descriptor_object),
             ],
         )? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         if !accepted {
@@ -1469,7 +1469,7 @@ impl Runtime {
             &method,
             &[Value::Object(rooted.target.clone()), key_value],
         )? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         if !accepted {

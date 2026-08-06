@@ -149,7 +149,10 @@ impl RuntimeVmHost {
             if let Value::Object(unscopables) = unscopables {
                 let excluded =
                     match self.get_property_with_key(Value::Object(unscopables), &key, true)? {
-                        Completion::Return(value) => value.to_boolean(),
+                        Completion::Return(value) => self
+                            .runtime
+                            .value_to_boolean(&value)
+                            .map_err(runtime_error_to_vm_error)?,
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     };
                 if excluded {

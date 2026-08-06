@@ -97,15 +97,17 @@ impl Runtime {
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             match kind {
-                ArrayIterationKind::Every if !callback_result.to_boolean() => {
-                    return Ok(Completion::Return(Value::Bool(false)));
+                ArrayIterationKind::Every => {
+                    if !self.value_to_boolean(&callback_result)? {
+                        return Ok(Completion::Return(Value::Bool(false)));
+                    }
                 }
-                ArrayIterationKind::Some if callback_result.to_boolean() => {
-                    return Ok(Completion::Return(Value::Bool(true)));
+                ArrayIterationKind::Some => {
+                    if self.value_to_boolean(&callback_result)? {
+                        return Ok(Completion::Return(Value::Bool(true)));
+                    }
                 }
-                ArrayIterationKind::Every
-                | ArrayIterationKind::Some
-                | ArrayIterationKind::ForEach => {}
+                ArrayIterationKind::ForEach => {}
                 ArrayIterationKind::Map => {
                     let mapped = mapped.as_ref().ok_or(RuntimeError::Invariant(
                         "TypedArray map result was not allocated",
@@ -117,34 +119,35 @@ impl Runtime {
                         }
                     }
                 }
-                ArrayIterationKind::Filter if callback_result.to_boolean() => {
-                    let selected = selected.as_ref().ok_or(RuntimeError::Invariant(
-                        "TypedArray filter temporary Array was not allocated",
-                    ))?;
-                    let key = self.intern_property_key(&selected_length.to_string())?;
-                    if !self.define_own_property(
-                        selected,
-                        &key,
-                        &OrdinaryPropertyDescriptor {
-                            value: DescriptorField::Present(value),
-                            writable: DescriptorField::Present(true),
-                            enumerable: DescriptorField::Present(true),
-                            configurable: DescriptorField::Present(true),
-                            ..OrdinaryPropertyDescriptor::new()
-                        },
-                    )? {
-                        return Err(RuntimeError::Invariant(
-                            "TypedArray filter temporary Array rejected a dense element",
-                        ));
+                ArrayIterationKind::Filter => {
+                    if self.value_to_boolean(&callback_result)? {
+                        let selected = selected.as_ref().ok_or(RuntimeError::Invariant(
+                            "TypedArray filter temporary Array was not allocated",
+                        ))?;
+                        let key = self.intern_property_key(&selected_length.to_string())?;
+                        if !self.define_own_property(
+                            selected,
+                            &key,
+                            &OrdinaryPropertyDescriptor {
+                                value: DescriptorField::Present(value),
+                                writable: DescriptorField::Present(true),
+                                enumerable: DescriptorField::Present(true),
+                                configurable: DescriptorField::Present(true),
+                                ..OrdinaryPropertyDescriptor::new()
+                            },
+                        )? {
+                            return Err(RuntimeError::Invariant(
+                                "TypedArray filter temporary Array rejected a dense element",
+                            ));
+                        }
+                        selected_length =
+                            selected_length
+                                .checked_add(1)
+                                .ok_or(RuntimeError::Invariant(
+                                    "TypedArray filter selected length overflowed u64",
+                                ))?;
                     }
-                    selected_length =
-                        selected_length
-                            .checked_add(1)
-                            .ok_or(RuntimeError::Invariant(
-                                "TypedArray filter selected length overflowed u64",
-                            ))?;
                 }
-                ArrayIterationKind::Filter => {}
             }
         }
 

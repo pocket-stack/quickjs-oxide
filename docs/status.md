@@ -4,6 +4,56 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ds QuickJS `IsHTMLDDA` semantics and global admission
+
+R3ds implements QuickJS's test262-only `$262.IsHTMLDDA` callable as a
+realm-owned, non-constructible function that returns `null`. Its marked object
+follows the same narrow legacy rules as pinned QuickJS 2026-06-04: it is falsy,
+compares loosely equal to `null` and `undefined`, and reports `"undefined"`
+from `typeof`. Strict equality and nullish operations remain ordinary object
+semantics, and the marker does not propagate through bound functions or
+proxies.
+
+The authenticated universe contains 42 paths / 84 sloppy-and-strict variants
+and hashes to
+`36adfbe3ebab8b0ba9d5a109ba7f5175cafff1971dfbc5fc762ad168dbfdb0a5`;
+its variant-key inventory hashes to
+`ab6197861f36270b6610882285b111b09963ae28d03592df399ef0c25bf0b83e`.
+Pinned QuickJS passes all 84. The historical R3dr runtime reports 84
+`unsupported-host-is-html-dda` outcomes, while the new runtime under the old
+profile reports 84 `unsupported-feature` outcomes. Adding only `IsHTMLDDA` to
+the live profile passes 80 variants and keeps four variants from two
+`class`-dependent paths feature-gated. An exact-universe scoped profile adds
+`class` and passes 84/84 without broadly admitting the still-unfinished class
+surface.
+
+The historical, live global, and exact scoped profile SHA-256 values are
+`a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe`,
+`02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4`,
+and
+`0cc6bb596188cf3b244f8f223663a2bd881bae9a90f73d456f1d9ded4295f118`.
+The global activation partition contains 40 paths / 80 variants; the deferred
+partition contains two paths / four variants. Both the coordinator and worker
+authenticate the canonical path, pinned source digest, complete metadata, and
+profile identity before accepting the scoped profile.
+
+Two independent native Linux ARM64 candidate runs are byte-identical. The
+canonical vector is now 66,674 passes / 66,726 runnable / 102,037 total
+variants. The historical-to-candidate join changes only the 84 cohort rows;
+all 101,953 outside rows remain byte-identical, with zero pass regressions. The
+canonical TSV/JSONL SHA-256 values are
+`0a70f2e3e1deb5d6e410367522451ac7a88f3a05a2a479d378933085a93fe05d`
+and
+`ae793ae44b4ad65b8ee87238501aa2d02ba453277168c212ec0397b494f41adc`.
+This is a host-semantics milestone, not a Feature Parity claim; the project
+remains pre-parity.
+
+```sh
+./scripts/test-test262-is-html-dda-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-is-html-dda-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-is-html-dda-global.sh --full
+```
+
 ## R3dr global Test262 agent wake/FIFO admission
 
 R3dr promotes the final 21 source- and metadata-authenticated agent paths into

@@ -15,6 +15,7 @@ var createRealmProperties = [
     "codePointRange",
     "global",
     "createRealm",
+    "IsHTMLDDA",
     "gc"
 ];
 var createRealmDescriptors = createRealmProperties.map(function (name) {
@@ -51,7 +52,35 @@ createRealmEmit(
         Object.prototype.hasOwnProperty.call(createRealmChild.evalScript, "prototype"),
         createRealmChild.createRealm.name,
         createRealmChild.createRealm.length,
-        Object.prototype.hasOwnProperty.call(createRealmChild.createRealm, "prototype")
+        Object.prototype.hasOwnProperty.call(createRealmChild.createRealm, "prototype"),
+        createRealmChild.IsHTMLDDA.name,
+        createRealmChild.IsHTMLDDA.length,
+        Object.prototype.hasOwnProperty.call(createRealmChild.IsHTMLDDA, "prototype")
+    ].join("|")
+);
+
+var createRealmHTMLDDA = createRealmChild.IsHTMLDDA;
+var createRealmBoundHTMLDDA = createRealmHTMLDDA.bind(null);
+var createRealmProxyHTMLDDA = new Proxy(createRealmHTMLDDA, {});
+createRealmEmit(
+    "html-dda",
+    [
+        typeof createRealmHTMLDDA,
+        Boolean(createRealmHTMLDDA),
+        !createRealmHTMLDDA,
+        createRealmHTMLDDA == null,
+        null == createRealmHTMLDDA,
+        createRealmHTMLDDA == undefined,
+        undefined == createRealmHTMLDDA,
+        createRealmHTMLDDA === null,
+        createRealmHTMLDDA === undefined,
+        Object.is(createRealmHTMLDDA, undefined),
+        (createRealmHTMLDDA ?? 42) === createRealmHTMLDDA,
+        createRealmHTMLDDA(),
+        typeof createRealmBoundHTMLDDA,
+        Boolean(createRealmBoundHTMLDDA),
+        typeof createRealmProxyHTMLDDA,
+        Boolean(createRealmProxyHTMLDDA)
     ].join("|")
 );
 

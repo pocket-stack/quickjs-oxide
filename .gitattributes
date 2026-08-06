@@ -52,3 +52,4 @@ tests/test262-agent-wait-bounded-a-transitions.tsv whitespace=-blank-at-eol
 tests/test262-agent-wake-fifo-global-parent.tsv whitespace=-blank-at-eol
 tests/test262-agent-wake-fifo-global-candidate.tsv whitespace=-blank-at-eol
 tests/test262-agent-wake-fifo-global-transitions.tsv whitespace=-blank-at-eol
+tests/test262-is-html-dda-*.tsv whitespace=-blank-at-eol

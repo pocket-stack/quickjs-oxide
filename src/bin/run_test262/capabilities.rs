@@ -363,6 +363,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-agent-wake-fifo-global-candidate.conf"
     ));
+    const IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-is-html-dda-global-candidate.conf"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -571,7 +575,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 132] = [
+    const EXPECTED_FEATURES: [&str; 133] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
@@ -598,6 +602,7 @@ mod tests {
         "Int16Array",
         "Int32Array",
         "Int8Array",
+        "IsHTMLDDA",
         "Map",
         "Math.sumPrecise",
         "Object.fromEntries",
@@ -1854,8 +1859,14 @@ mod tests {
                 .chain(AGENT_FIFO_WAKE_ORDER_ACTIVATION.lines())
                 .map(str::to_owned),
         );
-        assert_eq!(profile, agent_wake_fifo_global_candidate);
-        assert_eq!(CHECKED_IN_PROFILE, AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE);
+        let mut is_html_dda_global_candidate = agent_wake_fifo_global_candidate;
+        assert!(
+            is_html_dda_global_candidate
+                .features
+                .insert("IsHTMLDDA".to_owned())
+        );
+        assert_eq!(profile, is_html_dda_global_candidate);
+        assert_eq!(CHECKED_IN_PROFILE, IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE);
         assert_eq!(
             default_parameters_candidate
                 .features

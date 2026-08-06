@@ -1555,7 +1555,7 @@ impl Runtime {
                     Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
                 };
             let done = match self.get_property_in_realm(realm, &iteration, &done_key)? {
-                Completion::Return(value) => value.to_boolean(),
+                Completion::Return(value) => self.value_to_boolean(&value)?,
                 Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
             };
             if done {

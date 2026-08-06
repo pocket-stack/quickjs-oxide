@@ -10,6 +10,11 @@ root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-agent-wake-fifo-global-baseline.txt
 predecessor_baseline=tests/test262-agent-wait-bounded-a-global-baseline.txt
 predecessor_profile=tests/test262-agent-wait-bounded-a-global-candidate.conf
+successor_baseline=tests/test262-is-html-dda-global-baseline.txt
+successor_gate=scripts/test-test262-is-html-dda-global.sh
+successor_parent_profile=tests/test262-is-html-dda-global-parent.conf
+successor_global_profile=tests/test262-is-html-dda-global-candidate.conf
+successor_scoped_profile=tests/test262-is-html-dda-scoped.conf
 wake_scoped_baseline=tests/test262-agent-wake-count-location-baseline.txt
 wake_scoped_gate=scripts/test-test262-agent-wake-count-location.sh
 fifo_scoped_baseline=tests/test262-agent-fifo-wake-order-baseline.txt
@@ -42,6 +47,8 @@ runner_override=${TEST262_RUNNER:-}
 
 baseline_lines=134
 baseline_sha=1ddec4eb616b59ff9c01f2de64f839404b24e3dfd7dfd724bf9ffb689106d295
+successor_lines=129
+successor_sha=05c3a2e2aab4051f0666b06aeeb756e666b82e75c93f8954f88ff78614ff76e3
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -80,6 +87,7 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 predecessor_value() { value_from "$predecessor_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 wake_scoped_value() { value_from "$wake_scoped_baseline" "$1"; }
 fifo_scoped_value() { value_from "$fifo_scoped_baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
@@ -735,7 +743,104 @@ replay_full() {
     verify_full_join "$parent_full" "$candidate_full_repeat" repeat
 }
 
+bridge_r3ds_successor() {
+    [[ "$(canonical_value tsv_sha256)" != "$(value candidate_full_tsv_sha256)" ]] \
+        || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$parent_profile" "$(value parent_profile_lines)" \
+        "$(value parent_profile_sha256)"
+    check_file "$candidate_profile" "$(value candidate_profile_lines)" \
+        "$(value candidate_profile_sha256)"
+    check_file "$manifest" "$(value manifest_paths)" "$(value manifest_sha256)"
+    check_file "$wake_activation" "$(value wake_activation_paths)" \
+        "$(value wake_activation_sha256)"
+    check_file "$fifo_activation" "$(value fifo_activation_paths)" \
+        "$(value fifo_activation_sha256)"
+    check_file "$quickjs_receipt" "$(value quickjs_receipt_lines)" \
+        "$(value quickjs_receipt_sha256)"
+    check_file "$parent_report" "$(value parent_report_lines)" \
+        "$(value parent_tsv_sha256)"
+    check_file "${parent_report%.tsv}.jsonl" "$(value parent_jsonl_lines)" \
+        "$(value parent_jsonl_sha256)"
+    check_file "$candidate_report" "$(value candidate_report_lines)" \
+        "$(value candidate_tsv_sha256)"
+    check_file "${candidate_report%.tsv}.jsonl" \
+        "$(value candidate_jsonl_lines)" "$(value candidate_jsonl_sha256)"
+    check_file "$transition" "$(value transition_lines)" \
+        "$(value transition_sha256)"
+    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
+    check_file "$successor_parent_profile" \
+        "$(successor_value parent_profile_lines)" \
+        "$(successor_value historical_parent_oxide_profile_sha256)"
+    check_file "$successor_global_profile" \
+        "$(successor_value global_candidate_profile_lines)" \
+        "$(successor_value global_candidate_oxide_profile_sha256)"
+    check_file "$successor_scoped_profile" \
+        "$(successor_value scoped_candidate_profile_lines)" \
+        "$(successor_value scoped_candidate_oxide_profile_sha256)"
+    check_file "$canonical_baseline" 8 \
+        "$(successor_value canonical_full_baseline_sha256)"
+    [[ -x "$successor_gate" \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" \
+            == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" \
+            == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" \
+            == "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" \
+            == de52c950c9cf5ad8aea562005e89a96bc02d45c5 \
+        && "$(successor_value historical_parent_oxide_profile_sha256)" \
+            == "$(value candidate_profile_sha256)" \
+        && "$(successor_value runtime_parent_oxide_profile_sha256)" \
+            == "$(value candidate_profile_sha256)" \
+        && "$(successor_value full_variants)" == "$(value full_variants)" \
+        && "$(successor_value full_keys_sha256)" == "$(value full_keys_sha256)" \
+        && "$(successor_value historical_full_runnable)" \
+            == "$(value candidate_full_runnable)" \
+        && "$(successor_value historical_full_passes)" \
+            == "$(value candidate_full_passes)" \
+        && "$(successor_value historical_full_tsv_sha256)" \
+            == "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value historical_full_jsonl_sha256)" \
+            == "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value historical_full_summary)" \
+            == "$(value candidate_full_summary)" \
+        && "$(successor_value global_candidate_full_runnable)" \
+            == "$(canonical_value runnable)" \
+        && "$(successor_value global_candidate_full_passes)" \
+            == "$(canonical_value passes)" \
+        && "$(successor_value global_candidate_full_tsv_sha256)" \
+            == "$(canonical_value tsv_sha256)" \
+        && "$(successor_value global_candidate_full_jsonl_sha256)" \
+            == "$(canonical_value jsonl_sha256)" \
+        && "$(successor_value global_candidate_full_summary)" \
+            == "$(canonical_value summary)" \
+        && "$(successor_value full_transition_counts)" \
+            == 'changed=84 outcome=80 detail=4 unchanged=101953 pass_gains=80 pass_regressions=0' \
+        && "$(successor_value candidate_full_replay_status)" == passed-twice \
+        && "$(successor_value candidate_full_replays)" == 2 ]] \
+        || die 'R3ds successor does not checksum-bridge the historical R3dr receipt'
+    cmp -s "$candidate_profile" "$successor_parent_profile" \
+        || die 'R3ds parent profile is not byte-identical to the R3dr candidate'
+    cmp -s "$successor_global_profile" "$live_profile" \
+        || die 'live profile is not byte-identical to the R3ds global candidate'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3dr agent wake/FIFO receipt is checksum-bridged through the R3ds IsHTMLDDA admission.'
+    exit 0
+}
+
 cd -- "$root"
+bridge_r3ds_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3dr-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 suite=$("$script_dir/prepare-test262.sh")

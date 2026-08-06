@@ -1154,7 +1154,7 @@ impl Runtime {
                         Completion::Throw(value) => return Ok(Completion::Throw(value)),
                     };
                 let done = match self.get_property_in_realm(realm, &iteration, &done_key)? {
-                    Completion::Return(value) => value.to_boolean(),
+                    Completion::Return(value) => self.value_to_boolean(&value)?,
                     Completion::Throw(value) => return Ok(Completion::Throw(value)),
                 };
                 if done {
@@ -1544,7 +1544,9 @@ impl Runtime {
         let key = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::IsConcatSpreadable));
         match self.get_property_in_realm(realm, object, &key)? {
             Completion::Return(Value::Undefined) => self.internal_is_array(realm, value),
-            Completion::Return(value) => Ok(NativeConversion::Value(value.to_boolean())),
+            Completion::Return(value) => {
+                Ok(NativeConversion::Value(self.value_to_boolean(&value)?))
+            }
             Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
         }
     }
@@ -1821,11 +1823,15 @@ impl Runtime {
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             match kind {
-                ArrayIterationKind::Every if !callback_result.to_boolean() => {
-                    return Ok(Completion::Return(Value::Bool(false)));
+                ArrayIterationKind::Every => {
+                    if !self.value_to_boolean(&callback_result)? {
+                        return Ok(Completion::Return(Value::Bool(false)));
+                    }
                 }
-                ArrayIterationKind::Some if callback_result.to_boolean() => {
-                    return Ok(Completion::Return(Value::Bool(true)));
+                ArrayIterationKind::Some => {
+                    if self.value_to_boolean(&callback_result)? {
+                        return Ok(Completion::Return(Value::Bool(true)));
+                    }
                 }
                 ArrayIterationKind::Map => {
                     let Value::Object(result) = &result else {
@@ -1841,28 +1847,27 @@ impl Runtime {
                         return Ok(Completion::Throw(value));
                     }
                 }
-                ArrayIterationKind::Filter if callback_result.to_boolean() => {
-                    let Value::Object(result) = &result else {
-                        return Err(RuntimeError::Invariant(
-                            "Array.filter result was not an object",
-                        ));
-                    };
-                    if let Some(value) =
-                        self.create_indexed_data_property(realm, result, selected_count, value)?
-                    {
-                        return Ok(Completion::Throw(value));
+                ArrayIterationKind::Filter => {
+                    if self.value_to_boolean(&callback_result)? {
+                        let Value::Object(result) = &result else {
+                            return Err(RuntimeError::Invariant(
+                                "Array.filter result was not an object",
+                            ));
+                        };
+                        if let Some(value) =
+                            self.create_indexed_data_property(realm, result, selected_count, value)?
+                        {
+                            return Ok(Completion::Throw(value));
+                        }
+                        selected_count =
+                            selected_count
+                                .checked_add(1)
+                                .ok_or(RuntimeError::Invariant(
+                                    "Array.filter result index overflowed u64",
+                                ))?;
                     }
-                    selected_count =
-                        selected_count
-                            .checked_add(1)
-                            .ok_or(RuntimeError::Invariant(
-                                "Array.filter result index overflowed u64",
-                            ))?;
                 }
-                ArrayIterationKind::Every
-                | ArrayIterationKind::Some
-                | ArrayIterationKind::ForEach
-                | ArrayIterationKind::Filter => {}
+                ArrayIterationKind::ForEach => {}
             }
         }
         Ok(Completion::Return(result))
@@ -2118,7 +2123,7 @@ impl Runtime {
                 this_arg.clone(),
                 &callback_arguments,
             )? {
-                Completion::Return(value) => value.to_boolean(),
+                Completion::Return(value) => self.value_to_boolean(&value)?,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             if matches {

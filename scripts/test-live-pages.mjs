@@ -173,9 +173,9 @@ function validatePageAndBuildLabel(page, wasm, expectedCommit) {
     'id="frozen-global-vector"',
     'id="parity-contract-link"',
     'id="test262-progress-link"',
-    "66,594 passes / 66,646 runnable / 102,037 total",
-    "59/59 agent paths",
-    "0 remaining unsupported-host-agent",
+    "66,674 passes / 66,726 runnable / 102,037 total",
+    "IsHTMLDDA 80/84 globally",
+    "4 class-dependent variants deferred",
     "pre-parity",
   ];
   const missingPageMarker = requiredPageMarkers.find(

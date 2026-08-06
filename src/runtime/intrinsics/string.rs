@@ -813,7 +813,7 @@ impl Runtime {
             Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
         if !matches!(matcher, Value::Undefined) {
-            return Ok(NativeConversion::Value(matcher.to_boolean()));
+            return Ok(NativeConversion::Value(self.value_to_boolean(&matcher)?));
         }
         Ok(NativeConversion::Value(
             self.native_object_has_regexp_brand(object)?,

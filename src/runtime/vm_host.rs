@@ -2318,7 +2318,10 @@ impl VmHost for RuntimeVmHost {
             .intern_property_key("done")
             .map_err(|error| Error::internal(error.to_string()))?;
         let done = match self.get_property_with_key(result.clone(), &done_key, false) {
-            Ok(Completion::Return(value)) => value.to_boolean(),
+            Ok(Completion::Return(value)) => self
+                .runtime
+                .value_to_boolean(&value)
+                .map_err(runtime_error_to_vm_error)?,
             Ok(Completion::Throw(value)) => return Ok(ForOfNextOutcome::Throw(value)),
             Err(error) => {
                 return Ok(ForOfNextOutcome::Throw(
@@ -2363,7 +2366,10 @@ impl VmHost for RuntimeVmHost {
             .intern_property_key("done")
             .map_err(|error| Error::internal(error.to_string()))?;
         let done = match self.get_property_with_key(result.clone(), &done_key, false) {
-            Ok(Completion::Return(value)) => value.to_boolean(),
+            Ok(Completion::Return(value)) => self
+                .runtime
+                .value_to_boolean(&value)
+                .map_err(runtime_error_to_vm_error)?,
             Ok(Completion::Throw(value)) => return Ok(ForOfNextOutcome::Throw(value)),
             Err(error) => {
                 return Ok(ForOfNextOutcome::Throw(
@@ -2475,6 +2481,18 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn to_boolean(&mut self, value: &Value) -> Result<bool, Error> {
+        self.runtime
+            .value_to_boolean(value)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn is_html_dda(&mut self, value: &Value) -> Result<bool, Error> {
+        self.runtime
+            .value_is_html_dda(value)
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
         let Value::Object(object) = value else {
             return Ok(value.type_of());
@@ -2487,6 +2505,9 @@ impl VmHost for RuntimeVmHost {
             .heap
             .object(object.object_id())
             .map_err(|error| Error::internal(error.to_string()))?;
+        if object.is_html_dda {
+            return Ok("undefined");
+        }
         Ok(match &object.payload {
             ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }

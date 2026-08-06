@@ -22,6 +22,7 @@ pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
     eval_script: true,
     gc: true,
     global: true,
+    is_html_dda: true,
 };
 
 const WORKER_HOST_FILENAME: &str = "<test262-worker-host>";
@@ -1110,6 +1111,7 @@ var createRealmDescriptor = Object.getOwnPropertyDescriptor($262, "createRealm")
 var detachDescriptor = Object.getOwnPropertyDescriptor($262, "detachArrayBuffer");
 var evalScriptDescriptor = Object.getOwnPropertyDescriptor($262, "evalScript");
 var helperDescriptor = Object.getOwnPropertyDescriptor($262, "codePointRange");
+var isHTMLDDADescriptor = Object.getOwnPropertyDescriptor($262, "IsHTMLDDA");
 var gcDescriptor = Object.getOwnPropertyDescriptor($262, "gc");
 var hostGlobalDescriptor = Object.getOwnPropertyDescriptor($262, "global");
 if (!globalDescriptor.writable || !globalDescriptor.enumerable ||
@@ -1121,6 +1123,8 @@ if (!globalDescriptor.writable || !globalDescriptor.enumerable ||
     !evalScriptDescriptor.configurable ||
     !helperDescriptor.writable ||
     !helperDescriptor.enumerable || !helperDescriptor.configurable ||
+    !isHTMLDDADescriptor.writable || !isHTMLDDADescriptor.enumerable ||
+    !isHTMLDDADescriptor.configurable ||
     !gcDescriptor.writable || !gcDescriptor.enumerable ||
     !gcDescriptor.configurable || !hostGlobalDescriptor.writable ||
     !hostGlobalDescriptor.enumerable || !hostGlobalDescriptor.configurable) {
@@ -1144,6 +1148,25 @@ if ($262.codePointRange.name !== "codePointRange" ||
     $262.codePointRange.length !== 2 ||
     Object.getPrototypeOf($262.codePointRange) !== Function.prototype) {
     throw new Error("QuickJS codePointRange function metadata changed");
+}
+var htmlDDA = isHTMLDDADescriptor.value;
+if (htmlDDA !== $262.IsHTMLDDA || htmlDDA.name !== "IsHTMLDDA" ||
+    htmlDDA.length !== 0 ||
+    Object.getPrototypeOf(htmlDDA) !== Function.prototype ||
+    typeof htmlDDA !== "undefined" || Boolean(htmlDDA) || !htmlDDA !== true ||
+    (htmlDDA == null) !== true || (null == htmlDDA) !== true ||
+    (htmlDDA == undefined) !== true || (undefined == htmlDDA) !== true ||
+    htmlDDA === null || htmlDDA === undefined ||
+    Object.is(htmlDDA, undefined) || htmlDDA !== htmlDDA ||
+    (htmlDDA ?? 42) !== htmlDDA || htmlDDA() !== null) {
+    throw new Error("QuickJS IsHTMLDDA semantics changed");
+}
+var boundHTMLDDA = htmlDDA.bind(null);
+var proxyHTMLDDA = new Proxy(htmlDDA, {});
+if (typeof boundHTMLDDA !== "function" || !Boolean(boundHTMLDDA) ||
+    boundHTMLDDA() !== null || typeof proxyHTMLDDA !== "function" ||
+    !Boolean(proxyHTMLDDA) || proxyHTMLDDA() !== null) {
+    throw new Error("QuickJS IsHTMLDDA marker propagated to a new object");
 }
 if ($262.gc.name !== "gc" || $262.gc.length !== 0 ||
     Object.getPrototypeOf($262.gc) !== Function.prototype) {
@@ -1187,6 +1210,15 @@ if (!constructorThrew) {
 }
 constructorThrew = false;
 try {
+    new htmlDDA();
+} catch (error) {
+    constructorThrew = error instanceof TypeError;
+}
+if (!constructorThrew) {
+    throw new Error("QuickJS IsHTMLDDA became constructible");
+}
+constructorThrew = false;
+try {
     new $262.gc();
 } catch (error) {
     constructorThrew = error instanceof TypeError;
@@ -1227,7 +1259,11 @@ if (child.global.$262 !== child || child.global.$262.global !== child.global ||
 if (child.createRealm.name !== "createRealm" || child.createRealm.length !== 0 ||
     Object.getPrototypeOf(child.createRealm) !== child.global.Function.prototype ||
     child.evalScript.name !== "evalScript" || child.evalScript.length !== 1 ||
-    Object.getPrototypeOf(child.evalScript) !== child.global.Function.prototype) {
+    Object.getPrototypeOf(child.evalScript) !== child.global.Function.prototype ||
+    child.IsHTMLDDA === htmlDDA || typeof child.IsHTMLDDA !== "undefined" ||
+    child.IsHTMLDDA.name !== "IsHTMLDDA" || child.IsHTMLDDA.length !== 0 ||
+    Object.getPrototypeOf(child.IsHTMLDDA) !== child.global.Function.prototype ||
+    child.IsHTMLDDA() !== null) {
     throw new Error("QuickJS child host function realm or metadata changed");
 }
 

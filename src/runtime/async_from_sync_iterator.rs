@@ -287,7 +287,7 @@ impl Runtime {
 
         let done_key = self.intern_property_key("done")?;
         let done = match self.get_property_in_realm(realm, &result, &done_key)? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(reason) => {
                 return self.reject_async_from_sync_capability(realm, capability, reason);
             }

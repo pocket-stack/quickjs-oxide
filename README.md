@@ -8,18 +8,18 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-The latest conformance milestone globally admits the remaining 21
-source-audited agent paths covering `Atomics.wait` / `notify`
-wake/count/location and FIFO ordering. All 59/59 authenticated agent paths now
-pass their 118 variants, leaving zero `unsupported-host-agent` outcomes.
-Modules, broad built-ins, and the complete embedding/tooling surface remain
-unfinished, so the project is still pre-parity and the full Feature Parity
-goal is unchanged. Pinned QuickJS has no `Atomics.waitAsync`, so it is outside
-this rewrite's parity target.
+The latest conformance milestone implements QuickJS's test262-only
+`$262.IsHTMLDDA` callable and its deliberately narrow legacy semantics. Pinned
+QuickJS and a scoped Oxide profile pass the exact 42-path / 84-variant cohort;
+the live global profile admits 80/84 variants, with four variants across two
+`class`-dependent paths still feature-gated. Modules, broad built-ins, and the
+complete embedding/tooling surface remain unfinished, so the project is still
+pre-parity and the full Feature Parity goal is unchanged.
 
-The latest audited global vector is 66,594 passes / 66,646 runnable / 102,037
-total variants, with zero regressions from the prior milestone. Detailed
-implementation and Test262 bookkeeping live in the status documents below.
+The latest audited global vector is 66,674 passes / 66,726 runnable / 102,037
+total variants. Only the exact 84-row cohort changes from the prior milestone;
+all 101,953 outside rows remain byte-identical. Detailed implementation and
+Test262 bookkeeping live in the status documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The

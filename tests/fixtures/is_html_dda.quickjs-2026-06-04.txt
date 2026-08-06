@@ -1,0 +1,10 @@
+host=undefined|false|IsHTMLDDA|0|false|true|TypeError|true|true|true
+boolean=true|falsy|falsy|false|42|true|42|true
+equality=true|true|true|true|false|true|false|true|false|true|false
+nullish=true|true|true|true|IsHTMLDDA|true|true
+descriptors-proxy=false|false|false|false|false|false
+array=false|false|0|true|2|true
+typed-array=false|false|0|true
+iterator-helper=false|false|true|true
+get-method=1|7|TypeError|true
+non-propagation=true|function|false|true|true|function|false|true|true|function

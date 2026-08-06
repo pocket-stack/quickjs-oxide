@@ -839,7 +839,7 @@ mod tests {
         context.install_test262_host_with_agent(&session).unwrap();
         assert_eq!(
             eval_string(&mut context, "Reflect.ownKeys($262).join(',')"),
-            "detachArrayBuffer,evalScript,codePointRange,agent,global,createRealm,gc"
+            "detachArrayBuffer,evalScript,codePointRange,agent,global,createRealm,IsHTMLDDA,gc"
         );
         assert_eq!(
             eval_string(&mut context, "Reflect.ownKeys($262.agent).join(',')"),

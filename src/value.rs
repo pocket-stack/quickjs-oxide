@@ -1881,8 +1881,24 @@ impl Value {
         }
     }
 
+    /// Apply ECMAScript `ToBoolean`, including QuickJS's Annex B
+    /// `is_HTMLDDA` object exception.
     #[must_use]
     pub fn to_boolean(&self) -> bool {
+        let Self::Object(object) = self else {
+            return self.to_boolean_primitive();
+        };
+        !object
+            .runtime()
+            .value_is_html_dda(self)
+            .expect("a rooted ObjectRef must resolve in its owning runtime")
+    }
+
+    /// Apply the representation-only primitive portion of `ToBoolean`.
+    /// Runtime internals use this only after checking object metadata through
+    /// the owning runtime.
+    #[must_use]
+    pub(crate) fn to_boolean_primitive(&self) -> bool {
         match self {
             Self::Bool(value) => *value,
             Self::Int(value) => *value != 0,

@@ -28,6 +28,7 @@ fn test262_realm_helpers_are_defining_realm_generic_functions() {
     for target in [
         NativeFunctionId::Test262EvalScript,
         NativeFunctionId::Test262CreateRealm,
+        NativeFunctionId::Test262IsHtmlDda,
     ] {
         assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
         assert!(!target.descriptor().cproto.default_is_constructor());
@@ -138,6 +139,41 @@ fn returned_child_host_retains_and_then_releases_its_realm_cycle() {
     runtime
         .run_gc()
         .expect("collect unreachable child realm cycle");
+    assert_eq!(runtime.heap_counts().context_nodes, 1);
+
+    let child_262 = eval(&mut context, "$262.createRealm()");
+    let Value::Object(child_262) = child_262 else {
+        panic!("second createRealm did not return the child $262 object");
+    };
+    let is_html_dda_key = runtime
+        .intern_property_key("IsHTMLDDA")
+        .expect("intern IsHTMLDDA key");
+    let Value::Object(is_html_dda_object) = context
+        .get_property(&child_262, &is_html_dda_key)
+        .expect("read child IsHTMLDDA")
+    else {
+        panic!("child IsHTMLDDA was not an object");
+    };
+    let is_html_dda = runtime
+        .as_callable(&is_html_dda_object)
+        .expect("validate child IsHTMLDDA")
+        .expect("child IsHTMLDDA was not callable");
+    drop(is_html_dda_object);
+    drop(child_262);
+    runtime
+        .run_gc()
+        .expect("collect while only child IsHTMLDDA is exported");
+    assert_eq!(runtime.heap_counts().context_nodes, 2);
+    assert_eq!(
+        context
+            .call(&is_html_dda, Value::Undefined, &[])
+            .expect("call retained child IsHTMLDDA from parent realm"),
+        Value::Null
+    );
+    drop(is_html_dda);
+    runtime
+        .run_gc()
+        .expect("collect IsHTMLDDA-retained child realm cycle");
     assert_eq!(runtime.heap_counts().context_nodes, 1);
 
     drop(parent_262);

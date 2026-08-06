@@ -6,6 +6,56 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3ds `IsHTMLDDA` host semantics and global admission
+
+R3ds freezes the complete pinned Test262 `$262.IsHTMLDDA` universe: 42 paths /
+84 sloppy-and-strict variants. The path manifest hashes to
+`36adfbe3ebab8b0ba9d5a109ba7f5175cafff1971dfbc5fc762ad168dbfdb0a5`,
+the ordered variant keys hash to
+`ab6197861f36270b6610882285b111b09963ae28d03592df399ef0c25bf0b83e`,
+and the 42-line source ledger hashes to
+`72e10df46f93d5cdf0a16e8366d9c358c8101810f62219ee8a0943ceb3b418bd`.
+Pinned QuickJS 2026-06-04 passes all 84 variants.
+
+The gate records four independently authenticated states. The historical
+R3dr runtime and profile report 84 `unsupported-host-is-html-dda` outcomes.
+The R3ds runtime under that same profile reports 84 `unsupported-feature`
+outcomes, proving that host implementation does not bypass feature selection.
+The global candidate adds only `IsHTMLDDA` and passes 80 variants, retaining
+four `unsupported-feature` outcomes that also require `class`. The exact
+scoped candidate adds `IsHTMLDDA` plus `class` only for this manifest and
+passes 84/84. Its 40-path activation and two-path class-deferred manifests
+hash to
+`12a27c2af023d4679c45f4248111e840b29337ead0e45b17e5c89d357f84ce55`
+and
+`e1cdd7f226bcffd0710704c5cbedb3bc1cc01e7cc99016e0563b49ac88141d07`.
+
+The parent, global candidate, and scoped candidate profile hashes are
+`a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe`,
+`02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4`,
+and
+`0cc6bb596188cf3b244f8f223663a2bd881bae9a90f73d456f1d9ded4295f118`.
+Selection is fail-closed on the exact manifest, pinned source hashes, flags,
+features, includes, negative metadata, and profile identity at both the
+coordinator and isolated worker boundaries.
+
+Two independent native Linux ARM64 full candidate runs are byte-identical.
+The canonical result is 66,674 passes / 66,726 runnable / 102,037 total
+variants. An exact historical-to-candidate join changes only the 84-member
+cohort and preserves all 101,953 outside rows byte-for-byte, with 80 pass gains
+and zero pass regressions. The canonical TSV and JSONL SHA-256 values are
+`0a70f2e3e1deb5d6e410367522451ac7a88f3a05a2a479d378933085a93fe05d`
+and
+`ae793ae44b4ad65b8ee87238501aa2d02ba453277168c212ec0397b494f41adc`.
+The four deferred class-dependent variants are not silently counted as
+implemented, and the result remains pre-parity evidence.
+
+```sh
+./scripts/test-test262-is-html-dda-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-is-html-dda-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-is-html-dda-global.sh --full
+```
+
 ## R3dr global agent wake/FIFO admission
 
 R3dr globally admits the exact 21-path union previously proven by the R3dp and

@@ -73,7 +73,7 @@ impl Runtime {
                 this_arg.clone(),
                 &[value.clone(), index_value.clone(), receiver.clone()],
             )? {
-                Completion::Return(value) => value.to_boolean(),
+                Completion::Return(value) => self.value_to_boolean(&value)?,
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             };
             if matches {

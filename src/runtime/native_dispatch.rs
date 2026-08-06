@@ -695,6 +695,7 @@ impl Runtime {
                 self.call_test262_eval_script(realm, invocation, arguments)
             }
             NativeFunctionId::Test262CreateRealm => self.call_test262_create_realm(invocation),
+            NativeFunctionId::Test262IsHtmlDda => self.call_test262_is_html_dda(invocation),
             NativeFunctionId::Test262Gc => self.call_test262_gc(invocation),
             NativeFunctionId::Test262Agent(kind) => {
                 self.call_test262_agent(realm, kind, invocation, arguments)

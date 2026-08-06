@@ -1094,7 +1094,7 @@ impl Runtime {
         };
         let done_key = self.intern_property_key("done")?;
         let done = match self.get_property_in_realm(realm, &result, &done_key)? {
-            Completion::Return(value) => value.to_boolean(),
+            Completion::Return(value) => self.value_to_boolean(&value)?,
             Completion::Throw(value) => return Ok(ObjectIteratorStep::Throw(value)),
         };
         if done {
@@ -1147,7 +1147,9 @@ impl Runtime {
             record.target.clone(),
             std::slice::from_ref(&value),
         )? {
-            Completion::Return(value) => Ok(NativeConversion::Value(value.to_boolean())),
+            Completion::Return(value) => {
+                Ok(NativeConversion::Value(self.value_to_boolean(&value)?))
+            }
             Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
         }
     }
