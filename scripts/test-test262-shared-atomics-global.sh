@@ -9,7 +9,8 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-shared-atomics-global-baseline.txt
 predecessor_baseline=tests/test262-error-regexp-typedarray-global-baseline.txt
-canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-agent-stage-a-global-baseline.txt
+successor_gate=scripts/test-test262-agent-stage-a-global.sh
 upstream=compat/upstream.toml
 live_profile=compat/test262-oxide.conf
 parent_profile=tests/test262-shared-atomics-global-parent.conf
@@ -36,6 +37,8 @@ runner_override=${TEST262_RUNNER:-}
 
 baseline_lines=131
 baseline_sha=537c03e9f3f0eeb8f43249af5e1f2774bd0f0fc11d446ac3d60319b49510f6ab
+successor_lines=116
+successor_sha=d030977615eba3015fd80b0ad18a90c9cbe6c5e9cebd28c1692fcde9ad488c7c
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -74,7 +77,7 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 predecessor_value() { value_from "$predecessor_baseline" "$1"; }
-canonical_value() { value_from "$canonical_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -454,28 +457,20 @@ check_history_and_upstream() {
         && "$(toml_test262_value oxide_profile_sha256)" == "$(value candidate_profile_sha256)" ]] \
         || die 'R3dl predecessor or upstream bridge drifted'
 
-    if full_receipt_is_blessed; then
-        check_file "$canonical_baseline" "$(value canonical_baseline_lines)" \
-            "$(value canonical_candidate_sha256)"
-        [[ "$(canonical_value schema)" == "$(value schema)" \
-            && "$(canonical_value timeout_ms)" == "$(value timeout_ms)" \
-            && "$(canonical_value variants)" == "$(value full_variants)" \
-            && "$(canonical_value runnable)" == "$(value candidate_full_runnable)" \
-            && "$(canonical_value passes)" == "$(value candidate_full_passes)" \
-            && "$(canonical_value tsv_sha256)" == "$(value candidate_full_tsv_sha256)" \
-            && "$(canonical_value jsonl_sha256)" == "$(value candidate_full_jsonl_sha256)" \
-            && "$(canonical_value summary)" == "$(value candidate_full_summary)" ]] \
-            || die 'R3dl candidate is not the canonical full vector'
-    else
-        check_file "$canonical_baseline" "$(value canonical_baseline_lines)" \
-            "$(value canonical_parent_sha256)"
-        [[ "$(canonical_value runnable)" == "$(value parent_full_runnable)" \
-            && "$(canonical_value passes)" == "$(value parent_full_passes)" \
-            && "$(canonical_value tsv_sha256)" == "$(value parent_full_tsv_sha256)" \
-            && "$(canonical_value jsonl_sha256)" == "$(value parent_full_jsonl_sha256)" \
-            && "$(canonical_value summary)" == "$(value parent_full_summary)" ]] \
-            || die 'unblessed R3dl gate is not based on the R3dj canonical vector'
-    fi
+    # R3dl is now historical. Its immutable, checksum-bound baseline owns both
+    # full-vector snapshots; never read the mutable current canonical baseline.
+    [[ "$(value canonical_baseline_lines)" == 8 \
+        && "$(value canonical_parent_sha256)" == \
+            8c9b69ff622518433e88cedfa4735d0b9e0a02df2723dd15883ac9be74bbd01e \
+        && "$(value canonical_candidate_sha256)" == \
+            65b88033180df8f96d06348999b378d15ed9aa5854ba403547561a75f25701b1 \
+        && "$(value candidate_full_runnable)" == 66528 \
+        && "$(value candidate_full_passes)" == 66476 \
+        && "$(value candidate_full_tsv_sha256)" == \
+            501b64ed5c8367f33408225d956a262619163adf52baadf28f02811d14f3eae9 \
+        && "$(value candidate_full_jsonl_sha256)" == \
+            610e16ba65a0239556842efec7a745ba2885c72dfb3b8447c2578b8767ef7d40 ]] \
+        || die 'R3dl historical canonical snapshot drifted'
 }
 
 verify_fail_closed_selection() {
@@ -643,7 +638,79 @@ replay_full() {
     verify_full_join
 }
 
+bridge_r3dm_successor() {
+    [[ "$(toml_test262_value oxide_profile_sha256)" != \
+        "$(value candidate_profile_sha256)" ]] || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
+    [[ -x "$successor_gate" \
+        && "$(successor_value milestone_kind)" == global-profile-admission \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" == \
+            "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" == \
+            "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" == \
+            "$(value test262_metadata_sha256)" \
+        && "$(successor_value schema)" == "$(value schema)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" == \
+            fa64fa1da55ba130954e2279f1bb8c05bf71fe08 \
+        && "$(successor_value predecessor_baseline)" == "$baseline" \
+        && "$(successor_value predecessor_baseline_lines)" == "$baseline_lines" \
+        && "$(successor_value predecessor_baseline_sha256)" == "$baseline_sha" \
+        && "$(successor_value parent_profile_sha256)" == \
+            "$(value candidate_profile_sha256)" \
+        && "$(successor_value full_variants)" == "$(value full_variants)" \
+        && "$(successor_value full_keys_sha256)" == \
+            "$(value full_keys_sha256)" \
+        && "$(successor_value parent_full_runnable)" == \
+            "$(value candidate_full_runnable)" \
+        && "$(successor_value parent_full_passes)" == \
+            "$(value candidate_full_passes)" \
+        && "$(successor_value parent_full_unsupported_feature)" == \
+            "$(value candidate_full_unsupported_feature)" \
+        && "$(successor_value parent_full_tsv_sha256)" == \
+            "$(value candidate_full_tsv_sha256)" \
+        && "$(successor_value parent_full_jsonl_sha256)" == \
+            "$(value candidate_full_jsonl_sha256)" \
+        && "$(successor_value parent_full_summary)" == \
+            "$(value candidate_full_summary)" \
+        && "$(successor_value manifest_paths)" == 59 \
+        && "$(successor_value manifest_variants)" == 118 \
+        && "$(successor_value activation_variants)" == 2 \
+        && "$(successor_value retained_variants)" == 116 \
+        && "$(( $(successor_value candidate_full_runnable) - \
+            $(successor_value parent_full_runnable) ))" == 2 \
+        && "$(( $(successor_value candidate_full_passes) - \
+            $(successor_value parent_full_passes) ))" == 2 \
+        && "$(( $(successor_value parent_full_unsupported_host_agent) - \
+            $(successor_value candidate_full_unsupported_host_agent) ))" == 2 \
+        && "$(successor_value transition_outcome_changed)" == 2 \
+        && "$(successor_value transition_detail_only)" == 0 \
+        && "$(successor_value transition_unchanged)" == 116 \
+        && "$(successor_value transition_pass_regressions)" == 0 \
+        && "$(successor_value full_changed)" == 2 \
+        && "$(successor_value full_outcome_changed)" == 2 \
+        && "$(successor_value full_detail_only)" == 0 \
+        && "$(successor_value full_unchanged)" == 102035 \
+        && "$(successor_value full_pass_regressions)" == 0 ]] \
+        || die 'R3dl successor bridge to R3dm drifted'
+
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) TEST262_REUSE_FULL_REPORTS="$reuse_full_reports" \
+            "$successor_gate" --full ;;
+    esac
+    exit 0
+}
+
 cd -- "$root"
+bridge_r3dm_successor
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3dl.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 suite=$("$script_dir/prepare-test262.sh")

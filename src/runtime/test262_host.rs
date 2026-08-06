@@ -95,6 +95,13 @@ impl Runtime {
             Value::Object(code_point_range.as_object().clone()),
         )?;
 
+        // Pinned QuickJS installs `agent` at this exact point: after
+        // codePointRange and before global. The optional session binding keeps
+        // ordinary embedders and non-agent Test262 runs unchanged.
+        if let Some(agent) = self.new_registered_test262_agent_object(realm)? {
+            self.define_test262_host_property(&object_262, "agent", Value::Object(agent))?;
+        }
+
         self.define_test262_host_property(
             &object_262,
             "global",

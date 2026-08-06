@@ -5,10 +5,12 @@ use std::path::Path;
 const FEATURES_SECTION: &str = "features";
 const AUDITED_NEGATIVE_TESTS_SECTION: &str = "audited-negative-tests";
 const EXECUTION_SECTION: &str = "execution";
-const SECTION_ORDER: [&str; 3] = [
+const HOST_AGENT_TESTS_SECTION: &str = "host-agent-tests";
+const SECTION_ORDER: [&str; 4] = [
     FEATURES_SECTION,
     AUDITED_NEGATIVE_TESTS_SECTION,
     EXECUTION_SECTION,
+    HOST_AGENT_TESTS_SECTION,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +23,7 @@ pub(super) struct FailClosedClassification {
 pub(super) struct OxideProfile {
     features: BTreeSet<String>,
     audited_negative_tests: BTreeSet<String>,
+    host_agent_tests: BTreeSet<String>,
     async_execution: bool,
 }
 
@@ -35,6 +38,7 @@ impl OxideProfile {
         let mut profile = Self::default();
         let mut seen_sections = BTreeSet::new();
         let mut section_index = None;
+        let mut last_section_position = None;
         let mut previous_entry: Option<String> = None;
         let mut saw_async_execution_entry = false;
 
@@ -78,14 +82,13 @@ impl OxideProfile {
                     .iter()
                     .position(|section| *section == name)
                     .expect("known section was checked");
-                let expected_index = seen_sections.len() - 1;
-                if section_position != expected_index {
+                if last_section_position.is_some_and(|previous| section_position <= previous) {
                     return Err(format!(
-                        "line {line_number}: section [{name}] is out of order; expected [{}]",
-                        SECTION_ORDER[expected_index]
+                        "line {line_number}: section [{name}] is out of order"
                     ));
                 }
                 section_index = Some(section_position);
+                last_section_position = Some(section_position);
                 previous_entry = None;
                 continue;
             }
@@ -108,10 +111,11 @@ impl OxideProfile {
                 continue;
             }
 
-            let entries = if current_section == 0 {
-                &mut profile.features
-            } else {
-                &mut profile.audited_negative_tests
+            let entries = match current_section {
+                0 => &mut profile.features,
+                1 => &mut profile.audited_negative_tests,
+                3 => &mut profile.host_agent_tests,
+                _ => unreachable!("execution entries were handled above"),
             };
             if entries.contains(line) {
                 return Err(format!(
@@ -146,6 +150,10 @@ impl OxideProfile {
 
     pub(super) fn allows_async_execution(&self) -> bool {
         self.async_execution
+    }
+
+    pub(super) fn allows_agent_host(&self, path: &Path) -> bool {
+        self.host_agent_tests.contains(&test_path(path))
     }
 
     pub(super) fn audited_negative_paths(&self) -> impl Iterator<Item = &str> {
@@ -209,7 +217,7 @@ fn validate_entry(entry: &str, section_index: usize, line_number: usize) -> Resu
             SECTION_ORDER[section_index]
         ));
     }
-    if section_index == 1
+    if matches!(section_index, 1 | 3)
         && (!entry.starts_with("test/")
             || !entry.ends_with(".js")
             || entry.contains('\\')
@@ -218,7 +226,8 @@ fn validate_entry(entry: &str, section_index: usize, line_number: usize) -> Resu
                 .any(|component| component.is_empty() || matches!(component, "." | "..")))
     {
         return Err(format!(
-            "line {line_number}: audited negative test must be an exact test/*.js path: {entry:?}"
+            "line {line_number}: [{}] entry must be an exact test/*.js path: {entry:?}",
+            SECTION_ORDER[section_index]
         ));
     }
     Ok(())
@@ -234,8 +243,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        AUDITED_NEGATIVE_TESTS_SECTION, EXECUTION_SECTION, FEATURES_SECTION, OxideProfile,
-        SECTION_ORDER,
+        AUDITED_NEGATIVE_TESTS_SECTION, EXECUTION_SECTION, FEATURES_SECTION,
+        HOST_AGENT_TESTS_SECTION, OxideProfile, SECTION_ORDER,
     };
 
     const CHECKED_IN_PROFILE: &str = include_str!(concat!(
@@ -277,6 +286,10 @@ mod tests {
     const SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-shared-atomics-global-candidate.conf"
+    ));
+    const AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-stage-a-global-candidate.conf"
     ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1735,8 +1748,15 @@ mod tests {
             shared_atomics_global_candidate.allows_async_execution(),
             shared_atomics_global_parent.allows_async_execution()
         );
-        assert_eq!(profile, shared_atomics_global_candidate);
-        assert_eq!(CHECKED_IN_PROFILE, SHARED_ATOMICS_GLOBAL_CANDIDATE_PROFILE);
+        let mut agent_stage_a_global_candidate = shared_atomics_global_candidate.clone();
+        assert!(agent_stage_a_global_candidate.host_agent_tests.is_empty());
+        assert!(
+            agent_stage_a_global_candidate
+                .host_agent_tests
+                .insert("test/built-ins/Atomics/wait/good-views.js".to_owned())
+        );
+        assert_eq!(profile, agent_stage_a_global_candidate);
+        assert_eq!(CHECKED_IN_PROFILE, AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE);
         assert_eq!(
             default_parameters_candidate
                 .features
@@ -2066,7 +2086,7 @@ mod tests {
         assert!(
             OxideProfile::parse(reversed)
                 .unwrap_err()
-                .contains("section [audited-negative-tests] is out of order")
+                .contains("section [features] is out of order")
         );
     }
 
@@ -2127,6 +2147,27 @@ mod tests {
     }
 
     #[test]
+    fn optional_agent_section_is_exact_sorted_and_can_skip_execution() {
+        let source = "[features]\nAtomics\n[audited-negative-tests]\n[host-agent-tests]\ntest/built-ins/Atomics/wait/good-views.js\n";
+        let profile = OxideProfile::parse(source).unwrap();
+        assert!(!profile.allows_async_execution());
+        assert!(profile.allows_agent_host(Path::new("test/built-ins/Atomics/wait/good-views.js")));
+        assert!(!profile.allows_agent_host(Path::new("test/built-ins/Atomics/wait/wake.js")));
+
+        for invalid in [
+            "[features]\nAtomics\n[audited-negative-tests]\n[host-agent-tests]\ntest/b.js\ntest/a.js\n",
+            "[features]\nAtomics\n[audited-negative-tests]\n[host-agent-tests]\ntest/a.js\ntest/a.js\n",
+            "[features]\nAtomics\n[audited-negative-tests]\n[host-agent-tests]\n../test/a.js\n",
+            "[features]\nAtomics\n[audited-negative-tests]\n[host-agent-tests]\ntest/a.js\n[execution]\nasync=true\n",
+        ] {
+            assert!(
+                OxideProfile::parse(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parser_requires_entries_to_follow_the_fixed_section_order() {
         let source = "BigInt\n[features]\n[audited-negative-tests]\n";
         assert!(
@@ -2140,6 +2181,7 @@ mod tests {
                 FEATURES_SECTION,
                 AUDITED_NEGATIVE_TESTS_SECTION,
                 EXECUTION_SECTION,
+                HOST_AGENT_TESTS_SECTION,
             ]
         );
     }

@@ -5,14 +5,17 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use quickjs_oxide::{CompileOptions, Context, ErrorKind, Runtime, RuntimeError, Value};
+use quickjs_oxide::{
+    CompileOptions, Context, ErrorKind, Runtime, RuntimeError, Test262AgentSession, Value,
+};
 
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
-use super::requirements::HostCapabilities;
+use super::requirements::{HostCapabilities, is_exact_agent_stage_a_test};
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
 pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
+    agent: false,
     can_block_false: true,
     create_realm: true,
     detach_array_buffer: true,
@@ -57,6 +60,41 @@ const ASYNC_WORKER_HOST_SOURCE: &str = r#"
 const ASYNC_COMPLETE: &str = "Test262:AsyncTestComplete";
 const ASYNC_FAILURE_PREFIX: &str = "Test262:AsyncTestFailure:";
 
+struct AgentRunGuard {
+    session: Option<Test262AgentSession>,
+}
+
+impl AgentRunGuard {
+    fn new(enabled: bool) -> Self {
+        Self {
+            session: enabled.then(Test262AgentSession::new),
+        }
+    }
+
+    fn session(&self) -> Option<&Test262AgentSession> {
+        self.session.as_ref()
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        let Some(session) = self.session.take() else {
+            return Ok(());
+        };
+        session
+            .join_workers()
+            .map_err(|error| format!("Test262 agent worker failed: {error}"))
+    }
+}
+
+impl Drop for AgentRunGuard {
+    fn drop(&mut self) {
+        // Every early-return path still joins in start order. The normal tail
+        // calls `finish` explicitly so agent failures remain observable.
+        if let Some(session) = self.session.take() {
+            let _ = session.join_workers();
+        }
+    }
+}
+
 pub(super) fn run_isolated_worker(
     executable: &Path,
     suite: &Path,
@@ -64,6 +102,7 @@ pub(super) fn run_isolated_worker(
     variant: Variant,
     timeout: Duration,
     allow_async_host: bool,
+    allow_agent_stage_a: bool,
 ) -> Result<WorkerResult, String> {
     let mut command = Command::new(executable);
     command
@@ -76,6 +115,9 @@ pub(super) fn run_isolated_worker(
         .arg(variant.name());
     if allow_async_host {
         command.arg("--allow-async-host");
+    }
+    if allow_agent_stage_a {
+        command.arg("--allow-agent-stage-a");
     }
     let mut child = command
         .stdout(Stdio::piped())
@@ -169,6 +211,14 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let source =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let metadata = parse_metadata(&source)?;
+    if options.allow_agent_stage_a
+        && !is_exact_agent_stage_a_test(&options.test, &source, &metadata)?
+    {
+        return Err(format!(
+            "Test262 agent Stage A worker rejected unaudited path: {}",
+            options.test.display()
+        ));
+    }
     if metadata.is_module() || (metadata.is_async() && !options.allow_async_host) {
         return Err("unsupported test reached worker".to_owned());
     }
@@ -177,7 +227,8 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let runtime = Runtime::new();
     configure_runtime_can_block(&runtime, &metadata);
     let mut context = runtime.new_context();
-    install_worker_host(&runtime, &mut context, async_test)?;
+    let mut agent_run = AgentRunGuard::new(options.allow_agent_stage_a);
+    install_worker_host(&runtime, &mut context, async_test, agent_run.session())?;
     // The progress baseline follows the pinned Test262 interpretation rather
     // than run-test262.c's raw-test deviation: raw means no harness and no
     // source rewriting. The qjs-compatible `print` surface above is a worker
@@ -295,7 +346,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     {
         return Ok(classify_normal(&metadata));
     }
-    match context.execute(&function) {
+    let result = match context.execute(&function) {
         Ok(_) if async_test => Ok(finish_async_test(&runtime, &mut context, &metadata)),
         Ok(_) => Ok(classify_normal(&metadata)),
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
@@ -316,7 +367,9 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
             ))
         }
         Err(error) => Ok(engine_fault("engine-fault", "runtime", error, None)),
-    }
+    };
+    agent_run.finish()?;
+    result
 }
 
 fn configure_runtime_can_block(runtime: &Runtime, metadata: &Metadata) {
@@ -441,6 +494,7 @@ fn install_worker_host(
     runtime: &Runtime,
     context: &mut Context,
     record_print: bool,
+    agent_session: Option<&Test262AgentSession>,
 ) -> Result<(), String> {
     let options = CompileOptions::new(WORKER_HOST_FILENAME);
     let source = if record_print {
@@ -454,7 +508,11 @@ fn install_worker_host(
     context
         .execute(&function)
         .map_err(|error| worker_host_error(runtime, context, "execute", error))?;
-    match context.install_test262_host() {
+    let installed = match agent_session {
+        Some(session) => context.install_test262_host_with_agent(session),
+        None => context.install_test262_host(),
+    };
+    match installed {
         Ok(_) => Ok(()),
         Err(error) => Err(worker_host_error(runtime, context, "install $262", error)),
     }
@@ -668,6 +726,51 @@ mod tests {
     }
 
     #[test]
+    fn agent_stage_a_worker_flag_revalidates_path_and_source() {
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-agent-worker-revalidation-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let wrong_path = PathBuf::from("test/not-good-views.js");
+        fs::create_dir_all(suite.join("test/built-ins/Atomics/wait")).unwrap();
+        fs::write(
+            suite.join(&wrong_path),
+            "/*---\nincludes: [atomicsHelper.js]\nfeatures: [Atomics]\n---*/\n",
+        )
+        .unwrap();
+        let error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: wrong_path,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_stage_a: true,
+        })
+        .unwrap_err();
+        assert!(error.contains("rejected unaudited path"), "{error}");
+
+        let exact_path = PathBuf::from("test/built-ins/Atomics/wait/good-views.js");
+        fs::write(
+            suite.join(&exact_path),
+            "/*---\nincludes: [atomicsHelper.js]\nfeatures: [Atomics]\n---*/\n// drift\n",
+        )
+        .unwrap();
+        let error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: exact_path,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_stage_a: true,
+        })
+        .unwrap_err();
+        fs::remove_dir_all(suite).unwrap();
+        assert!(error.contains("source drifted"), "{error}");
+    }
+
+    #[test]
     fn matching_negative_result_preserves_its_diagnostic_provenance() {
         let metadata = Metadata {
             negative: Some(NegativeExpectation {
@@ -749,6 +852,7 @@ mod tests {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: false,
+            allow_agent_stage_a: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -787,6 +891,7 @@ mod tests {
             test: relative.clone(),
             variant: Variant::Sloppy,
             allow_async_host: false,
+            allow_agent_stage_a: false,
         })
         .unwrap_err();
         assert_eq!(denied, "unsupported test reached worker");
@@ -796,6 +901,7 @@ mod tests {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: true,
+            allow_agent_stage_a: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -828,6 +934,7 @@ mod tests {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: true,
+            allow_agent_stage_a: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -882,6 +989,7 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: false,
+            allow_agent_stage_a: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -1151,6 +1259,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: false,
+            allow_agent_stage_a: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();

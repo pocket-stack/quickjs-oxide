@@ -4,6 +4,53 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dm Test262 agent Stage A
+
+R3dm adds an opt-in, QuickJS-shaped Test262 `$262.agent` host without making
+the engine or its ordinary embedding contexts thread-safe. Each `agent.start`
+creates a fresh `Runtime` and `Context` on a dedicated native thread with a
+2 MiB stack. Only owned source text and an `Arc`/`Mutex` host coordinator cross
+the thread boundary; no runtime, realm, value, object, or heap root does.
+Workers enable blocking waits, reports use a shared FIFO queue, and cleanup
+joins workers in start order. The installed method order, descriptors, role
+checks, `sleep`, `monotonicNow`, `report`, `getReport`, `leaving`, and
+`createRealm` behavior follow pinned QuickJS 2026-06-04.
+
+Stage A deliberately does not claim the shared-buffer broadcast protocol.
+`broadcast` and `receiveBroadcast` are present with the QuickJS method shape
+but fail closed; native agent threads are unavailable on WebAssembly. The
+Test262 runner adds a separate exact-path allowlist and revalidates the pinned
+source hash and metadata before enabling the host. Only
+`test/built-ins/Atomics/wait/good-views.js` is admitted. The other 58 paths /
+116 variants remain `unsupported-host-agent`, and `Atomics.waitAsync` remains
+outside the pinned QuickJS parity target.
+
+The authenticated agent universe contains 59 paths / 118 sloppy-and-strict
+variants. The R3dl parent records all 118 as unsupported; the R3dm candidate
+passes the two admitted variants and leaves the other 116 byte-identical. A
+20-run stability gate records 40/40 activation passes, and pinned QuickJS
+passes both activation variants. Native tests separately cover the host shape,
+FIFO reports, role failures, fresh-runtime isolation, start-order joining, and
+worker failure cleanup.
+
+The complete 102,037-variant join reaches 66,478 passes / 66,530 runnable. It
+changes exactly the two admitted rows, reduces `unsupported-host-agent` from
+118 to 116, and leaves the other 102,035 rows unchanged with zero regression.
+Two independent release-mode full runs are byte-identical. The canonical
+TSV/JSONL SHA-256 values are
+`a05aed38d47216ca485334ad50656cbe3ddf8d5c9922a6eaf28e0ee9ff0863dc`
+and
+`4f0ff98da92582ae37571d754e6608b20aa707c0c1e456232b527e778b87e9c0`.
+
+Reproduce the scoped implementation proof and global admission with:
+
+```sh
+./scripts/test-test262-agent-stage-a.sh --check
+./scripts/test-test262-agent-stage-a-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-agent-stage-a-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-stage-a-global.sh --full
+```
+
 ## R3dl global SharedArrayBuffer and Atomics admission
 
 R3dl globally admits the already implemented `SharedArrayBuffer` and `Atomics`

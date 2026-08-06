@@ -45,7 +45,7 @@ pub use object::{
 };
 pub use runtime::{
     Context, EvalOptions, HostServices, PendingJobError, PendingJobOutcome, PromiseRejectionEvent,
-    Runtime, RuntimeError,
+    Runtime, RuntimeError, Test262AgentError, Test262AgentSession,
 };
 pub use value::{JsString, JsStringError, Value};
 

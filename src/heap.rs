@@ -6417,6 +6417,19 @@ pub enum PromiseResolvingKind {
     Reject,
 }
 
+/// Selector for QuickJS's Test262-only `$262.agent` host functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Test262AgentKind {
+    Start,
+    GetReport,
+    Broadcast,
+    Report,
+    Leaving,
+    ReceiveBroadcast,
+    Sleep,
+    MonotonicNow,
+}
+
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -6532,6 +6545,8 @@ pub enum NativeFunctionId {
     Test262CreateRealm,
     /// QuickJS's test262-only `$262.gc` host hook.
     Test262Gc,
+    /// QuickJS's test262-only `$262.agent` host hooks.
+    Test262Agent(Test262AgentKind),
     /// qjs-host `print`, installed explicitly by the CLI rather than as an
     /// ECMAScript intrinsic in every Context.
     QjsPrint,
@@ -7071,6 +7086,7 @@ impl NativeFunctionId {
             | Self::Test262EvalScript
             | Self::Test262CreateRealm
             | Self::Test262Gc
+            | Self::Test262Agent(_)
             | Self::QjsPrint
             | Self::StringPrototypeCharCodeAt
             | Self::StringPrototypeConcat

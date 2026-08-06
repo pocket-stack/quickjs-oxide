@@ -696,6 +696,9 @@ impl Runtime {
             }
             NativeFunctionId::Test262CreateRealm => self.call_test262_create_realm(invocation),
             NativeFunctionId::Test262Gc => self.call_test262_gc(invocation),
+            NativeFunctionId::Test262Agent(kind) => {
+                self.call_test262_agent(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::QjsPrint => self.call_qjs_print(realm, invocation, arguments),
             NativeFunctionId::PrimitivePrototypeToString(kind) => {
                 self.call_primitive_prototype_to_string(realm, kind, invocation, arguments)

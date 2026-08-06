@@ -26,6 +26,7 @@ mod private_elements;
 mod properties;
 mod qjs_host;
 mod template_object;
+mod test262_agent;
 mod test262_host;
 mod vm_host;
 
@@ -35,6 +36,7 @@ use self::intrinsics::date::SystemHostServices;
 use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::PromiseRejectionEvent;
 pub use self::jobs::{PendingJobError, PendingJobOutcome};
+pub use self::test262_agent::{Test262AgentError, Test262AgentSession};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -71,7 +73,8 @@ use crate::heap::{
     PublishedPrivateBindings, RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind,
     StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
     StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition, WeakSymbolGcEvent,
+    SymbolRegistryKind, Test262AgentKind, VarRefData, VarRefId, VariableDefinition,
+    WeakSymbolGcEvent,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,

@@ -12,6 +12,7 @@ use super::metadata::Metadata;
 /// implementation has actually published the corresponding hook.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct HostCapabilities {
+    pub agent: bool,
     pub can_block_false: bool,
     pub create_realm: bool,
     pub detach_array_buffer: bool,
@@ -23,6 +24,7 @@ pub(super) struct HostCapabilities {
 impl HostCapabilities {
     pub(super) fn retain_missing(self, capabilities: &mut Vec<String>) {
         capabilities.retain(|capability| match capability.as_str() {
+            "agent" => !self.agent,
             "can-block:false" => !self.can_block_false,
             "create-realm" => !self.create_realm,
             "detach-array-buffer" => !self.detach_array_buffer,
@@ -32,6 +34,43 @@ impl HostCapabilities {
             _ => true,
         });
     }
+}
+
+/// Admit only the single source-audited Stage A `$262.agent` test.
+///
+/// The path check prevents a profile entry from broadening the host surface,
+/// while the source hash prevents an in-place Test262 update from silently
+/// inheriting the opt-in. Metadata shape is checked as a second, readable
+/// provenance assertion for the runner and its gates.
+pub(super) fn is_exact_agent_stage_a_test(
+    path: &Path,
+    source: &str,
+    metadata: &Metadata,
+) -> Result<bool, String> {
+    const PATH: &str = "test/built-ins/Atomics/wait/good-views.js";
+    const SHA256: &str = "7ab45f324e0f668a9d9f3df03c866b0ac32276eb1dfb649d1e5783a88f70bb21";
+
+    if path != Path::new(PATH) {
+        return Ok(false);
+    }
+    let actual_sha256 = source_sha256(source)?;
+    if actual_sha256 != SHA256 {
+        return Err(format!(
+            "Test262 agent Stage A source drifted for {PATH}: expected SHA-256 {SHA256}, found {actual_sha256}"
+        ));
+    }
+    if metadata.includes != ["atomicsHelper.js"]
+        || metadata.features != ["Atomics"]
+        || metadata.is_raw()
+        || metadata.is_async()
+        || metadata.is_module()
+        || metadata.negative.is_some()
+    {
+        return Err(format!(
+            "Test262 agent Stage A metadata shape drifted for {PATH}"
+        ));
+    }
+    Ok(true)
 }
 
 /// Return conservative, stable IDs for Test262 execution capabilities which
@@ -1000,6 +1039,7 @@ mod tests {
             false,
         );
         HostCapabilities {
+            agent: false,
             can_block_false: true,
             create_realm: true,
             detach_array_buffer: true,

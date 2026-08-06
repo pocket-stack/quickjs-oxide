@@ -6,6 +6,62 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dm exact Test262 agent Stage A admission
+
+R3dm turns the authenticated `$262.agent` frontier into an exact, fail-closed
+global admission. The 132-feature R3dl parent profile hashes to
+`47cf8351f7844340bbbff3ba9bb781faf552f8f27d0dd6cca2e35dbf9ad48232`.
+The candidate/live profile changes no feature, audited-negative, or execution
+entry; it adds only a `[host-agent-tests]` allowlist containing
+`test/built-ins/Atomics/wait/good-views.js` and hashes to
+`37cb029eda8e3abe97a17c93c1c3fe95e6aaed330de09d41b5941e9a6c3784f8`.
+The runner accepts those profiles only with the exact 59-path universe
+manifest or `--all`, and it independently binds the activation path to its
+pinned source SHA-256 and metadata shape.
+
+The universe, activation, and retained manifests hash to
+`39774992fb157df3676b53c4c001c7f9cb60ca546309b0e8be18ff3ac9737151`,
+`cc8da184af01572cb83fc743f062fb54c17124663358532ccb2216587e62bb58`,
+and
+`bb59fba98ce4d41426a47de67630940f4eae29927421a2bfe6e1ea70c8f56d55`.
+Their exact partition is one activation path / two variants and 58 retained
+paths / 116 variants. The parent focused receipt reports 118
+`unsupported-host-agent` outcomes; the candidate reports two passes and 116
+unchanged unsupported outcomes. The global focused TSV/JSONL hashes move from
+`dfc09335a5a485e74844b5e4d701f601e4b5b73ed0dd1b4f863f5320a411029c`
+and
+`067c21dd84b54b4f4462d93261383dba0247490e311e552182e9f2c6a4b844ea`
+to
+`f2d934c0a46e17f9c4c5bc79fae91822df2c7dc619df96123b99180ee0ceba11`
+and
+`a0cf03718c3e869bdc96b1821642316b15083cdee98eb52b8efaf49c5031d70e`.
+The exact transition records two pass gains, 116 unchanged rows, and zero
+regressions. A separate 20-run activation receipt is byte-identical on every
+run, and pinned QuickJS passes both activation variants.
+
+The complete join changes only those two rows. It reaches 66,478 passes /
+66,530 runnable / 102,037 total variants and reduces
+`unsupported-host-agent` from 118 to 116; every other outcome count is
+unchanged. Two independent release-mode full runs are byte-identical. The new
+canonical TSV/JSONL SHA-256 values are
+`a05aed38d47216ca485334ad50656cbe3ddf8d5c9922a6eaf28e0ee9ff0863dc`
+and
+`4f0ff98da92582ae37571d754e6608b20aa707c0c1e456232b527e778b87e9c0`.
+
+The implemented host uses a fresh `Runtime` and `Context` per native agent,
+2 MiB stacks, FIFO reports, and start-order cleanup joins. It intentionally
+keeps `broadcast` and `receiveBroadcast` fail-closed, so the retained 58 paths
+remain the next agent-parity frontier rather than being folded into the green
+result. Native agent threads are unavailable on WebAssembly, and
+`Atomics.waitAsync` remains outside the pinned QuickJS target.
+
+```sh
+./scripts/test-test262-agent-stage-a.sh --check
+./scripts/test-test262-agent-stage-a-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-agent-stage-a-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-stage-a-global.sh --full
+```
+
 ## R3dl global SharedArrayBuffer and Atomics admission
 
 R3dl globally admits the implemented `SharedArrayBuffer` and `Atomics` tags.

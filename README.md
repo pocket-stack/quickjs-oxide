@@ -8,18 +8,16 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-The latest conformance milestone globally admits the implemented
-`SharedArrayBuffer` and `Atomics` surfaces. Its exact 886-variant gate adds 866
-passes with no regression; Oxide and pinned QuickJS both pass every variant
-that is not intentionally retained behind cross-realm support. The next
-shared-memory frontier is the Test262 `$262.agent` host (59 paths / 118
-variants). Modules, workers, broad built-ins, and the complete
-embedding/tooling surface also remain unfinished. Pinned QuickJS has no
-`Atomics.waitAsync`, so it is outside this rewrite's parity target.
+The latest conformance milestone adds an opt-in, QuickJS-shaped Test262
+`$262.agent` host and globally admits its first source-audited test: one path /
+two variants now pass, while the other 58 paths / 116 variants remain
+fail-closed for later agent coordination work. Modules, broad built-ins, and
+the complete embedding/tooling surface also remain unfinished. Pinned QuickJS
+has no `Atomics.waitAsync`, so it is outside this rewrite's parity target.
 
-The latest audited global vector is 66,476 passes / 66,528 runnable / 102,037
-total variants. Detailed implementation and Test262 bookkeeping lives in the
-status documents below, keeping this page focused on trying the engine.
+The latest audited global vector is 66,478 passes / 66,530 runnable / 102,037
+total variants, with zero regressions from the prior milestone. Detailed
+implementation and Test262 bookkeeping live in the status documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
