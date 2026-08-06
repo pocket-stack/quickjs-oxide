@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       page_url: ${{ steps.deployment.outputs.page_url }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       pages: write
       id-token: write
@@ -98,6 +98,8 @@ jobs:
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          timeout: 1200000
 
   verify:
     needs: [build, deploy]
