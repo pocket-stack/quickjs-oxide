@@ -31,14 +31,36 @@ const requiredArtifactFiles = [
   "pkg/quickjs_oxide_web.js",
   "pkg/quickjs_oxide_web_bg.wasm",
 ];
-const requiredBrowserResources = new Set([
-  `${pagesBasePath}app.js`,
-  `${pagesBasePath}examples.js`,
-  `${pagesBasePath}style.css`,
-  `${pagesBasePath}worker.js`,
-  `${pagesBasePath}pkg/quickjs_oxide_web.js`,
-  `${pagesBasePath}pkg/quickjs_oxide_web_bg.wasm`,
-]);
+const contentDigestPattern = "[0-9a-f]{64}";
+const requiredBrowserResources = [
+  [new RegExp(`^${pagesBasePath}app\\.${contentDigestPattern}\\.js$`, "u"), "app"],
+  [
+    new RegExp(`^${pagesBasePath}examples\\.${contentDigestPattern}\\.js$`, "u"),
+    "examples",
+  ],
+  [
+    new RegExp(`^${pagesBasePath}style\\.${contentDigestPattern}\\.css$`, "u"),
+    "stylesheet",
+  ],
+  [
+    new RegExp(`^${pagesBasePath}worker\\.${contentDigestPattern}\\.js$`, "u"),
+    "worker",
+  ],
+  [
+    new RegExp(
+      `^${pagesBasePath}pkg/quickjs_oxide_web\\.${contentDigestPattern}\\.js$`,
+      "u",
+    ),
+    "WASM glue",
+  ],
+  [
+    new RegExp(
+      `^${pagesBasePath}pkg/quickjs_oxide_web_bg\\.${contentDigestPattern}\\.wasm$`,
+      "u",
+    ),
+    "WASM binary",
+  ],
+];
 
 function contentType(filePath) {
   switch (path.extname(filePath)) {
@@ -90,6 +112,8 @@ async function startArtifactServer() {
   const serverErrors = [];
   let customGlueBody = null;
   let customGlueMime = null;
+  let customGlueVerificationAttempt = null;
+  let customFiles = new Map();
   let delayedVerificationPath = null;
   let delayedVerificationMs = 0;
   let rejectedVerificationAttempt = null;
@@ -130,26 +154,37 @@ async function startArtifactServer() {
         }
       }
 
-      const metadata = await stat(filePath).catch(() => null);
+      const customFile = customFiles.get(parsedRequestUrl.pathname) || null;
+      const metadata = customFile
+        ? { isFile: () => true, size: customFile.body.byteLength }
+        : await stat(filePath).catch(() => null);
       if (!metadata?.isFile()) {
         response.writeHead(404).end("Not found\n");
         return;
       }
 
-      const isGlue = filePath === path.join(
-        pagesDir,
-        "pkg/quickjs_oxide_web.js",
+      const isGlue = path.dirname(filePath) === path.join(pagesDir, "pkg") &&
+        /^quickjs_oxide_web(?:\.[0-9a-f]{64})?\.js$/u.test(
+          path.basename(filePath),
+        );
+      const useCustomGlue = isGlue && customGlueBody && (
+        customGlueVerificationAttempt === null ||
+        verificationAttempt === String(customGlueVerificationAttempt)
       );
       const body = request.method === "HEAD"
         ? null
-        : isGlue && customGlueBody
+        : useCustomGlue
         ? customGlueBody
+        : customFile
+        ? customFile.body
         : await readFile(filePath);
       response.writeHead(200, {
         "Cache-Control": "no-store",
         "Content-Length": body?.byteLength ?? metadata.size,
-        "Content-Type": isGlue && customGlueMime
+        "Content-Type": useCustomGlue && customGlueMime
           ? customGlueMime
+          : customFile?.mime
+          ? customFile.mime
           : contentType(filePath),
       });
       response.end(body);
@@ -175,9 +210,13 @@ async function startArtifactServer() {
     rejectVerificationAttempt(attempt) {
       rejectedVerificationAttempt = attempt;
     },
-    serveGlue(body, mime = null) {
+    serveGlue(body, mime = null, verificationAttempt = null) {
       customGlueBody = body;
       customGlueMime = mime;
+      customGlueVerificationAttempt = verificationAttempt;
+    },
+    serveFiles(files = new Map()) {
+      customFiles = new Map(files);
     },
     server,
     serverErrors,
@@ -242,6 +281,96 @@ function processGroupFixtureGlue({
       "})({ __proto__: null });\n",
     "utf8",
   );
+}
+
+function replaceExactlyOnce(source, reference, replacement, label) {
+  assert.equal(
+    source.split(reference).length,
+    2,
+    `${label} fixture reference is not unique`,
+  );
+  return source.replace(reference, replacement);
+}
+
+function contentAddressedExecutionFixture({
+  appSource,
+  expectedHashes,
+  glue,
+  indexSource,
+  workerSource,
+}) {
+  const originalGlueReference = workerSource.match(
+    /const PACKAGE_SCRIPT = "(\.\/pkg\/quickjs_oxide_web\.[0-9a-f]{64}\.js)";/u,
+  )?.[1];
+  const originalWorkerReference = appSource.match(
+    /new Worker\("(\.\/worker\.[0-9a-f]{64}\.js)"/u,
+  )?.[1];
+  const originalAppReference = indexSource.match(
+    /src="(\.\/app\.[0-9a-f]{64}\.js)"/u,
+  )?.[1];
+  assert.ok(originalGlueReference, "worker fixture has no hashed glue reference");
+  assert.ok(originalWorkerReference, "app fixture has no hashed worker reference");
+  assert.ok(originalAppReference, "index fixture has no hashed app reference");
+
+  const glueDigest = sha256Bytes(glue);
+  const glueReference = `./pkg/quickjs_oxide_web.${glueDigest}.js`;
+  const worker = Buffer.from(
+    replaceExactlyOnce(
+      workerSource,
+      originalGlueReference,
+      glueReference,
+      "worker glue",
+    ),
+    "utf8",
+  );
+  const workerDigest = sha256Bytes(worker);
+  const workerReference = `./worker.${workerDigest}.js`;
+  const app = Buffer.from(
+    replaceExactlyOnce(
+      appSource,
+      originalWorkerReference,
+      workerReference,
+      "app worker",
+    ),
+    "utf8",
+  );
+  const appDigest = sha256Bytes(app);
+  const appReference = `./app.${appDigest}.js`;
+  const index = Buffer.from(
+    replaceExactlyOnce(
+      indexSource,
+      originalAppReference,
+      appReference,
+      "index app",
+    ),
+    "utf8",
+  );
+
+  return {
+    expectedHashes: {
+      ...expectedHashes,
+      glueSha256: glueDigest,
+      indexSha256: sha256Bytes(index),
+    },
+    files: new Map([
+      [
+        pagesBasePath,
+        { body: index, mime: "text/html; charset=utf-8" },
+      ],
+      [
+        `${pagesBasePath}${appReference.slice(2)}`,
+        { body: app, mime: "text/javascript; charset=utf-8" },
+      ],
+      [
+        `${pagesBasePath}${workerReference.slice(2)}`,
+        { body: worker, mime: "text/javascript; charset=utf-8" },
+      ],
+      [
+        `${pagesBasePath}${glueReference.slice(2)}`,
+        { body: glue, mime: "text/javascript; charset=utf-8" },
+      ],
+    ]),
+  };
 }
 
 async function readFixturePid(markerPath) {
@@ -434,12 +563,19 @@ async function runAcceptance(url, serverErrors) {
 
     assert.ok(
       workerUrls.some(
-        (workerUrl) => new URL(workerUrl).pathname === `${pagesBasePath}worker.js`,
+        (workerUrl) =>
+          new RegExp(
+            `^${pagesBasePath}worker\\.${contentDigestPattern}\\.js$`,
+            "u",
+          ).test(new URL(workerUrl).pathname),
       ),
-      "the page did not create the expected engine worker",
+      "the page did not create the content-addressed engine worker",
     );
-    for (const resource of requiredBrowserResources) {
-      assert.ok(loadedResources.has(resource), `browser did not load ${resource}`);
+    for (const [pattern, label] of requiredBrowserResources) {
+      assert.ok(
+        [...loadedResources].some((resource) => pattern.test(resource)),
+        `browser did not load the content-addressed ${label}`,
+      );
     }
 
     await page.waitForTimeout(100);
@@ -487,6 +623,7 @@ const {
   rejectVerificationAttempt,
   server,
   serverErrors,
+  serveFiles,
   serveGlue,
   url,
 } = await startArtifactServer();
@@ -496,9 +633,33 @@ const fixtureDir = await mkdtemp(
 const expectedCommit =
   process.env.QUICKJS_OXIDE_COMMIT || process.env.GITHUB_SHA || "local";
 const expectedHashes = await hashPagesArtifact(pagesDir);
+const originalApp = await readFile(path.join(pagesDir, "app.js"), "utf8");
 const originalGlue = await readFile(
   path.join(pagesDir, "pkg/quickjs_oxide_web.js"),
 );
+const originalIndex = await readFile(
+  path.join(pagesDir, "index.html"),
+  "utf8",
+);
+const originalWorker = await readFile(
+  path.join(pagesDir, "worker.js"),
+  "utf8",
+);
+const appReference = originalIndex.match(
+  /src="\.\/(app\.[0-9a-f]{64}\.js)"/u,
+);
+const workerReference = originalApp.match(
+  /new Worker\("\.\/(worker\.[0-9a-f]{64}\.js)"/u,
+);
+const wasmReference = originalWorker.match(
+  /const PACKAGE_WASM = "\.\/(pkg\/quickjs_oxide_web_bg\.[0-9a-f]{64}\.wasm)";/u,
+);
+assert.ok(appReference, "built index has no content-addressed app reference");
+assert.ok(workerReference, "built app has no content-addressed worker reference");
+assert.ok(wasmReference, "built worker has no content-addressed WASM reference");
+const contentAddressedAppPath = `${pagesBasePath}${appReference[1]}`;
+const contentAddressedWorkerPath = `${pagesBasePath}${workerReference[1]}`;
+const contentAddressedWasmPath = `${pagesBasePath}${wasmReference[1]}`;
 const grandchildScriptPath = path.join(fixtureDir, "grandchild.mjs");
 const grandchildPidMarkers = [];
 try {
@@ -513,6 +674,66 @@ try {
   );
   await runAcceptance(url, serverErrors);
 
+  const tamperedApp = Buffer.from(originalApp);
+  tamperedApp[0] ^= 1;
+  const appTamperMarker = path.join(fixtureDir, "tampered-app.executed");
+  serveFiles(new Map([
+    [
+      contentAddressedAppPath,
+      { body: tamperedApp, mime: "text/javascript; charset=utf-8" },
+    ],
+  ]));
+  try {
+    await assert.rejects(
+      verifyPagesDeployment({
+        attempts: 1,
+        baseUrl: url,
+        executionMarkerPath: appTamperMarker,
+        expectedCommit,
+        expectedHashes,
+        label: "Tampered app fixture",
+      }),
+      /app\.[0-9a-f]{64}\.js content-address mismatch/,
+    );
+  } finally {
+    serveFiles();
+  }
+  assert.equal(
+    await stat(appTamperMarker).catch(() => null),
+    null,
+    "hash-mismatched app reached the execution child",
+  );
+
+  const tamperedWorker = Buffer.from(originalWorker);
+  tamperedWorker[0] ^= 1;
+  const workerTamperMarker = path.join(fixtureDir, "tampered-worker.executed");
+  serveFiles(new Map([
+    [
+      contentAddressedWorkerPath,
+      { body: tamperedWorker, mime: "text/javascript; charset=utf-8" },
+    ],
+  ]));
+  try {
+    await assert.rejects(
+      verifyPagesDeployment({
+        attempts: 1,
+        baseUrl: url,
+        executionMarkerPath: workerTamperMarker,
+        expectedCommit,
+        expectedHashes,
+        label: "Tampered worker fixture",
+      }),
+      /worker\.[0-9a-f]{64}\.js content-address mismatch/,
+    );
+  } finally {
+    serveFiles();
+  }
+  assert.equal(
+    await stat(workerTamperMarker).catch(() => null),
+    null,
+    "hash-mismatched worker reached the execution child",
+  );
+
   const tamperedGlue = Buffer.from(originalGlue);
   tamperedGlue[0] ^= 1;
   const tamperMarker = path.join(fixtureDir, "tampered-glue.executed");
@@ -526,13 +747,32 @@ try {
       expectedHashes,
       label: "Tampered glue fixture",
     }),
-    /quickjs_oxide_web\.js SHA-256 mismatch/,
+    /quickjs_oxide_web\.[0-9a-f]{64}\.js content-address mismatch/,
   );
   assert.equal(
     await stat(tamperMarker).catch(() => null),
     null,
     "hash-mismatched glue reached the execution child",
   );
+
+  const propagationMarker = path.join(fixtureDir, "propagating-glue.executed");
+  serveGlue(tamperedGlue, null, 1);
+  await verifyPagesDeployment({
+    attempts: 2,
+    baseUrl: url,
+    executionMarkerPath: propagationMarker,
+    expectedCommit,
+    expectedHashes,
+    label: "Propagating glue fixture",
+    retryBaseMs: 1,
+    retryMaxMs: 1,
+  });
+  assert.equal(
+    (await stat(propagationMarker)).isFile(),
+    true,
+    "hash-mismatched glue was not retried before authenticated execution",
+  );
+  await rm(propagationMarker, { force: true });
 
   const mimeMarker = path.join(fixtureDir, "wrong-mime.executed");
   serveGlue(originalGlue, "text/plain; charset=utf-8");
@@ -545,7 +785,7 @@ try {
       expectedHashes,
       label: "Wrong MIME fixture",
     }),
-    /quickjs_oxide_web\.js returned text\/plain/,
+    /quickjs_oxide_web\.[0-9a-f]{64}\.js returned text\/plain/,
   );
   assert.equal(
     await stat(mimeMarker).catch(() => null),
@@ -555,10 +795,7 @@ try {
 
   serveGlue(null);
   const timeoutMarker = path.join(fixtureDir, "request-timeout.executed");
-  delayVerificationPath(
-    `${pagesBasePath}pkg/quickjs_oxide_web_bg.wasm`,
-    250,
-  );
+  delayVerificationPath(contentAddressedWasmPath, 250);
   await assert.rejects(
     verifyPagesDeployment({
       attempts: 1,
@@ -573,7 +810,7 @@ try {
       assert.match(error.message, /attempt 1\/1/);
       assert.match(
         error.message,
-        /quickjs_oxide_web_bg\.wasm fetch failed.*AbortError/s,
+        /quickjs_oxide_web_bg\.[0-9a-f]{64}\.wasm fetch failed.*AbortError/s,
       );
       return true;
     },
@@ -591,14 +828,24 @@ try {
   const commitMarker = path.join(fixtureDir, "wrong-commit.executed");
   await assert.rejects(
     verifyPagesDeployment({
-      attempts: 1,
+      attempts: 2,
       baseUrl: url,
       executionMarkerPath: commitMarker,
       expectedCommit: "definitely-wrong-commit",
       expectedHashes,
       label: "Wrong commit fixture",
+      retryBaseMs: 1,
+      retryMaxMs: 1,
     }),
-    /does not contain build label definitely-wrong-commit/,
+    (error) => {
+      assert.match(error.message, /attempt 1\/2/);
+      assert.doesNotMatch(error.message, /attempt 2\/2/);
+      assert.match(
+        error.message,
+        /does not contain build label definitely-wrong-commit/,
+      );
+      return true;
+    },
   );
   assert.equal(
     await stat(commitMarker).catch(() => null),
@@ -618,18 +865,26 @@ try {
       hang: false,
       pidMarkerPath: returningPidMarker,
     });
-    serveGlue(returningGlue);
-    await verifyPagesDeployment({
-      attempts: 1,
-      baseUrl: url,
-      executionTempRoot: fixtureDir,
-      expectedCommit,
-      expectedHashes: {
-        ...expectedHashes,
-        glueSha256: sha256Bytes(returningGlue),
-      },
-      label: "Returning process-group fixture",
+    const returningGraph = contentAddressedExecutionFixture({
+      appSource: originalApp,
+      expectedHashes,
+      glue: returningGlue,
+      indexSource: originalIndex,
+      workerSource: originalWorker,
     });
+    serveFiles(returningGraph.files);
+    try {
+      await verifyPagesDeployment({
+        attempts: 1,
+        baseUrl: url,
+        executionTempRoot: fixtureDir,
+        expectedCommit,
+        expectedHashes: returningGraph.expectedHashes,
+        label: "Returning process-group fixture",
+      });
+    } finally {
+      serveFiles();
+    }
     await assertProcessExited(
       await readFixturePid(returningPidMarker),
       "normally returning authenticated grandchild",
@@ -654,26 +909,34 @@ try {
         pidMarkerPath: hangingPidMarker,
       });
   const hangingMarker = path.join(fixtureDir, "hanging-glue.executed");
-  serveGlue(hangingGlue);
+  const hangingGraph = contentAddressedExecutionFixture({
+    appSource: originalApp,
+    expectedHashes,
+    glue: hangingGlue,
+    indexSource: originalIndex,
+    workerSource: originalWorker,
+  });
+  serveFiles(hangingGraph.files);
   const hangingTimeoutMs = process.platform === "win32" ? 200 : 1_500;
-  await assert.rejects(
-    verifyPagesDeployment({
-      attempts: 1,
-      baseUrl: url,
-      childTimeoutMs: hangingTimeoutMs,
-      executionMarkerPath: hangingMarker,
-      executionTempRoot: fixtureDir,
-      expectedCommit,
-      expectedHashes: {
-        ...expectedHashes,
-        glueSha256: sha256Bytes(hangingGlue),
-      },
-      label: "Hanging authenticated glue fixture",
-    }),
-    new RegExp(
-      `authenticated WASM child exceeded ${hangingTimeoutMs} ms and was killed`,
-    ),
-  );
+  try {
+    await assert.rejects(
+      verifyPagesDeployment({
+        attempts: 1,
+        baseUrl: url,
+        childTimeoutMs: hangingTimeoutMs,
+        executionMarkerPath: hangingMarker,
+        executionTempRoot: fixtureDir,
+        expectedCommit,
+        expectedHashes: hangingGraph.expectedHashes,
+        label: "Hanging authenticated glue fixture",
+      }),
+      new RegExp(
+        `authenticated WASM child exceeded ${hangingTimeoutMs} ms and was killed`,
+      ),
+    );
+  } finally {
+    serveFiles();
+  }
   assert.equal(
     (await stat(hangingMarker)).isFile(),
     true,
@@ -694,9 +957,10 @@ try {
     "killed authenticated child left an execution directory behind",
   );
   console.log(
-    "Live verifier security fixtures passed: hash/MIME/commit/timeout failures " +
-      "never executed untrusted glue; returning and timed-out authenticated " +
-      "process groups were killed and cleaned.",
+    "Live verifier security fixtures passed: stale hashes were retried without " +
+      "execution; app/worker/glue hash and MIME/commit/timeout failures never " +
+      "executed untrusted code; returning and timed-out authenticated process " +
+      "groups were killed and cleaned.",
   );
 
   serveGlue(null);

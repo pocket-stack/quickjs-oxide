@@ -87,27 +87,43 @@ to the repository's `main` documentation links.
 ## Deployment
 
 `.github/workflows/pages.yml` rebuilds the same artifact on `main`, runs the
-Node anti-delegation/smoke gate and real Chromium acceptance, uploads
-`target/pages`, and deploys it through GitHub's official Pages actions. The
-crate and CLI `wasm-bindgen` versions and Playwright dependency are pinned so
-the browser proof cannot silently drift. The site also ships a project-owned
-social preview image; it contains no runtime claim beyond the visible
-pre-parity target.
+Node anti-delegation/smoke gate and real Chromium acceptance, then uploads
+`target/pages` through GitHub's official artifact action. A small
+repository-owned client obtains the Actions OIDC token, creates the deployment
+with the uploaded artifact ID and exact commit, and polls the Pages REST API.
+Unlike the general deploy action, exhausting this bounded poll never cancels a
+deployment that the Pages backend is still processing. Explicit terminal Pages
+statuses still fail the workflow. Mock-server fixtures cover the create
+payload, success, terminal failure, deferred polling, credential handling, and
+the absence of cancellation requests. The crate and CLI `wasm-bindgen`
+versions and Playwright dependency are pinned so the browser proof cannot
+silently drift. The site also ships a project-owned social preview image; it
+contains no runtime claim beyond the visible pre-parity target.
+
+The deployable index references a fully content-addressed asset chain:
+index to app, app to worker, and worker to the generated glue and WASM. CSS and
+example data use the same scheme. This prevents a Pages CDN edge from combining
+new HTML or JavaScript with a stale fixed-path WASM response while a deployment
+is propagating.
 
 After deployment, a separate read-only job runs `scripts/test-live-pages.mjs`
-without the Pages or OIDC permissions used by the official deploy action. It
-polls the cache-busted public URL with bounded backoff, requires successful
-HTML, JavaScript, and `application/wasm` responses, and byte-matches all three
-assets against SHA-256 values exported by the build job before executing any
-downloaded code. The
-authenticated no-modules binding and WASM then run in a credential-scrubbed
-isolated process group with a hard timeout and temporary-file cleanup. The gate
-accepts only when the package reports the workflow's exact commit and evaluates
-a JavaScript function to the number 42; it never sends that example to host
-`eval` or `Function`. The Chromium gate exercises the same verifier against a
-local artifact server, including hash tamper rejection, bounded process-tree
-termination, credential-scrubbing, cleanup, and stale-deployment retry
-fixtures.
+without Pages-write or OIDC permissions, and it passes no token to the
+verifier. It polls the cache-busted public index with bounded backoff. Only
+after the index matches the build job's SHA-256 does it follow the
+content-addressed app, worker, glue, and `application/wasm` references; every
+downloaded filename must match its bytes, and the glue/WASM digests must also
+match the build outputs.
+No downloaded code runs before that complete chain is authenticated. The
+binding and WASM then run in a credential-scrubbed isolated process group with
+a hard timeout and temporary-file cleanup. If the non-cancelling deployment
+client exhausts its polling window while the Pages backend is still publishing,
+this read-only verifier continues waiting for the exact artifact instead of
+accepting an inconsistent or older deployment. The gate accepts only when the
+package reports the workflow's exact commit and evaluates a JavaScript function
+to the number 42; it never sends that example to host `eval` or `Function`. The
+Chromium gate exercises the same verifier against a local artifact server,
+including hash tamper rejection, bounded process-tree termination,
+credential-scrubbing, cleanup, and stale-deployment retry fixtures.
 
 The playground is a milestone view of an incomplete engine, not a claim of
 complete ECMAScript support. The Test262 scoreboard remains the compatibility

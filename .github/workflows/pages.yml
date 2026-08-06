@@ -18,8 +18,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
+      artifact_id: ${{ steps.pages_artifact.outputs.artifact_id }}
       glue_sha256: ${{ steps.pages_hashes.outputs.glue_sha256 }}
       index_sha256: ${{ steps.pages_hashes.outputs.index_sha256 }}
+      page_url: ${{ steps.pages.outputs.base_url }}
       wasm_sha256: ${{ steps.pages_hashes.outputs.wasm_sha256 }}
     env:
       QUICKJS_OXIDE_COMMIT: ${{ github.sha }}
@@ -63,7 +65,11 @@ jobs:
       - name: Test the final Pages artifact in a real browser
         run: npm run test:browser
 
+      - name: Test the non-cancelling Pages deploy client
+        run: node scripts/test-deploy-pages.mjs
+
       - name: Configure GitHub Pages
+        id: pages
         uses: actions/configure-pages@v6
 
       - name: Authenticate final Pages asset bytes
@@ -78,6 +84,7 @@ jobs:
           echo "wasm_sha256=${wasm_sha256}" >> "$GITHUB_OUTPUT"
 
       - name: Upload GitHub Pages artifact
+        id: pages_artifact
         uses: actions/upload-pages-artifact@v5
         with:
           path: target/pages
@@ -85,26 +92,32 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    outputs:
-      page_url: ${{ steps.deployment.outputs.page_url }}
-    timeout-minutes: 25
+    timeout-minutes: 35
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ needs.build.outputs.page_url }}
     steps:
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Check out non-cancelling deployment client
+        uses: actions/checkout@v6
         with:
-          timeout: 1200000
+          persist-credentials: false
+
+      - name: Create and observe GitHub Pages deployment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          QUICKJS_OXIDE_PAGES_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+          QUICKJS_OXIDE_PAGES_POLL_INTERVAL_MS: "5000"
+          QUICKJS_OXIDE_PAGES_POLL_TIMEOUT_MS: "1500000"
+        run: node scripts/deploy-pages.mjs
 
   verify:
     needs: [build, deploy]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -118,6 +131,10 @@ jobs:
           QUICKJS_OXIDE_COMMIT: ${{ github.sha }}
           QUICKJS_OXIDE_GLUE_SHA256: ${{ needs.build.outputs.glue_sha256 }}
           QUICKJS_OXIDE_INDEX_SHA256: ${{ needs.build.outputs.index_sha256 }}
-          QUICKJS_OXIDE_PAGES_URL: ${{ needs.deploy.outputs.page_url }}
+          QUICKJS_OXIDE_LIVE_ATTEMPTS: "60"
+          QUICKJS_OXIDE_LIVE_RETRY_MAX_MS: "15000"
+          QUICKJS_OXIDE_LIVE_RETRY_MS: "5000"
+          QUICKJS_OXIDE_LIVE_TIMEOUT_MS: "10000"
+          QUICKJS_OXIDE_PAGES_URL: ${{ needs.build.outputs.page_url }}
           QUICKJS_OXIDE_WASM_SHA256: ${{ needs.build.outputs.wasm_sha256 }}
         run: node scripts/test-live-pages.mjs

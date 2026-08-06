@@ -24,6 +24,7 @@ const JAVASCRIPT_MIME_TYPES = new Set([
   "application/javascript",
   "text/javascript",
 ]);
+const CONTENT_DIGEST_PATTERN = "([0-9a-f]{64})";
 const ASSET_SPECS = [
   {
     hashKey: "indexSha256",
@@ -47,6 +48,41 @@ const ASSET_SPECS = [
     repositoryPath: "pkg/quickjs_oxide_web_bg.wasm",
   },
 ];
+const PAGE_SPEC = ASSET_SPECS[0];
+const CONTENT_REFERENCE_SPECS = {
+  app: {
+    mimeTypes: JAVASCRIPT_MIME_TYPES,
+    name: "app",
+    pattern: new RegExp(
+      `src="(\\./app\\.${CONTENT_DIGEST_PATTERN}\\.js)"`,
+      "gu",
+    ),
+  },
+  glue: {
+    mimeTypes: JAVASCRIPT_MIME_TYPES,
+    name: "glue",
+    pattern: new RegExp(
+      `const PACKAGE_SCRIPT = "(\\./pkg/quickjs_oxide_web\\.${CONTENT_DIGEST_PATTERN}\\.js)";`,
+      "gu",
+    ),
+  },
+  wasm: {
+    mimeTypes: new Set(["application/wasm"]),
+    name: "wasm",
+    pattern: new RegExp(
+      `const PACKAGE_WASM = "(\\./pkg/quickjs_oxide_web_bg\\.${CONTENT_DIGEST_PATTERN}\\.wasm)";`,
+      "gu",
+    ),
+  },
+  worker: {
+    mimeTypes: JAVASCRIPT_MIME_TYPES,
+    name: "worker",
+    pattern: new RegExp(
+      `new Worker\\("(\\./worker\\.${CONTENT_DIGEST_PATTERN}\\.js)"`,
+      "gu",
+    ),
+  },
+};
 
 class AuthenticatedArtifactError extends Error {
   constructor(cause) {
@@ -165,6 +201,59 @@ function authenticateAssets(assets, expectedHashes) {
       );
     }
   }
+}
+
+function authenticatedContentReference(source, spec) {
+  const matches = [...source.matchAll(spec.pattern)];
+  if (matches.length !== 1) {
+    throw new Error(
+      `authenticated ${spec.name} parent contains ${matches.length} ` +
+        `content-addressed ${spec.name} reference${matches.length === 1 ? "" : "s"}`,
+    );
+  }
+  return {
+    digest: matches[0][2],
+    mimeTypes: spec.mimeTypes,
+    name: spec.name,
+    relativePath: matches[0][1],
+    repositoryPath: matches[0][1].replace(/^\.\//u, ""),
+  };
+}
+
+function requireExpectedReference(reference, expectedDigest) {
+  if (reference.digest !== expectedDigest) {
+    throw new Error(
+      `authenticated worker references ${reference.repositoryPath} but ` +
+        `the workflow expects SHA-256 ${expectedDigest}`,
+    );
+  }
+}
+
+async function fetchContentAddressedAsset({
+  attempt,
+  baseUrl,
+  expectedCommit,
+  reference,
+  signal,
+}) {
+  const asset = await fetchAsset(
+    reference,
+    cacheBustedUrl(
+      baseUrl,
+      reference.relativePath,
+      expectedCommit,
+      attempt,
+    ),
+    signal,
+  );
+  const actual = sha256Bytes(asset.body);
+  if (actual !== reference.digest) {
+    throw new Error(
+      `${reference.repositoryPath} content-address mismatch; ` +
+        `filename declares ${reference.digest}, received ${actual}`,
+    );
+  }
+  return asset;
 }
 
 function validatePageAndBuildLabel(page, wasm, expectedCommit) {
@@ -390,19 +479,87 @@ async function verifyAttempt({
   const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
 
   try {
-    const entries = await Promise.all(
-      ASSET_SPECS.map(async (spec) => [
-        spec.name,
-        await fetchAsset(
-          spec,
-          cacheBustedUrl(baseUrl, spec.relativePath, expectedCommit, attempt),
-          controller.signal,
-        ),
-      ]),
+    const page = await fetchAsset(
+      PAGE_SPEC,
+      cacheBustedUrl(
+        baseUrl,
+        PAGE_SPEC.relativePath,
+        expectedCommit,
+        attempt,
+      ),
+      controller.signal,
     );
-    const assets = Object.fromEntries(entries);
+    authenticateAssets({ page }, expectedHashes);
 
-    authenticateAssets(assets, expectedHashes);
+    let appReference;
+    try {
+      appReference = authenticatedContentReference(
+        page.body.toString("utf8"),
+        CONTENT_REFERENCE_SPECS.app,
+      );
+    } catch (error) {
+      throw new AuthenticatedArtifactError(error);
+    }
+    const app = await fetchContentAddressedAsset({
+      attempt,
+      baseUrl,
+      expectedCommit,
+      reference: appReference,
+      signal: controller.signal,
+    });
+
+    let workerReference;
+    try {
+      workerReference = authenticatedContentReference(
+        app.body.toString("utf8"),
+        CONTENT_REFERENCE_SPECS.worker,
+      );
+    } catch (error) {
+      throw new AuthenticatedArtifactError(error);
+    }
+    const worker = await fetchContentAddressedAsset({
+      attempt,
+      baseUrl,
+      expectedCommit,
+      reference: workerReference,
+      signal: controller.signal,
+    });
+
+    let glueReference;
+    let wasmReference;
+    try {
+      const workerSource = worker.body.toString("utf8");
+      glueReference = authenticatedContentReference(
+        workerSource,
+        CONTENT_REFERENCE_SPECS.glue,
+      );
+      wasmReference = authenticatedContentReference(
+        workerSource,
+        CONTENT_REFERENCE_SPECS.wasm,
+      );
+      requireExpectedReference(glueReference, expectedHashes.glueSha256);
+      requireExpectedReference(wasmReference, expectedHashes.wasmSha256);
+    } catch (error) {
+      throw new AuthenticatedArtifactError(error);
+    }
+    const [glue, wasm] = await Promise.all([
+      fetchContentAddressedAsset({
+        attempt,
+        baseUrl,
+        expectedCommit,
+        reference: glueReference,
+        signal: controller.signal,
+      }),
+      fetchContentAddressedAsset({
+        attempt,
+        baseUrl,
+        expectedCommit,
+        reference: wasmReference,
+        signal: controller.signal,
+      }),
+    ]);
+    const assets = { app, glue, page, wasm, worker };
+
     try {
       validatePageAndBuildLabel(
         assets.page.body.toString("utf8"),
