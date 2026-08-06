@@ -4,6 +4,33 @@ Last audited: 2026-08-07. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dv global implemented-leaf admission
+
+R3dv promotes eight already-implemented Test262 features into the live global
+profile: `Array.prototype.values`, `Object.is`, `caller`, `for-of`,
+`json-superset`, `proxy-missing-checks`, `stable-array-sort`, and
+`stable-typedarray-sort`. This is a profile-only admission: runtime, parser,
+VM, host hooks, audited negatives, and execution policy do not change.
+
+The exhaustive pinned union contains 46 paths / 69 variants. Pinned QuickJS
+2026-06-04 passes all 69. The candidate converts 65 variants to passes; four
+also require `destructuring-assignment` and remain fail-closed behind that
+independent feature. The focused transition therefore records 65 pass gains,
+four reason-only changes, and zero regressions.
+
+Across the complete 102,037-variant vector, only those 69 expected rows change
+and the other 101,968 remain unchanged. The canonical vector is now 67,878
+passes / 67,930 runnable. The gate authenticates the pinned upstream, exact
+feature union and partitions, profile-only delta, metadata/source ledger,
+host-hook inventory, QuickJS receipt, focused reports, and full-vector join.
+R3dv remains a pre-parity admission milestone.
+
+```sh
+./scripts/test-test262-implemented-leaves-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-implemented-leaves-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-implemented-leaves-global.sh --full
+```
+
 ## R3du global cross-realm admission
 
 R3du promotes the Test262 `cross-realm` feature into the live global profile.

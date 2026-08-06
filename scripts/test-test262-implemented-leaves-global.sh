@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the R3du global admission of the Test262 `cross-realm` feature tag.
+# Reproduce the R3dv global admission of eight already-implemented Test262 leaf tags.
 
 set -euo pipefail
 export LC_ALL=C
@@ -7,44 +7,44 @@ export TZ=America/Los_Angeles
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
-baseline=tests/test262-cross-realm-global-baseline.txt
-successor_baseline=tests/test262-implemented-leaves-global-baseline.txt
-successor_gate=scripts/test-test262-implemented-leaves-global.sh
+baseline=tests/test262-implemented-leaves-global-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
 upstream=compat/upstream.toml
 live_profile=compat/test262-oxide.conf
-parent_profile=tests/test262-cross-realm-global-parent.conf
-candidate_profile=tests/test262-cross-realm-global-candidate.conf
-successor_parent_profile=tests/test262-implemented-leaves-global-parent.conf
-successor_candidate_profile=tests/test262-implemented-leaves-global-candidate.conf
-universe=tests/test262-cross-realm-global-universe.txt
-activation=tests/test262-cross-realm-global-activation.txt
-retained=tests/test262-cross-realm-global-retained.txt
-feature_skipped=tests/test262-cross-realm-global-feature-skipped.txt
-config_excluded=tests/test262-cross-realm-global-config-excluded.txt
-metadata_projection=tests/test262-cross-realm-global-metadata.tsv
-host_hooks=tests/test262-cross-realm-global-host-hooks.tsv
-ledger=tests/test262-cross-realm-global-ledger.tsv
-quickjs_skipped=tests/test262-cross-realm-global-quickjs-skipped.txt
-quickjs_runnable=tests/test262-cross-realm-global-quickjs-runnable.txt
-quickjs_skips_ledger=tests/test262-cross-realm-global-quickjs-skips.tsv
-quickjs_receipt=tests/test262-cross-realm-global-quickjs-receipt.txt
-parent_report=tests/test262-cross-realm-global-parent.tsv
-candidate_report=tests/test262-cross-realm-global-candidate.tsv
-transition=tests/test262-cross-realm-global-transitions.tsv
+parent_profile=tests/test262-implemented-leaves-global-parent.conf
+candidate_profile=tests/test262-implemented-leaves-global-candidate.conf
+added_features=tests/test262-implemented-leaves-global-added-features.txt
+universe=tests/test262-implemented-leaves-global-universe.txt
+activation=tests/test262-implemented-leaves-global-activation.txt
+retained=tests/test262-implemented-leaves-global-retained.txt
+feature_skipped=tests/test262-implemented-leaves-global-feature-skipped.txt
+config_excluded=tests/test262-implemented-leaves-global-config-excluded.txt
+metadata_projection=tests/test262-implemented-leaves-global-metadata.tsv
+feature_partitions=tests/test262-implemented-leaves-global-feature-partitions.tsv
+host_hooks=tests/test262-implemented-leaves-global-host-hooks.tsv
+ledger=tests/test262-implemented-leaves-global-ledger.tsv
+quickjs_skipped=tests/test262-implemented-leaves-global-quickjs-skipped.txt
+quickjs_runnable=tests/test262-implemented-leaves-global-quickjs-runnable.txt
+quickjs_skips_ledger=tests/test262-implemented-leaves-global-quickjs-skips.tsv
+quickjs_receipt=tests/test262-implemented-leaves-global-quickjs-receipt.txt
+parent_report=tests/test262-implemented-leaves-global-parent.tsv
+candidate_report=tests/test262-implemented-leaves-global-candidate.tsv
+transition=tests/test262-implemented-leaves-global-transitions.tsv
+for_of_oracle=tests/oracle_for_of.rs
+caller_oracle=tests/oracle_function_debug_accessors.rs
+json_oracle=tests/oracle_json_parse.rs
+lexer_source=src/lexer.rs
 workers=${TEST262_WORKERS:-8}
 full_workers=${TEST262_FULL_WORKERS:-2}
 reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
-full_dir=${TEST262_FULL_REPORT_DIR:-target/test262-cross-realm-global-full}
+full_dir=${TEST262_FULL_REPORT_DIR:-target/test262-implemented-leaves-global-full}
 full_parent=${TEST262_FULL_PARENT_REPORT:-$full_dir/parent.tsv}
 full_candidate_a=${TEST262_FULL_CANDIDATE_A_REPORT:-$full_dir/candidate-a.tsv}
 full_candidate_b=${TEST262_FULL_CANDIDATE_B_REPORT:-$full_dir/candidate-b.tsv}
 runner_override=${TEST262_RUNNER:-}
 
-baseline_lines=166
-baseline_sha=769957e7fd64b788117445cc49951f17d5c49d426c8c0458e38a8f907f12a680
-successor_lines=182
-successor_sha=a1c52e7d282ccc4348d8d7b43649a9570198c3d7a8cb55855c8f9efc98416743
+baseline_lines=182
+baseline_sha=a1c52e7d282ccc4348d8d7b43649a9570198c3d7a8cb55855c8f9efc98416743
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -89,7 +89,6 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
-successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -123,7 +122,7 @@ json_result_projection() {
     local report=$1
     awk -v report="$report" '
         function fail(message) {
-            printf "error: R3du JSONL projection %s: %s\n", report, message \
+            printf "error: R3dv JSONL projection %s: %s\n", report, message \
                 >"/dev/stderr"
             exit 2
         }
@@ -270,8 +269,11 @@ check_profiles() {
         "$(value candidate_profile_sha256)"
     check_file "$live_profile" "$(value live_profile_lines)" \
         "$(value live_profile_sha256)"
+    check_file "$added_features" "$(value added_features)" \
+        "$(value added_features_sha256)"
+    sort -c "$added_features" || die 'R3dv added features are not bytewise sorted'
     cmp -s "$candidate_profile" "$live_profile" \
-        || die 'R3du candidate is not byte-identical to the canonical profile'
+        || die 'R3dv candidate is not byte-identical to the canonical profile'
 
     for role in parent candidate; do
         local profile=$parent_profile
@@ -302,7 +304,7 @@ check_profiles() {
         && "$(lines "$tmp/candidate.host-agent-tests")" == "$(value candidate_host_agent_paths)" \
         && "$(sha "$tmp/parent.host-agent-tests")" == "$(value host_agent_paths_sha256)" \
         && "$(sha "$tmp/candidate.host-agent-tests")" == "$(value host_agent_paths_sha256)" ]] \
-        || die 'R3du profile inventory drifted'
+        || die 'R3dv profile inventory drifted'
     comm -13 "$tmp/parent.features" "$tmp/candidate.features" >"$tmp/added.features"
     comm -23 "$tmp/parent.features" "$tmp/candidate.features" >"$tmp/removed.features"
     comm -13 "$tmp/parent.audited-negative-tests" \
@@ -312,17 +314,17 @@ check_profiles() {
     [[ ! -s "$tmp/removed.features" && ! -s "$tmp/removed.negatives" \
         && "$(lines "$tmp/added.features")" == "$(value added_features)" \
         && "$(sha "$tmp/added.features")" == "$(value added_features_sha256)" ]] \
-        || die 'R3du profile removes capability or adds the wrong feature'
-    [[ "$(cat "$tmp/added.features")" == cross-realm \
-        && ! -s "$tmp/added.negatives" ]] \
-        || die 'R3du must add only cross-realm and no negative provenance'
+        || die 'R3dv profile removes capability or adds the wrong feature'
+    diff -u "$added_features" "$tmp/added.features"
+    [[ ! -s "$tmp/added.negatives" ]] \
+        || die 'R3dv must not add negative provenance'
     cmp -s "$tmp/parent.audited-negative-tests" \
         "$tmp/candidate.audited-negative-tests" \
-        || die 'R3du changes audited negative provenance'
+        || die 'R3dv changes audited negative provenance'
     cmp -s "$tmp/parent.execution" "$tmp/candidate.execution" \
-        || die 'R3du changes async execution policy'
+        || die 'R3dv changes async execution policy'
     cmp -s "$tmp/parent.host-agent-tests" "$tmp/candidate.host-agent-tests" \
-        || die 'R3du changes agent host policy'
+        || die 'R3dv changes agent host policy'
 }
 
 verify_manifest() {
@@ -346,6 +348,8 @@ check_manifests_and_receipts() {
     verify_manifest quickjs_runnable "$quickjs_runnable"
     check_file "$metadata_projection" "$(value metadata_projection_lines)" \
         "$(value metadata_projection_sha256)"
+    check_file "$feature_partitions" "$(value feature_partitions_lines)" \
+        "$(value feature_partitions_sha256)"
     check_file "$host_hooks" "$(value host_hooks_lines)" \
         "$(value host_hooks_sha256)"
     check_file "$ledger" "$(value ledger_lines)" "$(value ledger_sha256)"
@@ -362,12 +366,29 @@ check_manifests_and_receipts() {
     check_file "${candidate_report%.tsv}.jsonl" "$(value candidate_jsonl_lines)" \
         "$(value candidate_jsonl_sha256)"
     check_file "$transition" "$(value transition_lines)" "$(value transition_sha256)"
+    check_file "$for_of_oracle" "$(value for_of_oracle_lines)" \
+        "$(value for_of_oracle_sha256)"
+    check_file "$caller_oracle" "$(value caller_oracle_lines)" \
+        "$(value caller_oracle_sha256)"
+    check_file "$json_oracle" "$(value json_oracle_lines)" \
+        "$(value json_oracle_sha256)"
+    check_file "$lexer_source" "$(value lexer_source_lines)" \
+        "$(value lexer_source_sha256)"
+    grep -Fq 'fn for_of_values_match_pinned_quickjs()' "$for_of_oracle" \
+        || die 'R3dv for-of QuickJS differential evidence drifted'
+    grep -Fq 'const ORACLE_PROBE: &str' "$caller_oracle" \
+        && grep -Fq 'fn function_debug_accessors_and_strip_modes_match_quickjs_oracle()' \
+            "$caller_oracle" \
+        || die 'R3dv caller QuickJS source oracle evidence drifted'
+    grep -Fq 'fn json_parse_semantics_match_pinned_quickjs()' "$json_oracle" \
+        && grep -Fq "'\\u{2028}' | '\\u{2029}'" "$lexer_source" \
+        || die 'R3dv JSON/lexer differential evidence drifted'
 
     sort "$activation" "$retained" "$feature_skipped" "$config_excluded" \
         >"$tmp/universe.partition"
     diff -u "$universe" "$tmp/universe.partition"
     [[ -z "$(uniq -d "$tmp/universe.partition")" ]] \
-        || die 'R3du universe partitions overlap'
+        || die 'R3dv universe partitions overlap'
     sort "$activation" "$retained" >"$tmp/runnable.partition"
     diff -u "$quickjs_runnable" "$tmp/runnable.partition"
     sort "$feature_skipped" "$config_excluded" >"$tmp/skipped.partition"
@@ -383,38 +404,70 @@ check_manifests_and_receipts() {
         && "$(awk -F'\t' 'NR>1{s+=$7}END{print s+0}' "$ledger")" \
             == "$(value ledger_variants)" \
         && "$(awk -F'\t' 'NR>1&&$5!=""{n++}END{print n+0}' "$ledger")" == 0 ]] \
-        || die 'R3du source/metadata ledger drifted'
+        || die 'R3dv source/metadata ledger drifted'
     sed -n '2,$p' "$ledger" | cut -f1 | diff -u "$universe" -
     sed -n '2,$p' "$ledger" | cut -f1-6 | diff -u "$metadata_projection" -
-    awk -F'\t' 'NR>1{
-        if(index(","$4",",",cross-realm,")==0||$7!~/^[12]$/ \
-            ||length($8)!=64||$8~/[^0-9a-f]/)exit 2
-        flags=","$3","
-        if(index(flags,",module,")||index(flags,",async,")||$5!=""||$6!="")exit 3
-    }' "$ledger" || die 'R3du ledger carries invalid feature, async, module, or negative metadata'
+    awk -F'\t' '
+        FILENAME==ARGV[1]{supported[$0]=1;next}
+        FILENAME==ARGV[2]{retained[$0]=1;next}
+        FILENAME==ARGV[3]{target[$0]=1;next}
+        FNR==1{next}
+        {
+            count=split($4,features,",");matched=0;unknown=0;leaf=""
+            for(i=1;i<=count;i++){
+                if(features[i] in target){matched++;leaf=features[i]}
+                if(!(features[i] in supported)&&!(features[i] in target)){
+                    if(features[i]!="destructuring-assignment")exit 2
+                    unknown++
+                }
+            }
+            if(matched!=1||length($8)!=64||$8~/[^0-9a-f]/||$5!=""||$6!="")exit 3
+            if(leaf=="caller"){
+                if($3!="noStrict"||$7!=1)exit 4
+            } else if($3!=""||$7!=2)exit 5
+            if($1 in retained){if(unknown!=1)exit 6}else if(unknown!=0)exit 7
+        }
+    ' "$tmp/parent.features" "$retained" "$added_features" "$ledger" \
+        || die 'R3dv ledger carries invalid leaf, co-feature, flag, or negative metadata'
+    {
+        printf 'feature\tpaths\tvariants\n'
+        awk -F'\t' 'BEGIN{OFS="\t"}
+            NR==FNR{wanted[$0]=1;next} FNR==1{next}
+            {
+                count=split($4,features,",");matched=0
+                for(i=1;i<=count;i++)if(features[i] in wanted){
+                    paths[features[i]]++;variants[features[i]]+=$7;matched++
+                }
+                if(matched!=1)exit 2
+            }
+            END{for(feature in paths)print feature,paths[feature],variants[feature]}' \
+            "$added_features" "$ledger" | sort
+    } >"$tmp/feature-partitions.tsv"
+    diff -u "$feature_partitions" "$tmp/feature-partitions.tsv"
     cut -f1 "$host_hooks" | diff -u "$universe" -
     [[ "$(awk -F'\t' '$2=="$262.createRealm"{n++}END{print n+0}' "$host_hooks")" \
             == "$(value host_create_realm_paths)" \
         && "$(awk -F'\t' '$2==""{n++}END{print n+0}' "$host_hooks")" \
             == "$(value host_hook_free_paths)" ]] \
-        || die 'R3du frozen host-hook inventory drifted'
-    awk -F'\t' '$2!=""&&$2!="$262.createRealm"{exit 2}' "$host_hooks" \
-        || die 'R3du universe requires an unexpected host hook'
+        || die 'R3dv frozen host-hook inventory drifted'
+    awk -F'\t' '$2!=""{exit 2}' "$host_hooks" \
+        || die 'R3dv universe requires a host hook'
 
     for key in quickjs universe_paths universe_variants feature_skipped_paths \
         feature_skipped_variants config_excluded_paths config_excluded_variants \
         runnable_paths executed_variants passes failures replays replay_status \
-        log_lines log_sha256; do
+        log_lines log_projection_lines log_projection_sha256 \
+        linux_arm64_log_sha256 macos_arm64_log_sha256; do
         [[ "$(value_from "$quickjs_receipt" "$key")" \
                 == "$(value "quickjs_receipt_$key")" ]] \
-            || die "R3du QuickJS receipt field drifted: $key"
+            || die "R3dv QuickJS receipt field drifted: $key"
     done
 
     verify_report "$parent_report" "$(value parent_profile_sha256)" parent
     verify_report "$candidate_report" "$(value candidate_profile_sha256)" candidate
     [[ "$(awk -F'\t' '!/^#/&&$1!="path"{print}' "$transition" | sha_stream)" \
             == "$(value transition_data_sha256)" ]] \
-        || die 'R3du transition data drifted'
+        || die 'R3dv transition data drifted'
 }
 
 derive_metadata_and_sources() {
@@ -424,10 +477,14 @@ derive_metadata_and_sources() {
         || die 'pinned exhaustive Test262 metadata drifted'
     tr '\0' '\t' <"$tmp/metadata.bin" >"$tmp/metadata.tsv"
     awk -F'\t' 'function has(list,value){return index(","list",",","value",")!=0}
-        has($4,"cross-realm"){print $1}' "$tmp/metadata.tsv" | sort -u >"$tmp/universe"
+        NR==FNR{wanted[$0]=1;next}
+        {for(feature in wanted)if(has($4,feature)){print $1;next}}' \
+        "$added_features" "$tmp/metadata.tsv" | sort -u >"$tmp/universe"
     diff -u "$universe" "$tmp/universe"
     awk -F'\t' 'function has(list,value){return index(","list",",","value",")!=0}
-        has($4,"cross-realm"){print}' "$tmp/metadata.tsv" | sort \
+        NR==FNR{wanted[$0]=1;next}
+        {for(feature in wanted)if(has($4,feature)){print;next}}' \
+        "$added_features" "$tmp/metadata.tsv" | sort \
         >"$tmp/metadata-projection.tsv"
     diff -u "$metadata_projection" "$tmp/metadata-projection.tsv"
 
@@ -442,15 +499,21 @@ derive_metadata_and_sources() {
         {at=index($0,prefix);if(!at)exit 2;print substr($0,at+length(prefix)),$1}' \
         "$tmp/source-hashes.raw" | sort >"$tmp/source-hashes.tsv"
     awk -F'\t' 'BEGIN{OFS="\t"}
-        NR==FNR{hash[$1]=$2;next}
+        FILENAME==ARGV[1]{hash[$1]=$2;next}
+        FILENAME==ARGV[2]{wanted[$0]=1;next}
         function has(list,value){return index(","list",",","value",")!=0}
-        has($4,"cross-realm"){
+        {
+            matched=0
+            for(feature in wanted)if(has($4,feature))matched++
+            if(!matched)next
+            if(matched!=1)exit 4
             variants=(has($3,"module")||has($3,"noStrict")||has($3,"raw")||has($3,"onlyStrict"))?1:2
             if(!($1 in hash))exit 2
             print $1,$2,$3,$4,$5,$6,variants,hash[$1];seen[$1]=1
         }
         END{for(test_path in hash)if(!(test_path in seen))exit 3}
-    ' "$tmp/source-hashes.tsv" "$tmp/metadata.tsv" | sort >"$tmp/ledger.rows"
+    ' "$tmp/source-hashes.tsv" "$added_features" "$tmp/metadata.tsv" \
+        | sort >"$tmp/ledger.rows"
     {
         printf 'path\tincludes\tflags\tfeatures\tnegative_phase\tnegative_type\tvariants\tsource_sha256\n'
         sed -n '1,$p' "$tmp/ledger.rows"
@@ -459,12 +522,11 @@ derive_metadata_and_sources() {
 
     : >"$tmp/host-hooks.tsv"
     while IFS= read -r test_path; do
-        local source=$suite/$test_path hook=
-        if grep -Fq '$262.createRealm' "$source"; then hook='$262.createRealm'; fi
-        if grep -Eq '\$262\.(agent|evalScript)|\$DONE' "$source"; then
-            die "R3du source requires an unaudited host or async hook: $test_path"
+        local source=$suite/$test_path
+        if grep -Eq '\$262\.|\$DONE' "$source"; then
+            die "R3dv source requires a host or async hook: $test_path"
         fi
-        printf '%s\t%s\n' "$test_path" "$hook" >>"$tmp/host-hooks.tsv"
+        printf '%s\t\n' "$test_path" >>"$tmp/host-hooks.tsv"
     done <"$universe"
     diff -u "$host_hooks" "$tmp/host-hooks.tsv"
 
@@ -515,7 +577,7 @@ derive_metadata_and_sources() {
     diff -u "$feature_skipped" "$tmp/feature-skipped"
     diff -u "$config_excluded" "$tmp/config-excluded"
     [[ -z "$(comm -12 "$tmp/feature-skipped" "$tmp/config-excluded")" ]] \
-        || die 'R3du QuickJS feature and config skip partitions overlap'
+        || die 'R3dv QuickJS feature and config skip partitions overlap'
     awk -F'\t' 'NR==FNR{excluded[$1]=1;next}
         !($1=="feature"&&($3 in excluded)){print}' \
         "$tmp/config-excluded" "$tmp/quickjs-skip-occurrences" \
@@ -544,8 +606,9 @@ derive_activation_and_retained() {
 }
 
 verify_quickjs() {
-    local log_a=$root/target/test262-cross-realm-global-quickjs-a.log
-    local log_b=$root/target/test262-cross-realm-global-quickjs-b.log test_path
+    local log_a=$root/target/test262-implemented-leaves-global-quickjs-a.log
+    local log_b=$root/target/test262-implemented-leaves-global-quickjs-b.log test_path
+    local platform_log_sha=
     local -a files=()
     while IFS= read -r test_path; do files+=("test262/$test_path"); done <"$quickjs_runnable"
     [[ -x "$source_dir/run-test262" ]] \
@@ -556,18 +619,32 @@ verify_quickjs() {
             && ./run-test262 -m -c test262.conf -a -T "$workers" -f "${files[@]}") \
             >"$log" 2>&1; then
             tail -n 100 "$log" >&2
-            die 'pinned QuickJS could not execute the cross-realm runnable partition'
+            die 'pinned QuickJS could not execute the implemented leaf universe'
         fi
         if grep -Eq '(^|[[:space:]])FAILED($|[[:space:]])' "$log" \
             || ! grep -Fq "Average memory statistics for $(value quickjs_executed_variants) tests:" "$log" \
             || [[ "$(lines "$log")" != "$(value quickjs_log_lines)" ]]; then
             tail -n 100 "$log" >&2
-            die 'pinned QuickJS cross-realm result drifted'
+            die 'pinned QuickJS implemented leaf result drifted'
         fi
+        awk '/^test262\.conf:.* ignoring testdir=/{print}
+            /^Average memory statistics for [0-9]+ tests:/{print}' "$log" \
+            >"$tmp/$(basename "$log").projection"
+        [[ "$(lines "$tmp/$(basename "$log").projection")" \
+                == "$(value quickjs_log_projection_lines)" \
+            && "$(sha "$tmp/$(basename "$log").projection")" \
+                == "$(value quickjs_log_projection_sha256)" ]] \
+            || die 'pinned QuickJS semantic log projection drifted'
     done
     [[ ! -L "$log_a" && ! -L "$log_b" && ! "$log_a" -ef "$log_b" ]] \
-        || die 'R3du QuickJS replay logs must be distinct regular files'
-    cmp -s "$log_a" "$log_b" || die 'R3du QuickJS replays are not byte-identical'
+        || die 'R3dv QuickJS replay logs must be distinct regular files'
+    cmp -s "$log_a" "$log_b" || die 'R3dv QuickJS replays are not byte-identical'
+    case "$(uname -s)-$(uname -m)" in
+        Darwin-arm64) platform_log_sha=$(value quickjs_macos_arm64_log_sha256) ;;
+        Linux-aarch64) platform_log_sha=$(value quickjs_linux_arm64_log_sha256) ;;
+    esac
+    [[ -z "$platform_log_sha" || "$(sha "$log_a")" == "$platform_log_sha" ]] \
+        || die 'R3dv QuickJS platform receipt drifted'
 }
 
 transition_counts() {
@@ -583,7 +660,7 @@ transition_counts() {
 make_transition() {
     local before=$1 after=$2 output=$3
     {
-        printf '%s\n' '# Exhaustive R3du global cross-realm feature admission transition.'
+        printf '%s\n' '# Exhaustive R3dv global implemented leaf feature admission transition.'
         printf '# parent_profile_sha256=%s\n' "$(value parent_profile_sha256)"
         printf '# candidate_profile_sha256=%s\n' "$(value candidate_profile_sha256)"
         printf '# universe_sha256=%s\n' "$(value universe_sha256)"
@@ -616,38 +693,61 @@ verify_focused_semantics() {
             == "$(value candidate_skipped_config_exclude)" \
         && "$(report_count unsupported-feature "$candidate_report")" \
             == "$(value candidate_unsupported_feature)" ]] \
-        || die 'R3du focused outcome counts drifted'
-    awk -F'\t' 'NR==FNR{wanted[$1]=1;next}
-        !/^#/&&$1!="path"&&($1 in wanted)&&
-        !($7=="unsupported-feature"&&$8=="selection"&&$9=="EngineCapability" \
-          &&$10=="quickjs-oxide does not declare Test262 feature support: cross-realm"){exit 2}' \
-        "$activation" "$parent_report" \
-        || die 'R3du parent activation frontier drifted'
+        || die 'R3dv focused outcome counts drifted'
+    awk -F'\t' '
+        FILENAME==ARGV[1]{target[$0]=1;next}
+        FILENAME==ARGV[2]{retained[$0]=1;next}
+        FILENAME==ARGV[3]{
+            if(FNR==1)next
+            count=split($4,features,",");matched=0
+            for(i=1;i<=count;i++)if(features[i] in target){
+                leaf[$1]=features[i];matched++
+            }
+            if(matched!=1)exit 2
+            next
+        }
+        !/^#/&&$1!="path"{
+            if(!($7=="unsupported-feature"&&$8=="selection"&&$9=="EngineCapability"))exit 3
+            prefix="quickjs-oxide does not declare Test262 feature support: "
+            if(index($10,prefix)!=1)exit 4
+            missing=substr($10,length(prefix)+1)
+            count=split(missing,features,", ")
+            expected=($1 in retained)?2:1
+            if(count!=expected)exit 5
+            matched=0;extra=0
+            for(i=1;i<=count;i++){
+                if(features[i]==leaf[$1])matched++
+                else if(($1 in retained)&&features[i]=="destructuring-assignment")extra++
+                else exit 6
+            }
+            if(matched!=1||extra!=(($1 in retained)?1:0))exit 7
+        }' "$added_features" "$retained" "$ledger" "$parent_report" \
+        || die 'R3dv parent leaf frontier drifted'
     awk -F'\t' 'NR==FNR{wanted[$1]=1;next}
         !/^#/&&$1!="path"&&($1 in wanted)&&
         !($7=="pass"&&$8==$5&&$9==$6){exit 2}' \
         "$activation" "$candidate_report" \
-        || die 'R3du candidate activation semantics drifted'
+        || die 'R3dv candidate activation semantics drifted'
     awk -F'\t' 'NR==FNR{wanted[$1]=1;next}
         !/^#/&&$1!="path"&&($1 in wanted){
             if(!($7=="unsupported-feature"&&$8=="selection"&&$9=="EngineCapability") \
-                ||$10!~/^quickjs-oxide does not declare Test262 feature support: (class-methods-private|class-static-fields-private|class-static-methods-private|regexp-v-flag)$/)exit 2
-            if($10~/regexp-v-flag$/)regexp++;else private_class++
+                ||$10!="quickjs-oxide does not declare Test262 feature support: destructuring-assignment")exit 2
+            variants++
         }
-        END{if(regexp!=2||private_class!=13)exit 3}' \
+        END{if(variants!=4)exit 3}' \
         "$retained" "$candidate_report" \
-        || die 'R3du retained feature frontier drifted'
+        || die 'R3dv retained feature frontier drifted'
     awk -F'\t' 'NR==FNR{wanted[$1]=1;next}
         !/^#/&&$1!="path"&&($1 in wanted)&&$7!="skipped-feature"{exit 2}' \
         "$feature_skipped" "$candidate_report" \
-        || die 'R3du QuickJS feature-skip semantics drifted'
+        || die 'R3dv QuickJS feature-skip semantics drifted'
     awk -F'\t' 'NR==FNR{wanted[$1]=1;next}
         !/^#/&&$1!="path"&&($1 in wanted)&&$7!="skipped-config-exclude"{exit 2}' \
         "$config_excluded" "$candidate_report" \
-        || die 'R3du QuickJS config-exclude semantics drifted'
+        || die 'R3dv QuickJS config-exclude semantics drifted'
     local expected="changed=$(value transition_changed) outcome=$(value transition_outcome_changed) detail=$(value transition_detail_only) unchanged=$(value transition_unchanged) gains=$(value transition_pass_gains) regressions=$(value transition_pass_regressions)"
     [[ "$(transition_counts "$transition")" == "$expected" ]] \
-        || die 'R3du focused transition counts drifted'
+        || die 'R3dv focused transition counts drifted'
 }
 
 run_report() {
@@ -700,7 +800,7 @@ verify_full_join() {
     diff -u "$tmp/full-parent-outside.rows" "$tmp/full-candidate-outside.rows"
     [[ "$(lines "$tmp/full-parent-scope.rows")" == "$(value full_scope_variants)" \
         && "$(lines "$tmp/full-parent-outside.rows")" == "$(value full_outside_variants)" ]] \
-        || die 'R3du full scope partition drifted'
+        || die 'R3dv full scope partition drifted'
     counts=$(awk -F'\t' -v parent="$parent" '
         FILENAME==parent{if(!/^#/&&!($1=="path"&&$2=="variant")){old[$1 FS $2]=$0;before++}next}
         !/^#/&&!($1=="path"&&$2=="variant"){
@@ -713,119 +813,13 @@ verify_full_join() {
         END{for(key in old)if(!(key in seen))exit 4
             printf "changed=%d outcome=%d detail=%d unchanged=%d gains=%d regressions=%d", \
                 changed,outcome,detail,before-changed,gains,regressions}
-    ' "$parent" "$candidate") || die 'R3du full exact join failed'
+    ' "$parent" "$candidate") || die 'R3dv full exact join failed'
     expected="changed=$(value full_changed) outcome=$(value full_outcome_changed) detail=$(value full_detail_only) unchanged=$(value full_unchanged) gains=$(value full_pass_gains) regressions=$(value full_pass_regressions)"
-    [[ "$counts" == "$expected" ]] || die "R3du full transition drifted: $counts"
-}
-
-bridge_r3dv_successor() {
-    [[ "$(canonical_value tsv_sha256)" != "$(value full_candidate_tsv_sha256)" ]] \
-        || return 0
-
-    check_file "$baseline" "$baseline_lines" "$baseline_sha"
-    check_file "$parent_profile" "$(value parent_profile_lines)" \
-        "$(value parent_profile_sha256)"
-    check_file "$candidate_profile" "$(value candidate_profile_lines)" \
-        "$(value candidate_profile_sha256)"
-    check_file "$universe" "$(value universe_paths)" "$(value universe_sha256)"
-    check_file "$activation" "$(value activation_paths)" "$(value activation_sha256)"
-    check_file "$retained" "$(value retained_paths)" "$(value retained_sha256)"
-    check_file "$feature_skipped" "$(value feature_skipped_paths)" \
-        "$(value feature_skipped_sha256)"
-    check_file "$config_excluded" "$(value config_excluded_paths)" \
-        "$(value config_excluded_sha256)"
-    check_file "$metadata_projection" "$(value metadata_projection_lines)" \
-        "$(value metadata_projection_sha256)"
-    check_file "$host_hooks" "$(value host_hooks_lines)" "$(value host_hooks_sha256)"
-    check_file "$ledger" "$(value ledger_lines)" "$(value ledger_sha256)"
-    check_file "$quickjs_receipt" "$(value quickjs_receipt_lines)" \
-        "$(value quickjs_receipt_sha256)"
-    check_file "$quickjs_skips_ledger" "$(value quickjs_skips_ledger_lines)" \
-        "$(value quickjs_skips_ledger_sha256)"
-    check_file "$parent_report" "$(value parent_report_lines)" \
-        "$(value parent_tsv_sha256)"
-    check_file "${parent_report%.tsv}.jsonl" "$(value parent_jsonl_lines)" \
-        "$(value parent_jsonl_sha256)"
-    check_file "$candidate_report" "$(value candidate_report_lines)" \
-        "$(value candidate_tsv_sha256)"
-    check_file "${candidate_report%.tsv}.jsonl" "$(value candidate_jsonl_lines)" \
-        "$(value candidate_jsonl_sha256)"
-    check_file "$transition" "$(value transition_lines)" "$(value transition_sha256)"
-
-    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
-    check_file "$successor_parent_profile" \
-        "$(successor_value parent_profile_lines)" \
-        "$(successor_value parent_profile_sha256)"
-    check_file "$successor_candidate_profile" \
-        "$(successor_value candidate_profile_lines)" \
-        "$(successor_value candidate_profile_sha256)"
-    check_file "$canonical_baseline" 8 \
-        "$(successor_value canonical_full_baseline_sha256)"
-    [[ -x "$successor_gate" \
-        && "$(successor_value quickjs)" == "$(value quickjs)" \
-        && "$(successor_value test262)" == "$(value test262)" \
-        && "$(successor_value test262_patch_sha256)" \
-            == "$(value test262_patch_sha256)" \
-        && "$(successor_value test262_config_sha256)" \
-            == "$(value test262_config_sha256)" \
-        && "$(successor_value test262_metadata_sha256)" \
-            == "$(value test262_metadata_sha256)" \
-        && "$(successor_value schema)" == "$(value schema)" \
-        && "$(successor_value mode)" == "$(value mode)" \
-        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
-        && "$(successor_value parent_commit)" \
-            == 6ae0c04c96deef4f7c9b58bb47c616628f35e0c9 \
-        && "$(successor_value parent_canonical_baseline_sha256)" \
-            == "$(value canonical_full_baseline_sha256)" \
-        && "$(successor_value parent_profile_sha256)" \
-            == "$(value candidate_profile_sha256)" \
-        && "$(successor_value full_variants)" == "$(value full_variants)" \
-        && "$(successor_value full_keys_sha256)" == "$(value full_keys_sha256)" \
-        && "$(successor_value full_parent_runnable)" \
-            == "$(value full_candidate_runnable)" \
-        && "$(successor_value full_parent_passes)" \
-            == "$(value full_candidate_passes)" \
-        && "$(successor_value full_parent_tsv_sha256)" \
-            == "$(value full_candidate_tsv_sha256)" \
-        && "$(successor_value full_parent_jsonl_sha256)" \
-            == "$(value full_candidate_jsonl_sha256)" \
-        && "$(successor_value full_parent_summary)" \
-            == "$(value full_candidate_summary)" \
-        && "$(successor_value full_candidate_runnable)" \
-            == "$(canonical_value runnable)" \
-        && "$(successor_value full_candidate_passes)" \
-            == "$(canonical_value passes)" \
-        && "$(successor_value full_candidate_tsv_sha256)" \
-            == "$(canonical_value tsv_sha256)" \
-        && "$(successor_value full_candidate_jsonl_sha256)" \
-            == "$(canonical_value jsonl_sha256)" \
-        && "$(successor_value full_candidate_summary)" \
-            == "$(canonical_value summary)" \
-        && "$(successor_value full_changed)" == 69 \
-        && "$(successor_value full_outcome_changed)" == 65 \
-        && "$(successor_value full_detail_only)" == 4 \
-        && "$(successor_value full_unchanged)" == 101968 \
-        && "$(successor_value full_pass_gains)" == 65 \
-        && "$(successor_value full_pass_regressions)" == 0 \
-        && "$(successor_value full_candidate_replay_status)" == passed-twice \
-        && "$(successor_value full_candidate_replays)" == 2 ]] \
-        || die 'R3dv successor does not checksum-bridge the historical R3du receipt'
-    cmp -s "$candidate_profile" "$successor_parent_profile" \
-        || die 'R3dv parent profile is not byte-identical to the R3du candidate'
-    cmp -s "$successor_candidate_profile" "$live_profile" \
-        || die 'live profile is not byte-identical to the R3dv candidate'
-    case $mode in
-        check) "$successor_gate" --check ;;
-        focused) "$successor_gate" ;;
-        full) "$successor_gate" --full ;;
-    esac
-    echo 'Historical R3du cross-realm receipt is checksum-bridged through the R3dv implemented leaf admission.'
-    exit 0
+    [[ "$counts" == "$expected" ]] || die "R3dv full transition drifted: $counts"
 }
 
 cd -- "$root"
-bridge_r3dv_successor
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-cross-realm-global.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-implemented-leaves-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 check_file "$baseline" "$baseline_lines" "$baseline_sha"
 check_file "$upstream" "$(value upstream_lines)" "$(value upstream_sha256)"
@@ -846,14 +840,14 @@ parent_commit=$(value parent_commit)
 parent_profile_snapshot=$tmp/parent-commit-profile.conf
 parent_canonical_snapshot=$tmp/parent-commit-canonical-baseline.txt
 git cat-file -e "${parent_commit}^{commit}" 2>/dev/null \
-    || die "R3du parent commit is unavailable: $parent_commit"
+    || die "R3dv parent commit is unavailable: $parent_commit"
 git show "${parent_commit}:${live_profile}" >"$parent_profile_snapshot" 2>/dev/null \
-    || die "R3du parent commit has no $live_profile snapshot"
+    || die "R3dv parent commit has no $live_profile snapshot"
 cmp -s "$parent_profile" "$parent_profile_snapshot" \
-    || die 'R3du parent profile does not match its recorded commit'
+    || die 'R3dv parent profile does not match its recorded commit'
 git show "${parent_commit}:${canonical_baseline}" \
     >"$parent_canonical_snapshot" 2>/dev/null \
-    || die "R3du parent commit has no $canonical_baseline snapshot"
+    || die "R3dv parent commit has no $canonical_baseline snapshot"
 check_file "$parent_canonical_snapshot" \
     "$(value parent_canonical_baseline_lines)" \
     "$(value parent_canonical_baseline_sha256)"
@@ -870,7 +864,7 @@ check_file "$parent_canonical_snapshot" \
         == "$(value full_parent_jsonl_sha256)" \
     && "$(value_from "$parent_canonical_snapshot" summary)" \
         == "$(value full_parent_summary)" ]] \
-    || die 'R3du parent canonical receipt does not match its recorded commit'
+    || die 'R3dv parent canonical receipt does not match its recorded commit'
 [[ "$(sha "$canonical_baseline")" == "$(value canonical_full_baseline_sha256)" \
     && "$(canonical_value schema)" == "$(value schema)" \
     && "$(canonical_value timeout_ms)" == "$(value timeout_ms)" \
@@ -880,7 +874,7 @@ check_file "$parent_canonical_snapshot" \
     && "$(canonical_value tsv_sha256)" == "$(value full_candidate_tsv_sha256)" \
     && "$(canonical_value jsonl_sha256)" == "$(value full_candidate_jsonl_sha256)" \
     && "$(canonical_value summary)" == "$(value full_candidate_summary)" ]] \
-    || die 'canonical full baseline is not the admitted R3du candidate'
+    || die 'canonical full baseline is not the admitted R3dv candidate'
 check_profiles
 check_manifests_and_receipts
 
@@ -902,7 +896,7 @@ derive_metadata_and_sources
 derive_activation_and_retained
 verify_quickjs
 if [[ "$mode" == check ]]; then
-    echo 'R3du cross-realm inputs verified: 201 paths / 394 variants; QuickJS 338/338 executed + 36 feature-skipped + 20 config-excluded.'
+    echo 'R3dv implemented leaf inputs verified: 46 paths / 69 variants; QuickJS 69/69 executed with no skips.'
     exit 0
 fi
 
@@ -918,7 +912,7 @@ make_transition "$tmp/parent.tsv" "$tmp/candidate.tsv" "$tmp/transition.tsv"
 diff -u "$transition" "$tmp/transition.tsv"
 verify_focused_semantics
 if [[ "$mode" != full ]]; then
-    echo 'R3du cross-realm focused semantics pass: 323 pass, 15 retained unsupported, 36 feature-skipped, 20 config-excluded.'
+    echo 'R3dv implemented leaf focused semantics pass: 65 pass, 4 destructuring-assignment variants retained unsupported.'
     exit 0
 fi
 
@@ -936,18 +930,18 @@ verify_full_report "$full_candidate_b" "$(value candidate_profile_sha256)" \
 [[ ! -L "$full_candidate_a" && ! -L "$full_candidate_b" \
     && ! -L "${full_candidate_a%.tsv}.jsonl" \
     && ! -L "${full_candidate_b%.tsv}.jsonl" ]] \
-    || die 'R3du candidate full receipts must not be symbolic links'
+    || die 'R3dv candidate full receipts must not be symbolic links'
 if [[ "$full_candidate_a" -ef "$full_candidate_b" \
     || "${full_candidate_a%.tsv}.jsonl" -ef "${full_candidate_b%.tsv}.jsonl" ]]; then
-    die 'R3du candidate full receipts must be distinct files'
+    die 'R3dv candidate full receipts must be distinct files'
 fi
 cmp -s "$full_candidate_a" "$full_candidate_b" \
     && cmp -s "${full_candidate_a%.tsv}.jsonl" "${full_candidate_b%.tsv}.jsonl" \
-    || die 'R3du candidate full replays are not byte-identical'
+    || die 'R3dv candidate full replays are not byte-identical'
 [[ "$(value full_candidate_replay_status)" == passed-twice \
     && "$(value full_candidate_replays)" == 2 ]] \
-    || die 'R3du candidate replay certificate drifted'
+    || die 'R3dv candidate replay certificate drifted'
 verify_full_join "$full_parent" "$full_candidate_a"
-printf 'R3du cross-realm full semantics pass: parent=%s candidate=%s candidate_json=%s\n' \
+printf 'R3dv implemented leaf full semantics pass: parent=%s candidate=%s candidate_json=%s\n' \
     "$(sha "$full_parent")" "$(sha "$full_candidate_a")" \
     "$(sha "${full_candidate_a%.tsv}.jsonl")"

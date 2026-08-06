@@ -6,6 +6,33 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-07.
 
+## R3dv global implemented-leaf admission
+
+R3dv freezes the complete 46-path / 69-variant union carrying any of these
+eight already-implemented Test262 features: `Array.prototype.values`,
+`Object.is`, `caller`, `for-of`, `json-superset`, `proxy-missing-checks`,
+`stable-array-sort`, and `stable-typedarray-sort`. The exact feature
+partitions, ordered variants, metadata, source ledger, host-hook inventory,
+and profile transition are checksum-bound by the milestone gate.
+
+Pinned QuickJS 2026-06-04 runs and passes all 69 variants. The candidate
+profile adds exactly the eight feature names; runtime, parser, VM, host hooks,
+audited negatives, and execution policy remain unchanged. Oxide gains 65
+global passes. Four variants also require the independent
+`destructuring-assignment` feature, so they remain gated instead of being
+counted as implementation passes.
+
+The complete 102,037-variant join changes only the 69 expected rows: 65 gain
+passes, four lose only the newly admitted leaf reason, and the other 101,968
+are unchanged. The canonical baseline is now 67,878 passes / 67,930 runnable.
+This remains a progress instrument, not a Feature Parity claim.
+
+```sh
+./scripts/test-test262-implemented-leaves-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-implemented-leaves-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-implemented-leaves-global.sh --full
+```
+
 ## R3du global cross-realm admission
 
 R3du freezes the complete Test262 universe carrying `cross-realm`: 201 paths /

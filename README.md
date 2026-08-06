@@ -8,16 +8,17 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-The latest conformance milestone globally admits Test262 `cross-realm` after
-auditing its complete 201-path / 394-variant universe. Pinned QuickJS passes
-all 338 runnable variants and skips 56 by feature or configuration; Oxide gains
-323 global passes while 15 private-class or `regexp-v` co-feature variants stay
-fail-closed. This is a profile-only admission: runtime and host hooks do not
-change, and the full Feature Parity goal remains unchanged.
+The latest conformance milestone globally admits eight already-implemented
+Test262 leaf features: `Array.prototype.values`, `Object.is`, `caller`,
+`for-of`, `json-superset`, `proxy-missing-checks`, `stable-array-sort`, and
+`stable-typedarray-sort`. Their complete union is 46 paths / 69 variants:
+pinned QuickJS passes 69/69, while Oxide gains 65 global passes and keeps four
+`destructuring-assignment` co-feature variants fail-closed. This is a
+profile-only admission; the full Feature Parity goal remains unchanged.
 
-The latest audited global vector is 67,813 passes / 67,865 runnable / 102,037
-total variants, with 323 pass gains and zero regressions. Detailed hashes,
-partitions, and historical bookkeeping live in the status documents below.
+The latest audited global vector is 67,878 passes / 67,930 runnable / 102,037
+total variants. Detailed hashes, partitions, and historical bookkeeping live
+in the status documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The

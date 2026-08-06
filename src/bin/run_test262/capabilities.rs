@@ -387,6 +387,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-cross-realm-global-candidate.conf"
     ));
+    const IMPLEMENTED_LEAVES_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-implemented-leaves-global-parent.conf"
+    ));
+    const IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-implemented-leaves-global-candidate.conf"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -595,12 +603,13 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 135] = [
+    const EXPECTED_FEATURES: [&str; 143] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
         "Array.prototype.flatMap",
         "Array.prototype.includes",
+        "Array.prototype.values",
         "ArrayBuffer",
         "Atomics",
         "Atomics.pause",
@@ -627,6 +636,7 @@ mod tests {
         "Math.sumPrecise",
         "Object.fromEntries",
         "Object.hasOwn",
+        "Object.is",
         "Promise",
         "Promise.allSettled",
         "Promise.any",
@@ -683,6 +693,7 @@ mod tests {
         "arrow-function",
         "async-functions",
         "async-iteration",
+        "caller",
         "change-array-by-copy",
         "class",
         "coalesce-expression",
@@ -694,6 +705,7 @@ mod tests {
         "error-cause",
         "exponentiation",
         "for-in-order",
+        "for-of",
         "generators",
         "globalThis",
         "hashbang",
@@ -703,6 +715,7 @@ mod tests {
         "iterator-helpers",
         "iterator-sequencing",
         "json-parse-with-source",
+        "json-superset",
         "let",
         "logical-assignment-operators",
         "new.target",
@@ -713,6 +726,7 @@ mod tests {
         "optional-chaining",
         "promise-try",
         "promise-with-resolvers",
+        "proxy-missing-checks",
         "regexp-dotall",
         "regexp-duplicate-named-groups",
         "regexp-lookbehind",
@@ -723,6 +737,8 @@ mod tests {
         "resizable-arraybuffer",
         "rest-parameters",
         "set-methods",
+        "stable-array-sort",
+        "stable-typedarray-sort",
         "string-trimming",
         "super",
         "symbols-as-weakmap-keys",
@@ -1947,8 +1963,6 @@ mod tests {
             cross_realm_global_candidate,
             expected_cross_realm_global_candidate
         );
-        assert_eq!(profile, cross_realm_global_candidate);
-        assert_eq!(CHECKED_IN_PROFILE, CROSS_REALM_GLOBAL_CANDIDATE_PROFILE);
         assert_eq!(
             cross_realm_global_candidate
                 .features
@@ -1968,6 +1982,73 @@ mod tests {
         assert_eq!(
             cross_realm_global_candidate.allows_async_execution(),
             cross_realm_global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            IMPLEMENTED_LEAVES_GLOBAL_PARENT_PROFILE,
+            CROSS_REALM_GLOBAL_CANDIDATE_PROFILE
+        );
+        let implemented_leaves_global_parent =
+            OxideProfile::parse(IMPLEMENTED_LEAVES_GLOBAL_PARENT_PROFILE).unwrap();
+        let implemented_leaves_global_candidate =
+            OxideProfile::parse(IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        assert_eq!(
+            implemented_leaves_global_parent,
+            cross_realm_global_candidate
+        );
+        let expected_implemented_leaves = [
+            "Array.prototype.values",
+            "Object.is",
+            "caller",
+            "for-of",
+            "json-superset",
+            "proxy-missing-checks",
+            "stable-array-sort",
+            "stable-typedarray-sort",
+        ];
+        let mut expected_implemented_leaves_global_candidate =
+            implemented_leaves_global_parent.clone();
+        for feature in expected_implemented_leaves {
+            assert!(
+                expected_implemented_leaves_global_candidate
+                    .features
+                    .insert(feature.to_owned())
+            );
+        }
+        assert_eq!(
+            implemented_leaves_global_candidate,
+            expected_implemented_leaves_global_candidate
+        );
+        assert_eq!(profile, implemented_leaves_global_candidate);
+        assert_eq!(
+            CHECKED_IN_PROFILE,
+            IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE
+        );
+        assert_eq!(
+            implemented_leaves_global_candidate
+                .features
+                .difference(&implemented_leaves_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            expected_implemented_leaves
+        );
+        assert!(
+            implemented_leaves_global_parent
+                .features
+                .difference(&implemented_leaves_global_candidate.features)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            implemented_leaves_global_candidate.audited_negative_tests,
+            implemented_leaves_global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            implemented_leaves_global_candidate.host_agent_tests,
+            implemented_leaves_global_parent.host_agent_tests
+        );
+        assert_eq!(
+            implemented_leaves_global_candidate.allows_async_execution(),
+            implemented_leaves_global_parent.allows_async_execution()
         );
         assert_eq!(
             default_parameters_candidate

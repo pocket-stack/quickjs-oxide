@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "4fc0f253f5146025732b7b89b8c0547fa4a268f671373078980b4d07de15860d";
+    "715839a7403d087af41aa2643688e61dc0710897235afa2a99c5418ea1b095d0";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -347,6 +347,12 @@ const TEST262_CROSS_REALM_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "4fc0f253f5146025732b7b89b8c0547fa4a268f671373078980b4d07de15860d";
 const TEST262_CROSS_REALM_GLOBAL_MANIFEST_SHA256: &str =
     "dbff48284d8659486931a76fac06705efd94e118e6531b4f3f6a5df052654986";
+const TEST262_IMPLEMENTED_LEAVES_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "4fc0f253f5146025732b7b89b8c0547fa4a268f671373078980b4d07de15860d";
+const TEST262_IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "715839a7403d087af41aa2643688e61dc0710897235afa2a99c5418ea1b095d0";
+const TEST262_IMPLEMENTED_LEAVES_GLOBAL_MANIFEST_SHA256: &str =
+    "1386a7ea11cfce00663af8bf031cf07b0d668f66964f972d9ad2eb62b7c5729e";
 const TEST262_CREATE_REALM_PROFILE_SHA256: &str =
     "7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30";
 const TEST262_CREATE_REALM_MANIFEST_SHA256: &str =
@@ -1011,6 +1017,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::ClassGlobalCandidate
                     | OxideProfileKind::CrossRealmGlobalParent
                     | OxideProfileKind::CrossRealmGlobalCandidate
+                    | OxideProfileKind::ImplementedLeavesGlobalParent
+                    | OxideProfileKind::ImplementedLeavesGlobalCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1248,6 +1256,8 @@ enum OxideProfileKind {
     ClassGlobalCandidate,
     CrossRealmGlobalParent,
     CrossRealmGlobalCandidate,
+    ImplementedLeavesGlobalParent,
+    ImplementedLeavesGlobalCandidate,
     CreateRealm,
     EvalScript,
     RealmHostsGlobalParent,
@@ -1647,6 +1657,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-cross-realm-global-candidate.conf"),
             OxideProfileKind::CrossRealmGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-implemented-leaves-global-parent.conf"),
+            OxideProfileKind::ImplementedLeavesGlobalParent,
+        ),
+        (
+            root.join("tests/test262-implemented-leaves-global-candidate.conf"),
+            OxideProfileKind::ImplementedLeavesGlobalCandidate,
         ),
         (
             root.join("tests/test262-create-realm.conf"),
@@ -3751,6 +3769,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_CROSS_REALM_GLOBAL_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::ImplementedLeavesGlobalParent => verify_tag_transition_profile(
+            options,
+            "implemented leaf features global admission",
+            "parent",
+            TEST262_IMPLEMENTED_LEAVES_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-implemented-leaves-global-universe.txt",
+                TEST262_IMPLEMENTED_LEAVES_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::ImplementedLeavesGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "implemented leaf features global admission",
+            "candidate",
+            TEST262_IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-implemented-leaves-global-universe.txt",
+                TEST262_IMPLEMENTED_LEAVES_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::CreateRealm => verify_scoped_pinned_manifests(
             options,
             "$262.createRealm host hook",
@@ -4793,6 +4831,8 @@ mod cli_tests {
         TEST262_HTML_COMMENTS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_HTML_COMMENTS_SCOPED_PROFILE_SHA256, TEST262_IDENTIFIER_DEFAULTS_PROFILE_SHA256,
         TEST262_IDENTIFIER_REST_PROFILE_SHA256,
+        TEST262_IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_IMPLEMENTED_LEAVES_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_IS_HTML_DDA_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_IS_HTML_DDA_SCOPED_PROFILE_SHA256,
@@ -5443,6 +5483,20 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-cross-realm-global-candidate.conf"))
                 .unwrap(),
             OxideProfileKind::CrossRealmGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-implemented-leaves-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ImplementedLeavesGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-implemented-leaves-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::ImplementedLeavesGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-create-realm.conf")).unwrap(),
@@ -8855,6 +8909,28 @@ mod cli_tests {
                 &["tests/test262-cross-realm-global-universe.txt"],
                 "tests/test262-cross-realm-global-activation.txt",
                 "test/built-ins/AggregateError/proto-from-ctor-realm.js",
+            );
+        }
+    }
+
+    #[test]
+    fn implemented_leaves_global_profiles_require_the_exact_universe_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-implemented-leaves-global-parent.conf",
+                TEST262_IMPLEMENTED_LEAVES_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-implemented-leaves-global-candidate.conf",
+                TEST262_IMPLEMENTED_LEAVES_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-implemented-leaves-global-universe.txt"],
+                "tests/test262-implemented-leaves-global-activation.txt",
+                "test/built-ins/Object/is/not-a-constructor.js",
             );
         }
     }

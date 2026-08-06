@@ -1,0 +1,8 @@
+Array.prototype.values
+Object.is
+caller
+for-of
+json-superset
+proxy-missing-checks
+stable-array-sort
+stable-typedarray-sort

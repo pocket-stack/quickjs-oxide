@@ -1,0 +1,9 @@
+feature	paths	variants
+Array.prototype.values	4	8
+Object.is	2	4
+caller	23	23
+for-of	5	10
+json-superset	4	8
+proxy-missing-checks	3	6
+stable-array-sort	4	8
+stable-typedarray-sort	1	2
