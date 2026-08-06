@@ -298,11 +298,71 @@
     </main>
 
     <footer class="site-footer">
-      <p>quickjs-oxide <span aria-hidden="true">·</span> an unsafe-free QuickJS rewrite</p>
-      <a href="https://github.com/pocket-stack/quickjs-oxide#readme"
-        rel="noreferrer">
-        Read the project notes <span aria-hidden="true">→</span>
-      </a>
+      <div class="footer-summary">
+        <p>
+          quickjs-oxide <span aria-hidden="true">·</span> an unsafe-free
+          QuickJS rewrite
+        </p>
+        <p id="frozen-global-vector" class="footer-vector">
+          Frozen global Test262 vector
+          <strong>66,552 passes / 66,604 runnable / 102,037 total</strong>
+          <span>pre-parity</span>
+        </p>
+      </div>
+
+      <nav class="footer-links" aria-label="Project documentation">
+        <a
+          id="parity-contract-link"
+          data-repository-path="docs/parity.md"
+          data-repository-ref="main"
+          href="https://github.com/pocket-stack/quickjs-oxide/blob/main/docs/parity.md"
+          rel="noreferrer"
+        >
+          Parity contract <span aria-hidden="true">↗</span>
+        </a>
+        <a
+          id="test262-progress-link"
+          data-repository-path="docs/test262.md"
+          data-repository-ref="main"
+          href="https://github.com/pocket-stack/quickjs-oxide/blob/main/docs/test262.md"
+          rel="noreferrer"
+        >
+          Test262 progress <span aria-hidden="true">↗</span>
+        </a>
+        <a href="https://github.com/pocket-stack/quickjs-oxide#readme"
+          rel="noreferrer">
+          Project notes <span aria-hidden="true">→</span>
+        </a>
+      </nav>
     </footer>
+
+    <script>
+      (() => {
+        const commitNode = document.querySelector("#build-commit");
+        const documentationLinks = document.querySelectorAll(
+          ".footer-links [data-repository-path]",
+        );
+        const repository = "https://github.com/pocket-stack/quickjs-oxide";
+
+        const bindDocumentationLinks = () => {
+          const commit = commitNode.dataset.commit.trim();
+          const repositoryRef = /^[0-9a-f]{40}$/iu.test(commit)
+            ? commit
+            : "main";
+
+          for (const link of documentationLinks) {
+            link.dataset.repositoryRef = repositoryRef;
+            link.href =
+              `${repository}/blob/${repositoryRef}/${link.dataset.repositoryPath}`;
+          }
+        };
+
+        new MutationObserver(bindDocumentationLinks).observe(commitNode, {
+          attributes: true,
+          attributeFilter: ["data-commit"],
+        });
+        bindDocumentationLinks();
+      })();
+    </script>
   </body>
 </html>

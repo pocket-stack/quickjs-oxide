@@ -79,6 +79,11 @@ dedicated worker and WASM resources loaded, and rejects console, page, worker,
 request, or HTTP errors. Set `QUICKJS_OXIDE_COMMIT` when testing an artifact
 built with an explicit commit identity.
 
+The page footer keeps the frozen global Test262 vector visibly marked
+pre-parity and links the parity contract and Test262 ledger to the exact commit
+reported by the loaded WASM package. A local build labelled `local` falls back
+to the repository's `main` documentation links.
+
 ## Deployment
 
 `.github/workflows/pages.yml` rebuilds the same artifact on `main`, runs the
@@ -88,6 +93,21 @@ crate and CLI `wasm-bindgen` versions and Playwright dependency are pinned so
 the browser proof cannot silently drift. The site also ships a project-owned
 social preview image; it contains no runtime claim beyond the visible
 pre-parity target.
+
+After deployment, a separate read-only job runs `scripts/test-live-pages.mjs`
+without the Pages or OIDC permissions used by the official deploy action. It
+polls the cache-busted public URL with bounded backoff, requires successful
+HTML, JavaScript, and `application/wasm` responses, and byte-matches all three
+assets against SHA-256 values exported by the build job before executing any
+downloaded code. The
+authenticated no-modules binding and WASM then run in a credential-scrubbed
+isolated process group with a hard timeout and temporary-file cleanup. The gate
+accepts only when the package reports the workflow's exact commit and evaluates
+a JavaScript function to the number 42; it never sends that example to host
+`eval` or `Function`. The Chromium gate exercises the same verifier against a
+local artifact server, including hash tamper rejection, bounded process-tree
+termination, credential-scrubbing, cleanup, and stale-deployment retry
+fixtures.
 
 The playground is a milestone view of an incomplete engine, not a claim of
 complete ECMAScript support. The Test262 scoreboard remains the compatibility

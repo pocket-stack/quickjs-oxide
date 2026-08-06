@@ -11,10 +11,11 @@ Unicode normalization, and a growing parser/VM surface.
 Building on 16 previously admitted agent paths, the latest conformance
 milestone adds 22 source-audited bounded `Atomics.wait` / `notify` paths: all
 44 variants pass. In total, 38/59 paths are admitted; the other 21 paths / 42
-variants remain fail-closed for later wake/count/FIFO work. Modules, broad
-built-ins, and the complete embedding/tooling surface also remain unfinished.
-Pinned QuickJS has no `Atomics.waitAsync`, so it is outside this rewrite's
-parity target.
+variants remain fail-closed globally, although scoped gates now pass the 17
+wake/count/location paths and four FIFO paths awaiting global promotion.
+Modules, broad built-ins, and the complete embedding/tooling surface remain
+unfinished. Pinned QuickJS has no `Atomics.waitAsync`, so it is outside this
+rewrite's parity target.
 
 The latest audited global vector is 66,552 passes / 66,604 runnable / 102,037
 total variants, with zero regressions from the prior milestone. Detailed
