@@ -6,6 +6,42 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3do global bounded agent-wait cohort A admission
+
+R3do promotes exactly the scoped 22-path activation into the global
+`[host-agent-tests]` allowlist. The R3dn parent profile hashes to
+`f48a059f97fb7fdb1e2b883221756fa47343de3b4b06f85923eef81c3d98a955`;
+the candidate/live profile preserves all feature, negative-test, and execution
+sections, adds only those 22 paths, and hashes to
+`8c80eee8846d3eaf08f1aa0622e0edc9a8290aa03c492eb25003f9c2dc8f4052`.
+
+The global focused parent contains 86 `unsupported-host-agent` rows. The
+candidate contains 44 passes and 42 unchanged unsupported rows. Its TSV/JSONL
+hashes are
+`230100c55ae8f957514d9a1ce238716b3707becbbd75276cd6cd541481bfc593`
+and
+`1953046aeeea710ba8de5f3f30293208e48306d1d88073d32f2fb495a13fa00b`;
+the exhaustive transition hashes to
+`7cf767db98f54af56f7bd50ced4634f3e9dcda9117805aab89ff367c597c12e1`.
+
+Two independent native Linux release-mode full runs are byte-identical. Each
+exact join changes only the 44 activation variants from
+`unsupported-host-agent` to `pass`; all 101,993 outside-cohort TSV rows and JSON
+result rows remain byte-identical, with zero detail-only movement and zero
+previous-pass regression. The canonical vector is 66,552 passes / 66,604
+runnable / 102,037 total variants, with 42 `unsupported-host-agent` outcomes.
+Its TSV/JSONL SHA-256 values are
+`9c90b6e0eef96583834b824e628238faa3f10e7304e68797bd55b62a63f3bcb5`
+and
+`a6560c2ad8060dc7ce9a7468c49277efba6be51a04bd769baf223d0ef72cc959`.
+
+```sh
+./scripts/test-test262-agent-wait-bounded-a.sh --check
+./scripts/test-test262-agent-wait-bounded-a-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-agent-wait-bounded-a-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-wait-bounded-a-global.sh --full
+```
+
 ## R3do scoped bounded agent-wait cohort A
 
 R3do admits no new global capability. It creates a scoped runner receipt for
@@ -55,9 +91,10 @@ The exhaustive transition hashes to
 
 Twenty byte-identical single-worker candidate replays cover 880 runnable
 variants with 880 passes and keep all 840 retained outcomes fail-closed.
-Pinned QuickJS 2026-06-04 passes the same activation cohort 44/44. This
-milestone changes no runtime waiter semantics and leaves README,
-`compat/test262-oxide.conf`, and current-global receipts at R3dn.
+Pinned QuickJS 2026-06-04 passes the same activation cohort 44/44. This scoped
+milestone changes no runtime waiter semantics and initially left the live
+profile at R3dn; the distinct global admission above subsequently advances
+README, `compat/test262-oxide.conf`, and current-global receipts.
 
 ```sh
 ./scripts/test-test262-agent-wait-bounded-a.sh --check

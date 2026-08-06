@@ -4,6 +4,35 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3do global Test262 bounded agent-wait cohort A admission
+
+R3do now promotes the scoped 22-path / 44-variant bounded timeout and
+no-spurious-wakeup cohort into the live Test262 profile. The promotion changes
+only `[host-agent-tests]`: all 132 feature tags, 1,197 audited negative paths,
+and the execution policy remain byte-identical to R3dn. The live profile hash
+is
+`8c80eee8846d3eaf08f1aa0622e0edc9a8290aa03c492eb25003f9c2dc8f4052`.
+
+The global focused transition records 44 pass gains and 42 unchanged retained
+agent diagnostics, with no detail-only movement or regression. Two independent
+native Linux release-mode full runs are byte-identical. Against parent
+`e59037f438f07090a9e1973480d080d6f4c35bfe`, both 102,037-key joins change only
+the 44 activated rows; all
+101,993 outside-cohort TSV and JSON result rows remain byte-identical.
+
+The canonical vector is therefore 66,552 passes / 66,604 runnable / 102,037
+total variants. `unsupported-host-agent` falls from 86 to 42 while every other
+summary category is unchanged. The canonical TSV/JSONL SHA-256 values are
+`9c90b6e0eef96583834b824e628238faa3f10e7304e68797bd55b62a63f3bcb5`
+and
+`a6560c2ad8060dc7ce9a7468c49277efba6be51a04bd769baf223d0ef72cc959`.
+
+```sh
+./scripts/test-test262-agent-wait-bounded-a.sh --check
+./scripts/test-test262-agent-wait-bounded-a-global.sh --check
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-wait-bounded-a-global.sh --full
+```
+
 ## R3do scoped Test262 bounded agent-wait cohort A
 
 R3do adds a runner-only, source- and metadata-authenticated admission for 22
@@ -35,8 +64,8 @@ and
 `904192d569373232dafddc3a7e1935ffb35c7d01b169b1baa933517ca6ce8eb3`.
 Twenty single-worker replays are byte-identical and cover 880/880 activation
 passes. Pinned QuickJS 2026-06-04 passes the same 22 paths in both modes,
-44/44. README, the live compatibility profile, and current-global receipts
-remain at R3dn.
+44/44. At this scoped landing the live compatibility profile remained at
+R3dn; the separate global admission above subsequently promotes the cohort.
 
 ```sh
 ./scripts/test-test262-agent-wait-bounded-a.sh --check

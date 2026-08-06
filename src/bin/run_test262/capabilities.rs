@@ -319,6 +319,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-agent-wait-bounded-a-candidate.conf"
     ));
+    const AGENT_WAIT_BOUNDED_A_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-wait-bounded-a-global-parent.conf"
+    ));
+    const AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-wait-bounded-a-global-candidate.conf"
+    ));
     const AGENT_WAIT_BOUNDED_A_ACTIVATION: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-agent-wait-bounded-a.txt"
@@ -1795,10 +1803,18 @@ mod tests {
         agent_broadcast_a_global_candidate
             .host_agent_tests
             .extend(AGENT_BROADCAST_A_ACTIVATION.lines().map(str::to_owned));
-        assert_eq!(profile, agent_broadcast_a_global_candidate);
+        assert_eq!(
+            agent_broadcast_a_global_candidate,
+            OxideProfile::parse(AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE).unwrap()
+        );
+        let mut agent_wait_bounded_a_global_candidate = agent_broadcast_a_global_candidate;
+        agent_wait_bounded_a_global_candidate
+            .host_agent_tests
+            .extend(AGENT_WAIT_BOUNDED_A_ACTIVATION.lines().map(str::to_owned));
+        assert_eq!(profile, agent_wait_bounded_a_global_candidate);
         assert_eq!(
             CHECKED_IN_PROFILE,
-            AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE
+            AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE
         );
         assert_eq!(
             default_parameters_candidate
@@ -2212,7 +2228,6 @@ mod tests {
 
     #[test]
     fn agent_broadcast_a_profiles_add_only_the_exact_activation_allowlist() {
-        let live = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
         let parent = OxideProfile::parse(AGENT_BROADCAST_A_PARENT_PROFILE).unwrap();
         let candidate = OxideProfile::parse(AGENT_BROADCAST_A_CANDIDATE_PROFILE).unwrap();
         let global_parent = OxideProfile::parse(AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE).unwrap();
@@ -2228,7 +2243,6 @@ mod tests {
             global_parent,
             OxideProfile::parse(AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE).unwrap()
         );
-        assert_eq!(global_candidate, live);
         for (baseline, admitted) in [(&parent, &candidate), (&global_parent, &global_candidate)] {
             assert_eq!(admitted.features, baseline.features);
             assert_eq!(
@@ -2265,6 +2279,12 @@ mod tests {
         let predecessor = OxideProfile::parse(AGENT_BROADCAST_A_CANDIDATE_PROFILE).unwrap();
         let parent = OxideProfile::parse(AGENT_WAIT_BOUNDED_A_PARENT_PROFILE).unwrap();
         let candidate = OxideProfile::parse(AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE).unwrap();
+        let global_predecessor =
+            OxideProfile::parse(AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let global_parent =
+            OxideProfile::parse(AGENT_WAIT_BOUNDED_A_GLOBAL_PARENT_PROFILE).unwrap();
+        let global_candidate =
+            OxideProfile::parse(AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE).unwrap();
         let activation = AGENT_WAIT_BOUNDED_A_ACTIVATION
             .lines()
             .map(str::to_owned)
@@ -2293,6 +2313,31 @@ mod tests {
             parent
                 .host_agent_tests
                 .difference(&candidate.host_agent_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(global_parent, global_predecessor);
+        assert_eq!(global_candidate.features, global_parent.features);
+        assert_eq!(
+            global_candidate.audited_negative_tests,
+            global_parent.audited_negative_tests
+        );
+        assert_eq!(
+            global_candidate.allows_async_execution(),
+            global_parent.allows_async_execution()
+        );
+        assert_eq!(
+            global_candidate
+                .host_agent_tests
+                .difference(&global_parent.host_agent_tests)
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            activation
+        );
+        assert!(
+            global_parent
+                .host_agent_tests
+                .difference(&global_candidate.host_agent_tests)
                 .next()
                 .is_none()
         );
