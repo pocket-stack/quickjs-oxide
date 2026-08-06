@@ -156,7 +156,9 @@ fn resolve_private_binding(
                     match binding.storage {
                         BindingStorage::Local(index) => PrivateNameSource::Local(index),
                         BindingStorage::External(index) => PrivateNameSource::Closure(index),
-                        BindingStorage::Argument(_) | BindingStorage::Global => {
+                        BindingStorage::Argument(_)
+                        | BindingStorage::Module(_)
+                        | BindingStorage::Global => {
                             return Err(Error::internal(
                                 "private name occupied non-lexical storage",
                             ));

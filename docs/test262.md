@@ -6,6 +6,49 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-07.
 
+## R3dx dependency-free static-module execution
+
+R3dx replaces the blanket module rejection with an exact 13-path admission
+table. Both coordinator and worker independently authenticate each relative
+path, complete source SHA-256, includes, flags, features, and negative phase /
+type before permitting module compilation. Nine roots complete normally,
+three match parse-phase `SyntaxError`, and one matches runtime-phase
+`Test262Error`. The complete manifest, frontmatter/source ledger, focused
+TSV/JSONL reports, historical parent reports, and an unlisted-module canary
+are checksum-bound by the milestone baseline.
+
+The live Oxide candidate passes 13/13. Pinned QuickJS 2026-06-04 also passes
+13/13 in two independent single-threaded runs. At commit
+`0aad838791d2f1c13f8a0ceb9e2d69f7b5260c31`, all 13 rows were
+`unsupported-module`; an unlisted dependency-free-looking root still has that
+outcome today. Direct-worker canaries reject an unlisted path and any source
+or metadata drift, so this cohort cannot become an accidental general module
+switch.
+
+The two complete candidate replays are byte-identical:
+
+- 102,037 total variants, 68,156 runnable, 68,104 pass
+- TSV SHA-256
+  `261940811669b8bf9f901a8d5c1045797ac15602add35cd7066d46eb0c496588`
+- JSONL SHA-256
+  `fb08822cf3d2333a523bfb37ce46d180c8c909b6e883c4bd7eb51d2420e7383e`
+- exactly 13 `unsupported-module` to `pass` transitions, zero regressions,
+  zero detail-only changes, and 102,024 byte-identical outside rows
+
+The full gate reverse-derives the R3dw parent from either candidate and
+requires the resulting TSV/JSONL to reproduce the prior canonical hashes
+`85a6d37eb7dc42d0a83bde87bd5796b99d132498d79a6c87cf064b277ff335da`
+and
+`a1f842c8213ef7cc2d2035b9e253ff7f2b407cba02befb3ebd116a60d59799d6`.
+This cryptographically anchors the zero-regression claim. Dependency graphs,
+module resolution and namespace semantics remain outside this admission.
+
+```sh
+./scripts/test-test262-module-static-core.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-module-static-core.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-module-static-core.sh --full
+```
+
 ## R3dw global destructuring-assignment admission
 
 R3dw freezes the complete Test262 `destructuring-assignment` universe at 141

@@ -11,7 +11,9 @@ use quickjs_oxide::{
 
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
-use super::requirements::{HostCapabilities, is_exact_agent_host_test};
+use super::requirements::{
+    HostCapabilities, is_exact_agent_host_test, is_exact_dependency_free_module_test,
+};
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
 pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
@@ -212,13 +214,17 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let source =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let metadata = parse_metadata(&source)?;
+    let dependency_free_module =
+        is_exact_dependency_free_module_test(&options.test, &source, &metadata)?;
     if options.allow_agent_host && !is_exact_agent_host_test(&options.test, &source, &metadata)? {
         return Err(format!(
             "Test262 agent host worker rejected unaudited path: {}",
             options.test.display()
         ));
     }
-    if metadata.is_module() || (metadata.is_async() && !options.allow_async_host) {
+    if (metadata.is_module() && !dependency_free_module)
+        || (metadata.is_async() && !options.allow_async_host)
+    {
         return Err("unsupported test reached worker".to_owned());
     }
     let async_test = metadata.is_async();
@@ -307,6 +313,12 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         }
     }
 
+    if dependency_free_module {
+        let result = run_dependency_free_module(&runtime, &mut context, &path, &source, &metadata);
+        agent_run.finish()?;
+        return Ok(result);
+    }
+
     let authored = if options.variant == Variant::Strict {
         format!("\"use strict\";\n{source}")
     } else {
@@ -369,6 +381,59 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     };
     agent_run.finish()?;
     result
+}
+
+fn run_dependency_free_module(
+    runtime: &Runtime,
+    context: &mut Context,
+    path: &Path,
+    source: &str,
+    metadata: &Metadata,
+) -> WorkerResult {
+    let filename = path.to_string_lossy();
+    let compile_options = CompileOptions::new(filename.as_ref());
+    let module = match context
+        .compile_module_with_options_preserving_unsupported_diagnostics(source, &compile_options)
+    {
+        Ok(module) => module,
+        Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
+            return WorkerResult::failure(
+                "unsupported-parser",
+                "parse",
+                "Unsupported",
+                error.message(),
+            );
+        }
+        Err(RuntimeError::Exception) => {
+            let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
+            return classify_completion(metadata, "parse", &error_type, &detail);
+        }
+        Err(error) => return engine_fault("engine-fault", "parse", error, None),
+    };
+    if metadata
+        .negative
+        .as_ref()
+        .and_then(|negative| negative.phase.as_deref())
+        .is_some_and(|phase| matches!(phase, "parse" | "early"))
+    {
+        return classify_normal(metadata);
+    }
+    match context.execute_module(&module) {
+        Ok(_) => classify_normal(metadata),
+        Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
+            WorkerResult::failure(
+                "unsupported-runtime",
+                "runtime",
+                "Unsupported",
+                error.message(),
+            )
+        }
+        Err(RuntimeError::Exception) => {
+            let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
+            classify_completion(metadata, "runtime", &error_type, &detail)
+        }
+        Err(error) => engine_fault("engine-fault", "runtime", error, None),
+    }
 }
 
 fn configure_runtime_can_block(runtime: &Runtime, metadata: &Metadata) {

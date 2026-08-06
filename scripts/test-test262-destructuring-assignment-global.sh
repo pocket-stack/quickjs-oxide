@@ -8,6 +8,8 @@ export TZ=America/Los_Angeles
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 baseline=tests/test262-destructuring-assignment-global-baseline.txt
+successor_baseline=tests/test262-module-static-core-baseline.txt
+successor_gate=scripts/test-test262-module-static-core.sh
 canonical_baseline=tests/test262-full-baseline.txt
 upstream=compat/upstream.toml
 live_profile=compat/test262-oxide.conf
@@ -45,6 +47,8 @@ runner_override=${TEST262_RUNNER:-}
 
 baseline_lines=223
 baseline_sha=8944d20e029c55ab8038ea9207ea952d3e1f6aaeda75ada374e3aaacfc46723b
+successor_lines=71
+successor_sha=26713b79e1430244fc42479a2259d362e47e8fdb87a2e04eaf030b1dc45c77cb
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"
@@ -89,6 +93,7 @@ value_from() {
 }
 value() { value_from "$baseline" "$1"; }
 canonical_value() { value_from "$canonical_baseline" "$1"; }
+successor_value() { value_from "$successor_baseline" "$1"; }
 header() {
     awk -F= -v wanted="# $2" \
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
@@ -895,9 +900,68 @@ verify_full_join() {
     [[ "$counts" == "$expected" ]] || die "R3dw full transition drifted: $counts"
 }
 
+bridge_r3dx_successor() {
+    [[ "$(canonical_value tsv_sha256)" != "$(value full_candidate_tsv_sha256)" ]] \
+        || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha"
+    check_file "$parent_profile" "$(value parent_profile_lines)" \
+        "$(value parent_profile_sha256)"
+    check_file "$candidate_profile" "$(value candidate_profile_lines)" \
+        "$(value candidate_profile_sha256)"
+    check_manifests_and_receipts
+
+    check_file "$successor_baseline" "$successor_lines" "$successor_sha"
+    check_file "$canonical_baseline" 8 \
+        "$(successor_value candidate_canonical_baseline_sha256)"
+    [[ -x "$successor_gate" \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
+        && "$(successor_value parent_commit)" == 0aad838791d2f1c13f8a0ceb9e2d69f7b5260c31 \
+        && "$(successor_value parent_profile_sha256)" == "$(value candidate_profile_sha256)" \
+        && "$(successor_value parent_canonical_baseline_sha256)" \
+            == "$(value canonical_full_baseline_sha256)" \
+        && "$(successor_value full_variants)" == "$(value full_variants)" \
+        && "$(successor_value full_keys_sha256)" == "$(value full_keys_sha256)" \
+        && "$(successor_value full_parent_runnable)" == "$(value full_candidate_runnable)" \
+        && "$(successor_value full_parent_passes)" == "$(value full_candidate_passes)" \
+        && "$(successor_value full_parent_tsv_sha256)" == "$(value full_candidate_tsv_sha256)" \
+        && "$(successor_value full_parent_jsonl_sha256)" == "$(value full_candidate_jsonl_sha256)" \
+        && "$(successor_value full_parent_summary)" == "$(value full_candidate_summary)" \
+        && "$(successor_value full_candidate_runnable)" == "$(canonical_value runnable)" \
+        && "$(successor_value full_candidate_passes)" == "$(canonical_value passes)" \
+        && "$(successor_value full_candidate_tsv_sha256)" == "$(canonical_value tsv_sha256)" \
+        && "$(successor_value full_candidate_jsonl_sha256)" == "$(canonical_value jsonl_sha256)" \
+        && "$(successor_value full_candidate_summary)" == "$(canonical_value summary)" \
+        && "$(successor_value full_changed)" == 13 \
+        && "$(successor_value full_outcome_changed)" == 13 \
+        && "$(successor_value full_detail_only)" == 0 \
+        && "$(successor_value full_unchanged)" == 102024 \
+        && "$(successor_value full_pass_gains)" == 13 \
+        && "$(successor_value full_pass_regressions)" == 0 \
+        && "$(successor_value full_candidate_replay_status)" == passed-twice \
+        && "$(successor_value full_candidate_replays)" == 2 ]] \
+        || die 'R3dx successor does not checksum-bridge the historical R3dw receipt'
+    [[ "$(sha "$candidate_profile")" == "$(successor_value parent_profile_sha256)" \
+        && "$(sha "$live_profile")" == "$(successor_value candidate_profile_sha256)" ]] \
+        || die 'R3dx profiles do not bridge the historical R3dw candidate to live state'
+
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3dw destructuring-assignment receipt is checksum-bridged through the R3dx static-module milestone.'
+    exit 0
+}
+
 cd -- "$root"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-destructuring-assignment-global.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
+bridge_r3dx_successor
 check_file "$baseline" "$baseline_lines" "$baseline_sha"
 check_file "$upstream" "$(value upstream_lines)" "$(value upstream_sha256)"
 [[ "$(value live_profile)" == "$live_profile" \

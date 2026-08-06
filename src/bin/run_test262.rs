@@ -36,7 +36,8 @@ use metadata::{Metadata, parse_metadata};
 use report::{WorkerResult, report_row, write_report};
 use requirements::{
     generator_destructuring_source_needs_async_guard, is_exact_agent_host_test,
-    missing_host_capability_hints, supplemental_feature_hints,
+    is_exact_dependency_free_module_test, missing_host_capability_hints,
+    supplemental_feature_hints,
 };
 use scheduler::run_bounded;
 
@@ -48,7 +49,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "2dd4cd0b07ac8124b4176fa769b924027230d4386098c2f9b1e991d3d9c0ff54";
+    "a48c9f825125ec8f3f02bb87d60f4d51234f72cd6c02341de6ee115a9c4ca727";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -920,9 +921,9 @@ usage: run-test262 --suite DIR --config FILE --oxide-profile FILE (--manifest FI
   --validate-metadata FILE\n\
                        serialize the complete pinned metadata inventory\n\
 \n\
-Every variant runs in a fresh subprocess. Module tests remain unsupported;\n\
-async tests remain fail-closed unless a pinned scoped profile opts into the\n\
-job-draining Test262 host."
+Every variant runs in a fresh subprocess. Module tests remain unsupported except\n\
+for a source-authenticated dependency-free root cohort; async tests remain\n\
+fail-closed unless a pinned scoped profile opts into the job-draining Test262 host."
     );
 }
 
@@ -997,6 +998,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             .map_err(|error| format!("read {}: {error}", path.display()))?;
         let metadata = parse_metadata(&source)
             .map_err(|error| format!("parse metadata for {}: {error}", relative.display()))?;
+        let dependency_free_module =
+            is_exact_dependency_free_module_test(&relative, &source, &metadata)?;
         let allow_agent_host = if oxide_profile.allows_agent_host(&relative) {
             if !matches!(
                 oxide_profile_kind,
@@ -1051,6 +1054,9 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             &metadata,
             oxide_profile.allows_async_execution(),
         );
+        if dependency_free_module {
+            missing_host.retain(|capability| capability != "module");
+        }
         let mut worker_host_capabilities = execution::WORKER_HOST_CAPABILITIES;
         worker_host_capabilities.agent = allow_agent_host;
         worker_host_capabilities.retain_missing(&mut missing_host);

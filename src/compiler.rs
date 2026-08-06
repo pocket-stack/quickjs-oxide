@@ -35,6 +35,7 @@ use crate::lexer::{
     NumberKind, NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
     quickjs_simple_lookahead_is_of,
 };
+use crate::module::UnlinkedModule;
 use crate::source_text::SourceText;
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
@@ -48,6 +49,7 @@ mod class;
 mod destructuring;
 mod function;
 mod generator;
+mod module;
 mod object_literal;
 mod optional_chain;
 mod private_reference;
@@ -255,6 +257,26 @@ pub(crate) fn compile_unlinked_script_with_filename(
     lower_unlinked_tree(tree, debug_info)
 }
 
+/// Compile one ECMAScript module into its runtime-independent module record.
+pub(crate) fn compile_unlinked_module_with_filename(
+    source: &str,
+    filename: &str,
+    debug_info: DebugInfoMode,
+) -> Result<UnlinkedModule, Error> {
+    let mut tree = Parser::parse_module(source, JsString::try_from_utf8(filename)?)?;
+    resolve_identifiers(&mut tree)?;
+    if let Some(error) = tree.pending_unsupported.take() {
+        return Err(error);
+    }
+    let name = tree.filename.clone();
+    let module = tree
+        .module
+        .take()
+        .ok_or_else(|| Error::internal("module compiler produced no module record"))?;
+    let function = lower_unlinked_tree(tree, debug_info)?;
+    module::finish_module(name, function, module)
+}
+
 /// Compile one primitive-String eval as an independent synthetic root.
 ///
 /// This deliberately does not reuse the ordinary Script root. QuickJS gives
@@ -337,6 +359,7 @@ const FINALLY_EVAL_RET_LOCAL_NAME: &str = "<finally-ret>";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FunctionKind {
     Script,
+    Module,
     Eval(EvalKind),
     Ordinary,
     /// Compiler-only object-literal concise method. Like an ordinary function
@@ -568,6 +591,9 @@ enum BindingStorage {
     /// Exact slot on a synthetic direct-eval root, supplied by the active
     /// caller environment rather than by a compiler-tree parent.
     External(u16),
+    /// Exact binding in the synthetic module root. Its physical VarRef slot is
+    /// assigned after the complete module declaration table is known.
+    Module(module::ModuleBindingId),
     Global,
 }
 
@@ -1367,7 +1393,10 @@ impl FunctionIr {
             },
             IrScope {
                 parent: Some(function_root),
-                kind: if matches!(kind, FunctionKind::Script | FunctionKind::Eval(_)) {
+                kind: if matches!(
+                    kind,
+                    FunctionKind::Script | FunctionKind::Module | FunctionKind::Eval(_)
+                ) {
                     ScopeKind::ProgramBody
                 } else {
                     ScopeKind::FunctionBody
@@ -1786,6 +1815,7 @@ struct FunctionTree {
     functions: Vec<FunctionIr>,
     source: SourceText,
     filename: JsString,
+    module: Option<module::IrModule>,
     pending_unsupported: Option<Error>,
 }
 
@@ -1814,6 +1844,8 @@ struct Parser<'source> {
     current_function: FunctionId,
     in_mode: InMode,
     functions: Vec<FunctionIr>,
+    module: Option<module::IrModule>,
+    exporting_module_declaration: bool,
     /// Function expression eligible for QuickJS's assignment-name inference.
     /// Operators which make the surrounding expression cease to be an
     /// AnonymousFunctionDefinition clear this marker.
@@ -1826,12 +1858,17 @@ struct Parser<'source> {
 
 enum RootCompileContext {
     Script,
+    Module,
     Eval(EvalCompileContext),
 }
 
 impl<'source> Parser<'source> {
     fn parse(source: &'source str, filename: JsString) -> Result<FunctionTree, Error> {
         Self::parse_root(source, None, filename, RootCompileContext::Script)
+    }
+
+    fn parse_module(source: &'source str, filename: JsString) -> Result<FunctionTree, Error> {
+        Self::parse_root(source, None, filename, RootCompileContext::Module)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1868,6 +1905,7 @@ impl<'source> Parser<'source> {
                 "source is too large for QuickJS debug metadata",
             ));
         }
+        let is_module = matches!(&context, RootCompileContext::Module);
         let (
             root_kind,
             inherited_strict,
@@ -1883,6 +1921,17 @@ impl<'source> Parser<'source> {
                 EvalCallerProfile {
                     scope_kinds: Box::new([]),
                     variable_target: EvalCallerVariableTarget::Global,
+                },
+                SuperCapabilities::NONE,
+                false,
+            ),
+            RootCompileContext::Module => (
+                FunctionKind::Module,
+                true,
+                Vec::<EvalRootBinding<JsString>>::new().into_boxed_slice(),
+                EvalCallerProfile {
+                    scope_kinds: Box::new([]),
+                    variable_target: EvalCallerVariableTarget::StrictLocal,
                 },
                 SuperCapabilities::NONE,
                 false,
@@ -1925,11 +1974,15 @@ impl<'source> Parser<'source> {
             }
         };
         // QuickJS enables Annex B HTML comments for every Script and Eval
-        // parse, independently of strict mode. A future Module root must keep
-        // this option disabled (`allow_html_comments = !is_module`).
+        // parse, independently of strict mode. Module parsing keeps them
+        // disabled (`allow_html_comments = !is_module`).
         let lexer_options = LexerOptions {
-            allow_html_comments: true,
-            ..LexerOptions::default()
+            context: LexContext {
+                strict: inherited_strict,
+                module: is_module,
+                ..LexContext::default()
+            },
+            allow_html_comments: !is_module,
         };
         let mut lexer = match source_text {
             Some(source) => Lexer::with_source_text(source, lexer_options),
@@ -1945,6 +1998,8 @@ impl<'source> Parser<'source> {
             in_mode: InMode::Allow,
             anonymous_function_definition: None,
             pending_unsupported: None,
+            module: is_module.then(module::IrModule::default),
+            exporting_module_declaration: false,
             functions: vec![FunctionIr::new(
                 None,
                 root_kind,
@@ -1955,7 +2010,7 @@ impl<'source> Parser<'source> {
                     range: None,
                 },
                 FunctionIrOptions {
-                    function_name: Some("<eval>".to_owned()),
+                    function_name: (!is_module).then(|| "<eval>".to_owned()),
                     private_name_binding: false,
                     class_constructor: false,
                     derived_class_constructor: false,
@@ -1968,6 +2023,9 @@ impl<'source> Parser<'source> {
                 },
             )?],
         };
+        if is_module {
+            parser.functions[0].eval_caller_profile = caller_profile.clone();
+        }
         if matches!(root_kind, FunctionKind::Eval(_)) {
             install_eval_external_bindings(
                 &mut parser.functions[0],
@@ -1981,13 +2039,18 @@ impl<'source> Parser<'source> {
         parser.relex_current_with_strict(strict)?;
         parser.functions[0].strict = strict;
         parser.functions[0].arguments_forbidden = arguments_forbidden;
-        parser.parse_script_body()?;
+        if is_module {
+            parser.parse_module_body()?;
+        } else {
+            parser.parse_script_body()?;
+        }
         Ok(FunctionTree {
             functions: parser.functions,
             source: source_text
                 .cloned()
                 .unwrap_or_else(|| SourceText::from_utf8(source)),
             filename,
+            module: parser.module,
             pending_unsupported: parser.pending_unsupported,
         })
     }
@@ -2102,7 +2165,7 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Return) => {
                 if matches!(
                     self.current_ir().kind,
-                    FunctionKind::Script | FunctionKind::Eval(_)
+                    FunctionKind::Script | FunctionKind::Module | FunctionKind::Eval(_)
                 ) {
                     Err(self.syntax_here("return not in a function"))
                 } else {
@@ -2135,6 +2198,10 @@ impl<'source> Parser<'source> {
             && position == StatementPosition::ProgramBody
         {
             self.parse_program_function_declaration()
+        } else if matches!(self.current_ir().kind, FunctionKind::Module)
+            && position == StatementPosition::ProgramBody
+        {
+            self.parse_module_function_declaration(false)
         } else if matches!(self.current_ir().kind, FunctionKind::Eval(_))
             && position == StatementPosition::ProgramBody
         {
@@ -2440,6 +2507,12 @@ impl<'source> Parser<'source> {
         // ordinary `for (` expectation reports the syntax error instead.
         let is_for_await = matches!(self.current().kind, TokenKind::Keyword(Keyword::Await));
         if is_for_await {
+            if matches!(self.current_ir().kind, FunctionKind::Module) {
+                return Err(Error::unsupported(
+                    "top-level await is not implemented in this synchronous module slice",
+                    source_span(self.current().span),
+                ));
+            }
             if !matches!(
                 self.current_ir().execution_kind,
                 BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
@@ -4105,6 +4178,46 @@ impl<'source> Parser<'source> {
         if matches!(self.current_ir().kind, FunctionKind::Eval(_)) {
             return self.register_eval_var_binding(name, declaration_span, conflict_span);
         }
+        if matches!(self.current_ir().kind, FunctionKind::Module) {
+            if let Some((_, binding)) = self
+                .current_ir()
+                .binding_id_from_scope(self.current_ir().current_scope, name)
+                && matches!(
+                    self.current_ir().bindings[binding.0].kind,
+                    BindingKind::Lexical { .. }
+                )
+            {
+                return Err(Error::syntax(
+                    "invalid redefinition of lexical identifier",
+                    source_span(conflict_span),
+                ));
+            }
+            if let Some(binding) = self
+                .current_ir()
+                .binding_id_in_scope(self.current_ir().var_scope, name)
+            {
+                let BindingStorage::Module(module_binding) =
+                    self.current_ir().bindings[binding.0].storage
+                else {
+                    return Err(Error::internal("module var resolved to non-module storage"));
+                };
+                self.export_module_declaration(name, module_binding, declaration_span)?;
+                return Ok(());
+            }
+            let module_binding =
+                self.add_module_binding(name, module::ModuleBindingOrigin::Var, false)?;
+            let function = self.current_ir_mut();
+            function.add_binding(
+                function.var_scope,
+                function.current_scope,
+                name.to_owned(),
+                BindingStorage::Module(module_binding),
+                BindingKind::Normal,
+                Some(declaration_span),
+            );
+            self.export_module_declaration(name, module_binding, declaration_span)?;
+            return Ok(());
+        }
         let function = &mut self.functions[self.current_function];
         let selects_arguments_object =
             matches!(function.kind, FunctionKind::Ordinary | FunctionKind::Method)
@@ -4419,6 +4532,9 @@ impl<'source> Parser<'source> {
         let is_eval_body = matches!(scope_kind, ScopeKind::ProgramBody)
             && matches!(function.kind, FunctionKind::Eval(_))
             && scope == function.body_scope;
+        let is_module_body = matches!(scope_kind, ScopeKind::ProgramBody)
+            && matches!(function.kind, FunctionKind::Module)
+            && scope == function.body_scope;
         if is_eval_body
             && (function
                 .eval_declarations
@@ -4436,6 +4552,7 @@ impl<'source> Parser<'source> {
         }
         let supported_scope = is_global
             || is_eval_body
+            || is_module_body
             || matches!(
                 scope_kind,
                 ScopeKind::Block
@@ -4538,6 +4655,14 @@ impl<'source> Parser<'source> {
                     ));
                 }
                 (BindingStorage::External(_), _) => "",
+                (BindingStorage::Module(_), BindingKind::Normal) => {
+                    "invalid redefinition of module identifier"
+                }
+                (BindingStorage::Module(_), _) => {
+                    return Err(Error::internal(
+                        "non-var module binding leaked into the function var scope",
+                    ));
+                }
                 (BindingStorage::Global, BindingKind::Normal)
                     if function.scope_is_within(binding.declaration_scope, scope) =>
                 {
@@ -4570,6 +4695,21 @@ impl<'source> Parser<'source> {
                 BindingKind::Lexical { is_const },
                 Some(declaration_span),
             );
+            return Ok(());
+        }
+        if is_module_body {
+            let module_binding =
+                self.add_module_binding(name, module::ModuleBindingOrigin::Lexical, is_const)?;
+            let function = self.current_ir_mut();
+            function.add_binding(
+                scope,
+                scope,
+                name.to_owned(),
+                BindingStorage::Module(module_binding),
+                BindingKind::Lexical { is_const },
+                Some(declaration_span),
+            );
+            self.export_module_declaration(name, module_binding, declaration_span)?;
             return Ok(());
         }
         if function.locals.len() >= MAX_LOCAL_VARIABLES {
@@ -5245,6 +5385,12 @@ impl<'source> Parser<'source> {
             return self.parse_power_suffix(power_mode);
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Await)) {
+            if matches!(self.current_ir().kind, FunctionKind::Module) {
+                return Err(Error::unsupported(
+                    "top-level await is not implemented in this synchronous module slice",
+                    source_span(self.current().span),
+                ));
+            }
             if !matches!(
                 self.current_ir().execution_kind,
                 BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
@@ -6391,10 +6537,19 @@ impl<'source> Parser<'source> {
             if !exact_meta {
                 return Err(self.syntax_here("meta expected"));
             }
-            // This compiler currently has only Script and Eval roots. A future
-            // Module root must handle import.meta after selecting that goal;
-            // accepting it here would silently open the Module frontier.
-            return Err(self.syntax_here("import.meta only valid in module code"));
+            if self.module.is_none() {
+                return Err(self.syntax_here("import.meta only valid in module code"));
+            }
+            self.advance()?;
+            self.emit_instruction(Instruction::Undefined)?;
+            self.anonymous_function_definition = None;
+            if self.pending_unsupported.is_none() {
+                self.pending_unsupported = Some(Error::unsupported(
+                    "import.meta is not implemented in this module slice",
+                    source_span(import_span),
+                ));
+            }
+            return Ok(());
         }
 
         self.expect_punctuator(Punctuator::LeftParen)?;
@@ -7348,6 +7503,7 @@ impl<'source> Parser<'source> {
                     binding.name == name
                         && match (function.kind, eval_mode) {
                             (FunctionKind::Script, _) => binding.storage == BindingStorage::Global,
+                            (FunctionKind::Module, _) => false,
                             (
                                 FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow,
                                 _,
@@ -7981,7 +8137,9 @@ impl<'source> Parser<'source> {
             let function = &self.functions[function_id];
             match function.kind {
                 FunctionKind::Ordinary | FunctionKind::Method => return true,
-                FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect) => return false,
+                FunctionKind::Script
+                | FunctionKind::Module
+                | FunctionKind::Eval(EvalKind::Indirect) => return false,
                 FunctionKind::Eval(EvalKind::Direct) => {
                     return function
                         .binding_from_scope(function.var_scope, NEW_TARGET_LOCAL_NAME)
@@ -8958,8 +9116,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
         {
             return Err(Error::internal("function scope roots are malformed"));
         }
-        let expected_body = if matches!(function.kind, FunctionKind::Script | FunctionKind::Eval(_))
-        {
+        let expected_body = if matches!(
+            function.kind,
+            FunctionKind::Script | FunctionKind::Module | FunctionKind::Eval(_)
+        ) {
             ScopeKind::ProgramBody
         } else {
             ScopeKind::FunctionBody
@@ -9331,6 +9491,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
             FunctionKind::Eval(EvalKind::Direct) => {}
             FunctionKind::Script
+            | FunctionKind::Module
             | FunctionKind::Ordinary
             | FunctionKind::Eval(EvalKind::Indirect)
                 if !function.super_call_allowed && !function.super_allowed => {}
@@ -9339,6 +9500,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             }
             FunctionKind::Method
             | FunctionKind::Script
+            | FunctionKind::Module
             | FunctionKind::Ordinary
             | FunctionKind::Eval(EvalKind::Indirect) => {
                 return Err(Error::internal(
@@ -9384,7 +9546,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 "non-class function retained a constructor-call guard",
             ));
         }
-        if matches!(function.kind, FunctionKind::Script)
+        if matches!(function.kind, FunctionKind::Script | FunctionKind::Module)
             && (!function.hoisted_functions.is_empty() || function.function_hoists_installed)
         {
             return Err(Error::internal(
@@ -9450,6 +9612,17 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             "direct eval caller variable target is malformed",
                         ));
                     }
+                }
+            }
+            FunctionKind::Module => {
+                if !function.external_bindings.is_empty()
+                    || !function.eval_caller_profile.scope_kinds.is_empty()
+                    || function.eval_caller_profile.variable_target
+                        != EvalCallerVariableTarget::StrictLocal
+                {
+                    return Err(Error::internal(
+                        "module root retained a non-strict eval variable target",
+                    ));
                 }
             }
             FunctionKind::Eval(EvalKind::Indirect) => {
@@ -10013,6 +10186,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     },
                     BindingStorage::Global => false,
                     BindingStorage::External(_) => false,
+                    BindingStorage::Module(_) => false,
                 };
                 if !write_matches {
                     return Err(Error::internal(
@@ -10164,6 +10338,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                                 }) if *target == index
                             ),
                             BindingStorage::Argument(_) => false,
+                            BindingStorage::Module(_) => false,
                         };
                         (unresolved, resolved)
                     }
@@ -10441,6 +10616,13 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             ));
                         }
                     }
+                }
+            }
+            FunctionKind::Module => {
+                if !function.global_declarations.is_empty() {
+                    return Err(Error::internal(
+                        "module root retained realm-global declarations",
+                    ));
                 }
             }
             FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
@@ -10747,6 +10929,24 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                             ));
                         }
                     }
+                    BindingStorage::Module(binding_id) => {
+                        if !matches!(function.kind, FunctionKind::Module)
+                            || function.parent.is_some()
+                            || binding.is_catch_parameter
+                        {
+                            return Err(Error::internal(
+                                "module binding metadata escaped the module root",
+                            ));
+                        }
+                        let module_binding = tree
+                            .module
+                            .as_ref()
+                            .ok_or_else(|| Error::internal("module binding has no record"))?
+                            .binding(binding_id)?;
+                        if module_binding.name != binding.name {
+                            return Err(Error::internal("module binding metadata disagrees"));
+                        }
+                    }
                 }
             }
         }
@@ -10819,7 +11019,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                         .locals
                         .first()
                         .is_some_and(|name| name == EVAL_RET_LOCAL_NAME) => {}
-            FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+            FunctionKind::Module
+            | FunctionKind::Ordinary
+            | FunctionKind::Method
+            | FunctionKind::Arrow
                 if eval_ret_index.is_none() && synthetic_eval_ret.is_none() => {}
             _ => {
                 return Err(Error::internal(
@@ -10899,7 +11102,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 }
             } else if scope_index == function.body_scope.0 {
                 match function.kind {
-                    FunctionKind::Script if entries == 0 && leaves == 0 => {}
+                    FunctionKind::Script | FunctionKind::Module if entries == 0 && leaves == 0 => {}
                     FunctionKind::Ordinary
                     | FunctionKind::Method
                     | FunctionKind::Arrow
@@ -10975,14 +11178,16 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                     && function_name_bindings
                         .iter()
                         .all(|binding| matches!(binding.storage, BindingStorage::External(_))) => {}
-            FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect)
+            FunctionKind::Script
+            | FunctionKind::Module
+            | FunctionKind::Eval(EvalKind::Indirect)
                 if function.function_name_local.is_none()
                     && !function.private_name_binding
                     && function_name_bindings.is_empty() => {}
             FunctionKind::Eval(EvalKind::None) => {
                 return Err(Error::internal("eval root has no eval kind"));
             }
-            FunctionKind::Script | FunctionKind::Eval(_) => {
+            FunctionKind::Script | FunctionKind::Module | FunctionKind::Eval(_) => {
                 return Err(Error::internal("function-name binding metadata disagrees"));
             }
         }
@@ -11011,7 +11216,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ));
             }
         }
-        let root_kind = matches!(function.kind, FunctionKind::Script | FunctionKind::Eval(_));
+        let root_kind = matches!(
+            function.kind,
+            FunctionKind::Script | FunctionKind::Module | FunctionKind::Eval(_)
+        );
         if (function_id == 0) != function.parent.is_none() || (function_id == 0) != root_kind {
             return Err(Error::internal("function topology is malformed"));
         }
@@ -11030,6 +11238,8 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
     install_eval_variable_objects(tree)?;
     validate_scope_graph(tree)?;
     seed_global_declarations(tree)?;
+    seed_module_bindings(tree)?;
+    module::resolve_module_exports(tree)?;
     // QuickJS enters each function by pre-populating its direct-eval closure
     // table, then creates children depth-first in source order, and only then
     // resolves the parent's ordinary identifiers. The entry event matters:
@@ -11121,10 +11331,12 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
     install_global_function_hoists(tree)?;
     install_eval_declaration_hoists(tree)?;
     install_function_body_hoists(tree)?;
-    // Every prepend pass runs after identifier linking. Install pseudo
-    // activation cells last so the final bytecode order mirrors QuickJS:
-    // HomeObject/new.target/this, arguments, `<var>`, then `<arg_var>`.
+    // Every prepend pass runs after identifier linking. Install ordinary
+    // pseudo activation cells after declaration hoists. A module's dual-entry
+    // link guard is then wrapped around that authored-evaluation entry so a
+    // link-time call never initializes `this`/direct-eval pseudo cells.
     install_pseudo_binding_prologues(tree)?;
+    install_module_declaration_hoists(tree)?;
     validate_scope_graph(tree)
 }
 
@@ -11665,6 +11877,10 @@ fn link_eval_environment(
                     }
                     BindingStorage::Local(index) => (EvalBindingSource::Local(index), binding_kind),
                     BindingStorage::External(_) => unreachable!("filtered above"),
+                    BindingStorage::Module(binding) => (
+                        EvalBindingSource::Closure(module_binding_closure_index(tree, binding)?),
+                        binding_kind,
+                    ),
                     BindingStorage::Global => continue,
                 }
             } else {
@@ -11809,6 +12025,7 @@ fn link_eval_environment(
         .ok_or_else(|| Error::internal("eval environment has no current function segment"))?;
     let variable_environment = match caller_kind {
         FunctionKind::Script => EvalVariableEnvironment::Global,
+        FunctionKind::Module => EvalVariableEnvironment::StrictLocal(current_function_segment),
         FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow => {
             if caller_strict {
                 EvalVariableEnvironment::StrictLocal(current_function_segment)
@@ -11925,6 +12142,48 @@ fn seed_global_declarations(tree: &mut FunctionTree) -> Result<(), Error> {
     Ok(())
 }
 
+/// Convert the parser's typed module bindings into root VarRef descriptors.
+fn seed_module_bindings(tree: &mut FunctionTree) -> Result<(), Error> {
+    let Some(module) = tree.module.as_ref() else {
+        return Ok(());
+    };
+    let bindings = module
+        .bindings
+        .iter()
+        .map(|binding| (binding.name.clone(), binding.origin, binding.is_const))
+        .collect::<Vec<_>>();
+    for (binding_index, (name, origin, is_const)) in bindings.into_iter().enumerate() {
+        let name_index = ensure_string_constant(&mut tree.functions[0], &name)?;
+        let imported = matches!(origin, module::ModuleBindingOrigin::Import);
+        let is_lexical = matches!(
+            origin,
+            module::ModuleBindingOrigin::Lexical
+                | module::ModuleBindingOrigin::Import
+                | module::ModuleBindingOrigin::NamespaceImport
+        );
+        let closure_index = push_closure_variable(
+            &mut tree.functions[0],
+            ClosureVariable {
+                source: if imported {
+                    ClosureSource::ModuleImport
+                } else {
+                    ClosureSource::ModuleDeclaration
+                },
+                name: ClosureVariableName::Constant(name_index),
+                is_lexical,
+                is_const,
+                kind: ClosureVariableKind::Normal,
+            },
+        )?;
+        tree.module
+            .as_mut()
+            .and_then(|module| module.bindings.get_mut(binding_index))
+            .ok_or_else(|| Error::internal("module binding moved while seeding"))?
+            .closure_index = Some(closure_index);
+    }
+    Ok(())
+}
+
 /// QuickJS emits every Program function initializer before authored body
 /// bytecode. Each declaration retains its own child constant, while the raw
 /// write resolves by name to the first same-name `GLOBAL_DECL` slot.
@@ -11965,6 +12224,70 @@ fn install_global_function_hoists(tree: &mut FunctionTree) -> Result<(), Error> 
             pc_site: None,
         });
     }
+    prepend_hoist_prefix(&mut tree.functions[0], prefix)
+}
+
+/// QuickJS's module function has two entry modes. Link-time calls it with a
+/// truthy `this` to initialize var/function cells and return immediately;
+/// evaluation calls it with `undefined` and jumps directly to authored code.
+fn install_module_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
+    let Some(module) = tree.module.as_ref() else {
+        return Ok(());
+    };
+    let initializers = module
+        .bindings
+        .iter()
+        .filter_map(|binding| {
+            let value = match binding.origin {
+                module::ModuleBindingOrigin::Var => Some(None),
+                module::ModuleBindingOrigin::Function(constant) => Some(Some(constant)),
+                module::ModuleBindingOrigin::Lexical
+                | module::ModuleBindingOrigin::Import
+                | module::ModuleBindingOrigin::NamespaceImport => None,
+            }?;
+            Some((binding.closure_index, value))
+        })
+        .collect::<Vec<_>>();
+    let mut prefix = vec![
+        SpannedIrOp {
+            op: IrOp::Bytecode(Instruction::PushThis),
+            pc_site: None,
+        },
+        SpannedIrOp {
+            op: IrOp::Bytecode(Instruction::IfFalse(u32::MAX)),
+            pc_site: None,
+        },
+    ];
+    for (closure_index, constant) in initializers {
+        let closure_index = closure_index
+            .ok_or_else(|| Error::internal("module initializer closure was not seeded"))?;
+        prefix.push(SpannedIrOp {
+            op: constant.map_or(IrOp::Bytecode(Instruction::Undefined), IrOp::MakeClosure),
+            pc_site: None,
+        });
+        prefix.push(SpannedIrOp {
+            op: IrOp::Bytecode(Instruction::PutVarRef(closure_index)),
+            pc_site: None,
+        });
+    }
+    prefix.push(SpannedIrOp {
+        op: IrOp::Bytecode(Instruction::Undefined),
+        pc_site: None,
+    });
+    prefix.push(SpannedIrOp {
+        op: IrOp::Bytecode(Instruction::Return),
+        pc_site: None,
+    });
+    let body = u32::try_from(prefix.len())
+        .map_err(|_| Error::new(ErrorKind::JsInternal, "stack overflow"))?;
+    let Some(SpannedIrOp {
+        op: IrOp::Bytecode(Instruction::IfFalse(target)),
+        ..
+    }) = prefix.get_mut(1)
+    else {
+        return Err(Error::internal("module link entry guard is malformed"));
+    };
+    *target = body;
     prepend_hoist_prefix(&mut tree.functions[0], prefix)
 }
 
@@ -12056,7 +12379,10 @@ fn install_eval_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Error>
 /// direct body function declarations into argument/root-local slots.
 fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
     for function_id in 0..tree.functions.len() {
-        if matches!(tree.functions[function_id].kind, FunctionKind::Script) {
+        if matches!(
+            tree.functions[function_id].kind,
+            FunctionKind::Script | FunctionKind::Module
+        ) {
             continue;
         }
         let hoists = ordered_hoisted_functions(&tree.functions[function_id])?;
@@ -12165,6 +12491,11 @@ fn install_function_body_hoists(tree: &mut FunctionTree) -> Result<(), Error> {
                         "ordinary function hoist targeted global storage",
                     ));
                 }
+                (BindingStorage::Module(_), _) => {
+                    return Err(Error::internal(
+                        "ordinary function hoist targeted module storage",
+                    ));
+                }
             };
             body_hoists.push(SpannedIrOp {
                 op: IrOp::Bytecode(instruction),
@@ -12229,7 +12560,7 @@ fn ordered_hoisted_functions(function: &FunctionIr) -> Result<Vec<IrHoistedFunct
             .ok_or_else(|| Error::internal("hoisted function binding is out of bounds"))?;
         if matches!(
             binding.storage,
-            BindingStorage::External(_) | BindingStorage::Global
+            BindingStorage::External(_) | BindingStorage::Module(_) | BindingStorage::Global
         ) {
             return Err(Error::internal(
                 "ordinary function hoist targeted global storage",
@@ -12240,6 +12571,7 @@ fn ordered_hoisted_functions(function: &FunctionIr) -> Result<Vec<IrHoistedFunct
         BindingStorage::Argument(index) => (0_u8, index),
         BindingStorage::Local(index) => (1_u8, index),
         BindingStorage::External(_) => unreachable!("validated above"),
+        BindingStorage::Module(_) => unreachable!("validated above"),
         BindingStorage::Global => unreachable!("validated above"),
     });
     Ok(hoists)
@@ -13025,6 +13357,18 @@ fn resolved_binding_operation(
     if binding.storage == BindingStorage::Global {
         return global_declaration_operation(tree, consuming_function, binding.kind, access, name);
     }
+    if let BindingStorage::Module(binding_id) = binding.storage
+        && defining_function == consuming_function
+    {
+        let index = module_binding_closure_index(tree, binding_id)?;
+        return module_binding_operation(
+            &mut tree.functions[consuming_function],
+            index,
+            binding.kind,
+            access,
+            name,
+        );
+    }
     if defining_function == consuming_function {
         if let BindingStorage::External(index) = binding.storage {
             return closure_binding_operation(
@@ -13059,6 +13403,36 @@ fn resolved_binding_operation(
         access,
         name,
     )
+}
+
+fn module_binding_closure_index(
+    tree: &FunctionTree,
+    binding: module::ModuleBindingId,
+) -> Result<u16, Error> {
+    tree.module
+        .as_ref()
+        .ok_or_else(|| Error::internal("module binding has no module record"))?
+        .binding(binding)?
+        .closure_index
+        .ok_or_else(|| Error::internal("module binding closure was not seeded"))
+}
+
+fn module_binding_operation(
+    function: &mut FunctionIr,
+    index: u16,
+    kind: BindingKind,
+    access: IdentifierAccess,
+    name: &str,
+) -> Result<IrOp, Error> {
+    if access == IdentifierAccess::Initialize {
+        return match kind {
+            BindingKind::Lexical { .. } => Ok(IrOp::Bytecode(Instruction::InitializeVarRef(index))),
+            _ => Err(Error::internal(
+                "ordinary module binding used lexical initialization",
+            )),
+        };
+    }
+    closure_binding_operation(function, index, kind, access, name)
 }
 
 fn push_owned_eval_variable_sources(
@@ -13159,7 +13533,7 @@ fn push_dynamic_environment_source(
             | BindingKind::PrivateGetterSetter { .. },
             _,
         )
-        | (_, BindingStorage::Argument(_) | BindingStorage::Global) => {
+        | (_, BindingStorage::Argument(_) | BindingStorage::Module(_) | BindingStorage::Global) => {
             return Err(Error::internal(
                 "ordinary binding reached dynamic environment selection",
             ));
@@ -13603,6 +13977,9 @@ fn binding_instruction(
     name: &str,
 ) -> Result<Instruction, Error> {
     match (binding.storage, binding.kind, access) {
+        (BindingStorage::Module(_), _, _) => Err(Error::internal(
+            "module binding reached local binding instruction selection",
+        )),
         (BindingStorage::Global, _, _) => Err(Error::internal(
             "global binding reached local binding instruction selection",
         )),
@@ -13875,6 +14252,9 @@ fn capture_binding_path(
         BindingStorage::Argument(index) => ClosureSource::ParentArgument(index),
         BindingStorage::Local(index) => ClosureSource::ParentLocal(index),
         BindingStorage::External(index) => ClosureSource::ParentClosure(index),
+        BindingStorage::Module(binding) => {
+            ClosureSource::ParentClosure(module_binding_closure_index(tree, binding)?)
+        }
         BindingStorage::Global => {
             return Err(Error::internal(
                 "global binding reached local closure capture",
@@ -14150,7 +14530,9 @@ fn build_scope_lifecycles(
                 }
                 let index = match binding.storage {
                     BindingStorage::Local(index) => index,
-                    BindingStorage::External(_) | BindingStorage::Global => continue,
+                    BindingStorage::External(_)
+                    | BindingStorage::Module(_)
+                    | BindingStorage::Global => continue,
                     BindingStorage::Argument(_) => {
                         return Err(Error::internal(
                             "scoped binding lifecycle referenced an argument",
@@ -14242,33 +14624,36 @@ fn lower_unlinked_tree(
         functions: tree_functions,
         source,
         filename,
+        module: _,
         pending_unsupported: _,
     } = tree;
     let function_count = tree_functions.len();
     let captured_locals = captured_locals_by_function(&tree_functions)?;
     // A descendant eval descriptor names bindings owned by each ancestor and
-    // by every intervening closure relay. A synthetic eval tree also needs the
-    // names on its external root and every child relay. Those names are
-    // semantic linker metadata, not optional debug labels, so StripDebug must
-    // retain them the way QuickJS retains vardef names on eval-visible chains.
-    let synthetic_eval_tree = tree_functions
-        .first()
-        .is_some_and(|function| matches!(function.kind, FunctionKind::Eval(_)));
-    let mut retains_eval_names = tree_functions
+    // by every intervening closure relay. Synthetic eval and module trees also
+    // need names on their roots and every child relay: eval authenticates its
+    // imported environment, while the module linker uses names for its own
+    // declarations and unresolved globals. Those names are semantic linker
+    // metadata, not optional debug labels, so StripDebug must retain them the
+    // way QuickJS retains vardef names on these chains.
+    let synthetic_semantic_tree = tree_functions.first().is_some_and(|function| {
+        matches!(function.kind, FunctionKind::Eval(_) | FunctionKind::Module)
+    });
+    let mut retains_semantic_names = tree_functions
         .iter()
-        .map(|function| synthetic_eval_tree || !function.eval_environments.is_empty())
+        .map(|function| synthetic_semantic_tree || !function.eval_environments.is_empty())
         .collect::<Vec<_>>();
     for function_id in (1..function_count).rev() {
-        if !retains_eval_names[function_id] {
+        if !retains_semantic_names[function_id] {
             continue;
         }
         let parent = tree_functions[function_id]
             .parent
             .ok_or_else(|| Error::internal("eval-visible function has no parent"))?
             .function;
-        let retained = retains_eval_names
+        let retained = retains_semantic_names
             .get_mut(parent)
-            .ok_or_else(|| Error::internal("eval-visible parent is out of bounds"))?;
+            .ok_or_else(|| Error::internal("semantic-name parent is out of bounds"))?;
         *retained = true;
     }
     let mut functions = tree_functions.into_iter().map(Some).collect::<Vec<_>>();
@@ -14278,8 +14663,8 @@ fn lower_unlinked_tree(
         let mut function = functions[function_id]
             .take()
             .ok_or_else(|| Error::internal("function IR was lowered more than once"))?;
-        let retain_eval_names = retains_eval_names[function_id];
-        if debug_info == DebugInfoMode::StripDebug && !retain_eval_names {
+        let retain_semantic_names = retains_semantic_names[function_id];
+        if debug_info == DebugInfoMode::StripDebug && !retain_semantic_names {
             for descriptor in &mut function.closure_variables {
                 if descriptor.is_lexical
                     && descriptor.kind == ClosureVariableKind::Normal
@@ -14322,7 +14707,7 @@ fn lower_unlinked_tree(
             let is_parameter_initializer = storage_scope.is_parameter_initializer
                 && storage_scope.kind != ScopeKind::Parameter;
             let name = if debug_info == DebugInfoMode::StripDebug
-                && !retain_eval_names
+                && !retain_semantic_names
                 && matches!(binding.kind, BindingKind::Lexical { .. })
                 && !function.parameter_locals.contains(&index)
             {
@@ -14531,12 +14916,14 @@ fn lower_unlinked_tree(
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?,
             max_stack,
             strict: function.strict,
+            is_module: matches!(function.kind, FunctionKind::Module),
             super_call_allowed: function.super_call_allowed,
             super_allowed: function.super_allowed,
             arguments_forbidden: function.arguments_forbidden,
             eval_kind: match function.kind {
                 FunctionKind::Eval(kind) => kind,
                 FunctionKind::Script
+                | FunctionKind::Module
                 | FunctionKind::Ordinary
                 | FunctionKind::Method
                 | FunctionKind::Arrow => EvalKind::None,
@@ -14605,7 +14992,7 @@ fn lower_unlinked_tree(
 
     lowered[0]
         .take()
-        .ok_or_else(|| Error::internal("root script was not lowered"))
+        .ok_or_else(|| Error::internal("root function was not lowered"))
 }
 
 fn verify_lowered_max_stack(code: &[Instruction], constant_count: usize) -> Result<u16, Error> {

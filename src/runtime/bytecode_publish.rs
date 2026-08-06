@@ -17,6 +17,7 @@ use crate::heap::{
     validate_eval_environment_phase_layout, validate_parameter_bytecode_layout,
     validate_parameter_initializer_scope_layout, validate_pattern_parameter_bytecode_layout,
 };
+use crate::module::{ModuleExportTarget, ModuleLinkInitializerValue, UnlinkedModule};
 use crate::source_text::try_is_canonical_wtf8;
 
 /// Intern every semantically retained direct-eval binding name while keeping
@@ -556,6 +557,7 @@ fn verify_eval_scope_topology(
     environment: &EvalEnvironment<JsString>,
     function_depth: usize,
     synthetic_eval_tree: bool,
+    module_root: bool,
     imported_segment_count: usize,
     imported_scope_start: usize,
 ) -> Result<usize, RuntimeError> {
@@ -662,7 +664,13 @@ fn verify_eval_scope_topology(
             .iter()
             .flat_map(|scope| scope.bindings.iter())
         {
-            let source_matches_segment = if segment_count == 0 {
+            let source_matches_segment = if segment_count == 0 && module_root {
+                matches!(
+                    binding.source,
+                    crate::heap::EvalBindingSource::Local(_)
+                        | crate::heap::EvalBindingSource::Closure(_)
+                )
+            } else if segment_count == 0 {
                 matches!(
                     binding.source,
                     crate::heap::EvalBindingSource::Local(_)
@@ -834,6 +842,7 @@ fn verify_eval_environments(
             environment,
             function_depth,
             synthetic_eval_tree,
+            function.metadata().is_module,
             imported_segment_count,
             imported_scope_start,
         )?;
@@ -848,7 +857,8 @@ fn verify_eval_environments(
                 // environment through the global Program segment, even when
                 // the Script itself is strict. A synthetic strict eval root
                 // must instead own a StrictLocal destination.
-                if !is_root
+                if function.metadata().is_module
+                    || !is_root
                     || (environment.caller_strict
                         && function.metadata().eval_kind != EvalKind::None)
                 {
@@ -878,7 +888,10 @@ fn verify_eval_environments(
                         "strict eval variable environment has the wrong function anchor",
                     )));
                 }
-                if is_root && function.metadata().eval_kind == EvalKind::None {
+                if is_root
+                    && function.metadata().eval_kind == EvalKind::None
+                    && !function.metadata().is_module
+                {
                     return Err(RuntimeError::Engine(Error::internal(
                         "authored Script eval environment used a non-canonical strict-local target",
                     )));
@@ -1163,6 +1176,7 @@ fn verify_eval_environments(
 #[derive(Clone, Copy)]
 enum RootPublication<'a> {
     Script,
+    Module(&'a UnlinkedModule),
     Eval {
         kind: EvalKind,
         caller_strict: bool,
@@ -1181,6 +1195,307 @@ pub(in crate::runtime) struct EvalPublicationCapabilities {
 
 pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError> {
     verify_unlinked_tree_with_root(function, RootPublication::Script)
+}
+
+/// Authenticate a compiler-owned module record and the distinct bytecode ABI
+/// used to link and evaluate it. Ordinary script publication never accepts
+/// this root shape.
+pub(in crate::runtime) fn verify_unlinked_module_tree(
+    module: &UnlinkedModule,
+) -> Result<(), RuntimeError> {
+    verify_unlinked_module_tables(module)?;
+    verify_module_link_entry(module)?;
+    verify_unlinked_tree_with_root(module.function(), RootPublication::Module(module))
+}
+
+fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeError> {
+    let function = module.function();
+    let descriptors = function.closure_variables();
+    let request_count = module.requested_modules().len();
+    let request_exists = |index: crate::module::ModuleRequestIndex| {
+        usize::try_from(index.0)
+            .ok()
+            .is_some_and(|index| index < request_count)
+    };
+
+    let mut imported_slots = HashSet::new();
+    let mut namespace_slots = HashSet::new();
+    for import in module.imports() {
+        if !request_exists(import.request) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import referenced a missing request",
+            )));
+        }
+        if !imported_slots.insert(import.closure_index) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import table reused a closure slot",
+            )));
+        }
+        if import.is_namespace {
+            namespace_slots.insert(import.closure_index);
+        }
+        let descriptor = descriptors
+            .get(usize::from(import.closure_index))
+            .ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "module import closure index is out of bounds",
+                ))
+            })?;
+        let expected_source = if import.is_namespace {
+            ClosureSource::ModuleDeclaration
+        } else {
+            ClosureSource::ModuleImport
+        };
+        if descriptor.source != expected_source
+            || !descriptor.is_lexical
+            || !descriptor.is_const
+            || descriptor.kind != ClosureVariableKind::Normal
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import table disagrees with its closure descriptor",
+            )));
+        }
+    }
+
+    for (index, descriptor) in descriptors.iter().enumerate() {
+        if descriptor.source != ClosureSource::ModuleImport {
+            continue;
+        }
+        let index = u16::try_from(index).map_err(|_| {
+            RuntimeError::Engine(Error::internal(
+                "module import descriptor index exceeds bytecode range",
+            ))
+        })?;
+        if !imported_slots.contains(&index) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import descriptor has no import-table entry",
+            )));
+        }
+    }
+
+    let mut lexical_initializer_counts = vec![0_u8; descriptors.len()];
+    for instruction in function.code() {
+        let crate::bytecode::Instruction::InitializeVarRef(index) = instruction else {
+            continue;
+        };
+        let count = lexical_initializer_counts
+            .get_mut(usize::from(*index))
+            .ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "module lexical initializer is outside closure slots",
+                ))
+            })?;
+        *count = count.checked_add(1).ok_or_else(|| {
+            RuntimeError::Engine(Error::internal(
+                "module lexical initializer count overflowed",
+            ))
+        })?;
+    }
+    for (index, (descriptor, count)) in descriptors
+        .iter()
+        .zip(lexical_initializer_counts)
+        .enumerate()
+    {
+        let index = u16::try_from(index).map_err(|_| {
+            RuntimeError::Engine(Error::internal(
+                "module declaration descriptor index exceeds bytecode range",
+            ))
+        })?;
+        let expected = u8::from(
+            descriptor.source == ClosureSource::ModuleDeclaration
+                && descriptor.is_lexical
+                && !namespace_slots.contains(&index),
+        );
+        if count != expected {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module lexical initializer count disagrees with declarations",
+            )));
+        }
+    }
+
+    let mut exported_names = Vec::with_capacity(module.exports().len());
+    for export in module.exports() {
+        if exported_names
+            .iter()
+            .any(|name| name == &export.export_name)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module export table contains a duplicate exported name",
+            )));
+        }
+        exported_names.push(export.export_name.clone());
+        match &export.target {
+            ModuleExportTarget::Local { closure_index } => {
+                let descriptor = descriptors
+                    .get(usize::from(*closure_index))
+                    .ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "local module export closure index is out of bounds",
+                        ))
+                    })?;
+                if !matches!(
+                    descriptor.source,
+                    ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport
+                ) {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "local module export referenced a non-module binding",
+                    )));
+                }
+            }
+            ModuleExportTarget::Indirect { request, .. } => {
+                if !request_exists(*request) {
+                    return Err(RuntimeError::Engine(Error::internal(
+                        "indirect module export referenced a missing request",
+                    )));
+                }
+            }
+        }
+    }
+    for export in module.star_exports() {
+        if !request_exists(export.request) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "star module export referenced a missing request",
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError> {
+    let function = module.function();
+    let code = function.code();
+    if !matches!(
+        code.get(code.len().saturating_sub(2)..),
+        Some([
+            crate::bytecode::Instruction::Undefined,
+            crate::bytecode::Instruction::Return
+        ])
+    ) {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module body has no canonical undefined return",
+        )));
+    }
+    let Some(
+        [
+            crate::bytecode::Instruction::PushThis,
+            crate::bytecode::Instruction::IfFalse(body),
+        ],
+    ) = code.get(0..2)
+    else {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module bytecode has no link-entry guard",
+        )));
+    };
+    let body = usize::try_from(*body).map_err(|_| {
+        RuntimeError::Engine(Error::internal(
+            "module link-entry target is outside bytecode",
+        ))
+    })?;
+    if body < 4 || body >= code.len() {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module link-entry target is outside bytecode",
+        )));
+    }
+    if !matches!(
+        code.get(body - 2..body),
+        Some([
+            crate::bytecode::Instruction::Undefined,
+            crate::bytecode::Instruction::Return
+        ])
+    ) {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module link entry has no undefined return",
+        )));
+    }
+
+    let expected_slots = function
+        .closure_variables()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, descriptor)| {
+            (descriptor.source == ClosureSource::ModuleDeclaration && !descriptor.is_lexical)
+                .then_some(index)
+        })
+        .map(|index| {
+            u16::try_from(index).map_err(|_| {
+                RuntimeError::Engine(Error::internal(
+                    "module declaration descriptor index exceeds bytecode range",
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let initializers = module.link_initializers();
+    if initializers.len() != expected_slots.len() {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module link initializer ledger disagrees with declarations",
+        )));
+    }
+    let mut seen_slots = HashSet::with_capacity(initializers.len());
+    for initializer in initializers {
+        if !seen_slots.insert(initializer.closure_index) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module link initializer ledger reused a closure slot",
+            )));
+        }
+        let descriptor = function
+            .closure_variables()
+            .get(usize::from(initializer.closure_index))
+            .ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "module link initializer closure index is out of bounds",
+                ))
+            })?;
+        if descriptor.source != ClosureSource::ModuleDeclaration
+            || descriptor.is_lexical
+            || descriptor.is_const
+            || descriptor.kind != ClosureVariableKind::Normal
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module link initializer disagrees with its closure descriptor",
+            )));
+        }
+    }
+    if !initializers
+        .iter()
+        .map(|initializer| initializer.closure_index)
+        .eq(expected_slots.iter().copied())
+    {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module link initializer ledger is not in declaration order",
+        )));
+    }
+
+    let initializer_code = &code[2..body - 2];
+    if initializer_code.len() != initializers.len().saturating_mul(2) {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module link entry initializer count disagrees with declarations",
+        )));
+    }
+    for (pair, initializer) in initializer_code.chunks_exact(2).zip(initializers) {
+        let value_is_exact = match (initializer.value, &pair[0]) {
+            (ModuleLinkInitializerValue::Undefined, crate::bytecode::Instruction::Undefined) => {
+                true
+            }
+            (
+                ModuleLinkInitializerValue::Function(expected),
+                crate::bytecode::Instruction::FClosure(actual),
+            ) => expected == *actual,
+            (ModuleLinkInitializerValue::Undefined, _)
+            | (ModuleLinkInitializerValue::Function(_), _) => false,
+        };
+        if !value_is_exact
+            || !matches!(
+                pair[1],
+                crate::bytecode::Instruction::PutVarRef(slot)
+                    if slot == initializer.closure_index
+            )
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module link entry initializer is not canonical",
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Authenticate a synthetic eval root against the exact caller bindings that
@@ -1452,7 +1767,7 @@ fn verify_unlinked_tree_with_root(
 ) -> Result<(), RuntimeError> {
     let (synthetic_eval_tree, tree_expected_bindings, tree_expected_profile) =
         match root_publication {
-            RootPublication::Script => (false, &[][..], None),
+            RootPublication::Script | RootPublication::Module(_) => (false, &[][..], None),
             RootPublication::Eval {
                 expected_bindings,
                 expected_profile,
@@ -1559,7 +1874,7 @@ fn verify_unlinked_tree_with_root(
             .and_then(|layout| layout.arg_eval_variable_object_local);
         let expected_eval_kind = if is_root {
             match root_publication {
-                RootPublication::Script => EvalKind::None,
+                RootPublication::Script | RootPublication::Module(_) => EvalKind::None,
                 RootPublication::Eval { kind, .. } => kind,
             }
         } else {
@@ -1580,9 +1895,28 @@ fn verify_unlinked_tree_with_root(
         if is_root {
             match root_publication {
                 RootPublication::Script => {
+                    if function.metadata().is_module {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "script root retained module authority",
+                        )));
+                    }
                     if function.metadata().super_call_allowed || function.metadata().super_allowed {
                         return Err(RuntimeError::Engine(Error::internal(
                             "script root retained a super capability",
+                        )));
+                    }
+                }
+                RootPublication::Module(module) => {
+                    if !function.metadata().is_module
+                        || !function.metadata().strict
+                        || function.metadata().function_kind != FunctionKind::Normal
+                        || function.metadata().super_call_allowed
+                        || function.metadata().super_allowed
+                        || function.metadata().arguments_forbidden
+                        || !std::ptr::eq(function, module.function())
+                    {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "module root metadata disagrees with its publication entry point",
                         )));
                     }
                 }
@@ -1622,8 +1956,18 @@ fn verify_unlinked_tree_with_root(
                             "indirect eval root retained an arguments restriction",
                         )));
                     }
+                    if function.metadata().is_module {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "eval root retained module authority",
+                        )));
+                    }
                 }
             }
+        }
+        if !is_root && function.metadata().is_module {
+            return Err(RuntimeError::Engine(Error::internal(
+                "nested function retained module authority",
+            )));
         }
         if is_root
             && matches!(
@@ -1642,7 +1986,7 @@ fn verify_unlinked_tree_with_root(
         }
         let expected_eval_bindings = if is_root {
             match root_publication {
-                RootPublication::Script => None,
+                RootPublication::Script | RootPublication::Module(_) => None,
                 RootPublication::Eval {
                     expected_bindings, ..
                 } => Some(expected_bindings),
@@ -2293,6 +2637,32 @@ fn verify_unlinked_tree_with_root(
                 )));
             }
         }
+        for instruction in function.code() {
+            let crate::bytecode::Instruction::InitializeVarRef(index) = instruction else {
+                continue;
+            };
+            if !is_root || !matches!(root_publication, RootPublication::Module(_)) {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "module lexical initializer escaped a module root",
+                )));
+            }
+            let descriptor = function
+                .closure_variables()
+                .get(usize::from(*index))
+                .ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "module lexical initializer is outside closure slots",
+                    ))
+                })?;
+            if descriptor.source != ClosureSource::ModuleDeclaration
+                || !descriptor.is_lexical
+                || descriptor.kind != ClosureVariableKind::Normal
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "module lexical initializer targeted a non-declaration binding",
+                )));
+            }
+        }
         verify_unlinked_debug(function)?;
         if function.closure_variables().iter().any(|descriptor| {
             descriptor.is_const
@@ -2337,7 +2707,7 @@ fn verify_unlinked_tree_with_root(
         let mut verified_eval_binding_count = 0_usize;
         let eval_allows_global_declarations = is_root
             && match root_publication {
-                RootPublication::Script => false,
+                RootPublication::Script | RootPublication::Module(_) => false,
                 RootPublication::Eval {
                     kind,
                     caller_strict,
@@ -2433,6 +2803,8 @@ fn verify_unlinked_tree_with_root(
                     | ClosureSource::Global
                     | ClosureSource::ParentGlobal(_)
                     | ClosureSource::EvalEnvironment(_)
+                    | ClosureSource::ModuleDeclaration
+                    | ClosureSource::ModuleImport
             );
             let name = unlinked_closure_name(function, descriptor)?;
             if descriptor.kind.is_eval_variable_object()
@@ -2533,6 +2905,42 @@ fn verify_unlinked_tree_with_root(
                             )));
                         }
                     }
+                    RootPublication::Module(_) => match descriptor.source {
+                        ClosureSource::ModuleDeclaration => {
+                            if descriptor.kind != ClosureVariableKind::Normal
+                                || (descriptor.is_const && !descriptor.is_lexical)
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "module declaration descriptor has invalid binding metadata",
+                                )));
+                            }
+                        }
+                        ClosureSource::ModuleImport => {
+                            if descriptor.kind != ClosureVariableKind::Normal
+                                || !descriptor.is_lexical
+                                || !descriptor.is_const
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "module import descriptor has invalid binding metadata",
+                                )));
+                            }
+                        }
+                        ClosureSource::Global => {
+                            if descriptor.kind != ClosureVariableKind::Normal
+                                || descriptor.is_lexical
+                                || descriptor.is_const
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "module global descriptor has invalid binding metadata",
+                                )));
+                            }
+                        }
+                        _ => {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "module root closure descriptor used a non-module source",
+                            )));
+                        }
+                    },
                     RootPublication::Eval { .. } => match descriptor.source {
                         ClosureSource::Global | ClosureSource::EvalEnvironment(_) => {}
                         ClosureSource::GlobalDeclaration
@@ -2566,6 +2974,11 @@ fn verify_unlinked_tree_with_root(
                     ClosureSource::EvalEnvironment(_) => {
                         return Err(RuntimeError::Engine(Error::internal(
                             "only a verified eval root may use an eval environment binding",
+                        )));
+                    }
+                    ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "only a verified module root may own a module binding",
                         )));
                     }
                     _ => {}
@@ -3343,6 +3756,7 @@ fn verify_unlinked_tree_with_root(
                 | crate::bytecode::Instruction::SetVarRef(index)
                 | crate::bytecode::Instruction::GetVarRefCheck(index)
                 | crate::bytecode::Instruction::PutVarRefCheck(index)
+                | crate::bytecode::Instruction::InitializeVarRef(index)
                 | crate::bytecode::Instruction::GetVar(index)
                 | crate::bytecode::Instruction::GetVarUndef(index)
                 | crate::bytecode::Instruction::DeleteVar(index)
@@ -3689,6 +4103,11 @@ fn verify_unlinked_tree_with_root(
                                 "child bytecode directly referenced an eval environment binding",
                             )));
                         }
+                        ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                            return Err(RuntimeError::Engine(Error::internal(
+                                "child bytecode directly referenced a module-root descriptor",
+                            )));
+                        }
                     }
                     let descriptor_index = u16::try_from(descriptor_index).map_err(|_| {
                         RuntimeError::Engine(Error::internal(
@@ -3962,11 +4381,79 @@ fn raw_unlinked_primitive(value: Value) -> Result<RawValue, RuntimeError> {
 mod tests {
     use super::*;
     use crate::bytecode::Instruction;
+    use crate::compiler::compile_unlinked_module_with_filename;
+    use crate::debug::DebugInfoMode;
     use crate::heap::{
         EvalBinding, EvalBindingSource, EvalEnvironment, EvalScope, EvalScopeKind,
         EvalVariableEnvironment, ParameterArgumentCell, ParameterBodyStorage,
         ParameterDefaultSource, ParameterPatternCopy,
     };
+    use crate::module::{ModuleLinkInitializer, ModuleLinkInitializerValue};
+
+    fn module_with_link_initializers(
+        module: UnlinkedModule,
+        link_initializers: Vec<ModuleLinkInitializer>,
+    ) -> UnlinkedModule {
+        let parts = module.into_parts();
+        UnlinkedModule::new(
+            parts.name,
+            parts.function,
+            link_initializers,
+            parts.requested_modules.into_vec(),
+            parts.imports.into_vec(),
+            parts.exports.into_vec(),
+            parts.star_exports.into_vec(),
+        )
+    }
+
+    #[test]
+    fn module_link_initializer_ledger_rejects_reordered_slots() {
+        let module = compile_unlinked_module_with_filename(
+            "var first; function second() {}",
+            "forged-ledger-order.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        verify_unlinked_module_tree(&module).unwrap();
+
+        let mut initializers = module.link_initializers().to_vec();
+        assert_eq!(initializers.len(), 2);
+        initializers.swap(0, 1);
+        let forged = module_with_link_initializers(module, initializers);
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link initializer ledger is not in declaration order")
+        );
+    }
+
+    #[test]
+    fn module_link_initializer_ledger_rejects_value_mismatch() {
+        let module = compile_unlinked_module_with_filename(
+            "var first; function second() {}",
+            "forged-ledger-value.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        verify_unlinked_module_tree(&module).unwrap();
+
+        let mut initializers = module.link_initializers().to_vec();
+        let function = initializers
+            .iter_mut()
+            .find(|initializer| {
+                matches!(initializer.value, ModuleLinkInitializerValue::Function(_))
+            })
+            .expect("module function declaration has a link initializer");
+        function.value = ModuleLinkInitializerValue::Undefined;
+        let forged = module_with_link_initializers(module, initializers);
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
 
     fn ordinary_environment(binding: Option<EvalBinding<JsString>>) -> EvalEnvironment<JsString> {
         EvalEnvironment {

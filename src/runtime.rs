@@ -19,6 +19,7 @@ mod host;
 mod internal_methods;
 mod intrinsics;
 mod jobs;
+mod module;
 mod native_dispatch;
 mod native_stack;
 mod object_literal;
@@ -36,6 +37,7 @@ use self::intrinsics::date::SystemHostServices;
 use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::PromiseRejectionEvent;
 pub use self::jobs::{PendingJobError, PendingJobOutcome};
+pub use self::module::ModuleBytecodeRef;
 pub use self::test262_agent::{Test262AgentError, Test262AgentSession};
 
 use std::cell::{Cell, RefCell};
@@ -2985,6 +2987,11 @@ impl Runtime {
                 | ClosureSource::EvalEnvironment(_) => {
                     return Err(RuntimeError::Invariant(
                         "root bytecode closure descriptor used a child source",
+                    ));
+                }
+                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                    return Err(RuntimeError::Invariant(
+                        "ordinary root publication received a module descriptor",
                     ));
                 }
             };

@@ -266,6 +266,10 @@ pub enum Instruction {
     /// QuickJS `OP_put_var_ref_check`: consume and assign a captured mutable
     /// lexical binding. Value-preserving writes use `Dup; PutVarRefCheck`.
     PutVarRefCheck(u16),
+    /// QuickJS `OP_put_var_ref_check_init` for an ordinary lexical module
+    /// binding. The cell must still be uninitialized; unlike derived `this`,
+    /// the initialized value may be any ECMAScript value.
+    InitializeVarRef(u16),
     /// Captured-binding counterpart of [`Instruction::InitializeDerivedLocal`].
     /// Arrow functions and direct eval use this to initialize their enclosing
     /// derived constructor's single `this` cell.
@@ -803,6 +807,7 @@ impl Instruction {
             | Self::PutArg(_)
             | Self::PutVarRef(_)
             | Self::PutVarRefCheck(_)
+            | Self::InitializeVarRef(_)
             | Self::InitializeDerivedVarRef(_)
             | Self::PutVar(_)
             | Self::PutVarInit(_)

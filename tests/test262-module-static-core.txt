@@ -1,0 +1,13 @@
+test/language/comments/hashbang/module.js
+test/language/eval-code/direct/export.js
+test/language/eval-code/direct/import.js
+test/language/module-code/comment-single-line-html-open.js
+test/language/module-code/early-dup-export-id.js
+test/language/module-code/early-strict-mode.js
+test/language/module-code/eval-self-abrupt.js
+test/language/module-code/eval-this.js
+test/language/module-code/instn-local-bndng-const.js
+test/language/module-code/instn-local-bndng-fun.js
+test/language/module-code/instn-local-bndng-let.js
+test/language/module-code/instn-local-bndng-var.js
+test/language/module-code/parse-export-empty.js

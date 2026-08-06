@@ -38,6 +38,205 @@ impl HostCapabilities {
     }
 }
 
+#[derive(Clone, Copy)]
+struct NegativeMetadataContract {
+    phase: &'static str,
+    error_type: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct ModuleMetadataContract {
+    includes: &'static [&'static str],
+    flags: &'static [&'static str],
+    features: &'static [&'static str],
+    negative: Option<NegativeMetadataContract>,
+}
+
+struct DependencyFreeModuleAdmission {
+    path: &'static str,
+    source_sha256: &'static str,
+    metadata: ModuleMetadataContract,
+}
+
+const MODULE_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &[],
+    negative: None,
+};
+
+const MODULE_FN_GLOBAL_OBJECT_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &["fnGlobalObject.js"],
+    flags: &["module"],
+    features: &[],
+    negative: None,
+};
+
+const MODULE_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &[],
+    negative: Some(NegativeMetadataContract {
+        phase: "parse",
+        error_type: "SyntaxError",
+    }),
+};
+
+/// Source- and metadata-authenticated dependency-free module roots admitted by
+/// the first static-module Test262 milestone. This is deliberately not a
+/// general module capability switch: every other module retains the
+/// `unsupported-module` selection result.
+const DEPENDENCY_FREE_MODULE_ADMISSIONS: [DependencyFreeModuleAdmission; 13] = [
+    DependencyFreeModuleAdmission {
+        path: "test/language/comments/hashbang/module.js",
+        source_sha256: "5fe73a40369e7cbd61f4061b027c9b508d6f1752fc83b29a4f1e4af7e8471926",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module", "raw"],
+            features: &["hashbang"],
+            negative: None,
+        },
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/eval-code/direct/export.js",
+        source_sha256: "648a257196bc895409842b12191cc0a8d9e10d28e66886afb89059412761caca",
+        metadata: MODULE_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/eval-code/direct/import.js",
+        source_sha256: "28c29caa8c8649579790526b511323df04837efad886d2f9d0ea75140dc5fa89",
+        metadata: MODULE_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/comment-single-line-html-open.js",
+        source_sha256: "789641728f7d8496801f145059d329c8b3c9cc1d2901ecbe893ff70e5e426d11",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-export-id.js",
+        source_sha256: "c113c88cba6a99ba5ef7cf1c4c503c60d374aad2f6de2a3a112d6d1be937d91a",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-strict-mode.js",
+        source_sha256: "a72ab52b0625b5becdc0a4f7e4945848582dd797493b4590b7a2ea25b63dd4e4",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/eval-self-abrupt.js",
+        source_sha256: "a593ac28375f793312830e40cdda392054352f4fa692446de8ce2896c4518aa7",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &[],
+            negative: Some(NegativeMetadataContract {
+                phase: "runtime",
+                error_type: "Test262Error",
+            }),
+        },
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/eval-this.js",
+        source_sha256: "044874d01e501861c9c1d451ddd67e1c224a768045be75c5c49e0eb182d998c2",
+        metadata: MODULE_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/instn-local-bndng-const.js",
+        source_sha256: "a36eaed3d56e39769c951b6ca041e22a9cbd1aea1e5dc3651f416992815dca81",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/instn-local-bndng-fun.js",
+        source_sha256: "92b10ca365a70fb2a9b4ba5e98add3e14912e6dd14c9271ee7a88f157945f784",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/instn-local-bndng-let.js",
+        source_sha256: "fd0c09f7adc72c46b66fa440450bbaa5db68173c09e8b6f54af58978c27f99ac",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/instn-local-bndng-var.js",
+        source_sha256: "8f9e41100266ea157c23977f9cb6646ec9b8c826362d2c8eaa44b5b1c2ba232a",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-export-empty.js",
+        source_sha256: "eccb82249ee01600351841616110a7e8182e7056561f6eb9e44120b7aaf73cd8",
+        metadata: MODULE_METADATA,
+    },
+];
+
+/// Admit only one of the pinned, dependency-free module roots above.
+///
+/// The coordinator and worker both call this function. An exact-path source or
+/// metadata change is an audit failure, while an unlisted module is simply not
+/// admitted and remains classified as unsupported by the coordinator.
+pub(super) fn is_exact_dependency_free_module_test(
+    path: &Path,
+    source: &str,
+    metadata: &Metadata,
+) -> Result<bool, String> {
+    let Some(admission) = DEPENDENCY_FREE_MODULE_ADMISSIONS
+        .iter()
+        .find(|admission| path == Path::new(admission.path))
+    else {
+        return Ok(false);
+    };
+    let actual_sha256 = source_sha256(source)?;
+    authenticate_dependency_free_module_test(path, &actual_sha256, metadata, admission)
+}
+
+fn authenticate_dependency_free_module_test(
+    path: &Path,
+    actual_sha256: &str,
+    metadata: &Metadata,
+    admission: &DependencyFreeModuleAdmission,
+) -> Result<bool, String> {
+    if path != Path::new(admission.path) {
+        return Ok(false);
+    }
+    if actual_sha256 != admission.source_sha256 {
+        return Err(format!(
+            "dependency-free module source drifted for {}: expected SHA-256 {}, found {actual_sha256}",
+            admission.path, admission.source_sha256
+        ));
+    }
+    if !module_metadata_matches(metadata, admission.metadata) {
+        return Err(format!(
+            "dependency-free module metadata shape drifted for {}",
+            admission.path
+        ));
+    }
+    Ok(true)
+}
+
+fn module_metadata_matches(metadata: &Metadata, contract: ModuleMetadataContract) -> bool {
+    metadata
+        .includes
+        .iter()
+        .map(String::as_str)
+        .eq(contract.includes.iter().copied())
+        && metadata
+            .flags
+            .iter()
+            .map(String::as_str)
+            .eq(contract.flags.iter().copied())
+        && metadata
+            .features
+            .iter()
+            .map(String::as_str)
+            .eq(contract.features.iter().copied())
+        && match (&metadata.negative, contract.negative) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) => {
+                actual.phase.as_deref() == Some(expected.phase)
+                    && actual.error_type.as_deref() == Some(expected.error_type)
+            }
+            _ => false,
+        }
+}
+
 struct AgentHostAdmission {
     path: &'static str,
     source_sha256: &'static str,
@@ -1166,12 +1365,15 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        AGENT_HOST_ADMISSIONS, HostCapabilities, agent_host_metadata_matches,
-        generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
-        insert_exact_source_feature_hint, is_exact_agent_host_test, missing_host_capability_hints,
-        source_sha256, source_tokens, supplemental_feature_hints,
+        AGENT_HOST_ADMISSIONS, DEPENDENCY_FREE_MODULE_ADMISSIONS, HostCapabilities,
+        ModuleMetadataContract, agent_host_metadata_matches,
+        authenticate_dependency_free_module_test, generator_destructuring_source_needs_async_guard,
+        insert_atomics_cross_realm_feature_hints, insert_exact_source_feature_hint,
+        is_exact_agent_host_test, is_exact_dependency_free_module_test,
+        missing_host_capability_hints, module_metadata_matches, source_sha256, source_tokens,
+        supplemental_feature_hints,
     };
-    use crate::metadata::Metadata;
+    use crate::metadata::{Metadata, NegativeExpectation};
 
     fn metadata(flags: &[&str], features: &[&str], includes: &[&str]) -> Metadata {
         Metadata {
@@ -1184,6 +1386,105 @@ mod tests {
 
     fn generator_metadata() -> Metadata {
         metadata(&[], &["generators"], &[])
+    }
+
+    fn module_metadata(contract: ModuleMetadataContract) -> Metadata {
+        Metadata {
+            includes: contract
+                .includes
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            flags: contract
+                .flags
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            features: contract
+                .features
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            negative: contract.negative.map(|negative| NegativeExpectation {
+                phase: Some(negative.phase.to_owned()),
+                error_type: Some(negative.error_type.to_owned()),
+            }),
+        }
+    }
+
+    #[test]
+    fn dependency_free_module_admission_is_exact_and_complete() {
+        assert_eq!(DEPENDENCY_FREE_MODULE_ADMISSIONS.len(), 13);
+        assert!(
+            DEPENDENCY_FREE_MODULE_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+
+        for admission in &DEPENDENCY_FREE_MODULE_ADMISSIONS {
+            let metadata = module_metadata(admission.metadata);
+            assert!(metadata.is_module());
+            assert!(module_metadata_matches(&metadata, admission.metadata));
+            assert_eq!(
+                authenticate_dependency_free_module_test(
+                    Path::new(admission.path),
+                    admission.source_sha256,
+                    &metadata,
+                    admission,
+                ),
+                Ok(true),
+                "{}",
+                admission.path
+            );
+        }
+    }
+
+    #[test]
+    fn dependency_free_module_admission_rejects_source_and_metadata_drift() {
+        let admission = &DEPENDENCY_FREE_MODULE_ADMISSIONS[0];
+        let exact = module_metadata(admission.metadata);
+        let source_drift = authenticate_dependency_free_module_test(
+            Path::new(admission.path),
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            &exact,
+            admission,
+        )
+        .unwrap_err();
+        assert!(source_drift.contains("source drifted"));
+        assert!(source_drift.contains(admission.source_sha256));
+
+        let mut metadata_drift = exact;
+        metadata_drift.flags.insert("async".to_owned());
+        let metadata_drift = authenticate_dependency_free_module_test(
+            Path::new(admission.path),
+            admission.source_sha256,
+            &metadata_drift,
+            admission,
+        )
+        .unwrap_err();
+        assert!(metadata_drift.contains("metadata shape drifted"));
+    }
+
+    #[test]
+    fn ordinary_module_is_not_admitted() {
+        let metadata = metadata(&["module"], &[], &[]);
+        assert_eq!(
+            is_exact_dependency_free_module_test(
+                Path::new("test/language/module-code/not-a-pinned-root.js"),
+                "export {};",
+                &metadata,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            missing_host_capability_hints(
+                Path::new("test/language/module-code/not-a-pinned-root.js"),
+                "export {};",
+                &metadata,
+                false,
+            ),
+            ["module"]
+        );
     }
 
     #[test]

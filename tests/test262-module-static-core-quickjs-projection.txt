@@ -1,0 +1,6 @@
+test262.conf:44: ignoring testdir=test262/test
+SyntaxError: unexpected token in expression: '<'
+SyntaxError: duplicate exported name 'x'
+SyntaxError: variable name expected
+Throw: { message: "" }
+Average memory statistics for 13 tests:

@@ -1080,7 +1080,8 @@ impl RuntimeVmHost {
                     .checked_sub(1)
                     .and_then(|scope| environment.scopes.get(usize::from(scope)))
                     .is_some_and(|scope| scope.kind == crate::heap::EvalScopeKind::ProgramBody);
-                if !current_body_is_program
+                if caller_metadata.is_module
+                    || !current_body_is_program
                     || (caller_strict && caller_metadata.eval_kind != crate::heap::EvalKind::None)
                 {
                     return Err(Error::internal(
@@ -1105,6 +1106,7 @@ impl RuntimeVmHost {
                     .is_some_and(|scope| scope.kind == crate::heap::EvalScopeKind::ProgramBody);
                 if current_body_is_program
                     && caller_metadata.eval_kind == crate::heap::EvalKind::None
+                    && !caller_metadata.is_module
                 {
                     return Err(Error::internal(
                         "authored Script eval environment used a non-canonical strict-local target",
@@ -2683,6 +2685,11 @@ impl VmHost for RuntimeVmHost {
                 ClosureSource::EvalEnvironment(_) => {
                     return Err(Error::internal(
                         "child closure attempted to resolve an eval-root descriptor",
+                    ));
+                }
+                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                    return Err(Error::internal(
+                        "child closure attempted to resolve a module-root descriptor",
                     ));
                 }
             };
@@ -4328,6 +4335,37 @@ impl VmHost for RuntimeVmHost {
         }
         self.runtime
             .write_var_ref(root, value)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn initialize_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .copied()
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.source != ClosureSource::ModuleDeclaration
+            || !descriptor.is_lexical
+            || descriptor.kind != ClosureVariableKind::Normal
+        {
+            return Err(Error::internal(
+                "module lexical initialization referenced a non-declaration binding",
+            ));
+        }
+        let root = self
+            .closure_slots
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?
+            .clone();
+        let raw = self
+            .runtime
+            .raw_var_ref_value(&root)
+            .map_err(runtime_error_to_vm_error)?;
+        if !matches!(raw, RawValue::Uninitialized) {
+            return Err(self.lexical_uninitialized_error(self.closure_name(index)?)?);
+        }
+        self.runtime
+            .write_var_ref(&root, value)
             .map_err(runtime_error_to_vm_error)
     }
 

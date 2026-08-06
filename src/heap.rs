@@ -861,6 +861,9 @@ pub struct FunctionMetadata {
     pub closure_count: u16,
     pub max_stack: u16,
     pub strict: bool,
+    /// Authenticates the parentless callable owned by one Module record. A
+    /// nested function may never carry this bit.
+    pub is_module: bool,
     /// Whether `super()` is syntactically permitted in this bytecode. QuickJS
     /// carries this independently from HomeObject storage so direct eval can
     /// inherit constructor authority without inferring it from captured data.
@@ -3222,6 +3225,10 @@ pub enum ClosureSource {
     /// verified direct-eval root and is instantiated from caller-owned
     /// `VarRef` roots in the same synchronous operation that publishes it.
     EvalEnvironment(u16),
+    /// Root VarRef owned by an ECMAScript Module Environment Record.
+    ModuleDeclaration,
+    /// Root live binding supplied by a requested module during linking.
+    ModuleImport,
 }
 
 /// Closure-name representation before and after runtime publication.
@@ -4079,6 +4086,7 @@ fn ordinary_private_closure_operand(instruction: &Instruction) -> Option<u16> {
         | Instruction::SetVarRef(index)
         | Instruction::GetVarRefCheck(index)
         | Instruction::PutVarRefCheck(index)
+        | Instruction::InitializeVarRef(index)
         | Instruction::InitializeDerivedVarRef(index)
         | Instruction::GetVar(index)
         | Instruction::GetVarUndef(index)
@@ -10050,6 +10058,35 @@ impl Heap {
                 }
             }
         }
+        if bytecode.metadata.is_module
+            && (!bytecode.metadata.strict
+                || bytecode.metadata.function_kind != FunctionKind::Normal
+                || bytecode.metadata.eval_kind != EvalKind::None
+                || bytecode.metadata.argument_count != 0
+                || bytecode.metadata.defined_argument_count != 0
+                || bytecode.metadata.rest_parameter.is_some()
+                || bytecode.metadata.rest_pattern_start.is_some()
+                || bytecode.metadata.parameter_environment_local_count != 0
+                || bytecode.metadata.pattern_argument_count != 0
+                || bytecode.metadata.parameter_pattern_end.is_some()
+                || bytecode.parameter_environment.is_some()
+                || bytecode.metadata.function_name_local.is_some()
+                || bytecode.metadata.derived_this_local.is_some()
+                || bytecode.metadata.active_function_local.is_some()
+                || bytecode.metadata.eval_variable_object_local.is_some()
+                || bytecode.metadata.super_call_allowed
+                || bytecode.metadata.super_allowed
+                || bytecode.metadata.arguments_forbidden
+                || bytecode.metadata.needs_home_object
+                || bytecode.metadata.has_prototype
+                || bytecode.metadata.constructor_kind != ConstructorKind::None
+                || bytecode.metadata.class_initializer_kind.is_some()
+                || bytecode.metadata.class_private_brand)
+        {
+            return Err(HeapError::Invariant(
+                "module bytecode has invalid root metadata",
+            ));
+        }
         if bytecode
             .metadata
             .function_name_local
@@ -10458,6 +10495,45 @@ impl Heap {
         }
         let mut global_declaration_names = HashMap::new();
         for descriptor in bytecode.closure_variables.iter().copied() {
+            if bytecode.metadata.is_module {
+                if !matches!(
+                    descriptor.source,
+                    ClosureSource::ModuleDeclaration
+                        | ClosureSource::ModuleImport
+                        | ClosureSource::Global
+                ) {
+                    return Err(HeapError::Invariant(
+                        "module root closure descriptor used a non-module source",
+                    ));
+                }
+            } else if matches!(
+                descriptor.source,
+                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport
+            ) {
+                return Err(HeapError::Invariant(
+                    "module closure descriptor escaped module bytecode",
+                ));
+            }
+            match descriptor.source {
+                ClosureSource::ModuleDeclaration
+                    if descriptor.kind != ClosureVariableKind::Normal
+                        || (descriptor.is_const && !descriptor.is_lexical) =>
+                {
+                    return Err(HeapError::Invariant(
+                        "module declaration descriptor has invalid binding metadata",
+                    ));
+                }
+                ClosureSource::ModuleImport
+                    if descriptor.kind != ClosureVariableKind::Normal
+                        || !descriptor.is_lexical
+                        || !descriptor.is_const =>
+                {
+                    return Err(HeapError::Invariant(
+                        "module import descriptor has invalid binding metadata",
+                    ));
+                }
+                _ => {}
+            }
             if matches!(descriptor.source, ClosureSource::EvalEnvironment(_))
                 && bytecode.metadata.eval_kind != EvalKind::Direct
             {
@@ -10541,6 +10617,8 @@ impl Heap {
                     | ClosureSource::Global
                     | ClosureSource::ParentGlobal(_)
                     | ClosureSource::EvalEnvironment(_)
+                    | ClosureSource::ModuleDeclaration
+                    | ClosureSource::ModuleImport
             ) || matches!(
                 descriptor.kind,
                 ClosureVariableKind::FunctionName
@@ -10644,7 +10722,8 @@ impl Heap {
                         .checked_sub(1)
                         .and_then(|scope| environment.scopes.get(usize::from(scope)))
                         .is_some_and(|scope| scope.kind == EvalScopeKind::ProgramBody);
-                    if !current_body_is_program
+                    if bytecode.metadata.is_module
+                        || !current_body_is_program
                         || (environment.caller_strict
                             && bytecode.metadata.eval_kind != EvalKind::None)
                     {
@@ -10663,7 +10742,10 @@ impl Heap {
                         .checked_sub(1)
                         .and_then(|scope| environment.scopes.get(usize::from(scope)))
                         .is_some_and(|scope| scope.kind == EvalScopeKind::ProgramBody);
-                    if current_body_is_program && bytecode.metadata.eval_kind == EvalKind::None {
+                    if current_body_is_program
+                        && bytecode.metadata.eval_kind == EvalKind::None
+                        && !bytecode.metadata.is_module
+                    {
                         return Err(HeapError::Invariant(
                             "authored Script eval environment used a non-canonical strict-local target",
                         ));

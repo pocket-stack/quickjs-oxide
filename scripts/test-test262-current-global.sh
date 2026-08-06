@@ -9,10 +9,10 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 case ${1-} in
     ''|--check)
-        exec "$script_dir/test-test262-destructuring-assignment-global.sh" --check
+        exec "$script_dir/test-test262-module-static-core.sh" --check
         ;;
     --full)
-        exec "$script_dir/test-test262-destructuring-assignment-global.sh" --full
+        exec "$script_dir/test-test262-module-static-core.sh" --full
         ;;
     -h|--help)
         printf 'usage: %s [--check|--full]\n' "${0##*/}"

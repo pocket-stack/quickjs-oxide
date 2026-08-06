@@ -4,6 +4,51 @@ Last audited: 2026-08-07. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dx dependency-free static-module execution
+
+R3dx adds the first executable static-module slice using the same two-phase
+shape as pinned QuickJS 2026-06-04: compilation publishes a module record;
+the first execution Context links its live cells and realm-global references;
+evaluation then runs exactly once and caches either success or the thrown
+value. Module roots are always strict, have `this === undefined`, do not
+produce Script completion values, and use an isolated environment for
+`var`/function/`let`/`const`. The link entry preinitializes `var`, hoists
+functions, and leaves lexical cells in TDZ until evaluation. Direct eval sees
+the live module cells without leaking its own `var` declarations.
+
+The public `ModuleBytecodeRef` is runtime-owned and identity-preserving.
+Cross-runtime execution is rejected; same-runtime cross-realm execution uses
+and retains the first executing realm, matching QuickJS rather than the
+compilation realm. Module exception frames remain anonymous while retaining
+their source filename. The implementation lives in dedicated
+`compiler/module.rs`, `module.rs`, and `runtime/module.rs` boundaries, keeping
+`runtime.rs` as thin wiring rather than growing the monolithic runtime body.
+
+The runner admits only 13 exact, source- and metadata-authenticated
+dependency-free Test262 roots. They cover module parsing, always-strict mode,
+HTML-comment rejection, top-level `this`, isolated bindings, TDZ, function
+hoisting, local export validation, and parse/runtime negative phases. Oxide
+passes 13/13; pinned QuickJS passes 13/13 twice. Every unlisted module and
+source or metadata drift canary remains fail-closed. Static dependency
+loading, imports and re-exports, `ResolveExport`, namespace exotic objects,
+`import.meta`, and top-level await are deliberately deferred to the next
+module milestones.
+
+Two independent complete candidate runs are byte-identical at 68,104 passes /
+68,156 runnable / 102,037 variants. Their TSV and JSONL SHA-256 values are
+`261940811669b8bf9f901a8d5c1045797ac15602add35cd7066d46eb0c496588`
+and
+`fb08822cf3d2333a523bfb37ce46d180c8c909b6e883c4bd7eb51d2420e7383e`.
+Reversing only the 13 admitted rows plus the profile header and summary
+reproduces the prior canonical hashes exactly, proving 13 gains and zero
+regressions across the other 102,024 rows. R3dx is a pre-parity milestone.
+
+```sh
+./scripts/test-test262-module-static-core.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-module-static-core.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-module-static-core.sh --full
+```
+
 ## R3dw global destructuring-assignment admission
 
 R3dw promotes the already-implemented Test262 `destructuring-assignment`

@@ -14,6 +14,7 @@ pub mod error;
 pub mod function;
 pub mod heap;
 pub mod lexer;
+pub(crate) mod module;
 pub mod number;
 pub mod number_parse;
 pub mod object;
@@ -44,8 +45,8 @@ pub use object::{
     OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
 };
 pub use runtime::{
-    Context, EvalOptions, HostServices, PendingJobError, PendingJobOutcome, PromiseRejectionEvent,
-    Runtime, RuntimeError, Test262AgentError, Test262AgentSession,
+    Context, EvalOptions, HostServices, ModuleBytecodeRef, PendingJobError, PendingJobOutcome,
+    PromiseRejectionEvent, Runtime, RuntimeError, Test262AgentError, Test262AgentSession,
 };
 pub use value::{JsString, JsStringError, Value};
 

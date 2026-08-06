@@ -707,6 +707,12 @@ pub(crate) trait VmHost {
     fn put_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error>;
     fn get_var_ref_checked(&mut self, index: u16) -> Result<Value, Error>;
     fn put_var_ref_checked(&mut self, index: u16, value: Value) -> Result<(), Error>;
+    fn initialize_var_ref(&mut self, _index: u16, _value: Value) -> Result<(), Error> {
+        Err(Error::new(
+            crate::error::ErrorKind::Unsupported,
+            "module lexical initialization requires a module runtime publisher",
+        ))
+    }
     fn initialize_derived_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error>;
     /// Apply the derived-constructor return protocol. Unlike ordinary VM
     /// errors, protocol TypeError/ReferenceError objects are allocated in the
@@ -3695,6 +3701,10 @@ impl VmActivation {
             Instruction::PutVarRefCheck(index) => {
                 let value = self.pop()?;
                 host.put_var_ref_checked(*index, value)?;
+            }
+            Instruction::InitializeVarRef(index) => {
+                let value = self.pop()?;
+                host.initialize_var_ref(*index, value)?;
             }
             Instruction::InitializeDerivedVarRef(index) => {
                 let value = self.pop()?;

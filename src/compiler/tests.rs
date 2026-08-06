@@ -1804,6 +1804,7 @@ fn async_generator_return_hand_lowers_active_iterator_close() {
 }
 
 use crate::lexer::{LexError, LexErrorKind, Lexer, Position, Span};
+use crate::module::ModuleExportTarget;
 use crate::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, OrdinaryPropertyDescriptor,
     PropertyKey, WellKnownSymbol,
@@ -1819,10 +1820,303 @@ use super::{
     FunctionTree, HOME_OBJECT_LOCAL_NAME, InMode, IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
     MAX_LOCAL_VARIABLES, NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset,
     SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles,
-    compile_script, compile_unlinked_eval_with_filename, compile_unlinked_script,
-    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, resolve_identifiers,
-    validate_scope_graph,
+    compile_script, compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
+    compile_unlinked_script, compile_unlinked_script_with_filename, ensure_closure_variable,
+    lex_error, resolve_identifiers, validate_scope_graph,
 };
+
+#[test]
+fn module_root_is_strict_has_no_script_completion_and_owns_declaration_slots() {
+    let module = compile_unlinked_module_with_filename(
+        "export {}; export { answer as value }; const answer = 42;",
+        "file:///module.js",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    let function = module.function();
+    assert!(function.metadata().strict);
+    assert!(function.metadata().is_module);
+    assert_eq!(function.func_name(), None);
+    assert!(function.local_definitions().is_empty());
+    assert_eq!(function.closure_variables().len(), 1);
+    assert_eq!(
+        function.closure_variables()[0].source,
+        ClosureSource::ModuleDeclaration
+    );
+    assert!(function.closure_variables()[0].is_lexical);
+    assert!(function.closure_variables()[0].is_const);
+    assert!(
+        function
+            .closure_variables()
+            .iter()
+            .all(|descriptor| !matches!(
+                descriptor.source,
+                ClosureSource::GlobalDeclaration | ClosureSource::Global
+            ))
+    );
+    assert!(matches!(
+        &function.code()[..4],
+        [
+            Instruction::PushThis,
+            Instruction::IfFalse(4),
+            Instruction::Undefined,
+            Instruction::Return,
+        ]
+    ));
+    assert!(function.code().windows(2).any(|window| matches!(
+        window,
+        [Instruction::PushI32(42), Instruction::InitializeVarRef(0)]
+    )));
+    assert!(matches!(
+        function
+            .code()
+            .get(function.code().len().saturating_sub(2)..),
+        Some([Instruction::Undefined, Instruction::Return])
+    ));
+    assert_eq!(module.exports().len(), 1);
+    assert_eq!(module.exports()[0].export_name.to_utf8_lossy(), "value");
+    assert_eq!(
+        module.exports()[0].target,
+        ModuleExportTarget::Local { closure_index: 0 }
+    );
+}
+
+#[test]
+fn module_export_duplicate_and_missing_binding_are_early_errors() {
+    let duplicate = compile_unlinked_module_with_filename(
+        "const a=1,b=2; export {a as value}; export {b as value};",
+        "duplicate.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(duplicate.kind(), ErrorKind::Syntax);
+    assert!(duplicate.message().contains("duplicate exported name"));
+
+    let missing = compile_unlinked_module_with_filename(
+        "export { missing };",
+        "missing.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(missing.kind(), ErrorKind::Syntax);
+    assert!(missing.message().contains("does not exist"));
+}
+
+#[test]
+fn module_function_redeclarations_follow_quickjs_source_order() {
+    // QuickJS 2026-06-04 retains the function initializer when a later `var`
+    // reuses its module cell.
+    let allowed = compile_unlinked_module_with_filename(
+        "function value(){ return 42; } var value;",
+        "function-then-var.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    assert_eq!(allowed.link_initializers().len(), 1);
+    assert!(matches!(
+        allowed.link_initializers()[0].value,
+        crate::module::ModuleLinkInitializerValue::Function(_)
+    ));
+
+    for source in [
+        "var value; function value(){}",
+        "function value(){} function value(){}",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "invalid-function-redeclaration.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert!(
+            error
+                .message()
+                .contains("invalid redefinition of global identifier in module code"),
+            "{source}: {}",
+            error.message()
+        );
+    }
+
+    // Preserve QuickJS's first-global-entry scope quirk. A var first seen in
+    // a nested statement still uses the module cell, but does not make a
+    // later Program-level function declaration an early error.
+    for source in [
+        "{ var value; } function value(){ return 42; }",
+        "if (false) { var value; } function value(){ return 42; }",
+        "for (;;) { var value; break; } function value(){ return 42; }",
+        "{ var value; } var value; function value(){ return 42; }",
+        "{ var value; } function value(){ return 1; } function value(){ return 42; }",
+    ] {
+        let module = compile_unlinked_module_with_filename(
+            source,
+            "nested-var-then-function.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        assert!(matches!(
+            module.link_initializers()[0].value,
+            crate::module::ModuleLinkInitializerValue::Function(_)
+        ));
+    }
+
+    let first_program_var_wins_the_check = compile_unlinked_module_with_filename(
+        "var value; { var value; } function value(){}",
+        "program-var-first.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(first_program_var_wins_the_check.kind(), ErrorKind::Syntax);
+
+    for source in [
+        "function value(){} function value( {",
+        "function value(){} function value(){ @ }",
+        "function value(){} function value",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "redefinition-precedes-tail.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert!(
+            error
+                .message()
+                .contains("invalid redefinition of global identifier in module code"),
+            "{source}: {}",
+            error.message()
+        );
+    }
+}
+
+#[test]
+fn module_root_rejects_html_comments_and_strict_with_before_execution() {
+    for source in ["<!-- hidden\nexport {};", "with ({}) {}"] {
+        let error =
+            compile_unlinked_module_with_filename(source, "strict.mjs", DebugInfoMode::StripDebug)
+                .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+    }
+}
+
+#[test]
+fn module_import_meta_remains_an_explicit_implementation_frontier() {
+    let error = compile_unlinked_module_with_filename(
+        "globalThis.meta = import.meta;",
+        "import-meta.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(error.message().contains("import.meta is not implemented"));
+
+    let script = compile_unlinked_script_with_filename(
+        "import.meta",
+        "import-meta.js",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(script.kind(), ErrorKind::Syntax);
+    assert!(script.message().contains("only valid in module code"));
+}
+
+#[test]
+fn top_level_await_remains_an_explicit_synchronous_module_frontier() {
+    for source in ["await 1;", "for await (const value of []) {}"] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "top-level-await.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+        assert!(error.message().contains("top-level await"), "{source}");
+    }
+}
+
+#[test]
+fn module_var_and_function_use_the_link_only_dual_entry() {
+    let module = compile_unlinked_module_with_filename(
+        "export var value; export function answer(){ return 42; }",
+        "dual-entry.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    let function = module.function();
+    assert_eq!(function.closure_variables().len(), 2);
+    assert!(
+        function
+            .closure_variables()
+            .iter()
+            .all(
+                |descriptor| descriptor.source == ClosureSource::ModuleDeclaration
+                    && !descriptor.is_lexical
+                    && !descriptor.is_const
+            )
+    );
+    assert!(matches!(function.code()[0], Instruction::PushThis));
+    let Instruction::IfFalse(body) = function.code()[1] else {
+        panic!("module root lost its link/evaluation entry guard");
+    };
+    let body = body as usize;
+    assert!(matches!(
+        &function.code()[2..body],
+        [
+            Instruction::Undefined,
+            Instruction::PutVarRef(0),
+            Instruction::FClosure(_),
+            Instruction::PutVarRef(1),
+            Instruction::Undefined,
+            Instruction::Return,
+        ]
+    ));
+    assert!(matches!(
+        &function.code()[body..],
+        [Instruction::Undefined, Instruction::Return]
+    ));
+}
+
+#[test]
+fn module_direct_eval_records_a_strict_local_variable_environment() {
+    let module = compile_unlinked_module_with_filename(
+        "let local=1; eval('var x; local');",
+        "eval-module.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    assert_eq!(module.function().eval_environments().len(), 1);
+    assert!(matches!(
+        module.function().eval_environments()[0].variable_environment,
+        EvalVariableEnvironment::StrictLocal(_)
+    ));
+}
+
+#[test]
+fn stripped_module_tree_retains_linker_binding_names() {
+    let module = compile_unlinked_module_with_filename(
+        "const local=1; export function read(){ return local; }",
+        "stripped-module.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    assert!(matches!(
+        module.function().closure_variables()[0].name,
+        ClosureVariableName::Constant(_)
+    ));
+    let child = module
+        .function()
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("module function declaration has child bytecode");
+    assert!(matches!(
+        child.closure_variables(),
+        [descriptor]
+            if descriptor.source == ClosureSource::ParentClosure(0)
+                && matches!(descriptor.name, ClosureVariableName::Constant(_))
+    ));
+}
 
 #[test]
 fn string_too_long_lex_error_maps_to_js_internal() {
@@ -2565,6 +2859,7 @@ fn captured_with_object_has_close_lifetime_without_lexical_tdz() {
         functions: vec![strict],
         source: "".into(),
         filename: JsString::from_static("<strict-with-metadata>"),
+        module: None,
         pending_unsupported: None,
     };
     assert!(
@@ -9733,6 +10028,8 @@ fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
             )
             .unwrap(),
         ],
+        module: None,
+        exporting_module_declaration: false,
         anonymous_function_definition: None,
         pending_unsupported: None,
     };

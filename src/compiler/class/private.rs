@@ -117,6 +117,7 @@ impl<'source> Parser<'source> {
                 BindingStorage::Local(local) => local,
                 BindingStorage::Argument(_)
                 | BindingStorage::External(_)
+                | BindingStorage::Module(_)
                 | BindingStorage::Global => {
                     return Err(Error::internal(
                         "private accessor primary binding has invalid storage",
@@ -325,6 +326,8 @@ mod tests {
             current_function: 0,
             in_mode: InMode::Allow,
             functions: vec![root],
+            module: None,
+            exporting_module_declaration: false,
             anonymous_function_definition: None,
             pending_unsupported: None,
         };

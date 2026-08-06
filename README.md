@@ -6,19 +6,20 @@ the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 The `unsafe`-free engine is runnable, but it is not at Feature Parity yet. Its
 strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
-Unicode normalization, and a growing parser/VM surface.
+Unicode normalization, an initial dependency-free synchronous-module slice,
+and a growing parser/VM surface.
 
-The latest conformance milestone globally admits the already-implemented
-Test262 `destructuring-assignment` feature plus an exact 90-path audited
-parse-negative allowlist. Its raw universe is 141 paths / 217 variants; the
-137-path / 213-variant activation passes in pinned QuickJS and Oxide, adding
-213 global passes with zero regressions. Four `flags: [module]` variants stay
-fail-closed behind module support. This is a profile-only admission; the full
-Feature Parity goal remains unchanged.
+The latest conformance milestone adds QuickJS-shaped compile/link/evaluate
+semantics for an exact, source-authenticated cohort of 13 dependency-free
+static-module roots. Pinned QuickJS and Oxide both pass 13/13. Static imports,
+re-exports, module namespaces, `import.meta`, and top-level await remain
+fail-closed until their graph/linker milestones; the full Feature Parity goal
+is unchanged.
 
-The latest audited global vector is 68,091 passes / 68,143 runnable / 102,037
-total variants. Detailed hashes, partitions, and historical bookkeeping live
-in the status documents below.
+The latest audited global vector is 68,104 passes / 68,156 runnable / 102,037
+total variants: 13 gains, zero regressions, and two byte-identical full
+replays. Detailed hashes and historical bookkeeping live in the status
+documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The

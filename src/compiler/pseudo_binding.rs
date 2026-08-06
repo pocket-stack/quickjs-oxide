@@ -153,7 +153,9 @@ fn function_allows_new_target(tree: &FunctionTree, mut function_id: FunctionId) 
         let function = &tree.functions[function_id];
         match function.kind {
             FunctionKind::Ordinary | FunctionKind::Method => return true,
-            FunctionKind::Script | FunctionKind::Eval(EvalKind::Indirect) => return false,
+            FunctionKind::Script
+            | FunctionKind::Module
+            | FunctionKind::Eval(EvalKind::Indirect) => return false,
             FunctionKind::Eval(EvalKind::Direct) => {
                 return function
                     .binding_from_scope(function.var_scope, NEW_TARGET_LOCAL_NAME)
@@ -267,6 +269,7 @@ pub(super) const fn function_owns_pseudo_binding(
         PseudoBinding::This => matches!(
             kind,
             FunctionKind::Script
+                | FunctionKind::Module
                 | FunctionKind::Ordinary
                 | FunctionKind::Method
                 | FunctionKind::Eval(EvalKind::Indirect)
