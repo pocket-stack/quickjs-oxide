@@ -4,6 +4,28 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dp scoped Test262 agent wake/count/location admission
+
+R3dp adds a runner-only admission for 17 wake-count, default-count/index,
+waiter-location, and wake-before-timeout agent paths. It changes neither the
+runtime nor the live compatibility profile. The exact 21-path R3do retained
+universe is partitioned into 17 activation paths / 34 variants and four FIFO
+paths / eight variants; the candidate reports 34 passes and eight unchanged
+`unsupported-host-agent` outcomes, with zero regressions.
+
+The coordinator and isolated worker both require exact path, source SHA-256,
+and complete metadata before enabling the agent host. The scoped parent and
+candidate profile hashes are `9e20cfcb8b4b6f23116079b9ad12b823e1845688efbc1b81de97f9c28e2f5fb9`
+and `3e378f7260dac9b5a70155cfbad411f282f7584300f96ca4e0be887f4e6254a0`.
+Fifty single-worker and twenty eight-worker candidate replays are
+byte-identical, covering 1,700 + 680 activation passes while retaining 400 +
+160 fail-closed FIFO outcomes. Pinned QuickJS 2026-06-04 passes the same 34
+variants.
+
+```sh
+./scripts/test-test262-agent-wake-count-location.sh --check
+```
+
 ## R3do global Test262 bounded agent-wait cohort A admission
 
 R3do now promotes the scoped 22-path / 44-variant bounded timeout and

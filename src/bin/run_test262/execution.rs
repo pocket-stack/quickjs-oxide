@@ -798,6 +798,23 @@ mod tests {
             allow_agent_host: true,
         })
         .unwrap_err();
+
+        let wake_count_location_path =
+            PathBuf::from("test/built-ins/Atomics/notify/bigint/notify-all-on-loc.js");
+        fs::create_dir_all(suite.join("test/built-ins/Atomics/notify/bigint")).unwrap();
+        fs::write(
+            suite.join(&wake_count_location_path),
+            "/*---\nincludes: [atomicsHelper.js]\nfeatures: [Atomics, BigInt, SharedArrayBuffer, TypedArray]\n---*/\n// drift\n",
+        )
+        .unwrap();
+        let wake_count_location_error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: wake_count_location_path,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: true,
+        })
+        .unwrap_err();
         fs::remove_dir_all(suite).unwrap();
         assert!(
             error.contains("agent broadcast cohort A source drifted"),
@@ -806,6 +823,10 @@ mod tests {
         assert!(
             bounded_wait_error.contains("agent bounded wait cohort A source drifted"),
             "{bounded_wait_error}"
+        );
+        assert!(
+            wake_count_location_error.contains("agent wake/count/location cohort source drifted"),
+            "{wake_count_location_error}"
         );
     }
 

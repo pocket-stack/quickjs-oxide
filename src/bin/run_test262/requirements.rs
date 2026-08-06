@@ -43,7 +43,25 @@ struct AgentHostAdmission {
     cohort: &'static str,
 }
 
-const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 38] = [
+const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 55] = [
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/bigint/notify-all-on-loc.js",
+        source_sha256: "442a9e3af420e81107defd515e5bfe539a7a5a133e61797fad9a640e93439b3d",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/count-defaults-to-infinity-missing.js",
+        source_sha256: "5bc3aee123dafa5dd70ff92a8c73385880a26118e5d110f79d809707225f6a6b",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/count-defaults-to-infinity-undefined.js",
+        source_sha256: "57afbd3a2f85800ee919c038809d605511102f6ee99504f5b833f97cf75c7efb",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
     AgentHostAdmission {
         path: "test/built-ins/Atomics/notify/negative-count.js",
         source_sha256: "fe734b6972c67082995e6140e781449198828b79d0ddb24a51a204b5afd6390e",
@@ -51,10 +69,40 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 38] = [
         cohort: "Test262 agent bounded wait cohort A",
     },
     AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-all-on-loc.js",
+        source_sha256: "f2f60a1f70c6f6c47d28ad602418889b81586b4d4c1f06e8c09e063c4e510844",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-all.js",
+        source_sha256: "0a68a903a51def1d8869c2c93fb7e3640bf6389f148482e5a4cb8bc42e7926d9",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
         path: "test/built-ins/Atomics/notify/notify-nan.js",
         source_sha256: "9d022e8e59572cbcd5dc672b3249b9c67407e9007c7e56f4156b4aea2e4857c5",
         features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
         cohort: "Test262 agent bounded wait cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-one.js",
+        source_sha256: "3364d4844004ba73efe5036da4fd0cafa1bab5218885946e5b704bd06082dd61",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-renotify-noop.js",
+        source_sha256: "e69b68f7240ff876c28b5ed4130a54830eaf6e02e665db6c87e0b7c1a1cbafdb",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-two.js",
+        source_sha256: "03309fe924420caf6fc40817dce1095895470233268502687a2168a27769d9ab",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
     },
     AgentHostAdmission {
         path: "test/built-ins/Atomics/notify/notify-with-no-agents-waiting.js",
@@ -75,10 +123,22 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 38] = [
         cohort: "Test262 agent bounded wait cohort A",
     },
     AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/undefined-index-defaults-to-zero.js",
+        source_sha256: "9235c0501b3f81cb4b7079ee73e52de6f39f987467d90b79b9c47bb44baf6550",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
         path: "test/built-ins/Atomics/wait/bigint/false-for-timeout-agent.js",
         source_sha256: "30818849f231757c0fce413f31fa235c63236f9268eab982ce58078d427fade1",
         features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
         cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/bigint/nan-for-timeout.js",
+        source_sha256: "7109bf013ce44e8e36d88ce1eda639b0f844fee89c04f31cf8356475b6b89021",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
     },
     AgentHostAdmission {
         path: "test/built-ins/Atomics/wait/bigint/negative-timeout-agent.js",
@@ -147,6 +207,18 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 38] = [
         cohort: "Test262 agent broadcast cohort A",
     },
     AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/bigint/waiterlist-block-indexedposition-wake.js",
+        source_sha256: "b02f89aa4a6fc7cc8e6f63c7761b95a2cfe08bd2bdb2483e6f9c4c0462975e95",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/bigint/was-woken-before-timeout.js",
+        source_sha256: "f7af53430000b4c57d0e50314cf9f1a5c68f3f9f40f9d0da26fdeb40651cd11e",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
         path: "test/built-ins/Atomics/wait/false-for-timeout-agent.js",
         source_sha256: "1f155c405b5b137c902e5e385a5a39a858444ad63941bdde5ca6762844e978a2",
         features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
@@ -157,6 +229,12 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 38] = [
         source_sha256: "7ab45f324e0f668a9d9f3df03c866b0ac32276eb1dfb649d1e5783a88f70bb21",
         features: &["Atomics"],
         cohort: "Test262 agent Stage A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/nan-for-timeout.js",
+        source_sha256: "efaa0c6981a9a485a0dd40b145fd071f3667d4d7bef28a5c844a22f9bcd1c1d2",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
     },
     AgentHostAdmission {
         path: "test/built-ins/Atomics/wait/negative-timeout-agent.js",
@@ -279,6 +357,18 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 38] = [
         cohort: "Test262 agent bounded wait cohort A",
     },
     AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/undefined-for-timeout.js",
+        source_sha256: "0dd3f74bb8ae3b06012e1b1b047fcd1e499943e63829214da4c16fc49df5d589",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/undefined-index-defaults-to-zero.js",
+        source_sha256: "c0b85d26b9e50ee0c309d55d90f4a30a06ebd7139a57197e55b7c0ecec9a95fb",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
         path: "test/built-ins/Atomics/wait/value-not-equal.js",
         source_sha256: "24a38831488f8794736387ab7cafc0528fc9fd9f2276b49a5e04d77f5ef0e4a7",
         features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
@@ -289,6 +379,18 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 38] = [
         source_sha256: "0c2103b7079f54cfbe0c57ccbaef6644bab370409dad2f32e6b0c3e9577dfa08",
         features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
         cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/waiterlist-block-indexedposition-wake.js",
+        source_sha256: "87e398dbfc8e4022331380d67325a2da98dea734dfed11158ab0e34e0f417ab3",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/was-woken-before-timeout.js",
+        source_sha256: "d97f474e3fe55e36d6475ef88653ce4e4b203e638d2f28f5547f9c2b30784d2a",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent wake/count/location cohort",
     },
 ];
 
@@ -1060,7 +1162,7 @@ mod tests {
 
     #[test]
     fn agent_host_admission_ledger_is_exact_sorted_and_metadata_frozen() {
-        assert_eq!(AGENT_HOST_ADMISSIONS.len(), 38);
+        assert_eq!(AGENT_HOST_ADMISSIONS.len(), 55);
         assert!(
             AGENT_HOST_ADMISSIONS
                 .windows(2)
@@ -1117,6 +1219,62 @@ mod tests {
         );
         let mut feature_shapes = BTreeSet::new();
         for admission in bounded_wait {
+            feature_shapes.insert(admission.features);
+            let exact = metadata(&[], admission.features, &["atomicsHelper.js"]);
+            assert!(agent_host_metadata_matches(&exact, admission));
+
+            let source_drift =
+                is_exact_agent_host_test(Path::new(admission.path), "/* source drift */", &exact)
+                    .unwrap_err();
+            assert!(source_drift.contains(admission.source_sha256));
+
+            let mut include_drift = exact.clone();
+            include_drift.includes.push("extra.js".to_owned());
+            assert!(!agent_host_metadata_matches(&include_drift, admission));
+
+            let mut flag_drift = exact.clone();
+            flag_drift.flags.insert("noStrict".to_owned());
+            assert!(!agent_host_metadata_matches(&flag_drift, admission));
+
+            let mut negative_drift = exact.clone();
+            negative_drift.negative = Some(Default::default());
+            assert!(!agent_host_metadata_matches(&negative_drift, admission));
+
+            let mut feature_drift = exact;
+            feature_drift.features.push("feature-drift".to_owned());
+            assert!(!agent_host_metadata_matches(&feature_drift, admission));
+        }
+        assert_eq!(feature_shapes.len(), 2);
+
+        let wake_count_location = AGENT_HOST_ADMISSIONS
+            .iter()
+            .filter(|admission| admission.cohort == "Test262 agent wake/count/location cohort")
+            .collect::<Vec<_>>();
+        assert_eq!(wake_count_location.len(), 17);
+        let source_ledger = wake_count_location
+            .iter()
+            .map(|admission| format!("{}\t{}\n", admission.path, admission.source_sha256))
+            .collect::<String>();
+        assert_eq!(
+            source_sha256(&source_ledger).unwrap(),
+            "04625efdf79624f49c5bcc24282eae8962ba29294b4e3be6b39958083763e472"
+        );
+        let metadata_ledger = wake_count_location
+            .iter()
+            .map(|admission| {
+                format!(
+                    "{}\tflags=-\tfeatures={}\tincludes=atomicsHelper.js\tnegative=-\n",
+                    admission.path,
+                    admission.features.join(",")
+                )
+            })
+            .collect::<String>();
+        assert_eq!(
+            source_sha256(&metadata_ledger).unwrap(),
+            "bcf9a3992212ea0dcfb401b5205dbe3afbaa21c2c8f9d459e413c0845a36897c"
+        );
+        let mut feature_shapes = BTreeSet::new();
+        for admission in wake_count_location {
             feature_shapes.insert(admission.features);
             let exact = metadata(&[], admission.features, &["atomicsHelper.js"]);
             assert!(agent_host_metadata_matches(&exact, admission));

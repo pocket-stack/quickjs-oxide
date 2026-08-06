@@ -1,0 +1,17 @@
+test/built-ins/Atomics/notify/bigint/notify-all-on-loc.js
+test/built-ins/Atomics/notify/count-defaults-to-infinity-missing.js
+test/built-ins/Atomics/notify/count-defaults-to-infinity-undefined.js
+test/built-ins/Atomics/notify/notify-all-on-loc.js
+test/built-ins/Atomics/notify/notify-all.js
+test/built-ins/Atomics/notify/notify-one.js
+test/built-ins/Atomics/notify/notify-renotify-noop.js
+test/built-ins/Atomics/notify/notify-two.js
+test/built-ins/Atomics/notify/undefined-index-defaults-to-zero.js
+test/built-ins/Atomics/wait/bigint/nan-for-timeout.js
+test/built-ins/Atomics/wait/bigint/waiterlist-block-indexedposition-wake.js
+test/built-ins/Atomics/wait/bigint/was-woken-before-timeout.js
+test/built-ins/Atomics/wait/nan-for-timeout.js
+test/built-ins/Atomics/wait/undefined-for-timeout.js
+test/built-ins/Atomics/wait/undefined-index-defaults-to-zero.js
+test/built-ins/Atomics/wait/waiterlist-block-indexedposition-wake.js
+test/built-ins/Atomics/wait/was-woken-before-timeout.js

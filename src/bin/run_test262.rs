@@ -523,6 +523,16 @@ const TEST262_AGENT_WAIT_BOUNDED_A_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "f48a059f97fb7fdb1e2b883221756fa47343de3b4b06f85923eef81c3d98a955";
 const TEST262_AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "8c80eee8846d3eaf08f1aa0622e0edc9a8290aa03c492eb25003f9c2dc8f4052";
+const TEST262_AGENT_WAKE_COUNT_LOCATION_PARENT_PROFILE_SHA256: &str =
+    "9e20cfcb8b4b6f23116079b9ad12b823e1845688efbc1b81de97f9c28e2f5fb9";
+const TEST262_AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE_SHA256: &str =
+    "3e378f7260dac9b5a70155cfbad411f282f7584300f96ca4e0be887f4e6254a0";
+const TEST262_AGENT_WAKE_COUNT_LOCATION_UNIVERSE_SHA256: &str =
+    "76dc724e39d9eab3c707150ac5811712c543b71ab650339ba559e9a5429c7ea4";
+const TEST262_AGENT_WAKE_COUNT_LOCATION_ACTIVATION_SHA256: &str =
+    "8502e6fa50a94a7e9eef34310535f29906c2d9b1eaa49e8fe0d9388fa0e4c4f4";
+const TEST262_AGENT_WAKE_COUNT_LOCATION_RETAINED_SHA256: &str =
+    "8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8";
 const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
 const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -957,6 +967,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::AgentWaitBoundedACandidate
                     | OxideProfileKind::AgentWaitBoundedAGlobalParent
                     | OxideProfileKind::AgentWaitBoundedAGlobalCandidate
+                    | OxideProfileKind::AgentWakeCountLocationParent
+                    | OxideProfileKind::AgentWakeCountLocationCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1235,6 +1247,8 @@ enum OxideProfileKind {
     AgentWaitBoundedACandidate,
     AgentWaitBoundedAGlobalParent,
     AgentWaitBoundedAGlobalCandidate,
+    AgentWakeCountLocationParent,
+    AgentWakeCountLocationCandidate,
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
@@ -1744,6 +1758,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-agent-wait-bounded-a-global-candidate.conf"),
             OxideProfileKind::AgentWaitBoundedAGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-agent-wake-count-location-parent.conf"),
+            OxideProfileKind::AgentWakeCountLocationParent,
+        ),
+        (
+            root.join("tests/test262-agent-wake-count-location-candidate.conf"),
+            OxideProfileKind::AgentWakeCountLocationCandidate,
         ),
         (
             root.join("tests/test262-atomics-pause-global-parent.conf"),
@@ -2421,6 +2443,103 @@ fn verify_agent_wait_bounded_a_profile(
         manifest,
         TEST262_AGENT_WAIT_BOUNDED_A_UNIVERSE_SHA256,
         &format!("Test262 agent bounded wait cohort A {label} universe"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_agent_wake_count_location_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("Test262 agent wake/count/location {label} capability profile"),
+    )?;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifests = [
+        (
+            "tests/test262-agent-wake-count-location-universe.txt",
+            TEST262_AGENT_WAKE_COUNT_LOCATION_UNIVERSE_SHA256,
+        ),
+        (
+            "tests/test262-agent-wake-count-location.txt",
+            TEST262_AGENT_WAKE_COUNT_LOCATION_ACTIVATION_SHA256,
+        ),
+        (
+            "tests/test262-agent-wake-count-location-retained.txt",
+            TEST262_AGENT_WAKE_COUNT_LOCATION_RETAINED_SHA256,
+        ),
+    ];
+    for (relative, sha256) in manifests {
+        verify_sha256(
+            &root.join(relative),
+            sha256,
+            &format!("Test262 agent wake/count/location {relative}"),
+        )?;
+    }
+
+    let load_manifest = |relative: &str| -> Result<BTreeSet<String>, String> {
+        let path = root.join(relative);
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        Ok(source.lines().map(str::to_owned).collect())
+    };
+    let universe = load_manifest("tests/test262-agent-wake-count-location-universe.txt")?;
+    let activation = load_manifest("tests/test262-agent-wake-count-location.txt")?;
+    let retained = load_manifest("tests/test262-agent-wake-count-location-retained.txt")?;
+    let partition = activation
+        .union(&retained)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if universe.len() != 21
+        || activation.len() != 17
+        || retained.len() != 4
+        || !activation.is_disjoint(&retained)
+        || partition != universe
+    {
+        return Err(
+            "Test262 agent wake/count/location manifests are not the exact 17 + 4 = 21 partition"
+                .to_owned(),
+        );
+    }
+
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the Test262 agent wake/count/location {label} capability profile requires --all or its exact 21-path universe"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the Test262 agent wake/count/location {label} capability profile requires --all or its exact 21-path universe"
+        )
+    })?;
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve Test262 agent wake/count/location {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected =
+        fs::canonicalize(root.join("tests/test262-agent-wake-count-location-universe.txt"))
+            .map_err(|error| {
+                format!("resolve pinned Test262 agent wake/count/location universe: {error}")
+            })?;
+    if actual != expected {
+        return Err(format!(
+            "the Test262 agent wake/count/location {label} capability profile requires --all or tests/test262-agent-wake-count-location-universe.txt, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_AGENT_WAKE_COUNT_LOCATION_UNIVERSE_SHA256,
+        &format!("Test262 agent wake/count/location {label} universe"),
     )?;
     Ok(profile_sha256)
 }
@@ -3984,6 +4103,18 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "global candidate",
             TEST262_AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
         ),
+        OxideProfileKind::AgentWakeCountLocationParent => verify_agent_wake_count_location_profile(
+            options,
+            "scoped parent",
+            TEST262_AGENT_WAKE_COUNT_LOCATION_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::AgentWakeCountLocationCandidate => {
+            verify_agent_wake_count_location_profile(
+                options,
+                "scoped candidate",
+                TEST262_AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE_SHA256,
+            )
+        }
         OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
             options,
             "Atomics.pause global admission",
@@ -4333,11 +4464,14 @@ mod cli_tests {
         TEST262_AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE_SHA256,
         TEST262_AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_AGENT_WAIT_BOUNDED_A_GLOBAL_PARENT_PROFILE_SHA256,
-        TEST262_AGENT_WAIT_BOUNDED_A_PARENT_PROFILE_SHA256, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
-        TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
-        TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
-        TEST262_ARRAY_BUFFER_PROFILE_SHA256, TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256,
-        TEST262_ASYNC_CLASS_METHOD_CORE_PROFILE_SHA256, TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256,
+        TEST262_AGENT_WAIT_BOUNDED_A_PARENT_PROFILE_SHA256,
+        TEST262_AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE_SHA256,
+        TEST262_AGENT_WAKE_COUNT_LOCATION_PARENT_PROFILE_SHA256,
+        TEST262_AGGREGATE_ERROR_PROFILE_SHA256, TEST262_ARGUMENT_SPREAD_PROFILE_SHA256,
+        TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256,
+        TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256, TEST262_ARRAY_BUFFER_PROFILE_SHA256,
+        TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256, TEST262_ASYNC_CLASS_METHOD_CORE_PROFILE_SHA256,
+        TEST262_ASYNC_FUNCTION_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_CLASS_METHOD_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_CORE_PROFILE_SHA256,
         TEST262_ASYNC_GENERATOR_OBJECT_METHOD_CORE_PROFILE_SHA256,
@@ -5215,6 +5349,20 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::AgentWaitBoundedAGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-wake-count-location-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentWakeCountLocationParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-wake-count-location-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentWakeCountLocationCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-atomics-pause-global-parent.conf"))
@@ -9348,6 +9496,71 @@ mod cli_tests {
                     "tests/test262-agent-wait-bounded-a-retained.txt",
                 ],
                 ["--manifest", "tests/test262-agent-broadcast-a-retained.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let arguments = [
+                    "--suite",
+                    "suite",
+                    "--oxide-profile",
+                    profile,
+                    selection[0],
+                    selection[1],
+                    "--report",
+                    "report.tsv",
+                ];
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn agent_wake_count_location_profiles_require_exact_21_path_universe_or_all() {
+        for (profile, expected_sha256) in [
+            (
+                "tests/test262-agent-wake-count-location-parent.conf",
+                TEST262_AGENT_WAKE_COUNT_LOCATION_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-wake-count-location-candidate.conf",
+                TEST262_AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                [
+                    "--manifest",
+                    "tests/test262-agent-wake-count-location-universe.txt",
+                ],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_sha256);
+            }
+
+            for selection in [
+                [
+                    "--test",
+                    "test/built-ins/Atomics/notify/bigint/notify-all-on-loc.js",
+                ],
+                ["--manifest", "tests/test262-agent-wake-count-location.txt"],
+                [
+                    "--manifest",
+                    "tests/test262-agent-wake-count-location-retained.txt",
+                ],
+                [
+                    "--manifest",
+                    "tests/test262-agent-wait-bounded-a-retained.txt",
+                ],
                 ["--manifest", "Cargo.toml"],
             ] {
                 let arguments = [

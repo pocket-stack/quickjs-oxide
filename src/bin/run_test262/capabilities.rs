@@ -331,6 +331,18 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-agent-wait-bounded-a.txt"
     ));
+    const AGENT_WAKE_COUNT_LOCATION_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-wake-count-location-parent.conf"
+    ));
+    const AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-wake-count-location-candidate.conf"
+    ));
+    const AGENT_WAKE_COUNT_LOCATION_ACTIVATION: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-wake-count-location.txt"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -2341,6 +2353,46 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn agent_wake_count_location_profiles_add_only_the_exact_activation_allowlist() {
+        let predecessor = OxideProfile::parse(AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE).unwrap();
+        let parent = OxideProfile::parse(AGENT_WAKE_COUNT_LOCATION_PARENT_PROFILE).unwrap();
+        let candidate = OxideProfile::parse(AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE).unwrap();
+        let activation = AGENT_WAKE_COUNT_LOCATION_ACTIVATION
+            .lines()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(activation.len(), 17);
+        assert_eq!(parent, predecessor);
+        assert_eq!(candidate.features, parent.features);
+        assert_eq!(
+            candidate.audited_negative_tests,
+            parent.audited_negative_tests
+        );
+        assert_eq!(
+            candidate.allows_async_execution(),
+            parent.allows_async_execution()
+        );
+        assert_eq!(
+            candidate
+                .host_agent_tests
+                .difference(&parent.host_agent_tests)
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            activation
+        );
+        assert!(
+            parent
+                .host_agent_tests
+                .difference(&candidate.host_agent_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(parent.host_agent_tests.len(), 38);
+        assert_eq!(candidate.host_agent_tests.len(), 55);
     }
 
     #[test]

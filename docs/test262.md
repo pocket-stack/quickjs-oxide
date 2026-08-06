@@ -6,6 +6,44 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dp scoped agent wake/count/location admission
+
+R3dp keeps the live global profile and runtime byte-for-byte outside this
+runner-only admission. Its universe is the exact 21-path R3do retained
+manifest, SHA-256
+`76dc724e39d9eab3c707150ac5811712c543b71ab650339ba559e9a5429c7ea4`.
+The disjoint activation and retained partitions contain 17 and four paths and
+hash to `8502e6fa50a94a7e9eef34310535f29906c2d9b1eaa49e8fe0d9388fa0e4c4f4`
+and `8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8`.
+The four retained paths are the FIFO-order cohort reserved for R3dq.
+
+The parent profile is byte-identical to the R3do scoped candidate and hashes
+to `9e20cfcb8b4b6f23116079b9ad12b823e1845688efbc1b81de97f9c28e2f5fb9`.
+The candidate adds only the 17 authenticated host-agent paths and hashes to
+`3e378f7260dac9b5a70155cfbad411f282f7584300f96ca4e0be887f4e6254a0`.
+Both profiles accept only `--all` or the canonical 21-path universe. Selection
+by `--test`, either 17/4 submanifest, an unrelated manifest, or the same bytes
+under the R3do retained path is rejected. Coordinator and worker validation
+bind admission to exact path, source SHA-256, flags, ordered features,
+includes, and negative metadata.
+
+The parent contains 42 `unsupported-host-agent` rows. The candidate contains
+34 passes and eight byte-identical retained outcomes. Exact TSV and JSON joins
+therefore record 34 unsupported-to-pass gains, eight unchanged rows, and zero
+regressions. Candidate TSV/JSONL hashes are
+`1b11c5f99c59c5e498eaf715f0bfa8d3c136b002a9856abe480d6867da145263`
+and `9746ff7dacf2a65badd40518f1e4ee58dcf6a2b5acde0334306c1cd7b0517b53`.
+
+Fifty one-worker replays are byte-identical, producing 1,700 activation passes
+and 400 retained fail-closed outcomes. Twenty additional eight-worker pressure
+runs produce 680 passes and 160 retained outcomes with the same report hashes.
+Pinned QuickJS 2026-06-04 passes all 34 activation variants. The gate also
+replays the complete R3do scoped receipt independently.
+
+```sh
+./scripts/test-test262-agent-wake-count-location.sh --check
+```
+
 ## R3do global bounded agent-wait cohort A admission
 
 R3do promotes exactly the scoped 22-path activation into the global
