@@ -6,6 +6,54 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dt global base-class admission
+
+R3dt freezes the complete Test262 universe carrying the base `class` feature:
+4,768 paths / 9,374 variants. The path manifest, ordered variant keys, and
+source ledger hash to
+`a92e0bd5ab869839868a734308cb43d1fed369deef5d08d015b025d4b6acde17`,
+`d75e8faeb7ec9c076d4d565f26319298d1c3f9d28c5d8c50b9c59c6424610c7e`,
+and
+`9d0286bcffe71b2296871e28c2c6ac18faa4cbb27f6cd71172b80cbb89c21216`.
+Pinned QuickJS 2026-06-04 passes every one of its 9,311 runnable variants and
+config-skips the other 63. The skip partition is independently frozen rather
+than being counted as implementation success.
+
+The promoted profile adds exactly `class` plus 54 audited parse-negative paths
+/ 108 variants. The focused parent reports 9,268 unsupported-feature rows, 63
+config skips, and 43 unsupported modules. The candidate converts 816 rows to
+passes, retains 8,452 behind independent feature tags, and leaves all 106
+config/module rows unchanged. Exact TSV and JSONL projections agree on 816
+outcome gains, 8,452 reason-only changes, and zero regressions. This admits the
+base feature without treating private methods, decorators, or other finer
+class tags as implemented.
+
+The parent and candidate profile hashes are
+`02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4`
+and
+`a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8`.
+Two independent Linux ARM64 full candidate reports are byte-identical and
+match the native macOS ARM64 hashes. Across all 102,037 variants, only the
+9,268 expected class-universe rows change: 816 gain passes and 8,452 lose only
+the admitted `class` reason. The remaining 92,769 rows are unchanged and there
+are zero pass regressions.
+
+The canonical baseline is now 67,490 passes / 67,542 runnable. Its TSV and
+JSONL SHA-256 values are
+`de1f16b5ae92cba92d04ccf5c582d45516625abddf06af7827e97bc6e76175cc`
+and
+`270dd718813a652fb99846c83238bb97cf1275fa6a3e29292ba21d30d8209db1`.
+The gate binds those reports to the parent commit, upstream/profile hashes,
+full metadata and source ledger, QuickJS receipt, four scoped class
+predecessors, and independent candidate files. This remains a progress
+instrument, not a Feature Parity claim.
+
+```sh
+./scripts/test-test262-class-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-class-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-class-global.sh --full
+```
+
 ## R3ds `IsHTMLDDA` host semantics and global admission
 
 R3ds freezes the complete pinned Test262 `$262.IsHTMLDDA` universe: 42 paths /

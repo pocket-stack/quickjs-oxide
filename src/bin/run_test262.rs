@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4";
+    "a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -335,6 +335,12 @@ const TEST262_IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4";
 const TEST262_IS_HTML_DDA_MANIFEST_SHA256: &str =
     "36adfbe3ebab8b0ba9d5a109ba7f5175cafff1971dfbc5fc762ad168dbfdb0a5";
+const TEST262_CLASS_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4";
+const TEST262_CLASS_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8";
+const TEST262_CLASS_GLOBAL_MANIFEST_SHA256: &str =
+    "a92e0bd5ab869839868a734308cb43d1fed369deef5d08d015b025d4b6acde17";
 const TEST262_CREATE_REALM_PROFILE_SHA256: &str =
     "7d27ac5117879670609206a0fa7d459a2c050d230ba489979dcae0aa9911fd30";
 const TEST262_CREATE_REALM_MANIFEST_SHA256: &str =
@@ -995,6 +1001,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::AgentWakeFifoGlobalCandidate
                     | OxideProfileKind::IsHtmlDdaGlobalParent
                     | OxideProfileKind::IsHtmlDdaGlobalCandidate
+                    | OxideProfileKind::ClassGlobalParent
+                    | OxideProfileKind::ClassGlobalCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1228,6 +1236,8 @@ enum OxideProfileKind {
     IsHtmlDdaScoped,
     IsHtmlDdaGlobalParent,
     IsHtmlDdaGlobalCandidate,
+    ClassGlobalParent,
+    ClassGlobalCandidate,
     CreateRealm,
     EvalScript,
     RealmHostsGlobalParent,
@@ -1611,6 +1621,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-is-html-dda-global-candidate.conf"),
             OxideProfileKind::IsHtmlDdaGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-class-global-parent.conf"),
+            OxideProfileKind::ClassGlobalParent,
+        ),
+        (
+            root.join("tests/test262-class-global-candidate.conf"),
+            OxideProfileKind::ClassGlobalCandidate,
         ),
         (
             root.join("tests/test262-create-realm.conf"),
@@ -3675,6 +3693,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_IS_HTML_DDA_MANIFEST_SHA256,
             )],
         ),
+        OxideProfileKind::ClassGlobalParent => verify_tag_transition_profile(
+            options,
+            "class global admission",
+            "parent",
+            TEST262_CLASS_GLOBAL_PARENT_PROFILE_SHA256,
+            &[(
+                "tests/test262-class-global-universe.txt",
+                TEST262_CLASS_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
+        OxideProfileKind::ClassGlobalCandidate => verify_tag_transition_profile(
+            options,
+            "class global admission",
+            "candidate",
+            TEST262_CLASS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            &[(
+                "tests/test262-class-global-universe.txt",
+                TEST262_CLASS_GLOBAL_MANIFEST_SHA256,
+            )],
+        ),
         OxideProfileKind::CreateRealm => verify_scoped_pinned_manifests(
             options,
             "$262.createRealm host hook",
@@ -4681,6 +4719,7 @@ mod cli_tests {
         TEST262_BINARY_DATA_GLOBAL_PARENT_PROFILE_SHA256, TEST262_CATCH_BINDING_PROFILE_SHA256,
         TEST262_CLASS_BASE_PROFILE_SHA256, TEST262_CLASS_DERIVED_PROFILE_SHA256,
         TEST262_CLASS_GENERATOR_METHODS_PROFILE_SHA256,
+        TEST262_CLASS_GLOBAL_CANDIDATE_PROFILE_SHA256, TEST262_CLASS_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_ACCESSORS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_FIELDS_PROFILE_SHA256,
         TEST262_CLASS_PRIVATE_GENERATOR_METHODS_PROFILE_SHA256,
@@ -5346,6 +5385,14 @@ mod cli_tests {
             identify_oxide_profile(Path::new("tests/test262-is-html-dda-global-candidate.conf"))
                 .unwrap(),
             OxideProfileKind::IsHtmlDdaGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-class-global-parent.conf")).unwrap(),
+            OxideProfileKind::ClassGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-class-global-candidate.conf")).unwrap(),
+            OxideProfileKind::ClassGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-create-realm.conf")).unwrap(),
@@ -6671,8 +6718,11 @@ mod cli_tests {
         assert!(adjacent.detail.ends_with("computed-property-names"));
 
         let global = super::OxideProfile::load(Path::new("compat/test262-oxide.conf")).unwrap();
+        assert_eq!(
+            global.classify(positive, &["class".to_owned()], false),
+            None
+        );
         for feature in [
-            "class",
             "class-fields-public",
             "class-static-fields-public",
             "class-static-block",
@@ -8712,6 +8762,28 @@ mod cli_tests {
                 panic!("coordinator arguments selected another invocation");
             };
             assert!(verify_oxide_profile(&options).is_err());
+        }
+    }
+
+    #[test]
+    fn class_global_profiles_require_the_exact_universe_or_all() {
+        for (profile, expected_hash) in [
+            (
+                "tests/test262-class-global-parent.conf",
+                TEST262_CLASS_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-class-global-candidate.conf",
+                TEST262_CLASS_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            assert_tag_transition_profile_binding(
+                profile,
+                expected_hash,
+                &["tests/test262-class-global-universe.txt"],
+                "tests/test262-class-global-activation.txt",
+                "test/annexB/language/statements/class/subclass/superclass-emulates-undefined.js",
+            );
         }
     }
 

@@ -4,6 +4,61 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dt global base-class admission
+
+R3dt promotes the base Test262 `class` feature into the live global profile.
+It does not claim that every class-related proposal is complete: independent
+tags for private elements, decorators, and other finer surfaces remain
+fail-closed. The candidate changes the profile by one feature tag and adds 54
+source-authenticated parse-negative paths whose expected `SyntaxError`
+behavior was already proven by the scoped class gates. Runtime semantics are
+unchanged.
+
+The exhaustive pinned universe contains 4,768 paths / 9,374 variants. Its path
+manifest and variant-key SHA-256 values are
+`a92e0bd5ab869839868a734308cb43d1fed369deef5d08d015b025d4b6acde17`
+and
+`d75e8faeb7ec9c076d4d565f26319298d1c3f9d28c5d8c50b9c59c6424610c7e`.
+Pinned QuickJS 2026-06-04 executes and passes 4,732 paths / 9,311 variants. Its
+configuration skips the remaining 36 paths / 63 variants: decorators 24/42,
+explicit resource management 2/4, legacy RegExp 7/14, and non-extensible
+private elements 3/3.
+
+Under the parent profile all 9,268 non-config/non-module rows report
+`unsupported-feature`. The candidate gains 448 paths / 816 passing variants;
+8,452 variants remain `unsupported-feature` because another feature is still
+missing, 63 remain config-skipped, and 43 remain unsupported modules. The
+exact focused transition therefore has 816 outcome gains, 8,452 detail-only
+changes that remove only the `class` reason, 106 unchanged rows, and zero pass
+regressions. The 54 newly admitted negative paths account for 108 variants and
+all match the pinned parse phase and error type.
+
+The parent and promoted profile SHA-256 values are
+`02dd4c59f0103d8bce2296646e7d9031051634c37e5b693336d752c11aa647d4`
+and
+`a2e139f4c7523fd29d7f06441b4d04816bac8a074972afb9866d889588158db8`.
+Two independent Linux ARM64 full candidate reports are byte-identical and
+match the native macOS ARM64 hashes. The complete 102,037-variant join records
+816 pass gains, 8,452 detail-only changes, 92,769 unchanged rows, and zero
+regressions. The canonical vector is now 67,490 passes / 67,542 runnable; its
+TSV and JSONL SHA-256 values are
+`de1f16b5ae92cba92d04ccf5c582d45516625abddf06af7827e97bc6e76175cc`
+and
+`270dd718813a652fb99846c83238bb97cf1275fa6a3e29292ba21d30d8209db1`.
+Linux ARM64 also independently passes all 161 runner contract tests.
+
+The gate authenticates the pinned upstream, parent commit and canonical
+baseline, complete metadata/source ledger, QuickJS runnable and skip
+partitions, four scoped class predecessors, focused TSV/JSONL projection, and
+two independent full candidate report files. R3dt remains a pre-parity
+admission milestone.
+
+```sh
+./scripts/test-test262-class-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-class-global.sh
+TEST262_FULL_WORKERS=8 ./scripts/test-test262-class-global.sh --full
+```
+
 ## R3ds QuickJS `IsHTMLDDA` semantics and global admission
 
 R3ds implements QuickJS's test262-only `$262.IsHTMLDDA` callable as a

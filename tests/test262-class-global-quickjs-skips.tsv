@@ -1,0 +1,5 @@
+feature	paths	variants
+decorators	24	42
+explicit-resource-management	2	4
+legacy-regexp	7	14
+nonextensible-applies-to-private	3	3

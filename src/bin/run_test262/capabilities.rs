@@ -367,6 +367,18 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-is-html-dda-global-candidate.conf"
     ));
+    const CLASS_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-class-global-parent.conf"
+    ));
+    const CLASS_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-class-global-candidate.conf"
+    ));
+    const CLASS_GLOBAL_ADDED_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-class-global-added-negatives.txt"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -575,7 +587,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 133] = [
+    const EXPECTED_FEATURES: [&str; 134] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
@@ -664,6 +676,7 @@ mod tests {
         "async-functions",
         "async-iteration",
         "change-array-by-copy",
+        "class",
         "coalesce-expression",
         "computed-property-names",
         "const",
@@ -1865,8 +1878,49 @@ mod tests {
                 .features
                 .insert("IsHTMLDDA".to_owned())
         );
-        assert_eq!(profile, is_html_dda_global_candidate);
-        assert_eq!(CHECKED_IN_PROFILE, IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE);
+        assert_eq!(
+            CLASS_GLOBAL_PARENT_PROFILE,
+            IS_HTML_DDA_GLOBAL_CANDIDATE_PROFILE
+        );
+        let class_global_parent = OxideProfile::parse(CLASS_GLOBAL_PARENT_PROFILE).unwrap();
+        let class_global_candidate = OxideProfile::parse(CLASS_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        assert_eq!(class_global_parent, is_html_dda_global_candidate);
+        let mut expected_class_global_candidate = class_global_parent.clone();
+        assert!(
+            expected_class_global_candidate
+                .features
+                .insert("class".to_owned())
+        );
+        expected_class_global_candidate
+            .audited_negative_tests
+            .extend(CLASS_GLOBAL_ADDED_NEGATIVES.lines().map(str::to_owned));
+        assert_eq!(class_global_candidate, expected_class_global_candidate);
+        assert_eq!(profile, class_global_candidate);
+        assert_eq!(CHECKED_IN_PROFILE, CLASS_GLOBAL_CANDIDATE_PROFILE);
+        assert_eq!(
+            class_global_candidate
+                .features
+                .difference(&class_global_parent.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["class"]
+        );
+        assert_eq!(
+            class_global_candidate
+                .audited_negative_tests
+                .difference(&class_global_parent.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            CLASS_GLOBAL_ADDED_NEGATIVES.lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            class_global_candidate.host_agent_tests,
+            class_global_parent.host_agent_tests
+        );
+        assert_eq!(
+            class_global_candidate.allows_async_execution(),
+            class_global_parent.allows_async_execution()
+        );
         assert_eq!(
             default_parameters_candidate
                 .features
@@ -2126,7 +2180,8 @@ mod tests {
                 &[
                     "class".to_owned(),
                     "class-fields-private".to_owned(),
-                    "class".to_owned(),
+                    "class-static-fields-private".to_owned(),
+                    "class-fields-private".to_owned(),
                 ],
                 true,
             )
@@ -2135,7 +2190,7 @@ mod tests {
         assert_eq!(classification.outcome, "unsupported-feature");
         assert_eq!(
             classification.detail,
-            "quickjs-oxide does not declare Test262 feature support: class, class-fields-private"
+            "quickjs-oxide does not declare Test262 feature support: class-fields-private, class-static-fields-private"
         );
     }
 
