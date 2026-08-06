@@ -40,3 +40,6 @@ tests/test262-future-reserved-words-transitions.tsv whitespace=-blank-at-eol
 tests/test262-future-reserved-words-global-parent.tsv whitespace=-blank-at-eol
 tests/test262-future-reserved-words-global-candidate.tsv whitespace=-blank-at-eol
 tests/test262-future-reserved-words-global-transitions.tsv whitespace=-blank-at-eol
+tests/test262-agent-broadcast-a-parent.tsv whitespace=-blank-at-eol
+tests/test262-agent-broadcast-a-candidate.tsv whitespace=-blank-at-eol
+tests/test262-agent-broadcast-a-transitions.tsv whitespace=-blank-at-eol

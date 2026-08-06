@@ -291,6 +291,26 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-agent-stage-a-global-candidate.conf"
     ));
+    const AGENT_BROADCAST_A_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-broadcast-a-parent.conf"
+    ));
+    const AGENT_BROADCAST_A_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-broadcast-a-candidate.conf"
+    ));
+    const AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-broadcast-a-global-parent.conf"
+    ));
+    const AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-broadcast-a-global-candidate.conf"
+    ));
+    const AGENT_BROADCAST_A_ACTIVATION: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-broadcast-a.txt"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -2163,6 +2183,52 @@ mod tests {
             assert!(
                 OxideProfile::parse(invalid).is_err(),
                 "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_broadcast_a_profiles_add_only_the_exact_activation_allowlist() {
+        let live = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
+        let parent = OxideProfile::parse(AGENT_BROADCAST_A_PARENT_PROFILE).unwrap();
+        let candidate = OxideProfile::parse(AGENT_BROADCAST_A_CANDIDATE_PROFILE).unwrap();
+        let global_parent = OxideProfile::parse(AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE).unwrap();
+        let global_candidate =
+            OxideProfile::parse(AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let activation = AGENT_BROADCAST_A_ACTIVATION
+            .lines()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(activation.len(), 15);
+        assert_eq!(global_parent, live);
+        for (baseline, admitted) in [(&parent, &candidate), (&global_parent, &global_candidate)] {
+            assert_eq!(admitted.features, baseline.features);
+            assert_eq!(
+                admitted.audited_negative_tests,
+                baseline.audited_negative_tests
+            );
+            assert_eq!(
+                admitted.allows_async_execution(),
+                baseline.allows_async_execution()
+            );
+            assert_eq!(
+                admitted
+                    .host_agent_tests
+                    .difference(&baseline.host_agent_tests)
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+                activation
+            );
+            assert!(
+                baseline
+                    .host_agent_tests
+                    .difference(&admitted.host_agent_tests)
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                baseline.allows_agent_host(Path::new("test/built-ins/Atomics/wait/good-views.js"))
             );
         }
     }

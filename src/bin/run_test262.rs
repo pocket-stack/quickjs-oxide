@@ -35,7 +35,7 @@ use execution::{run_isolated_worker, run_worker};
 use metadata::{Metadata, parse_metadata};
 use report::{WorkerResult, report_row, write_report};
 use requirements::{
-    generator_destructuring_source_needs_async_guard, is_exact_agent_stage_a_test,
+    generator_destructuring_source_needs_async_guard, is_exact_agent_host_test,
     missing_host_capability_hints, supplemental_feature_hints,
 };
 use scheduler::run_bounded;
@@ -495,6 +495,20 @@ const TEST262_AGENT_STAGE_A_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "47cf8351f7844340bbbff3ba9bb781faf552f8f27d0dd6cca2e35dbf9ad48232";
 const TEST262_AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "37cb029eda8e3abe97a17c93c1c3fe95e6aaed330de09d41b5941e9a6c3784f8";
+const TEST262_AGENT_BROADCAST_A_PARENT_PROFILE_SHA256: &str =
+    "7254bdc5a52a30f70f270bdabc9337231c94799d636f993ba54b8ae082915dea";
+const TEST262_AGENT_BROADCAST_A_CANDIDATE_PROFILE_SHA256: &str =
+    "4f2a285a77e31815a94266ddcdafac7df9c8a148c0236be4e60968590999e706";
+const TEST262_AGENT_BROADCAST_A_UNIVERSE_SHA256: &str =
+    "bb59fba98ce4d41426a47de67630940f4eae29927421a2bfe6e1ea70c8f56d55";
+const TEST262_AGENT_BROADCAST_A_ACTIVATION_SHA256: &str =
+    "8ca17690ee6e1fd5b4deb6e41047925e5b1d5a3cd0dfcd4f5ccdaeb04b336f23";
+const TEST262_AGENT_BROADCAST_A_RETAINED_SHA256: &str =
+    "6c723dcea7ff0f92b79b5d1f8218e74d209d0206a3e6c111f129ac4321a1497f";
+const TEST262_AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "37cb029eda8e3abe97a17c93c1c3fe95e6aaed330de09d41b5941e9a6c3784f8";
+const TEST262_AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "f48a059f97fb7fdb1e2b883221756fa47343de3b4b06f85923eef81c3d98a955";
 const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
 const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -592,7 +606,7 @@ struct WorkerOptions {
     test: PathBuf,
     variant: Variant,
     allow_async_host: bool,
-    allow_agent_stage_a: bool,
+    allow_agent_host: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -685,7 +699,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let mut variant = None;
     let mut metadata_records = None;
     let mut allow_async_host = false;
-    let mut allow_agent_stage_a = false;
+    let mut allow_agent_host = false;
     let mut index = 0;
     while index < arguments.len() {
         let argument = &arguments[index];
@@ -701,7 +715,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
         match argument.as_str() {
             "--worker-one" => {}
             "--allow-async-host" => allow_async_host = true,
-            "--allow-agent-stage-a" => allow_agent_stage_a = true,
+            "--allow-agent-host" => allow_agent_host = true,
             "--suite" => suite = Some(PathBuf::from(take_value("--suite")?)),
             "--config" => config = Some(PathBuf::from(take_value("--config")?)),
             "--oxide-profile" => {
@@ -757,7 +771,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || timeout_explicit
             || workers.is_some()
             || allow_async_host
-            || allow_agent_stage_a
+            || allow_agent_host
         {
             return Err("--validate-metadata cannot be combined with execution options".to_owned());
         }
@@ -785,14 +799,14 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             test: tests.remove(0),
             variant: variant.ok_or_else(|| "--worker-one requires --variant".to_owned())?,
             allow_async_host,
-            allow_agent_stage_a,
+            allow_agent_host,
         }));
     }
     if allow_async_host {
         return Err("--allow-async-host is internal to --worker-one".to_owned());
     }
-    if allow_agent_stage_a {
-        return Err("--allow-agent-stage-a is internal to --worker-one".to_owned());
+    if allow_agent_host {
+        return Err("--allow-agent-host is internal to --worker-one".to_owned());
     }
     if variant.is_some() {
         return Err("--variant is internal to --worker-one".to_owned());
@@ -859,7 +873,7 @@ fn default_worker_count() -> usize {
 struct PlannedTest {
     relative: PathBuf,
     metadata: Metadata,
-    allow_agent_stage_a: bool,
+    allow_agent_host: bool,
 }
 
 struct PlannedRow {
@@ -915,21 +929,25 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             .map_err(|error| format!("read {}: {error}", path.display()))?;
         let metadata = parse_metadata(&source)
             .map_err(|error| format!("parse metadata for {}: {error}", relative.display()))?;
-        let allow_agent_stage_a = if oxide_profile.allows_agent_host(&relative) {
+        let allow_agent_host = if oxide_profile.allows_agent_host(&relative) {
             if !matches!(
                 oxide_profile_kind,
                 OxideProfileKind::Global
                     | OxideProfileKind::AgentStageACandidate
                     | OxideProfileKind::AgentStageAGlobalCandidate
+                    | OxideProfileKind::AgentBroadcastAParent
+                    | OxideProfileKind::AgentBroadcastACandidate
+                    | OxideProfileKind::AgentBroadcastAGlobalParent
+                    | OxideProfileKind::AgentBroadcastAGlobalCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
                     oxide_profile_kind
                 ));
             }
-            if !is_exact_agent_stage_a_test(&relative, &source, &metadata)? {
+            if !is_exact_agent_host_test(&relative, &source, &metadata)? {
                 return Err(format!(
-                    "Test262 agent Stage A profile admitted an unaudited path: {}",
+                    "Test262 agent host profile admitted an unaudited path: {}",
                     relative.display()
                 ));
             }
@@ -946,7 +964,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             oxide_profile.allows_async_execution(),
         );
         let mut worker_host_capabilities = execution::WORKER_HOST_CAPABILITIES;
-        worker_host_capabilities.agent = allow_agent_stage_a;
+        worker_host_capabilities.agent = allow_agent_host;
         worker_host_capabilities.retain_missing(&mut missing_host);
         let mut required_features = metadata.features.clone();
         required_features.extend(supplemental_feature_hints(&relative, &source)?);
@@ -979,7 +997,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         planned_tests.push(PlannedTest {
             relative,
             metadata,
-            allow_agent_stage_a,
+            allow_agent_host,
         });
 
         if variants.is_empty() {
@@ -1023,7 +1041,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             job.variant,
             options.timeout,
             oxide_profile.allows_async_execution(),
-            test.allow_agent_stage_a,
+            test.allow_agent_host,
         )
     })?;
     for (job, result) in runnable_jobs.iter().zip(worker_results) {
@@ -1191,6 +1209,10 @@ enum OxideProfileKind {
     AgentStageACandidate,
     AgentStageAGlobalParent,
     AgentStageAGlobalCandidate,
+    AgentBroadcastAParent,
+    AgentBroadcastACandidate,
+    AgentBroadcastAGlobalParent,
+    AgentBroadcastAGlobalCandidate,
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
@@ -1668,6 +1690,22 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-agent-stage-a-global-candidate.conf"),
             OxideProfileKind::AgentStageAGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-agent-broadcast-a-parent.conf"),
+            OxideProfileKind::AgentBroadcastAParent,
+        ),
+        (
+            root.join("tests/test262-agent-broadcast-a-candidate.conf"),
+            OxideProfileKind::AgentBroadcastACandidate,
+        ),
+        (
+            root.join("tests/test262-agent-broadcast-a-global-parent.conf"),
+            OxideProfileKind::AgentBroadcastAGlobalParent,
+        ),
+        (
+            root.join("tests/test262-agent-broadcast-a-global-candidate.conf"),
+            OxideProfileKind::AgentBroadcastAGlobalCandidate,
         ),
         (
             root.join("tests/test262-atomics-pause-global-parent.conf"),
@@ -2155,6 +2193,102 @@ fn verify_tag_transition_profile(
         "the {cohort} {label} Test262 capability profile requires --all or {allowed}, found {}",
         manifest.display()
     ))
+}
+
+fn verify_agent_broadcast_a_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("Test262 agent broadcast cohort A {label} capability profile"),
+    )?;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifests = [
+        (
+            "tests/test262-agent-broadcast-a-universe.txt",
+            TEST262_AGENT_BROADCAST_A_UNIVERSE_SHA256,
+        ),
+        (
+            "tests/test262-agent-broadcast-a.txt",
+            TEST262_AGENT_BROADCAST_A_ACTIVATION_SHA256,
+        ),
+        (
+            "tests/test262-agent-broadcast-a-retained.txt",
+            TEST262_AGENT_BROADCAST_A_RETAINED_SHA256,
+        ),
+    ];
+    for (relative, sha256) in manifests {
+        verify_sha256(
+            &root.join(relative),
+            sha256,
+            &format!("Test262 agent broadcast cohort A {relative}"),
+        )?;
+    }
+
+    let load_manifest = |relative: &str| -> Result<BTreeSet<String>, String> {
+        let path = root.join(relative);
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        Ok(source.lines().map(str::to_owned).collect())
+    };
+    let universe = load_manifest("tests/test262-agent-broadcast-a-universe.txt")?;
+    let activation = load_manifest("tests/test262-agent-broadcast-a.txt")?;
+    let retained = load_manifest("tests/test262-agent-broadcast-a-retained.txt")?;
+    let partition = activation
+        .union(&retained)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if universe.len() != 58
+        || activation.len() != 15
+        || retained.len() != 43
+        || !activation.is_disjoint(&retained)
+        || partition != universe
+    {
+        return Err(
+            "Test262 agent broadcast cohort A manifests are not the exact 15 + 43 = 58 partition"
+                .to_owned(),
+        );
+    }
+
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the Test262 agent broadcast cohort A {label} capability profile requires --all or its exact 58-path universe"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the Test262 agent broadcast cohort A {label} capability profile requires --all or its exact 58-path universe"
+        )
+    })?;
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve Test262 agent broadcast cohort A {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(root.join("tests/test262-agent-broadcast-a-universe.txt"))
+        .map_err(|error| {
+            format!("resolve pinned Test262 agent broadcast cohort A universe: {error}")
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the Test262 agent broadcast cohort A {label} capability profile requires --all or tests/test262-agent-broadcast-a-universe.txt, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_AGENT_BROADCAST_A_UNIVERSE_SHA256,
+        &format!("Test262 agent broadcast cohort A {label} universe"),
+    )?;
+    Ok(profile_sha256)
 }
 
 fn verify_scoped_object_assignment_profile(
@@ -3676,6 +3810,26 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_AGENT_STAGE_A_UNIVERSE_SHA256,
             )],
         ),
+        OxideProfileKind::AgentBroadcastAParent => verify_agent_broadcast_a_profile(
+            options,
+            "scoped parent",
+            TEST262_AGENT_BROADCAST_A_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::AgentBroadcastACandidate => verify_agent_broadcast_a_profile(
+            options,
+            "scoped candidate",
+            TEST262_AGENT_BROADCAST_A_CANDIDATE_PROFILE_SHA256,
+        ),
+        OxideProfileKind::AgentBroadcastAGlobalParent => verify_agent_broadcast_a_profile(
+            options,
+            "global parent",
+            TEST262_AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::AgentBroadcastAGlobalCandidate => verify_agent_broadcast_a_profile(
+            options,
+            "global candidate",
+            TEST262_AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        ),
         OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
             options,
             "Atomics.pause global admission",
@@ -4016,6 +4170,10 @@ mod cli_tests {
 
     use super::{
         CoordinatorOptions, Invocation, OxideProfileKind,
+        TEST262_AGENT_BROADCAST_A_CANDIDATE_PROFILE_SHA256,
+        TEST262_AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_AGENT_BROADCAST_A_PARENT_PROFILE_SHA256,
         TEST262_AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_AGENT_STAGE_A_GLOBAL_PARENT_PROFILE_SHA256, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
         TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
@@ -4230,11 +4388,11 @@ mod cli_tests {
             "--all",
             "--report",
             "report.tsv",
-            "--allow-agent-stage-a",
+            "--allow-agent-host",
         ]);
         assert_eq!(
             coordinator,
-            "--allow-agent-stage-a is internal to --worker-one"
+            "--allow-agent-host is internal to --worker-one"
         );
     }
 
@@ -4255,11 +4413,11 @@ mod cli_tests {
             panic!("worker arguments selected another invocation");
         };
         assert!(options.allow_async_host);
-        assert!(!options.allow_agent_stage_a);
+        assert!(!options.allow_agent_host);
     }
 
     #[test]
-    fn worker_accepts_the_explicit_scoped_agent_stage_a_flag() {
+    fn worker_accepts_the_explicit_scoped_agent_host_flag() {
         let invocation = parse(&[
             "--worker-one",
             "--suite",
@@ -4268,14 +4426,29 @@ mod cli_tests {
             "test/built-ins/Atomics/wait/good-views.js",
             "--variant",
             "sloppy",
-            "--allow-agent-stage-a",
+            "--allow-agent-host",
         ])
         .unwrap();
         let Invocation::Worker(options) = invocation else {
             panic!("worker arguments selected another invocation");
         };
-        assert!(options.allow_agent_stage_a);
+        assert!(options.allow_agent_host);
         assert!(!options.allow_async_host);
+    }
+
+    #[test]
+    fn retired_stage_a_worker_flag_cannot_bypass_agent_host_admission() {
+        let error = parse_error(&[
+            "--worker-one",
+            "--suite",
+            "suite",
+            "--test",
+            "test/built-ins/Atomics/wait/good-views.js",
+            "--variant",
+            "sloppy",
+            "--allow-agent-stage-a",
+        ]);
+        assert_eq!(error, "unknown option: --allow-agent-stage-a");
     }
 
     #[test]
@@ -4834,6 +5007,30 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::AgentStageAGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-agent-broadcast-a-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::AgentBroadcastAParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-agent-broadcast-a-candidate.conf"))
+                .unwrap(),
+            OxideProfileKind::AgentBroadcastACandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-broadcast-a-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentBroadcastAGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-broadcast-a-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentBroadcastAGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-atomics-pause-global-parent.conf"))
@@ -8837,6 +9034,69 @@ mod cli_tests {
                 ["--test", "test/built-ins/Atomics/wait/good-views.js"],
                 ["--manifest", "tests/test262-agent-stage-a.txt"],
                 ["--manifest", "tests/test262-agent-stage-a-retained.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let arguments = [
+                    "--suite",
+                    "suite",
+                    "--oxide-profile",
+                    profile,
+                    selection[0],
+                    selection[1],
+                    "--report",
+                    "report.tsv",
+                ];
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn agent_broadcast_a_profiles_require_exact_58_path_universe_or_all() {
+        for (profile, expected_sha256) in [
+            (
+                "tests/test262-agent-broadcast-a-parent.conf",
+                TEST262_AGENT_BROADCAST_A_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-broadcast-a-candidate.conf",
+                TEST262_AGENT_BROADCAST_A_CANDIDATE_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-broadcast-a-global-parent.conf",
+                TEST262_AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-broadcast-a-global-candidate.conf",
+                TEST262_AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                ["--manifest", "tests/test262-agent-broadcast-a-universe.txt"],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_sha256);
+            }
+
+            for selection in [
+                [
+                    "--test",
+                    "test/built-ins/Atomics/notify/notify-with-no-agents-waiting.js",
+                ],
+                ["--manifest", "tests/test262-agent-broadcast-a.txt"],
+                ["--manifest", "tests/test262-agent-broadcast-a-retained.txt"],
                 ["--manifest", "Cargo.toml"],
             ] {
                 let arguments = [

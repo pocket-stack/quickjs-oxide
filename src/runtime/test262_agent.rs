@@ -1,4 +1,4 @@
-//! QuickJS-shaped Test262 `$262.agent` Stage A host.
+//! QuickJS-shaped Test262 `$262.agent` host.
 //!
 //! The JavaScript engine is deliberately not made thread-safe here. Every
 //! agent thread constructs and owns a fresh [`Runtime`] and [`Context`]. The
@@ -8,7 +8,11 @@
 
 use super::*;
 
+use crate::shared_memory::SharedBufferHandle;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+#[cfg(not(target_family = "wasm"))]
+use std::sync::Condvar;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 #[cfg(not(target_family = "wasm"))]
 use std::thread;
@@ -43,6 +47,8 @@ impl Test262AgentSession {
             inner: Arc::new(AgentSessionInner {
                 reports: Mutex::new(VecDeque::new()),
                 workers: Mutex::new(AgentWorkers::default()),
+                #[cfg(not(target_family = "wasm"))]
+                workers_changed: Condvar::new(),
                 clock_origin: Instant::now(),
             }),
         }
@@ -98,16 +104,92 @@ impl Test262AgentSession {
             .next_sequence
             .checked_add(1)
             .ok_or_else(|| "Test262 agent sequence space exhausted".to_owned())?;
+        // Pinned QuickJS links the zeroed agent record before pthread_create.
+        // Publish the corresponding ordered delivery slot before spawning so
+        // an immediate broadcast can never miss a successfully started agent.
+        workers.slots.push(AgentWorkerSlot {
+            sequence,
+            pending: None,
+            acknowledged_generation: 0,
+        });
         let session = self.clone();
-        let handle = thread::Builder::new()
+        let spawn = thread::Builder::new()
             .name(format!("test262-agent-{sequence}"))
             .stack_size(AGENT_STACK_SIZE)
-            .spawn(move || run_agent_worker(&session, &source))
-            .map_err(|error| format!("spawn Test262 agent {sequence}: {error}"))?;
+            .spawn(move || run_agent_worker(&session, sequence, &source));
+        let handle = match spawn {
+            Ok(handle) => handle,
+            Err(error) => {
+                let removed = workers.slots.pop();
+                debug_assert_eq!(removed.map(|slot| slot.sequence), Some(sequence));
+                return Err(format!("spawn Test262 agent {sequence}: {error}"));
+            }
+        };
         // JavaScript calls start synchronously, so this vector is the exact
         // start/list insertion order used by pinned QuickJS's cleanup join.
         workers.handles.push(handle);
         Ok(())
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn broadcast(&self, handle: SharedBufferHandle, value: i32) -> Result<(), String> {
+        let mut workers = lock_unpoisoned(&self.inner.workers);
+        while workers.broadcast_in_progress {
+            workers = wait_unpoisoned(&self.inner.workers_changed, workers);
+        }
+
+        workers.last_generation = workers
+            .last_generation
+            .checked_add(1)
+            .ok_or_else(|| "Test262 agent broadcast generation space exhausted".to_owned())?;
+        let generation = workers.last_generation;
+        let cohort_len = workers.slots.len();
+        workers.broadcast_in_progress = true;
+        for slot in workers.slots.iter_mut().take(cohort_len) {
+            debug_assert!(slot.pending.is_none());
+            slot.pending = Some(AgentBroadcast {
+                generation,
+                handle: handle.clone(),
+                value,
+            });
+        }
+        self.inner.workers_changed.notify_all();
+
+        // pthread_cond_wait has no timeout in pinned QuickJS. Preserve that
+        // contract: every agent in the invocation-time cohort must ACK after
+        // taking its delivery and before entering JavaScript callback code.
+        while workers.slots[..cohort_len]
+            .iter()
+            .any(|slot| slot.acknowledged_generation < generation)
+        {
+            workers = wait_unpoisoned(&self.inner.workers_changed, workers);
+        }
+        workers.broadcast_in_progress = false;
+        self.inner.workers_changed.notify_all();
+        Ok(())
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn broadcast(&self, _handle: SharedBufferHandle, _value: i32) -> Result<(), String> {
+        Err("Test262 agent threads are unavailable on wasm targets".to_owned())
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn wait_for_broadcast(&self, sequence: u64) -> Result<AgentBroadcast, String> {
+        let mut workers = lock_unpoisoned(&self.inner.workers);
+        loop {
+            let slot = workers
+                .slots
+                .iter_mut()
+                .find(|slot| slot.sequence == sequence)
+                .ok_or_else(|| format!("Test262 agent {sequence} lost its delivery slot"))?;
+            if let Some(delivery) = slot.pending.take() {
+                slot.acknowledged_generation = delivery.generation;
+                self.inner.workers_changed.notify_all();
+                return Ok(delivery);
+            }
+            workers = wait_unpoisoned(&self.inner.workers_changed, workers);
+        }
     }
 
     #[cfg(target_family = "wasm")]
@@ -133,6 +215,8 @@ impl StdError for Test262AgentError {}
 struct AgentSessionInner {
     reports: Mutex<VecDeque<String>>,
     workers: Mutex<AgentWorkers>,
+    #[cfg(not(target_family = "wasm"))]
+    workers_changed: Condvar,
     clock_origin: Instant,
 }
 
@@ -140,8 +224,28 @@ struct AgentSessionInner {
 struct AgentWorkers {
     #[cfg(not(target_family = "wasm"))]
     next_sequence: u64,
+    #[cfg(not(target_family = "wasm"))]
+    last_generation: u64,
+    #[cfg(not(target_family = "wasm"))]
+    broadcast_in_progress: bool,
     finished: bool,
     handles: Vec<JoinHandle<Result<(), String>>>,
+    #[cfg(not(target_family = "wasm"))]
+    slots: Vec<AgentWorkerSlot>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct AgentWorkerSlot {
+    sequence: u64,
+    pending: Option<AgentBroadcast>,
+    acknowledged_generation: u64,
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct AgentBroadcast {
+    generation: u64,
+    handle: SharedBufferHandle,
+    value: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,6 +268,13 @@ fn bindings() -> &'static Mutex<HashMap<u64, RuntimeAgentBinding>> {
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn wait_unpoisoned<'a, T>(condition: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    condition
+        .wait(guard)
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -259,38 +370,173 @@ impl Drop for RuntimeBindingGuard {
     }
 }
 
+thread_local! {
+    /// Worker callbacks are runtime roots and must never enter the Send/Sync
+    /// session coordinator. The native receiveBroadcast call and the worker
+    /// loop execute on the same agent thread, so a runtime-domain key is
+    /// sufficient to retain and replace the callback in thread-local storage.
+    static AGENT_WORKER_CALLBACKS: RefCell<HashMap<u64, CallableRef>> =
+        RefCell::new(HashMap::new());
+}
+
+fn install_worker_callback(runtime_id: u64, callback: CallableRef) {
+    AGENT_WORKER_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().insert(runtime_id, callback);
+    });
+}
+
 #[cfg(not(target_family = "wasm"))]
-fn run_agent_worker(session: &Test262AgentSession, source: &str) -> Result<(), String> {
+fn worker_callback(runtime_id: u64) -> Option<CallableRef> {
+    AGENT_WORKER_CALLBACKS.with(|callbacks| callbacks.borrow().get(&runtime_id).cloned())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn clear_worker_callback(runtime_id: u64) {
+    AGENT_WORKER_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().remove(&runtime_id);
+    });
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct WorkerCallbackGuard(u64);
+
+#[cfg(not(target_family = "wasm"))]
+impl Drop for WorkerCallbackGuard {
+    fn drop(&mut self) {
+        clear_worker_callback(self.0);
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn run_agent_worker(
+    session: &Test262AgentSession,
+    sequence: u64,
+    source: &str,
+) -> Result<(), String> {
     // Only owned source text and Arc-backed host state entered this thread.
     // The engine runtime, context, bytecode, and every root are born and die
     // here, on the worker thread.
     let runtime = Runtime::new();
+    let runtime_id = runtime.domain_id();
     runtime.set_can_block(true);
     let mut context = runtime.new_context();
     bind_realm(&runtime, context.realm_id(), session, AgentRole::Worker)
         .map_err(|error| format!("bind worker realm: {error}"))?;
-    let _binding = RuntimeBindingGuard(runtime.domain_id());
+    let _binding = RuntimeBindingGuard(runtime_id);
+    let _callback = WorkerCallbackGuard(runtime_id);
     context
         .install_qjs_print()
         .map_err(|error| format!("install worker print host: {error}"))?;
     context
         .install_test262_host()
         .map_err(|error| format!("install worker Test262 host: {error}"))?;
-    let function = context
-        .compile_with_filename(source, AGENT_EVAL_FILENAME)
-        .map_err(|error| format!("compile agent source: {error}"))?;
-    context
-        .execute(&function)
-        .map_err(|error| format!("execute agent source: {error}"))?;
-    while runtime.is_job_pending() {
-        if !runtime
-            .execute_pending_job()
-            .map_err(|error| format!("execute agent job: {error}"))?
-        {
-            return Err("agent runtime reported a pending job but executed none".to_owned());
+
+    let mut failures = Vec::new();
+    match context.compile_with_filename(source, AGENT_EVAL_FILENAME) {
+        Ok(function) => {
+            if let Err(error) = context.execute(&function) {
+                record_agent_failure(&mut context, &mut failures, "execute agent source", &error);
+            }
+        }
+        Err(error) => {
+            record_agent_failure(&mut context, &mut failures, "compile agent source", &error);
         }
     }
-    Ok(())
+
+    let mut job_operation = "execute agent job";
+    loop {
+        if !drain_agent_jobs(&runtime, &mut context, &mut failures, job_operation) {
+            break;
+        }
+
+        let Some(callback) = worker_callback(runtime_id) else {
+            break;
+        };
+
+        // wait_for_broadcast takes the delivery and signals the main thread
+        // while holding the coordinator mutex. Import and callback execution
+        // therefore happen strictly after this worker's ACK.
+        let delivery = session.wait_for_broadcast(sequence)?;
+        let shared = match context.import_shared_array_buffer(delivery.handle) {
+            Ok(shared) => shared,
+            Err(error) => {
+                record_agent_failure(
+                    &mut context,
+                    &mut failures,
+                    "import agent broadcast buffer",
+                    &error,
+                );
+                clear_worker_callback(runtime_id);
+                break;
+            }
+        };
+        if let Err(error) = context.call(
+            &callback,
+            Value::Undefined,
+            &[Value::Object(shared), Value::Int(delivery.value)],
+        ) {
+            record_agent_failure(
+                &mut context,
+                &mut failures,
+                "call agent broadcast callback",
+                &error,
+            );
+        }
+
+        // Pinned QuickJS clears broadcast_func immediately after JS_Call. A
+        // synchronous replacement is therefore discarded, while a Promise
+        // job can install the next callback during the following drain pass.
+        clear_worker_callback(runtime_id);
+        job_operation = "execute agent callback job";
+    }
+    finish_agent_failures(failures)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn record_agent_failure(
+    context: &mut Context,
+    failures: &mut Vec<String>,
+    operation: &str,
+    error: &RuntimeError,
+) {
+    failures.push(format!("{operation}: {error}"));
+    if context.has_exception() {
+        if let Err(clear_error) = context.take_exception() {
+            failures.push(format!("clear {operation} exception: {clear_error}"));
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn drain_agent_jobs(
+    runtime: &Runtime,
+    context: &mut Context,
+    failures: &mut Vec<String>,
+    operation: &str,
+) -> bool {
+    while runtime.is_job_pending() {
+        match runtime.execute_pending_job() {
+            Ok(true) => {}
+            Ok(false) => {
+                failures.push("agent runtime reported a pending job but executed none".to_owned());
+                return false;
+            }
+            Err(error) => {
+                record_agent_failure(context, failures, operation, &error);
+                return false;
+            }
+        }
+    }
+    true
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn finish_agent_failures(failures: Vec<String>) -> Result<(), String> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 impl Runtime {
@@ -402,10 +648,26 @@ impl Runtime {
                     return self
                         .test262_agent_type_error(realm, "cannot be called inside an agent");
                 }
-                self.test262_agent_type_error(
-                    realm,
-                    "broadcast is not implemented in Test262 agent Stage A",
-                )
+                // JS_GetArrayBuffer performs its ArrayBuffer/SAB brand and
+                // detached checks before JS_ToInt32 can run user code.
+                let handle = match self
+                    .test262_agent_export_broadcast_buffer(realm, &arguments.readable[0])?
+                {
+                    NativeConversion::Value(handle) => handle,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                let value = match self.native_to_number(realm, &arguments.readable[1])? {
+                    NativeConversion::Value(value) => crate::number::to_int32(value),
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+                if let Err(error) = session.broadcast(handle, value) {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Internal,
+                        &error,
+                    )?));
+                }
+                Ok(Completion::Return(Value::Undefined))
             }
             Test262AgentKind::Report => {
                 // QuickJS's implementation does not enforce the comment's
@@ -428,10 +690,15 @@ impl Runtime {
                 if role == AgentRole::Main {
                     return self.test262_agent_type_error(realm, "must be called inside an agent");
                 }
-                self.test262_agent_type_error(
-                    realm,
-                    "receiveBroadcast is not implemented in Test262 agent Stage A",
-                )
+                let callback = match &arguments.readable[0] {
+                    Value::Object(object) => self.as_callable(object)?,
+                    _ => None,
+                };
+                let Some(callback) = callback else {
+                    return self.test262_agent_type_error(realm, "expecting function");
+                };
+                install_worker_callback(self.domain_id(), callback);
+                Ok(Completion::Return(Value::Undefined))
             }
             Test262AgentKind::Sleep => {
                 let duration = match self.native_to_number(realm, &arguments.readable[0])? {
@@ -466,10 +733,58 @@ impl Runtime {
             message,
         )?))
     }
+
+    fn test262_agent_export_broadcast_buffer(
+        &self,
+        realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<SharedBufferHandle>, RuntimeError> {
+        let Value::Object(object) = value else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "ArrayBuffer object expected",
+            )?));
+        };
+        let Some(access) = self.snapshot_buffer_access_if_branded(object)? else {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "ArrayBuffer object expected",
+            )?));
+        };
+        if access.state.detached {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "ArrayBuffer is detached",
+            )?));
+        }
+        if !access.is_shared() {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "ordinary ArrayBuffer broadcast is unavailable across runtimes",
+            )?));
+        }
+        if access.state.max_byte_length.is_some() {
+            return Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "growable SharedArrayBuffer broadcast is unavailable across runtimes",
+            )?));
+        }
+        let handle =
+            self.shared_array_buffer_handle_if_branded(object)?
+                .ok_or(RuntimeError::Invariant(
+                    "validated shared broadcast buffer lost its class payload",
+                ))?;
+        Ok(NativeConversion::Value(handle))
+    }
 }
 
 impl Context {
-    /// Install the QuickJS Test262 host surface with a Stage A agent session.
+    /// Install the QuickJS Test262 host surface with an agent session.
     ///
     /// The initial realm has main role. `createRealm` contexts inherit the same
     /// session and, matching QuickJS's null ContextOpaque behavior, also have
@@ -628,7 +943,7 @@ mod tests {
          message(function () { $262.agent.receiveBroadcast(); });
 })()"#,
             ),
-            "TypeError: must be called inside an agent|TypeError: broadcast is not implemented in Test262 agent Stage A|TypeError: must be called inside an agent"
+            "TypeError: must be called inside an agent|TypeError: ArrayBuffer object expected|TypeError: must be called inside an agent"
         );
         session.join_workers().unwrap();
     }
@@ -663,7 +978,7 @@ mod tests {
                 "timed-out",
                 "TypeError: cannot be called inside an agent",
                 "TypeError: cannot be called inside an agent",
-                "TypeError: receiveBroadcast is not implemented in Test262 agent Stage A",
+                "TypeError: expecting function",
                 "after-leaving",
             ]
         );
@@ -717,6 +1032,332 @@ child262.agent.start("$262.agent.report('main-child')");"#,
                 "outer-worker",
             ]
         );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn broadcast_handles_zero_and_invocation_time_worker_cohorts() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let session = Test262AgentSession::new();
+        context.install_test262_host_with_agent(&session).unwrap();
+
+        assert_eq!(
+            context
+                .eval("$262.agent.broadcast(new SharedArrayBuffer(0))")
+                .unwrap(),
+            Value::Undefined
+        );
+        context
+            .eval(
+                r#"$262.agent.start(`
+  $262.agent.receiveBroadcast(function (sab, value) {
+    $262.agent.report("worker-0:" + value + ":" + sab.byteLength);
+  });
+  $262.agent.report("ready-0");
+`);
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function (sab, value) {
+    $262.agent.report("worker-1:" + value + ":" + sab.byteLength);
+  });
+  $262.agent.report("ready-1");
+`);
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function (sab, value) {
+    $262.agent.report("worker-2:" + value + ":" + sab.byteLength);
+  });
+  $262.agent.report("ready-2");
+`);
+var cohortBuffer = new SharedArrayBuffer(4);"#,
+            )
+            .unwrap();
+        assert_eq!(lock_unpoisoned(&session.inner.workers).slots.len(), 3);
+        wait_for_report(&session, "ready-0");
+        wait_for_report(&session, "ready-1");
+        wait_for_report(&session, "ready-2");
+        let mut ready = take_reports(&session);
+        ready.sort();
+        assert_eq!(ready, ["ready-0", "ready-1", "ready-2"]);
+        context.eval("$262.agent.broadcast(cohortBuffer)").unwrap();
+        session.join_workers().unwrap();
+        let mut reports = take_reports(&session);
+        reports.sort();
+        assert_eq!(reports, ["worker-0:0:4", "worker-1:0:4", "worker-2:0:4"]);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn receiver_can_wait_before_broadcast_and_ack_precedes_callback_completion() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let session = Test262AgentSession::new();
+        context.install_test262_host_with_agent(&session).unwrap();
+        context
+            .eval(
+                r#"var ackGate = new SharedArrayBuffer(8);
+var ackGateView = new Int32Array(ackGate);
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function (sab, value) {
+    var view = new Int32Array(sab);
+    $262.agent.report("callback:" + value);
+    var outcome = Atomics.wait(view, 1, 0, 1000);
+    $262.agent.report("released:" + outcome);
+  });
+  $262.agent.report("ready");
+`);"#,
+            )
+            .unwrap();
+        wait_for_report(&session, "ready");
+
+        // If broadcast waited for callback completion instead of its ACK,
+        // the callback's finite wait would time out before this store ran.
+        context
+            .eval(
+                "$262.agent.broadcast(ackGate, 17); \
+                 Atomics.store(ackGateView, 1, 1); Atomics.notify(ackGateView, 1);",
+            )
+            .unwrap();
+        session.join_workers().unwrap();
+        let reports = take_reports(&session);
+        assert_eq!(&reports[..2], ["ready", "callback:17"]);
+        assert!(
+            matches!(reports[2].as_str(), "released:ok" | "released:not-equal"),
+            "unexpected callback wait outcome: {reports:?}"
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn callback_replacement_role_checks_and_conversion_order_are_pinned() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let session = Test262AgentSession::new();
+        context.install_test262_host_with_agent(&session).unwrap();
+
+        assert_eq!(
+            eval_string(
+                &mut context,
+                r#"(function () {
+  var invalidFirstTouched = 0;
+  var validValueTouched = 0;
+  var ordinaryTouched = 0;
+  var growableTouched = 0;
+  function message(callback) {
+    try { callback(); return "missing"; }
+    catch (error) { return error.name + ":" + error.message; }
+  }
+  var receiveRole = message(function () {
+    $262.agent.receiveBroadcast({ valueOf: function () { throw "touched"; } });
+  });
+  var invalidFirst = message(function () {
+    $262.agent.broadcast({}, { valueOf: function () {
+      invalidFirstTouched += 1; return 1;
+    } });
+  });
+  var fixed = new SharedArrayBuffer(4);
+  $262.agent.broadcast(fixed, { valueOf: function () {
+    validValueTouched += 1; return 4294967297;
+  } });
+  var bigint = message(function () { $262.agent.broadcast(fixed, 1n); });
+  var ordinary = message(function () {
+    $262.agent.broadcast(new ArrayBuffer(4), { valueOf: function () {
+      ordinaryTouched += 1; return 1;
+    } });
+  });
+  var growable = message(function () {
+    $262.agent.broadcast(new SharedArrayBuffer(4, { maxByteLength: 8 }), {
+      valueOf: function () { growableTouched += 1; return 1; }
+    });
+  });
+  return receiveRole + "|" + invalidFirst + "|" + invalidFirstTouched +
+         "|" + validValueTouched + "|" + bigint + "|" + ordinary + "|" +
+         ordinaryTouched + "|" + growable + "|" + growableTouched;
+})()"#,
+            ),
+            "TypeError:must be called inside an agent|TypeError:ArrayBuffer object expected|0|1|TypeError:cannot convert bigint to number|TypeError:ordinary ArrayBuffer broadcast is unavailable across runtimes|0|TypeError:growable SharedArrayBuffer broadcast is unavailable across runtimes|0"
+        );
+
+        context
+            .eval(
+                r#"var replacementBuffer = new SharedArrayBuffer(4);
+$262.agent.start(`
+  var roleTouched = 0;
+  try {
+    $262.agent.broadcast({}, { valueOf: function () { roleTouched += 1; } });
+  } catch (error) {
+    $262.agent.report("role:" + error.message + ":" + roleTouched);
+  }
+  $262.agent.receiveBroadcast(function () { $262.agent.report("old"); });
+  $262.agent.receiveBroadcast(function (sab, value) {
+    $262.agent.report("new:" + value);
+  });
+  try { $262.agent.receiveBroadcast(0); }
+  catch (error) { $262.agent.report("callable:" + error.message); }
+  $262.agent.leaving();
+  $262.agent.report("replacement-ready");
+`);"#,
+            )
+            .unwrap();
+        wait_for_report(&session, "replacement-ready");
+        context
+            .eval("$262.agent.broadcast(replacementBuffer, -4294967295)")
+            .unwrap();
+        session.join_workers().unwrap();
+        assert_eq!(
+            take_reports(&session),
+            [
+                "role:cannot be called inside an agent:0",
+                "callable:expecting function",
+                "replacement-ready",
+                "new:1",
+            ]
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn fixed_shared_backing_preserves_int32_and_bigint_across_runtimes() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let session = Test262AgentSession::new();
+        context.install_test262_host_with_agent(&session).unwrap();
+        context
+            .eval(
+                r#"var numericShared = new SharedArrayBuffer(16);
+var numericInts = new Int32Array(numericShared, 0, 1);
+var numericBigs = new BigInt64Array(numericShared, 8, 1);
+numericInts[0] = 40;
+numericBigs[0] = 9007199254740993n;
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function (sab, value) {
+    var ints = new Int32Array(sab, 0, 1);
+    var bigs = new BigInt64Array(sab, 8, 1);
+    $262.agent.report(ints[0] + ":" + bigs[0] + ":" + value);
+    Atomics.add(ints, 0, 2);
+    Atomics.add(bigs, 0, 3n);
+  });
+  $262.agent.report("numeric-ready");
+`);"#,
+            )
+            .unwrap();
+        wait_for_report(&session, "numeric-ready");
+        context
+            .eval("$262.agent.broadcast(numericShared, 4294967297)")
+            .unwrap();
+        session.join_workers().unwrap();
+        assert_eq!(
+            take_reports(&session),
+            ["numeric-ready", "40:9007199254740993:1"]
+        );
+        assert_eq!(
+            eval_string(&mut context, "numericInts[0] + ':' + numericBigs[0]"),
+            "42:9007199254740996"
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn callback_jobs_can_register_the_next_broadcast_generation() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let session = Test262AgentSession::new();
+        context.install_test262_host_with_agent(&session).unwrap();
+        context
+            .eval(
+                r#"var generationBuffer = new SharedArrayBuffer(4);
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function (sab, value) {
+    $262.agent.report("first:" + value);
+    Promise.resolve().then(function () {
+      $262.agent.receiveBroadcast(function (nextSab, nextValue) {
+        $262.agent.report("second:" + nextValue + ":" + nextSab.byteLength);
+      });
+      $262.agent.report("rearmed");
+    });
+  });
+  $262.agent.report("generation-ready");
+`);"#,
+            )
+            .unwrap();
+        wait_for_report(&session, "generation-ready");
+        context
+            .eval(
+                "$262.agent.broadcast(generationBuffer, 1); \
+                 $262.agent.broadcast(generationBuffer, 2);",
+            )
+            .unwrap();
+        session.join_workers().unwrap();
+        assert_eq!(
+            take_reports(&session),
+            ["generation-ready", "first:1", "rearmed", "second:2:4",]
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn synchronous_callback_replacement_is_discarded_after_the_current_call() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let session = Test262AgentSession::new();
+        context.install_test262_host_with_agent(&session).unwrap();
+        context
+            .eval(
+                r#"var synchronousReplacementBuffer = new SharedArrayBuffer(4);
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function () {
+    $262.agent.receiveBroadcast(function () {
+      $262.agent.report("synchronous-replacement-ran");
+    });
+    $262.agent.report("synchronous-current-ran");
+  });
+  $262.agent.report("synchronous-ready");
+`);"#,
+            )
+            .unwrap();
+        wait_for_report(&session, "synchronous-ready");
+        context
+            .eval("$262.agent.broadcast(synchronousReplacementBuffer, 1)")
+            .unwrap();
+        session.join_workers().unwrap();
+        assert_eq!(
+            take_reports(&session),
+            ["synchronous-ready", "synchronous-current-ran"]
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn worker_and_callback_exceptions_still_drain_jobs_and_clean_up_join() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let session = Test262AgentSession::new();
+        context.install_test262_host_with_agent(&session).unwrap();
+        context
+            .eval(
+                r#"var failureBuffer = new SharedArrayBuffer(4);
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function () {
+    $262.agent.report("callback-ran");
+    Promise.resolve().then(function () { $262.agent.report("callback-job"); });
+    throw new Error("callback failure");
+  });
+  $262.agent.report("failure-ready");
+  throw new Error("source failure");
+`);"#,
+            )
+            .unwrap();
+        wait_for_report(&session, "failure-ready");
+        context
+            .eval("$262.agent.broadcast(failureBuffer, 0)")
+            .unwrap();
+        let error = session.join_workers().unwrap_err().to_string();
+        assert!(error.contains("execute agent source"), "{error}");
+        assert!(error.contains("call agent broadcast callback"), "{error}");
+        assert_eq!(
+            take_reports(&session),
+            ["failure-ready", "callback-ran", "callback-job"]
+        );
+        session.join_workers().unwrap();
     }
 
     #[cfg(not(target_family = "wasm"))]

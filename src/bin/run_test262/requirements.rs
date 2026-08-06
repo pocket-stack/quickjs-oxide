@@ -36,41 +36,171 @@ impl HostCapabilities {
     }
 }
 
-/// Admit only the single source-audited Stage A `$262.agent` test.
+struct AgentHostAdmission {
+    path: &'static str,
+    source_sha256: &'static str,
+    features: &'static [&'static str],
+    cohort: &'static str,
+}
+
+const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 16] = [
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-with-no-agents-waiting.js",
+        source_sha256: "c4f49f9a52daab30e695cea6d8fe400a7ebd38dc41daef6843b763d1006ba718",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-with-no-matching-agents-waiting.js",
+        source_sha256: "85e1c3a5897d64f38b6f271b714cb025ed237267d47ebf9ab332a19b03e1a382",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/bigint/false-for-timeout-agent.js",
+        source_sha256: "30818849f231757c0fce413f31fa235c63236f9268eab982ce58078d427fade1",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/bigint/negative-timeout-agent.js",
+        source_sha256: "098159fb9b6c3619ee5eaf445333bf5b20088fc46e9227c8de383bfd3550b014",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/bigint/value-not-equal.js",
+        source_sha256: "6ac2ae7a18c6081df18371c6dab12bb82430f37e92ec6a6c3ff9ff5ce59df700",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/false-for-timeout-agent.js",
+        source_sha256: "1f155c405b5b137c902e5e385a5a39a858444ad63941bdde5ca6762844e978a2",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/good-views.js",
+        source_sha256: "7ab45f324e0f668a9d9f3df03c866b0ac32276eb1dfb649d1e5783a88f70bb21",
+        features: &["Atomics"],
+        cohort: "Test262 agent Stage A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/negative-timeout-agent.js",
+        source_sha256: "8d2236937f9a3d792cfda706d7d7703642c21bbda26729ca29421d89cb3865eb",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/null-for-timeout-agent.js",
+        source_sha256: "407d2a0a8bf72382dfeb22b711cce26ea562a8b2da1c79e941c50315e78f7a30",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/object-for-timeout-agent.js",
+        source_sha256: "c7ecd98803298b5fbc82f6f68d16bce6f3246800a9ef79b526ae55be06d41d0f",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/poisoned-object-for-timeout-throws-agent.js",
+        source_sha256: "2780f367fba1a8090ac059185fc8dd3d7f92da10dea9261ff9eb00845ef3c266",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/symbol-for-index-throws-agent.js",
+        source_sha256: "b255a1f336e1fa3de54eff1a885a5b8c52d1d307ca2d21e73e5a8c5cbb472c1f",
+        features: &[
+            "Atomics",
+            "SharedArrayBuffer",
+            "Symbol",
+            "Symbol.toPrimitive",
+            "TypedArray",
+        ],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/symbol-for-timeout-throws-agent.js",
+        source_sha256: "6d37e6f2f0db2518c31b41e08aa2479e07d425ed1510a5170a30277b8698c172",
+        features: &[
+            "Atomics",
+            "SharedArrayBuffer",
+            "Symbol",
+            "Symbol.toPrimitive",
+            "TypedArray",
+        ],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/symbol-for-value-throws-agent.js",
+        source_sha256: "7176e285cd33104da37b6cc70a2f5e83a9165da02092ad15062088ed7d83b5de",
+        features: &[
+            "Atomics",
+            "SharedArrayBuffer",
+            "Symbol",
+            "Symbol.toPrimitive",
+            "TypedArray",
+        ],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/value-not-equal.js",
+        source_sha256: "24a38831488f8794736387ab7cafc0528fc9fd9f2276b49a5e04d77f5ef0e4a7",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/wait-index-value-not-equal.js",
+        source_sha256: "0c2103b7079f54cfbe0c57ccbaef6644bab370409dad2f32e6b0c3e9577dfa08",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent broadcast cohort A",
+    },
+];
+
+/// Admit only source- and metadata-audited `$262.agent` tests.
 ///
-/// The path check prevents a profile entry from broadening the host surface,
-/// while the source hash prevents an in-place Test262 update from silently
-/// inheriting the opt-in. Metadata shape is checked as a second, readable
-/// provenance assertion for the runner and its gates.
-pub(super) fn is_exact_agent_stage_a_test(
+/// The exact path check prevents a profile entry from broadening the host
+/// surface. The source hash and complete metadata shape prevent an in-place
+/// Test262 update from silently inheriting an earlier admission.
+pub(super) fn is_exact_agent_host_test(
     path: &Path,
     source: &str,
     metadata: &Metadata,
 ) -> Result<bool, String> {
-    const PATH: &str = "test/built-ins/Atomics/wait/good-views.js";
-    const SHA256: &str = "7ab45f324e0f668a9d9f3df03c866b0ac32276eb1dfb649d1e5783a88f70bb21";
-
-    if path != Path::new(PATH) {
+    let Some(admission) = AGENT_HOST_ADMISSIONS
+        .iter()
+        .find(|admission| path == Path::new(admission.path))
+    else {
         return Ok(false);
-    }
+    };
     let actual_sha256 = source_sha256(source)?;
-    if actual_sha256 != SHA256 {
+    if actual_sha256 != admission.source_sha256 {
         return Err(format!(
-            "Test262 agent Stage A source drifted for {PATH}: expected SHA-256 {SHA256}, found {actual_sha256}"
+            "{} source drifted for {}: expected SHA-256 {}, found {actual_sha256}",
+            admission.cohort, admission.path, admission.source_sha256
         ));
     }
-    if metadata.includes != ["atomicsHelper.js"]
-        || metadata.features != ["Atomics"]
-        || metadata.is_raw()
-        || metadata.is_async()
-        || metadata.is_module()
-        || metadata.negative.is_some()
-    {
+    if !agent_host_metadata_matches(metadata, admission) {
         return Err(format!(
-            "Test262 agent Stage A metadata shape drifted for {PATH}"
+            "{} metadata shape drifted for {}",
+            admission.cohort, admission.path
         ));
     }
     Ok(true)
+}
+
+fn agent_host_metadata_matches(metadata: &Metadata, admission: &AgentHostAdmission) -> bool {
+    metadata.includes == ["atomicsHelper.js"]
+        && metadata.flags.is_empty()
+        && metadata
+            .features
+            .iter()
+            .map(String::as_str)
+            .eq(admission.features.iter().copied())
+        && metadata.negative.is_none()
 }
 
 /// Return conservative, stable IDs for Test262 execution capabilities which
@@ -776,9 +906,10 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        HostCapabilities, generator_destructuring_source_needs_async_guard,
-        insert_atomics_cross_realm_feature_hints, insert_exact_source_feature_hint,
-        missing_host_capability_hints, source_sha256, source_tokens, supplemental_feature_hints,
+        AGENT_HOST_ADMISSIONS, HostCapabilities, agent_host_metadata_matches,
+        generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
+        insert_exact_source_feature_hint, is_exact_agent_host_test, missing_host_capability_hints,
+        source_sha256, source_tokens, supplemental_feature_hints,
     };
     use crate::metadata::Metadata;
 
@@ -793,6 +924,65 @@ mod tests {
 
     fn generator_metadata() -> Metadata {
         metadata(&[], &["generators"], &[])
+    }
+
+    #[test]
+    fn agent_host_admission_ledger_is_exact_sorted_and_metadata_frozen() {
+        assert_eq!(AGENT_HOST_ADMISSIONS.len(), 16);
+        assert!(
+            AGENT_HOST_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+
+        let broadcast = AGENT_HOST_ADMISSIONS
+            .iter()
+            .filter(|admission| admission.cohort == "Test262 agent broadcast cohort A")
+            .collect::<Vec<_>>();
+        assert_eq!(broadcast.len(), 15);
+        let ledger = broadcast
+            .iter()
+            .map(|admission| format!("{}\t{}\n", admission.path, admission.source_sha256))
+            .collect::<String>();
+        assert_eq!(
+            source_sha256(&ledger).unwrap(),
+            "b467b2cdca29ad877981b7894e5b28bdf966385034aa5e722d9d81b86b19c0cf"
+        );
+
+        let mut feature_shapes = BTreeSet::new();
+        for admission in broadcast {
+            feature_shapes.insert(admission.features);
+            let exact = metadata(&[], admission.features, &["atomicsHelper.js"]);
+            assert!(agent_host_metadata_matches(&exact, admission));
+
+            let source_drift =
+                is_exact_agent_host_test(Path::new(admission.path), "/* source drift */", &exact)
+                    .unwrap_err();
+            assert!(source_drift.contains(admission.source_sha256));
+
+            let mut drifted = exact.clone();
+            drifted.flags.insert("noStrict".to_owned());
+            assert!(!agent_host_metadata_matches(&drifted, admission));
+
+            let mut feature_drift = exact;
+            feature_drift.features.push("feature-drift".to_owned());
+            assert!(!agent_host_metadata_matches(&feature_drift, admission));
+        }
+        assert_eq!(feature_shapes.len(), 3);
+
+        let stage_a = AGENT_HOST_ADMISSIONS
+            .iter()
+            .find(|admission| admission.cohort == "Test262 agent Stage A")
+            .unwrap();
+        assert_eq!(stage_a.path, "test/built-ins/Atomics/wait/good-views.js");
+        assert_eq!(
+            stage_a.source_sha256,
+            "7ab45f324e0f668a9d9f3df03c866b0ac32276eb1dfb649d1e5783a88f70bb21"
+        );
+        assert!(agent_host_metadata_matches(
+            &metadata(&[], &["Atomics"], &["atomicsHelper.js"]),
+            stage_a
+        ));
     }
 
     #[test]

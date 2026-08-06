@@ -4,6 +4,40 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dn scoped Test262 agent broadcast cohort A
+
+R3dn implements the pinned QuickJS `$262.agent.broadcast` /
+`receiveBroadcast` control plane for fixed `SharedArrayBuffer` backing. A
+broadcast snapshots the invocation-time worker cohort, publishes one shared
+backing handle and an `int32` payload, and waits for every worker to acknowledge
+delivery before any callback has to finish. Workers keep callbacks rooted only
+in their own runtime thread. A synchronous callback replacement is discarded
+at the end of that delivery, while a Promise job may install the receiver for
+the next generation, matching QuickJS's callback/job ordering.
+
+This is a scoped implementation milestone, not yet a global Test262
+promotion. The source- and metadata-authenticated cohort activates 15 paths /
+30 sloppy-and-strict variants. Oxide passes all 30, while the other 43 paths /
+86 variants remain `unsupported-host-agent`; the exact transition is 30 pass
+gains, 86 unchanged rows, and zero regressions. Twenty single-worker replays
+produce 600/600 activation passes, and pinned QuickJS 2026-06-04 passes the
+same 30 variants.
+
+The admitted sources use only fixed shared buffers. Ordinary `ArrayBuffer`
+and growable `SharedArrayBuffer` broadcasts remain explicitly fail-closed
+rather than pretending that a copied backing store has shared identity.
+Worker exceptions are also surfaced more strictly than QuickJS's diagnostic
+printing. Those differences must be resolved or separately audited before the
+remaining agent cohorts can be admitted. WebAssembly continues to expose no
+agent threads, and `Atomics.waitAsync` remains outside the pinned QuickJS
+target.
+
+Reproduce the checksum-bound scoped receipt with:
+
+```sh
+./scripts/test-test262-agent-broadcast-a.sh --check
+```
+
 ## R3dm Test262 agent Stage A
 
 R3dm adds an opt-in, QuickJS-shaped Test262 `$262.agent` host without making

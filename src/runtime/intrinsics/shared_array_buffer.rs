@@ -676,7 +676,7 @@ impl Runtime {
             ))
     }
 
-    fn shared_array_buffer_handle_if_branded(
+    pub(in crate::runtime) fn shared_array_buffer_handle_if_branded(
         &self,
         object: &ObjectRef,
     ) -> Result<Option<SharedBufferHandle>, RuntimeError> {

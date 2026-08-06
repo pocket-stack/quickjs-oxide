@@ -11,7 +11,7 @@ use quickjs_oxide::{
 
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
-use super::requirements::{HostCapabilities, is_exact_agent_stage_a_test};
+use super::requirements::{HostCapabilities, is_exact_agent_host_test};
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
 pub(super) const WORKER_HOST_CAPABILITIES: HostCapabilities = HostCapabilities {
@@ -102,7 +102,7 @@ pub(super) fn run_isolated_worker(
     variant: Variant,
     timeout: Duration,
     allow_async_host: bool,
-    allow_agent_stage_a: bool,
+    allow_agent_host: bool,
 ) -> Result<WorkerResult, String> {
     let mut command = Command::new(executable);
     command
@@ -116,8 +116,8 @@ pub(super) fn run_isolated_worker(
     if allow_async_host {
         command.arg("--allow-async-host");
     }
-    if allow_agent_stage_a {
-        command.arg("--allow-agent-stage-a");
+    if allow_agent_host {
+        command.arg("--allow-agent-host");
     }
     let mut child = command
         .stdout(Stdio::piped())
@@ -211,11 +211,9 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let source =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let metadata = parse_metadata(&source)?;
-    if options.allow_agent_stage_a
-        && !is_exact_agent_stage_a_test(&options.test, &source, &metadata)?
-    {
+    if options.allow_agent_host && !is_exact_agent_host_test(&options.test, &source, &metadata)? {
         return Err(format!(
-            "Test262 agent Stage A worker rejected unaudited path: {}",
+            "Test262 agent host worker rejected unaudited path: {}",
             options.test.display()
         ));
     }
@@ -227,7 +225,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let runtime = Runtime::new();
     configure_runtime_can_block(&runtime, &metadata);
     let mut context = runtime.new_context();
-    let mut agent_run = AgentRunGuard::new(options.allow_agent_stage_a);
+    let mut agent_run = AgentRunGuard::new(options.allow_agent_host);
     install_worker_host(&runtime, &mut context, async_test, agent_run.session())?;
     // The progress baseline follows the pinned Test262 interpretation rather
     // than run-test262.c's raw-test deviation: raw means no harness and no
@@ -726,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_stage_a_worker_flag_revalidates_path_and_source() {
+    fn agent_host_worker_flag_revalidates_path_and_source() {
         let suite = std::env::temp_dir().join(format!(
             "quickjs-oxide-agent-worker-revalidation-{}-{}",
             std::process::id(),
@@ -747,7 +745,7 @@ mod tests {
             test: wrong_path,
             variant: Variant::Sloppy,
             allow_async_host: false,
-            allow_agent_stage_a: true,
+            allow_agent_host: true,
         })
         .unwrap_err();
         assert!(error.contains("rejected unaudited path"), "{error}");
@@ -763,11 +761,32 @@ mod tests {
             test: exact_path,
             variant: Variant::Sloppy,
             allow_async_host: false,
-            allow_agent_stage_a: true,
+            allow_agent_host: true,
+        })
+        .unwrap_err();
+        assert!(error.contains("source drifted"), "{error}");
+
+        let broadcast_path =
+            PathBuf::from("test/built-ins/Atomics/notify/notify-with-no-agents-waiting.js");
+        fs::create_dir_all(suite.join("test/built-ins/Atomics/notify")).unwrap();
+        fs::write(
+            suite.join(&broadcast_path),
+            "/*---\nincludes: [atomicsHelper.js]\nfeatures: [Atomics, SharedArrayBuffer, TypedArray]\n---*/\n// drift\n",
+        )
+        .unwrap();
+        let error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: broadcast_path,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: true,
         })
         .unwrap_err();
         fs::remove_dir_all(suite).unwrap();
-        assert!(error.contains("source drifted"), "{error}");
+        assert!(
+            error.contains("agent broadcast cohort A source drifted"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -852,7 +871,7 @@ mod tests {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: false,
-            allow_agent_stage_a: false,
+            allow_agent_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -891,7 +910,7 @@ mod tests {
             test: relative.clone(),
             variant: Variant::Sloppy,
             allow_async_host: false,
-            allow_agent_stage_a: false,
+            allow_agent_host: false,
         })
         .unwrap_err();
         assert_eq!(denied, "unsupported test reached worker");
@@ -901,7 +920,7 @@ mod tests {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: true,
-            allow_agent_stage_a: false,
+            allow_agent_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -934,7 +953,7 @@ mod tests {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: true,
-            allow_agent_stage_a: false,
+            allow_agent_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -989,7 +1008,7 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: false,
-            allow_agent_stage_a: false,
+            allow_agent_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();
@@ -1259,7 +1278,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
             test: relative,
             variant: Variant::Sloppy,
             allow_async_host: false,
-            allow_agent_stage_a: false,
+            allow_agent_host: false,
         })
         .unwrap();
         fs::remove_dir_all(suite).unwrap();

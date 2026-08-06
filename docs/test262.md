@@ -6,6 +6,46 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dn scoped agent broadcast cohort A
+
+R3dn stages the first authenticated `broadcast` / `receiveBroadcast` slice
+without changing the live global profile. Its 58-path universe hashes to
+`bb59fba98ce4d41426a47de67630940f4eae29927421a2bfe6e1ea70c8f56d55`
+and is exactly partitioned into a 15-path activation manifest hashing to
+`8ca17690ee6e1fd5b4deb6e41047925e5b1d5a3cd0dfcd4f5ccdaeb04b336f23`
+and a 43-path retained manifest hashing to
+`6c723dcea7ff0f92b79b5d1f8218e74d209d0206a3e6c111f129ac4321a1497f`.
+The activation path/source ledger hashes to
+`b467b2cdca29ad877981b7894e5b28bdf966385034aa5e722d9d81b86b19c0cf`.
+
+The scoped parent and candidate profiles hash to
+`7254bdc5a52a30f70f270bdabc9337231c94799d636f993ba54b8ae082915dea`
+and
+`4f2a285a77e31815a94266ddcdafac7df9c8a148c0236be4e60968590999e706`.
+They differ only by the 15 authenticated host-agent paths. The runner accepts
+the profiles only with the exact 58-path manifest or `--all`, and both the
+coordinator and isolated worker revalidate exact path, pinned source SHA-256,
+and complete metadata before installing the agent host.
+
+The parent scoped vector contains 116 `unsupported-host-agent` outcomes. The
+candidate contains 30 passes and 86 unchanged unsupported outcomes, yielding
+30 pass gains and zero regressions. Its TSV/JSONL SHA-256 values are
+`bf3524122b78ed31d931f3e28df2d930ba0308cfb6ed33a144a51caa2ff7d457`
+and
+`8acfbeb71c2c3ae70b8e1677601eb2e5b718c877fd8d0c0fffd38778907d4a5b`.
+Twenty deterministic single-worker replays cover 600 activated variants with
+600 passes; pinned QuickJS passes the same 15 paths in both modes, 30/30.
+
+This admission is deliberately limited to fixed `SharedArrayBuffer` backing.
+Ordinary `ArrayBuffer`, growable shared buffers, and the 43 wake-order,
+timeout, and FIFO paths remain fail-closed pending their own audits. The R3dm
+102,037-variant vector therefore remains canonical until a separate R3dn
+global full-run gate is completed.
+
+```sh
+./scripts/test-test262-agent-broadcast-a.sh --check
+```
+
 ## R3dm exact Test262 agent Stage A admission
 
 R3dm turns the authenticated `$262.agent` frontier into an exact, fail-closed
