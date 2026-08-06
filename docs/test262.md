@@ -6,6 +6,41 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dr global agent wake/FIFO admission
+
+R3dr globally admits the exact 21-path union previously proven by the R3dp and
+R3dq scoped gates. The 17 wake/count/location paths hash to
+`8502e6fa50a94a7e9eef34310535f29906c2d9b1eaa49e8fe0d9388fa0e4c4f4`;
+the four FIFO paths hash to
+`8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8`;
+their exact union hashes to
+`76dc724e39d9eab3c707150ac5811712c543b71ab650339ba559e9a5429c7ea4`.
+No runtime, feature, negative-test, or execution-policy bytes change. The
+parent and candidate profile hashes are
+`8c80eee8846d3eaf08f1aa0622e0edc9a8290aa03c492eb25003f9c2dc8f4052`
+and
+`a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe`.
+
+The focused transition has 42 unsupported-to-pass gains and zero regressions;
+pinned QuickJS passes the same 42 variants. Two independent native Linux ARM64
+release-mode candidate full runs are byte-identical and match the native macOS
+hashes. Exact TSV and JSON joins change only the 42 admitted variants and
+preserve all 101,995 outside rows byte-for-byte. The canonical vector is 66,594
+passes / 66,646 runnable / 102,037 total variants, with zero
+`unsupported-host-agent` outcomes. Its TSV/JSONL SHA-256 values are
+`ba1d7e6612b4750d4cecb71ab947bba5d4a47e0603d5987aef64b4187ba25cf3`
+and
+`72bb3268e0b0a7e8297772a5aaa59487a6b6b8181f2eb812c379ce2351222f34`.
+The checksum-bound gate also authenticates both scoped predecessor gates, the
+pinned source ledger, the QuickJS receipt, the prior global baseline, and the
+canonical full-vector bridge. This is progress evidence, not a parity claim.
+
+```sh
+./scripts/test-test262-agent-wake-fifo-global.sh --check
+TEST262_WORKERS=8 ./scripts/test-test262-agent-wake-fifo-global.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-wake-fifo-global.sh --full
+```
+
 ## R3dq scoped agent FIFO wake-order admission
 
 R3dq admits only the exact four FIFO wake-order paths / eight sloppy-and-strict

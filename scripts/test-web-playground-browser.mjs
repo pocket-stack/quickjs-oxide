@@ -429,7 +429,7 @@ async function runAcceptance(url, serverErrors) {
     );
     assert.match(
       (await page.locator("#frozen-global-vector").textContent()) || "",
-      /66,552 passes\s*\/\s*66,604 runnable\s*\/\s*102,037 total[\s\S]*pre-parity/,
+      /66,594 passes\s*\/\s*66,646 runnable\s*\/\s*102,037 total[\s\S]*59\/59 agent paths[\s\S]*0 remaining unsupported-host-agent[\s\S]*pre-parity/,
     );
 
     assert.ok(

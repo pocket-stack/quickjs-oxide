@@ -355,6 +355,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-agent-fifo-wake-order.txt"
     ));
+    const AGENT_WAKE_FIFO_GLOBAL_PARENT_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-wake-fifo-global-parent.conf"
+    ));
+    const AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-agent-wake-fifo-global-candidate.conf"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -1835,11 +1843,19 @@ mod tests {
         agent_wait_bounded_a_global_candidate
             .host_agent_tests
             .extend(AGENT_WAIT_BOUNDED_A_ACTIVATION.lines().map(str::to_owned));
-        assert_eq!(profile, agent_wait_bounded_a_global_candidate);
         assert_eq!(
-            CHECKED_IN_PROFILE,
-            AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE
+            agent_wait_bounded_a_global_candidate,
+            OxideProfile::parse(AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE).unwrap()
         );
+        let mut agent_wake_fifo_global_candidate = agent_wait_bounded_a_global_candidate;
+        agent_wake_fifo_global_candidate.host_agent_tests.extend(
+            AGENT_WAKE_COUNT_LOCATION_ACTIVATION
+                .lines()
+                .chain(AGENT_FIFO_WAKE_ORDER_ACTIVATION.lines())
+                .map(str::to_owned),
+        );
+        assert_eq!(profile, agent_wake_fifo_global_candidate);
+        assert_eq!(CHECKED_IN_PROFILE, AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE);
         assert_eq!(
             default_parameters_candidate
                 .features
@@ -2445,6 +2461,54 @@ mod tests {
         );
         assert_eq!(parent.host_agent_tests.len(), 55);
         assert_eq!(candidate.host_agent_tests.len(), 59);
+    }
+
+    #[test]
+    fn agent_wake_fifo_global_profiles_add_only_the_exact_21_path_allowlist() {
+        let predecessor =
+            OxideProfile::parse(AGENT_WAIT_BOUNDED_A_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let parent = OxideProfile::parse(AGENT_WAKE_FIFO_GLOBAL_PARENT_PROFILE).unwrap();
+        let candidate = OxideProfile::parse(AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE).unwrap();
+        let scoped_candidate =
+            OxideProfile::parse(AGENT_FIFO_WAKE_ORDER_CANDIDATE_PROFILE).unwrap();
+        let activation = AGENT_WAKE_COUNT_LOCATION_ACTIVATION
+            .lines()
+            .chain(AGENT_FIFO_WAKE_ORDER_ACTIVATION.lines())
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(activation.len(), 21);
+        assert_eq!(parent, predecessor);
+        assert_eq!(candidate.features, parent.features);
+        assert_eq!(
+            candidate.audited_negative_tests,
+            parent.audited_negative_tests
+        );
+        assert_eq!(
+            candidate.allows_async_execution(),
+            parent.allows_async_execution()
+        );
+        assert_eq!(
+            candidate
+                .host_agent_tests
+                .difference(&parent.host_agent_tests)
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            activation
+        );
+        assert!(
+            parent
+                .host_agent_tests
+                .difference(&candidate.host_agent_tests)
+                .next()
+                .is_none()
+        );
+        assert_eq!(parent.host_agent_tests.len(), 38);
+        assert_eq!(candidate.host_agent_tests.len(), 59);
+        assert_eq!(
+            candidate.host_agent_tests,
+            scoped_candidate.host_agent_tests
+        );
     }
 
     #[test]

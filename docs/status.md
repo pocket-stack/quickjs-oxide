@@ -4,6 +4,38 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dr global Test262 agent wake/FIFO admission
+
+R3dr promotes the final 21 source- and metadata-authenticated agent paths into
+the live Test262 profile. This is a pure profile admission: runtime semantics,
+all 132 feature tags, 1,197 audited negative paths, and the execution policy
+remain unchanged. The R3do parent profile hashes to
+`8c80eee8846d3eaf08f1aa0622e0edc9a8290aa03c492eb25003f9c2dc8f4052`;
+the 59-path candidate/live profile hashes to
+`a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe`.
+
+The focused parent has 42 `unsupported-host-agent` rows, while the candidate
+passes all 42. Pinned QuickJS 2026-06-04 independently passes the same 21 paths
+in both modes. Two independent native Linux ARM64 release-mode candidate full
+runs are byte-identical and match the native macOS hashes. Their exact joins
+change only those 42 outcomes; all 101,995 outside-cohort TSV and JSON result
+rows remain byte-identical, with zero regressions.
+
+The canonical vector is now 66,594 passes / 66,646 runnable / 102,037 total
+variants. All 59 authenticated agent paths pass their 118 variants, so
+`unsupported-host-agent` falls from 42 to zero. The canonical TSV/JSONL
+SHA-256 values are
+`ba1d7e6612b4750d4cecb71ab947bba5d4a47e0603d5987aef64b4187ba25cf3`
+and
+`72bb3268e0b0a7e8297772a5aaa59487a6b6b8181f2eb812c379ce2351222f34`.
+This closes the authenticated agent backlog, not the wider Feature Parity
+backlog; the project remains pre-parity.
+
+```sh
+./scripts/test-test262-agent-wake-fifo-global.sh --check
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-agent-wake-fifo-global.sh --full
+```
+
 ## R3dq scoped Test262 agent FIFO wake-order admission
 
 R3dq adds a runner-only admission for the exact four-path / eight-variant

@@ -8,16 +8,16 @@ strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
 Unicode normalization, and a growing parser/VM surface.
 
-Building on 16 previously admitted agent paths, the latest conformance
-milestone adds 22 source-audited bounded `Atomics.wait` / `notify` paths: all
-44 variants pass. In total, 38/59 paths are admitted; the other 21 paths / 42
-variants remain fail-closed globally, although scoped gates now pass the 17
-wake/count/location paths and four FIFO paths awaiting global promotion.
+The latest conformance milestone globally admits the remaining 21
+source-audited agent paths covering `Atomics.wait` / `notify`
+wake/count/location and FIFO ordering. All 59/59 authenticated agent paths now
+pass their 118 variants, leaving zero `unsupported-host-agent` outcomes.
 Modules, broad built-ins, and the complete embedding/tooling surface remain
-unfinished. Pinned QuickJS has no `Atomics.waitAsync`, so it is outside this
-rewrite's parity target.
+unfinished, so the project is still pre-parity and the full Feature Parity
+goal is unchanged. Pinned QuickJS has no `Atomics.waitAsync`, so it is outside
+this rewrite's parity target.
 
-The latest audited global vector is 66,552 passes / 66,604 runnable / 102,037
+The latest audited global vector is 66,594 passes / 66,646 runnable / 102,037
 total variants, with zero regressions from the prior milestone. Detailed
 implementation and Test262 bookkeeping live in the status documents below.
 

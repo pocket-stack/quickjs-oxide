@@ -48,7 +48,7 @@ const TEST262_CONFIG_SHA256: &str =
 const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const TEST262_OXIDE_PROFILE_SHA256: &str =
-    "8c80eee8846d3eaf08f1aa0622e0edc9a8290aa03c492eb25003f9c2dc8f4052";
+    "a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe";
 const TEST262_ARRAY_FLATTEN_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "ff0a591164b267d06762bd5d5a41781d50cc8128377a3787e3c1ea13f7c30b1a";
 const TEST262_ARRAY_FLATTEN_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -541,6 +541,10 @@ const TEST262_AGENT_FIFO_WAKE_ORDER_UNIVERSE_SHA256: &str =
     "8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8";
 const TEST262_AGENT_FIFO_WAKE_ORDER_ACTIVATION_SHA256: &str =
     "8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8";
+const TEST262_AGENT_WAKE_FIFO_GLOBAL_PARENT_PROFILE_SHA256: &str =
+    "8c80eee8846d3eaf08f1aa0622e0edc9a8290aa03c492eb25003f9c2dc8f4052";
+const TEST262_AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
+    "a903c4c7850dbf676477d5ef9038a9ce7c9d581eb70e1ac1f17cf30adc3f21fe";
 const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
 const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -979,6 +983,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::AgentWakeCountLocationCandidate
                     | OxideProfileKind::AgentFifoWakeOrderParent
                     | OxideProfileKind::AgentFifoWakeOrderCandidate
+                    | OxideProfileKind::AgentWakeFifoGlobalParent
+                    | OxideProfileKind::AgentWakeFifoGlobalCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1261,6 +1267,8 @@ enum OxideProfileKind {
     AgentWakeCountLocationCandidate,
     AgentFifoWakeOrderParent,
     AgentFifoWakeOrderCandidate,
+    AgentWakeFifoGlobalParent,
+    AgentWakeFifoGlobalCandidate,
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
@@ -1786,6 +1794,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-agent-fifo-wake-order-candidate.conf"),
             OxideProfileKind::AgentFifoWakeOrderCandidate,
+        ),
+        (
+            root.join("tests/test262-agent-wake-fifo-global-parent.conf"),
+            OxideProfileKind::AgentWakeFifoGlobalParent,
+        ),
+        (
+            root.join("tests/test262-agent-wake-fifo-global-candidate.conf"),
+            OxideProfileKind::AgentWakeFifoGlobalCandidate,
         ),
         (
             root.join("tests/test262-atomics-pause-global-parent.conf"),
@@ -4227,6 +4243,16 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "scoped candidate",
             TEST262_AGENT_FIFO_WAKE_ORDER_CANDIDATE_PROFILE_SHA256,
         ),
+        OxideProfileKind::AgentWakeFifoGlobalParent => verify_agent_wake_count_location_profile(
+            options,
+            "global parent",
+            TEST262_AGENT_WAKE_FIFO_GLOBAL_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::AgentWakeFifoGlobalCandidate => verify_agent_wake_count_location_profile(
+            options,
+            "global candidate",
+            TEST262_AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        ),
         OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
             options,
             "Atomics.pause global admission",
@@ -4581,6 +4607,8 @@ mod cli_tests {
         TEST262_AGENT_WAIT_BOUNDED_A_PARENT_PROFILE_SHA256,
         TEST262_AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE_SHA256,
         TEST262_AGENT_WAKE_COUNT_LOCATION_PARENT_PROFILE_SHA256,
+        TEST262_AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE_SHA256,
+        TEST262_AGENT_WAKE_FIFO_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_AGGREGATE_ERROR_PROFILE_SHA256, TEST262_ARGUMENT_SPREAD_PROFILE_SHA256,
         TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256, TEST262_ARRAY_BUFFER_PROFILE_SHA256,
@@ -5489,6 +5517,20 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::AgentFifoWakeOrderCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-wake-fifo-global-parent.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentWakeFifoGlobalParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-wake-fifo-global-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentWakeFifoGlobalCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-atomics-pause-global-parent.conf"))
@@ -9652,6 +9694,14 @@ mod cli_tests {
             (
                 "tests/test262-agent-wake-count-location-candidate.conf",
                 TEST262_AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-wake-fifo-global-parent.conf",
+                TEST262_AGENT_WAKE_FIFO_GLOBAL_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-wake-fifo-global-candidate.conf",
+                TEST262_AGENT_WAKE_FIFO_GLOBAL_CANDIDATE_PROFILE_SHA256,
             ),
         ] {
             for selection in [
