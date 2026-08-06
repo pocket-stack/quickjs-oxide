@@ -533,6 +533,14 @@ const TEST262_AGENT_WAKE_COUNT_LOCATION_ACTIVATION_SHA256: &str =
     "8502e6fa50a94a7e9eef34310535f29906c2d9b1eaa49e8fe0d9388fa0e4c4f4";
 const TEST262_AGENT_WAKE_COUNT_LOCATION_RETAINED_SHA256: &str =
     "8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8";
+const TEST262_AGENT_FIFO_WAKE_ORDER_PARENT_PROFILE_SHA256: &str =
+    "3e378f7260dac9b5a70155cfbad411f282f7584300f96ca4e0be887f4e6254a0";
+const TEST262_AGENT_FIFO_WAKE_ORDER_CANDIDATE_PROFILE_SHA256: &str =
+    "196325f0899f6d570f9974bdb0428e444f29f5a93d377173d392f33f18dc99b9";
+const TEST262_AGENT_FIFO_WAKE_ORDER_UNIVERSE_SHA256: &str =
+    "8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8";
+const TEST262_AGENT_FIFO_WAKE_ORDER_ACTIVATION_SHA256: &str =
+    "8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8";
 const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
 const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -969,6 +977,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::AgentWaitBoundedAGlobalCandidate
                     | OxideProfileKind::AgentWakeCountLocationParent
                     | OxideProfileKind::AgentWakeCountLocationCandidate
+                    | OxideProfileKind::AgentFifoWakeOrderParent
+                    | OxideProfileKind::AgentFifoWakeOrderCandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1249,6 +1259,8 @@ enum OxideProfileKind {
     AgentWaitBoundedAGlobalCandidate,
     AgentWakeCountLocationParent,
     AgentWakeCountLocationCandidate,
+    AgentFifoWakeOrderParent,
+    AgentFifoWakeOrderCandidate,
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
@@ -1766,6 +1778,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-agent-wake-count-location-candidate.conf"),
             OxideProfileKind::AgentWakeCountLocationCandidate,
+        ),
+        (
+            root.join("tests/test262-agent-fifo-wake-order-parent.conf"),
+            OxideProfileKind::AgentFifoWakeOrderParent,
+        ),
+        (
+            root.join("tests/test262-agent-fifo-wake-order-candidate.conf"),
+            OxideProfileKind::AgentFifoWakeOrderCandidate,
         ),
         (
             root.join("tests/test262-atomics-pause-global-parent.conf"),
@@ -2540,6 +2560,88 @@ fn verify_agent_wake_count_location_profile(
         manifest,
         TEST262_AGENT_WAKE_COUNT_LOCATION_UNIVERSE_SHA256,
         &format!("Test262 agent wake/count/location {label} universe"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_agent_fifo_wake_order_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("Test262 agent FIFO wake-order {label} capability profile"),
+    )?;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifests = [
+        (
+            "tests/test262-agent-fifo-wake-order-universe.txt",
+            TEST262_AGENT_FIFO_WAKE_ORDER_UNIVERSE_SHA256,
+        ),
+        (
+            "tests/test262-agent-fifo-wake-order.txt",
+            TEST262_AGENT_FIFO_WAKE_ORDER_ACTIVATION_SHA256,
+        ),
+    ];
+    for (relative, sha256) in manifests {
+        verify_sha256(
+            &root.join(relative),
+            sha256,
+            &format!("Test262 agent FIFO wake-order {relative}"),
+        )?;
+    }
+
+    let load_manifest = |relative: &str| -> Result<BTreeSet<String>, String> {
+        let path = root.join(relative);
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        Ok(source.lines().map(str::to_owned).collect())
+    };
+    let universe = load_manifest("tests/test262-agent-fifo-wake-order-universe.txt")?;
+    let activation = load_manifest("tests/test262-agent-fifo-wake-order.txt")?;
+    if universe.len() != 4 || activation.len() != 4 || universe != activation {
+        return Err(
+            "Test262 agent FIFO wake-order manifests are not the exact 4-path activation universe"
+                .to_owned(),
+        );
+    }
+
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the Test262 agent FIFO wake-order {label} capability profile requires --all or its exact 4-path universe"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the Test262 agent FIFO wake-order {label} capability profile requires --all or its exact 4-path universe"
+        )
+    })?;
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve Test262 agent FIFO wake-order {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(root.join("tests/test262-agent-fifo-wake-order-universe.txt"))
+        .map_err(|error| {
+            format!("resolve pinned Test262 agent FIFO wake-order universe: {error}")
+        })?;
+    if actual != expected {
+        return Err(format!(
+            "the Test262 agent FIFO wake-order {label} capability profile requires --all or tests/test262-agent-fifo-wake-order-universe.txt, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_AGENT_FIFO_WAKE_ORDER_UNIVERSE_SHA256,
+        &format!("Test262 agent FIFO wake-order {label} universe"),
     )?;
     Ok(profile_sha256)
 }
@@ -4115,6 +4217,16 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
                 TEST262_AGENT_WAKE_COUNT_LOCATION_CANDIDATE_PROFILE_SHA256,
             )
         }
+        OxideProfileKind::AgentFifoWakeOrderParent => verify_agent_fifo_wake_order_profile(
+            options,
+            "scoped parent",
+            TEST262_AGENT_FIFO_WAKE_ORDER_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::AgentFifoWakeOrderCandidate => verify_agent_fifo_wake_order_profile(
+            options,
+            "scoped candidate",
+            TEST262_AGENT_FIFO_WAKE_ORDER_CANDIDATE_PROFILE_SHA256,
+        ),
         OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
             options,
             "Atomics.pause global admission",
@@ -4459,6 +4571,8 @@ mod cli_tests {
         TEST262_AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_AGENT_BROADCAST_A_PARENT_PROFILE_SHA256,
+        TEST262_AGENT_FIFO_WAKE_ORDER_CANDIDATE_PROFILE_SHA256,
+        TEST262_AGENT_FIFO_WAKE_ORDER_PARENT_PROFILE_SHA256,
         TEST262_AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
         TEST262_AGENT_STAGE_A_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE_SHA256,
@@ -5363,6 +5477,18 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::AgentWakeCountLocationCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-agent-fifo-wake-order-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::AgentFifoWakeOrderParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-fifo-wake-order-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentFifoWakeOrderCandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-atomics-pause-global-parent.conf"))
@@ -9560,6 +9686,69 @@ mod cli_tests {
                 [
                     "--manifest",
                     "tests/test262-agent-wait-bounded-a-retained.txt",
+                ],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let arguments = [
+                    "--suite",
+                    "suite",
+                    "--oxide-profile",
+                    profile,
+                    selection[0],
+                    selection[1],
+                    "--report",
+                    "report.tsv",
+                ];
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn agent_fifo_wake_order_profiles_require_exact_4_path_universe_or_all() {
+        for (profile, expected_sha256) in [
+            (
+                "tests/test262-agent-fifo-wake-order-parent.conf",
+                TEST262_AGENT_FIFO_WAKE_ORDER_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-fifo-wake-order-candidate.conf",
+                TEST262_AGENT_FIFO_WAKE_ORDER_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                [
+                    "--manifest",
+                    "tests/test262-agent-fifo-wake-order-universe.txt",
+                ],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_sha256);
+            }
+
+            for selection in [
+                ["--test", "test/built-ins/Atomics/notify/notify-in-order.js"],
+                ["--manifest", "tests/test262-agent-fifo-wake-order.txt"],
+                ["--manifest", "tests/test262-agent-wake-count-location.txt"],
+                [
+                    "--manifest",
+                    "tests/test262-agent-wake-count-location-universe.txt",
+                ],
+                [
+                    "--manifest",
+                    "tests/test262-agent-wake-count-location-retained.txt",
                 ],
                 ["--manifest", "Cargo.toml"],
             ] {

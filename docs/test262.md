@@ -6,6 +6,37 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3dq scoped agent FIFO wake-order admission
+
+R3dq admits only the exact four FIFO wake-order paths / eight sloppy-and-strict
+variants into scoped runner profiles. It changes neither runtime semantics nor
+the live global profile. The canonical universe hashes to
+`8e0fc31a034e1b76aff14e15bc1582ed820e8efb93bd633c173b3ccbf33ba5e8`.
+The parent is byte-identical to the R3dp candidate and hashes to
+`3e378f7260dac9b5a70155cfbad411f282f7584300f96ca4e0be887f4e6254a0`;
+the candidate adds only these four authenticated paths and hashes to
+`196325f0899f6d570f9974bdb0428e444f29f5a93d377173d392f33f18dc99b9`.
+
+Admission is bound independently at coordinator and worker boundaries to the
+canonical path, pinned source SHA-256, flags, ordered features, includes, and
+negative metadata. Only the canonical four-path universe or `--all` is
+accepted. `--test`, the R3dp 17- and 21-path manifests, an older byte-identical
+four-path manifest, and unrelated manifests remain fail-closed.
+
+The focused parent has eight `unsupported-host-agent` rows; the candidate has
+eight passes. Exact TSV and JSON joins therefore record eight
+unsupported-to-pass gains, no unchanged rows, and zero regressions. One
+hundred one-worker Oxide runs produce 800/800 passes, while 32 eight-worker
+runs produce 256/256 with byte-identical reports. Pinned QuickJS 2026-06-04
+passes the same eight variants across 100 runs, totaling 800/800 oracle
+passes. The gate replays the complete R3dp scoped gate as its predecessor.
+These results are scoped admission evidence, not a global promotion or a
+Feature Parity completion claim.
+
+```sh
+./scripts/test-test262-agent-fifo-wake-order.sh --check
+```
+
 ## R3dp scoped agent wake/count/location admission
 
 R3dp keeps the live global profile and runtime byte-for-byte outside this

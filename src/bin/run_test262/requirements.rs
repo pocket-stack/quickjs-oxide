@@ -43,7 +43,7 @@ struct AgentHostAdmission {
     cohort: &'static str,
 }
 
-const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 55] = [
+const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 59] = [
     AgentHostAdmission {
         path: "test/built-ins/Atomics/notify/bigint/notify-all-on-loc.js",
         source_sha256: "442a9e3af420e81107defd515e5bfe539a7a5a133e61797fad9a640e93439b3d",
@@ -79,6 +79,18 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 55] = [
         source_sha256: "0a68a903a51def1d8869c2c93fb7e3640bf6389f148482e5a4cb8bc42e7926d9",
         features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
         cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-in-order-one-time.js",
+        source_sha256: "9cdc624fc8932d14b137b5daf34bf27efedce16fb53a0f4ef94fcdd0f26af989",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent FIFO wake-order cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/notify/notify-in-order.js",
+        source_sha256: "9cdc624fc8932d14b137b5daf34bf27efedce16fb53a0f4ef94fcdd0f26af989",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent FIFO wake-order cohort",
     },
     AgentHostAdmission {
         path: "test/built-ins/Atomics/notify/notify-nan.js",
@@ -211,6 +223,12 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 55] = [
         source_sha256: "b02f89aa4a6fc7cc8e6f63c7761b95a2cfe08bd2bdb2483e6f9c4c0462975e95",
         features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
         cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/bigint/waiterlist-order-of-operations-is-fifo.js",
+        source_sha256: "bfa8cc8764efee31ea7bda7f25755853e5fbf3b109ddc72650e65c53058b3f88",
+        features: &["Atomics", "BigInt", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent FIFO wake-order cohort",
     },
     AgentHostAdmission {
         path: "test/built-ins/Atomics/wait/bigint/was-woken-before-timeout.js",
@@ -385,6 +403,12 @@ const AGENT_HOST_ADMISSIONS: [AgentHostAdmission; 55] = [
         source_sha256: "87e398dbfc8e4022331380d67325a2da98dea734dfed11158ab0e34e0f417ab3",
         features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
         cohort: "Test262 agent wake/count/location cohort",
+    },
+    AgentHostAdmission {
+        path: "test/built-ins/Atomics/wait/waiterlist-order-of-operations-is-fifo.js",
+        source_sha256: "6503e1b20e4c55d661c165020ee7b83a3cd35326fed0211358df41b67b2adda1",
+        features: &["Atomics", "SharedArrayBuffer", "TypedArray"],
+        cohort: "Test262 agent FIFO wake-order cohort",
     },
     AgentHostAdmission {
         path: "test/built-ins/Atomics/wait/was-woken-before-timeout.js",
@@ -1162,7 +1186,7 @@ mod tests {
 
     #[test]
     fn agent_host_admission_ledger_is_exact_sorted_and_metadata_frozen() {
-        assert_eq!(AGENT_HOST_ADMISSIONS.len(), 55);
+        assert_eq!(AGENT_HOST_ADMISSIONS.len(), 59);
         assert!(
             AGENT_HOST_ADMISSIONS
                 .windows(2)
@@ -1275,6 +1299,62 @@ mod tests {
         );
         let mut feature_shapes = BTreeSet::new();
         for admission in wake_count_location {
+            feature_shapes.insert(admission.features);
+            let exact = metadata(&[], admission.features, &["atomicsHelper.js"]);
+            assert!(agent_host_metadata_matches(&exact, admission));
+
+            let source_drift =
+                is_exact_agent_host_test(Path::new(admission.path), "/* source drift */", &exact)
+                    .unwrap_err();
+            assert!(source_drift.contains(admission.source_sha256));
+
+            let mut include_drift = exact.clone();
+            include_drift.includes.push("extra.js".to_owned());
+            assert!(!agent_host_metadata_matches(&include_drift, admission));
+
+            let mut flag_drift = exact.clone();
+            flag_drift.flags.insert("noStrict".to_owned());
+            assert!(!agent_host_metadata_matches(&flag_drift, admission));
+
+            let mut negative_drift = exact.clone();
+            negative_drift.negative = Some(Default::default());
+            assert!(!agent_host_metadata_matches(&negative_drift, admission));
+
+            let mut feature_drift = exact;
+            feature_drift.features.push("feature-drift".to_owned());
+            assert!(!agent_host_metadata_matches(&feature_drift, admission));
+        }
+        assert_eq!(feature_shapes.len(), 2);
+
+        let fifo_wake_order = AGENT_HOST_ADMISSIONS
+            .iter()
+            .filter(|admission| admission.cohort == "Test262 agent FIFO wake-order cohort")
+            .collect::<Vec<_>>();
+        assert_eq!(fifo_wake_order.len(), 4);
+        let source_ledger = fifo_wake_order
+            .iter()
+            .map(|admission| format!("{}\t{}\n", admission.path, admission.source_sha256))
+            .collect::<String>();
+        assert_eq!(
+            source_sha256(&source_ledger).unwrap(),
+            "6881f53503b504225342ba6611216642a6799f099255f7b6846b762b2865d358"
+        );
+        let metadata_ledger = fifo_wake_order
+            .iter()
+            .map(|admission| {
+                format!(
+                    "{}\tflags=-\tfeatures={}\tincludes=atomicsHelper.js\tnegative=-\n",
+                    admission.path,
+                    admission.features.join(",")
+                )
+            })
+            .collect::<String>();
+        assert_eq!(
+            source_sha256(&metadata_ledger).unwrap(),
+            "6f22656e524ec7736801c3e6a46d469c153da77437735d5fd348e0480c9ac8f7"
+        );
+        let mut feature_shapes = BTreeSet::new();
+        for admission in fifo_wake_order {
             feature_shapes.insert(admission.features);
             let exact = metadata(&[], admission.features, &["atomicsHelper.js"]);
             assert!(agent_host_metadata_matches(&exact, admission));

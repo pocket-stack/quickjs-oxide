@@ -4,6 +4,28 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dq scoped Test262 agent FIFO wake-order admission
+
+R3dq adds a runner-only admission for the exact four-path / eight-variant
+FIFO wake-order cohort. The runtime is unchanged, and the live global
+compatibility profile is unchanged. The scoped parent reports eight
+`unsupported-host-agent` outcomes; the candidate reports eight passes, so the
+exact transition contains eight gains and zero regressions.
+
+Both the coordinator and isolated worker fail closed unless the canonical
+path, pinned source SHA-256, and complete metadata all match. The runner
+accepts only the canonical four-path universe or `--all`; alternate paths,
+including an older byte-identical manifest, do not inherit admission. One
+hundred one-worker Oxide replays produce 800/800 passes, and 32 eight-worker
+replays produce another 256/256. Pinned QuickJS 2026-06-04 independently
+passes the same eight variants in each of 100 runs, for 800/800 oracle passes.
+The gate also replays the complete R3dp scoped receipt. This remains scoped
+evidence, not a global promotion or a Feature Parity completion claim.
+
+```sh
+./scripts/test-test262-agent-fifo-wake-order.sh --check
+```
+
 ## R3dp scoped Test262 agent wake/count/location admission
 
 R3dp adds a runner-only admission for 17 wake-count, default-count/index,

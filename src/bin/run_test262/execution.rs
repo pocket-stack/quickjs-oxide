@@ -815,6 +815,22 @@ mod tests {
             allow_agent_host: true,
         })
         .unwrap_err();
+
+        let fifo_wake_order_path =
+            PathBuf::from("test/built-ins/Atomics/notify/notify-in-order.js");
+        fs::write(
+            suite.join(&fifo_wake_order_path),
+            "/*---\nincludes: [atomicsHelper.js]\nfeatures: [Atomics, SharedArrayBuffer, TypedArray]\n---*/\n// drift\n",
+        )
+        .unwrap();
+        let fifo_wake_order_error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: fifo_wake_order_path,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: true,
+        })
+        .unwrap_err();
         fs::remove_dir_all(suite).unwrap();
         assert!(
             error.contains("agent broadcast cohort A source drifted"),
@@ -827,6 +843,10 @@ mod tests {
         assert!(
             wake_count_location_error.contains("agent wake/count/location cohort source drifted"),
             "{wake_count_location_error}"
+        );
+        assert!(
+            fifo_wake_order_error.contains("agent FIFO wake-order cohort source drifted"),
+            "{fifo_wake_order_error}"
         );
     }
 
