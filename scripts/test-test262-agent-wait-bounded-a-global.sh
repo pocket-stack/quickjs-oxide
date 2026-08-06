@@ -38,7 +38,7 @@ reuse_full_reports=${TEST262_REUSE_FULL_REPORTS:-false}
 runner_override=${TEST262_RUNNER:-}
 
 baseline_lines=124
-baseline_sha=42d8dc706c90075ebfe08a6bb003002b439fcaa3d1822f84411c761a2c811d0d
+baseline_sha=bc7644abbf932e9259e6d036e1763e5c2cc5efe6c28c28ad97649381ed896d0d
 
 usage() {
     printf 'usage: %s [--check|--full]\n' "${0##*/}"

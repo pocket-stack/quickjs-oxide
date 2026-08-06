@@ -475,7 +475,7 @@ done
     && "$stability_passes" == "$(value stability_passes)" ]] \
     || die 'bounded wait A aggregate stability counts drifted'
 
-"${MAKE:-make}" -B -C "$source_dir" run-test262 >&2
+[[ -x "$source_dir/run-test262" ]] || die 'authenticated QuickJS run-test262 oracle is missing'
 quickjs_files=()
 while IFS= read -r test_path; do
     quickjs_files+=("test262/$test_path")

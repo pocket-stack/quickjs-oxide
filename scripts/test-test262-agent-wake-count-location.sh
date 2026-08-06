@@ -263,7 +263,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3dp-scoped.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 
 check_file "$baseline" 113 \
-    27cea19736b14d8a082a3c81feb0de8ef4a868b66bb96f97c89ac9e6f4b59cbd
+    6780d507d3449e81f3f7285e336846b9ba6b4117121eb51b812d91068dce71b2
 [[ "$(value milestone)" == R3dp \
     && "$(value milestone_kind)" == scoped-runner-admission \
     && "$(value scope_semantics)" == notify-wake-count-and-waiter-location \
@@ -656,7 +656,7 @@ done
     && "$parallel_retained" == "$(value parallel_retained_outcomes)" ]] \
     || die 'wake/count/location parallel aggregate drifted'
 
-"${MAKE:-make}" -B -C "$source_dir" run-test262 >&2
+[[ -x "$source_dir/run-test262" ]] || die 'authenticated QuickJS run-test262 oracle is missing'
 quickjs_files=()
 while IFS= read -r test_path; do
     quickjs_files+=("test262/$test_path")

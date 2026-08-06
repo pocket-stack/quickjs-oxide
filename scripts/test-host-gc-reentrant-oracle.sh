@@ -66,12 +66,8 @@ verify_hash() {
 verify_hash "$fixture" "$fixture_sha256"
 verify_hash "$expected" "$expected_sha256"
 
-qjs_oracle=$("$script_dir/build-quickjs-oracle.sh")
-oracle_source=$(dirname -- "$qjs_oracle")
+oracle_source=$("$script_dir/build-quickjs-oracle.sh" --test262-oracles)
 oracle=$oracle_source/run-test262
-if [[ ! -x "$oracle" ]]; then
-    "${MAKE:-make}" -C "$oracle_source" run-test262 >&2
-fi
 if [[ ! -x "$oracle" ]]; then
     echo "error: pinned QuickJS run-test262 oracle is not executable: $oracle" >&2
     exit 1

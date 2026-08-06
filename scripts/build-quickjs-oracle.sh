@@ -15,14 +15,16 @@ oracle=$source_dir/qjs
 lock_dir=$cache/.quickjs-${version}.lock
 lock_wait_seconds=${QJS_ORACLE_LOCK_WAIT_SECONDS:-30}
 source_only=0
+test262_oracles=0
 
 usage() {
-    echo "usage: $0 [--source-only]" >&2
+    echo "usage: $0 [--source-only|--test262-oracles]" >&2
 }
 
 case ${1-} in
     "") ;;
     --source-only) source_only=1 ;;
+    --test262-oracles) test262_oracles=1 ;;
     *) usage; exit 2 ;;
 esac
 if [[ $# -gt 1 ]]; then
@@ -64,6 +66,8 @@ lock_owned=0
 work_dir=$cache/.quickjs-${version}.work.$lock_token
 archive_tmp=$cache/.quickjs-${version}.archive.$lock_token.tmp
 publish_tmp=$source_dir/.qjs.$lock_token.tmp
+runner_publish_tmp=$source_dir/.run-test262.$lock_token.tmp
+stage_source=
 
 release_lock() {
     if [[ $lock_owned -eq 1 && -d "$lock_dir" && ! -L "$lock_dir" && \
@@ -77,7 +81,7 @@ release_lock() {
 }
 
 cleanup() {
-    rm -f -- "$archive_tmp" "$publish_tmp" 2>/dev/null || true
+    rm -f -- "$archive_tmp" "$publish_tmp" "$runner_publish_tmp" 2>/dev/null || true
     rm -rf -- "$work_dir" 2>/dev/null || true
     release_lock
 }
@@ -227,6 +231,17 @@ if [[ -e "$source_dir" || -L "$source_dir" ]]; then
     authenticate_source "$stage_source" "$source_dir"
 fi
 
+validate_publish_destination() {
+    local destination=$1
+    local label=$2
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        if [[ ! -f "$destination" || -L "$destination" ]]; then
+            echo "error: refusing unsafe cached QuickJS $label destination: $destination" >&2
+            return 1
+        fi
+    fi
+}
+
 if [[ $source_only -eq 1 ]]; then
     if [[ $source_exists -eq 0 ]]; then
         mv -- "$stage_source" "$source_dir"
@@ -235,12 +250,52 @@ if [[ $source_only -eq 1 ]]; then
     exit 0
 fi
 
-"${MAKE:-make}" -C "$stage_source" qjs >&2
+if [[ $source_exists -eq 1 ]]; then
+    validate_publish_destination "$oracle" qjs
+    if [[ $test262_oracles -eq 1 ]]; then
+        validate_publish_destination "$source_dir/run-test262" run-test262
+    fi
+fi
+
+if [[ $test262_oracles -eq 1 ]]; then
+    "${MAKE:-make}" -C "$stage_source" qjs run-test262 >&2
+else
+    "${MAKE:-make}" -C "$stage_source" qjs >&2
+fi
 staged_oracle=$stage_source/qjs
 if [[ ! -f "$staged_oracle" || -L "$staged_oracle" || ! -x "$staged_oracle" ]]; then
     echo "error: QuickJS build did not produce an executable regular qjs" >&2
     exit 1
 fi
+
+if [[ $test262_oracles -eq 1 ]]; then
+    staged_runner=$stage_source/run-test262
+    staged_obj=$stage_source/.obj
+    if [[ ! -f "$staged_runner" || -L "$staged_runner" || ! -x "$staged_runner" ]]; then
+        echo "error: QuickJS build did not produce an executable regular run-test262" >&2
+        exit 1
+    fi
+    if [[ ! -d "$staged_obj" || -L "$staged_obj" ]]; then
+        echo "error: QuickJS build did not produce a regular .obj directory" >&2
+        exit 1
+    fi
+    while IFS= read -r -d '' obj_member; do
+        if [[ -L "$obj_member" || ( ! -d "$obj_member" && ! -f "$obj_member" ) ]]; then
+            echo "error: fresh QuickJS .obj contains an unsafe member: $obj_member" >&2
+            exit 1
+        fi
+    done < <(find "$staged_obj" -mindepth 1 -print0)
+fi
+
+verify_parent=$work_dir/verify
+mkdir -- "$verify_parent"
+tar -xJf "$archive" -C "$verify_parent"
+verify_source=$verify_parent/quickjs-${version}
+if [[ ! -d "$verify_source" || -L "$verify_source" ]]; then
+    echo "error: verified QuickJS archive did not reproduce the source tree" >&2
+    exit 1
+fi
+authenticate_source "$verify_source" "$stage_source"
 
 if [[ $source_exists -eq 0 ]]; then
     mv -- "$stage_source" "$source_dir"
@@ -250,7 +305,30 @@ else
         echo "error: failed to stage the QuickJS oracle executable" >&2
         exit 1
     fi
+    if [[ $test262_oracles -eq 1 ]]; then
+        cp -p -- "$staged_runner" "$runner_publish_tmp"
+        if [[ ! -f "$runner_publish_tmp" || -L "$runner_publish_tmp" || ! -x "$runner_publish_tmp" ]]; then
+            echo "error: failed to stage the QuickJS run-test262 executable" >&2
+            exit 1
+        fi
+    fi
     mv -f -- "$publish_tmp" "$oracle"
+    if [[ ! -f "$oracle" || -L "$oracle" || ! -x "$oracle" ]]; then
+        echo "error: published QuickJS qjs is not an executable regular file" >&2
+        exit 1
+    fi
+    if [[ $test262_oracles -eq 1 ]]; then
+        mv -f -- "$runner_publish_tmp" "$source_dir/run-test262"
+        if [[ ! -f "$source_dir/run-test262" || -L "$source_dir/run-test262" || \
+              ! -x "$source_dir/run-test262" ]]; then
+            echo "error: published QuickJS run-test262 is not an executable regular file" >&2
+            exit 1
+        fi
+    fi
 fi
 
-printf '%s\n' "$oracle"
+if [[ $test262_oracles -eq 1 ]]; then
+    printf '%s\n' "$source_dir"
+else
+    printf '%s\n' "$oracle"
+fi

@@ -90,7 +90,8 @@ assert_no_internal_debris() {
            -o -name ".quickjs-${version}.lock" \) -print)
     [[ -z "$debris" ]] || fail "cache contains internal debris: $debris"
     if [[ -d "$cache/$source_name" ]]; then
-        debris=$(find "$cache/$source_name" -maxdepth 1 -name '.qjs.*.tmp' -print)
+        debris=$(find "$cache/$source_name" -maxdepth 1 \
+            \( -name '.qjs.*.tmp' -o -name '.run-test262.*.tmp' \) -print)
         [[ -z "$debris" ]] || fail "source contains publish debris: $debris"
     fi
 }
@@ -99,15 +100,30 @@ fake_make=$test_root/fake-make-success.sh
 cat >"$fake_make" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# -eq 3 && $1 == -C && $3 == qjs ]]
+[[ $# -ge 3 && $1 == -C ]]
 source_dir=$2
 [[ ! -e "$source_dir/.obj/poison.d" ]]
+[[ ! -e "$source_dir/unicode/UnicodeData.txt" ]]
 if [[ -n ${FAKE_MAKE_LOG:-} ]]; then
     printf 'build %s\n' "$source_dir" >>"$FAKE_MAKE_LOG"
 fi
 sleep "${FAKE_MAKE_SLEEP:-0}"
-printf '%s\n' '#!/usr/bin/env sh' '# built-from-clean-archive-stage' 'exit 0' >"$source_dir/qjs"
-chmod +x "$source_dir/qjs"
+shift 2
+for target in "$@"; do
+    case $target in
+        qjs)
+            printf '%s\n' '#!/usr/bin/env sh' '# built-from-clean-archive-stage' 'exit 0' >"$source_dir/qjs"
+            chmod +x "$source_dir/qjs"
+            ;;
+        run-test262)
+            printf '%s\n' '#!/usr/bin/env sh' '# built-run-test262-from-clean-stage' 'exit 0' >"$source_dir/run-test262"
+            chmod +x "$source_dir/run-test262"
+            mkdir -p "$source_dir/.obj"
+            printf 'trusted object\n' >"$source_dir/.obj/trusted.o"
+            ;;
+        *) exit 64 ;;
+    esac
+done
 EOF
 chmod +x "$fake_make"
 
@@ -158,7 +174,7 @@ printf 'truncated archive\n' >"$output"
 EOF
 chmod +x "$bad_curl_dir/curl"
 
-echo "[1/13] cold extraction, atomic archive download, and warm offline source-only" >&2
+echo "[1/14] cold extraction, atomic archive download, and warm offline source-only" >&2
 download_cache=$test_root/download
 mkdir -- "$download_cache"
 assert_success_path "$download_cache/$source_name" env \
@@ -181,7 +197,7 @@ assert_success_path "$download_cache/$source_name" env \
     "$build_script" --source-only
 [[ ! -e "$offline_marker" ]] || fail "warm source-only attempted network access"
 
-echo "[2/13] cached archive checksum failure" >&2
+echo "[2/14] cached archive checksum failure" >&2
 bad_archive_cache=$(new_cache bad-archive)
 printf 'corruption\n' >>"$bad_archive_cache/$archive_name"
 assert_failure "archive checksum mismatch" env \
@@ -189,7 +205,7 @@ assert_failure "archive checksum mismatch" env \
 [[ ! -e "$bad_archive_cache/$source_name" ]] || fail "bad archive published source"
 assert_no_internal_debris "$bad_archive_cache"
 
-echo "[3/13] failed download is never published" >&2
+echo "[3/14] failed download is never published" >&2
 bad_download_cache=$test_root/bad-download
 mkdir -- "$bad_download_cache"
 assert_failure "archive checksum mismatch" env PATH="$bad_curl_dir:$PATH" \
@@ -197,21 +213,21 @@ assert_failure "archive checksum mismatch" env PATH="$bad_curl_dir:$PATH" \
 [[ ! -e "$bad_download_cache/$archive_name" ]] || fail "bad download was published"
 assert_no_internal_debris "$bad_download_cache"
 
-echo "[4/13] changed archive-provided source member" >&2
+echo "[4/14] changed archive-provided source member" >&2
 changed_cache=$(prime_cache changed-source)
 printf 'tampered\n' >>"$changed_cache/$source_name/VERSION"
 assert_failure "source differs from verified archive" env \
     QJS_ORACLE_CACHE="$changed_cache" "$build_script" --source-only
 assert_no_internal_debris "$changed_cache"
 
-echo "[5/13] deleted archive-provided source member" >&2
+echo "[5/14] deleted archive-provided source member" >&2
 deleted_cache=$(prime_cache deleted-source)
 rm -- "$deleted_cache/$source_name/qjs.c"
 assert_failure "source member has wrong type" env \
     QJS_ORACLE_CACHE="$deleted_cache" "$build_script" --source-only
 assert_no_internal_debris "$deleted_cache"
 
-echo "[6/13] symlink substituted for archive-provided source member" >&2
+echo "[6/14] symlink substituted for archive-provided source member" >&2
 symlink_cache=$(prime_cache symlink-source)
 rm -- "$symlink_cache/$source_name/qjs.c"
 ln -s VERSION "$symlink_cache/$source_name/qjs.c"
@@ -219,7 +235,7 @@ assert_failure "source member has wrong type" env \
     QJS_ORACLE_CACHE="$symlink_cache" "$build_script" --source-only
 assert_no_internal_debris "$symlink_cache"
 
-echo "[7/13] partial persistent source is rejected" >&2
+echo "[7/14] partial persistent source is rejected" >&2
 partial_cache=$(new_cache partial-source)
 mkdir -- "$partial_cache/$source_name"
 cp -- "$download_cache/$source_name/VERSION" "$partial_cache/$source_name/VERSION"
@@ -227,7 +243,7 @@ assert_failure "source member has wrong type" env \
     QJS_ORACLE_CACHE="$partial_cache" "$build_script" --source-only
 assert_no_internal_debris "$partial_cache"
 
-echo "[8/13] fake qjs and dependency files are ignored by a clean warm rebuild" >&2
+echo "[8/14] fake qjs and dependency files are ignored by a clean warm rebuild" >&2
 poison_cache=$(prime_cache poisoned-build)
 mkdir -- "$poison_cache/$source_name/.obj"
 printf 'include attacker-controlled dependency\n' >"$poison_cache/$source_name/.obj/poison.d"
@@ -243,7 +259,7 @@ grep -F '# built-from-clean-archive-stage' "$poison_cache/$source_name/qjs" >/de
 [[ -f "$poison_cache/$source_name/.obj/poison.d" ]] || fail "test poison unexpectedly disappeared"
 assert_no_internal_debris "$poison_cache"
 
-echo "[9/13] active lock waits for a bounded interval" >&2
+echo "[9/14] active lock waits for a bounded interval" >&2
 active_cache=$(new_cache active-lock)
 active_lock=$active_cache/.quickjs-${version}.lock
 mkdir -- "$active_lock"
@@ -255,7 +271,7 @@ assert_failure "timed out waiting for active oracle lock" env \
 rm -- "$active_lock/owner"
 rmdir -- "$active_lock"
 
-echo "[10/13] stale lock and invalid lock wait fail closed" >&2
+echo "[10/14] stale lock and invalid lock wait fail closed" >&2
 stale_cache=$(new_cache stale-lock)
 stale_lock=$stale_cache/.quickjs-${version}.lock
 mkdir -- "$stale_lock"
@@ -270,7 +286,7 @@ assert_failure "must be between 0 and 3600 seconds" env \
     QJS_ORACLE_LOCK_WAIT_SECONDS=999999999999999999999999999999999999 \
     QJS_ORACLE_CACHE="$stale_cache" "$build_script" --source-only
 
-echo "[11/13] two concurrent normal calls serialize and each clean-build" >&2
+echo "[11/14] two concurrent normal calls serialize and each clean-build" >&2
 concurrent_cache=$(prime_cache concurrent)
 concurrent_log=$test_root/concurrent-make.log
 out_a=$test_root/concurrent-a.out
@@ -296,7 +312,7 @@ expected_oracle=$concurrent_cache/$source_name/qjs
 [[ $(awk 'END { print NR }' "$concurrent_log") == 2 ]] || fail "concurrent calls did not each clean-build"
 assert_no_internal_debris "$concurrent_cache"
 
-echo "[12/13] build failures leave no partial publish" >&2
+echo "[12/14] build failures leave no partial publish" >&2
 cold_failure_cache=$(new_cache cold-build-failure)
 assert_failure "fake-make-failure" env MAKE="$failing_make" \
     QJS_ORACLE_CACHE="$cold_failure_cache" "$build_script"
@@ -312,7 +328,32 @@ grep -F '# prior-qjs' "$warm_failure_cache/$source_name/qjs" >/dev/null || \
     fail "failed warm build replaced the prior qjs"
 assert_no_internal_debris "$warm_failure_cache"
 
-echo "[13/13] fresh normal build publishes source and qjs without network" >&2
+qjs_directory_cache=$(prime_cache qjs-directory)
+mkdir -- "$qjs_directory_cache/$source_name/qjs"
+assert_failure "unsafe cached QuickJS qjs destination" env MAKE="$fake_make" \
+    QJS_ORACLE_CACHE="$qjs_directory_cache" "$build_script"
+[[ -z $(find "$qjs_directory_cache/$source_name/qjs" -mindepth 1 -print) ]] || \
+    fail "qjs directory destination received a nested temp file"
+assert_no_internal_debris "$qjs_directory_cache"
+qjs_symlink_cache=$(prime_cache qjs-symlink)
+ln -s . "$qjs_symlink_cache/$source_name/qjs"
+assert_failure "unsafe cached QuickJS qjs destination" env MAKE="$fake_make" \
+    QJS_ORACLE_CACHE="$qjs_symlink_cache" "$build_script"
+assert_no_internal_debris "$qjs_symlink_cache"
+runner_directory_cache=$(prime_cache runner-directory)
+mkdir -- "$runner_directory_cache/$source_name/run-test262"
+assert_failure "unsafe cached QuickJS run-test262 destination" env MAKE="$fake_make" \
+    QJS_ORACLE_CACHE="$runner_directory_cache" "$build_script" --test262-oracles
+[[ -z $(find "$runner_directory_cache/$source_name/run-test262" -mindepth 1 -print) ]] || \
+    fail "runner directory destination received a nested temp file"
+assert_no_internal_debris "$runner_directory_cache"
+runner_symlink_cache=$(prime_cache runner-symlink)
+ln -s . "$runner_symlink_cache/$source_name/run-test262"
+assert_failure "unsafe cached QuickJS run-test262 destination" env MAKE="$fake_make" \
+    QJS_ORACLE_CACHE="$runner_symlink_cache" "$build_script" --test262-oracles
+assert_no_internal_debris "$runner_symlink_cache"
+
+echo "[13/14] fresh normal build publishes source and qjs without network" >&2
 fresh_cache=$(new_cache fresh-normal)
 fresh_make_log=$test_root/fresh-make.log
 rm -f -- "$offline_marker"
@@ -327,5 +368,42 @@ assert_success_path "$fresh_cache/$source_name/qjs" env \
 [[ $(awk 'END { print NR }' "$fresh_make_log") == 1 ]] || \
     fail "fresh normal call did not perform exactly one clean build"
 assert_no_internal_debris "$fresh_cache"
+
+echo "[14/14] combined mode fresh-builds both binaries without consuming extras" >&2
+cold_combined_cache=$(new_cache cold-combined)
+cold_combined_source=$cold_combined_cache/$source_name
+assert_success_path "$cold_combined_source" env MAKE="$fake_make" \
+    QJS_ORACLE_CACHE="$cold_combined_cache" "$build_script" --test262-oracles
+[[ -f "$cold_combined_source/qjs" && -x "$cold_combined_source/qjs" && \
+   ! -L "$cold_combined_source/qjs" ]] || fail "cold combined mode did not publish qjs"
+[[ -f "$cold_combined_source/run-test262" && -x "$cold_combined_source/run-test262" && \
+   ! -L "$cold_combined_source/run-test262" ]] || fail "cold combined mode did not publish run-test262"
+[[ -f "$cold_combined_source/.obj/trusted.o" ]] || fail "cold combined source lacks fresh build objects"
+assert_no_internal_debris "$cold_combined_cache"
+combined_cache=$(prime_cache combined-generation)
+combined_source=$combined_cache/$source_name
+mkdir -p "$combined_source/test262" "$combined_source/unicode" "$combined_source/.obj"
+printf 'preserved suite\n' >"$combined_source/test262/marker"
+printf 'wildcard poison\n' >"$combined_source/unicode/UnicodeData.txt"
+printf 'dependency poison\n' >"$combined_source/.obj/poison.d"
+printf 'old qjs\n' >"$combined_source/qjs"
+printf 'old runner\n' >"$combined_source/run-test262"
+chmod +x "$combined_source/qjs" "$combined_source/run-test262"
+combined_log=$test_root/combined-make.log
+assert_success_path "$combined_source" env MAKE="$fake_make" \
+    FAKE_MAKE_LOG="$combined_log" QJS_ORACLE_CACHE="$combined_cache" \
+    "$build_script" --test262-oracles
+[[ $(awk 'END { print NR }' "$combined_log") == 1 ]] || \
+    fail "combined mode did not perform exactly one clean build"
+grep -F '# built-from-clean-archive-stage' "$combined_source/qjs" >/dev/null || \
+    fail "combined mode reused qjs"
+grep -F '# built-run-test262-from-clean-stage' "$combined_source/run-test262" >/dev/null || \
+    fail "combined mode reused run-test262"
+[[ -e "$combined_source/.obj/poison.d" ]] || fail "combined mode unexpectedly replaced persistent .obj"
+[[ -e "$combined_source/unicode/UnicodeData.txt" ]] || \
+    fail "combined mode unexpectedly removed persistent wildcard extras"
+grep -F 'preserved suite' "$combined_source/test262/marker" >/dev/null || \
+    fail "combined mode did not preserve Test262"
+assert_no_internal_debris "$combined_cache"
 
 echo "PASS: isolated QuickJS oracle cache hardening" >&2
