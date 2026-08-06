@@ -46,3 +46,6 @@ tests/test262-agent-broadcast-a-transitions.tsv whitespace=-blank-at-eol
 tests/test262-agent-broadcast-a-global-parent.tsv whitespace=-blank-at-eol
 tests/test262-agent-broadcast-a-global-candidate.tsv whitespace=-blank-at-eol
 tests/test262-agent-broadcast-a-global-transitions.tsv whitespace=-blank-at-eol
+tests/test262-agent-wait-bounded-a-parent.tsv whitespace=-blank-at-eol
+tests/test262-agent-wait-bounded-a-candidate.tsv whitespace=-blank-at-eol
+tests/test262-agent-wait-bounded-a-transitions.tsv whitespace=-blank-at-eol

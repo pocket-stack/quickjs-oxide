@@ -509,6 +509,16 @@ const TEST262_AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "37cb029eda8e3abe97a17c93c1c3fe95e6aaed330de09d41b5941e9a6c3784f8";
 const TEST262_AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
     "f48a059f97fb7fdb1e2b883221756fa47343de3b4b06f85923eef81c3d98a955";
+const TEST262_AGENT_WAIT_BOUNDED_A_PARENT_PROFILE_SHA256: &str =
+    "4f2a285a77e31815a94266ddcdafac7df9c8a148c0236be4e60968590999e706";
+const TEST262_AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE_SHA256: &str =
+    "9e20cfcb8b4b6f23116079b9ad12b823e1845688efbc1b81de97f9c28e2f5fb9";
+const TEST262_AGENT_WAIT_BOUNDED_A_UNIVERSE_SHA256: &str =
+    "6c723dcea7ff0f92b79b5d1f8218e74d209d0206a3e6c111f129ac4321a1497f";
+const TEST262_AGENT_WAIT_BOUNDED_A_ACTIVATION_SHA256: &str =
+    "239bcf25fa58c9081c7e4bc9bfd831862225691490ede631d585a99bd8995eb0";
+const TEST262_AGENT_WAIT_BOUNDED_A_RETAINED_SHA256: &str =
+    "76dc724e39d9eab3c707150ac5811712c543b71ab650339ba559e9a5429c7ea4";
 const TEST262_ATOMICS_PAUSE_GLOBAL_PARENT_PROFILE_SHA256: &str =
     "7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775";
 const TEST262_ATOMICS_PAUSE_GLOBAL_CANDIDATE_PROFILE_SHA256: &str =
@@ -939,6 +949,8 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::AgentBroadcastACandidate
                     | OxideProfileKind::AgentBroadcastAGlobalParent
                     | OxideProfileKind::AgentBroadcastAGlobalCandidate
+                    | OxideProfileKind::AgentWaitBoundedAParent
+                    | OxideProfileKind::AgentWaitBoundedACandidate
             ) {
                 return Err(format!(
                     "Test262 agent host opt-in is unavailable to profile {:?}",
@@ -1213,6 +1225,8 @@ enum OxideProfileKind {
     AgentBroadcastACandidate,
     AgentBroadcastAGlobalParent,
     AgentBroadcastAGlobalCandidate,
+    AgentWaitBoundedAParent,
+    AgentWaitBoundedACandidate,
     AtomicsPauseGlobalParent,
     AtomicsPauseGlobalCandidate,
     ErrorRegExpTypedArrayGlobalCandidate,
@@ -1706,6 +1720,14 @@ fn identify_oxide_profile(path: &Path) -> Result<OxideProfileKind, String> {
         (
             root.join("tests/test262-agent-broadcast-a-global-candidate.conf"),
             OxideProfileKind::AgentBroadcastAGlobalCandidate,
+        ),
+        (
+            root.join("tests/test262-agent-wait-bounded-a-parent.conf"),
+            OxideProfileKind::AgentWaitBoundedAParent,
+        ),
+        (
+            root.join("tests/test262-agent-wait-bounded-a-candidate.conf"),
+            OxideProfileKind::AgentWaitBoundedACandidate,
         ),
         (
             root.join("tests/test262-atomics-pause-global-parent.conf"),
@@ -2287,6 +2309,102 @@ fn verify_agent_broadcast_a_profile(
         manifest,
         TEST262_AGENT_BROADCAST_A_UNIVERSE_SHA256,
         &format!("Test262 agent broadcast cohort A {label} universe"),
+    )?;
+    Ok(profile_sha256)
+}
+
+fn verify_agent_wait_bounded_a_profile(
+    options: &CoordinatorOptions,
+    label: &str,
+    profile_sha256: &'static str,
+) -> Result<&'static str, String> {
+    verify_sha256(
+        &options.oxide_profile,
+        profile_sha256,
+        &format!("Test262 agent bounded wait cohort A {label} capability profile"),
+    )?;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifests = [
+        (
+            "tests/test262-agent-wait-bounded-a-universe.txt",
+            TEST262_AGENT_WAIT_BOUNDED_A_UNIVERSE_SHA256,
+        ),
+        (
+            "tests/test262-agent-wait-bounded-a.txt",
+            TEST262_AGENT_WAIT_BOUNDED_A_ACTIVATION_SHA256,
+        ),
+        (
+            "tests/test262-agent-wait-bounded-a-retained.txt",
+            TEST262_AGENT_WAIT_BOUNDED_A_RETAINED_SHA256,
+        ),
+    ];
+    for (relative, sha256) in manifests {
+        verify_sha256(
+            &root.join(relative),
+            sha256,
+            &format!("Test262 agent bounded wait cohort A {relative}"),
+        )?;
+    }
+
+    let load_manifest = |relative: &str| -> Result<BTreeSet<String>, String> {
+        let path = root.join(relative);
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        Ok(source.lines().map(str::to_owned).collect())
+    };
+    let universe = load_manifest("tests/test262-agent-wait-bounded-a-universe.txt")?;
+    let activation = load_manifest("tests/test262-agent-wait-bounded-a.txt")?;
+    let retained = load_manifest("tests/test262-agent-wait-bounded-a-retained.txt")?;
+    let partition = activation
+        .union(&retained)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if universe.len() != 43
+        || activation.len() != 22
+        || retained.len() != 21
+        || !activation.is_disjoint(&retained)
+        || partition != universe
+    {
+        return Err(
+            "Test262 agent bounded wait cohort A manifests are not the exact 22 + 21 = 43 partition"
+                .to_owned(),
+        );
+    }
+
+    if !options.tests.is_empty() {
+        return Err(format!(
+            "the Test262 agent bounded wait cohort A {label} capability profile requires --all or its exact 43-path universe"
+        ));
+    }
+    if options.all {
+        return Ok(profile_sha256);
+    }
+    let manifest = options.manifest.as_ref().ok_or_else(|| {
+        format!(
+            "the Test262 agent bounded wait cohort A {label} capability profile requires --all or its exact 43-path universe"
+        )
+    })?;
+    let actual = fs::canonicalize(manifest).map_err(|error| {
+        format!(
+            "resolve Test262 agent bounded wait cohort A {label} manifest {}: {error}",
+            manifest.display()
+        )
+    })?;
+    let expected = fs::canonicalize(root.join("tests/test262-agent-wait-bounded-a-universe.txt"))
+        .map_err(|error| {
+        format!("resolve pinned Test262 agent bounded wait cohort A universe: {error}")
+    })?;
+    if actual != expected {
+        return Err(format!(
+            "the Test262 agent bounded wait cohort A {label} capability profile requires --all or tests/test262-agent-wait-bounded-a-universe.txt, found {}",
+            manifest.display()
+        ));
+    }
+    verify_sha256(
+        manifest,
+        TEST262_AGENT_WAIT_BOUNDED_A_UNIVERSE_SHA256,
+        &format!("Test262 agent bounded wait cohort A {label} universe"),
     )?;
     Ok(profile_sha256)
 }
@@ -3830,6 +3948,16 @@ fn verify_oxide_profile(options: &CoordinatorOptions) -> Result<&'static str, St
             "global candidate",
             TEST262_AGENT_BROADCAST_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
         ),
+        OxideProfileKind::AgentWaitBoundedAParent => verify_agent_wait_bounded_a_profile(
+            options,
+            "scoped parent",
+            TEST262_AGENT_WAIT_BOUNDED_A_PARENT_PROFILE_SHA256,
+        ),
+        OxideProfileKind::AgentWaitBoundedACandidate => verify_agent_wait_bounded_a_profile(
+            options,
+            "scoped candidate",
+            TEST262_AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE_SHA256,
+        ),
         OxideProfileKind::AtomicsPauseGlobalParent => verify_tag_transition_profile(
             options,
             "Atomics.pause global admission",
@@ -4175,7 +4303,9 @@ mod cli_tests {
         TEST262_AGENT_BROADCAST_A_GLOBAL_PARENT_PROFILE_SHA256,
         TEST262_AGENT_BROADCAST_A_PARENT_PROFILE_SHA256,
         TEST262_AGENT_STAGE_A_GLOBAL_CANDIDATE_PROFILE_SHA256,
-        TEST262_AGENT_STAGE_A_GLOBAL_PARENT_PROFILE_SHA256, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
+        TEST262_AGENT_STAGE_A_GLOBAL_PARENT_PROFILE_SHA256,
+        TEST262_AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE_SHA256,
+        TEST262_AGENT_WAIT_BOUNDED_A_PARENT_PROFILE_SHA256, TEST262_AGGREGATE_ERROR_PROFILE_SHA256,
         TEST262_ARGUMENT_SPREAD_PROFILE_SHA256, TEST262_ARRAY_ASSIGNMENT_FLAT_PROFILE_SHA256,
         TEST262_ARRAY_BINDING_FLAT_PROFILE_SHA256, TEST262_ARRAY_BINDING_NESTED_PROFILE_SHA256,
         TEST262_ARRAY_BUFFER_PROFILE_SHA256, TEST262_ASYNC_ARROW_CORE_PROFILE_SHA256,
@@ -5031,6 +5161,18 @@ mod cli_tests {
             ))
             .unwrap(),
             OxideProfileKind::AgentBroadcastAGlobalCandidate
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new("tests/test262-agent-wait-bounded-a-parent.conf"))
+                .unwrap(),
+            OxideProfileKind::AgentWaitBoundedAParent
+        );
+        assert_eq!(
+            identify_oxide_profile(Path::new(
+                "tests/test262-agent-wait-bounded-a-candidate.conf"
+            ))
+            .unwrap(),
+            OxideProfileKind::AgentWaitBoundedACandidate
         );
         assert_eq!(
             identify_oxide_profile(Path::new("tests/test262-atomics-pause-global-parent.conf"))
@@ -9096,6 +9238,65 @@ mod cli_tests {
                     "test/built-ins/Atomics/notify/notify-with-no-agents-waiting.js",
                 ],
                 ["--manifest", "tests/test262-agent-broadcast-a.txt"],
+                ["--manifest", "tests/test262-agent-broadcast-a-retained.txt"],
+                ["--manifest", "Cargo.toml"],
+            ] {
+                let arguments = [
+                    "--suite",
+                    "suite",
+                    "--oxide-profile",
+                    profile,
+                    selection[0],
+                    selection[1],
+                    "--report",
+                    "report.tsv",
+                ];
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert!(verify_oxide_profile(&options).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn agent_wait_bounded_a_profiles_require_exact_43_path_universe_or_all() {
+        for (profile, expected_sha256) in [
+            (
+                "tests/test262-agent-wait-bounded-a-parent.conf",
+                TEST262_AGENT_WAIT_BOUNDED_A_PARENT_PROFILE_SHA256,
+            ),
+            (
+                "tests/test262-agent-wait-bounded-a-candidate.conf",
+                TEST262_AGENT_WAIT_BOUNDED_A_CANDIDATE_PROFILE_SHA256,
+            ),
+        ] {
+            for selection in [
+                [
+                    "--manifest",
+                    "tests/test262-agent-wait-bounded-a-universe.txt",
+                ],
+                ["--all", ""],
+            ] {
+                let mut arguments =
+                    vec!["--suite", "suite", "--oxide-profile", profile, selection[0]];
+                if !selection[1].is_empty() {
+                    arguments.push(selection[1]);
+                }
+                arguments.extend(["--report", "report.tsv"]);
+                let Invocation::Coordinator(options) = parse(&arguments).unwrap() else {
+                    panic!("coordinator arguments selected another invocation");
+                };
+                assert_eq!(verify_oxide_profile(&options).unwrap(), expected_sha256);
+            }
+
+            for selection in [
+                ["--test", "test/built-ins/Atomics/notify/negative-count.js"],
+                ["--manifest", "tests/test262-agent-wait-bounded-a.txt"],
+                [
+                    "--manifest",
+                    "tests/test262-agent-wait-bounded-a-retained.txt",
+                ],
                 ["--manifest", "tests/test262-agent-broadcast-a-retained.txt"],
                 ["--manifest", "Cargo.toml"],
             ] {

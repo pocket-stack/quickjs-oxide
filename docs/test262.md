@@ -6,6 +6,63 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-06.
 
+## R3do scoped bounded agent-wait cohort A
+
+R3do admits no new global capability. It creates a scoped runner receipt for
+the bounded timeout/no-spurious subset of R3dn's 43 retained agent paths. The
+43-path universe hashes to
+`6c723dcea7ff0f92b79b5d1f8218e74d209d0206a3e6c111f129ac4321a1497f`
+and is byte-identical to the R3dn retained manifest. Its exact disjoint
+partition is 22 activation paths hashing to
+`239bcf25fa58c9081c7e4bc9bfd831862225691490ede631d585a99bd8995eb0`
+and 21 retained paths hashing to
+`76dc724e39d9eab3c707150ac5811712c543b71ab650339ba559e9a5429c7ea4`.
+The activation source ledger hashes to
+`79105013edd054a045fe16f3de55fe1b5fb233e373ac9052c1213f1c4bcea04d`.
+
+The activation inventory consists of three zero-count notification tests,
+nine Int32 and nine BigInt64 no-spurious-wakeup tests, and one true-timeout
+coercion test. Every path has exactly `atomicsHelper.js`, empty flags, no
+negative expectation, and its pinned ordered feature list. Admissions are
+bound to exact path, source SHA-256, and that complete metadata shape. The
+coordinator performs this validation while planning, and the isolated worker
+rereads and revalidates the source and metadata before installing the agent
+host.
+
+The scoped parent is byte-identical to the R3dn broadcast candidate and hashes
+to
+`4f2a285a77e31815a94266ddcdafac7df9c8a148c0236be4e60968590999e706`.
+The scoped candidate adds only the 22 activation paths and hashes to
+`9e20cfcb8b4b6f23116079b9ad12b823e1845688efbc1b81de97f9c28e2f5fb9`.
+Both profiles require either `--all` or the canonical 43-path manifest.
+Selection by `--test`, either 22/21 submanifest, an unrelated manifest, or the
+same universe bytes under the R3dn predecessor path is rejected.
+
+The parent vector contains 86 `unsupported-host-agent` rows. The candidate
+contains 44 passes and 42 retained unsupported rows. TSV and JSON result rows
+join exactly on all 86 path/variant keys; activation changes are exactly 44
+unsupported-to-pass gains, retained rows are byte-identical, and there are no
+regressions. The parent TSV/JSONL hashes are
+`50f600ce2bf37ca20e76e390a79d176ee819568517abf9bea577f7bb5aae19ab`
+and
+`ca343931edeb266a06dec6dba31dda24b1f97843a66cef2e998a470a94554f3d`;
+the candidate hashes are
+`31a867b732145c44e351e2691ae3ba0dc20e2efc5f3f1d0ce042d97cf83aaf12`
+and
+`904192d569373232dafddc3a7e1935ffb35c7d01b169b1baa933517ca6ce8eb3`.
+The exhaustive transition hashes to
+`37590a163b6a4d6acd0279d3faa05f37d3ff5bc194df1fb05d76b07220f6c33b`.
+
+Twenty byte-identical single-worker candidate replays cover 880 runnable
+variants with 880 passes and keep all 840 retained outcomes fail-closed.
+Pinned QuickJS 2026-06-04 passes the same activation cohort 44/44. This
+milestone changes no runtime waiter semantics and leaves README,
+`compat/test262-oxide.conf`, and current-global receipts at R3dn.
+
+```sh
+./scripts/test-test262-agent-wait-bounded-a.sh --check
+```
+
 ## R3dn global agent broadcast cohort A admission
 
 After the scoped implementation receipt below was frozen, R3dn promoted only

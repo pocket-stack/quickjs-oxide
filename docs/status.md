@@ -4,6 +4,44 @@ Last audited: 2026-08-06. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3do scoped Test262 bounded agent-wait cohort A
+
+R3do adds a runner-only, source- and metadata-authenticated admission for 22
+bounded timeout and no-spurious-wakeup agent tests. It does not change the
+runtime waiter implementation or promote anything into the live global
+profile. The exact R3dn retained universe is partitioned into 22 activation
+paths / 44 variants and 21 retained paths / 42 variants; their SHA-256 values
+are
+`239bcf25fa58c9081c7e4bc9bfd831862225691490ede631d585a99bd8995eb0`
+and
+`76dc724e39d9eab3c707150ac5811712c543b71ab650339ba559e9a5429c7ea4`.
+
+The scoped parent and candidate profiles hash to
+`4f2a285a77e31815a94266ddcdafac7df9c8a148c0236be4e60968590999e706`
+and
+`9e20cfcb8b4b6f23116079b9ad12b823e1845688efbc1b81de97f9c28e2f5fb9`.
+They differ only by the exact 22-path host-agent allowlist. The runner accepts
+either profile only with the canonical 43-path universe or `--all`; `--test`,
+both submanifests, and a byte-identical manifest under the predecessor path
+remain fail-closed. The coordinator and isolated worker independently
+revalidate exact path, source SHA-256, and complete metadata before enabling
+the host.
+
+The parent reports 86 `unsupported-host-agent` outcomes. The candidate reports
+44 passes and 42 unchanged unsupported outcomes, for 44 pass gains, 42
+unchanged rows, and zero regressions. Its TSV/JSONL SHA-256 values are
+`31a867b732145c44e351e2691ae3ba0dc20e2efc5f3f1d0ce042d97cf83aaf12`
+and
+`904192d569373232dafddc3a7e1935ffb35c7d01b169b1baa933517ca6ce8eb3`.
+Twenty single-worker replays are byte-identical and cover 880/880 activation
+passes. Pinned QuickJS 2026-06-04 passes the same 22 paths in both modes,
+44/44. README, the live compatibility profile, and current-global receipts
+remain at R3dn.
+
+```sh
+./scripts/test-test262-agent-wait-bounded-a.sh --check
+```
+
 ## R3dn global Test262 agent broadcast cohort A admission
 
 R3dn now promotes the 15-path / 30-variant fixed-shared-buffer broadcast

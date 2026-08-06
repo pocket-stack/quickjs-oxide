@@ -782,10 +782,30 @@ mod tests {
             allow_agent_host: true,
         })
         .unwrap_err();
+
+        let bounded_wait_path =
+            PathBuf::from("test/built-ins/Atomics/wait/true-for-timeout-agent.js");
+        fs::write(
+            suite.join(&bounded_wait_path),
+            "/*---\nincludes: [atomicsHelper.js]\nfeatures: [Atomics, SharedArrayBuffer, TypedArray]\n---*/\n// drift\n",
+        )
+        .unwrap();
+        let bounded_wait_error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: bounded_wait_path,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: true,
+        })
+        .unwrap_err();
         fs::remove_dir_all(suite).unwrap();
         assert!(
             error.contains("agent broadcast cohort A source drifted"),
             "{error}"
+        );
+        assert!(
+            bounded_wait_error.contains("agent bounded wait cohort A source drifted"),
+            "{bounded_wait_error}"
         );
     }
 
