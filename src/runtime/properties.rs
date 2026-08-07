@@ -648,6 +648,9 @@ impl Runtime {
         if descriptor.is_mixed_descriptor() {
             return Err(PropertyDefinitionError::InvalidDescriptor.into());
         }
+        if let Some(defined) = self.define_module_namespace_export(object, key, descriptor)? {
+            return Ok(PropertyDefineOutcome::Defined(defined));
+        }
         if self.typed_array_is_object(object)?
             && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?
         {
@@ -1431,6 +1434,9 @@ impl Runtime {
         let _operation = self.operation();
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("object"));
+        }
+        if let Some(keys) = self.module_namespace_own_property_keys(object)? {
+            return Ok(keys);
         }
         let string_length = self.string_exotic_length(object)?;
         let typed_array_length = self

@@ -488,7 +488,9 @@ impl Runtime {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<NativeConversion<bool>, RuntimeError> {
-        if self.proxy_snapshot_if_any(object)?.is_none() {
+        if self.proxy_snapshot_if_any(object)?.is_none()
+            && !self.is_module_namespace_object(object)?
+        {
             return self
                 .has_own_property(object, key)
                 .map(NativeConversion::Value);
@@ -531,7 +533,9 @@ impl Runtime {
         object: &ObjectRef,
         key: &PropertyKey,
     ) -> Result<NativeConversion<bool>, RuntimeError> {
-        if self.proxy_snapshot_if_any(object)?.is_none() {
+        if self.proxy_snapshot_if_any(object)?.is_none()
+            && !self.is_module_namespace_object(object)?
+        {
             return self
                 .own_property_is_enumerable(object, key)
                 .map(NativeConversion::Value);
@@ -986,6 +990,11 @@ impl Runtime {
     ) -> Result<NativeConversion<InternalSetResult>, RuntimeError> {
         if self.proxy_snapshot_if_any(object)?.is_some() {
             return self.proxy_set(realm, object, key, value, receiver);
+        }
+        if self.is_module_namespace_object(object)? {
+            return Ok(NativeConversion::Value(InternalSetResult::Rejected(
+                PropertySetRejection::ReadOnly,
+            )));
         }
         if self.typed_array_is_object(object)?
             && let Some(numeric) = self.typed_array_canonical_numeric_index(key)?

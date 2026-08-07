@@ -3,14 +3,14 @@
 //! QuickJS publishes a `JSModuleDef` separately from the bytecode function it
 //! drives. This slice keeps that ownership boundary across Context-local
 //! caching, host resolution, live import cells, and iterative SCC
-//! linking/evaluation. Namespace objects, transitive exports, and top-level
-//! await remain explicit later frontiers.
+//! linking/evaluation. Static namespace objects and transitive exports are
+//! included; top-level await and dynamic import remain later frontiers.
 
 use super::*;
 use crate::compiler::{CompileOptions, compile_unlinked_module_with_name};
 use crate::module::{
-    ModuleExport, ModuleExportTarget, ModuleImport, ModuleLinkInitializer, ModuleRequest,
-    ModuleStarExport, UnlinkedModule,
+    ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportName, ModuleLinkInitializer,
+    ModuleRequest, ModuleRequestIndex, ModuleStarExport, UnlinkedModule,
 };
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -344,9 +344,10 @@ struct ModuleRecord {
     requested_modules: Box<[ModuleRequest]>,
     imports: Box<[ModuleImport]>,
     exports: Box<[ModuleExport]>,
-    _star_exports: Box<[ModuleStarExport]>,
+    star_exports: Box<[ModuleStarExport]>,
     resolution: RefCell<ModuleResolutionState>,
     instance: RefCell<Option<ModuleInstance>>,
+    namespace: RefCell<ModuleNamespaceState>,
     link_status: Cell<ModuleLinkStatus>,
     evaluation: RefCell<ModuleEvaluationState>,
     // QuickJS creates and caches the module function in the Context which
@@ -392,6 +393,12 @@ struct ModuleInstance {
     callable: Option<CallableRef>,
 }
 
+enum ModuleNamespaceState {
+    Empty,
+    Building(ObjectRef),
+    Ready(ObjectRef),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModuleLinkStatus {
     Unlinked,
@@ -432,6 +439,98 @@ struct ModuleResolveFrame {
     next_request: usize,
     dependencies: Vec<ModuleId>,
     loader: Option<Rc<dyn ModuleLoader>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModuleExportResolveResultKind {
+    NotFound,
+    Circular,
+    Ambiguous,
+}
+
+#[derive(Clone)]
+enum ModuleResolvedBindingTarget {
+    Local { closure_index: u16 },
+    Namespace { export_index: usize },
+}
+
+#[derive(Clone)]
+struct ModuleResolvedBinding {
+    module: ModuleBytecodeRef,
+    target: ModuleResolvedBindingTarget,
+}
+
+impl ModuleResolvedBinding {
+    fn has_same_identity(&self, other: &Self) -> bool {
+        if !Rc::ptr_eq(&self.module.graph, &other.module.graph) || self.module.id != other.module.id
+        {
+            return false;
+        }
+        match (&self.target, &other.target) {
+            (
+                ModuleResolvedBindingTarget::Local {
+                    closure_index: left,
+                },
+                ModuleResolvedBindingTarget::Local {
+                    closure_index: right,
+                },
+            ) => left == right,
+            (
+                ModuleResolvedBindingTarget::Namespace { export_index: left },
+                ModuleResolvedBindingTarget::Namespace {
+                    export_index: right,
+                },
+            ) => left == right,
+            (
+                ModuleResolvedBindingTarget::Local { .. },
+                ModuleResolvedBindingTarget::Namespace { .. },
+            )
+            | (
+                ModuleResolvedBindingTarget::Namespace { .. },
+                ModuleResolvedBindingTarget::Local { .. },
+            ) => false,
+        }
+    }
+}
+
+enum ModuleExportResolveResult {
+    Found(ModuleResolvedBinding),
+    NotFound,
+    Circular,
+    Ambiguous,
+}
+
+impl ModuleExportResolveResult {
+    const fn error_kind(&self) -> Option<ModuleExportResolveResultKind> {
+        match self {
+            Self::Found(_) => None,
+            Self::NotFound => Some(ModuleExportResolveResultKind::NotFound),
+            Self::Circular => Some(ModuleExportResolveResultKind::Circular),
+            Self::Ambiguous => Some(ModuleExportResolveResultKind::Ambiguous),
+        }
+    }
+}
+
+enum ModuleExportResolveFrameState {
+    Enter,
+    AwaitIndirect,
+    Stars {
+        next_star: usize,
+        found: Option<ModuleResolvedBinding>,
+    },
+}
+
+struct ModuleExportResolveFrame {
+    module: ModuleBytecodeRef,
+    export_name: JsString,
+    state: ModuleExportResolveFrameState,
+}
+
+struct ModuleExportNamesFrame {
+    module: ModuleBytecodeRef,
+    from_star: bool,
+    entered: bool,
+    next_star: usize,
 }
 
 struct ModuleDfsFrame {
@@ -812,23 +911,6 @@ impl Runtime {
     ) -> Result<ModuleBytecodeRef, RuntimeError> {
         bytecode_publish::verify_unlinked_module_tree(&module)?;
 
-        // Namespace and transitive-export machinery remains fail-closed until
-        // the namespace-exotic/complete ResolveExport milestone. R3dy admits
-        // side-effect edges and direct named imports only.
-        let has_indirect_export = module
-            .exports()
-            .iter()
-            .any(|export| matches!(export.target, ModuleExportTarget::Indirect { .. }));
-        if module.imports().iter().any(|import| import.is_namespace)
-            || !module.star_exports().is_empty()
-            || has_indirect_export
-        {
-            return Err(RuntimeError::Engine(Error::new(
-                ErrorKind::Unsupported,
-                "module namespace and transitive export linking is not implemented",
-            )));
-        }
-
         let realm_root = ModuleRealmRoot::retain(self, realm)?;
         let parts = module.into_parts();
         let function = self.publish_verified_unlinked_function(realm, parts.function)?;
@@ -839,9 +921,10 @@ impl Runtime {
             requested_modules: parts.requested_modules,
             imports: parts.imports,
             exports: parts.exports,
-            _star_exports: parts.star_exports,
+            star_exports: parts.star_exports,
             resolution: RefCell::new(ModuleResolutionState::Unresolved),
             instance: RefCell::new(None),
+            namespace: RefCell::new(ModuleNamespaceState::Empty),
             link_status: Cell::new(ModuleLinkStatus::Unlinked),
             evaluation: RefCell::new(ModuleEvaluationState::Unevaluated),
             link_realm_root: RefCell::new(None),
@@ -870,6 +953,32 @@ impl Runtime {
                 })
             })
             .collect()
+    }
+
+    fn module_dependency(
+        &self,
+        module: &ModuleBytecodeRef,
+        request: ModuleRequestIndex,
+    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+        let id = match &*module.record.resolution.borrow() {
+            ModuleResolutionState::Resolved(ids) => {
+                ids.get(request.0 as usize)
+                    .copied()
+                    .ok_or(RuntimeError::Invariant(
+                        "module request is outside the resolved graph",
+                    ))?
+            }
+            ModuleResolutionState::Unresolved | ModuleResolutionState::Resolving => {
+                return Err(RuntimeError::Invariant(
+                    "module dependency lookup reached an unresolved graph",
+                ));
+            }
+        };
+        Ok(ModuleBytecodeRef {
+            graph: module.graph.clone(),
+            id,
+            record: module.graph.record(id)?,
+        })
     }
 
     fn prepare_module_instance(
@@ -992,129 +1101,545 @@ impl Runtime {
         Err(RuntimeError::Exception)
     }
 
-    /// Resolve the ultimate declaration cell behind a local export.
+    fn throw_module_export_resolution_error<T>(
+        &self,
+        realm: ContextId,
+        kind: ModuleExportResolveResultKind,
+        module: &ModuleBytecodeRef,
+        export_name: &JsString,
+    ) -> Result<T, RuntimeError> {
+        let message = match kind {
+            ModuleExportResolveResultKind::NotFound => module_export_error_message(
+                "Could not find export '",
+                export_name,
+                &module.record.name,
+            ),
+            ModuleExportResolveResultKind::Circular => module_export_error_message(
+                "circular reference when looking for export '",
+                export_name,
+                &module.record.name,
+            ),
+            ModuleExportResolveResultKind::Ambiguous => {
+                let mut message =
+                    module_export_error_message("export '", export_name, &module.record.name);
+                message.push_utf8(" is ambiguous");
+                message
+            }
+        };
+        self.throw_module_link_syntax_error(realm, message)
+    }
+
+    /// Resolve one exported name without consuming the native stack.
     ///
-    /// R3dy still rejects indirect and star export syntax at publication, but
-    /// `export { importedName }` is represented as a local export of an import
-    /// view. Following that authenticated view here avoids depending on SCC
-    /// link order and gives circular alias chains a JavaScript SyntaxError
-    /// instead of an absent-cell engine invariant.
-    fn resolve_module_export_cell(
+    /// The resolve set deliberately survives the complete operation instead
+    /// of being popped with a DFS frame. This is the observable QuickJS
+    /// behavior for a diamond containing a circular branch. Local exports
+    /// retain their `(module, closure)` identity here; imported-local aliases
+    /// are followed only when a caller asks for the live VarRef.
+    #[allow(clippy::mutable_key_type)] // JsString hashes immutable contents; only its rope cache mutates.
+    fn resolve_module_export(
         &self,
         module: &ModuleBytecodeRef,
         export_name: &JsString,
-        realm: ContextId,
-    ) -> Result<VarRefRoot, RuntimeError> {
-        let error_module_name = module.record.name.clone();
-        let error_export_name = export_name.clone();
-        let mut current = module.clone();
-        let mut name = export_name.clone();
-        let mut resolve_set = HashSet::new();
+    ) -> Result<ModuleExportResolveResult, RuntimeError> {
+        enum Action {
+            Continue,
+            Complete(ModuleExportResolveResult),
+            Push(ModuleBytecodeRef, JsString),
+        }
+
+        let mut resolve_set: HashSet<(ModuleId, JsString)> = HashSet::new();
+        let mut stack = vec![ModuleExportResolveFrame {
+            module: module.clone(),
+            export_name: export_name.clone(),
+            state: ModuleExportResolveFrameState::Enter,
+        }];
+        let mut completed = None;
 
         loop {
-            if !resolve_set.insert((current.id, name.utf16_units().collect::<Vec<_>>())) {
-                return self.throw_module_link_syntax_error(
-                    realm,
-                    module_export_error_message(
-                        "circular reference when looking for export '",
-                        &error_export_name,
-                        &error_module_name,
-                    ),
-                );
-            }
-            let Some(export) = current
-                .record
-                .exports
-                .iter()
-                .find(|export| export.export_name == name)
-            else {
-                return self.throw_module_link_syntax_error(
-                    realm,
-                    module_export_error_message(
-                        "Could not find export '",
-                        &error_export_name,
-                        &error_module_name,
-                    ),
-                );
-            };
-            let ModuleExportTarget::Local { closure_index } = export.target else {
-                return Err(RuntimeError::Invariant(
-                    "indirect export escaped its publication frontier",
-                ));
-            };
-            let descriptor = {
-                let state = self.0.state.borrow();
-                state
-                    .heap
-                    .function_bytecode(current.record.function.bytecode_id())?
-                    .closure_variables
-                    .get(usize::from(closure_index))
-                    .copied()
-                    .ok_or(RuntimeError::Invariant(
-                        "resolved export closure is outside the module root",
-                    ))?
-            };
-            match descriptor.source {
-                ClosureSource::ModuleDeclaration => {
-                    if descriptor.kind != ClosureVariableKind::Normal {
+            if let Some(result) = completed.take() {
+                let Some(parent) = stack.last_mut() else {
+                    return Ok(result);
+                };
+                match &mut parent.state {
+                    ModuleExportResolveFrameState::AwaitIndirect => {
+                        stack.pop();
+                        completed = Some(result);
+                    }
+                    ModuleExportResolveFrameState::Stars { found, .. } => match result {
+                        ModuleExportResolveResult::Found(binding) => {
+                            if found
+                                .as_ref()
+                                .is_some_and(|prior| !prior.has_same_identity(&binding))
+                            {
+                                stack.pop();
+                                completed = Some(ModuleExportResolveResult::Ambiguous);
+                            } else {
+                                if found.is_none() {
+                                    *found = Some(binding);
+                                }
+                            }
+                        }
+                        ModuleExportResolveResult::Ambiguous => {
+                            stack.pop();
+                            completed = Some(ModuleExportResolveResult::Ambiguous);
+                        }
+                        ModuleExportResolveResult::NotFound
+                        | ModuleExportResolveResult::Circular => {}
+                    },
+                    ModuleExportResolveFrameState::Enter => {
                         return Err(RuntimeError::Invariant(
-                            "resolved module declaration export has invalid metadata",
+                            "export resolver returned to an unentered parent frame",
                         ));
                     }
-                    return current
-                        .record
-                        .instance
-                        .borrow()
-                        .as_ref()
-                        .and_then(|instance| instance.slots.get(usize::from(closure_index)))
-                        .and_then(Option::as_ref)
-                        .cloned()
-                        .ok_or(RuntimeError::Invariant(
-                            "resolved export has no instantiated live cell",
-                        ));
                 }
-                ClosureSource::ModuleImport => {
-                    if descriptor.kind != ClosureVariableKind::ModuleImportView {
+                continue;
+            }
+
+            let action = {
+                let frame = stack.last_mut().ok_or(RuntimeError::Invariant(
+                    "export resolver call stack unexpectedly became empty",
+                ))?;
+                match &mut frame.state {
+                    ModuleExportResolveFrameState::Enter => {
+                        if !resolve_set.insert((frame.module.id, frame.export_name.clone())) {
+                            Action::Complete(ModuleExportResolveResult::Circular)
+                        } else if let Some((export_index, target)) = frame
+                            .module
+                            .record
+                            .exports
+                            .iter()
+                            .enumerate()
+                            .find(|(_, export)| export.export_name == frame.export_name)
+                            .map(|(index, export)| (index, export.target.clone()))
+                        {
+                            match target {
+                                ModuleExportTarget::Local { closure_index } => Action::Complete(
+                                    ModuleExportResolveResult::Found(ModuleResolvedBinding {
+                                        module: frame.module.clone(),
+                                        target: ModuleResolvedBindingTarget::Local {
+                                            closure_index,
+                                        },
+                                    }),
+                                ),
+                                ModuleExportTarget::Indirect {
+                                    request,
+                                    import_name: ModuleImportName::Namespace,
+                                } => {
+                                    let _ = request;
+                                    Action::Complete(ModuleExportResolveResult::Found(
+                                        ModuleResolvedBinding {
+                                            module: frame.module.clone(),
+                                            target: ModuleResolvedBindingTarget::Namespace {
+                                                export_index,
+                                            },
+                                        },
+                                    ))
+                                }
+                                ModuleExportTarget::Indirect {
+                                    request,
+                                    import_name: ModuleImportName::Name(import_name),
+                                } => {
+                                    let dependency =
+                                        self.module_dependency(&frame.module, request)?;
+                                    frame.state = ModuleExportResolveFrameState::AwaitIndirect;
+                                    Action::Push(dependency, import_name)
+                                }
+                            }
+                        } else if frame.export_name == JsString::from_static("default") {
+                            Action::Complete(ModuleExportResolveResult::NotFound)
+                        } else {
+                            frame.state = ModuleExportResolveFrameState::Stars {
+                                next_star: 0,
+                                found: None,
+                            };
+                            Action::Continue
+                        }
+                    }
+                    ModuleExportResolveFrameState::AwaitIndirect => {
                         return Err(RuntimeError::Invariant(
-                            "resolved module import export has invalid metadata",
+                            "export resolver indirect frame lost its child result",
                         ));
                     }
-                    let import = current
-                        .record
-                        .imports
-                        .iter()
-                        .find(|import| import.closure_index == closure_index)
-                        .ok_or(RuntimeError::Invariant(
-                            "exported module import has no import table entry",
-                        ))?;
-                    if import.is_namespace {
-                        return Err(RuntimeError::Invariant(
-                            "namespace import escaped its publication frontier",
-                        ));
+                    ModuleExportResolveFrameState::Stars { next_star, found } => {
+                        if let Some(star) = frame.module.record.star_exports.get(*next_star) {
+                            *next_star += 1;
+                            let dependency = self.module_dependency(&frame.module, star.request)?;
+                            Action::Push(dependency, frame.export_name.clone())
+                        } else {
+                            Action::Complete(found.take().map_or(
+                                ModuleExportResolveResult::NotFound,
+                                ModuleExportResolveResult::Found,
+                            ))
+                        }
                     }
-                    let request = import.request;
-                    let import_name = import.import_name.clone();
-                    let dependencies = self.module_dependencies(&current)?;
-                    current = dependencies.get(request.0 as usize).cloned().ok_or(
+                }
+            };
+
+            match action {
+                Action::Continue => {}
+                Action::Complete(result) => {
+                    stack.pop();
+                    completed = Some(result);
+                }
+                Action::Push(module, export_name) => stack.push(ModuleExportResolveFrame {
+                    module,
+                    export_name,
+                    state: ModuleExportResolveFrameState::Enter,
+                }),
+            }
+        }
+    }
+
+    /// Collect the candidate names for a module namespace using the same
+    /// global visited-set traversal as QuickJS `get_exported_names`.
+    fn get_module_exported_names(
+        &self,
+        module: &ModuleBytecodeRef,
+    ) -> Result<Vec<JsString>, RuntimeError> {
+        let default_name = JsString::from_static("default");
+        let mut visited = HashSet::new();
+        let mut seen_names = HashSet::new();
+        let mut names = Vec::new();
+        let mut stack = vec![ModuleExportNamesFrame {
+            module: module.clone(),
+            from_star: false,
+            entered: false,
+            next_star: 0,
+        }];
+
+        while let Some(frame) = stack.last_mut() {
+            if !frame.entered {
+                frame.entered = true;
+                if !visited.insert(frame.module.id) {
+                    stack.pop();
+                    continue;
+                }
+                for export in frame.module.record.exports.iter() {
+                    if frame.from_star && export.export_name == default_name {
+                        continue;
+                    }
+                    if seen_names.insert(export.export_name.utf16_units().collect::<Vec<_>>()) {
+                        names.push(export.export_name.clone());
+                    }
+                }
+                continue;
+            }
+
+            let Some(star) = frame.module.record.star_exports.get(frame.next_star) else {
+                stack.pop();
+                continue;
+            };
+            frame.next_star += 1;
+            let dependency = self.module_dependency(&frame.module, star.request)?;
+            stack.push(ModuleExportNamesFrame {
+                module: dependency,
+                from_star: true,
+                entered: false,
+                next_star: 0,
+            });
+        }
+        Ok(names)
+    }
+
+    fn rollback_module_namespace_transaction(&self, graph: &Rc<ModuleGraph>, created: &[ModuleId]) {
+        for id in created.iter().rev().copied() {
+            let Ok(record) = graph.record(id) else {
+                continue;
+            };
+            *record.namespace.borrow_mut() = ModuleNamespaceState::Empty;
+        }
+    }
+
+    pub(in crate::runtime) fn get_module_namespace(
+        &self,
+        module: &ModuleBytecodeRef,
+        realm: ContextId,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let mut created = Vec::new();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.build_module_namespace(module, realm, &mut created)
+        }));
+        match result {
+            Ok(Ok(namespace)) => Ok(namespace),
+            Ok(Err(error)) => {
+                self.rollback_module_namespace_transaction(&module.graph, &created);
+                Err(error)
+            }
+            Err(payload) => {
+                self.rollback_module_namespace_transaction(&module.graph, &created);
+                resume_unwind(payload)
+            }
+        }
+    }
+
+    fn build_module_namespace(
+        &self,
+        module: &ModuleBytecodeRef,
+        realm: ContextId,
+        created: &mut Vec<ModuleId>,
+    ) -> Result<ObjectRef, RuntimeError> {
+        {
+            let namespace = module.record.namespace.borrow();
+            match &*namespace {
+                ModuleNamespaceState::Building(object) | ModuleNamespaceState::Ready(object) => {
+                    return Ok(object.clone());
+                }
+                ModuleNamespaceState::Empty => {}
+            }
+        }
+
+        let namespace = self.new_module_namespace_object()?;
+        *module.record.namespace.borrow_mut() = ModuleNamespaceState::Building(namespace.clone());
+        created.push(module.id);
+
+        let mut names = self.get_module_exported_names(module)?;
+        names.sort_by(|left, right| left.utf16_units().cmp(right.utf16_units()));
+        for name in names {
+            let binding = match self.resolve_module_export(module, &name)? {
+                ModuleExportResolveResult::Found(binding) => binding,
+                ModuleExportResolveResult::Ambiguous => continue,
+                result => {
+                    let kind = result.error_kind().ok_or(RuntimeError::Invariant(
+                        "non-found module export resolution had no error kind",
+                    ))?;
+                    return self.throw_module_export_resolution_error(realm, kind, module, &name);
+                }
+            };
+            let slot = self.materialize_module_resolved_binding_inner(
+                binding, realm, module, &name, created,
+            )?;
+            let key = self.intern_property_key_js_string(&name)?;
+            self.store_property_slot(
+                &namespace,
+                &key,
+                PropertyFlags::data(true, true, false),
+                PropertySlot::VarRef(slot.id()),
+            )?;
+        }
+
+        let tag = PropertyKey::from(self.well_known_symbol(WellKnownSymbol::ToStringTag));
+        self.store_property_slot(
+            &namespace,
+            &tag,
+            PropertyFlags::data(false, false, false),
+            PropertySlot::Data(RawValue::String(JsString::from_static("Module"))),
+        )?;
+        *module.record.namespace.borrow_mut() = ModuleNamespaceState::Ready(namespace.clone());
+        Ok(namespace)
+    }
+
+    fn materialize_module_resolved_binding(
+        &self,
+        binding: ModuleResolvedBinding,
+        realm: ContextId,
+        error_module: &ModuleBytecodeRef,
+        error_name: &JsString,
+    ) -> Result<VarRefRoot, RuntimeError> {
+        let mut created = Vec::new();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.materialize_module_resolved_binding_inner(
+                binding,
+                realm,
+                error_module,
+                error_name,
+                &mut created,
+            )
+        }));
+        match result {
+            Ok(Ok(slot)) => Ok(slot),
+            Ok(Err(error)) => {
+                self.rollback_module_namespace_transaction(&error_module.graph, &created);
+                Err(error)
+            }
+            Err(payload) => {
+                self.rollback_module_namespace_transaction(&error_module.graph, &created);
+                resume_unwind(payload)
+            }
+        }
+    }
+
+    fn materialize_module_resolved_binding_inner(
+        &self,
+        binding: ModuleResolvedBinding,
+        realm: ContextId,
+        error_module: &ModuleBytecodeRef,
+        error_name: &JsString,
+        namespace_transaction: &mut Vec<ModuleId>,
+    ) -> Result<VarRefRoot, RuntimeError> {
+        let mut binding = binding;
+        let mut local_aliases = HashSet::new();
+
+        loop {
+            match binding.target {
+                ModuleResolvedBindingTarget::Namespace { export_index } => {
+                    let export = binding.module.record.exports.get(export_index).ok_or(
                         RuntimeError::Invariant(
-                            "exported module import request is outside the resolved graph",
+                            "resolved namespace export entry is outside the module table",
                         ),
                     )?;
-                    name = import_name;
+                    let ModuleExportTarget::Indirect {
+                        request,
+                        import_name: ModuleImportName::Namespace,
+                    } = &export.target
+                    else {
+                        return Err(RuntimeError::Invariant(
+                            "resolved namespace identity no longer names a namespace export",
+                        ));
+                    };
+                    let target = self.module_dependency(&binding.module, *request)?;
+                    let namespace =
+                        self.build_module_namespace(&target, realm, namespace_transaction)?;
+                    return self.new_var_ref(
+                        Value::Object(namespace),
+                        true,
+                        true,
+                        ClosureVariableKind::Normal,
+                    );
                 }
-                ClosureSource::ParentLocal(_)
-                | ClosureSource::ParentArgument(_)
-                | ClosureSource::ParentClosure(_)
-                | ClosureSource::GlobalDeclaration
-                | ClosureSource::Global
-                | ClosureSource::ParentGlobal(_)
-                | ClosureSource::EvalEnvironment(_) => {
-                    return Err(RuntimeError::Invariant(
-                        "local module export resolved to a non-module binding",
-                    ));
+                ModuleResolvedBindingTarget::Local { closure_index } => {
+                    if !local_aliases.insert((binding.module.id, closure_index)) {
+                        return self.throw_module_export_resolution_error(
+                            realm,
+                            ModuleExportResolveResultKind::Circular,
+                            error_module,
+                            error_name,
+                        );
+                    }
+                    let descriptor = {
+                        let state = self.0.state.borrow();
+                        state
+                            .heap
+                            .function_bytecode(binding.module.record.function.bytecode_id())?
+                            .closure_variables
+                            .get(usize::from(closure_index))
+                            .copied()
+                            .ok_or(RuntimeError::Invariant(
+                                "resolved export closure is outside the module root",
+                            ))?
+                    };
+                    match descriptor.source {
+                        ClosureSource::ModuleDeclaration => {
+                            if descriptor.kind != ClosureVariableKind::Normal {
+                                return Err(RuntimeError::Invariant(
+                                    "resolved module declaration export has invalid metadata",
+                                ));
+                            }
+                            return binding
+                                .module
+                                .record
+                                .instance
+                                .borrow()
+                                .as_ref()
+                                .and_then(|instance| instance.slots.get(usize::from(closure_index)))
+                                .and_then(Option::as_ref)
+                                .cloned()
+                                .ok_or(RuntimeError::Invariant(
+                                    "resolved export has no instantiated live cell",
+                                ));
+                        }
+                        ClosureSource::ModuleImport => {
+                            if descriptor.kind != ClosureVariableKind::ModuleImportView {
+                                return Err(RuntimeError::Invariant(
+                                    "resolved module import export has invalid metadata",
+                                ));
+                            }
+                            let import = binding
+                                .module
+                                .record
+                                .imports
+                                .iter()
+                                .find(|import| import.closure_index == closure_index)
+                                .cloned()
+                                .ok_or(RuntimeError::Invariant(
+                                    "exported module import has no import table entry",
+                                ))?;
+                            let dependency =
+                                self.module_dependency(&binding.module, import.request)?;
+                            match import.import_name {
+                                ModuleImportName::Namespace => {
+                                    let namespace = self.build_module_namespace(
+                                        &dependency,
+                                        realm,
+                                        namespace_transaction,
+                                    )?;
+                                    return self.new_var_ref(
+                                        Value::Object(namespace),
+                                        true,
+                                        true,
+                                        ClosureVariableKind::Normal,
+                                    );
+                                }
+                                ModuleImportName::Name(import_name) => {
+                                    binding = match self
+                                        .resolve_module_export(&dependency, &import_name)?
+                                    {
+                                        ModuleExportResolveResult::Found(binding) => binding,
+                                        result => {
+                                            let kind = result.error_kind().ok_or(
+                                                RuntimeError::Invariant(
+                                                    "failed imported alias resolution had no error kind",
+                                                ),
+                                            )?;
+                                            return self.throw_module_export_resolution_error(
+                                                realm,
+                                                kind,
+                                                error_module,
+                                                error_name,
+                                            );
+                                        }
+                                    };
+                                }
+                            }
+                        }
+                        ClosureSource::ParentLocal(_)
+                        | ClosureSource::ParentArgument(_)
+                        | ClosureSource::ParentClosure(_)
+                        | ClosureSource::GlobalDeclaration
+                        | ClosureSource::Global
+                        | ClosureSource::ParentGlobal(_)
+                        | ClosureSource::EvalEnvironment(_) => {
+                            return Err(RuntimeError::Invariant(
+                                "local module export resolved to a non-module binding",
+                            ));
+                        }
+                    }
                 }
             }
         }
+    }
+
+    fn validate_module_indirect_exports(
+        &self,
+        module: &ModuleBytecodeRef,
+        dependencies: &[ModuleBytecodeRef],
+        realm: ContextId,
+    ) -> Result<(), RuntimeError> {
+        for export in module.record.exports.iter() {
+            let ModuleExportTarget::Indirect {
+                request,
+                import_name: ModuleImportName::Name(import_name),
+            } = &export.target
+            else {
+                continue;
+            };
+            let dependency =
+                dependencies
+                    .get(request.0 as usize)
+                    .ok_or(RuntimeError::Invariant(
+                        "indirect export request is outside the resolved graph",
+                    ))?;
+            let result = self.resolve_module_export(dependency, import_name)?;
+            if let Some(kind) = result.error_kind() {
+                return self.throw_module_export_resolution_error(
+                    realm,
+                    kind,
+                    module,
+                    &export.export_name,
+                );
+            }
+        }
+        Ok(())
     }
 
     fn link_module_imports(
@@ -1124,18 +1649,53 @@ impl Runtime {
         realm: ContextId,
     ) -> Result<(), RuntimeError> {
         for import in module.record.imports.iter() {
-            if import.is_namespace {
-                return Err(RuntimeError::Invariant(
-                    "namespace import escaped its publication frontier",
-                ));
-            }
             let dependency =
                 dependencies
                     .get(import.request.0 as usize)
                     .ok_or(RuntimeError::Invariant(
                         "module import request is outside the resolved graph",
                     ))?;
-            let slot = self.resolve_module_export_cell(dependency, &import.import_name, realm)?;
+            let slot = match &import.import_name {
+                ModuleImportName::Namespace => {
+                    let namespace = self.get_module_namespace(dependency, realm)?;
+                    let slot = module
+                        .record
+                        .instance
+                        .borrow()
+                        .as_ref()
+                        .and_then(|instance| instance.slots.get(usize::from(import.closure_index)))
+                        .and_then(Option::as_ref)
+                        .cloned()
+                        .ok_or(RuntimeError::Invariant(
+                            "namespace import has no preallocated declaration cell",
+                        ))?;
+                    self.write_var_ref(&slot, Value::Object(namespace))?;
+                    continue;
+                }
+                ModuleImportName::Name(import_name) => {
+                    let resolution = self.resolve_module_export(dependency, import_name)?;
+                    let binding = match resolution {
+                        ModuleExportResolveResult::Found(binding) => binding,
+                        result => {
+                            let kind = result.error_kind().ok_or(RuntimeError::Invariant(
+                                "failed module import resolution had no error kind",
+                            ))?;
+                            return self.throw_module_export_resolution_error(
+                                realm,
+                                kind,
+                                dependency,
+                                import_name,
+                            );
+                        }
+                    };
+                    self.materialize_module_resolved_binding(
+                        binding,
+                        realm,
+                        dependency,
+                        import_name,
+                    )?
+                }
+            };
             let mut instance = module.record.instance.borrow_mut();
             let target = instance
                 .as_mut()
@@ -1307,6 +1867,7 @@ impl Runtime {
                 .ok_or(RuntimeError::Invariant(
                     "instantiated module has no retained link realm",
                 ))?;
+            self.validate_module_indirect_exports(&frame.module, &frame.dependencies, realm)?;
             self.link_module_imports(&frame.module, &frame.dependencies, realm)?;
             let callable = self.create_module_callable(&frame.module, realm)?;
             let completion = match self.call_internal(realm, &callable, Value::Bool(true), &[]) {
@@ -2022,6 +2583,27 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StarChainModuleLoader {
+        module_count: usize,
+    }
+
+    impl ModuleLoader for StarChainModuleLoader {
+        fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+            let normalized_name = valid_fixture_module_name(normalized_name)?;
+            let index = normalized_name
+                .strip_prefix('s')
+                .and_then(|index| index.parse::<usize>().ok())
+                .filter(|index| *index < self.module_count)
+                .ok_or_else(|| ModuleLoaderError::new("invalid generated star module name"))?;
+            if index + 1 == self.module_count {
+                Ok("export const answer = 42;".to_owned())
+            } else {
+                Ok(format!("export * from 's{}';", index + 1))
+            }
+        }
+    }
+
     struct ReentrantModuleLoader {
         context: Rc<RefCell<Context>>,
         attempted: Cell<bool>,
@@ -2716,6 +3298,326 @@ mod tests {
             ));
         }
         assert_script_true(&mut context, "typeof __circularAliasBody === 'undefined'");
+    }
+
+    #[test]
+    fn resolve_export_keeps_same_binding_diamonds_unambiguous() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            ("pkg/source.js", "export const answer = 42;"),
+            ("pkg/left.js", "export { answer } from './source.js';"),
+            ("pkg/right.js", "export { answer } from './source.js';"),
+            (
+                "pkg/barrel.js",
+                "export * from './left.js'; export * from './right.js';",
+            ),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { answer } from './barrel.js'; globalThis.__diamondAnswer = answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__diamondAnswer === 42");
+    }
+
+    #[test]
+    fn resolve_export_reports_distinct_star_bindings_as_ambiguous() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            ("pkg/left.js", "export const answer = 1;"),
+            ("pkg/right.js", "export const answer = 2;"),
+            (
+                "pkg/barrel.js",
+                "export * from './left.js'; export * from './right.js';",
+            ),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { answer } from './barrel.js'; void answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        assert_eq!(context.link_module(&module), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static("export 'answer' in module 'pkg/barrel.js' is ambiguous")
+        );
+    }
+
+    #[test]
+    fn star_resolution_ignores_circular_and_not_found_branches() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            (
+                "pkg/cycle-a.js",
+                "export * from './cycle-b.js'; export const unrelated = 1;",
+            ),
+            (
+                "pkg/cycle-b.js",
+                "export * from './cycle-a.js'; export const other = 2;",
+            ),
+            ("pkg/empty.js", "export const absent = 3;"),
+            ("pkg/source.js", "export const answer = 42;"),
+            (
+                "pkg/barrel.js",
+                "export * from './cycle-a.js'; export * from './empty.js'; export * from './source.js';",
+            ),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { answer } from './barrel.js'; globalThis.__starBranchAnswer = answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__starBranchAnswer === 42");
+    }
+
+    #[test]
+    fn module_namespace_omits_an_ambiguous_star_export() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            (
+                "pkg/left.js",
+                "export const answer = 1; export const left = 2;",
+            ),
+            (
+                "pkg/right.js",
+                "export const answer = 3; export const right = 4;",
+            ),
+            (
+                "pkg/barrel.js",
+                "export * from './left.js'; export * from './right.js';",
+            ),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import * as ns from './barrel.js'; globalThis.__ambiguousNamespace = ns;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(
+            &mut context,
+            "!('answer' in __ambiguousNamespace) && __ambiguousNamespace.left === 2 && __ambiguousNamespace.right === 4",
+        );
+    }
+
+    #[test]
+    fn default_is_not_resolved_through_star_exports() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            ("pkg/source.js", "export default 42;"),
+            ("pkg/barrel.js", "export * from './source.js';"),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { default as answer } from './barrel.js'; void answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        assert_eq!(context.link_module(&module), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static("Could not find export 'default' in module 'pkg/barrel.js'")
+        );
+    }
+
+    #[test]
+    fn indirect_export_preflight_blames_the_public_name_and_owner() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([(
+            "pkg/dependency.js",
+            "globalThis.__indirectDependencyRan = true; export const present = 1;",
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "export { absent as publicName } from './dependency.js';",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        assert_eq!(context.link_module(&module), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static("Could not find export 'publicName' in module 'pkg/entry.js'")
+        );
+        assert_script_true(
+            &mut context,
+            "typeof __indirectDependencyRan === 'undefined'",
+        );
+    }
+
+    #[test]
+    fn circular_indirect_exports_fail_without_native_recursion() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            ("pkg/a.js", "export { answer } from './b.js';"),
+            ("pkg/b.js", "export { answer } from './a.js';"),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { answer } from './a.js'; void answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        assert_eq!(context.link_module(&module), Err(RuntimeError::Exception));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static(
+                "circular reference when looking for export 'answer' in module 'pkg/b.js'"
+            )
+        );
+    }
+
+    #[test]
+    fn namespace_cache_preserves_cycles_identity_and_live_cells() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            (
+                "pkg/a.js",
+                "export * as b from './b.js'; export let value = 1; export function bump() { value = 42; }",
+            ),
+            (
+                "pkg/b.js",
+                "export * as a from './a.js'; export const marker = 2;",
+            ),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import * as a from './a.js';
+                import * as b from './b.js';
+                globalThis.__namespaceA = a;
+                globalThis.__namespaceB = b;
+                globalThis.__namespaceBefore = a.value;
+                a.bump();
+                globalThis.__namespaceAfter = a.value;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(
+            &mut context,
+            r#"
+            __namespaceA.b === __namespaceB &&
+            __namespaceB.a === __namespaceA &&
+            __namespaceBefore === 1 && __namespaceAfter === 42 &&
+            Object.getPrototypeOf(__namespaceA) === null &&
+            Object.isExtensible(__namespaceA) === false &&
+            Reflect.ownKeys(__namespaceA).slice(0, 3).join(',') === 'b,bump,value' &&
+            Reflect.ownKeys(__namespaceA)[3] === Symbol.toStringTag
+            "#,
+        );
+    }
+
+    #[test]
+    fn self_namespace_import_export_keeps_the_preallocated_cell() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([(
+            "pkg/self.js",
+            "import * as self from './self.js'; export { self }; export const answer = 42;",
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import * as ns from './self.js'; globalThis.__selfNamespace = ns;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(
+            &mut context,
+            "__selfNamespace.self === __selfNamespace && __selfNamespace.answer === 42",
+        );
+    }
+
+    #[test]
+    fn failed_namespace_build_rolls_back_its_placeholder_for_retry() {
+        let runtime = Runtime::new();
+        let (loader, _, _) =
+            MapModuleLoader::new([("pkg/dependency.js", "export const present = 1;")]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "export { absent as publicName } from './dependency.js';",
+                "pkg/entry.js",
+            )
+            .unwrap();
+        runtime
+            .prepare_module_instance(&module, context.realm)
+            .unwrap();
+
+        for _ in 0..2 {
+            assert_eq!(
+                runtime.get_module_namespace(&module, context.realm),
+                Err(RuntimeError::Exception)
+            );
+            assert!(matches!(
+                &*module.record.namespace.borrow(),
+                ModuleNamespaceState::Empty
+            ));
+            assert!(matches!(
+                context.take_exception().unwrap(),
+                Some(Value::Object(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn deep_star_resolution_uses_an_explicit_frame_stack() {
+        const MODULE_COUNT: usize = 1_024;
+
+        std::thread::Builder::new()
+            .name("deep-star-module-graph".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let runtime = Runtime::new();
+                let _loader_registration = runtime.set_module_loader(StarChainModuleLoader {
+                    module_count: MODULE_COUNT,
+                });
+                let mut context = runtime.new_context();
+                let module = context
+                    .compile_module_with_filename(
+                        "import * as ns from 's0'; globalThis.__deepStarAnswer = ns.answer;",
+                        "entry.js",
+                    )
+                    .unwrap();
+                context.execute_module(&module).unwrap();
+                assert_script_true(&mut context, "__deepStarAnswer === 42");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

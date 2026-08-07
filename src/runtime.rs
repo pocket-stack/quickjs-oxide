@@ -20,6 +20,7 @@ mod internal_methods;
 mod intrinsics;
 mod jobs;
 mod module;
+mod module_namespace;
 mod native_dispatch;
 mod native_stack;
 mod object_literal;

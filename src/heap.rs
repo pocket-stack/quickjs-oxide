@@ -5399,6 +5399,8 @@ pub enum ObjectPayload {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ObjectKind {
     Ordinary,
+    /// `JS_CLASS_MODULE_NS`: null-prototype, non-extensible live export view.
+    ModuleNamespace,
     Array,
     Arguments,
     ArrayIterator,
@@ -7417,6 +7419,27 @@ impl ObjectData {
             immutable_prototype: false,
             is_constructor: false,
             kind: ObjectKind::Ordinary,
+            payload: ObjectPayload::Ordinary,
+        }
+    }
+
+    /// Construct one `JS_CLASS_MODULE_NS` exotic object.
+    ///
+    /// Export bindings remain ordinary `PropertySlot::VarRef` edges, while
+    /// the distinct class marker selects the namespace-only internal methods.
+    /// The caller supplies a null-prototype shape and installs the complete
+    /// sorted export table through the runtime's private construction path.
+    #[must_use]
+    pub const fn module_namespace(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            is_html_dda: false,
+            extensible: false,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::ModuleNamespace,
             payload: ObjectPayload::Ordinary,
         }
     }
@@ -15454,7 +15477,8 @@ impl Heap {
             (
                 ObjectKind::Ordinary,
                 ObjectPayload::Ordinary | ObjectPayload::RawJson
-            ) | (ObjectKind::Array, ObjectPayload::Array { .. })
+            ) | (ObjectKind::ModuleNamespace, ObjectPayload::Ordinary)
+                | (ObjectKind::Array, ObjectPayload::Array { .. })
                 | (ObjectKind::Arguments, ObjectPayload::Arguments { .. })
                 | (
                     ObjectKind::ArrayIterator,
