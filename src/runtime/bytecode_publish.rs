@@ -17,7 +17,9 @@ use crate::heap::{
     validate_eval_environment_phase_layout, validate_parameter_bytecode_layout,
     validate_parameter_initializer_scope_layout, validate_pattern_parameter_bytecode_layout,
 };
-use crate::module::{ModuleExportTarget, ModuleLinkInitializerValue, UnlinkedModule};
+use crate::module::{
+    ModuleExportTarget, ModuleImportName, ModuleLinkInitializerValue, UnlinkedModule,
+};
 use crate::source_text::try_is_canonical_wtf8;
 
 /// Intern every semantically retained direct-eval binding name while keeping
@@ -1232,7 +1234,8 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
                 "module import table reused a closure slot",
             )));
         }
-        if import.is_namespace {
+        let is_namespace = matches!(&import.import_name, ModuleImportName::Namespace);
+        if is_namespace {
             namespace_slots.insert(import.closure_index);
         }
         let descriptor = descriptors
@@ -1242,12 +1245,12 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
                     "module import closure index is out of bounds",
                 ))
             })?;
-        let expected_source = if import.is_namespace {
+        let expected_source = if is_namespace {
             ClosureSource::ModuleDeclaration
         } else {
             ClosureSource::ModuleImport
         };
-        let expected_kind = if import.is_namespace {
+        let expected_kind = if is_namespace {
             ClosureVariableKind::Normal
         } else {
             ClosureVariableKind::ModuleImportView
@@ -1348,7 +1351,10 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
                     )));
                 }
             }
-            ModuleExportTarget::Indirect { request, .. } => {
+            ModuleExportTarget::Indirect {
+                request,
+                import_name: _,
+            } => {
                 if !request_exists(*request) {
                     return Err(RuntimeError::Engine(Error::internal(
                         "indirect module export referenced a missing request",

@@ -23,11 +23,19 @@ pub(crate) struct ModuleRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ModuleImport {
     pub(crate) request: ModuleRequestIndex,
-    pub(crate) import_name: JsString,
+    pub(crate) import_name: ModuleImportName,
     pub(crate) closure_index: u16,
-    /// Namespace imports own a fresh immutable module-declaration cell. The
-    /// linker initializes that cell with the dependency namespace object.
-    pub(crate) is_namespace: bool,
+}
+
+/// The target selected from one requested module.
+///
+/// QuickJS represents the namespace case with its private `JS_ATOM__star_`
+/// atom. Keeping it outside the JavaScript string domain prevents a real
+/// exported name `"*"` from being mistaken for that implementation sentinel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ModuleImportName {
+    Name(JsString),
+    Namespace,
 }
 
 /// Compiler-authored value installed into one hoisted module declaration
@@ -51,10 +59,9 @@ pub(crate) enum ModuleExportTarget {
     /// Exact root closure slot for a local declaration or imported binding.
     Local { closure_index: u16 },
     /// Named re-export resolved through a requested module.
-    #[allow(dead_code)] // Used by the pending indirect-export parser/linker slice.
     Indirect {
         request: ModuleRequestIndex,
-        import_name: JsString,
+        import_name: ModuleImportName,
     },
 }
 

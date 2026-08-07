@@ -7,9 +7,14 @@
 
 use super::*;
 use crate::module::{
-    ModuleExport, ModuleExportTarget, ModuleImport, ModuleLinkInitializer,
+    ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportName, ModuleLinkInitializer,
     ModuleLinkInitializerValue, ModuleRequest, ModuleStarExport, UnlinkedModule,
 };
+
+// QuickJS stores expression-form default exports in its private
+// `JS_ATOM__default_` module lexical. Source text cannot spell this binding,
+// so it cannot shadow or reference the implementation-owned cell.
+const MODULE_DEFAULT_BINDING_NAME: &str = "<module-default>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ModuleBindingId(usize);
@@ -42,9 +47,8 @@ pub(super) struct IrModuleLocalExport {
 #[derive(Clone, Debug)]
 struct IrModuleImport {
     request: crate::module::ModuleRequestIndex,
-    import_name: JsString,
+    import_name: ModuleImportName,
     binding: ModuleBindingId,
-    is_namespace: bool,
 }
 
 #[derive(Debug, Default)]
@@ -111,6 +115,36 @@ impl IrModule {
         });
         Ok(())
     }
+
+    fn add_indirect_export(
+        &mut self,
+        export_name: JsString,
+        target: ModuleExportTarget,
+        span: Span,
+    ) -> Result<(), Error> {
+        if self
+            .local_exports
+            .iter()
+            .any(|entry| entry.export_name == export_name)
+            || self
+                .exports
+                .iter()
+                .any(|entry| entry.export_name == export_name)
+        {
+            let mut message = NativeErrorMessage::new();
+            message.push_utf8("duplicate exported name '");
+            export_name.push_atom_get_str_to(&mut message);
+            message.push_utf8("'");
+            return Err(
+                Error::from_native_message(ErrorKind::Syntax, message).with_span(source_span(span))
+            );
+        }
+        self.exports.push(ModuleExport {
+            export_name,
+            target,
+        });
+        Ok(())
+    }
 }
 
 impl<'source> Parser<'source> {
@@ -164,12 +198,10 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Class) => {
                 self.with_exported_module_declaration(Self::parse_class_declaration)
             }
-            TokenKind::Keyword(Keyword::Default) | TokenKind::Punctuator(Punctuator::Multiply) => {
-                Err(Error::unsupported(
-                    "default and re-export module syntax is not implemented in this module slice",
-                    source_span(export_span),
-                ))
+            TokenKind::Keyword(Keyword::Default) => {
+                self.parse_module_default_expression_export(export_span)
             }
+            TokenKind::Punctuator(Punctuator::Multiply) => self.parse_module_star_export(),
             _ => Err(self.syntax_here("invalid export syntax")),
         }
     }
@@ -181,75 +213,92 @@ impl<'source> Parser<'source> {
         if matches!(self.current().kind, TokenKind::String(_)) {
             let request = self.parse_module_specifier()?;
             self.reject_module_import_attributes()?;
-            self.module_ir_mut()?.requested_modules.push(request);
+            self.add_module_request(request)?;
             return self.consume_statement_terminator();
         }
 
-        // R3dy deliberately starts with named imports. Default and namespace
-        // imports depend on default-export and namespace-exotic semantics,
-        // which remain fail-closed until their dedicated milestone.
-        if !self.is_punctuator(Punctuator::LeftBrace) {
+        let mut imports = Vec::new();
+        if self.is_punctuator(Punctuator::Multiply) {
+            self.advance()?;
+            if !self.is_contextual_keyword("as") {
+                return Err(self.syntax_here("expecting 'as'"));
+            }
+            self.advance()?;
+            let (local_name, local_span) = self.module_binding_identifier()?;
+            let binding = self.register_module_import_binding(&local_name, local_span, true)?;
+            imports.push((binding, ModuleImportName::Namespace));
+        } else if self.is_punctuator(Punctuator::LeftBrace) {
+            self.expect_punctuator(Punctuator::LeftBrace)?;
+            while !self.is_punctuator(Punctuator::RightBrace) {
+                let imported_token = self.current().clone();
+                let import_name = self.module_export_name()?;
+                let (local_name, local_span) = if self.is_contextual_keyword("as") {
+                    self.advance()?;
+                    self.module_binding_identifier()?
+                } else {
+                    let TokenKind::Identifier(identifier) = imported_token.kind else {
+                        return Err(Error::syntax(
+                            "imported keyword requires an 'as' binding",
+                            source_span(imported_token.span),
+                        ));
+                    };
+                    validate_identifier(
+                        &identifier,
+                        imported_token.span,
+                        true,
+                        IdentifierContext::Variable,
+                    )?;
+                    (identifier.value, imported_token.span)
+                };
+                let binding =
+                    self.register_module_import_binding(&local_name, local_span, false)?;
+                imports.push((binding, ModuleImportName::Name(import_name)));
+                if !self.consume_punctuator(Punctuator::Comma)? {
+                    break;
+                }
+            }
+            self.expect_punctuator(Punctuator::RightBrace)?;
+        } else {
+            // Default imports (including `default, * as namespace`) stay
+            // fail-closed until default declaration exports are implemented.
             return Err(Error::unsupported(
-                "default and namespace imports are not implemented in this module slice",
+                "default imports are not implemented in this module slice",
                 source_span(import_span),
             ));
         }
+        let request_index = self.parse_module_from_clause()?;
+        let module = self.module_ir_mut()?;
+        module.imports.extend(
+            imports
+                .into_iter()
+                .map(|(binding, import_name)| IrModuleImport {
+                    request: request_index,
+                    import_name,
+                    binding,
+                }),
+        );
+        self.consume_statement_terminator()
+    }
 
-        self.expect_punctuator(Punctuator::LeftBrace)?;
-        let mut imports = Vec::new();
-        while !self.is_punctuator(Punctuator::RightBrace) {
-            let imported_token = self.current().clone();
-            let import_name = self.module_export_name()?;
-            let (local_name, local_span) = if self.is_contextual_keyword("as") {
-                self.advance()?;
-                self.module_binding_identifier()?
-            } else {
-                let TokenKind::Identifier(identifier) = imported_token.kind else {
-                    return Err(Error::syntax(
-                        "imported keyword requires an 'as' binding",
-                        source_span(imported_token.span),
-                    ));
-                };
-                validate_identifier(
-                    &identifier,
-                    imported_token.span,
-                    true,
-                    IdentifierContext::Variable,
-                )?;
-                (identifier.value, imported_token.span)
-            };
-            let binding = self.register_module_import_binding(&local_name, local_span, false)?;
-            imports.push((binding, import_name, false));
-            if !self.consume_punctuator(Punctuator::Comma)? {
-                break;
-            }
-        }
-        self.expect_punctuator(Punctuator::RightBrace)?;
+    fn add_module_request(
+        &mut self,
+        request: ModuleRequest,
+    ) -> Result<crate::module::ModuleRequestIndex, Error> {
+        let module = self.module_ir_mut()?;
+        let index = u32::try_from(module.requested_modules.len())
+            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many requested modules"))?;
+        module.requested_modules.push(request);
+        Ok(crate::module::ModuleRequestIndex(index))
+    }
+
+    fn parse_module_from_clause(&mut self) -> Result<crate::module::ModuleRequestIndex, Error> {
         if !self.is_contextual_keyword("from") {
             return Err(self.syntax_here("from clause expected"));
         }
         self.advance()?;
         let request = self.parse_module_specifier()?;
         self.reject_module_import_attributes()?;
-        let request_index = {
-            let module = self.module_ir_mut()?;
-            let index = u32::try_from(module.requested_modules.len())
-                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many requested modules"))?;
-            module.requested_modules.push(request);
-            crate::module::ModuleRequestIndex(index)
-        };
-        let module = self.module_ir_mut()?;
-        module.imports.extend(
-            imports
-                .into_iter()
-                .map(|(binding, import_name, is_namespace)| IrModuleImport {
-                    request: request_index,
-                    import_name,
-                    binding,
-                    is_namespace,
-                }),
-        );
-        self.consume_statement_terminator()
+        self.add_module_request(request)
     }
 
     fn parse_module_specifier(&mut self) -> Result<ModuleRequest, Error> {
@@ -306,6 +355,7 @@ impl<'source> Parser<'source> {
 
     fn parse_module_export_clause(&mut self) -> Result<(), Error> {
         self.expect_punctuator(Punctuator::LeftBrace)?;
+        let mut entries = Vec::new();
         while !self.is_punctuator(Punctuator::RightBrace) {
             let (local_name, local_span) = self.module_identifier_name()?;
             let export_name = if self.is_contextual_keyword("as") {
@@ -314,18 +364,110 @@ impl<'source> Parser<'source> {
             } else {
                 JsString::try_from_utf8(&local_name)?
             };
-            self.module_ir_mut()?
-                .add_local_export(local_name, export_name, local_span)?;
+            entries.push((local_name, export_name, local_span));
             if !self.consume_punctuator(Punctuator::Comma)? {
                 break;
             }
         }
         self.expect_punctuator(Punctuator::RightBrace)?;
         if self.is_contextual_keyword("from") {
-            return Err(
-                self.unsupported_here("indirect exports are not implemented in this module slice")
-            );
+            let request = self.parse_module_from_clause()?;
+            let module = self.module_ir_mut()?;
+            for (import_name, export_name, span) in entries {
+                module.add_indirect_export(
+                    export_name,
+                    ModuleExportTarget::Indirect {
+                        request,
+                        import_name: ModuleImportName::Name(JsString::try_from_utf8(&import_name)?),
+                    },
+                    span,
+                )?;
+            }
+        } else {
+            let module = self.module_ir_mut()?;
+            for (local_name, export_name, span) in entries {
+                module.add_local_export(local_name, export_name, span)?;
+            }
         }
+        self.consume_statement_terminator()
+    }
+
+    fn parse_module_star_export(&mut self) -> Result<(), Error> {
+        self.expect_punctuator(Punctuator::Multiply)?;
+        if self.is_contextual_keyword("as") {
+            self.advance()?;
+            // Pinned QuickJS 2026-06-04 accepts IdentifierName here, including
+            // keywords, but deliberately does not accept a StringLiteral.
+            let (export_name, span) = self.module_identifier_name()?;
+            let request = self.parse_module_from_clause()?;
+            self.module_ir_mut()?.add_indirect_export(
+                JsString::try_from_utf8(&export_name)?,
+                ModuleExportTarget::Indirect {
+                    request,
+                    import_name: ModuleImportName::Namespace,
+                },
+                span,
+            )?;
+        } else {
+            let request = self.parse_module_from_clause()?;
+            self.module_ir_mut()?
+                .star_exports
+                .push(ModuleStarExport { request });
+        }
+        self.consume_statement_terminator()
+    }
+
+    fn parse_module_default_expression_export(&mut self, export_span: Span) -> Result<(), Error> {
+        let default_span = self.current().span;
+        self.advance()?;
+        if matches!(
+            self.current().kind,
+            TokenKind::Keyword(Keyword::Class | Keyword::Function)
+        ) || matches!(self.current().kind, TokenKind::Identifier(_))
+            && self.async_function_ahead()
+        {
+            return Err(Error::unsupported(
+                "default function and class exports are not implemented in this module slice",
+                source_span(export_span),
+            ));
+        }
+
+        self.parse_assignment_allow_in()?;
+        if let Some(definition) = self.take_anonymous_function_definition() {
+            let name = self.add_constant(IrConstant::Primitive(Value::String(
+                JsString::try_from_utf8("default")?,
+            )))?;
+            self.emit_anonymous_set_name(definition, Instruction::SetName(name))?;
+        }
+
+        let binding = if let Some(binding) = self
+            .module_ir_mut()?
+            .binding_id(MODULE_DEFAULT_BINDING_NAME)
+        {
+            binding
+        } else {
+            self.register_lexical_binding(
+                MODULE_DEFAULT_BINDING_NAME,
+                default_span,
+                default_span,
+                false,
+                false,
+            )?;
+            self.module_ir_mut()?
+                .binding_id(MODULE_DEFAULT_BINDING_NAME)
+                .ok_or_else(|| Error::internal("default module binding was not registered"))?
+        };
+        self.emit_identifier(
+            MODULE_DEFAULT_BINDING_NAME.to_owned(),
+            default_span,
+            IdentifierAccess::Initialize,
+        )?;
+        let actual_name = self.module_ir_mut()?.binding(binding)?.name.clone();
+        self.module_ir_mut()?.add_local_export(
+            actual_name,
+            JsString::try_from_utf8("default")?,
+            export_span,
+        )?;
         self.consume_statement_terminator()
     }
 
@@ -575,7 +717,6 @@ pub(super) fn finish_module(
                 request: import.request,
                 import_name: import.import_name,
                 closure_index,
-                is_namespace: import.is_namespace,
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
