@@ -874,6 +874,13 @@ enum CallArguments {
 #[derive(Debug)]
 enum IrOp {
     Bytecode(Instruction),
+    /// Parser-only `ImportMeta` marker. It resolves directly to the hidden
+    /// module cell and deliberately never becomes an IdentifierReference, so
+    /// assignment/update syntax cannot target it.
+    ImportMeta {
+        span: Span,
+        scope: ScopeId,
+    },
     /// Typed counterparts of QuickJS `OP_enter_scope` / `OP_leave_scope`.
     /// They remain scope identities until every declaration and child capture
     /// is known, then lowering expands entry to lexical TDZ initialization and
@@ -1030,6 +1037,7 @@ impl IrOp {
     fn stack_effect(&self) -> (usize, usize) {
         match self {
             Self::Bytecode(instruction) => instruction.stack_effect(),
+            Self::ImportMeta { .. } => (0, 1),
             Self::EnterScope(_)
             | Self::PrepareCatchScope(_)
             | Self::LeaveScope(_)
@@ -6638,14 +6646,15 @@ impl<'source> Parser<'source> {
                 return Err(self.syntax_here("import.meta only valid in module code"));
             }
             self.advance()?;
-            self.emit_instruction(Instruction::Undefined)?;
+            self.ensure_module_import_meta_binding()?;
+            self.emit_at(
+                IrOp::ImportMeta {
+                    span: import_span,
+                    scope: self.current_ir().current_scope,
+                },
+                source_offset(import_span)?,
+            )?;
             self.anonymous_function_definition = None;
-            if self.pending_unsupported.is_none() {
-                self.pending_unsupported = Some(Error::unsupported(
-                    "import.meta is not implemented in this module slice",
-                    source_span(import_span),
-                ));
-            }
             return Ok(());
         }
 
@@ -11330,6 +11339,7 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
     enum UnresolvedAccess {
         Identifier(IdentifierAccess),
         IdentifierReference(IdentifierReferenceAccess),
+        ImportMeta,
         PrivateField(PrivateFieldAccess),
     }
 
@@ -11378,6 +11388,13 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
                             *scope,
                             UnresolvedAccess::IdentifierReference(*access),
                         )),
+                        IrOp::ImportMeta { span, scope } => Some((
+                            index,
+                            crate::module::MODULE_IMPORT_META_BINDING_NAME.to_owned(),
+                            *span,
+                            *scope,
+                            UnresolvedAccess::ImportMeta,
+                        )),
                         IrOp::PrivateField {
                             name,
                             span,
@@ -11409,6 +11426,7 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
                                 access,
                             )?
                         }
+                        UnresolvedAccess::ImportMeta => resolve_import_meta(tree, function_id)?,
                         UnresolvedAccess::PrivateField(access) => {
                             private_reference::resolve_private_field_operation(
                                 tree,
@@ -12253,48 +12271,71 @@ fn seed_module_bindings(tree: &mut FunctionTree) -> Result<(), Error> {
     let bindings = module
         .bindings
         .iter()
-        .map(|binding| (binding.name.clone(), binding.declaration, binding.import))
+        .map(|binding| {
+            (
+                binding.name.clone(),
+                binding.declaration,
+                binding.import,
+                binding.is_import_meta,
+            )
+        })
         .collect::<Vec<_>>();
-    for (binding_index, (name, declaration, import)) in bindings.into_iter().enumerate() {
+    for (binding_index, (name, declaration, import, is_import_meta)) in
+        bindings.into_iter().enumerate()
+    {
         let name_index = ensure_string_constant(&mut tree.functions[0], &name)?;
-        let (source, is_lexical, is_const, kind) = match import {
-            Some(module::ModuleImportKind::Named) => (
-                if declaration.is_some() {
-                    ClosureSource::ModuleImportCollision
-                } else {
-                    ClosureSource::ModuleImport
-                },
-                true,
-                true,
-                ClosureVariableKind::ModuleImportView,
-            ),
-            Some(module::ModuleImportKind::Namespace) => (
-                if declaration.is_some() {
-                    ClosureSource::ModuleImportCollision
-                } else {
-                    ClosureSource::ModuleDeclaration
-                },
+        let (source, is_lexical, is_const, kind) = if is_import_meta {
+            if declaration.is_some() || import.is_some() {
+                return Err(Error::internal(
+                    "import.meta binding acquired a declaration or import",
+                ));
+            }
+            (
+                ClosureSource::ModuleImportMeta,
                 true,
                 true,
                 ClosureVariableKind::Normal,
-            ),
-            None => match declaration.ok_or_else(|| {
-                Error::internal("module binding has neither an import nor a declaration")
-            })? {
-                module::ModuleDeclarationOrigin::Var
-                | module::ModuleDeclarationOrigin::Function { .. } => (
-                    ClosureSource::ModuleDeclaration,
-                    false,
-                    false,
-                    ClosureVariableKind::Normal,
-                ),
-                module::ModuleDeclarationOrigin::Lexical { is_const } => (
-                    ClosureSource::ModuleDeclaration,
+            )
+        } else {
+            match import {
+                Some(module::ModuleImportKind::Named) => (
+                    if declaration.is_some() {
+                        ClosureSource::ModuleImportCollision
+                    } else {
+                        ClosureSource::ModuleImport
+                    },
                     true,
-                    is_const,
+                    true,
+                    ClosureVariableKind::ModuleImportView,
+                ),
+                Some(module::ModuleImportKind::Namespace) => (
+                    if declaration.is_some() {
+                        ClosureSource::ModuleImportCollision
+                    } else {
+                        ClosureSource::ModuleDeclaration
+                    },
+                    true,
+                    true,
                     ClosureVariableKind::Normal,
                 ),
-            },
+                None => match declaration.ok_or_else(|| {
+                    Error::internal("module binding has neither an import nor a declaration")
+                })? {
+                    module::ModuleDeclarationOrigin::Var
+                    | module::ModuleDeclarationOrigin::Function { .. } => (
+                        ClosureSource::ModuleDeclaration,
+                        false,
+                        false,
+                        ClosureVariableKind::Normal,
+                    ),
+                    module::ModuleDeclarationOrigin::Lexical { is_const } => (
+                        ClosureSource::ModuleDeclaration,
+                        true,
+                        is_const,
+                        ClosureVariableKind::Normal,
+                    ),
+                },
+            }
         };
         let closure_index = push_closure_variable(
             &mut tree.functions[0],
@@ -13183,6 +13224,36 @@ fn resolve_identifier(
         access,
         path.sources,
         path.fallback,
+    )
+}
+
+fn resolve_import_meta(
+    tree: &mut FunctionTree,
+    consuming_function: FunctionId,
+) -> Result<IrOp, Error> {
+    let binding = tree
+        .module
+        .as_ref()
+        .ok_or_else(|| Error::internal("import.meta escaped module compilation"))?
+        .bindings
+        .iter()
+        .enumerate()
+        .find_map(|(index, binding)| {
+            binding
+                .is_import_meta
+                .then_some(module::ModuleBindingId(index))
+        })
+        .ok_or_else(|| Error::internal("import.meta has no hidden module binding"))?;
+    resolved_binding_operation(
+        tree,
+        0,
+        consuming_function,
+        ResolvedBinding {
+            storage: BindingStorage::Module(binding),
+            kind: BindingKind::Lexical { is_const: true },
+        },
+        IdentifierAccess::Get,
+        crate::module::MODULE_IMPORT_META_BINDING_NAME,
     )
 }
 
@@ -15927,6 +15998,7 @@ fn lower_ops(operations: Vec<SpannedIrOp>, scopes: &[ScopeLifecycle]) -> Result<
             }
             IrOp::Identifier { .. }
             | IrOp::IdentifierReference { .. }
+            | IrOp::ImportMeta { .. }
             | IrOp::PrivateField { .. } => {
                 return Err(Error::internal(
                     "lexical operation reached bytecode lowering before resolution",

@@ -2023,15 +2023,31 @@ fn module_root_rejects_html_comments_and_strict_with_before_execution() {
 }
 
 #[test]
-fn module_import_meta_remains_an_explicit_implementation_frontier() {
-    let error = compile_unlinked_module_with_filename(
-        "globalThis.meta = import.meta;",
+fn module_import_meta_uses_one_hidden_module_cell() {
+    let module = compile_unlinked_module_with_filename(
+        "globalThis.meta = import.meta; globalThis.readMeta = () => import.meta;",
         "import-meta.mjs",
         DebugInfoMode::StripDebug,
     )
-    .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert!(error.message().contains("import.meta is not implemented"));
+    .unwrap();
+    let meta_slots = module
+        .function()
+        .closure_variables()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, descriptor)| {
+            (descriptor.source == ClosureSource::ModuleImportMeta).then_some((index, descriptor))
+        })
+        .collect::<Vec<_>>();
+    let [(index, descriptor)] = meta_slots.as_slice() else {
+        panic!("module did not retain exactly one import.meta cell: {meta_slots:?}");
+    };
+    assert!(descriptor.is_lexical);
+    assert!(descriptor.is_const);
+    assert_eq!(descriptor.kind, ClosureVariableKind::Normal);
+    assert!(module.function().code().iter().any(|instruction| {
+        matches!(instruction, Instruction::GetVarRefCheck(found) if usize::from(*found) == *index)
+    }));
 
     let script = compile_unlinked_script_with_filename(
         "import.meta",
@@ -2041,6 +2057,21 @@ fn module_import_meta_remains_an_explicit_implementation_frontier() {
     .unwrap_err();
     assert_eq!(script.kind(), ErrorKind::Syntax);
     assert!(script.message().contains("only valid in module code"));
+
+    for source in [
+        "import.meta = 1;",
+        "++import.meta;",
+        "[import.meta] = [];",
+        "for (import.meta in {}) {}",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "invalid-import-meta-target.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}: {error}");
+    }
 }
 
 #[test]

@@ -2697,7 +2697,8 @@ impl VmHost for RuntimeVmHost {
                 }
                 ClosureSource::ModuleDeclaration
                 | ClosureSource::ModuleImport
-                | ClosureSource::ModuleImportCollision => {
+                | ClosureSource::ModuleImportCollision
+                | ClosureSource::ModuleImportMeta => {
                     return Err(Error::internal(
                         "child closure attempted to resolve a module-root descriptor",
                     ));

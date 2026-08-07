@@ -569,7 +569,8 @@ impl Runtime {
                 ClosureSource::EvalEnvironment(_) => {}
                 ClosureSource::ModuleDeclaration
                 | ClosureSource::ModuleImport
-                | ClosureSource::ModuleImportCollision => {
+                | ClosureSource::ModuleImportCollision
+                | ClosureSource::ModuleImportMeta => {
                     return Err(RuntimeError::Invariant(
                         "eval root retained a module closure descriptor",
                     ));
@@ -712,7 +713,8 @@ impl Runtime {
                 }
                 ClosureSource::ModuleDeclaration
                 | ClosureSource::ModuleImport
-                | ClosureSource::ModuleImportCollision => {
+                | ClosureSource::ModuleImportCollision
+                | ClosureSource::ModuleImportMeta => {
                     return Err(RuntimeError::Invariant(
                         "eval root retained a module closure descriptor",
                     ));

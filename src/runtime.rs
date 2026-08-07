@@ -3003,7 +3003,8 @@ impl Runtime {
                 }
                 ClosureSource::ModuleDeclaration
                 | ClosureSource::ModuleImport
-                | ClosureSource::ModuleImportCollision => {
+                | ClosureSource::ModuleImportCollision
+                | ClosureSource::ModuleImportMeta => {
                     return Err(RuntimeError::Invariant(
                         "ordinary root publication received a module descriptor",
                     ));

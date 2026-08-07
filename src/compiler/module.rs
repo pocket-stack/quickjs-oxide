@@ -7,14 +7,14 @@
 
 use super::*;
 use crate::module::{
-    MODULE_DEFAULT_BINDING_NAME, ModuleExport, ModuleExportTarget, ModuleImport,
-    ModuleImportCollision, ModuleImportCollisionDeclaration, ModuleImportName,
+    MODULE_DEFAULT_BINDING_NAME, MODULE_IMPORT_META_BINDING_NAME, ModuleExport, ModuleExportTarget,
+    ModuleImport, ModuleImportCollision, ModuleImportCollisionDeclaration, ModuleImportName,
     ModuleLinkInitializer, ModuleLinkInitializerValue, ModuleRequest, ModuleStarExport,
     UnlinkedModule, UnlinkedModuleTables,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ModuleBindingId(usize);
+pub(super) struct ModuleBindingId(pub(super) usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ModuleDeclarationOrigin {
@@ -40,6 +40,7 @@ pub(super) struct IrModuleBinding {
     pub(super) declaration: Option<ModuleDeclarationOrigin>,
     pub(super) declaration_scope: Option<ScopeId>,
     pub(super) import: Option<ModuleImportKind>,
+    pub(super) is_import_meta: bool,
     pub(super) closure_index: Option<u16>,
 }
 
@@ -387,6 +388,7 @@ impl<'source> Parser<'source> {
                     declaration: None,
                     declaration_scope: None,
                     import: Some(import),
+                    is_import_meta: false,
                     closure_index: None,
                 });
                 binding
@@ -652,10 +654,64 @@ impl<'source> Parser<'source> {
             declaration: Some(declaration),
             declaration_scope: Some(declaration_scope),
             import: None,
+            is_import_meta: false,
             closure_index: None,
         });
         module.declaration_order.push(id);
         Ok(id)
+    }
+
+    pub(super) fn ensure_module_import_meta_binding(&mut self) -> Result<(), Error> {
+        let binding = if let Some((index, _)) = self
+            .module
+            .as_ref()
+            .ok_or_else(|| Error::internal("import.meta has no module record"))?
+            .bindings
+            .iter()
+            .enumerate()
+            .find(|(_, binding)| binding.is_import_meta)
+        {
+            ModuleBindingId(index)
+        } else {
+            let module = self.module_ir_mut()?;
+            let binding = ModuleBindingId(module.bindings.len());
+            module.bindings.push(IrModuleBinding {
+                name: MODULE_IMPORT_META_BINDING_NAME.to_owned(),
+                declaration: None,
+                declaration_scope: None,
+                import: None,
+                is_import_meta: true,
+                closure_index: None,
+            });
+            binding
+        };
+
+        let root = self
+            .functions
+            .first_mut()
+            .ok_or_else(|| Error::internal("module parser has no root function"))?;
+        let scope = root.body_scope;
+        if let Some(existing) = root.binding_id_in_scope(scope, MODULE_IMPORT_META_BINDING_NAME) {
+            let existing = root
+                .bindings
+                .get(existing.0)
+                .ok_or_else(|| Error::internal("import.meta binding moved"))?;
+            if existing.storage != BindingStorage::Module(binding)
+                || existing.kind != (BindingKind::Lexical { is_const: true })
+            {
+                return Err(Error::internal("import.meta binding is malformed"));
+            }
+        } else {
+            root.add_binding(
+                scope,
+                scope,
+                MODULE_IMPORT_META_BINDING_NAME.to_owned(),
+                BindingStorage::Module(binding),
+                BindingKind::Lexical { is_const: true },
+                None,
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn export_module_declaration(

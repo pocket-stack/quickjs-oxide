@@ -13,6 +13,9 @@ use crate::value::JsString;
 /// Source text cannot name this cell.
 pub(crate) const MODULE_DEFAULT_BINDING_NAME: &str = "<module-default>";
 
+/// Unspellable compiler/runtime cell which caches one module's `import.meta`.
+pub(crate) const MODULE_IMPORT_META_BINDING_NAME: &str = "<import.meta>";
+
 /// Source-order index into [`UnlinkedModule::requested_modules`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ModuleRequestIndex(pub(crate) u32);

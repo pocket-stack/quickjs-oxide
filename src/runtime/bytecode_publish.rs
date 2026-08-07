@@ -1225,6 +1225,34 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
 
     let mut imported_slots = HashSet::new();
     let mut namespace_slots = HashSet::new();
+    let mut import_meta_slot = None;
+    for (index, descriptor) in descriptors.iter().enumerate() {
+        if descriptor.source != ClosureSource::ModuleImportMeta {
+            continue;
+        }
+        let index = u16::try_from(index).map_err(|_| {
+            RuntimeError::Engine(Error::internal(
+                "import.meta descriptor index exceeds bytecode range",
+            ))
+        })?;
+        if import_meta_slot.replace(index).is_some() {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module contains more than one import.meta binding",
+            )));
+        }
+        if !descriptor.is_lexical
+            || !descriptor.is_const
+            || descriptor.kind != ClosureVariableKind::Normal
+            || unlinked_closure_name(function, descriptor)?
+                != Some(&JsString::from_static(
+                    crate::module::MODULE_IMPORT_META_BINDING_NAME,
+                ))
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "import.meta descriptor has invalid binding metadata",
+            )));
+        }
+    }
     for import in module.imports() {
         if !request_exists(import.request) {
             return Err(RuntimeError::Engine(Error::internal(
@@ -3091,6 +3119,7 @@ fn verify_unlinked_tree_with_root(
                     | ClosureSource::ModuleDeclaration
                     | ClosureSource::ModuleImport
                     | ClosureSource::ModuleImportCollision
+                    | ClosureSource::ModuleImportMeta
             );
             let name = unlinked_closure_name(function, descriptor)?;
             if descriptor.kind.is_eval_variable_object()
@@ -3225,6 +3254,20 @@ fn verify_unlinked_tree_with_root(
                                 )));
                             }
                         }
+                        ClosureSource::ModuleImportMeta => {
+                            if descriptor.kind != ClosureVariableKind::Normal
+                                || !descriptor.is_lexical
+                                || !descriptor.is_const
+                                || name
+                                    != Some(&JsString::from_static(
+                                        crate::module::MODULE_IMPORT_META_BINDING_NAME,
+                                    ))
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "import.meta descriptor has invalid binding metadata",
+                                )));
+                            }
+                        }
                         ClosureSource::Global => {
                             if descriptor.kind != ClosureVariableKind::Normal
                                 || descriptor.is_lexical
@@ -3278,7 +3321,8 @@ fn verify_unlinked_tree_with_root(
                     }
                     ClosureSource::ModuleDeclaration
                     | ClosureSource::ModuleImport
-                    | ClosureSource::ModuleImportCollision => {
+                    | ClosureSource::ModuleImportCollision
+                    | ClosureSource::ModuleImportMeta => {
                         return Err(RuntimeError::Engine(Error::internal(
                             "only a verified module root may own a module binding",
                         )));
@@ -4408,7 +4452,8 @@ fn verify_unlinked_tree_with_root(
                         }
                         ClosureSource::ModuleDeclaration
                         | ClosureSource::ModuleImport
-                        | ClosureSource::ModuleImportCollision => {
+                        | ClosureSource::ModuleImportCollision
+                        | ClosureSource::ModuleImportMeta => {
                             return Err(RuntimeError::Engine(Error::internal(
                                 "child bytecode directly referenced a module-root descriptor",
                             )));
@@ -4760,6 +4805,28 @@ mod tests {
         )
     }
 
+    fn module_with_mutated_function(
+        module: UnlinkedModule,
+        mutate: impl FnOnce(&mut UnlinkedFunctionParts),
+    ) -> UnlinkedModule {
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        mutate(&mut function_parts);
+        UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
+        )
+    }
+
     fn function_from_parts(parts: UnlinkedFunctionParts) -> UnlinkedFunction {
         let UnlinkedFunctionParts {
             code,
@@ -4872,6 +4939,68 @@ mod tests {
             error
                 .to_string()
                 .contains("module import collision ledger reused a closure slot")
+        );
+    }
+
+    #[test]
+    fn module_import_meta_descriptor_is_unique_and_exact() {
+        let compile = || {
+            compile_unlinked_module_with_filename(
+                "globalThis.meta = import.meta;",
+                "forged-import-meta.mjs",
+                DebugInfoMode::StripDebug,
+            )
+            .unwrap()
+        };
+
+        let malformed = module_with_mutated_function(compile(), |parts| {
+            let descriptor = parts
+                .closure_variables
+                .iter_mut()
+                .find(|descriptor| descriptor.source == ClosureSource::ModuleImportMeta)
+                .unwrap();
+            descriptor.is_const = false;
+        });
+        let error = verify_unlinked_module_tree(&malformed).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("import.meta descriptor has invalid binding metadata"),
+            "{error}"
+        );
+
+        let unnamed = module_with_mutated_function(compile(), |parts| {
+            let descriptor = parts
+                .closure_variables
+                .iter_mut()
+                .find(|descriptor| descriptor.source == ClosureSource::ModuleImportMeta)
+                .unwrap();
+            descriptor.name = ClosureVariableName::None;
+        });
+        let error = verify_unlinked_module_tree(&unnamed).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("import.meta descriptor has invalid binding metadata"),
+            "{error}"
+        );
+
+        let duplicate = module_with_mutated_function(compile(), |parts| {
+            let descriptor = parts
+                .closure_variables
+                .iter()
+                .find(|descriptor| descriptor.source == ClosureSource::ModuleImportMeta)
+                .copied()
+                .unwrap();
+            parts.closure_variables.push(descriptor);
+            parts.metadata.closure_count += 1;
+        });
+        let error = verify_unlinked_module_tree(&duplicate).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module contains more than one import.meta binding"),
+            "{error}"
         );
     }
 

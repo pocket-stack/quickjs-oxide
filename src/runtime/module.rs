@@ -1075,6 +1075,23 @@ impl Runtime {
                         }
                     }
                 }
+                ClosureSource::ModuleImportMeta => {
+                    if descriptor.kind != ClosureVariableKind::Normal
+                        || !descriptor.is_lexical
+                        || !descriptor.is_const
+                    {
+                        return Err(RuntimeError::Invariant(
+                            "published import.meta binding has invalid metadata",
+                        ));
+                    }
+                    let meta = self.new_object(None)?;
+                    Some(self.new_var_ref(
+                        Value::Object(meta),
+                        true,
+                        true,
+                        ClosureVariableKind::Normal,
+                    )?)
+                }
                 ClosureSource::Global => {
                     if descriptor.kind != ClosureVariableKind::Normal
                         || descriptor.is_lexical
@@ -1676,6 +1693,11 @@ impl Runtime {
                                 ));
                             }
                         },
+                        ClosureSource::ModuleImportMeta => {
+                            return Err(RuntimeError::Invariant(
+                                "import.meta binding escaped into module exports",
+                            ));
+                        }
                         ClosureSource::ParentLocal(_)
                         | ClosureSource::ParentArgument(_)
                         | ClosureSource::ParentClosure(_)
@@ -3566,6 +3588,50 @@ mod tests {
             context.take_exception().unwrap(),
             Some(Value::Object(_))
         ));
+    }
+
+    #[test]
+    fn import_meta_is_cached_per_defining_module() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([(
+            "pkg/dependency.js",
+            r#"
+                globalThis.__dependencyMeta = import.meta;
+                export function readMeta() { return import.meta; }
+            "#,
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                    import { readMeta } from "./dependency.js";
+                    const local = import.meta;
+                    function localRead() { return import.meta; }
+                    const before = Reflect.ownKeys(local).length === 0;
+                    local.answer = 42;
+                    const descriptor = Object.getOwnPropertyDescriptor(local, "answer");
+                    globalThis.__lateReadMeta = readMeta;
+                    globalThis.__importMetaParity =
+                        before &&
+                        Object.getPrototypeOf(local) === null &&
+                        Object.isExtensible(local) &&
+                        local === import.meta && local === localRead() &&
+                        readMeta() === globalThis.__dependencyMeta &&
+                        readMeta() !== local &&
+                        descriptor.value === 42 && descriptor.writable &&
+                        descriptor.enumerable && descriptor.configurable &&
+                        delete local.answer && !("answer" in local) &&
+                        typeof local.resolve === "undefined";
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__importMetaParity === true");
+        drop(module);
+        runtime.run_gc().unwrap();
+        assert_script_true(&mut context, "__lateReadMeta() === __dependencyMeta");
     }
 
     #[test]

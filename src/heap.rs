@@ -3232,6 +3232,9 @@ pub enum ClosureSource {
     /// Root import slot which also receives a pinned QuickJS declaration-time
     /// raw write. This provenance never propagates through child closures.
     ModuleImportCollision,
+    /// Hidden, immutable cell containing one module record's cached
+    /// null-prototype `import.meta` object.
+    ModuleImportMeta,
 }
 
 /// Closure-name representation before and after runtime publication.
@@ -10534,6 +10537,7 @@ impl Heap {
             *count -= 1;
         }
         let mut global_declaration_names = HashMap::new();
+        let mut import_meta_count = 0_u8;
         for descriptor in bytecode.closure_variables.iter().copied() {
             if bytecode.metadata.is_module {
                 if !matches!(
@@ -10541,6 +10545,7 @@ impl Heap {
                     ClosureSource::ModuleDeclaration
                         | ClosureSource::ModuleImport
                         | ClosureSource::ModuleImportCollision
+                        | ClosureSource::ModuleImportMeta
                         | ClosureSource::Global
                 ) {
                     return Err(HeapError::Invariant(
@@ -10552,6 +10557,7 @@ impl Heap {
                 ClosureSource::ModuleDeclaration
                     | ClosureSource::ModuleImport
                     | ClosureSource::ModuleImportCollision
+                    | ClosureSource::ModuleImportMeta
             ) {
                 return Err(HeapError::Invariant(
                     "module closure descriptor escaped module bytecode",
@@ -10587,7 +10593,24 @@ impl Heap {
                         "module import collision descriptor has invalid binding metadata",
                     ));
                 }
+                ClosureSource::ModuleImportMeta
+                    if descriptor.kind != ClosureVariableKind::Normal
+                        || !descriptor.is_lexical
+                        || !descriptor.is_const =>
+                {
+                    return Err(HeapError::Invariant(
+                        "import.meta descriptor has invalid binding metadata",
+                    ));
+                }
                 _ => {}
+            }
+            if descriptor.source == ClosureSource::ModuleImportMeta {
+                import_meta_count = import_meta_count.saturating_add(1);
+                if import_meta_count > 1 {
+                    return Err(HeapError::Invariant(
+                        "module bytecode contains more than one import.meta binding",
+                    ));
+                }
             }
             if descriptor.kind == ClosureVariableKind::ModuleImportView
                 && (!descriptor.is_lexical
@@ -10690,6 +10713,7 @@ impl Heap {
                     | ClosureSource::ModuleDeclaration
                     | ClosureSource::ModuleImport
                     | ClosureSource::ModuleImportCollision
+                    | ClosureSource::ModuleImportMeta
             ) || matches!(
                 descriptor.kind,
                 ClosureVariableKind::FunctionName
