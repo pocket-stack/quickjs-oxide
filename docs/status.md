@@ -4,6 +4,59 @@ Last audited: 2026-08-07. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dz-A module namespace admission
+
+R3dz-A admits the natural pinned Test262 namespace cohort: all 36 non-fixture
+roots below `language/module-code/namespace`, plus the adjacent
+`ambiguous-export-bindings/omitted-from-namespace.js` root. The resulting
+recursive union is exactly 37 roots / 48 source files / 46 static request
+edges. Every root is restricted to its independently reachable closure; the
+runner authenticates exact paths, complete source and frontmatter hashes,
+ordered request specifiers and normalized targets before module selection or
+loading. An adjacent unlisted root and a nested fixture mutation remain
+fail-closed.
+
+The implementation adds namespace imports, named indirect exports,
+`export *`, `export * as`, and `export default <expression>` to the existing
+static graph. Iterative `ResolveExport` and `GetExportedNames` use a global
+resolve set, preserve declaration-cell identity through imported aliases, and
+match QuickJS's `_star_` identity rule for namespace bindings from one owner.
+Ambiguous and missing indirect exports fail during linking with QuickJS-shaped
+errors rather than partially evaluating a graph.
+
+Module namespace objects are cached live exotic objects with a null prototype
+and a non-extensible shape. Their UTF-16-sorted string exports expose live
+bindings and TDZ, while `[[Set]]`, `[[Delete]]`, `[[DefineOwnProperty]]`,
+`[[HasProperty]]`, own-key enumeration, descriptors, and
+`Symbol.toStringTag` follow the corresponding QuickJS paths. Preallocated
+namespace import cells, iterative graph walks, and transactional
+`Empty/Building/Ready` rollback cover self-cycles, deep graphs, errors, and
+host panics without consuming the Rust call stack.
+
+Oxide passes the focused 37/37 cohort twice with byte-identical TSV/JSONL
+reports; pinned QuickJS 2026-06-04 also passes 37/37 twice. Two complete Oxide
+replays are byte-identical at 68,145 passes / 68,197 runnable / 102,037 total
+variants. Their TSV and JSONL SHA-256 values are
+`84932f55cfb59d31c75e603ef044f7fc06a972cd2fd66e790ac05354c093810e`
+and
+`02268353b77f1089503c334504863a5af0ba01a6f6d1f356eaa73ffcbd03628e`.
+
+The full join records 37 `unsupported-module` to `pass` gains and eight
+detail-only changes where `dynamic-import` remains unsupported; 101,992 rows
+are byte-identical and there are zero regressions. Thirteen other variants
+carrying `export-star-as-namespace-from-module` remain unchanged and
+fail-closed as unadmitted modules. Reversing those exact changes and the
+profile header reproduces the R3dy-A canonical hashes. Default imports,
+default function/class exports, `import.meta`, import attributes, dynamic
+import, and top-level await remain later module frontiers, so R3dz-A is still
+a pre-parity milestone.
+
+```sh
+./scripts/test-test262-module-namespace-a.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-module-namespace-a.sh
+TEST262_FULL_WORKERS=4 ./scripts/test-test262-module-namespace-a.sh --full
+```
+
 ## R3dy-A static-module loader/linker admission
 
 R3dy-A admits the first exact dependency-graph slice layered on R3dx. Its

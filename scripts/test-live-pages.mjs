@@ -264,10 +264,10 @@ function validatePageAndBuildLabel(page, wasm, expectedCommit) {
     'id="test262-progress-link"',
     "function that returns 42",
     "real quickjs-oxide Rust interpreter compiled to WebAssembly",
-    "68,091 passes / 68,143 runnable / 102,037 total",
-    "R3dw destructuring-assignment admission",
-    "+213 global passes",
-    "4 cohort module variants remain gated",
+    "68,145 passes / 68,197 runnable / 102,037 total",
+    "R3dz-A module namespace admission",
+    "+37 namespace passes",
+    "8 detail-only rows",
     "pre-parity",
   ];
   const missingPageMarker = requiredPageMarkers.find(

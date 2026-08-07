@@ -558,7 +558,7 @@ async function runAcceptance(url, serverErrors) {
     );
     assert.match(
       (await page.locator("#frozen-global-vector").textContent()) || "",
-      /68,091 passes\s*\/\s*68,143 runnable\s*\/\s*102,037 total[\s\S]*R3dw destructuring-assignment admission[\s\S]*\+213 global passes[\s\S]*4 cohort module variants remain gated[\s\S]*pre-parity/,
+      /68,145 passes\s*\/\s*68,197 runnable\s*\/\s*102,037 total[\s\S]*R3dz-A module namespace admission[\s\S]*\+37 namespace passes[\s\S]*8 detail-only rows[\s\S]*pre-parity/,
     );
 
     assert.ok(

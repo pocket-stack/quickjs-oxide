@@ -6,6 +6,46 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-07.
 
+## R3dz-A module namespace cohort
+
+R3dz-A freezes the complete natural namespace slice at the pinned Test262
+revision: 36 non-fixture roots under `language/module-code/namespace` and one
+adjacent ambiguous-star root. Their independently derived closures form a
+37-root / 48-file / 46-edge union. The checked-in manifest, per-root closure
+counts, ordered edge table, full source/frontmatter ledger, implementation
+stream, and feature-profile transition are checksum-bound. Coordinator and
+worker admission both use the same exact ledger, and a root can load only
+files reachable from its own authenticated graph.
+
+Oxide and pinned QuickJS 2026-06-04 each pass 37/37 twice. The Oxide focused
+TSV and JSONL hashes are
+`e45a39a8e7cb9bf0f267cace70bb3cef27cf759beb8323d0e174b9aa2424da04`
+and
+`b5c76fa1f84abb6afd1fccc9ee4706a12979178807c4bd1c6e8f731d477f9091`.
+An adjacent unlisted module remains `unsupported-module`, direct worker entry
+rejects it, and a mutation in the deepest nested fixture is detected before
+execution.
+
+The promoted global profile adds only
+`export-star-as-namespace-from-module`. Across the full 102,037-variant
+vector, exactly 37 namespace rows gain passes and eight dynamic-import rows
+change only their unsupported-feature detail; 101,992 rows are byte-identical
+and there are no previous-pass regressions. Thirteen other feature-tagged
+module variants remain byte-identical and unadmitted. Two independent full
+candidate reports match byte-for-byte at 68,145 passes / 68,197 runnable,
+with TSV SHA-256
+`84932f55cfb59d31c75e603ef044f7fc06a972cd2fd66e790ac05354c093810e`
+and JSONL SHA-256
+`02268353b77f1089503c334504863a5af0ba01a6f6d1f356eaa73ffcbd03628e`.
+The gate reverse-derives the R3dy-A report and requires its prior canonical
+hashes, preventing unrelated changes from being hidden by the new summary.
+
+```sh
+./scripts/test-test262-module-namespace-a.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-module-namespace-a.sh
+TEST262_FULL_WORKERS=4 ./scripts/test-test262-module-namespace-a.sh --full
+```
+
 ## R3dx dependency-free static-module execution
 
 R3dx replaces the blanket module rejection with an exact 13-path admission

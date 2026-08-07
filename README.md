@@ -6,22 +6,22 @@ the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 The `unsafe`-free engine is runnable, but it is not at Feature Parity yet. Its
 strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
-Unicode normalization, a synchronous static-module graph slice, and a growing
-parser/VM surface.
+Unicode normalization, synchronous static-module graphs with namespace
+objects, and a growing parser/VM surface.
 
-The admitted R3dy-A milestone adds a Context-local source loader and cache,
-iterative SCC linking/evaluation, side-effect and direct named imports, and
-read-only live import bindings. Its source-authenticated dependency-graph gate
-covers four roots and nine files; pinned QuickJS and Oxide both pass 4/4.
-Default and namespace imports, complete indirect/star export resolution,
-module namespace exotic objects, `import.meta`, attributes, and top-level
-await remain fail-closed. The full Feature Parity goal is unchanged.
+The admitted R3dz-A milestone adds namespace imports, named indirect, star,
+and namespace re-exports, iterative `ResolveExport`/`GetExportedNames`, and live
+module namespace exotic objects. Its source-authenticated gate covers the
+natural 37-root namespace cohort, a 48-file recursive closure, and 46 static
+request edges; pinned QuickJS and Oxide both pass 37/37. Default imports,
+default function/class exports, `import.meta`, attributes, and top-level await
+remain fail-closed. The full Feature Parity goal is unchanged.
 
-The latest admitted canonical vector is 68,108 passes / 68,160 runnable /
-102,037 total variants. R3dy-A adds exactly four module-graph passes over
-R3dx, leaves the other 102,033 variants unchanged, and has two byte-identical
-full replays. Detailed hashes and historical bookkeeping live in the status
-documents below.
+The latest admitted canonical vector is 68,145 passes / 68,197 runnable /
+102,037 total variants. R3dz-A adds exactly 37 passes over R3dy-A; eight other
+rows change only their remaining unsupported-feature detail, 101,992 rows are
+byte-identical, and the two full replays match byte-for-byte. Detailed hashes
+and historical bookkeeping live in the status documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
@@ -55,7 +55,6 @@ cargo run --quiet --bin qjs -- --print-result -e \
 ```sh
 cargo test --locked --workspace --all-targets
 ./scripts/test-test262-current-global.sh --check  # latest frozen receipt
-./scripts/test-test262-module-loader-linker-a.sh --check
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
 npm ci && npx playwright install chromium && npm run test:browser
