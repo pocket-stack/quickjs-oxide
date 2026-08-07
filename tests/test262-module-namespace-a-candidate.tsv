@@ -1,0 +1,48 @@
+# quickjs-oxide Test262 outcome vector v2
+# quickjs=2026-06-04
+# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+# oxide_profile_sha256=f076aed49c304be872dadc43bd08d2890ac8261df1dbac520bf42d0e3b077a7c
+# profile=test262-canonical-classified-v2
+# mode=both
+path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
+test/language/module-code/ambiguous-export-bindings/omitted-from-namespace.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/Symbol.iterator.js	sloppy	module	Symbol.iterator	normal		pass	normal		
+test/language/module-code/namespace/Symbol.toStringTag.js	sloppy	module	Symbol.toStringTag	normal		pass	normal		
+test/language/module-code/namespace/internals/define-own-property.js	sloppy	module	Symbol.iterator,Reflect,Symbol,Symbol.toStringTag	normal		pass	normal		
+test/language/module-code/namespace/internals/delete-exported-init.js	sloppy	module	Reflect	normal		pass	normal		
+test/language/module-code/namespace/internals/delete-exported-uninit.js	sloppy	module	Reflect,let	normal		pass	normal		
+test/language/module-code/namespace/internals/delete-non-exported.js	sloppy	module	Reflect,Symbol,Symbol.toStringTag	normal		pass	normal		
+test/language/module-code/namespace/internals/enumerate-binding-uninit.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip.js	sloppy	module	export-star-as-namespace-from-module	normal		pass	normal		
+test/language/module-code/namespace/internals/get-nested-namespace-props-nrml.js	sloppy	module	export-star-as-namespace-from-module	normal		pass	normal		
+test/language/module-code/namespace/internals/get-own-property-str-found-init.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/get-own-property-str-found-uninit.js	sloppy	module	let	normal		pass	normal		
+test/language/module-code/namespace/internals/get-own-property-str-not-found.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/get-own-property-sym.js	sloppy	module	Symbol,Symbol.toStringTag	normal		pass	normal		
+test/language/module-code/namespace/internals/get-prototype-of.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/get-str-found-init.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/get-str-found-uninit.js	sloppy	module	let	normal		pass	normal		
+test/language/module-code/namespace/internals/get-str-initialize.js	sloppy	module	let	normal		pass	normal		
+test/language/module-code/namespace/internals/get-str-not-found.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/get-str-update.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/get-sym-found.js	sloppy	module	Symbol.toStringTag	normal		pass	normal		
+test/language/module-code/namespace/internals/get-sym-not-found.js	sloppy	module	Symbol	normal		pass	normal		
+test/language/module-code/namespace/internals/has-property-str-found-init.js	sloppy	module	Reflect	normal		pass	normal		
+test/language/module-code/namespace/internals/has-property-str-found-uninit.js	sloppy	module	Reflect,let	normal		pass	normal		
+test/language/module-code/namespace/internals/has-property-str-not-found.js	sloppy	module	Reflect	normal		pass	normal		
+test/language/module-code/namespace/internals/has-property-sym-found.js	sloppy	module	Symbol.toStringTag,Reflect	normal		pass	normal		
+test/language/module-code/namespace/internals/has-property-sym-not-found.js	sloppy	module	Symbol,Reflect	normal		pass	normal		
+test/language/module-code/namespace/internals/is-extensible.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/object-hasOwnProperty-binding-uninit.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/object-keys-binding-uninit.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/object-propertyIsEnumerable-binding-uninit.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/own-property-keys-binding-types.js	sloppy	module	Reflect,Symbol.toStringTag,let	normal		pass	normal		
+test/language/module-code/namespace/internals/own-property-keys-sort.js	sloppy	module	Reflect,Symbol.toStringTag	normal		pass	normal		
+test/language/module-code/namespace/internals/prevent-extensions.js	sloppy	module	Reflect	normal		pass	normal		
+test/language/module-code/namespace/internals/set-prototype-of-null.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/set-prototype-of.js	sloppy	module		normal		pass	normal		
+test/language/module-code/namespace/internals/set.js	sloppy	module	Reflect,Symbol,Symbol.toStringTag	normal		pass	normal		
+# summary pass=37

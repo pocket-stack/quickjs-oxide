@@ -1,0 +1,2 @@
+test262.conf:44: ignoring testdir=test262/test
+Average memory statistics for 37 tests:

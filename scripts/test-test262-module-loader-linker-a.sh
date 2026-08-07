@@ -11,6 +11,8 @@ cd "$root"
 
 baseline=tests/test262-module-loader-linker-a-baseline.txt
 canonical_baseline=tests/test262-full-baseline.txt
+successor_baseline=tests/test262-module-namespace-a-baseline.txt
+successor_gate=scripts/test-test262-module-namespace-a.sh
 manifest=tests/test262-module-loader-linker-a.txt
 sources=tests/test262-module-loader-linker-a-sources.txt
 negatives=tests/test262-module-loader-linker-a-negatives.txt
@@ -77,6 +79,11 @@ canonical_value() {
         '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
         "$canonical_baseline"
 }
+successor_value() {
+    awk -F= -v wanted="$1" \
+        '$1==wanted{sub(/^[^=]*=/,"");print;found++} END{if(found!=1)exit 1}' \
+        "$successor_baseline"
+}
 check_file() {
     [[ -f "$1" && ! -L "$1" && "$(lines "$1")" == "$2" && "$(sha "$1")" == "$3" ]] \
         || die "authenticated R3dy-A input drifted: $1"
@@ -126,6 +133,56 @@ strip_profile_section() {
         !inside{print}
     ' "$2"
 }
+
+bridge_r3dz_successor() {
+    [[ "$(canonical_value tsv_sha256)" != "$(value full_candidate_tsv_sha256)" ]] \
+        || return 0
+
+    check_file "$baseline" "$baseline_lines" "$baseline_sha256"
+    check_file "$successor_baseline" 118 \
+        df55c74f91c7ece8fe92769d88fa1a75108a4e52cf3ede7d1f9233dce9bc979c
+    [[ -x "$successor_gate" \
+        && "$(successor_value schema)" == r3dz-a-test262-module-namespace-v1 \
+        && "$(successor_value predecessor_baseline)" == "$baseline" \
+        && "$(successor_value predecessor_baseline_lines)" == "$baseline_lines" \
+        && "$(successor_value predecessor_baseline_sha256)" == "$baseline_sha256" \
+        && "$(successor_value quickjs)" == "$(value quickjs)" \
+        && "$(successor_value test262)" == "$(value test262)" \
+        && "$(successor_value test262_patch_sha256)" == "$(value test262_patch_sha256)" \
+        && "$(successor_value test262_config_sha256)" == "$(value test262_config_sha256)" \
+        && "$(successor_value test262_metadata_sha256)" == "$(value test262_metadata_sha256)" \
+        && "$(successor_value mode)" == "$(value mode)" \
+        && "$(successor_value timeout_ms)" == "$(value timeout_ms)" \
+        && "$(successor_value parent_commit)" == d544b92459f5312336d0b8e468897ea387b1901b \
+        && "$(successor_value parent_profile_sha256)" == "$(value candidate_profile_sha256)" \
+        && "$(successor_value parent_canonical_baseline_sha256)" \
+            == "$(value candidate_canonical_baseline_sha256)" \
+        && "$(successor_value full_parent_runnable)" == "$(value full_candidate_runnable)" \
+        && "$(successor_value full_parent_passes)" == "$(value full_candidate_passes)" \
+        && "$(successor_value full_parent_tsv_sha256)" == "$(value full_candidate_tsv_sha256)" \
+        && "$(successor_value full_parent_jsonl_sha256)" == "$(value full_candidate_jsonl_sha256)" \
+        && "$(successor_value full_parent_summary)" == "$(value full_candidate_summary)" \
+        && "$(successor_value roots)" == 37 \
+        && "$(successor_value source_closure)" == 48 \
+        && "$(successor_value request_edges)" == 46 \
+        && "$(successor_value full_changed)" == 45 \
+        && "$(successor_value full_outcome_changed)" == 37 \
+        && "$(successor_value full_detail_only)" == 8 \
+        && "$(successor_value full_unchanged)" == 101992 \
+        && "$(successor_value full_pass_regressions)" == 0 \
+        && "$(sha "$canonical_baseline")" \
+            == "$(successor_value candidate_canonical_baseline_sha256)" ]] \
+        || die 'R3dz-A successor does not checksum-bridge the historical R3dy-A receipt'
+    case $mode in
+        check) "$successor_gate" --check ;;
+        focused) "$successor_gate" --focused ;;
+        full) "$successor_gate" --full ;;
+    esac
+    echo 'Historical R3dy-A module loader/linker receipt is checksum-bridged through the R3dz-A namespace admission.'
+    exit 0
+}
+
+bridge_r3dz_successor
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-r3dy-a.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT

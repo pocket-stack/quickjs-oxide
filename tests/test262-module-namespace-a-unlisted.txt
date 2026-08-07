@@ -1,0 +1,1 @@
+test/language/module-code/ambiguous-export-bindings/namespace-unambiguous-if-export-star-as-from.js
