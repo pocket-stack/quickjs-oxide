@@ -66,13 +66,21 @@ const fn is_private_callable_kind(kind: ClosureVariableKind) -> bool {
 
 /// QuickJS keeps access flags on each closure descriptor rather than on the
 /// shared VarRef. Its ordinary direct-eval prepass may therefore expose one
-/// FunctionName cell through a mutable Normal descriptor. Publication
-/// authenticates where this one-way erasure enters the closure chain.
+/// FunctionName cell through a mutable Normal descriptor. A module import is
+/// likewise an immutable lexical view of the exporter's original mutable or
+/// immutable ordinary cell, and nested closures/eval relay that immutable
+/// view after the original `ModuleImport` source tag is no longer present.
+/// Publication authenticates where these view-only metadata differences enter
+/// the closure chain.
 pub(super) fn closure_view_matches_cell(
     cell: (bool, bool, ClosureVariableKind),
     descriptor: ClosureVariable,
 ) -> bool {
     cell == (descriptor.is_lexical, descriptor.is_const, descriptor.kind)
+        || (descriptor.is_lexical
+            && descriptor.is_const
+            && descriptor.kind == ClosureVariableKind::ModuleImportView
+            && cell.2 == ClosureVariableKind::Normal)
         || (cell.0 == descriptor.is_lexical
             && !cell.0
             && cell.2 == ClosureVariableKind::FunctionName
@@ -4537,6 +4545,34 @@ mod tests {
             is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }
+    }
+
+    #[test]
+    fn only_a_sealed_module_import_view_may_alias_different_cell_flags() {
+        let ordinary_const = ClosureVariable {
+            source: ClosureSource::ParentClosure(0),
+            name: ClosureVariableName::None,
+            is_lexical: true,
+            is_const: true,
+            kind: ClosureVariableKind::Normal,
+        };
+        assert!(!closure_view_matches_cell(
+            (true, false, ClosureVariableKind::Normal),
+            ordinary_const,
+        ));
+
+        let import_view = ClosureVariable {
+            kind: ClosureVariableKind::ModuleImportView,
+            ..ordinary_const
+        };
+        assert!(closure_view_matches_cell(
+            (true, false, ClosureVariableKind::Normal),
+            import_view,
+        ));
+        assert!(closure_view_matches_cell(
+            (false, false, ClosureVariableKind::Normal),
+            import_view,
+        ));
     }
 
     #[test]

@@ -1,0 +1,1 @@
+test/language/module-code/instn-resolve-empty-export.js

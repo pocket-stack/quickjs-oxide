@@ -38,13 +38,14 @@ use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::PromiseRejectionEvent;
 pub use self::jobs::{PendingJobError, PendingJobOutcome};
 pub use self::module::ModuleBytecodeRef;
+pub use self::module::{ModuleLoader, ModuleLoaderError, ModuleLoaderRegistration};
 pub use self::test262_agent::{Test262AgentError, Test262AgentSession};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::atom::{Atom, AtomError, AtomKind, AtomSpelling, AtomTable, PropertyKeyKind};
@@ -103,6 +104,11 @@ struct RuntimeInner {
     /// this disabled until a host explicitly opts in.
     can_block: Cell<bool>,
     promise_rejection_tracker: RefCell<Option<HostPromiseRejectionTracker>>,
+    module_loader: RefCell<Option<Weak<dyn ModuleLoader>>>,
+    /// Reject nested source-text module resolution from a loader callback.
+    /// The public loader contract forbids Runtime re-entry; making the graph
+    /// transaction explicit keeps a violating host from corrupting caches.
+    module_resolution_active: Cell<bool>,
     /// Address marker captured at the outermost JavaScript/native call entry.
     /// Nested call guards compare against it using QuickJS's one-MiB host-stack
     /// budget; no pointer is dereferenced after the marker's lifetime ends.
@@ -757,6 +763,8 @@ impl Runtime {
             host_services,
             can_block: Cell::new(false),
             promise_rejection_tracker: RefCell::new(None),
+            module_loader: RefCell::new(None),
+            module_resolution_active: Cell::new(false),
             host_stack_top: Cell::new(None),
             proxy_method_depth: Cell::new(0),
             next_context_id: Cell::new(0),
@@ -938,6 +946,7 @@ impl Runtime {
             runtime: self.clone(),
             id,
             realm,
+            module_graph: Rc::new(module::ModuleGraph::new()),
         };
         self.0
             .state
@@ -2906,7 +2915,8 @@ impl Runtime {
                     {
                         self.check_global_function_declaration(caller_realm, &key)?;
                     }
-                    ClosureVariableKind::FunctionName
+                    ClosureVariableKind::ModuleImportView
+                    | ClosureVariableKind::FunctionName
                     | ClosureVariableKind::GlobalFunction
                     | ClosureVariableKind::EvalVariableObject
                     | ClosureVariableKind::ArgEvalVariableObject
@@ -2963,7 +2973,8 @@ impl Runtime {
                                 GlobalBindingCreationMode::Script,
                             )?
                         }
-                        ClosureVariableKind::FunctionName
+                        ClosureVariableKind::ModuleImportView
+                        | ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
                         | ClosureVariableKind::ArgEvalVariableObject
@@ -9570,6 +9581,7 @@ pub struct Context {
     runtime: Runtime,
     id: u64,
     realm: ContextId,
+    module_graph: Rc<module::ModuleGraph>,
 }
 
 impl Clone for Context {
@@ -9581,6 +9593,7 @@ impl Clone for Context {
             runtime: self.runtime.clone(),
             id: self.id,
             realm: self.realm,
+            module_graph: self.module_graph.clone(),
         }
     }
 }

@@ -3249,6 +3249,14 @@ pub enum ClosureVariableName {
 pub enum ClosureVariableKind {
     #[default]
     Normal,
+    /// Sealed descriptor-only view of an imported ECMAScript module binding.
+    ///
+    /// The underlying VarRef remains the exporting module's ordinary
+    /// [`Normal`](Self::Normal) cell. This kind authenticates the one legal
+    /// metadata mismatch: an immutable lexical importing view over that live
+    /// cell. It may appear on module-root, closure-relay, and direct-eval
+    /// descriptors, but never on a VariableDefinition or VarRefData cell.
+    ModuleImportView,
     FunctionName,
     /// QuickJS `JS_VAR_GLOBAL_FUNCTION_DECL`: a Program function declaration
     /// whose global-property preflight and creation rules differ from `var`.
@@ -10478,6 +10486,11 @@ impl Heap {
             .iter()
             .chain(bytecode.local_definitions.iter())
         {
+            if definition.kind == ClosureVariableKind::ModuleImportView {
+                return Err(HeapError::Invariant(
+                    "module-import view escaped into a variable definition",
+                ));
+            }
             let Some(atom) = definition.name else {
                 continue;
             };
@@ -10524,7 +10537,7 @@ impl Heap {
                     ));
                 }
                 ClosureSource::ModuleImport
-                    if descriptor.kind != ClosureVariableKind::Normal
+                    if descriptor.kind != ClosureVariableKind::ModuleImportView
                         || !descriptor.is_lexical
                         || !descriptor.is_const =>
                 {
@@ -10533,6 +10546,20 @@ impl Heap {
                     ));
                 }
                 _ => {}
+            }
+            if descriptor.kind == ClosureVariableKind::ModuleImportView
+                && (!descriptor.is_lexical
+                    || !descriptor.is_const
+                    || !matches!(
+                        descriptor.source,
+                        ClosureSource::ModuleImport
+                            | ClosureSource::ParentClosure(_)
+                            | ClosureSource::EvalEnvironment(_)
+                    ))
+            {
+                return Err(HeapError::Invariant(
+                    "module-import view descriptor has invalid provenance",
+                ));
             }
             if matches!(descriptor.source, ClosureSource::EvalEnvironment(_))
                 && bytecode.metadata.eval_kind != EvalKind::Direct
@@ -18049,6 +18076,11 @@ fn validate_var_ref_value(
     is_const: bool,
     value: &RawValue,
 ) -> Result<(), HeapError> {
+    if kind == ClosureVariableKind::ModuleImportView {
+        return Err(HeapError::Invariant(
+            "module-import view escaped into a VarRef cell",
+        ));
+    }
     if kind.is_private() && (!is_lexical || !is_const) {
         return Err(HeapError::Invariant(
             "private-element VarRef is not an immutable lexical binding",

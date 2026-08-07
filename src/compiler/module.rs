@@ -19,9 +19,7 @@ pub(super) enum ModuleBindingOrigin {
     Var,
     Lexical,
     Function(u32),
-    #[allow(dead_code)] // Populated by the pending named-import parser slice.
     Import,
-    #[allow(dead_code)] // Populated by the pending namespace-import parser slice.
     NamespaceImport,
 }
 
@@ -41,11 +39,19 @@ pub(super) struct IrModuleLocalExport {
     binding: Option<ModuleBindingId>,
 }
 
+#[derive(Clone, Debug)]
+struct IrModuleImport {
+    request: crate::module::ModuleRequestIndex,
+    import_name: JsString,
+    binding: ModuleBindingId,
+    is_namespace: bool,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct IrModule {
     pub(super) bindings: Vec<IrModuleBinding>,
     requested_modules: Vec<ModuleRequest>,
-    imports: Vec<ModuleImport>,
+    imports: Vec<IrModuleImport>,
     local_exports: Vec<IrModuleLocalExport>,
     exports: Vec<ModuleExport>,
     star_exports: Vec<ModuleStarExport>,
@@ -89,10 +95,13 @@ impl IrModule {
                 .iter()
                 .any(|entry| entry.export_name == export_name)
         {
-            return Err(Error::syntax(
-                format!("duplicate exported name '{}'", export_name.to_utf8_lossy()),
-                source_span(span),
-            ));
+            let mut message = NativeErrorMessage::new();
+            message.push_utf8("duplicate exported name '");
+            export_name.push_atom_get_str_to(&mut message);
+            message.push_utf8("'");
+            return Err(
+                Error::from_native_message(ErrorKind::Syntax, message).with_span(source_span(span))
+            );
         }
         self.local_exports.push(IrModuleLocalExport {
             local_name,
@@ -112,9 +121,7 @@ impl<'source> Parser<'source> {
             } else if matches!(self.current().kind, TokenKind::Keyword(Keyword::Import))
                 && self.static_import_declaration_ahead()?
             {
-                return Err(self.unsupported_here(
-                    "static import declarations are not implemented in this module slice",
-                ));
+                self.parse_module_import()?;
             } else {
                 self.parse_statement_or_decl(
                     StatementCompletion::Discard,
@@ -165,6 +172,136 @@ impl<'source> Parser<'source> {
             }
             _ => Err(self.syntax_here("invalid export syntax")),
         }
+    }
+
+    fn parse_module_import(&mut self) -> Result<(), Error> {
+        let import_span = self.current().span;
+        self.advance()?;
+
+        if matches!(self.current().kind, TokenKind::String(_)) {
+            let request = self.parse_module_specifier()?;
+            self.reject_module_import_attributes()?;
+            self.module_ir_mut()?.requested_modules.push(request);
+            return self.consume_statement_terminator();
+        }
+
+        // R3dy deliberately starts with named imports. Default and namespace
+        // imports depend on default-export and namespace-exotic semantics,
+        // which remain fail-closed until their dedicated milestone.
+        if !self.is_punctuator(Punctuator::LeftBrace) {
+            return Err(Error::unsupported(
+                "default and namespace imports are not implemented in this module slice",
+                source_span(import_span),
+            ));
+        }
+
+        self.expect_punctuator(Punctuator::LeftBrace)?;
+        let mut imports = Vec::new();
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            let imported_token = self.current().clone();
+            let import_name = self.module_export_name()?;
+            let (local_name, local_span) = if self.is_contextual_keyword("as") {
+                self.advance()?;
+                self.module_binding_identifier()?
+            } else {
+                let TokenKind::Identifier(identifier) = imported_token.kind else {
+                    return Err(Error::syntax(
+                        "imported keyword requires an 'as' binding",
+                        source_span(imported_token.span),
+                    ));
+                };
+                validate_identifier(
+                    &identifier,
+                    imported_token.span,
+                    true,
+                    IdentifierContext::Variable,
+                )?;
+                (identifier.value, imported_token.span)
+            };
+            let binding = self.register_module_import_binding(&local_name, local_span, false)?;
+            imports.push((binding, import_name, false));
+            if !self.consume_punctuator(Punctuator::Comma)? {
+                break;
+            }
+        }
+        self.expect_punctuator(Punctuator::RightBrace)?;
+        if !self.is_contextual_keyword("from") {
+            return Err(self.syntax_here("from clause expected"));
+        }
+        self.advance()?;
+        let request = self.parse_module_specifier()?;
+        self.reject_module_import_attributes()?;
+        let request_index = {
+            let module = self.module_ir_mut()?;
+            let index = u32::try_from(module.requested_modules.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many requested modules"))?;
+            module.requested_modules.push(request);
+            crate::module::ModuleRequestIndex(index)
+        };
+        let module = self.module_ir_mut()?;
+        module.imports.extend(
+            imports
+                .into_iter()
+                .map(|(binding, import_name, is_namespace)| IrModuleImport {
+                    request: request_index,
+                    import_name,
+                    binding,
+                    is_namespace,
+                }),
+        );
+        self.consume_statement_terminator()
+    }
+
+    fn parse_module_specifier(&mut self) -> Result<ModuleRequest, Error> {
+        let token = self.current().clone();
+        let TokenKind::String(literal) = token.kind else {
+            return Err(self.syntax_here("string expected"));
+        };
+        let specifier = JsString::try_from_utf16(literal.value.utf16)?;
+        self.advance()?;
+        Ok(ModuleRequest { specifier })
+    }
+
+    fn reject_module_import_attributes(&self) -> Result<(), Error> {
+        if self.is_contextual_keyword("with")
+            || matches!(self.current().kind, TokenKind::Keyword(Keyword::With))
+        {
+            return Err(self.unsupported_here(
+                "module import attributes are not implemented in this module slice",
+            ));
+        }
+        Ok(())
+    }
+
+    fn module_binding_identifier(&mut self) -> Result<(String, Span), Error> {
+        let token = self.current().clone();
+        let TokenKind::Identifier(identifier) = token.kind else {
+            return Err(self.syntax_here("identifier expected"));
+        };
+        validate_identifier(&identifier, token.span, true, IdentifierContext::Variable)?;
+        self.advance()?;
+        Ok((identifier.value, token.span))
+    }
+
+    fn register_module_import_binding(
+        &mut self,
+        name: &str,
+        span: Span,
+        is_namespace: bool,
+    ) -> Result<ModuleBindingId, Error> {
+        self.register_lexical_binding(name, span, span, true, false)?;
+        let module = self.module_ir_mut()?;
+        let binding = module
+            .binding_id(name)
+            .ok_or_else(|| Error::internal("registered import binding is missing"))?;
+        let binding_record = module.binding_mut(binding)?;
+        binding_record.origin = if is_namespace {
+            ModuleBindingOrigin::NamespaceImport
+        } else {
+            ModuleBindingOrigin::Import
+        };
+        binding_record.is_const = true;
+        Ok(binding)
     }
 
     fn parse_module_export_clause(&mut self) -> Result<(), Error> {
@@ -427,6 +564,21 @@ pub(super) fn finish_module(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let imports = imports
+        .into_iter()
+        .map(|import| {
+            let closure_index = bindings
+                .get(import.binding.0)
+                .and_then(|binding| binding.closure_index)
+                .ok_or_else(|| Error::internal("module import closure was not seeded"))?;
+            Ok(ModuleImport {
+                request: import.request,
+                import_name: import.import_name,
+                closure_index,
+                is_namespace: import.is_namespace,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     for export in local_exports {
         let binding = export
             .binding

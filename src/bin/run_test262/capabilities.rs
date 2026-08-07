@@ -407,11 +407,13 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-destructuring-assignment-global-negative.txt"
     ));
-    const DEPENDENCY_FREE_MODULE_NEGATIVES: [&str; 4] = [
+    const EXACT_MODULE_NEGATIVES: [&str; 6] = [
         "test/language/module-code/comment-single-line-html-open.js",
         "test/language/module-code/early-dup-export-id.js",
         "test/language/module-code/early-strict-mode.js",
+        "test/language/module-code/eval-rqstd-abrupt.js",
         "test/language/module-code/eval-self-abrupt.js",
+        "test/language/module-code/instn-resolve-empty-import.js",
     ];
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -2095,11 +2097,9 @@ mod tests {
             expected_destructuring_assignment_global_candidate
         );
         let mut expected_current_profile = destructuring_assignment_global_candidate.clone();
-        expected_current_profile.audited_negative_tests.extend(
-            DEPENDENCY_FREE_MODULE_NEGATIVES
-                .into_iter()
-                .map(str::to_owned),
-        );
+        expected_current_profile
+            .audited_negative_tests
+            .extend(EXACT_MODULE_NEGATIVES.into_iter().map(str::to_owned));
         assert_eq!(profile, expected_current_profile);
         assert_eq!(
             profile
@@ -2107,7 +2107,7 @@ mod tests {
                 .difference(&destructuring_assignment_global_candidate.audited_negative_tests)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            DEPENDENCY_FREE_MODULE_NEGATIVES
+            EXACT_MODULE_NEGATIVES
         );
         assert_eq!(
             destructuring_assignment_global_candidate

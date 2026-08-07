@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::metadata::Metadata;
+use super::metadata::{Metadata, parse_metadata};
 
 /// Host hooks which the concrete worker installs for every test process.
 ///
@@ -58,6 +59,32 @@ struct DependencyFreeModuleAdmission {
     metadata: ModuleMetadataContract,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ExactModuleTest {
+    DependencyFree,
+    FixtureGraph,
+}
+
+#[derive(Clone, Copy)]
+struct ModuleRequestAdmission {
+    specifier: &'static str,
+    normalized_path: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct ModuleGraphFileAdmission {
+    path: &'static str,
+    source_sha256: &'static str,
+    metadata: ModuleMetadataContract,
+    requests: &'static [ModuleRequestAdmission],
+}
+
+#[derive(Clone, Copy)]
+struct FixtureGraphModuleAdmission {
+    root_path: &'static str,
+    files: &'static [ModuleGraphFileAdmission],
+}
+
 const MODULE_METADATA: ModuleMetadataContract = ModuleMetadataContract {
     includes: &[],
     flags: &["module"],
@@ -80,6 +107,33 @@ const MODULE_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract = ModuleMetadat
         phase: "parse",
         error_type: "SyntaxError",
     }),
+};
+
+const MODULE_RUNTIME_TYPE_ERROR_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &[],
+    negative: Some(NegativeMetadataContract {
+        phase: "runtime",
+        error_type: "TypeError",
+    }),
+};
+
+const MODULE_RESOLUTION_SYNTAX_ERROR_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &[],
+    negative: Some(NegativeMetadataContract {
+        phase: "resolution",
+        error_type: "SyntaxError",
+    }),
+};
+
+const MODULE_FIXTURE_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &[],
+    features: &[],
+    negative: None,
 };
 
 /// Source- and metadata-authenticated dependency-free module roots admitted by
@@ -167,6 +221,114 @@ const DEPENDENCY_FREE_MODULE_ADMISSIONS: [DependencyFreeModuleAdmission; 13] = [
     },
 ];
 
+const EVAL_GTBNDNG_INDIRECT_UPDATE_FILES: [ModuleGraphFileAdmission; 2] = [
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update.js",
+        source_sha256: "2e382b6cef4a65f3c1b58ed7a21f9311b2627e7980b410805d1018b714d4b5b6",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-gtbndng-indirect-update_FIXTURE.js",
+            normalized_path: "test/language/module-code/eval-gtbndng-indirect-update_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update_FIXTURE.js",
+        source_sha256: "86f9d73e4f721d046412952d46a9fdeb2864fb6bdc2917d995170945d6f7800b",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+];
+
+const EVAL_REQUESTED_ABRUPT_FILES: [ModuleGraphFileAdmission; 3] = [
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-abrupt.js",
+        source_sha256: "96266e78b158e46ce04ab22c987e62a4ff5c6b9484ebb8adacd993f44e4e8f29",
+        metadata: MODULE_RUNTIME_TYPE_ERROR_METADATA,
+        requests: &[
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-abrupt-err-type_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-abrupt-err-type_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-abrupt-err-uri_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-abrupt-err-uri_FIXTURE.js",
+            },
+        ],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-abrupt-err-type_FIXTURE.js",
+        source_sha256: "ce3ebfa86081c793bf36a681e6f1e4faca99e529b338bfbfc433b550e1bf27e8",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-abrupt-err-uri_FIXTURE.js",
+        source_sha256: "e6bbf1d0467c9a361289d3d6a40ae8479bff3c7d928b10140c2171b309207572",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+];
+
+const INSTN_RESOLVE_EMPTY_IMPORT_FILES: [ModuleGraphFileAdmission; 2] = [
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-resolve-empty-import.js",
+        source_sha256: "88161e79a99ef0372dddb122e6dc2e545961bf0d4775f53ba48531b3fcc3fadb",
+        metadata: MODULE_RESOLUTION_SYNTAX_ERROR_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-resolve-empty-import_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-resolve-empty-import_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-resolve-empty-import_FIXTURE.js",
+        source_sha256: "d019396c51ec65b57af8edc64bcc7b969df709c1f0a11a6b5220bc5f09545e80",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+];
+
+const INSTN_SAME_GLOBAL_FILES: [ModuleGraphFileAdmission; 2] = [
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-same-global.js",
+        source_sha256: "564f38753491b84941656868c73ce342c2111fc9b29ed7b681ee9732f4e5cbce",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-same-global-set_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-same-global-set_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-same-global-set_FIXTURE.js",
+        source_sha256: "ac117f0e7632295f0e7b67bace1d65b72e2f4d9a3dd2b66643b3b27d24f48f8f",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+];
+
+/// Source-, metadata-, edge-, and recursive-closure-authenticated module
+/// graphs admitted by the loader/linker Test262 milestone. The four roots are
+/// intentionally independent, so their nine total source files form the
+/// smallest useful direct-import cohort and no unrelated fixture can be
+/// reached through the worker loader.
+const FIXTURE_GRAPH_MODULE_ADMISSIONS: [FixtureGraphModuleAdmission; 4] = [
+    FixtureGraphModuleAdmission {
+        root_path: "test/language/module-code/eval-gtbndng-indirect-update.js",
+        files: &EVAL_GTBNDNG_INDIRECT_UPDATE_FILES,
+    },
+    FixtureGraphModuleAdmission {
+        root_path: "test/language/module-code/eval-rqstd-abrupt.js",
+        files: &EVAL_REQUESTED_ABRUPT_FILES,
+    },
+    FixtureGraphModuleAdmission {
+        root_path: "test/language/module-code/instn-resolve-empty-import.js",
+        files: &INSTN_RESOLVE_EMPTY_IMPORT_FILES,
+    },
+    FixtureGraphModuleAdmission {
+        root_path: "test/language/module-code/instn-same-global.js",
+        files: &INSTN_SAME_GLOBAL_FILES,
+    },
+];
+
 /// Admit only one of the pinned, dependency-free module roots above.
 ///
 /// The coordinator and worker both call this function. An exact-path source or
@@ -209,6 +371,214 @@ fn authenticate_dependency_free_module_test(
         ));
     }
     Ok(true)
+}
+
+/// Authenticate one of the two deliberately narrow static-module execution
+/// frontiers. An unlisted module remains unadmitted without touching any
+/// fixture file; an exact graph root authenticates its complete recursive
+/// closure before either the coordinator or worker can remove `module` from
+/// the missing-host set.
+pub(super) fn exact_module_test(
+    suite: &Path,
+    path: &Path,
+    source: &str,
+    metadata: &Metadata,
+) -> Result<Option<ExactModuleTest>, String> {
+    if is_exact_dependency_free_module_test(path, source, metadata)? {
+        return Ok(Some(ExactModuleTest::DependencyFree));
+    }
+    if is_exact_fixture_graph_module_test(suite, path, source, metadata)? {
+        return Ok(Some(ExactModuleTest::FixtureGraph));
+    }
+    Ok(None)
+}
+
+fn is_exact_fixture_graph_module_test(
+    suite: &Path,
+    path: &Path,
+    source: &str,
+    metadata: &Metadata,
+) -> Result<bool, String> {
+    let Some(admission) = fixture_graph_admission(path) else {
+        return Ok(false);
+    };
+    let root = module_graph_file(admission, admission.root_path).ok_or_else(|| {
+        format!(
+            "fixture graph admission has no root file: {}",
+            admission.root_path
+        )
+    })?;
+    authenticate_module_graph_file(path, source, metadata, root)?;
+    authenticate_fixture_graph_closure(admission, |relative| {
+        read_regular_module_source(suite, relative)
+    })?;
+    Ok(true)
+}
+
+fn fixture_graph_admission(root_path: &Path) -> Option<&'static FixtureGraphModuleAdmission> {
+    FIXTURE_GRAPH_MODULE_ADMISSIONS
+        .iter()
+        .find(|admission| root_path == Path::new(admission.root_path))
+}
+
+fn module_graph_file<'a>(
+    admission: &'a FixtureGraphModuleAdmission,
+    path: &str,
+) -> Option<&'a ModuleGraphFileAdmission> {
+    admission.files.iter().find(|file| file.path == path)
+}
+
+fn authenticate_fixture_graph_closure(
+    admission: &FixtureGraphModuleAdmission,
+    mut read_source: impl FnMut(&str) -> Result<String, String>,
+) -> Result<(), String> {
+    let mut visited = BTreeSet::new();
+    let mut pending = vec![admission.root_path];
+    while let Some(path) = pending.pop() {
+        if !visited.insert(path) {
+            continue;
+        }
+        let file = module_graph_file(admission, path).ok_or_else(|| {
+            format!(
+                "fixture graph edge escaped the authenticated closure for {}: {path}",
+                admission.root_path
+            )
+        })?;
+        let source = read_source(path)?;
+        let metadata = parse_metadata(&source)
+            .map_err(|error| format!("parse authenticated module metadata for {path}: {error}"))?;
+        authenticate_module_graph_file(Path::new(path), &source, &metadata, file)?;
+        for request in file.requests.iter().rev() {
+            if module_graph_file(admission, request.normalized_path).is_none() {
+                return Err(format!(
+                    "fixture graph request escaped the authenticated closure for {}: {} -> {}",
+                    admission.root_path, request.specifier, request.normalized_path
+                ));
+            }
+            pending.push(request.normalized_path);
+        }
+    }
+    if visited.len() != admission.files.len() {
+        let unreachable = admission
+            .files
+            .iter()
+            .filter(|file| !visited.contains(file.path))
+            .map(|file| file.path)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "fixture graph admission contains files outside the recursive closure for {}: {unreachable}",
+            admission.root_path
+        ));
+    }
+    Ok(())
+}
+
+fn authenticate_module_graph_file(
+    path: &Path,
+    source: &str,
+    metadata: &Metadata,
+    file: &ModuleGraphFileAdmission,
+) -> Result<(), String> {
+    let actual_sha256 = source_sha256(source)?;
+    authenticate_module_graph_file_digest(path, &actual_sha256, metadata, file)
+}
+
+fn authenticate_module_graph_file_digest(
+    path: &Path,
+    actual_sha256: &str,
+    metadata: &Metadata,
+    file: &ModuleGraphFileAdmission,
+) -> Result<(), String> {
+    if path != Path::new(file.path) {
+        return Err(format!(
+            "fixture graph file path drifted: expected {}, found {}",
+            file.path,
+            path.display()
+        ));
+    }
+    if actual_sha256 != file.source_sha256 {
+        return Err(format!(
+            "fixture graph module source drifted for {}: expected SHA-256 {}, found {actual_sha256}",
+            file.path, file.source_sha256
+        ));
+    }
+    if !module_metadata_matches(metadata, file.metadata) {
+        return Err(format!(
+            "fixture graph module metadata shape drifted for {}",
+            file.path
+        ));
+    }
+    Ok(())
+}
+
+fn read_regular_module_source(suite: &Path, relative: &str) -> Result<String, String> {
+    let path = suite.join(relative);
+    let file_type = fs::symlink_metadata(&path)
+        .map_err(|error| format!("stat authenticated module {}: {error}", path.display()))?
+        .file_type();
+    if !file_type.is_file() || file_type.is_symlink() {
+        return Err(format!(
+            "authenticated module is not a regular non-symlink file: {}",
+            path.display()
+        ));
+    }
+    fs::read_to_string(&path)
+        .map_err(|error| format!("read authenticated module {}: {error}", path.display()))
+}
+
+/// Normalize only a source-authenticated request edge from one admitted graph.
+/// This deliberately refuses generic path joining, bare names, and requests
+/// from an unlisted graph member.
+pub(super) fn normalize_exact_module_request(
+    root_path: &Path,
+    base_name: &str,
+    specifier: &str,
+) -> Result<String, String> {
+    let admission = fixture_graph_admission(root_path).ok_or_else(|| {
+        format!(
+            "module loader rejected unaudited root: {}",
+            root_path.display()
+        )
+    })?;
+    let base = module_graph_file(admission, base_name)
+        .ok_or_else(|| format!("module loader rejected unaudited base module: {base_name}"))?;
+    let request = base
+        .requests
+        .iter()
+        .find(|request| request.specifier == specifier)
+        .ok_or_else(|| {
+            format!("module loader rejected unaudited request from {base_name}: {specifier}")
+        })?;
+    Ok(request.normalized_path.to_owned())
+}
+
+/// Load one exact fixture from a previously authenticated graph. The source
+/// and metadata are checked again at the loader boundary to close the gap
+/// between coordinator admission and worker resolution.
+pub(super) fn load_exact_module_fixture(
+    suite: &Path,
+    root_path: &Path,
+    normalized_name: &str,
+) -> Result<String, String> {
+    let admission = fixture_graph_admission(root_path).ok_or_else(|| {
+        format!(
+            "module loader rejected unaudited root: {}",
+            root_path.display()
+        )
+    })?;
+    let file = module_graph_file(admission, normalized_name)
+        .filter(|file| file.path != admission.root_path)
+        .ok_or_else(|| format!("module loader rejected unaudited fixture: {normalized_name}"))?;
+    let source = read_regular_module_source(suite, file.path)?;
+    let metadata = parse_metadata(&source).map_err(|error| {
+        format!(
+            "parse authenticated module metadata for {}: {error}",
+            file.path
+        )
+    })?;
+    authenticate_module_graph_file(Path::new(file.path), &source, &metadata, file)?;
+    Ok(source)
 }
 
 fn module_metadata_matches(metadata: &Metadata, contract: ModuleMetadataContract) -> bool {
@@ -1365,12 +1735,16 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        AGENT_HOST_ADMISSIONS, DEPENDENCY_FREE_MODULE_ADMISSIONS, HostCapabilities,
-        ModuleMetadataContract, agent_host_metadata_matches,
-        authenticate_dependency_free_module_test, generator_destructuring_source_needs_async_guard,
-        insert_atomics_cross_realm_feature_hints, insert_exact_source_feature_hint,
-        is_exact_agent_host_test, is_exact_dependency_free_module_test,
-        missing_host_capability_hints, module_metadata_matches, source_sha256, source_tokens,
+        AGENT_HOST_ADMISSIONS, DEPENDENCY_FREE_MODULE_ADMISSIONS, ExactModuleTest,
+        FIXTURE_GRAPH_MODULE_ADMISSIONS, FixtureGraphModuleAdmission, HostCapabilities,
+        MODULE_FIXTURE_METADATA, MODULE_METADATA, ModuleGraphFileAdmission, ModuleMetadataContract,
+        ModuleRequestAdmission, agent_host_metadata_matches,
+        authenticate_dependency_free_module_test, authenticate_fixture_graph_closure,
+        authenticate_module_graph_file_digest, exact_module_test,
+        generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
+        insert_exact_source_feature_hint, is_exact_agent_host_test,
+        is_exact_dependency_free_module_test, missing_host_capability_hints,
+        module_metadata_matches, normalize_exact_module_request, source_sha256, source_tokens,
         supplemental_feature_hints,
     };
     use crate::metadata::{Metadata, NegativeExpectation};
@@ -1466,6 +1840,169 @@ mod tests {
     }
 
     #[test]
+    fn fixture_graph_module_admission_is_exact_sorted_and_closed() {
+        assert_eq!(FIXTURE_GRAPH_MODULE_ADMISSIONS.len(), 4);
+        assert!(
+            FIXTURE_GRAPH_MODULE_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].root_path < pair[1].root_path)
+        );
+        assert_eq!(
+            FIXTURE_GRAPH_MODULE_ADMISSIONS
+                .iter()
+                .map(|admission| admission.files.len())
+                .sum::<usize>(),
+            9
+        );
+
+        let mut all_paths = BTreeSet::new();
+        for admission in &FIXTURE_GRAPH_MODULE_ADMISSIONS {
+            assert_eq!(admission.files[0].path, admission.root_path);
+            assert!(module_metadata(admission.files[0].metadata).is_module());
+            let mut reachable = BTreeSet::new();
+            let mut pending = vec![admission.root_path];
+            while let Some(path) = pending.pop() {
+                assert!(reachable.insert(path), "duplicate or cyclic edge at {path}");
+                let file = admission
+                    .files
+                    .iter()
+                    .find(|file| file.path == path)
+                    .expect("every request target stays in its admission");
+                assert!(all_paths.insert(file.path), "duplicate file {}", file.path);
+                for request in file.requests.iter().rev() {
+                    assert!(request.specifier.starts_with("./"));
+                    pending.push(request.normalized_path);
+                }
+            }
+            assert_eq!(reachable.len(), admission.files.len());
+            assert!(
+                admission.files[1..]
+                    .iter()
+                    .all(|file| module_metadata_matches(&Metadata::default(), file.metadata))
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_graph_file_authentication_rejects_source_metadata_and_path_drift() {
+        let file = &FIXTURE_GRAPH_MODULE_ADMISSIONS[0].files[1];
+        let exact = module_metadata(file.metadata);
+        assert_eq!(
+            authenticate_module_graph_file_digest(
+                Path::new(file.path),
+                file.source_sha256,
+                &exact,
+                file,
+            ),
+            Ok(())
+        );
+
+        let source_drift = authenticate_module_graph_file_digest(
+            Path::new(file.path),
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            &exact,
+            file,
+        )
+        .unwrap_err();
+        assert!(source_drift.contains("source drifted"));
+        assert!(source_drift.contains(file.source_sha256));
+
+        let mut drifted_metadata = exact;
+        drifted_metadata.flags.insert("module".to_owned());
+        let metadata_drift = authenticate_module_graph_file_digest(
+            Path::new(file.path),
+            file.source_sha256,
+            &drifted_metadata,
+            file,
+        )
+        .unwrap_err();
+        assert!(metadata_drift.contains("metadata shape drifted"));
+
+        let path_drift = authenticate_module_graph_file_digest(
+            Path::new("test/language/module-code/other_FIXTURE.js"),
+            file.source_sha256,
+            &module_metadata(file.metadata),
+            file,
+        )
+        .unwrap_err();
+        assert!(path_drift.contains("path drifted"));
+    }
+
+    #[test]
+    fn recursive_fixture_closure_authentication_rejects_nested_drift() {
+        const ROOT_SOURCE: &str =
+            "/*---\nflags: [module]\n---*/\nimport \"./fixture_FIXTURE.js\";\n";
+        const FIXTURE_SOURCE: &str = "export const value = 1;\n";
+        const REQUESTS: [ModuleRequestAdmission; 1] = [ModuleRequestAdmission {
+            specifier: "./fixture_FIXTURE.js",
+            normalized_path: "test/fixture_FIXTURE.js",
+        }];
+        const FILES: [ModuleGraphFileAdmission; 2] = [
+            ModuleGraphFileAdmission {
+                path: "test/root.js",
+                source_sha256: "32d8e8b1d38a53f8f4873d89cd0d00a115c33b0ed8294eb016e22e3edea95afe",
+                metadata: MODULE_METADATA,
+                requests: &REQUESTS,
+            },
+            ModuleGraphFileAdmission {
+                path: "test/fixture_FIXTURE.js",
+                source_sha256: "5d8f65d2774e206bc9f7a7a4ad39ca2dc563b5c31e46ab57ef4874961237ce29",
+                metadata: MODULE_FIXTURE_METADATA,
+                requests: &[],
+            },
+        ];
+        const ADMISSION: FixtureGraphModuleAdmission = FixtureGraphModuleAdmission {
+            root_path: "test/root.js",
+            files: &FILES,
+        };
+
+        let exact = authenticate_fixture_graph_closure(&ADMISSION, |path| match path {
+            "test/root.js" => Ok(ROOT_SOURCE.to_owned()),
+            "test/fixture_FIXTURE.js" => Ok(FIXTURE_SOURCE.to_owned()),
+            _ => Err(format!("unexpected path: {path}")),
+        });
+        assert_eq!(exact, Ok(()));
+
+        let drift = authenticate_fixture_graph_closure(&ADMISSION, |path| match path {
+            "test/root.js" => Ok(ROOT_SOURCE.to_owned()),
+            "test/fixture_FIXTURE.js" => Ok("export const value = 2;\n".to_owned()),
+            _ => Err(format!("unexpected path: {path}")),
+        })
+        .unwrap_err();
+        assert!(drift.contains("source drifted"));
+        assert!(drift.contains("fixture_FIXTURE.js"));
+    }
+
+    #[test]
+    fn fixture_graph_loader_normalization_rejects_unlisted_edges() {
+        let admission = &FIXTURE_GRAPH_MODULE_ADMISSIONS[0];
+        let base = admission.root_path;
+        let request = admission.files[0].requests[0];
+        assert_eq!(
+            normalize_exact_module_request(Path::new(admission.root_path), base, request.specifier,),
+            Ok(request.normalized_path.to_owned())
+        );
+        assert!(
+            normalize_exact_module_request(
+                Path::new(admission.root_path),
+                base,
+                "./unlisted_FIXTURE.js",
+            )
+            .unwrap_err()
+            .contains("unaudited request")
+        );
+        assert!(
+            normalize_exact_module_request(
+                Path::new(admission.root_path),
+                "test/language/module-code/unlisted.js",
+                request.specifier,
+            )
+            .unwrap_err()
+            .contains("unaudited base")
+        );
+    }
+
+    #[test]
     fn ordinary_module_is_not_admitted() {
         let metadata = metadata(&["module"], &[], &[]);
         assert_eq!(
@@ -1475,6 +2012,24 @@ mod tests {
                 &metadata,
             ),
             Ok(false)
+        );
+        assert_eq!(
+            exact_module_test(
+                Path::new("."),
+                Path::new("test/language/module-code/not-a-pinned-root.js"),
+                "export {};",
+                &metadata,
+            ),
+            Ok(None)
+        );
+        assert_ne!(
+            exact_module_test(
+                Path::new("."),
+                Path::new(DEPENDENCY_FREE_MODULE_ADMISSIONS[0].path),
+                "drifted",
+                &module_metadata(DEPENDENCY_FREE_MODULE_ADMISSIONS[0].metadata),
+            ),
+            Ok(Some(ExactModuleTest::DependencyFree))
         );
         assert_eq!(
             missing_host_capability_hints(

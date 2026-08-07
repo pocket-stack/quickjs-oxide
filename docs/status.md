@@ -4,6 +4,47 @@ Last audited: 2026-08-07. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3dy-A static-module loader/linker admission
+
+R3dy-A admits the first exact dependency-graph slice layered on R3dx. Its
+frozen cohort is four Test262 roots with a nine-file recursive source closure
+and five ordered request edges. The positive cases cover one shared realm and
+an imported live binding; the negative cases require a dependency `TypeError`
+in the runtime phase and a dependency `SyntaxError` in the resolution phase.
+Every source, complete frontmatter, request edge, parent runner/profile, and
+the pinned Test262 and QuickJS 2026-06-04 inputs are checksum-bound. An
+unlisted graph root and nested fixture drift remain fail-closed.
+
+The implementation adds a runtime-wide host-owned loader registration and a
+Context-local oldest-first module cache. Resolution snapshots the loader for
+the complete transaction, preserves UTF-16 names through the host boundary,
+and rolls back every active record after errors or host panics. Iterative
+Tarjan linking and evaluation handle cyclic graphs without consuming the Rust
+call stack. Direct named imports follow local exported-import aliases to their
+ultimate declaration cells and expose immutable importer views over live
+bindings; abrupt evaluation is cached across the active SCC.
+
+The focused receipt reproduces Oxide 4/4 twice and pinned QuickJS 4/4 twice,
+with the expected phases and both fail-closed canaries. The final 14-file
+implementation-source inventory is also checksum-bound. Two independent full
+reports are byte-identical at 68,108 passes / 68,160 runnable / 102,037 total
+variants. Their TSV and JSONL SHA-256 values are
+`f763e677dc1461792b18caad6d7b9a0d565c0b97cbd663e2d96a52b962316d3f`
+and
+`85fdcb21fb3c967db26cd05e453681f1dd117eb0c5bc426c455888a584872ca9`.
+Reversing exactly the four admitted rows plus the profile header and summary
+reproduces the R3dx canonical hashes, proving four gains, zero regressions,
+and 102,033 unchanged variants. R3dy-A is an admitted pre-parity milestone,
+not a full Feature Parity claim. The next module cohorts still own complete
+indirect/star `ResolveExport`, namespace objects and imports, default
+imports/exports, `import.meta`, attributes, and TLA.
+
+```sh
+./scripts/test-test262-module-loader-linker-a.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-module-loader-linker-a.sh
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-module-loader-linker-a.sh --full
+```
+
 ## R3dx dependency-free static-module execution
 
 R3dx adds the first executable static-module slice using the same two-phase

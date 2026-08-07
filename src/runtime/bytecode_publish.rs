@@ -91,6 +91,7 @@ const fn eval_variable_object_sentinel(kind: ClosureVariableKind) -> Option<&'st
         ClosureVariableKind::EvalVariableObject => Some("<var>"),
         ClosureVariableKind::ArgEvalVariableObject => Some("<arg_var>"),
         ClosureVariableKind::Normal
+        | ClosureVariableKind::ModuleImportView
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
         | ClosureVariableKind::WithObject
@@ -1246,10 +1247,15 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
         } else {
             ClosureSource::ModuleImport
         };
+        let expected_kind = if import.is_namespace {
+            ClosureVariableKind::Normal
+        } else {
+            ClosureVariableKind::ModuleImportView
+        };
         if descriptor.source != expected_source
             || !descriptor.is_lexical
             || !descriptor.is_const
-            || descriptor.kind != ClosureVariableKind::Normal
+            || descriptor.kind != expected_kind
         {
             return Err(RuntimeError::Engine(Error::internal(
                 "module import table disagrees with its closure descriptor",
@@ -2916,7 +2922,7 @@ fn verify_unlinked_tree_with_root(
                             }
                         }
                         ClosureSource::ModuleImport => {
-                            if descriptor.kind != ClosureVariableKind::Normal
+                            if descriptor.kind != ClosureVariableKind::ModuleImportView
                                 || !descriptor.is_lexical
                                 || !descriptor.is_const
                             {

@@ -542,6 +542,7 @@ impl Runtime {
                             self.check_global_function_declaration(realm, &key)?;
                         }
                         ClosureVariableKind::Normal
+                        | ClosureVariableKind::ModuleImportView
                         | ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject
@@ -684,6 +685,7 @@ impl Runtime {
                             )?
                         }
                         ClosureVariableKind::Normal
+                        | ClosureVariableKind::ModuleImportView
                         | ClosureVariableKind::FunctionName
                         | ClosureVariableKind::GlobalFunction
                         | ClosureVariableKind::EvalVariableObject

@@ -6,19 +6,21 @@ the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 The `unsafe`-free engine is runnable, but it is not at Feature Parity yet. Its
 strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
 SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
-Unicode normalization, an initial dependency-free synchronous-module slice,
-and a growing parser/VM surface.
+Unicode normalization, a synchronous static-module graph slice, and a growing
+parser/VM surface.
 
-The latest conformance milestone adds QuickJS-shaped compile/link/evaluate
-semantics for an exact, source-authenticated cohort of 13 dependency-free
-static-module roots. Pinned QuickJS and Oxide both pass 13/13. Static imports,
-re-exports, module namespaces, `import.meta`, and top-level await remain
-fail-closed until their graph/linker milestones; the full Feature Parity goal
-is unchanged.
+The admitted R3dy-A milestone adds a Context-local source loader and cache,
+iterative SCC linking/evaluation, side-effect and direct named imports, and
+read-only live import bindings. Its source-authenticated dependency-graph gate
+covers four roots and nine files; pinned QuickJS and Oxide both pass 4/4.
+Default and namespace imports, complete indirect/star export resolution,
+module namespace exotic objects, `import.meta`, attributes, and top-level
+await remain fail-closed. The full Feature Parity goal is unchanged.
 
-The latest audited global vector is 68,104 passes / 68,156 runnable / 102,037
-total variants: 13 gains, zero regressions, and two byte-identical full
-replays. Detailed hashes and historical bookkeeping live in the status
+The latest admitted canonical vector is 68,108 passes / 68,160 runnable /
+102,037 total variants. R3dy-A adds exactly four module-graph passes over
+R3dx, leaves the other 102,033 variants unchanged, and has two byte-identical
+full replays. Detailed hashes and historical bookkeeping live in the status
 documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
@@ -53,6 +55,7 @@ cargo run --quiet --bin qjs -- --print-result -e \
 ```sh
 cargo test --locked --workspace --all-targets
 ./scripts/test-test262-current-global.sh --check  # latest frozen receipt
+./scripts/test-test262-module-loader-linker-a.sh --check
 ./scripts/test-test262-full.sh
 ./scripts/test-web-playground.sh
 npm ci && npx playwright install chromium && npm run test:browser

@@ -58,3 +58,4 @@ tests/test262-cross-realm-global-*.tsv whitespace=-blank-at-eol
 tests/test262-implemented-leaves-global-*.tsv whitespace=-blank-at-eol
 tests/test262-destructuring-assignment-global-*.tsv whitespace=-blank-at-eol
 tests/test262-module-static-core-*.tsv whitespace=-blank-at-eol
+tests/test262-module-loader-linker-a-*.tsv whitespace=-blank-at-eol

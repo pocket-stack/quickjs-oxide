@@ -1,18 +1,22 @@
+use std::cell::Cell;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use quickjs_oxide::{
-    CompileOptions, Context, ErrorKind, Runtime, RuntimeError, Test262AgentSession, Value,
+    CompileOptions, Context, ErrorKind, JsString, ModuleLoader, ModuleLoaderError, Runtime,
+    RuntimeError, Test262AgentSession, Value,
 };
 
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
 use super::requirements::{
-    HostCapabilities, is_exact_agent_host_test, is_exact_dependency_free_module_test,
+    ExactModuleTest, HostCapabilities, exact_module_test, is_exact_agent_host_test,
+    load_exact_module_fixture, normalize_exact_module_request,
 };
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
@@ -62,6 +66,50 @@ const ASYNC_WORKER_HOST_SOURCE: &str = r#"
 "#;
 const ASYNC_COMPLETE: &str = "Test262:AsyncTestComplete";
 const ASYNC_FAILURE_PREFIX: &str = "Test262:AsyncTestFailure:";
+
+#[derive(Debug)]
+struct ExactTest262ModuleLoader {
+    suite: PathBuf,
+    root: PathBuf,
+    resolution_started: Rc<Cell<bool>>,
+}
+
+struct ExactModuleRun<'a> {
+    path: &'a Path,
+    relative_path: &'a Path,
+    source: &'a str,
+    metadata: &'a Metadata,
+    exact_module: ExactModuleTest,
+    resolution_started: &'a Cell<bool>,
+}
+
+impl ModuleLoader for ExactTest262ModuleLoader {
+    fn normalize(
+        &self,
+        base_name: &JsString,
+        specifier: &JsString,
+    ) -> Result<JsString, ModuleLoaderError> {
+        self.resolution_started.set(true);
+        let base_name = exact_module_utf8_name(base_name)?;
+        let specifier = exact_module_utf8_name(specifier)?;
+        let normalized = normalize_exact_module_request(&self.root, &base_name, &specifier)
+            .map_err(ModuleLoaderError::new)?;
+        JsString::try_from_utf8(&normalized)
+            .map_err(|error| ModuleLoaderError::new(error.to_string()))
+    }
+
+    fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+        self.resolution_started.set(true);
+        let normalized_name = exact_module_utf8_name(normalized_name)?;
+        load_exact_module_fixture(&self.suite, &self.root, &normalized_name)
+            .map_err(ModuleLoaderError::new)
+    }
+}
+
+fn exact_module_utf8_name(name: &JsString) -> Result<String, ModuleLoaderError> {
+    String::from_utf16(&name.utf16_units().collect::<Vec<_>>())
+        .map_err(|_| ModuleLoaderError::new("Test262 module name is not valid UTF-16"))
+}
 
 struct AgentRunGuard {
     session: Option<Test262AgentSession>,
@@ -214,15 +262,14 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let source =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let metadata = parse_metadata(&source)?;
-    let dependency_free_module =
-        is_exact_dependency_free_module_test(&options.test, &source, &metadata)?;
+    let exact_module = exact_module_test(&options.suite, &options.test, &source, &metadata)?;
     if options.allow_agent_host && !is_exact_agent_host_test(&options.test, &source, &metadata)? {
         return Err(format!(
             "Test262 agent host worker rejected unaudited path: {}",
             options.test.display()
         ));
     }
-    if (metadata.is_module() && !dependency_free_module)
+    if (metadata.is_module() && exact_module.is_none())
         || (metadata.is_async() && !options.allow_async_host)
     {
         return Err("unsupported test reached worker".to_owned());
@@ -230,6 +277,15 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let async_test = metadata.is_async();
 
     let runtime = Runtime::new();
+    let module_resolution_started = Rc::new(Cell::new(false));
+    let _module_loader_registration =
+        (exact_module == Some(ExactModuleTest::FixtureGraph)).then(|| {
+            runtime.set_module_loader(ExactTest262ModuleLoader {
+                suite: options.suite.clone(),
+                root: options.test.clone(),
+                resolution_started: module_resolution_started.clone(),
+            })
+        });
     configure_runtime_can_block(&runtime, &metadata);
     let mut context = runtime.new_context();
     let mut agent_run = AgentRunGuard::new(options.allow_agent_host);
@@ -313,8 +369,19 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         }
     }
 
-    if dependency_free_module {
-        let result = run_dependency_free_module(&runtime, &mut context, &path, &source, &metadata);
+    if let Some(exact_module) = exact_module {
+        let result = run_exact_module(
+            &runtime,
+            &mut context,
+            ExactModuleRun {
+                path: &path,
+                relative_path: &options.test,
+                source: &source,
+                metadata: &metadata,
+                exact_module,
+                resolution_started: &module_resolution_started,
+            },
+        );
         agent_run.finish()?;
         return Ok(result);
     }
@@ -383,38 +450,89 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     result
 }
 
-fn run_dependency_free_module(
+fn run_exact_module(
     runtime: &Runtime,
     context: &mut Context,
-    path: &Path,
-    source: &str,
-    metadata: &Metadata,
+    run: ExactModuleRun<'_>,
 ) -> WorkerResult {
-    let filename = path.to_string_lossy();
+    let ExactModuleRun {
+        path,
+        relative_path,
+        source,
+        metadata,
+        exact_module,
+        resolution_started,
+    } = run;
+    let filename = if exact_module == ExactModuleTest::FixtureGraph {
+        relative_path.to_string_lossy()
+    } else {
+        path.to_string_lossy()
+    };
     let compile_options = CompileOptions::new(filename.as_ref());
     let module = match context
         .compile_module_with_options_preserving_unsupported_diagnostics(source, &compile_options)
     {
         Ok(module) => module,
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
+            let phase = module_compile_failure_phase(exact_module, resolution_started);
             return WorkerResult::failure(
-                "unsupported-parser",
-                "parse",
+                if phase == "resolution" {
+                    "unsupported-resolution"
+                } else {
+                    "unsupported-parser"
+                },
+                phase,
                 "Unsupported",
                 error.message(),
             );
         }
         Err(RuntimeError::Exception) => {
             let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
-            return classify_completion(metadata, "parse", &error_type, &detail);
+            return classify_completion(
+                metadata,
+                module_compile_failure_phase(exact_module, resolution_started),
+                &error_type,
+                &detail,
+            );
         }
-        Err(error) => return engine_fault("engine-fault", "parse", error, None),
+        Err(error) => {
+            return engine_fault(
+                "engine-fault",
+                module_compile_failure_phase(exact_module, resolution_started),
+                error,
+                None,
+            );
+        }
     };
     if metadata
         .negative
         .as_ref()
         .and_then(|negative| negative.phase.as_deref())
         .is_some_and(|phase| matches!(phase, "parse" | "early"))
+    {
+        return classify_normal(metadata);
+    }
+    match context.link_module(&module) {
+        Ok(()) => {}
+        Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
+            return WorkerResult::failure(
+                "unsupported-resolution",
+                "resolution",
+                "Unsupported",
+                error.message(),
+            );
+        }
+        Err(RuntimeError::Exception) => {
+            let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
+            return classify_completion(metadata, "resolution", &error_type, &detail);
+        }
+        Err(error) => return engine_fault("engine-fault", "resolution", error, None),
+    }
+    if metadata
+        .negative
+        .as_ref()
+        .and_then(|negative| negative.phase.as_deref())
+        == Some("resolution")
     {
         return classify_normal(metadata);
     }
@@ -433,6 +551,17 @@ fn run_dependency_free_module(
             classify_completion(metadata, "runtime", &error_type, &detail)
         }
         Err(error) => engine_fault("engine-fault", "runtime", error, None),
+    }
+}
+
+fn module_compile_failure_phase(
+    exact_module: ExactModuleTest,
+    resolution_started: &Cell<bool>,
+) -> &'static str {
+    if exact_module == ExactModuleTest::FixtureGraph && resolution_started.get() {
+        "resolution"
+    } else {
+        "parse"
     }
 }
 

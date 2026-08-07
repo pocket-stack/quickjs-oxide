@@ -1,0 +1,9 @@
+test/language/module-code/eval-gtbndng-indirect-update.js
+test/language/module-code/eval-gtbndng-indirect-update_FIXTURE.js
+test/language/module-code/eval-rqstd-abrupt-err-type_FIXTURE.js
+test/language/module-code/eval-rqstd-abrupt-err-uri_FIXTURE.js
+test/language/module-code/eval-rqstd-abrupt.js
+test/language/module-code/instn-resolve-empty-import.js
+test/language/module-code/instn-resolve-empty-import_FIXTURE.js
+test/language/module-code/instn-same-global-set_FIXTURE.js
+test/language/module-code/instn-same-global.js

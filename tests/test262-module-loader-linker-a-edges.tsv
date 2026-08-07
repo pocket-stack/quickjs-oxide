@@ -1,0 +1,6 @@
+root_path	base_path	request_index	specifier	normalized_path
+test/language/module-code/eval-gtbndng-indirect-update.js	test/language/module-code/eval-gtbndng-indirect-update.js	0	./eval-gtbndng-indirect-update_FIXTURE.js	test/language/module-code/eval-gtbndng-indirect-update_FIXTURE.js
+test/language/module-code/eval-rqstd-abrupt.js	test/language/module-code/eval-rqstd-abrupt.js	0	./eval-rqstd-abrupt-err-type_FIXTURE.js	test/language/module-code/eval-rqstd-abrupt-err-type_FIXTURE.js
+test/language/module-code/eval-rqstd-abrupt.js	test/language/module-code/eval-rqstd-abrupt.js	1	./eval-rqstd-abrupt-err-uri_FIXTURE.js	test/language/module-code/eval-rqstd-abrupt-err-uri_FIXTURE.js
+test/language/module-code/instn-resolve-empty-import.js	test/language/module-code/instn-resolve-empty-import.js	0	./instn-resolve-empty-import_FIXTURE.js	test/language/module-code/instn-resolve-empty-import_FIXTURE.js
+test/language/module-code/instn-same-global.js	test/language/module-code/instn-same-global.js	0	./instn-same-global-set_FIXTURE.js	test/language/module-code/instn-same-global-set_FIXTURE.js

@@ -1903,6 +1903,23 @@ fn module_export_duplicate_and_missing_binding_are_early_errors() {
 }
 
 #[test]
+fn module_string_export_names_reject_unpaired_surrogates_like_quickjs() {
+    for source in [
+        r#"const value = 42; export { value as "\ud800" };"#,
+        r#"import { "\udfff" as value } from "dependency.js"; void value;"#,
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "unpaired-module-name.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax);
+        assert_eq!(error.message(), "contains unpaired surrogate");
+    }
+}
+
+#[test]
 fn module_function_redeclarations_follow_quickjs_source_order() {
     // QuickJS 2026-06-04 retains the function initializer when a later `var`
     // reuses its module cell.
@@ -2019,6 +2036,90 @@ fn module_import_meta_remains_an_explicit_implementation_frontier() {
     .unwrap_err();
     assert_eq!(script.kind(), ErrorKind::Syntax);
     assert!(script.message().contains("only valid in module code"));
+}
+
+#[test]
+fn module_named_imports_publish_requests_live_cells_and_local_reexports() {
+    let module = compile_unlinked_module_with_filename(
+        r#"
+        import "./side-effect.js";
+        import { value, "external-name" as alias } from "./dependency.js";
+        export { value as live };
+        globalThis.imported = value + alias;
+        "#,
+        "file:///entry.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+
+    assert_eq!(module.requested_modules().len(), 2);
+    assert_eq!(
+        module.requested_modules()[0].specifier.to_utf8_lossy(),
+        "./side-effect.js"
+    );
+    assert_eq!(
+        module.requested_modules()[1].specifier.to_utf8_lossy(),
+        "./dependency.js"
+    );
+    assert_eq!(module.imports().len(), 2);
+    assert_eq!(module.imports()[0].request.0, 1);
+    assert_eq!(module.imports()[0].import_name.to_utf8_lossy(), "value");
+    assert_eq!(module.imports()[0].closure_index, 0);
+    assert!(!module.imports()[0].is_namespace);
+    assert_eq!(
+        module.imports()[1].import_name.to_utf8_lossy(),
+        "external-name"
+    );
+    assert_eq!(module.imports()[1].closure_index, 1);
+    let import_descriptors = module
+        .function()
+        .closure_variables()
+        .iter()
+        .filter(|descriptor| descriptor.source == ClosureSource::ModuleImport)
+        .collect::<Vec<_>>();
+    assert_eq!(import_descriptors.len(), 2);
+    assert!(
+        import_descriptors
+            .iter()
+            .all(|descriptor| descriptor.is_lexical
+                && descriptor.is_const
+                && descriptor.kind == ClosureVariableKind::ModuleImportView)
+    );
+    assert_eq!(
+        module.exports()[0].target,
+        ModuleExportTarget::Local { closure_index: 0 }
+    );
+}
+
+#[test]
+fn module_import_frontiers_and_duplicate_bindings_fail_closed() {
+    for source in [
+        "import value from './dependency.js';",
+        "import * as namespace from './dependency.js';",
+        "import { value } from './dependency.js' with { type: 'json' };",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "unsupported-import.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+    }
+
+    for source in [
+        "import { value } from './a.js'; let value;",
+        "let value; import { value } from './a.js';",
+        "import { value } from './a.js'; import { value } from './b.js';",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "duplicate-import.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+    }
 }
 
 #[test]

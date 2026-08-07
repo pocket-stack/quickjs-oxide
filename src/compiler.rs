@@ -258,12 +258,23 @@ pub(crate) fn compile_unlinked_script_with_filename(
 }
 
 /// Compile one ECMAScript module into its runtime-independent module record.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn compile_unlinked_module_with_filename(
     source: &str,
     filename: &str,
     debug_info: DebugInfoMode,
 ) -> Result<UnlinkedModule, Error> {
-    let mut tree = Parser::parse_module(source, JsString::try_from_utf8(filename)?)?;
+    compile_unlinked_module_with_name(source, JsString::try_from_utf8(filename)?, debug_info)
+}
+
+/// Compile a module whose host-resolved identity may contain any ECMAScript
+/// String code unit, including lone UTF-16 surrogates.
+pub(crate) fn compile_unlinked_module_with_name(
+    source: &str,
+    name: JsString,
+    debug_info: DebugInfoMode,
+) -> Result<UnlinkedModule, Error> {
+    let mut tree = Parser::parse_module(source, name)?;
     resolve_identifiers(&mut tree)?;
     if let Some(error) = tree.pending_unsupported.take() {
         return Err(error);
@@ -540,6 +551,9 @@ const fn binding_kind_from_closure_flags(
     match kind {
         ClosureVariableKind::Normal if is_lexical => Some(BindingKind::Lexical { is_const }),
         ClosureVariableKind::Normal if !is_const => Some(BindingKind::Normal),
+        ClosureVariableKind::ModuleImportView if is_lexical && is_const => {
+            Some(BindingKind::Lexical { is_const: true })
+        }
         ClosureVariableKind::FunctionName if !is_lexical => {
             Some(BindingKind::FunctionName { is_const })
         }
@@ -571,6 +585,7 @@ const fn binding_kind_from_closure_flags(
             Some(BindingKind::PrivateGetterSetter { is_static: false })
         }
         ClosureVariableKind::Normal
+        | ClosureVariableKind::ModuleImportView
         | ClosureVariableKind::FunctionName
         | ClosureVariableKind::GlobalFunction
         | ClosureVariableKind::EvalVariableObject
@@ -10665,6 +10680,7 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
                 ClosureVariableKind::ArgEvalVariableObject => ARG_EVAL_VARIABLE_OBJECT_LOCAL_NAME,
                 ClosureVariableKind::WithObject => WITH_OBJECT_LOCAL_NAME,
                 ClosureVariableKind::Normal
+                | ClosureVariableKind::ModuleImportView
                 | ClosureVariableKind::FunctionName
                 | ClosureVariableKind::GlobalFunction
                 | ClosureVariableKind::PrivateField
@@ -11870,6 +11886,7 @@ fn link_eval_environment(
             if matches!(storage, BindingStorage::External(_)) {
                 continue;
             }
+            let module_import_view = binding_storage_is_module_import_view(tree, owner, storage)?;
             let (source, resolved_kind) = if owner == consuming_function {
                 match storage {
                     BindingStorage::Argument(index) => {
@@ -11933,7 +11950,11 @@ fn link_eval_environment(
                         | BindingKind::PrivateSetter { .. }
                         | BindingKind::PrivateGetterSetter { .. }
                 ),
-                kind: closure_kind(resolved_kind),
+                kind: if module_import_view {
+                    ClosureVariableKind::ModuleImportView
+                } else {
+                    closure_kind(resolved_kind)
+                },
                 is_catch_parameter,
             });
         }
@@ -12172,7 +12193,11 @@ fn seed_module_bindings(tree: &mut FunctionTree) -> Result<(), Error> {
                 name: ClosureVariableName::Constant(name_index),
                 is_lexical,
                 is_const,
-                kind: ClosureVariableKind::Normal,
+                kind: if imported {
+                    ClosureVariableKind::ModuleImportView
+                } else {
+                    ClosureVariableKind::Normal
+                },
             },
         )?;
         tree.module
@@ -13417,6 +13442,33 @@ fn module_binding_closure_index(
         .ok_or_else(|| Error::internal("module binding closure was not seeded"))
 }
 
+fn binding_storage_is_module_import_view(
+    tree: &FunctionTree,
+    defining_function: FunctionId,
+    storage: BindingStorage,
+) -> Result<bool, Error> {
+    let kind = match storage {
+        BindingStorage::Module(binding) => {
+            let index = module_binding_closure_index(tree, binding)?;
+            tree.functions
+                .first()
+                .and_then(|function| function.closure_variables.get(usize::from(index)))
+                .map(|descriptor| descriptor.kind)
+                .ok_or_else(|| Error::internal("module binding descriptor is missing"))?
+        }
+        BindingStorage::External(index) => tree
+            .functions
+            .get(defining_function)
+            .and_then(|function| function.external_bindings.get(usize::from(index)))
+            .map(|binding| binding.kind)
+            .ok_or_else(|| Error::internal("eval external binding is missing"))?,
+        BindingStorage::Argument(_) | BindingStorage::Local(_) | BindingStorage::Global => {
+            return Ok(false);
+        }
+    };
+    Ok(kind == ClosureVariableKind::ModuleImportView)
+}
+
 fn module_binding_operation(
     function: &mut FunctionIr,
     index: u16,
@@ -14219,6 +14271,8 @@ fn capture_binding_path(
     retain_name: bool,
     erase_function_name: bool,
 ) -> Result<(u16, BindingKind), Error> {
+    let module_import_view =
+        binding_storage_is_module_import_view(tree, defining_function, binding.storage)?;
     let mut path = Vec::new();
     let mut cursor = consuming_function;
     while cursor != defining_function {
@@ -14306,7 +14360,11 @@ fn capture_binding_path(
                     | BindingKind::PrivateSetter { .. }
                     | BindingKind::PrivateGetterSetter { .. }
             ),
-            kind: closure_kind(requested_kind),
+            kind: if module_import_view {
+                ClosureVariableKind::ModuleImportView
+            } else {
+                closure_kind(requested_kind)
+            },
         };
         let (index, actual_kind) =
             ensure_captured_closure_variable(function, descriptor, requested_kind)?;

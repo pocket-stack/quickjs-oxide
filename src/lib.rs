@@ -45,8 +45,9 @@ pub use object::{
     OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
 };
 pub use runtime::{
-    Context, EvalOptions, HostServices, ModuleBytecodeRef, PendingJobError, PendingJobOutcome,
-    PromiseRejectionEvent, Runtime, RuntimeError, Test262AgentError, Test262AgentSession,
+    Context, EvalOptions, HostServices, ModuleBytecodeRef, ModuleLoader, ModuleLoaderError,
+    ModuleLoaderRegistration, PendingJobError, PendingJobOutcome, PromiseRejectionEvent, Runtime,
+    RuntimeError, Test262AgentError, Test262AgentSession,
 };
 pub use value::{JsString, JsStringError, Value};
 

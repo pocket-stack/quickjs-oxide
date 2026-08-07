@@ -1,0 +1,2 @@
+test/language/module-code/eval-rqstd-abrupt.js
+test/language/module-code/instn-resolve-empty-import.js
