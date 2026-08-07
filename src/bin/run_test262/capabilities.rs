@@ -623,7 +623,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 144] = [
+    const EXPECTED_FEATURES: [&str; 145] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
@@ -725,6 +725,7 @@ mod tests {
         "destructuring-binding",
         "error-cause",
         "exponentiation",
+        "export-star-as-namespace-from-module",
         "for-in-order",
         "for-of",
         "generators",
@@ -2097,10 +2098,23 @@ mod tests {
             expected_destructuring_assignment_global_candidate
         );
         let mut expected_current_profile = destructuring_assignment_global_candidate.clone();
+        assert!(
+            expected_current_profile
+                .features
+                .insert("export-star-as-namespace-from-module".to_owned())
+        );
         expected_current_profile
             .audited_negative_tests
             .extend(EXACT_MODULE_NEGATIVES.into_iter().map(str::to_owned));
         assert_eq!(profile, expected_current_profile);
+        assert_eq!(
+            profile
+                .features
+                .difference(&destructuring_assignment_global_candidate.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["export-star-as-namespace-from-module"]
+        );
         assert_eq!(
             profile
                 .audited_negative_tests

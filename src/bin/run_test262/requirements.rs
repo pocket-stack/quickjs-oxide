@@ -85,6 +85,19 @@ struct FixtureGraphModuleAdmission {
     files: &'static [ModuleGraphFileAdmission],
 }
 
+#[derive(Clone, Copy)]
+struct ModuleGraphRootAdmission {
+    path: &'static str,
+    closure_file_count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ExactModuleGraphAdmission {
+    root_path: &'static str,
+    files: &'static [ModuleGraphFileAdmission],
+    closure_file_count: usize,
+}
+
 const MODULE_METADATA: ModuleMetadataContract = ModuleMetadataContract {
     includes: &[],
     flags: &["module"],
@@ -329,6 +342,714 @@ const FIXTURE_GRAPH_MODULE_ADMISSIONS: [FixtureGraphModuleAdmission; 4] = [
     },
 ];
 
+/// The complete natural Test262 namespace cohort at the pinned suite
+/// revision: every non-fixture root below `namespace/`, plus the one adjacent
+/// ambiguous-export namespace test. Roots share one sorted file ledger, while
+/// `closure_file_count` freezes each root's independently reachable closure.
+const NAMESPACE_MODULE_ROOT_ADMISSIONS: [ModuleGraphRootAdmission; 37] = [
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace.js",
+        closure_file_count: 4,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/Symbol.iterator.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/Symbol.toStringTag.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/define-own-property.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/delete-exported-init.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/delete-exported-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/delete-non-exported.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/enumerate-binding-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip.js",
+        closure_file_count: 5,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml.js",
+        closure_file_count: 4,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-str-found-init.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-str-found-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-str-not-found.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-sym.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-prototype-of.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-found-init.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-found-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-initialize.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-not-found.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-update.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-sym-found.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/get-sym-not-found.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-str-found-init.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-str-found-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-str-not-found.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-sym-found.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-sym-not-found.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/is-extensible.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/object-hasOwnProperty-binding-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/object-keys-binding-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/object-propertyIsEnumerable-binding-uninit.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/own-property-keys-binding-types.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/own-property-keys-sort.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/prevent-extensions.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/set-prototype-of-null.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/set-prototype-of.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/namespace/internals/set.js",
+        closure_file_count: 1,
+    },
+];
+
+const NAMESPACE_MODULE_FILE_ADMISSIONS: [ModuleGraphFileAdmission; 48] = [
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace-1_FIXTURE.js",
+        source_sha256: "da063d7cea6c2ddfb33c462850ed97c90ade8d57bda9655debc8acc6d4cd63e2",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace-2_FIXTURE.js",
+        source_sha256: "865336830a521eb03d82ef1579dba5fb7fb04fbc617fdba2259b90562c43364a",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace.js",
+        source_sha256: "47239d1ac289c855e372dcfd86e15ddaa57be453cec4d32cc1edc45e2f8217e1",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./omitted-from-namespace_FIXTURE.js",
+            normalized_path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace_FIXTURE.js",
+        source_sha256: "dfdb499dcdedf15de650ad013f4ee0ce265ce58cc8a1cd23cedbd1778d91ae93",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[
+            ModuleRequestAdmission {
+                specifier: "./omitted-from-namespace-1_FIXTURE.js",
+                normalized_path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace-1_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./omitted-from-namespace-2_FIXTURE.js",
+                normalized_path: "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace-2_FIXTURE.js",
+            },
+        ],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/Symbol.iterator.js",
+        source_sha256: "03082b2bf4a1432a2e190f4973be5c463dbe9a757b49f5908ac86b0a45343e09",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol.iterator"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./Symbol.iterator.js",
+            normalized_path: "test/language/module-code/namespace/Symbol.iterator.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/Symbol.toStringTag.js",
+        source_sha256: "6315c6f95c2c060a0f21a777655a498a47c44efbdbd72939685829f98355dca8",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol.toStringTag"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./Symbol.toStringTag.js",
+            normalized_path: "test/language/module-code/namespace/Symbol.toStringTag.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/define-own-property.js",
+        source_sha256: "490086320b7c5fb23f7ca4ebfad4a326e5fe49aa4259e628f1c3a1e52c7690c6",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol.iterator", "Reflect", "Symbol", "Symbol.toStringTag"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./define-own-property.js",
+            normalized_path: "test/language/module-code/namespace/internals/define-own-property.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/delete-exported-init.js",
+        source_sha256: "989744c43f64724c9957e490a87fb456acb764ed2ac7a6d7f24147f37aff84b8",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./delete-exported-init.js",
+            normalized_path: "test/language/module-code/namespace/internals/delete-exported-init.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/delete-exported-uninit.js",
+        source_sha256: "ead3d19b68a4f4631f933fed4cf3f42367c429f7540c2a6dc25baca17e3755e3",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect", "let"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./delete-exported-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/delete-exported-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/delete-non-exported.js",
+        source_sha256: "5549137de62e046e20a0d64fb75a1ecdb83d7e5569f10012f4acc76678041209",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect", "Symbol", "Symbol.toStringTag"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./delete-non-exported.js",
+            normalized_path: "test/language/module-code/namespace/internals/delete-non-exported.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/enumerate-binding-uninit.js",
+        source_sha256: "e3749a663a14cbfbe71cca4ff2fbd23d255bc9869e3a63520744cc4237b7edf3",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./enumerate-binding-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/enumerate-binding-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-named-end_FIXTURE.js",
+        source_sha256: "4f1ecf3ed3337648b0d453d223ad34f5a24f0df166561699864c008dd8d0b43c",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-named_FIXTURE.js",
+        source_sha256: "ce8799937a6671573f4c0b2dcfdf46f8e595a23d9bdd5de6a307343d7970bc8d",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-nested-namespace-dflt-skip-named-end_FIXTURE.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-named-end_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-prod-end_FIXTURE.js",
+        source_sha256: "b9af329375f371cddbec3e46804af29bea7a2ac992b4181135021ab5f3939b59",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-prod_FIXTURE.js",
+        source_sha256: "f4b066890b604a1fd83857d58dd0a74a09aa05f3127ae601909b109726492ef6",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-nested-namespace-dflt-skip-prod-end_FIXTURE.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-prod-end_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip.js",
+        source_sha256: "9a7eac9328403480e06b15cce9ac2279486bf2bbc036d19e5223380247984ca2",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["export-star-as-namespace-from-module"],
+            negative: None,
+        },
+        requests: &[
+            ModuleRequestAdmission {
+                specifier: "./get-nested-namespace-dflt-skip-named_FIXTURE.js",
+                normalized_path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-named_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./get-nested-namespace-dflt-skip-prod_FIXTURE.js",
+                normalized_path: "test/language/module-code/namespace/internals/get-nested-namespace-dflt-skip-prod_FIXTURE.js",
+            },
+        ],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml-1_FIXTURE.js",
+        source_sha256: "11c902ba608e8100b8379ba450a4fc25a245f31cdea28a6385d1159ee78f8000",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-nested-namespace-props-nrml-2_FIXTURE.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml-2_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml-2_FIXTURE.js",
+        source_sha256: "87b004638b126edb359c44ec998fd34089510d80dd5ba4af680c0a73f2b5d732",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-nested-namespace-props-nrml-3_FIXTURE.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml-3_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml-3_FIXTURE.js",
+        source_sha256: "fc4a16120836dbd4685742b12fff11a5066d8ad431bebb4a5ac6830f2979b52f",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml.js",
+        source_sha256: "74fd6103875b20199f6a4ff1c31b0fae154319eaa5be03816c33c6751c1097cf",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["export-star-as-namespace-from-module"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-nested-namespace-props-nrml-1_FIXTURE.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-nested-namespace-props-nrml-1_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-str-found-init.js",
+        source_sha256: "bba174e662b5bc81f0b82f71a98cadd6faeac1e885cdb356b211954bd6276faf",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-own-property-str-found-init.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-own-property-str-found-init.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-str-found-uninit.js",
+        source_sha256: "367055bde6f3dae3dfe050ef2785f16a321a83c52363a75e09fa0ebedbfb3005",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["let"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-own-property-str-found-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-own-property-str-found-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-str-not-found.js",
+        source_sha256: "722c22fdceee8ad9c76918220203241e79e038cd8dc33df3c43a744620b6f2d9",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-own-property-str-not-found.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-own-property-str-not-found.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-own-property-sym.js",
+        source_sha256: "5daefc7f5e487c260f2d78b8087e141c6f065940340ef6440a5577f7567db759",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol", "Symbol.toStringTag"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-own-property-sym.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-own-property-sym.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-prototype-of.js",
+        source_sha256: "1a49c3befc8b4c820e8bbb4d2f3ec1e818afdfba0a633e634de7b8b274795643",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-prototype-of.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-prototype-of.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-found-init.js",
+        source_sha256: "ddd4e6b68b4093df6f87b8c1977155cdc85526e568a721f16b7ab44363405c52",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-str-found-init.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-str-found-init.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-found-uninit.js",
+        source_sha256: "fba153a816cfdfe812ecb222894dddbf0246a2220074b7aaec98d36e7cd8b4f8",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["let"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-str-found-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-str-found-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-initialize.js",
+        source_sha256: "eb293f29acf96e5808797d3aec9964ef4ef9b629fa9c1675afd0c15c2a05a01e",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["let"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-str-initialize.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-str-initialize.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-not-found.js",
+        source_sha256: "00adb485df5fb8ca302897d4db5d4b3e89a83ef569dd67913a12edc2e0db7b6e",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-str-not-found.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-str-not-found.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-str-update.js",
+        source_sha256: "4acedca4f7c613fc1f15d855020f39dc673c508d1d7403db1f7ccadb3c6ad01b",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-str-update.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-str-update.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-sym-found.js",
+        source_sha256: "954376d03885980563797915af1d933056d438d9eddab074a63cf4c35f2256d6",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol.toStringTag"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-sym-found.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-sym-found.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/get-sym-not-found.js",
+        source_sha256: "383f50910a9241dd148e178979e053d4b284cb663998d6abf1ccbf0eb51ac68a",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./get-sym-not-found.js",
+            normalized_path: "test/language/module-code/namespace/internals/get-sym-not-found.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-str-found-init.js",
+        source_sha256: "24244c2ffd67d73f90145b70b7f99df87c0962ba32679f057dad46a3ac098af8",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./has-property-str-found-init.js",
+            normalized_path: "test/language/module-code/namespace/internals/has-property-str-found-init.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-str-found-uninit.js",
+        source_sha256: "27471a2bf678598fec6c3df6fdfec8ed1236ef393cf931bb2ca603cdccf9216b",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect", "let"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./has-property-str-found-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/has-property-str-found-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-str-not-found.js",
+        source_sha256: "5ea28c74bfe936f7dca93b9c1a678f213cacdeb57fb1499fb462e663c6259d0b",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./has-property-str-not-found.js",
+            normalized_path: "test/language/module-code/namespace/internals/has-property-str-not-found.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-sym-found.js",
+        source_sha256: "6572cf48501dae9f8d4602c60cb0d342c623965c5ec52a89a34238569358715d",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol.toStringTag", "Reflect"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./has-property-sym-found.js",
+            normalized_path: "test/language/module-code/namespace/internals/has-property-sym-found.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/has-property-sym-not-found.js",
+        source_sha256: "277e068c61a8c1d00e228147df1fadd2e699da65654e220cf2be652f98af7856",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Symbol", "Reflect"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./has-property-sym-not-found.js",
+            normalized_path: "test/language/module-code/namespace/internals/has-property-sym-not-found.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/is-extensible.js",
+        source_sha256: "c500c5b92cfd978223c8528fc64a783ff99931b1a9629011b95f5c3b6969048c",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./is-extensible.js",
+            normalized_path: "test/language/module-code/namespace/internals/is-extensible.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/object-hasOwnProperty-binding-uninit.js",
+        source_sha256: "e80c6a04e4f120c0b9ec63aa41013cc5de354476694abfebe1c0f0b5a171136b",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./object-hasOwnProperty-binding-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/object-hasOwnProperty-binding-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/object-keys-binding-uninit.js",
+        source_sha256: "4d1566016d2096e5635f5fb02b0ce7777a030cba72131eadbb9436798ed2e06c",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./object-keys-binding-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/object-keys-binding-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/object-propertyIsEnumerable-binding-uninit.js",
+        source_sha256: "d7c6352c00c55d094688435f1895aa74f0f5ffcf5c4325d9e072d905f6e448dd",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./object-propertyIsEnumerable-binding-uninit.js",
+            normalized_path: "test/language/module-code/namespace/internals/object-propertyIsEnumerable-binding-uninit.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/own-property-keys-binding-types.js",
+        source_sha256: "a3819b67e5dc41adf8c6d06ba9972d43f84f7f3a49d430f32a96aa98bfc8fc68",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect", "Symbol.toStringTag", "let"],
+            negative: None,
+        },
+        requests: &[
+            ModuleRequestAdmission {
+                specifier: "./own-property-keys-binding-types.js",
+                normalized_path: "test/language/module-code/namespace/internals/own-property-keys-binding-types.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./own-property-keys-binding-types_FIXTURE.js",
+                normalized_path: "test/language/module-code/namespace/internals/own-property-keys-binding-types_FIXTURE.js",
+            },
+        ],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/own-property-keys-binding-types_FIXTURE.js",
+        source_sha256: "3b4098e5e9b8e2e72e390b813ef3aa76417bb2bda217b631355da917e1d93c7f",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./own-property-keys-binding-types.js",
+            normalized_path: "test/language/module-code/namespace/internals/own-property-keys-binding-types.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/own-property-keys-sort.js",
+        source_sha256: "b0eae14038b0da50ab314e3b63352c650318657cfc6e56e4cc61342fb7824f0b",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect", "Symbol.toStringTag"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./own-property-keys-sort.js",
+            normalized_path: "test/language/module-code/namespace/internals/own-property-keys-sort.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/prevent-extensions.js",
+        source_sha256: "c0ee6e57a97cea72137fb19f80a12512fb2797f8903699a353ff717d6141bf30",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./prevent-extensions.js",
+            normalized_path: "test/language/module-code/namespace/internals/prevent-extensions.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/set-prototype-of-null.js",
+        source_sha256: "9c63575fc8841e01c02ef30ef47e7c8f713ad8cc4a879cf197f64b7023751e99",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./set-prototype-of-null.js",
+            normalized_path: "test/language/module-code/namespace/internals/set-prototype-of-null.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/set-prototype-of.js",
+        source_sha256: "3de9551554eea456e0075fe9dc03daeb5f8641c64d735f448d2c9396eff8e9b8",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./set-prototype-of.js",
+            normalized_path: "test/language/module-code/namespace/internals/set-prototype-of.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/namespace/internals/set.js",
+        source_sha256: "4cfe9d8bfa3dfe2ad3c663013855b43b40173b95f32bec06171813b79d56e87e",
+        metadata: ModuleMetadataContract {
+            includes: &[],
+            flags: &["module"],
+            features: &["Reflect", "Symbol", "Symbol.toStringTag"],
+            negative: None,
+        },
+        requests: &[ModuleRequestAdmission {
+            specifier: "./set.js",
+            normalized_path: "test/language/module-code/namespace/internals/set.js",
+        }],
+    },
+];
+
 /// Admit only one of the pinned, dependency-free module roots above.
 ///
 /// The coordinator and worker both call this function. An exact-path source or
@@ -373,7 +1094,7 @@ fn authenticate_dependency_free_module_test(
     Ok(true)
 }
 
-/// Authenticate one of the two deliberately narrow static-module execution
+/// Authenticate one of the deliberately narrow static-module execution
 /// frontiers. An unlisted module remains unadmitted without touching any
 /// fixture file; an exact graph root authenticates its complete recursive
 /// closure before either the coordinator or worker can remove `module` from
@@ -399,7 +1120,7 @@ fn is_exact_fixture_graph_module_test(
     source: &str,
     metadata: &Metadata,
 ) -> Result<bool, String> {
-    let Some(admission) = fixture_graph_admission(path) else {
+    let Some(admission) = exact_module_graph_admission(path) else {
         return Ok(false);
     };
     let root = module_graph_file(admission, admission.root_path).ok_or_else(|| {
@@ -409,29 +1130,71 @@ fn is_exact_fixture_graph_module_test(
         )
     })?;
     authenticate_module_graph_file(path, source, metadata, root)?;
-    authenticate_fixture_graph_closure(admission, |relative| {
+    authenticate_exact_module_graph_closure(admission, |relative| {
         read_regular_module_source(suite, relative)
     })?;
     Ok(true)
 }
 
-fn fixture_graph_admission(root_path: &Path) -> Option<&'static FixtureGraphModuleAdmission> {
-    FIXTURE_GRAPH_MODULE_ADMISSIONS
+fn exact_module_graph_admission(root_path: &Path) -> Option<ExactModuleGraphAdmission> {
+    if let Some(admission) = FIXTURE_GRAPH_MODULE_ADMISSIONS
         .iter()
         .find(|admission| root_path == Path::new(admission.root_path))
+    {
+        return Some(ExactModuleGraphAdmission {
+            root_path: admission.root_path,
+            files: admission.files,
+            closure_file_count: admission.files.len(),
+        });
+    }
+    NAMESPACE_MODULE_ROOT_ADMISSIONS
+        .iter()
+        .find(|admission| root_path == Path::new(admission.path))
+        .map(|admission| ExactModuleGraphAdmission {
+            root_path: admission.path,
+            files: &NAMESPACE_MODULE_FILE_ADMISSIONS,
+            closure_file_count: admission.closure_file_count,
+        })
 }
 
-fn module_graph_file<'a>(
-    admission: &'a FixtureGraphModuleAdmission,
+fn module_graph_file(
+    admission: ExactModuleGraphAdmission,
     path: &str,
-) -> Option<&'a ModuleGraphFileAdmission> {
+) -> Option<&'static ModuleGraphFileAdmission> {
     admission.files.iter().find(|file| file.path == path)
 }
 
-fn authenticate_fixture_graph_closure(
-    admission: &FixtureGraphModuleAdmission,
+fn authenticate_exact_module_graph_closure(
+    admission: ExactModuleGraphAdmission,
     mut read_source: impl FnMut(&str) -> Result<String, String>,
 ) -> Result<(), String> {
+    let visited = reachable_module_graph_paths(admission)?;
+    if visited.len() != admission.closure_file_count {
+        return Err(format!(
+            "fixture graph recursive closure size drifted for {}: expected {}, found {}",
+            admission.root_path,
+            admission.closure_file_count,
+            visited.len()
+        ));
+    }
+    for path in &visited {
+        let file = module_graph_file(admission, path).ok_or_else(|| {
+            format!(
+                "fixture graph edge escaped the authenticated closure for {}: {path}",
+                admission.root_path
+            )
+        })?;
+        let source = read_source(path)?;
+        let metadata = parse_metadata(&source)
+            .map_err(|error| format!("parse authenticated module metadata for {path}: {error}"))?;
+        authenticate_module_graph_file(Path::new(path), &source, &metadata, file)?;
+    }
+    Ok(())
+}
+
+fn reachable_module_graph_paths(
+    admission: ExactModuleGraphAdmission,
+) -> Result<BTreeSet<&'static str>, String> {
     let mut visited = BTreeSet::new();
     let mut pending = vec![admission.root_path];
     while let Some(path) = pending.pop() {
@@ -444,10 +1207,6 @@ fn authenticate_fixture_graph_closure(
                 admission.root_path
             )
         })?;
-        let source = read_source(path)?;
-        let metadata = parse_metadata(&source)
-            .map_err(|error| format!("parse authenticated module metadata for {path}: {error}"))?;
-        authenticate_module_graph_file(Path::new(path), &source, &metadata, file)?;
         for request in file.requests.iter().rev() {
             if module_graph_file(admission, request.normalized_path).is_none() {
                 return Err(format!(
@@ -458,20 +1217,22 @@ fn authenticate_fixture_graph_closure(
             pending.push(request.normalized_path);
         }
     }
-    if visited.len() != admission.files.len() {
-        let unreachable = admission
-            .files
-            .iter()
-            .filter(|file| !visited.contains(file.path))
-            .map(|file| file.path)
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "fixture graph admission contains files outside the recursive closure for {}: {unreachable}",
-            admission.root_path
-        ));
-    }
-    Ok(())
+    Ok(visited)
+}
+
+#[cfg(test)]
+fn authenticate_fixture_graph_closure(
+    admission: &FixtureGraphModuleAdmission,
+    read_source: impl FnMut(&str) -> Result<String, String>,
+) -> Result<(), String> {
+    authenticate_exact_module_graph_closure(
+        ExactModuleGraphAdmission {
+            root_path: admission.root_path,
+            files: admission.files,
+            closure_file_count: admission.files.len(),
+        },
+        read_source,
+    )
 }
 
 fn authenticate_module_graph_file(
@@ -535,12 +1296,18 @@ pub(super) fn normalize_exact_module_request(
     base_name: &str,
     specifier: &str,
 ) -> Result<String, String> {
-    let admission = fixture_graph_admission(root_path).ok_or_else(|| {
+    let admission = exact_module_graph_admission(root_path).ok_or_else(|| {
         format!(
             "module loader rejected unaudited root: {}",
             root_path.display()
         )
     })?;
+    let reachable = reachable_module_graph_paths(admission)?;
+    if !reachable.contains(base_name) {
+        return Err(format!(
+            "module loader rejected unaudited base module: {base_name}"
+        ));
+    }
     let base = module_graph_file(admission, base_name)
         .ok_or_else(|| format!("module loader rejected unaudited base module: {base_name}"))?;
     let request = base
@@ -561,12 +1328,18 @@ pub(super) fn load_exact_module_fixture(
     root_path: &Path,
     normalized_name: &str,
 ) -> Result<String, String> {
-    let admission = fixture_graph_admission(root_path).ok_or_else(|| {
+    let admission = exact_module_graph_admission(root_path).ok_or_else(|| {
         format!(
             "module loader rejected unaudited root: {}",
             root_path.display()
         )
     })?;
+    let reachable = reachable_module_graph_paths(admission)?;
+    if !reachable.contains(normalized_name) {
+        return Err(format!(
+            "module loader rejected unaudited fixture: {normalized_name}"
+        ));
+    }
     let file = module_graph_file(admission, normalized_name)
         .filter(|file| file.path != admission.root_path)
         .ok_or_else(|| format!("module loader rejected unaudited fixture: {normalized_name}"))?;
@@ -1732,22 +2505,24 @@ const fn is_ascii_identifier_continue(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::path::Path;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     use super::{
-        AGENT_HOST_ADMISSIONS, DEPENDENCY_FREE_MODULE_ADMISSIONS, ExactModuleTest,
-        FIXTURE_GRAPH_MODULE_ADMISSIONS, FixtureGraphModuleAdmission, HostCapabilities,
-        MODULE_FIXTURE_METADATA, MODULE_METADATA, ModuleGraphFileAdmission, ModuleMetadataContract,
-        ModuleRequestAdmission, agent_host_metadata_matches,
+        AGENT_HOST_ADMISSIONS, DEPENDENCY_FREE_MODULE_ADMISSIONS, ExactModuleGraphAdmission,
+        ExactModuleTest, FIXTURE_GRAPH_MODULE_ADMISSIONS, FixtureGraphModuleAdmission,
+        HostCapabilities, MODULE_FIXTURE_METADATA, MODULE_METADATA, ModuleGraphFileAdmission,
+        ModuleMetadataContract, ModuleRequestAdmission, NAMESPACE_MODULE_FILE_ADMISSIONS,
+        NAMESPACE_MODULE_ROOT_ADMISSIONS, agent_host_metadata_matches,
         authenticate_dependency_free_module_test, authenticate_fixture_graph_closure,
-        authenticate_module_graph_file_digest, exact_module_test,
+        authenticate_module_graph_file, authenticate_module_graph_file_digest, exact_module_test,
         generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
         insert_exact_source_feature_hint, is_exact_agent_host_test,
         is_exact_dependency_free_module_test, missing_host_capability_hints,
-        module_metadata_matches, normalize_exact_module_request, source_sha256, source_tokens,
-        supplemental_feature_hints,
+        module_metadata_matches, normalize_exact_module_request, reachable_module_graph_paths,
+        source_sha256, source_tokens, supplemental_feature_hints,
     };
-    use crate::metadata::{Metadata, NegativeExpectation};
+    use crate::metadata::{Metadata, NegativeExpectation, parse_metadata};
 
     fn metadata(flags: &[&str], features: &[&str], includes: &[&str]) -> Metadata {
         Metadata {
@@ -1783,6 +2558,71 @@ mod tests {
                 phase: Some(negative.phase.to_owned()),
                 error_type: Some(negative.error_type.to_owned()),
             }),
+        }
+    }
+
+    fn audited_module_specifiers(source: &str) -> BTreeSet<String> {
+        source
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim_start();
+                if !line.starts_with("import") && !line.starts_with("export") {
+                    return None;
+                }
+                let request = if let Some(index) = line.find(" from ") {
+                    line[index + " from ".len()..].trim_start()
+                } else {
+                    let request = line.strip_prefix("import")?;
+                    let request = request.trim_start();
+                    if !matches!(request.as_bytes().first(), Some(b'\'' | b'"')) {
+                        return None;
+                    }
+                    request
+                };
+                let quote = request.as_bytes().first().copied()?;
+                if !matches!(quote, b'\'' | b'"') {
+                    return None;
+                }
+                let tail = &request[1..];
+                let end = tail.as_bytes().iter().position(|byte| *byte == quote)?;
+                Some(tail[..end].to_owned())
+            })
+            .collect()
+    }
+
+    fn normalized_audited_request(base: &str, specifier: &str) -> String {
+        let relative = specifier
+            .strip_prefix("./")
+            .expect("the namespace cohort uses relative child requests");
+        Path::new(base)
+            .parent()
+            .expect("module path has a parent")
+            .join(relative)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn collect_non_fixture_js(dir: &Path, suite: &Path, paths: &mut BTreeSet<String>) {
+        let mut entries = fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+            .map(|entry| entry.expect("read Test262 namespace entry").path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                collect_non_fixture_js(&path, suite, paths);
+            } else if path.extension().is_some_and(|extension| extension == "js")
+                && !path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with("_FIXTURE.js"))
+            {
+                paths.insert(
+                    path.strip_prefix(suite)
+                        .expect("namespace file belongs to suite")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
         }
     }
 
@@ -1881,6 +2721,243 @@ mod tests {
                     .all(|file| module_metadata_matches(&Metadata::default(), file.metadata))
             );
         }
+    }
+
+    #[test]
+    fn namespace_module_admission_is_the_exact_natural_closed_cohort() {
+        assert_eq!(NAMESPACE_MODULE_ROOT_ADMISSIONS.len(), 37);
+        assert_eq!(NAMESPACE_MODULE_FILE_ADMISSIONS.len(), 48);
+        assert!(
+            NAMESPACE_MODULE_ROOT_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert!(
+            NAMESPACE_MODULE_FILE_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert_eq!(
+            NAMESPACE_MODULE_FILE_ADMISSIONS
+                .iter()
+                .map(|file| file.requests.len())
+                .sum::<usize>(),
+            46
+        );
+
+        let mut union = BTreeSet::new();
+        for root in &NAMESPACE_MODULE_ROOT_ADMISSIONS {
+            assert!(!root.path.ends_with("_FIXTURE.js"));
+            let admission = ExactModuleGraphAdmission {
+                root_path: root.path,
+                files: &NAMESPACE_MODULE_FILE_ADMISSIONS,
+                closure_file_count: root.closure_file_count,
+            };
+            let reachable = reachable_module_graph_paths(admission)
+                .unwrap_or_else(|error| panic!("{}: {error}", root.path));
+            assert_eq!(reachable.len(), root.closure_file_count, "{}", root.path);
+            union.extend(reachable);
+
+            let root_file = NAMESPACE_MODULE_FILE_ADMISSIONS
+                .iter()
+                .find(|file| file.path == root.path)
+                .expect("every namespace root is present in the file ledger");
+            assert!(module_metadata(root_file.metadata).is_module());
+        }
+        assert_eq!(union.len(), 48);
+        assert_eq!(
+            union,
+            NAMESPACE_MODULE_FILE_ADMISSIONS
+                .iter()
+                .map(|file| file.path)
+                .collect()
+        );
+
+        for file in &NAMESPACE_MODULE_FILE_ADMISSIONS {
+            assert_eq!(file.source_sha256.len(), 64, "{}", file.path);
+            assert!(
+                file.source_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "{}",
+                file.path
+            );
+            let mut specifiers = BTreeSet::new();
+            for request in file.requests {
+                assert!(
+                    specifiers.insert(request.specifier),
+                    "duplicate request {} in {}",
+                    request.specifier,
+                    file.path
+                );
+                assert_eq!(
+                    request.normalized_path,
+                    normalized_audited_request(file.path, request.specifier),
+                    "{} -> {}",
+                    file.path,
+                    request.specifier
+                );
+                assert!(
+                    NAMESPACE_MODULE_FILE_ADMISSIONS
+                        .iter()
+                        .any(|candidate| candidate.path == request.normalized_path),
+                    "{} -> {}",
+                    file.path,
+                    request.normalized_path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn namespace_module_admission_matches_available_pinned_suite() {
+        let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/oracle/quickjs-2026-06-04/test262");
+        if !suite.is_dir() {
+            return;
+        }
+
+        let mut natural_roots = BTreeSet::new();
+        collect_non_fixture_js(
+            &suite.join("test/language/module-code/namespace"),
+            &suite,
+            &mut natural_roots,
+        );
+        natural_roots.insert(
+            "test/language/module-code/ambiguous-export-bindings/omitted-from-namespace.js"
+                .to_owned(),
+        );
+        assert_eq!(natural_roots.len(), 37);
+        assert_eq!(
+            natural_roots,
+            NAMESPACE_MODULE_ROOT_ADMISSIONS
+                .iter()
+                .map(|root| root.path.to_owned())
+                .collect()
+        );
+
+        for file in &NAMESPACE_MODULE_FILE_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(file.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", file.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", file.path));
+            authenticate_module_graph_file(Path::new(file.path), &source, &metadata, file)
+                .unwrap_or_else(|error| panic!("authenticate {}: {error}", file.path));
+            assert_eq!(
+                audited_module_specifiers(&source),
+                file.requests
+                    .iter()
+                    .map(|request| request.specifier.to_owned())
+                    .collect(),
+                "{} static requests drifted",
+                file.path
+            );
+        }
+
+        for root in &NAMESPACE_MODULE_ROOT_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(root.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", root.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", root.path));
+            assert_eq!(
+                exact_module_test(&suite, Path::new(root.path), &source, &metadata),
+                Ok(Some(ExactModuleTest::FixtureGraph)),
+                "{}",
+                root.path
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_module_admission_rejects_source_metadata_and_path_drift() {
+        let file = NAMESPACE_MODULE_FILE_ADMISSIONS
+            .iter()
+            .find(|file| file.path == "test/language/module-code/namespace/Symbol.iterator.js")
+            .expect("audited namespace root");
+        let exact = module_metadata(file.metadata);
+        assert_eq!(
+            authenticate_module_graph_file_digest(
+                Path::new(file.path),
+                file.source_sha256,
+                &exact,
+                file,
+            ),
+            Ok(())
+        );
+
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(file.path),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                &exact,
+                file,
+            )
+            .unwrap_err()
+            .contains("source drifted")
+        );
+
+        let mut metadata_drift = exact;
+        metadata_drift.features.push("Symbol".to_owned());
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(file.path),
+                file.source_sha256,
+                &metadata_drift,
+                file,
+            )
+            .unwrap_err()
+            .contains("metadata shape drifted")
+        );
+
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new("test/language/module-code/namespace/unlisted.js"),
+                file.source_sha256,
+                &module_metadata(file.metadata),
+                file,
+            )
+            .unwrap_err()
+            .contains("path drifted")
+        );
+    }
+
+    #[test]
+    fn module_graph_admission_rejects_request_and_closure_drift() {
+        const MISSING_REQUEST_FILES: [ModuleGraphFileAdmission; 1] = [ModuleGraphFileAdmission {
+            path: "test/root.js",
+            source_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            metadata: MODULE_METADATA,
+            requests: &[],
+        }];
+        let missing_request = super::authenticate_exact_module_graph_closure(
+            ExactModuleGraphAdmission {
+                root_path: "test/root.js",
+                files: &MISSING_REQUEST_FILES,
+                closure_file_count: 2,
+            },
+            |_| panic!("closure drift must fail before reading sources"),
+        )
+        .unwrap_err();
+        assert!(missing_request.contains("closure size drifted"));
+
+        const ESCAPED_REQUESTS: [ModuleRequestAdmission; 1] = [ModuleRequestAdmission {
+            specifier: "./escaped.js",
+            normalized_path: "test/escaped.js",
+        }];
+        const ESCAPED_REQUEST_FILES: [ModuleGraphFileAdmission; 1] = [ModuleGraphFileAdmission {
+            path: "test/root.js",
+            source_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            metadata: MODULE_METADATA,
+            requests: &ESCAPED_REQUESTS,
+        }];
+        let escaped_request = reachable_module_graph_paths(ExactModuleGraphAdmission {
+            root_path: "test/root.js",
+            files: &ESCAPED_REQUEST_FILES,
+            closure_file_count: 1,
+        })
+        .unwrap_err();
+        assert!(escaped_request.contains("request escaped"));
+        assert!(escaped_request.contains("./escaped.js"));
     }
 
     #[test]
