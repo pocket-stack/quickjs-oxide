@@ -476,11 +476,9 @@ impl ModuleResolvedBinding {
                 },
             ) => left == right,
             (
-                ModuleResolvedBindingTarget::Namespace { export_index: left },
-                ModuleResolvedBindingTarget::Namespace {
-                    export_index: right,
-                },
-            ) => left == right,
+                ModuleResolvedBindingTarget::Namespace { .. },
+                ModuleResolvedBindingTarget::Namespace { .. },
+            ) => true,
             (
                 ModuleResolvedBindingTarget::Local { .. },
                 ModuleResolvedBindingTarget::Namespace { .. },
@@ -3323,6 +3321,39 @@ mod tests {
 
         context.execute_module(&module).unwrap();
         assert_script_true(&mut context, "__diamondAnswer === 42");
+    }
+
+    #[test]
+    fn namespace_exports_from_one_owner_share_quickjs_star_identity() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            ("pkg/a.js", "export const a = 1;"),
+            ("pkg/b.js", "export const b = 2;"),
+            (
+                "pkg/source.js",
+                "export * as left from './a.js'; export * as right from './b.js';",
+            ),
+            ("pkg/left.js", "export { left as x } from './source.js';"),
+            ("pkg/right.js", "export { right as x } from './source.js';"),
+            (
+                "pkg/barrel.js",
+                "export * from './left.js'; export * from './right.js';",
+            ),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { x } from './barrel.js'; globalThis.__namespaceIdentity = x;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(
+            &mut context,
+            "__namespaceIdentity.a === 1 && !('b' in __namespaceIdentity)",
+        );
     }
 
     #[test]
