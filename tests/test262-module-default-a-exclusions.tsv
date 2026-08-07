@@ -1,0 +1,6 @@
+surface	canary_path
+dynamic-import	test/language/expressions/dynamic-import/always-create-new-promise.js
+top-level-await	test/language/module-code/top-level-await/await-expr-resolution.js
+import-attributes	test/language/module-code/import-attributes/import-attribute-empty.js
+import.meta	test/language/expressions/import.meta/same-object-returned.js
+source-phase-import	test/language/module-code/source-phase-import/import-source.js

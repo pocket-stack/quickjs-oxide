@@ -1,0 +1,5 @@
+test/language/module-code/instn-iee-err-dflt-thru-star-as.js
+test/language/module-code/instn-iee-err-dflt-thru-star.js
+test/language/module-code/instn-named-err-dflt-thru-star-as.js
+test/language/module-code/instn-named-err-dflt-thru-star-dflt.js
+test/language/module-code/instn-named-err-not-found-dflt.js

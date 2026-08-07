@@ -407,14 +407,23 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-destructuring-assignment-global-negative.txt"
     ));
-    const EXACT_MODULE_NEGATIVES: [&str; 6] = [
+    const EXACT_MODULE_NEGATIVES: [&str; 11] = [
         "test/language/module-code/comment-single-line-html-open.js",
         "test/language/module-code/early-dup-export-id.js",
         "test/language/module-code/early-strict-mode.js",
         "test/language/module-code/eval-rqstd-abrupt.js",
         "test/language/module-code/eval-self-abrupt.js",
+        "test/language/module-code/instn-iee-err-dflt-thru-star-as.js",
+        "test/language/module-code/instn-iee-err-dflt-thru-star.js",
+        "test/language/module-code/instn-named-err-dflt-thru-star-as.js",
+        "test/language/module-code/instn-named-err-dflt-thru-star-dflt.js",
+        "test/language/module-code/instn-named-err-not-found-dflt.js",
         "test/language/module-code/instn-resolve-empty-import.js",
     ];
+    const DEFAULT_MODULE_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-default-a-negatives.txt"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -2469,6 +2478,19 @@ mod tests {
                 )
                 .is_some()
         );
+    }
+
+    #[test]
+    fn default_module_negative_profile_delta_is_the_exact_five_path_manifest() {
+        let profile = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
+        let negatives = DEFAULT_MODULE_NEGATIVES.lines().collect::<Vec<_>>();
+
+        assert_eq!(negatives, EXACT_MODULE_NEGATIVES[5..10]);
+        assert_eq!(negatives.len(), 5);
+        assert!(negatives.windows(2).all(|pair| pair[0] < pair[1]));
+        for path in negatives {
+            assert_eq!(profile.classify(Path::new(path), &[], true), None, "{path}");
+        }
     }
 
     #[test]

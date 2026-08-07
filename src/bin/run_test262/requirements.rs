@@ -112,6 +112,28 @@ const MODULE_FN_GLOBAL_OBJECT_METADATA: ModuleMetadataContract = ModuleMetadataC
     negative: None,
 };
 
+const MODULE_GENERATORS_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &["generators"],
+    negative: None,
+};
+
+const MODULE_EXPORT_STAR_NAMESPACE_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &["export-star-as-namespace-from-module"],
+    negative: None,
+};
+
+const MODULE_EXPORT_STAR_NAMESPACE_FN_GLOBAL_OBJECT_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &["fnGlobalObject.js"],
+        flags: &["module"],
+        features: &["export-star-as-namespace-from-module"],
+        negative: None,
+    };
+
 const MODULE_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract = ModuleMetadataContract {
     includes: &[],
     flags: &["module"],
@@ -1050,6 +1072,658 @@ const NAMESPACE_MODULE_FILE_ADMISSIONS: [ModuleGraphFileAdmission; 48] = [
     },
 ];
 
+/// The exact top-level default/indirect module graph cohort at the pinned
+/// Test262 revision. The natural root selector, complete source union,
+/// request edges, metadata, and per-root recursive closure are frozen by
+/// `scripts/generate-test262-module-default-a.mjs`.
+const DEFAULT_MODULE_ROOT_ADMISSIONS: [ModuleGraphRootAdmission; 38] = [
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-anon-semi.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-anon.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-name-meth.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-named-semi.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-named.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-cls-anon.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-cls-name-meth.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-cls-named.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-fn-anon.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-fn-named.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-gen-anon.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-gen-named.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-in.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-fun-anon-semi.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-fun-named-semi.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-gen-anon-semi.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-export-dflt-gen-named-semi.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-trlng-comma.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update-as.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update-dflt.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-rqstd-once.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-rqstd-order.js",
+        closure_file_count: 10,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/eval-self-once.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/export-star-as-dflt.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-iee-err-dflt-thru-star-as.js",
+        closure_file_count: 3,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-iee-err-dflt-thru-star.js",
+        closure_file_count: 3,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-cls.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-expr.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-fun-anon.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-fun-named.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-gen-anon.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-gen-named.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-named.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-star.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-err-dflt-thru-star-as.js",
+        closure_file_count: 3,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-err-dflt-thru-star-dflt.js",
+        closure_file_count: 3,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/module-code/instn-named-err-not-found-dflt.js",
+        closure_file_count: 2,
+    },
+];
+
+const DEFAULT_MODULE_FILE_ADMISSIONS: [ModuleGraphFileAdmission; 58] = [
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-anon-semi.js",
+        source_sha256: "8f51596535737bf33603d78543bfb00f8792802208b9ff0f9cc0212a7d329de1",
+        metadata: MODULE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-anon.js",
+        source_sha256: "aa9d5c379bff55735756c7f447ed368b56b0276277d97cca5a07c99b4cfc03d4",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-cls-anon.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-cls-anon.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-name-meth.js",
+        source_sha256: "176ca161854205b96d780b0a5568008c5f98d3e85224417d00c1f8a2d9a226e2",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-cls-name-meth.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-cls-name-meth.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-named-semi.js",
+        source_sha256: "bf7513623f7cc16522906e13371a8c6763bb287fefcc0a0901243c935640aba9",
+        metadata: MODULE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-cls-named.js",
+        source_sha256: "5522ec499f121872a462cc2c4b79572c84b96215818c194726c818ffb8595213",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-cls-named.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-cls-named.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-cls-anon.js",
+        source_sha256: "b5fa8a12655de8b56d7a6c6c30c7686988acdc3b7f557052adb4d1ad9633c1d3",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-cls-anon.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-cls-anon.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-cls-name-meth.js",
+        source_sha256: "4ed56bab4263eeabf56ab0227931f34dac658bb3ed3fb6e9e611eb100719cfca",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-cls-name-meth.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-cls-name-meth.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-cls-named.js",
+        source_sha256: "b36534c4e4484c30c69ed52957405dc77bb694168a100b9c2df8da21e11bc2e1",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-cls-named.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-cls-named.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-fn-anon.js",
+        source_sha256: "8d2ce3104e20aca09591911a65ad881cdcea15473b855662813d82be496bb89b",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-fn-anon.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-fn-anon.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-fn-named.js",
+        source_sha256: "e2d8ba24e84aa368887535e974ca4c06c65137b097edd48438e1a8df75995b6a",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-fn-named.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-fn-named.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-gen-anon.js",
+        source_sha256: "aa8991077c498d490869ec8003ca322036bc8769017a3b3bf3a1da5aef2d01a2",
+        metadata: MODULE_GENERATORS_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-gen-anon.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-gen-anon.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-gen-named.js",
+        source_sha256: "8bc314bf83d82152cb9505999b881ce13ce581445072d924fdd47483b17cb770",
+        metadata: MODULE_GENERATORS_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-gen-named.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-gen-named.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-expr-in.js",
+        source_sha256: "7551d897ea97bab6c708d0db6791c2da411bb16f279515758bcd14c6a5a45fba",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-export-dflt-expr-in.js",
+            normalized_path: "test/language/module-code/eval-export-dflt-expr-in.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-fun-anon-semi.js",
+        source_sha256: "5e07612c564201578fda64fcb97493bffcdb1a7d9d4731a1f937b22dda60bc50",
+        metadata: MODULE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-fun-named-semi.js",
+        source_sha256: "cdbef6d4d8e357472675cb56b0f9799a32035a3ebd1551169b533d5330d4c1a7",
+        metadata: MODULE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-gen-anon-semi.js",
+        source_sha256: "b4866570c972b626075e779a8ff3338437f55c95fd22910af9bf9095d1572ec3",
+        metadata: MODULE_GENERATORS_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-export-dflt-gen-named-semi.js",
+        source_sha256: "c8310adf20a006287f477bf98bef4487800950ad472a65b739e34ac0ba3fe88e",
+        metadata: MODULE_GENERATORS_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-trlng-comma.js",
+        source_sha256: "12f9d3c46c2fe9ac4b9607acc71e97973e6c63281c08524f335772e477db6f85",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-gtbndng-indirect-trlng-comma_FIXTURE.js",
+            normalized_path: "test/language/module-code/eval-gtbndng-indirect-trlng-comma_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-trlng-comma_FIXTURE.js",
+        source_sha256: "5c22ed86c12987e7a3fbe9720539f5e5f2dab0e7e462b0a25b9bb74bb580c4f1",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update-as.js",
+        source_sha256: "531a6d88591198d2c6d8ca9151a675b17b1259c150bfd0b24a9b5208799fcb52",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-gtbndng-indirect-update-as_FIXTURE.js",
+            normalized_path: "test/language/module-code/eval-gtbndng-indirect-update-as_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update-as_FIXTURE.js",
+        source_sha256: "86f9d73e4f721d046412952d46a9fdeb2864fb6bdc2917d995170945d6f7800b",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update-dflt.js",
+        source_sha256: "2d949247244a5054173aff0bff717cb22d83048bd2e552e27b3a635fa3456544",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-gtbndng-indirect-update-dflt_FIXTURE.js",
+            normalized_path: "test/language/module-code/eval-gtbndng-indirect-update-dflt_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update-dflt_FIXTURE.js",
+        source_sha256: "12a289fc58e54afefbf54b974ac7db0432b3dca1815d3c7f0fa7d4f639b0fe1f",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update.js",
+        source_sha256: "2e382b6cef4a65f3c1b58ed7a21f9311b2627e7980b410805d1018b714d4b5b6",
+        metadata: MODULE_FN_GLOBAL_OBJECT_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-gtbndng-indirect-update_FIXTURE.js",
+            normalized_path: "test/language/module-code/eval-gtbndng-indirect-update_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-gtbndng-indirect-update_FIXTURE.js",
+        source_sha256: "86f9d73e4f721d046412952d46a9fdeb2864fb6bdc2917d995170945d6f7800b",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-once.js",
+        source_sha256: "882ed0917cb6f3e51819d3df04b339fa3bedc5066f82e096a5caccee46b02ae6",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_FN_GLOBAL_OBJECT_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-rqstd-once_FIXTURE.js",
+            normalized_path: "test/language/module-code/eval-rqstd-once_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-once_FIXTURE.js",
+        source_sha256: "7e63dfa9e539e07a14cb5ea9efe0e2a9c96d8779823ab37fe8ca40aba2211e00",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-1_FIXTURE.js",
+        source_sha256: "4e8c98537b24278a6601d04bb1d2bbc58176b1c33d1d2d960bd70cc7bc16f900",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-2_FIXTURE.js",
+        source_sha256: "5ffd70f38a902fdef8e02fbdd5368ad6ab32d8396dbc630a55a6cb5dac06b1b7",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-3_FIXTURE.js",
+        source_sha256: "9f7e3c79460a2b7e4da418992c31252f2f1b56571d606b35ce98f40f25db0dcb",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-4_FIXTURE.js",
+        source_sha256: "9a831329fea0311b153e2ba34dfafad10bb46a05d5bf42f40f30a9934cd0d376",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-5_FIXTURE.js",
+        source_sha256: "e6c9b77d88e2d7bba9a4aa82dd410c82d54f9b753a7b794b3aed46b9700bebe9",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-6_FIXTURE.js",
+        source_sha256: "98612128fbccba934f3db5cdc705ce56965555e31c28bd327dd4567dc56db835",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-7_FIXTURE.js",
+        source_sha256: "8a5cb9176b931cb963c31f81c4be7e69528f9c354067990b6559363edeec8f73",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-8_FIXTURE.js",
+        source_sha256: "2dcca213985438e5376357e19866341af0e5d78995d02a5631934f0c544be930",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order-9_FIXTURE.js",
+        source_sha256: "aa255b335b9c9309ba4e630256f102a6bbaeae107905698cbf19c1ecb642e891",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-rqstd-order.js",
+        source_sha256: "6bc5fcbee5e8c6c9315ac71d6b88b47ff0b0c826a0f4430537130d64fd70f5e6",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_FN_GLOBAL_OBJECT_METADATA,
+        requests: &[
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-1_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-1_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-2_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-2_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-3_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-3_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-4_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-4_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-5_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-5_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-6_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-6_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-7_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-7_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-8_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-8_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./eval-rqstd-order-9_FIXTURE.js",
+                normalized_path: "test/language/module-code/eval-rqstd-order-9_FIXTURE.js",
+            },
+        ],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/eval-self-once.js",
+        source_sha256: "6639c2cb8e4ea955fc030d1811350f05b5c710f811904067a495e70c628f7581",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_FN_GLOBAL_OBJECT_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./eval-self-once.js",
+            normalized_path: "test/language/module-code/eval-self-once.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/export-star-as-dflt.js",
+        source_sha256: "a9724b86d659a6d967194d51e68c42a8b22595eeb236ee0eda32ac57778156cc",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_METADATA,
+        requests: &[
+            ModuleRequestAdmission {
+                specifier: "./export-star-as-dflt_FIXTURE.js",
+                normalized_path: "test/language/module-code/export-star-as-dflt_FIXTURE.js",
+            },
+            ModuleRequestAdmission {
+                specifier: "./export-star-as-dflt.js",
+                normalized_path: "test/language/module-code/export-star-as-dflt.js",
+            },
+        ],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/export-star-as-dflt_FIXTURE.js",
+        source_sha256: "630349bb17477e095abdc188b14a85a02bc228caa11f3a257f7f052148dff40c",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-iee-err-dflt-thru-star-as.js",
+        source_sha256: "65ebe620436c09c8be4d37528ffa9d367d3419852af2b3cf285533d855c9f1cc",
+        metadata: MODULE_RESOLUTION_SYNTAX_ERROR_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-iee-err-dflt-thru-star-int_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-iee-err-dflt-thru-star-int_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-iee-err-dflt-thru-star-dflt_FIXTURE.js",
+        source_sha256: "2c51cc1863b9a1c6b1043a6a46258752acf39fc2640733ce8d47895be318a986",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-iee-err-dflt-thru-star-int_FIXTURE.js",
+        source_sha256: "52f6800be916aba38d70ec388015cb91686900ef40525123ce9bb368d31bd2a9",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-iee-err-dflt-thru-star-dflt_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-iee-err-dflt-thru-star-dflt_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-iee-err-dflt-thru-star.js",
+        source_sha256: "c0d32ab7ca2682ce77e5cfefd9a72fcd371fc70c5a0ee553a9b710e5964b2f70",
+        metadata: MODULE_RESOLUTION_SYNTAX_ERROR_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-iee-err-dflt-thru-star-int_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-iee-err-dflt-thru-star-int_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-cls.js",
+        source_sha256: "d27eee1aeb3d07af6844a2ddc798b886ea7e010f1837e4246925ccadd2804d88",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-cls.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-cls.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-expr.js",
+        source_sha256: "fe0332bf39c1354b625d2f89abd5df929288ffaf3aa12d9f45003aea00244352",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-expr.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-expr.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-fun-anon.js",
+        source_sha256: "375193b74f1be8dead8b515e8d83efee9ac5fe5c126253ce8059035ddafc793d",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-fun-anon.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-fun-anon.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-fun-named.js",
+        source_sha256: "042384a9e73eac9d84d0894decaf5bc3c4be167293649c17f21f1f74b1945133",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-fun-named.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-fun-named.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-gen-anon.js",
+        source_sha256: "e43f2c710106ec2059a660fcea954647460f5d92222ecb2c3d8dddef503a0a46",
+        metadata: MODULE_GENERATORS_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-gen-anon.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-gen-anon.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-gen-named.js",
+        source_sha256: "5f24d94650d27ba1c046b21e985c5d5b835db0ecf5cdb2679c70ae89b2fc1907",
+        metadata: MODULE_GENERATORS_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-gen-named.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-gen-named.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-named.js",
+        source_sha256: "6c2005b1dac577b28f6683ebe3a952c9cc5e0278c3148bab1477cc7d2cf3deb9",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-named.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-named.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-bndng-dflt-star.js",
+        source_sha256: "ba471a14418389ae63bd62f70f30eb29b88ee7dd017505f3bf7db8c247d9b8e5",
+        metadata: MODULE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-bndng-dflt-star.js",
+            normalized_path: "test/language/module-code/instn-named-bndng-dflt-star.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-err-dflt-thru-star-as.js",
+        source_sha256: "8969afda03d04ba65fb428016f4cfd070882b915bf5508b338d5950ca9a0cb07",
+        metadata: MODULE_RESOLUTION_SYNTAX_ERROR_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-err-dflt-thru-star-int_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-named-err-dflt-thru-star-int_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-err-dflt-thru-star-dflt.js",
+        source_sha256: "7e8536f5deabfff2cf58214adfaabbd3b30dc9077e0700a9ea69a3841b04f81b",
+        metadata: MODULE_RESOLUTION_SYNTAX_ERROR_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-err-dflt-thru-star-int_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-named-err-dflt-thru-star-int_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-err-dflt-thru-star-dflt_FIXTURE.js",
+        source_sha256: "2c51cc1863b9a1c6b1043a6a46258752acf39fc2640733ce8d47895be318a986",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-err-dflt-thru-star-int_FIXTURE.js",
+        source_sha256: "2e50d471452af4e2edbdf2b8c5423677c1400cb6386d48dec493792ac7718131",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-err-dflt-thru-star-dflt_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-named-err-dflt-thru-star-dflt_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-err-not-found-dflt.js",
+        source_sha256: "926ab4c8a1c02df68c146855e4facf94cdf0d0d8e20277a2ff446513a3460b5e",
+        metadata: MODULE_RESOLUTION_SYNTAX_ERROR_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./instn-named-err-not-found-empty_FIXTURE.js",
+            normalized_path: "test/language/module-code/instn-named-err-not-found-empty_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/module-code/instn-named-err-not-found-empty_FIXTURE.js",
+        source_sha256: "2d326e77199c7b7def6df453731bddee1732fba0635344e7e47d161d7aa17dba",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+];
+
 /// Admit only one of the pinned, dependency-free module roots above.
 ///
 /// The coordinator and worker both call this function. An exact-path source or
@@ -1137,6 +1811,16 @@ fn is_exact_fixture_graph_module_test(
 }
 
 fn exact_module_graph_admission(root_path: &Path) -> Option<ExactModuleGraphAdmission> {
+    if let Some(admission) = DEFAULT_MODULE_ROOT_ADMISSIONS
+        .iter()
+        .find(|admission| root_path == Path::new(admission.path))
+    {
+        return Some(ExactModuleGraphAdmission {
+            root_path: admission.path,
+            files: &DEFAULT_MODULE_FILE_ADMISSIONS,
+            closure_file_count: admission.closure_file_count,
+        });
+    }
     if let Some(admission) = FIXTURE_GRAPH_MODULE_ADMISSIONS
         .iter()
         .find(|admission| root_path == Path::new(admission.root_path))
@@ -2509,13 +3193,14 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AGENT_HOST_ADMISSIONS, DEPENDENCY_FREE_MODULE_ADMISSIONS, ExactModuleGraphAdmission,
-        ExactModuleTest, FIXTURE_GRAPH_MODULE_ADMISSIONS, FixtureGraphModuleAdmission,
-        HostCapabilities, MODULE_FIXTURE_METADATA, MODULE_METADATA, ModuleGraphFileAdmission,
-        ModuleMetadataContract, ModuleRequestAdmission, NAMESPACE_MODULE_FILE_ADMISSIONS,
-        NAMESPACE_MODULE_ROOT_ADMISSIONS, agent_host_metadata_matches,
-        authenticate_dependency_free_module_test, authenticate_fixture_graph_closure,
-        authenticate_module_graph_file, authenticate_module_graph_file_digest, exact_module_test,
+        AGENT_HOST_ADMISSIONS, DEFAULT_MODULE_FILE_ADMISSIONS, DEFAULT_MODULE_ROOT_ADMISSIONS,
+        DEPENDENCY_FREE_MODULE_ADMISSIONS, ExactModuleGraphAdmission, ExactModuleTest,
+        FIXTURE_GRAPH_MODULE_ADMISSIONS, FixtureGraphModuleAdmission, HostCapabilities,
+        MODULE_FIXTURE_METADATA, MODULE_METADATA, ModuleGraphFileAdmission, ModuleMetadataContract,
+        ModuleRequestAdmission, NAMESPACE_MODULE_FILE_ADMISSIONS, NAMESPACE_MODULE_ROOT_ADMISSIONS,
+        agent_host_metadata_matches, authenticate_dependency_free_module_test,
+        authenticate_fixture_graph_closure, authenticate_module_graph_file,
+        authenticate_module_graph_file_digest, exact_module_graph_admission, exact_module_test,
         generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
         insert_exact_source_feature_hint, is_exact_agent_host_test,
         is_exact_dependency_free_module_test, missing_host_capability_hints,
@@ -2523,6 +3208,31 @@ mod tests {
         source_sha256, source_tokens, supplemental_feature_hints,
     };
     use crate::metadata::{Metadata, NegativeExpectation, parse_metadata};
+
+    const DEFAULT_MODULE_MANIFEST: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-default-a.txt"
+    ));
+    const DEFAULT_MODULE_SOURCES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-default-a-sources.txt"
+    ));
+    const DEFAULT_MODULE_EDGES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-default-a-edges.tsv"
+    ));
+    const DEFAULT_MODULE_CLOSURES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-default-a-closures.tsv"
+    ));
+    const DEFAULT_MODULE_LEDGER: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-default-a-ledger.tsv"
+    ));
+    const DEFAULT_MODULE_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-default-a-negatives.txt"
+    ));
 
     fn metadata(flags: &[&str], features: &[&str], includes: &[&str]) -> Metadata {
         Metadata {
@@ -2562,6 +3272,9 @@ mod tests {
     }
 
     fn audited_module_specifiers(source: &str) -> BTreeSet<String> {
+        let source = source
+            .find("---*/")
+            .map_or(source, |end| &source[end + "---*/".len()..]);
         source
             .lines()
             .filter_map(|line| {
@@ -2590,10 +3303,28 @@ mod tests {
             .collect()
     }
 
+    fn complete_frontmatter(source: &str) -> &str {
+        let Some(start) = source.find("/*---") else {
+            return "";
+        };
+        let marker_end = start
+            + source[start..]
+                .find("---*/")
+                .expect("Test262 frontmatter terminator")
+            + "---*/".len();
+        if source[marker_end..].starts_with("\r\n") {
+            &source[start..marker_end + 2]
+        } else if source[marker_end..].starts_with('\n') {
+            &source[start..marker_end + 1]
+        } else {
+            &source[start..marker_end]
+        }
+    }
+
     fn normalized_audited_request(base: &str, specifier: &str) -> String {
         let relative = specifier
             .strip_prefix("./")
-            .expect("the namespace cohort uses relative child requests");
+            .expect("the audited module cohorts use relative child requests");
         Path::new(base)
             .parent()
             .expect("module path has a parent")
@@ -2624,6 +3355,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn is_default_module_graph_root_name(name: &str) -> bool {
+        name.ends_with(".js")
+            && !name.ends_with("_FIXTURE.js")
+            && ((name.starts_with("eval-export-dflt-")
+                && !name.starts_with("eval-export-dflt-expr-err-"))
+                || name.starts_with("eval-gtbndng-indirect-")
+                || matches!(name, "eval-rqstd-once.js" | "eval-rqstd-order.js")
+                || matches!(name, "eval-self-once.js" | "export-star-as-dflt.js")
+                || (name.starts_with("instn-")
+                    && name.contains("dflt")
+                    && !name.starts_with("instn-star-props-dflt")
+                    && !name.starts_with("instn-star-as-props-dflt")))
     }
 
     #[test]
@@ -2719,6 +3464,308 @@ mod tests {
                 admission.files[1..]
                     .iter()
                     .all(|file| module_metadata_matches(&Metadata::default(), file.metadata))
+            );
+        }
+    }
+
+    #[test]
+    fn default_module_admission_is_exact_sorted_and_closed() {
+        assert_eq!(DEFAULT_MODULE_ROOT_ADMISSIONS.len(), 38);
+        assert_eq!(DEFAULT_MODULE_FILE_ADMISSIONS.len(), 58);
+        assert!(
+            DEFAULT_MODULE_ROOT_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert!(
+            DEFAULT_MODULE_FILE_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert_eq!(
+            DEFAULT_MODULE_MANIFEST.lines().collect::<Vec<_>>(),
+            DEFAULT_MODULE_ROOT_ADMISSIONS
+                .iter()
+                .map(|root| root.path)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            DEFAULT_MODULE_SOURCES.lines().collect::<Vec<_>>(),
+            DEFAULT_MODULE_FILE_ADMISSIONS
+                .iter()
+                .map(|file| file.path)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            DEFAULT_MODULE_FILE_ADMISSIONS
+                .iter()
+                .map(|file| file.requests.len())
+                .sum::<usize>(),
+            43
+        );
+
+        let mut union = BTreeSet::new();
+        let mut rooted_request_count = 0;
+        let mut self_edge_count = 0;
+        let mut expected_edges =
+            String::from("root_path\tbase_path\trequest_index\tspecifier\tnormalized_path\n");
+        let mut expected_closures = String::from("root_path\tclosure_files\trequest_edges\n");
+        for root in &DEFAULT_MODULE_ROOT_ADMISSIONS {
+            let admission = ExactModuleGraphAdmission {
+                root_path: root.path,
+                files: &DEFAULT_MODULE_FILE_ADMISSIONS,
+                closure_file_count: root.closure_file_count,
+            };
+            let reachable = reachable_module_graph_paths(admission)
+                .unwrap_or_else(|error| panic!("{}: {error}", root.path));
+            assert_eq!(reachable.len(), root.closure_file_count, "{}", root.path);
+            union.extend(reachable.iter().copied());
+
+            let root_file = DEFAULT_MODULE_FILE_ADMISSIONS
+                .iter()
+                .find(|file| file.path == root.path)
+                .expect("every default cohort root is in the source ledger");
+            assert!(module_metadata(root_file.metadata).is_module());
+
+            let mut closure_requests = 0;
+            for path in reachable {
+                let file = DEFAULT_MODULE_FILE_ADMISSIONS
+                    .iter()
+                    .find(|file| file.path == path)
+                    .expect("every reachable file is in the source ledger");
+                for (request_index, request) in file.requests.iter().enumerate() {
+                    closure_requests += 1;
+                    rooted_request_count += 1;
+                    if file.path == request.normalized_path {
+                        self_edge_count += 1;
+                    }
+                    expected_edges.push_str(&format!(
+                        "{}\t{}\t{}\t{}\t{}\n",
+                        root.path,
+                        file.path,
+                        request_index,
+                        request.specifier,
+                        request.normalized_path
+                    ));
+                }
+            }
+            expected_closures.push_str(&format!(
+                "{}\t{}\t{}\n",
+                root.path, root.closure_file_count, closure_requests
+            ));
+        }
+        assert_eq!(union.len(), 58);
+        assert_eq!(
+            union,
+            DEFAULT_MODULE_FILE_ADMISSIONS
+                .iter()
+                .map(|file| file.path)
+                .collect()
+        );
+        assert_eq!(rooted_request_count, 45);
+        assert_eq!(self_edge_count, 21);
+        assert_eq!(expected_edges, DEFAULT_MODULE_EDGES);
+        assert_eq!(expected_closures, DEFAULT_MODULE_CLOSURES);
+
+        for file in &DEFAULT_MODULE_FILE_ADMISSIONS {
+            assert_eq!(file.source_sha256.len(), 64, "{}", file.path);
+            assert!(
+                file.source_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "{}",
+                file.path
+            );
+            if file.path.ends_with("_FIXTURE.js") {
+                assert!(module_metadata_matches(&Metadata::default(), file.metadata));
+            }
+            let mut specifiers = BTreeSet::new();
+            for request in file.requests {
+                assert!(
+                    specifiers.insert(request.specifier),
+                    "duplicate request {} in {}",
+                    request.specifier,
+                    file.path
+                );
+                assert_eq!(
+                    request.normalized_path,
+                    normalized_audited_request(file.path, request.specifier),
+                    "{} -> {}",
+                    file.path,
+                    request.specifier
+                );
+                assert!(
+                    DEFAULT_MODULE_FILE_ADMISSIONS
+                        .iter()
+                        .any(|candidate| candidate.path == request.normalized_path),
+                    "{} -> {}",
+                    file.path,
+                    request.normalized_path
+                );
+            }
+        }
+
+        let audited_negatives = DEFAULT_MODULE_ROOT_ADMISSIONS
+            .iter()
+            .filter_map(|root| {
+                DEFAULT_MODULE_FILE_ADMISSIONS
+                    .iter()
+                    .find(|file| file.path == root.path)
+                    .filter(|file| file.metadata.negative.is_some())
+                    .map(|file| file.path)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            audited_negatives,
+            DEFAULT_MODULE_NEGATIVES.lines().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn default_module_admission_matches_available_pinned_suite() {
+        let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/oracle/quickjs-2026-06-04/test262");
+        if !suite.is_dir() {
+            return;
+        }
+
+        let module_dir = suite.join("test/language/module-code");
+        let natural_roots = fs::read_dir(&module_dir)
+            .expect("read pinned module-code directory")
+            .map(|entry| entry.expect("read pinned module-code entry"))
+            .filter(|entry| entry.path().is_file())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| is_default_module_graph_root_name(name))
+            .map(|name| format!("test/language/module-code/{name}"))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(natural_roots.len(), 38);
+        assert_eq!(
+            natural_roots,
+            DEFAULT_MODULE_ROOT_ADMISSIONS
+                .iter()
+                .map(|root| root.path.to_owned())
+                .collect()
+        );
+
+        let ledger = DEFAULT_MODULE_LEDGER
+            .lines()
+            .skip(1)
+            .map(|line| {
+                let fields = line.split('\t').collect::<Vec<_>>();
+                assert_eq!(fields.len(), 9, "{line}");
+                (fields[0], fields)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(ledger.len(), 58);
+        for file in &DEFAULT_MODULE_FILE_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(file.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", file.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", file.path));
+            authenticate_module_graph_file(Path::new(file.path), &source, &metadata, file)
+                .unwrap_or_else(|error| panic!("authenticate {}: {error}", file.path));
+            assert_eq!(
+                audited_module_specifiers(&source),
+                file.requests
+                    .iter()
+                    .map(|request| request.specifier.to_owned())
+                    .collect(),
+                "{} static requests drifted",
+                file.path
+            );
+
+            let fields = ledger.get(file.path).expect("source ledger row");
+            assert_eq!(
+                fields[1],
+                if file.path.ends_with("_FIXTURE.js") {
+                    "fixture"
+                } else {
+                    "root"
+                }
+            );
+            assert_eq!(fields[2], file.metadata.includes.join(","));
+            assert_eq!(fields[3], file.metadata.flags.join(","));
+            assert_eq!(fields[4], file.metadata.features.join(","));
+            assert_eq!(
+                fields[5],
+                file.metadata.negative.map_or("", |negative| negative.phase)
+            );
+            assert_eq!(
+                fields[6],
+                file.metadata
+                    .negative
+                    .map_or("", |negative| negative.error_type)
+            );
+            assert_eq!(fields[7], file.source_sha256);
+            assert_eq!(
+                fields[8],
+                source_sha256(complete_frontmatter(&source)).expect("hash frontmatter")
+            );
+        }
+
+        for root in &DEFAULT_MODULE_ROOT_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(root.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", root.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", root.path));
+            assert_eq!(
+                exact_module_test(&suite, Path::new(root.path), &source, &metadata),
+                Ok(Some(ExactModuleTest::FixtureGraph)),
+                "{}",
+                root.path
+            );
+        }
+    }
+
+    #[test]
+    fn default_module_admission_rejects_drift_and_preserves_adjacent_exclusions() {
+        let file = DEFAULT_MODULE_FILE_ADMISSIONS
+            .iter()
+            .find(|file| file.path == "test/language/module-code/export-star-as-dflt.js")
+            .expect("audited default-export root");
+        let exact = module_metadata(file.metadata);
+        assert_eq!(
+            authenticate_module_graph_file_digest(
+                Path::new(file.path),
+                file.source_sha256,
+                &exact,
+                file,
+            ),
+            Ok(())
+        );
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(file.path),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                &exact,
+                file,
+            )
+            .unwrap_err()
+            .contains("source drifted")
+        );
+        let mut metadata_drift = exact;
+        metadata_drift.features.clear();
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(file.path),
+                file.source_sha256,
+                &metadata_drift,
+                file,
+            )
+            .unwrap_err()
+            .contains("metadata shape drifted")
+        );
+
+        for excluded in [
+            "test/language/expressions/dynamic-import/always-create-new-promise.js",
+            "test/language/module-code/top-level-await/await-expr-resolution.js",
+            "test/language/module-code/import-attributes/import-attribute-empty.js",
+            "test/language/expressions/import.meta/same-object-returned.js",
+            "test/language/module-code/source-phase-import/import-source.js",
+        ] {
+            assert!(
+                exact_module_graph_admission(Path::new(excluded)).is_none(),
+                "excluded module surface was admitted: {excluded}"
             );
         }
     }
