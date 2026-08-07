@@ -567,7 +567,9 @@ impl Runtime {
                     }
                 }
                 ClosureSource::EvalEnvironment(_) => {}
-                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                ClosureSource::ModuleDeclaration
+                | ClosureSource::ModuleImport
+                | ClosureSource::ModuleImportCollision => {
                     return Err(RuntimeError::Invariant(
                         "eval root retained a module closure descriptor",
                     ));
@@ -708,7 +710,9 @@ impl Runtime {
                         "eval environment closure descriptors are not an exact prefix",
                     ));
                 }
-                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                ClosureSource::ModuleDeclaration
+                | ClosureSource::ModuleImport
+                | ClosureSource::ModuleImportCollision => {
                     return Err(RuntimeError::Invariant(
                         "eval root retained a module closure descriptor",
                     ));

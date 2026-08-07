@@ -2695,7 +2695,9 @@ impl VmHost for RuntimeVmHost {
                         "child closure attempted to resolve an eval-root descriptor",
                     ));
                 }
-                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                ClosureSource::ModuleDeclaration
+                | ClosureSource::ModuleImport
+                | ClosureSource::ModuleImportCollision => {
                     return Err(Error::internal(
                         "child closure attempted to resolve a module-root descriptor",
                     ));
@@ -4365,15 +4367,39 @@ impl VmHost for RuntimeVmHost {
             .get(usize::from(index))
             .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?
             .clone();
-        let raw = self
-            .runtime
-            .raw_var_ref_value(&root)
-            .map_err(runtime_error_to_vm_error)?;
-        if !matches!(raw, RawValue::Uninitialized) {
-            return Err(self.lexical_uninitialized_error(self.closure_name(index)?)?);
-        }
         self.runtime
             .write_var_ref(&root, value)
+            .map_err(runtime_error_to_vm_error)
+    }
+
+    fn initialize_module_import_collision(
+        &mut self,
+        index: u16,
+        value: Value,
+    ) -> Result<(), Error> {
+        let descriptor = self
+            .closure_variables
+            .get(usize::from(index))
+            .copied()
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        if descriptor.source != ClosureSource::ModuleImportCollision
+            || !descriptor.is_lexical
+            || !descriptor.is_const
+            || !matches!(
+                descriptor.kind,
+                ClosureVariableKind::Normal | ClosureVariableKind::ModuleImportView
+            )
+        {
+            return Err(Error::internal(
+                "module import collision initialization targeted a non-import binding",
+            ));
+        }
+        let root = self
+            .closure_slots
+            .get(usize::from(index))
+            .ok_or_else(|| Error::internal("closure variable index is out of bounds"))?;
+        self.runtime
+            .write_var_ref(root, value)
             .map_err(runtime_error_to_vm_error)
     }
 

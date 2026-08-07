@@ -7,31 +7,39 @@
 
 use super::*;
 use crate::module::{
-    MODULE_DEFAULT_BINDING_NAME, ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportName,
+    MODULE_DEFAULT_BINDING_NAME, ModuleExport, ModuleExportTarget, ModuleImport,
+    ModuleImportCollision, ModuleImportCollisionDeclaration, ModuleImportName,
     ModuleLinkInitializer, ModuleLinkInitializerValue, ModuleRequest, ModuleStarExport,
-    UnlinkedModule,
+    UnlinkedModule, UnlinkedModuleTables,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ModuleBindingId(usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ModuleBindingOrigin {
+pub(super) enum ModuleDeclarationOrigin {
     Var,
-    Lexical,
+    Lexical {
+        is_const: bool,
+    },
     Function {
         constant: u32,
         inferred_name: Option<u32>,
     },
-    Import,
-    NamespaceImport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ModuleImportKind {
+    Named,
+    Namespace,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct IrModuleBinding {
     pub(super) name: String,
-    pub(super) origin: ModuleBindingOrigin,
-    pub(super) is_const: bool,
+    pub(super) declaration: Option<ModuleDeclarationOrigin>,
+    pub(super) declaration_scope: Option<ScopeId>,
+    pub(super) import: Option<ModuleImportKind>,
     pub(super) closure_index: Option<u16>,
 }
 
@@ -53,6 +61,7 @@ struct IrModuleImport {
 #[derive(Debug, Default)]
 pub(super) struct IrModule {
     pub(super) bindings: Vec<IrModuleBinding>,
+    pub(super) declaration_order: Vec<ModuleBindingId>,
     requested_modules: Vec<ModuleRequest>,
     imports: Vec<IrModuleImport>,
     local_exports: Vec<IrModuleLocalExport>,
@@ -347,18 +356,67 @@ impl<'source> Parser<'source> {
         span: Span,
         is_namespace: bool,
     ) -> Result<ModuleBindingId, Error> {
-        self.register_lexical_binding(name, span, span, true, false)?;
-        let module = self.module_ir_mut()?;
-        let binding = module
-            .binding_id(name)
-            .ok_or_else(|| Error::internal("registered import binding is missing"))?;
-        let binding_record = module.binding_mut(binding)?;
-        binding_record.origin = if is_namespace {
-            ModuleBindingOrigin::NamespaceImport
+        if !matches!(self.current_ir().kind, FunctionKind::Module)
+            || self.current_ir().current_scope != self.current_ir().body_scope
+        {
+            return Err(Error::internal(
+                "module import binding escaped the module body",
+            ));
+        }
+        let import = if is_namespace {
+            ModuleImportKind::Namespace
         } else {
-            ModuleBindingOrigin::Import
+            ModuleImportKind::Named
         };
-        binding_record.is_const = true;
+        let binding = {
+            let module = self.module_ir_mut()?;
+            if let Some(binding) = module.binding_id(name) {
+                let record = module.binding_mut(binding)?;
+                if record.import.is_some() {
+                    return Err(Error::syntax(
+                        "invalid redefinition of lexical identifier",
+                        source_span(span),
+                    ));
+                }
+                record.import = Some(import);
+                binding
+            } else {
+                let binding = ModuleBindingId(module.bindings.len());
+                module.bindings.push(IrModuleBinding {
+                    name: name.to_owned(),
+                    declaration: None,
+                    declaration_scope: None,
+                    import: Some(import),
+                    closure_index: None,
+                });
+                binding
+            }
+        };
+
+        let scope = self.current_ir().current_scope;
+        if let Some(existing) = self.current_ir().binding_id_in_scope(scope, name) {
+            let record = self
+                .current_ir_mut()
+                .bindings
+                .get_mut(existing.0)
+                .ok_or_else(|| Error::internal("module import binding moved"))?;
+            if record.storage != BindingStorage::Module(binding) {
+                return Err(Error::internal(
+                    "module import collision resolved to different storage",
+                ));
+            }
+            record.kind = BindingKind::Lexical { is_const: true };
+        } else {
+            let function = self.current_ir_mut();
+            function.add_binding(
+                scope,
+                scope,
+                name.to_owned(),
+                BindingStorage::Module(binding),
+                BindingKind::Lexical { is_const: true },
+                Some(span),
+            );
+        }
         Ok(binding)
     }
 
@@ -552,30 +610,51 @@ impl<'source> Parser<'source> {
     pub(super) fn add_module_binding(
         &mut self,
         name: &str,
-        origin: ModuleBindingOrigin,
-        is_const: bool,
+        declaration: ModuleDeclarationOrigin,
     ) -> Result<ModuleBindingId, Error> {
+        let declaration_scope = self.current_ir().current_scope;
         let module = self.module_ir_mut()?;
         if let Some(id) = module.binding_id(name) {
-            if let ModuleBindingOrigin::Function {
+            let first_declaration = module.binding(id)?.declaration.is_none();
+            let replaces_with_function =
+                matches!(declaration, ModuleDeclarationOrigin::Function { .. });
+            if let ModuleDeclarationOrigin::Function {
                 constant,
                 inferred_name,
-            } = origin
+            } = declaration
             {
-                module.binding_mut(id)?.origin = ModuleBindingOrigin::Function {
+                module.binding_mut(id)?.declaration = Some(ModuleDeclarationOrigin::Function {
                     constant,
                     inferred_name,
-                };
+                });
+            } else if first_declaration {
+                module.binding_mut(id)?.declaration = Some(declaration);
+            }
+            if first_declaration {
+                module.binding_mut(id)?.declaration_scope = Some(declaration_scope);
+                module.declaration_order.push(id);
+            } else if replaces_with_function {
+                let position = module
+                    .declaration_order
+                    .iter()
+                    .position(|candidate| *candidate == id)
+                    .ok_or_else(|| {
+                        Error::internal("module declaration order omitted an existing binding")
+                    })?;
+                module.declaration_order.remove(position);
+                module.declaration_order.push(id);
             }
             return Ok(id);
         }
         let id = ModuleBindingId(module.bindings.len());
         module.bindings.push(IrModuleBinding {
             name: name.to_owned(),
-            origin,
-            is_const,
+            declaration: Some(declaration),
+            declaration_scope: Some(declaration_scope),
+            import: None,
             closure_index: None,
         });
+        module.declaration_order.push(id);
         Ok(id)
     }
 
@@ -628,8 +707,18 @@ impl<'source> Parser<'source> {
                 .current_ir()
                 .binding_id_from_scope(self.current_ir().current_scope, &name)
                 .is_some_and(|(_, binding)| {
-                    self.current_ir().bindings[binding.0].declaration_scope
-                        == self.current_ir().current_scope
+                    let binding = &self.current_ir().bindings[binding.0];
+                    if binding.declaration_scope != self.current_ir().current_scope {
+                        return false;
+                    }
+                    let BindingStorage::Module(module_binding) = binding.storage else {
+                        return true;
+                    };
+                    self.module
+                        .as_ref()
+                        .and_then(|module| module.bindings.get(module_binding.0))
+                        .and_then(|binding| binding.declaration_scope)
+                        .is_some_and(|scope| scope == self.current_ir().current_scope)
                 })
         {
             return Err(Error::syntax(
@@ -651,19 +740,42 @@ impl<'source> Parser<'source> {
         } else {
             None
         };
+        let first_declaration = self
+            .module
+            .as_ref()
+            .and_then(|module| module.binding_id(&name))
+            .and_then(|binding| self.module.as_ref()?.binding(binding).ok())
+            .is_some_and(|binding| binding.declaration.is_none());
         let binding = self.add_module_binding(
             &name,
-            ModuleBindingOrigin::Function {
+            ModuleDeclarationOrigin::Function {
                 constant: parsed.constant,
                 inferred_name,
             },
-            false,
         )?;
-        if self
+        if let Some(existing) = self
             .current_ir()
             .binding_in_scope(self.current_ir().var_scope, &name)
-            .is_none()
         {
+            if first_declaration {
+                let declaration_scope = self.current_ir().current_scope;
+                let binding_record = self
+                    .current_ir_mut()
+                    .bindings
+                    .iter_mut()
+                    .find(|candidate| {
+                        candidate.name == name
+                            && candidate.storage == BindingStorage::Module(binding)
+                    })
+                    .ok_or_else(|| Error::internal("module function binding moved"))?;
+                binding_record.declaration_scope = declaration_scope;
+                binding_record.declaration_span = Some(declaration_span);
+            } else if existing.storage != BindingStorage::Module(binding) {
+                return Err(Error::internal(
+                    "module function resolved to different storage",
+                ));
+            }
+        } else {
             let function = self.current_ir_mut();
             function.add_binding(
                 function.var_scope,
@@ -725,41 +837,62 @@ pub(super) fn finish_module(
 ) -> Result<UnlinkedModule, Error> {
     let IrModule {
         bindings,
+        declaration_order,
         requested_modules,
         imports,
         local_exports,
         mut exports,
         star_exports,
     } = module;
-    let link_initializers = bindings
-        .iter()
-        .filter_map(|binding| {
-            let value = match binding.origin {
-                ModuleBindingOrigin::Var => ModuleLinkInitializerValue::Undefined,
-                ModuleBindingOrigin::Function {
-                    constant,
-                    inferred_name,
-                } => ModuleLinkInitializerValue::Function {
-                    constant,
-                    inferred_name,
-                },
-                ModuleBindingOrigin::Lexical
-                | ModuleBindingOrigin::Import
-                | ModuleBindingOrigin::NamespaceImport => return None,
+    let mut published_declaration_order = Vec::with_capacity(declaration_order.len());
+    let mut link_initializers = Vec::new();
+    let mut import_collisions = Vec::new();
+    for binding_id in declaration_order {
+        let binding = bindings
+            .get(binding_id.0)
+            .ok_or_else(|| Error::internal("module declaration order is out of bounds"))?;
+        let declaration = binding.declaration.ok_or_else(|| {
+            Error::internal("module declaration order referenced an import-only binding")
+        })?;
+        let closure_index = binding
+            .closure_index
+            .ok_or_else(|| Error::internal("module declaration closure was not seeded"))?;
+        published_declaration_order.push(closure_index);
+        let value = match declaration {
+            ModuleDeclarationOrigin::Var if binding.import.is_none() => {
+                Some(ModuleLinkInitializerValue::Undefined)
+            }
+            ModuleDeclarationOrigin::Function {
+                constant,
+                inferred_name,
+            } => Some(ModuleLinkInitializerValue::Function {
+                constant,
+                inferred_name,
+            }),
+            ModuleDeclarationOrigin::Var | ModuleDeclarationOrigin::Lexical { .. } => None,
+        };
+        if let Some(value) = value {
+            link_initializers.push(ModuleLinkInitializer {
+                closure_index,
+                value,
+            });
+        }
+        if binding.import.is_some() {
+            let declaration = match declaration {
+                ModuleDeclarationOrigin::Var => ModuleImportCollisionDeclaration::Var,
+                ModuleDeclarationOrigin::Lexical { .. } => {
+                    ModuleImportCollisionDeclaration::Lexical
+                }
+                ModuleDeclarationOrigin::Function { .. } => {
+                    ModuleImportCollisionDeclaration::Function
+                }
             };
-            Some(
-                binding
-                    .closure_index
-                    .map(|closure_index| ModuleLinkInitializer {
-                        closure_index,
-                        value,
-                    })
-                    .ok_or_else(|| {
-                        Error::internal("module link initializer closure was not seeded")
-                    }),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            import_collisions.push(ModuleImportCollision {
+                closure_index,
+                declaration,
+            });
+        }
+    }
     let imports = imports
         .into_iter()
         .map(|import| {
@@ -790,10 +923,14 @@ pub(super) fn finish_module(
     Ok(UnlinkedModule::new(
         name,
         function,
-        link_initializers,
-        requested_modules,
-        imports,
-        exports,
-        star_exports,
+        UnlinkedModuleTables {
+            declaration_order: published_declaration_order,
+            link_initializers,
+            import_collisions,
+            requested_modules,
+            imports,
+            exports,
+            star_exports,
+        },
     ))
 }

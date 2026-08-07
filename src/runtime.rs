@@ -3001,7 +3001,9 @@ impl Runtime {
                         "root bytecode closure descriptor used a child source",
                     ));
                 }
-                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                ClosureSource::ModuleDeclaration
+                | ClosureSource::ModuleImport
+                | ClosureSource::ModuleImportCollision => {
                     return Err(RuntimeError::Invariant(
                         "ordinary root publication received a module descriptor",
                     ));

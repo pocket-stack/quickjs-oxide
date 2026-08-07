@@ -18,7 +18,8 @@ use crate::heap::{
     validate_parameter_initializer_scope_layout, validate_pattern_parameter_bytecode_layout,
 };
 use crate::module::{
-    ModuleExportTarget, ModuleImportName, ModuleLinkInitializerValue, UnlinkedModule,
+    ModuleExportTarget, ModuleImportCollisionDeclaration, ModuleImportName,
+    ModuleLinkInitializerValue, UnlinkedModule,
 };
 use crate::source_text::try_is_canonical_wtf8;
 
@@ -1238,6 +1239,10 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
         if is_namespace {
             namespace_slots.insert(import.closure_index);
         }
+        let is_collision = module
+            .import_collisions()
+            .iter()
+            .any(|collision| collision.closure_index == import.closure_index);
         let descriptor = descriptors
             .get(usize::from(import.closure_index))
             .ok_or_else(|| {
@@ -1245,7 +1250,9 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
                     "module import closure index is out of bounds",
                 ))
             })?;
-        let expected_source = if is_namespace {
+        let expected_source = if is_collision {
+            ClosureSource::ModuleImportCollision
+        } else if is_namespace {
             ClosureSource::ModuleDeclaration
         } else {
             ClosureSource::ModuleImport
@@ -1267,7 +1274,10 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
     }
 
     for (index, descriptor) in descriptors.iter().enumerate() {
-        if descriptor.source != ClosureSource::ModuleImport {
+        if !matches!(
+            descriptor.source,
+            ClosureSource::ModuleImport | ClosureSource::ModuleImportCollision
+        ) {
             continue;
         }
         let index = u16::try_from(index).map_err(|_| {
@@ -1280,25 +1290,105 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
                 "module import descriptor has no import-table entry",
             )));
         }
+        if descriptor.source == ClosureSource::ModuleImportCollision
+            && !module
+                .import_collisions()
+                .iter()
+                .any(|collision| collision.closure_index == index)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import collision descriptor has no collision ledger entry",
+            )));
+        }
+    }
+
+    let mut collision_declarations = vec![None; descriptors.len()];
+    for collision in module.import_collisions() {
+        if !imported_slots.contains(&collision.closure_index) {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import collision has no import-table entry",
+            )));
+        }
+        let declaration = collision_declarations
+            .get_mut(usize::from(collision.closure_index))
+            .ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "module import collision closure index is out of bounds",
+                ))
+            })?;
+        if declaration.replace(collision.declaration).is_some() {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import collision ledger reused a closure slot",
+            )));
+        }
+    }
+
+    let expected_declaration_slots = descriptors
+        .iter()
+        .enumerate()
+        .filter_map(|(index, descriptor)| {
+            let index = u16::try_from(index).ok()?;
+            (descriptor.source == ClosureSource::ModuleImportCollision
+                || descriptor.source == ClosureSource::ModuleDeclaration
+                    && (!descriptor.is_lexical || !namespace_slots.contains(&index)))
+            .then_some(index)
+        })
+        .collect::<HashSet<_>>();
+    let mut seen_declarations = HashSet::with_capacity(module.declaration_order().len());
+    for closure_index in module.declaration_order() {
+        if !expected_declaration_slots.contains(closure_index)
+            || !seen_declarations.insert(*closure_index)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module declaration-order ledger disagrees with descriptors",
+            )));
+        }
+    }
+    if seen_declarations != expected_declaration_slots {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module declaration-order ledger omitted a declaration",
+        )));
+    }
+    let ordered_collision_slots = module.declaration_order().iter().copied().filter(|index| {
+        descriptors
+            .get(usize::from(*index))
+            .is_some_and(|descriptor| descriptor.source == ClosureSource::ModuleImportCollision)
+    });
+    if !module
+        .import_collisions()
+        .iter()
+        .map(|collision| collision.closure_index)
+        .eq(ordered_collision_slots)
+    {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module import collision ledger is not in declaration order",
+        )));
     }
 
     let mut lexical_initializer_counts = vec![0_u8; descriptors.len()];
+    let mut collision_initializer_counts = vec![0_u8; descriptors.len()];
     for instruction in function.code() {
-        let crate::bytecode::Instruction::InitializeVarRef(index) = instruction else {
-            continue;
-        };
-        let count = lexical_initializer_counts
-            .get_mut(usize::from(*index))
-            .ok_or_else(|| {
-                RuntimeError::Engine(Error::internal(
-                    "module lexical initializer is outside closure slots",
-                ))
-            })?;
-        *count = count.checked_add(1).ok_or_else(|| {
-            RuntimeError::Engine(Error::internal(
+        let (index, counts, message) = match instruction {
+            crate::bytecode::Instruction::InitializeVarRef(index) => (
+                index,
+                &mut lexical_initializer_counts,
                 "module lexical initializer count overflowed",
+            ),
+            crate::bytecode::Instruction::InitializeModuleImportCollision(index) => (
+                index,
+                &mut collision_initializer_counts,
+                "module import collision initializer count overflowed",
+            ),
+            _ => continue,
+        };
+        let count = counts.get_mut(usize::from(*index)).ok_or_else(|| {
+            RuntimeError::Engine(Error::internal(
+                "module initializer is outside closure slots",
             ))
         })?;
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| RuntimeError::Engine(Error::internal(message)))?;
     }
     for (index, (descriptor, count)) in descriptors
         .iter()
@@ -1318,6 +1408,24 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
         if count != expected {
             return Err(RuntimeError::Engine(Error::internal(
                 "module lexical initializer count disagrees with declarations",
+            )));
+        }
+    }
+    for (declaration, count) in collision_declarations
+        .iter()
+        .copied()
+        .zip(collision_initializer_counts)
+    {
+        let expected = match declaration {
+            Some(
+                ModuleImportCollisionDeclaration::Lexical
+                | ModuleImportCollisionDeclaration::Function,
+            ) => 1,
+            Some(ModuleImportCollisionDeclaration::Var) | None => 0,
+        };
+        if count != expected {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module import collision initializer count disagrees with its ledger",
             )));
         }
     }
@@ -1344,7 +1452,9 @@ fn verify_unlinked_module_tables(module: &UnlinkedModule) -> Result<(), RuntimeE
                     })?;
                 if !matches!(
                     descriptor.source,
-                    ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport
+                    ClosureSource::ModuleDeclaration
+                        | ClosureSource::ModuleImport
+                        | ClosureSource::ModuleImportCollision
                 ) {
                     return Err(RuntimeError::Engine(Error::internal(
                         "local module export referenced a non-module binding",
@@ -1419,23 +1529,86 @@ fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError>
             "module link entry has no undefined return",
         )));
     }
+    for (pc, instruction) in code.iter().enumerate() {
+        let Some(target) = explicit_control_flow_target(instruction) else {
+            continue;
+        };
+        if pc >= body && target < body {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module evaluation control flow entered the link phase",
+            )));
+        }
+        if pc < body
+            && (pc != 1
+                || !matches!(instruction, crate::bytecode::Instruction::IfFalse(_))
+                || target != body)
+        {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module link phase contains non-canonical control flow",
+            )));
+        }
+    }
 
-    let expected_slots = function
-        .closure_variables()
+    let lexical_collision_slots = module
+        .import_collisions()
         .iter()
-        .enumerate()
-        .filter_map(|(index, descriptor)| {
-            (descriptor.source == ClosureSource::ModuleDeclaration && !descriptor.is_lexical)
-                .then_some(index)
+        .filter_map(|collision| {
+            (collision.declaration == ModuleImportCollisionDeclaration::Lexical)
+                .then_some(collision.closure_index)
         })
-        .map(|index| {
-            u16::try_from(index).map_err(|_| {
-                RuntimeError::Engine(Error::internal(
-                    "module declaration descriptor index exceeds bytecode range",
-                ))
-            })
+        .collect::<HashSet<_>>();
+    for (initializer_pc, instruction) in code.iter().enumerate() {
+        let evaluation_initializer = match instruction {
+            crate::bytecode::Instruction::InitializeVarRef(_) => true,
+            crate::bytecode::Instruction::InitializeModuleImportCollision(index) => {
+                lexical_collision_slots.contains(index)
+            }
+            _ => false,
+        };
+        if !evaluation_initializer {
+            continue;
+        }
+        if initializer_pc < body {
+            return Err(RuntimeError::Engine(Error::internal(
+                "module lexical initializer escaped the evaluation phase",
+            )));
+        }
+        for (source_pc, source) in code.iter().enumerate().skip(body) {
+            let Some(target) = explicit_control_flow_target(source) else {
+                continue;
+            };
+            let repeats = source_pc >= initializer_pc && target <= initializer_pc;
+            let skips = source_pc < initializer_pc && target > initializer_pc;
+            if repeats || skips {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "module lexical initializer is not a one-shot control-flow cut",
+                )));
+            }
+        }
+    }
+
+    let function_collision_slots = module
+        .import_collisions()
+        .iter()
+        .filter_map(|collision| {
+            (collision.declaration == ModuleImportCollisionDeclaration::Function)
+                .then_some(collision.closure_index)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<HashSet<_>>();
+    let expected_slots = function.closure_variables();
+    let expected_slots = module
+        .declaration_order()
+        .iter()
+        .copied()
+        .filter(|index| {
+            let descriptor = expected_slots.get(usize::from(*index));
+            let Some(descriptor) = descriptor else {
+                return false;
+            };
+            descriptor.source == ClosureSource::ModuleDeclaration && !descriptor.is_lexical
+                || function_collision_slots.contains(index)
+        })
+        .collect::<Vec<_>>();
     let initializers = module.link_initializers();
     if initializers.len() != expected_slots.len() {
         return Err(RuntimeError::Engine(Error::internal(
@@ -1457,11 +1630,12 @@ fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError>
                     "module link initializer closure index is out of bounds",
                 ))
             })?;
-        if descriptor.source != ClosureSource::ModuleDeclaration
-            || descriptor.is_lexical
-            || descriptor.is_const
-            || descriptor.kind != ClosureVariableKind::Normal
-        {
+        let collision = function_collision_slots.contains(&initializer.closure_index);
+        let ordinary_declaration = descriptor.source == ClosureSource::ModuleDeclaration
+            && !descriptor.is_lexical
+            && !descriptor.is_const
+            && descriptor.kind == ClosureVariableKind::Normal;
+        if !collision && !ordinary_declaration {
             return Err(RuntimeError::Engine(Error::internal(
                 "module link initializer disagrees with its closure descriptor",
             )));
@@ -1485,7 +1659,7 @@ fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError>
                 let matches = matches!(
                     initializer_code.get(cursor),
                     Some(crate::bytecode::Instruction::Undefined)
-                );
+                ) && !function_collision_slots.contains(&initializer.closure_index);
                 cursor = cursor.saturating_add(1);
                 matches
             }
@@ -1516,25 +1690,30 @@ fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError>
                             "module function initializer descriptor has no name",
                         ))
                     })?;
-                let binding_is_exact = if inferred_name.is_some() {
-                    let mut local_exports = module.exports().iter().filter(|export| {
-                        matches!(
-                            &export.target,
-                            ModuleExportTarget::Local { closure_index }
-                                if *closure_index == initializer.closure_index
-                        )
-                    });
-                    local_exports.next().is_some_and(|export| {
-                        export.export_name == JsString::from_static("default")
-                    }) && local_exports.next().is_none()
-                        && descriptor_name
-                            == &JsString::from_static(crate::module::MODULE_DEFAULT_BINDING_NAME)
-                        && child.func_name().is_none()
-                } else {
-                    descriptor_name
-                        != &JsString::from_static(crate::module::MODULE_DEFAULT_BINDING_NAME)
-                        && child.func_name() == Some(descriptor_name)
-                };
+                let declaration_child_is_exact =
+                    child.metadata().strict && child.metadata().function_name_local.is_none();
+                let binding_is_exact = declaration_child_is_exact
+                    && if inferred_name.is_some() {
+                        let mut local_exports = module.exports().iter().filter(|export| {
+                            matches!(
+                                &export.target,
+                                ModuleExportTarget::Local { closure_index }
+                                    if *closure_index == initializer.closure_index
+                            )
+                        });
+                        local_exports.next().is_some_and(|export| {
+                            export.export_name == JsString::from_static("default")
+                        }) && local_exports.next().is_none()
+                            && descriptor_name
+                                == &JsString::from_static(
+                                    crate::module::MODULE_DEFAULT_BINDING_NAME,
+                                )
+                            && child.func_name().is_none()
+                    } else {
+                        descriptor_name
+                            != &JsString::from_static(crate::module::MODULE_DEFAULT_BINDING_NAME)
+                            && child.func_name() == Some(descriptor_name)
+                    };
                 let matches = matches!(
                     initializer_code.get(cursor),
                     Some(crate::bytecode::Instruction::FClosure(actual))
@@ -1560,11 +1739,19 @@ fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError>
                 }
             }
         };
-        let target_is_exact = matches!(
-            initializer_code.get(cursor),
-            Some(crate::bytecode::Instruction::PutVarRef(slot))
-                if *slot == initializer.closure_index
-        );
+        let target_is_exact = if function_collision_slots.contains(&initializer.closure_index) {
+            matches!(
+                initializer_code.get(cursor),
+                Some(crate::bytecode::Instruction::InitializeModuleImportCollision(slot))
+                    if *slot == initializer.closure_index
+            )
+        } else {
+            matches!(
+                initializer_code.get(cursor),
+                Some(crate::bytecode::Instruction::PutVarRef(slot))
+                    if *slot == initializer.closure_index
+            )
+        };
         cursor = cursor.saturating_add(1);
         if !value_is_exact || !target_is_exact {
             return Err(RuntimeError::Engine(Error::internal(
@@ -2745,6 +2932,51 @@ fn verify_unlinked_tree_with_root(
                 )));
             }
         }
+        for instruction in function.code() {
+            let crate::bytecode::Instruction::InitializeModuleImportCollision(index) = instruction
+            else {
+                continue;
+            };
+            let RootPublication::Module(module) = root_publication else {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "module import collision initializer escaped a module root",
+                )));
+            };
+            if !is_root
+                || !module.import_collisions().iter().any(|collision| {
+                    collision.closure_index == *index
+                        && matches!(
+                            collision.declaration,
+                            ModuleImportCollisionDeclaration::Lexical
+                                | ModuleImportCollisionDeclaration::Function
+                        )
+                })
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "module import collision initializer has no matching ledger entry",
+                )));
+            }
+            let descriptor = function
+                .closure_variables()
+                .get(usize::from(*index))
+                .ok_or_else(|| {
+                    RuntimeError::Engine(Error::internal(
+                        "module import collision initializer is outside closure slots",
+                    ))
+                })?;
+            if descriptor.source != ClosureSource::ModuleImportCollision
+                || !descriptor.is_lexical
+                || !descriptor.is_const
+                || !matches!(
+                    descriptor.kind,
+                    ClosureVariableKind::Normal | ClosureVariableKind::ModuleImportView
+                )
+            {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "module import collision initializer targeted a non-import binding",
+                )));
+            }
+        }
         verify_unlinked_debug(function)?;
         if function.closure_variables().iter().any(|descriptor| {
             descriptor.is_const
@@ -2887,6 +3119,7 @@ fn verify_unlinked_tree_with_root(
                     | ClosureSource::EvalEnvironment(_)
                     | ClosureSource::ModuleDeclaration
                     | ClosureSource::ModuleImport
+                    | ClosureSource::ModuleImportCollision
             );
             let name = unlinked_closure_name(function, descriptor)?;
             if descriptor.kind.is_eval_variable_object()
@@ -3007,6 +3240,20 @@ fn verify_unlinked_tree_with_root(
                                 )));
                             }
                         }
+                        ClosureSource::ModuleImportCollision => {
+                            if !descriptor.is_lexical
+                                || !descriptor.is_const
+                                || !matches!(
+                                    descriptor.kind,
+                                    ClosureVariableKind::Normal
+                                        | ClosureVariableKind::ModuleImportView
+                                )
+                            {
+                                return Err(RuntimeError::Engine(Error::internal(
+                                    "module import collision descriptor has invalid binding metadata",
+                                )));
+                            }
+                        }
                         ClosureSource::Global => {
                             if descriptor.kind != ClosureVariableKind::Normal
                                 || descriptor.is_lexical
@@ -3058,7 +3305,9 @@ fn verify_unlinked_tree_with_root(
                             "only a verified eval root may use an eval environment binding",
                         )));
                     }
-                    ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                    ClosureSource::ModuleDeclaration
+                    | ClosureSource::ModuleImport
+                    | ClosureSource::ModuleImportCollision => {
                         return Err(RuntimeError::Engine(Error::internal(
                             "only a verified module root may own a module binding",
                         )));
@@ -3839,6 +4088,7 @@ fn verify_unlinked_tree_with_root(
                 | crate::bytecode::Instruction::GetVarRefCheck(index)
                 | crate::bytecode::Instruction::PutVarRefCheck(index)
                 | crate::bytecode::Instruction::InitializeVarRef(index)
+                | crate::bytecode::Instruction::InitializeModuleImportCollision(index)
                 | crate::bytecode::Instruction::GetVar(index)
                 | crate::bytecode::Instruction::GetVarUndef(index)
                 | crate::bytecode::Instruction::DeleteVar(index)
@@ -4185,7 +4435,9 @@ fn verify_unlinked_tree_with_root(
                                 "child bytecode directly referenced an eval environment binding",
                             )));
                         }
-                        ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport => {
+                        ClosureSource::ModuleDeclaration
+                        | ClosureSource::ModuleImport
+                        | ClosureSource::ModuleImportCollision => {
                             return Err(RuntimeError::Engine(Error::internal(
                                 "child bytecode directly referenced a module-root descriptor",
                             )));
@@ -4471,7 +4723,7 @@ mod tests {
         EvalVariableEnvironment, ParameterArgumentCell, ParameterBodyStorage,
         ParameterDefaultSource, ParameterPatternCopy,
     };
-    use crate::module::{ModuleLinkInitializer, ModuleLinkInitializerValue};
+    use crate::module::{ModuleLinkInitializer, ModuleLinkInitializerValue, UnlinkedModuleTables};
 
     fn module_with_link_initializers(
         module: UnlinkedModule,
@@ -4481,11 +4733,35 @@ mod tests {
         UnlinkedModule::new(
             parts.name,
             parts.function,
-            link_initializers,
-            parts.requested_modules.into_vec(),
-            parts.imports.into_vec(),
-            parts.exports.into_vec(),
-            parts.star_exports.into_vec(),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers,
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
+        )
+    }
+
+    fn module_with_import_collisions(
+        module: UnlinkedModule,
+        import_collisions: Vec<crate::module::ModuleImportCollision>,
+    ) -> UnlinkedModule {
+        let parts = module.into_parts();
+        UnlinkedModule::new(
+            parts.name,
+            parts.function,
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions,
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
         )
     }
 
@@ -4571,6 +4847,242 @@ mod tests {
     }
 
     #[test]
+    fn module_import_collision_requires_an_exact_unique_ledger() {
+        let module = compile_unlinked_module_with_filename(
+            "import { value } from './dependency.js'; let value = 1;",
+            "forged-collision-ledger.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        verify_unlinked_module_tree(&module).unwrap();
+
+        let missing = module_with_import_collisions(module, Vec::new());
+        let error = verify_unlinked_module_tree(&missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module import table disagrees with its closure descriptor")
+        );
+
+        let module = compile_unlinked_module_with_filename(
+            "import { value } from './dependency.js'; let value = 1;",
+            "forged-duplicate-collision-ledger.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let collision = module.import_collisions()[0];
+        let duplicate = module_with_import_collisions(module, vec![collision, collision]);
+        let error = verify_unlinked_module_tree(&duplicate).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module import collision ledger reused a closure slot")
+        );
+    }
+
+    #[test]
+    fn module_evaluation_cannot_reenter_link_or_repeat_a_collision_initializer() {
+        for (target, expected) in [
+            (
+                None,
+                "module lexical initializer is not a one-shot control-flow cut",
+            ),
+            (
+                Some(2_u32),
+                "module evaluation control flow entered the link phase",
+            ),
+        ] {
+            let module = compile_unlinked_module_with_filename(
+                "import { value } from './dependency.js'; let value = 1;",
+                "forged-collision-control-flow.mjs",
+                DebugInfoMode::StripDebug,
+            )
+            .unwrap();
+            let collision_pc = module
+                .function()
+                .code()
+                .iter()
+                .position(|instruction| {
+                    matches!(instruction, Instruction::InitializeModuleImportCollision(_))
+                })
+                .unwrap();
+            let parts = module.into_parts();
+            let mut function_parts = parts.function.into_parts();
+            let target = target.unwrap_or_else(|| u32::try_from(collision_pc).unwrap());
+            let insertion = function_parts.code.len() - 2;
+            function_parts
+                .code
+                .insert(insertion, Instruction::Goto(target));
+            let forged = UnlinkedModule::new(
+                parts.name,
+                function_from_parts(function_parts),
+                UnlinkedModuleTables {
+                    declaration_order: parts.declaration_order.into_vec(),
+                    link_initializers: parts.link_initializers.into_vec(),
+                    import_collisions: parts.import_collisions.into_vec(),
+                    requested_modules: parts.requested_modules.into_vec(),
+                    imports: parts.imports.into_vec(),
+                    exports: parts.exports.into_vec(),
+                    star_exports: parts.star_exports.into_vec(),
+                },
+            );
+            let error = verify_unlinked_module_tree(&forged).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn module_lexical_initializers_allow_expression_joins_but_not_forward_skips() {
+        for import in [
+            "",
+            "import value from './dependency.js';",
+            "import { value } from './dependency.js';",
+            "import * as value from './dependency.js';",
+        ] {
+            for expression in [
+                "globalThis.flag ? 1 : 2",
+                "globalThis.flag && 42",
+                "globalThis.flag || 42",
+                "globalThis.flag ?? 42",
+            ] {
+                let source = format!("{import} let value = {expression};");
+                let module = compile_unlinked_module_with_filename(
+                    &source,
+                    "module-lexical-expression-join.mjs",
+                    DebugInfoMode::StripDebug,
+                )
+                .unwrap_or_else(|error| panic!("{source}: {error}"));
+                let initializer_pc = module
+                    .function()
+                    .code()
+                    .iter()
+                    .position(|instruction| {
+                        matches!(
+                            instruction,
+                            Instruction::InitializeVarRef(_)
+                                | Instruction::InitializeModuleImportCollision(_)
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("{source}: lexical initializer disappeared"));
+                assert!(
+                    module.function().code()[..initializer_pc]
+                        .iter()
+                        .any(|instruction| {
+                            explicit_control_flow_target(instruction) == Some(initializer_pc)
+                        }),
+                    "{source}: expression lost its initializer join edge"
+                );
+                verify_unlinked_module_tree(&module)
+                    .unwrap_or_else(|error| panic!("{source}: {error}"));
+            }
+        }
+
+        let module = compile_unlinked_module_with_filename(
+            "import { value } from './dependency.js';\
+             let value = globalThis.flag ? 1 : 2;",
+            "forged-forward-skip-collision.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let initializer_pc = module
+            .function()
+            .code()
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::InitializeModuleImportCollision(_))
+            })
+            .unwrap();
+        let join_pc = module.function().code()[..initializer_pc]
+            .iter()
+            .position(|instruction| {
+                explicit_control_flow_target(instruction) == Some(initializer_pc)
+            })
+            .unwrap();
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        let skip_target = u32::try_from(initializer_pc + 1).unwrap();
+        match &mut function_parts.code[join_pc] {
+            Instruction::Goto(target)
+            | Instruction::IfFalse(target)
+            | Instruction::IfTrue(target) => *target = skip_target,
+            instruction => panic!("unexpected initializer join edge: {instruction:?}"),
+        }
+        let forged = UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
+        );
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module lexical initializer is not a one-shot control-flow cut"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn module_function_initializer_requires_a_strict_declaration_child() {
+        for private_name in [false, true] {
+            let module = compile_unlinked_module_with_filename(
+                "export function value() {}",
+                "forged-function-child-metadata.mjs",
+                DebugInfoMode::StripDebug,
+            )
+            .unwrap();
+            let constant = match module.link_initializers()[0].value {
+                ModuleLinkInitializerValue::Function { constant, .. } => constant,
+                _ => panic!("module function lost its initializer"),
+            };
+            let parts = module.into_parts();
+            let mut function_parts = parts.function.into_parts();
+            let original = std::mem::replace(
+                &mut function_parts.constants[constant as usize],
+                UnlinkedConstant::primitive(Value::Undefined).unwrap(),
+            );
+            let (_, _, child) = original.into_parts();
+            let mut child_parts = child
+                .expect("module function stopped referencing a child")
+                .into_parts();
+            if private_name {
+                child_parts.metadata.function_name_local = Some(0);
+            } else {
+                child_parts.metadata.strict = false;
+            }
+            function_parts.constants[constant as usize] =
+                UnlinkedConstant::child(function_from_parts(child_parts));
+            let forged = UnlinkedModule::new(
+                parts.name,
+                function_from_parts(function_parts),
+                UnlinkedModuleTables {
+                    declaration_order: parts.declaration_order.into_vec(),
+                    link_initializers: parts.link_initializers.into_vec(),
+                    import_collisions: parts.import_collisions.into_vec(),
+                    requested_modules: parts.requested_modules.into_vec(),
+                    imports: parts.imports.into_vec(),
+                    exports: parts.exports.into_vec(),
+                    star_exports: parts.star_exports.into_vec(),
+                },
+            );
+            let error = verify_unlinked_module_tree(&forged).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("module link entry initializer is not canonical"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn anonymous_default_function_initializer_requires_exact_name_inference() {
         let module = compile_unlinked_module_with_filename(
             "export default function () {}",
@@ -4621,11 +5133,15 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
-            parts.link_initializers.into_vec(),
-            parts.requested_modules.into_vec(),
-            parts.imports.into_vec(),
-            parts.exports.into_vec(),
-            parts.star_exports.into_vec(),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
         );
         let error = verify_unlinked_module_tree(&forged).unwrap_err();
         assert!(
@@ -4685,11 +5201,15 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             parts.function,
-            parts.link_initializers.into_vec(),
-            parts.requested_modules.into_vec(),
-            parts.imports.into_vec(),
-            exports,
-            parts.star_exports.into_vec(),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports,
+                star_exports: parts.star_exports.into_vec(),
+            },
         );
         let error = verify_unlinked_module_tree(&forged).unwrap_err();
         assert!(
@@ -4717,11 +5237,15 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
-            parts.link_initializers.into_vec(),
-            parts.requested_modules.into_vec(),
-            parts.imports.into_vec(),
-            parts.exports.into_vec(),
-            parts.star_exports.into_vec(),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
         );
         let error = verify_unlinked_module_tree(&forged).unwrap_err();
         assert!(
@@ -4758,11 +5282,15 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
-            parts.link_initializers.into_vec(),
-            parts.requested_modules.into_vec(),
-            parts.imports.into_vec(),
-            parts.exports.into_vec(),
-            parts.star_exports.into_vec(),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
         );
         let error = verify_unlinked_module_tree(&forged).unwrap_err();
         assert!(
@@ -4813,11 +5341,15 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
-            parts.link_initializers.into_vec(),
-            parts.requested_modules.into_vec(),
-            parts.imports.into_vec(),
-            parts.exports.into_vec(),
-            parts.star_exports.into_vec(),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
         );
         let error = verify_unlinked_module_tree(&forged).unwrap_err();
         assert!(

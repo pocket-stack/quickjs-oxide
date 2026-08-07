@@ -9,8 +9,8 @@
 use super::*;
 use crate::compiler::{CompileOptions, compile_unlinked_module_with_name};
 use crate::module::{
-    ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportName, ModuleLinkInitializer,
-    ModuleRequest, ModuleRequestIndex, ModuleStarExport, UnlinkedModule,
+    ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportCollision, ModuleImportName,
+    ModuleLinkInitializer, ModuleRequest, ModuleRequestIndex, ModuleStarExport, UnlinkedModule,
 };
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -340,7 +340,9 @@ struct ModuleRecord {
     function: FunctionBytecodeRef,
     // Retain the complete published record so the later graph linker can
     // extend this identity without changing the public compile boundary.
+    _declaration_order: Box<[u16]>,
     _link_initializers: Box<[ModuleLinkInitializer]>,
+    _import_collisions: Box<[ModuleImportCollision]>,
     requested_modules: Box<[ModuleRequest]>,
     imports: Box<[ModuleImport]>,
     exports: Box<[ModuleExport]>,
@@ -915,7 +917,9 @@ impl Runtime {
         Ok(graph.publish(ModuleRecord {
             name: parts.name,
             function,
+            _declaration_order: parts.declaration_order,
             _link_initializers: parts.link_initializers,
+            _import_collisions: parts.import_collisions,
             requested_modules: parts.requested_modules,
             imports: parts.imports,
             exports: parts.exports,
@@ -1048,6 +1052,28 @@ impl Runtime {
                         ));
                     }
                     None
+                }
+                ClosureSource::ModuleImportCollision => {
+                    if !descriptor.is_lexical || !descriptor.is_const {
+                        return Err(RuntimeError::Invariant(
+                            "published module import collision has invalid binding metadata",
+                        ));
+                    }
+                    match descriptor.kind {
+                        ClosureVariableKind::ModuleImportView => None,
+                        ClosureVariableKind::Normal => {
+                            Some(self.new_uninitialized_captured_var_ref(
+                                true,
+                                true,
+                                ClosureVariableKind::Normal,
+                            )?)
+                        }
+                        _ => {
+                            return Err(RuntimeError::Invariant(
+                                "published module import collision has invalid binding kind",
+                            ));
+                        }
+                    }
                 }
                 ClosureSource::Global => {
                     if descriptor.kind != ClosureVariableKind::Normal
@@ -1590,6 +1616,66 @@ impl Runtime {
                                 }
                             }
                         }
+                        ClosureSource::ModuleImportCollision => match descriptor.kind {
+                            ClosureVariableKind::Normal => {
+                                return binding
+                                    .module
+                                    .record
+                                    .instance
+                                    .borrow()
+                                    .as_ref()
+                                    .and_then(|instance| {
+                                        instance.slots.get(usize::from(closure_index))
+                                    })
+                                    .and_then(Option::as_ref)
+                                    .cloned()
+                                    .ok_or(RuntimeError::Invariant(
+                                        "namespace import collision has no instantiated live cell",
+                                    ));
+                            }
+                            ClosureVariableKind::ModuleImportView => {
+                                let import = binding
+                                    .module
+                                    .record
+                                    .imports
+                                    .iter()
+                                    .find(|import| import.closure_index == closure_index)
+                                    .cloned()
+                                    .ok_or(RuntimeError::Invariant(
+                                        "exported module import collision has no import table entry",
+                                    ))?;
+                                let ModuleImportName::Name(import_name) = import.import_name else {
+                                    return Err(RuntimeError::Invariant(
+                                        "named import collision resolved to a namespace import",
+                                    ));
+                                };
+                                let dependency =
+                                    self.module_dependency(&binding.module, import.request)?;
+                                binding = match self
+                                    .resolve_module_export(&dependency, &import_name)?
+                                {
+                                    ModuleExportResolveResult::Found(binding) => binding,
+                                    result => {
+                                        let kind = result.error_kind().ok_or(
+                                            RuntimeError::Invariant(
+                                                "failed collision alias resolution had no error kind",
+                                            ),
+                                        )?;
+                                        return self.throw_module_export_resolution_error(
+                                            realm,
+                                            kind,
+                                            error_module,
+                                            error_name,
+                                        );
+                                    }
+                                };
+                            }
+                            _ => {
+                                return Err(RuntimeError::Invariant(
+                                    "module import collision export has invalid binding metadata",
+                                ));
+                            }
+                        },
                         ClosureSource::ParentLocal(_)
                         | ClosureSource::ParentArgument(_)
                         | ClosureSource::ParentClosure(_)
@@ -3375,6 +3461,92 @@ mod tests {
             __nestedImportRead() === 42 && __evalNestedImportRead() === 42
             "#,
         );
+    }
+
+    #[test]
+    fn import_declaration_collisions_match_pinned_quickjs_single_slot_semantics() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([
+            ("pkg/named-let.js", "export let value = 7;"),
+            ("pkg/named-const.js", "export let value = 7;"),
+            ("pkg/namespace.js", "export const value = 7;"),
+            ("pkg/class.js", "export default 7;"),
+            ("pkg/function.js", "export function value() { return 7; }"),
+            ("pkg/default-expression.js", "export default null;"),
+            ("pkg/default-var.js", "export default 7;"),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import { value as letValue, value as letAlias } from "./named-let.js";
+                let letValue = 11;
+
+                const constValue = 13;
+                import { value as constValue, value as constAlias } from "./named-const.js";
+
+                import * as namespaceValue from "./namespace.js";
+                import * as namespaceAlias from "./namespace.js";
+                let namespaceValue = 12;
+                export { namespaceValue as collidedNamespace };
+                import { collidedNamespace as namespaceExportAlias } from "./collision.js";
+
+                import classValue from "./class.js";
+                import classAlias from "./class.js";
+                class classValue {}
+
+                import { value as first, value as second } from "./function.js";
+                { var first; }
+                function second() { return 2; }
+                function first() { return 1; }
+
+                import defaultFunction from "./default-expression.js";
+                import defaultFunctionAlias from "./default-expression.js";
+                function defaultFunction() { return 42; }
+
+                import defaultVar from "./default-var.js";
+                var defaultVar;
+
+                let readonly = 0;
+                try { letValue = 90; } catch (error) { readonly += error instanceof TypeError; }
+                try { constValue = 91; } catch (error) { readonly += error instanceof TypeError; }
+                try { namespaceValue = 92; } catch (error) { readonly += error instanceof TypeError; }
+                try { classValue = 93; } catch (error) { readonly += error instanceof TypeError; }
+                try { first = 94; } catch (error) { readonly += error instanceof TypeError; }
+                try { defaultFunction = 95; } catch (error) { readonly += error instanceof TypeError; }
+                try { defaultVar = 96; } catch (error) { readonly += error instanceof TypeError; }
+
+                globalThis.__importDeclarationCollision =
+                    letValue === 11 && letAlias === 11 &&
+                    constValue === 13 && constAlias === 13 &&
+                    namespaceValue === 12 && namespaceAlias.value === 7 &&
+                    namespaceExportAlias === 12 &&
+                    classValue === classAlias && classValue.name === "classValue" &&
+                    first() === 1 && second() === 1 &&
+                    defaultFunction === null && defaultFunctionAlias === null &&
+                    defaultVar === 7 && readonly === 7;
+                "#,
+                "pkg/collision.js",
+            )
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__importDeclarationCollision === true");
+
+        let var_initializer = context
+            .compile_module_with_filename(
+                "import failed from './default-var.js'; var failed = 42;",
+                "pkg/var-initializer-collision.js",
+            )
+            .unwrap();
+        assert_eq!(
+            context.execute_module(&var_initializer),
+            Err(RuntimeError::Exception)
+        );
+        assert!(matches!(
+            context.take_exception().unwrap(),
+            Some(Value::Object(_))
+        ));
     }
 
     #[test]

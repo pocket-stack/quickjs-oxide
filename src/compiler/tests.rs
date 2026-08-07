@@ -1804,7 +1804,7 @@ fn async_generator_return_hand_lowers_active_iterator_close() {
 }
 
 use crate::lexer::{LexError, LexErrorKind, Lexer, Position, Span};
-use crate::module::{ModuleExportTarget, ModuleImportName};
+use crate::module::{ModuleExportTarget, ModuleImportCollisionDeclaration, ModuleImportName};
 use crate::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, OrdinaryPropertyDescriptor,
     PropertyKey, WellKnownSymbol,
@@ -1939,6 +1939,8 @@ fn module_function_redeclarations_follow_quickjs_source_order() {
     for source in [
         "var value; function value(){}",
         "function value(){} function value(){}",
+        "import value from './dependency.js'; var value; function value(){}",
+        "var value; import value from './dependency.js'; function value(){}",
     ] {
         let error = compile_unlinked_module_with_filename(
             source,
@@ -1965,13 +1967,15 @@ fn module_function_redeclarations_follow_quickjs_source_order() {
         "for (;;) { var value; break; } function value(){ return 42; }",
         "{ var value; } var value; function value(){ return 42; }",
         "{ var value; } function value(){ return 1; } function value(){ return 42; }",
+        "import value from './dependency.js'; { var value; } function value(){ return 42; }",
+        "{ var value; } import value from './dependency.js'; function value(){ return 42; }",
     ] {
         let module = compile_unlinked_module_with_filename(
             source,
             "nested-var-then-function.mjs",
             DebugInfoMode::StripDebug,
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{source}: {error:?}"));
         assert!(matches!(
             module.link_initializers()[0].value,
             crate::module::ModuleLinkInitializerValue::Function { .. }
@@ -2656,13 +2660,9 @@ fn module_import_attributes_invalid_clauses_and_duplicate_bindings_fail_closed()
     }
 
     for source in [
-        "import value from './a.js'; let value;",
-        "let value; import value from './a.js';",
         "import value from './a.js'; import value from './b.js';",
         "import value, { other as value } from './a.js';",
         "import value, * as value from './a.js';",
-        "import { value } from './a.js'; let value;",
-        "let value; import { value } from './a.js';",
         "import { value } from './a.js'; import { value } from './b.js';",
     ] {
         let error = compile_unlinked_module_with_filename(
@@ -2673,6 +2673,165 @@ fn module_import_attributes_invalid_clauses_and_duplicate_bindings_fail_closed()
         .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
     }
+}
+
+#[test]
+fn module_import_declaration_collisions_use_one_authenticated_import_slot() {
+    let imports = [
+        (
+            "import value from './a.js';",
+            ClosureVariableKind::ModuleImportView,
+        ),
+        (
+            "import { value } from './a.js';",
+            ClosureVariableKind::ModuleImportView,
+        ),
+        (
+            "import * as value from './a.js';",
+            ClosureVariableKind::Normal,
+        ),
+    ];
+    let declarations = [
+        (
+            "var value;",
+            ModuleImportCollisionDeclaration::Var,
+            false,
+            false,
+        ),
+        (
+            "let value;",
+            ModuleImportCollisionDeclaration::Lexical,
+            true,
+            false,
+        ),
+        (
+            "const value = 1;",
+            ModuleImportCollisionDeclaration::Lexical,
+            true,
+            false,
+        ),
+        (
+            "class value {}",
+            ModuleImportCollisionDeclaration::Lexical,
+            true,
+            false,
+        ),
+        (
+            "function value() {}",
+            ModuleImportCollisionDeclaration::Function,
+            true,
+            true,
+        ),
+    ];
+
+    for (import, expected_kind) in imports {
+        for (declaration_source, declaration, expects_initializer, expects_link_initializer) in
+            declarations
+        {
+            for source in [
+                format!("{import} {declaration_source}"),
+                format!("{declaration_source} {import}"),
+            ] {
+                let module = compile_unlinked_module_with_filename(
+                    &source,
+                    "import-declaration-collision.mjs",
+                    DebugInfoMode::StripDebug,
+                )
+                .unwrap_or_else(|error| panic!("{source}: {error}"));
+                assert_eq!(module.function().closure_variables().len(), 1, "{source}");
+                let descriptor = module.function().closure_variables()[0];
+                assert_eq!(
+                    descriptor.source,
+                    ClosureSource::ModuleImportCollision,
+                    "{source}"
+                );
+                assert!(descriptor.is_lexical && descriptor.is_const, "{source}");
+                assert_eq!(descriptor.kind, expected_kind, "{source}");
+                assert_eq!(
+                    module.import_collisions(),
+                    [crate::module::ModuleImportCollision {
+                        closure_index: 0,
+                        declaration,
+                    }],
+                    "{source}"
+                );
+                assert_eq!(module.declaration_order(), [0], "{source}");
+                let Instruction::IfFalse(body) = module.function().code()[1] else {
+                    panic!("{source}: module collision root lost its dual entry");
+                };
+                let initializer_pc = module.function().code().iter().position(|instruction| {
+                    matches!(instruction, Instruction::InitializeModuleImportCollision(0))
+                });
+                assert_eq!(initializer_pc.is_some(), expects_initializer, "{source}");
+                if let Some(initializer_pc) = initializer_pc {
+                    assert_eq!(
+                        initializer_pc < body as usize,
+                        expects_link_initializer,
+                        "{source}"
+                    );
+                }
+                assert_eq!(
+                    module.link_initializers().len(),
+                    usize::from(expects_link_initializer),
+                    "{source}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn module_import_collisions_do_not_mask_declaration_redefinitions() {
+    for source in [
+        "var value; let value;",
+        "function value() {} const value = 1;",
+        "import value from './a.js'; var value; let value;",
+        "var value; import value from './a.js'; class value {}",
+        "import value from './a.js'; { var value; } function value() {} const value = 1;",
+        "let value; import value from './a.js'; var value;",
+        "import value from './a.js'; let value; function value() {}",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "import-declaration-redefinition.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+    }
+}
+
+#[test]
+fn module_function_collision_hoists_follow_declaration_not_import_order() {
+    let module = compile_unlinked_module_with_filename(
+        "import { value as first, value as second } from './a.js';\
+         { var first; } function second() {} function first() {}",
+        "import-function-declaration-order.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    assert_eq!(module.declaration_order(), [1, 0]);
+    assert_eq!(
+        module
+            .link_initializers()
+            .iter()
+            .map(|initializer| initializer.closure_index)
+            .collect::<Vec<_>>(),
+        [1, 0]
+    );
+    let Instruction::IfFalse(body) = module.function().code()[1] else {
+        panic!("module collision root lost its dual entry");
+    };
+    assert_eq!(
+        module.function().code()[2..body as usize]
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::InitializeModuleImportCollision(index) => Some(*index),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        [1, 0]
+    );
 }
 
 #[test]

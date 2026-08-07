@@ -266,10 +266,16 @@ pub enum Instruction {
     /// QuickJS `OP_put_var_ref_check`: consume and assign a captured mutable
     /// lexical binding. Value-preserving writes use `Dup; PutVarRefCheck`.
     PutVarRefCheck(u16),
-    /// QuickJS `OP_put_var_ref_check_init` for an ordinary lexical module
-    /// binding. The cell must still be uninitialized; unlike derived `this`,
-    /// the initialized value may be any ECMAScript value.
+    /// QuickJS's declaration-time raw VarRef write for an ordinary lexical
+    /// module binding. Publication proves this occurs once in the authored
+    /// evaluation path; the cell may already have been changed indirectly by
+    /// QuickJS's import/declaration collision quirk.
     InitializeVarRef(u16),
+    /// Pinned QuickJS declaration initialization when an import and a module
+    /// declaration share the import's first closure slot. Publication accepts
+    /// this raw write only for a matching module collision ledger entry;
+    /// ordinary writes to the same binding remain read-only.
+    InitializeModuleImportCollision(u16),
     /// Captured-binding counterpart of [`Instruction::InitializeDerivedLocal`].
     /// Arrow functions and direct eval use this to initialize their enclosing
     /// derived constructor's single `this` cell.
@@ -808,6 +814,7 @@ impl Instruction {
             | Self::PutVarRef(_)
             | Self::PutVarRefCheck(_)
             | Self::InitializeVarRef(_)
+            | Self::InitializeModuleImportCollision(_)
             | Self::InitializeDerivedVarRef(_)
             | Self::PutVar(_)
             | Self::PutVarInit(_)
@@ -920,6 +927,11 @@ impl BytecodeFunction {
                 // payload required by this runtime-publication opcode.
                 return Err(Error::internal(
                     "detached bytecode cannot encode RegExp constants",
+                ));
+            }
+            if matches!(instruction, Instruction::InitializeModuleImportCollision(_)) {
+                return Err(Error::internal(
+                    "detached bytecode cannot encode a module import collision initializer",
                 ));
             }
             if matches!(

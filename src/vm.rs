@@ -713,6 +713,16 @@ pub(crate) trait VmHost {
             "module lexical initialization requires a module runtime publisher",
         ))
     }
+    fn initialize_module_import_collision(
+        &mut self,
+        _index: u16,
+        _value: Value,
+    ) -> Result<(), Error> {
+        Err(Error::new(
+            crate::error::ErrorKind::Unsupported,
+            "module import collision initialization requires a module runtime publisher",
+        ))
+    }
     fn initialize_derived_var_ref(&mut self, index: u16, value: Value) -> Result<(), Error>;
     /// Apply the derived-constructor return protocol. Unlike ordinary VM
     /// errors, protocol TypeError/ReferenceError objects are allocated in the
@@ -3705,6 +3715,10 @@ impl VmActivation {
             Instruction::InitializeVarRef(index) => {
                 let value = self.pop()?;
                 host.initialize_var_ref(*index, value)?;
+            }
+            Instruction::InitializeModuleImportCollision(index) => {
+                let value = self.pop()?;
+                host.initialize_module_import_collision(*index, value)?;
             }
             Instruction::InitializeDerivedVarRef(index) => {
                 let value = self.pop()?;

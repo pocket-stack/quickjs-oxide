@@ -353,6 +353,7 @@ fn ordinary_closure_operand(instruction: &Instruction) -> Option<u16> {
         | Instruction::SetVarRef(index)
         | Instruction::GetVarRefCheck(index)
         | Instruction::PutVarRefCheck(index)
+        | Instruction::InitializeModuleImportCollision(index)
         | Instruction::InitializeDerivedVarRef(index)
         | Instruction::GetVar(index)
         | Instruction::GetVarUndef(index)

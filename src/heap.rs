@@ -3229,6 +3229,9 @@ pub enum ClosureSource {
     ModuleDeclaration,
     /// Root live binding supplied by a requested module during linking.
     ModuleImport,
+    /// Root import slot which also receives a pinned QuickJS declaration-time
+    /// raw write. This provenance never propagates through child closures.
+    ModuleImportCollision,
 }
 
 /// Closure-name representation before and after runtime publication.
@@ -4095,6 +4098,7 @@ fn ordinary_private_closure_operand(instruction: &Instruction) -> Option<u16> {
         | Instruction::GetVarRefCheck(index)
         | Instruction::PutVarRefCheck(index)
         | Instruction::InitializeVarRef(index)
+        | Instruction::InitializeModuleImportCollision(index)
         | Instruction::InitializeDerivedVarRef(index)
         | Instruction::GetVar(index)
         | Instruction::GetVarUndef(index)
@@ -10536,6 +10540,7 @@ impl Heap {
                     descriptor.source,
                     ClosureSource::ModuleDeclaration
                         | ClosureSource::ModuleImport
+                        | ClosureSource::ModuleImportCollision
                         | ClosureSource::Global
                 ) {
                     return Err(HeapError::Invariant(
@@ -10544,7 +10549,9 @@ impl Heap {
                 }
             } else if matches!(
                 descriptor.source,
-                ClosureSource::ModuleDeclaration | ClosureSource::ModuleImport
+                ClosureSource::ModuleDeclaration
+                    | ClosureSource::ModuleImport
+                    | ClosureSource::ModuleImportCollision
             ) {
                 return Err(HeapError::Invariant(
                     "module closure descriptor escaped module bytecode",
@@ -10568,6 +10575,18 @@ impl Heap {
                         "module import descriptor has invalid binding metadata",
                     ));
                 }
+                ClosureSource::ModuleImportCollision
+                    if !descriptor.is_lexical
+                        || !descriptor.is_const
+                        || !matches!(
+                            descriptor.kind,
+                            ClosureVariableKind::Normal | ClosureVariableKind::ModuleImportView
+                        ) =>
+                {
+                    return Err(HeapError::Invariant(
+                        "module import collision descriptor has invalid binding metadata",
+                    ));
+                }
                 _ => {}
             }
             if descriptor.kind == ClosureVariableKind::ModuleImportView
@@ -10576,6 +10595,7 @@ impl Heap {
                     || !matches!(
                         descriptor.source,
                         ClosureSource::ModuleImport
+                            | ClosureSource::ModuleImportCollision
                             | ClosureSource::ParentClosure(_)
                             | ClosureSource::EvalEnvironment(_)
                     ))
@@ -10669,6 +10689,7 @@ impl Heap {
                     | ClosureSource::EvalEnvironment(_)
                     | ClosureSource::ModuleDeclaration
                     | ClosureSource::ModuleImport
+                    | ClosureSource::ModuleImportCollision
             ) || matches!(
                 descriptor.kind,
                 ClosureVariableKind::FunctionName

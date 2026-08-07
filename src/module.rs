@@ -63,6 +63,25 @@ pub(crate) struct ModuleLinkInitializer {
     pub(crate) value: ModuleLinkInitializerValue,
 }
 
+/// One pinned QuickJS import/declaration name collision.
+///
+/// QuickJS resolves both records to the import's first closure slot. Ordinary
+/// writes remain read-only, while declaration initialization has a narrowly
+/// authenticated raw-write path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModuleImportCollision {
+    pub(crate) closure_index: u16,
+    pub(crate) declaration: ModuleImportCollisionDeclaration,
+}
+
+/// Declaration flavor sharing an import's effective closure slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModuleImportCollisionDeclaration {
+    Var,
+    Lexical,
+    Function,
+}
+
 /// Resolved target of one exported name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ModuleExportTarget {
@@ -94,18 +113,33 @@ pub(crate) struct ModuleStarExport {
 pub(crate) struct UnlinkedModule {
     name: JsString,
     function: UnlinkedFunction,
+    declaration_order: Box<[u16]>,
     link_initializers: Box<[ModuleLinkInitializer]>,
+    import_collisions: Box<[ModuleImportCollision]>,
     requested_modules: Box<[ModuleRequest]>,
     imports: Box<[ModuleImport]>,
     exports: Box<[ModuleExport]>,
     star_exports: Box<[ModuleStarExport]>,
 }
 
+/// Compiler-owned module tables published as one sealed aggregate.
+pub(crate) struct UnlinkedModuleTables {
+    pub(crate) declaration_order: Vec<u16>,
+    pub(crate) link_initializers: Vec<ModuleLinkInitializer>,
+    pub(crate) import_collisions: Vec<ModuleImportCollision>,
+    pub(crate) requested_modules: Vec<ModuleRequest>,
+    pub(crate) imports: Vec<ModuleImport>,
+    pub(crate) exports: Vec<ModuleExport>,
+    pub(crate) star_exports: Vec<ModuleStarExport>,
+}
+
 /// Owned pieces crossing the one-way module publication boundary.
 pub(crate) struct UnlinkedModuleParts {
     pub(crate) name: JsString,
     pub(crate) function: UnlinkedFunction,
+    pub(crate) declaration_order: Box<[u16]>,
     pub(crate) link_initializers: Box<[ModuleLinkInitializer]>,
+    pub(crate) import_collisions: Box<[ModuleImportCollision]>,
     pub(crate) requested_modules: Box<[ModuleRequest]>,
     pub(crate) imports: Box<[ModuleImport]>,
     pub(crate) exports: Box<[ModuleExport]>,
@@ -117,16 +151,23 @@ impl UnlinkedModule {
     pub(crate) fn new(
         name: JsString,
         function: UnlinkedFunction,
-        link_initializers: Vec<ModuleLinkInitializer>,
-        requested_modules: Vec<ModuleRequest>,
-        imports: Vec<ModuleImport>,
-        exports: Vec<ModuleExport>,
-        star_exports: Vec<ModuleStarExport>,
+        tables: UnlinkedModuleTables,
     ) -> Self {
+        let UnlinkedModuleTables {
+            declaration_order,
+            link_initializers,
+            import_collisions,
+            requested_modules,
+            imports,
+            exports,
+            star_exports,
+        } = tables;
         Self {
             name,
             function,
+            declaration_order: declaration_order.into_boxed_slice(),
             link_initializers: link_initializers.into_boxed_slice(),
+            import_collisions: import_collisions.into_boxed_slice(),
             requested_modules: requested_modules.into_boxed_slice(),
             imports: imports.into_boxed_slice(),
             exports: exports.into_boxed_slice(),
@@ -140,8 +181,18 @@ impl UnlinkedModule {
     }
 
     #[must_use]
+    pub(crate) const fn declaration_order(&self) -> &[u16] {
+        &self.declaration_order
+    }
+
+    #[must_use]
     pub(crate) const fn link_initializers(&self) -> &[ModuleLinkInitializer] {
         &self.link_initializers
+    }
+
+    #[must_use]
+    pub(crate) const fn import_collisions(&self) -> &[ModuleImportCollision] {
+        &self.import_collisions
     }
 
     #[must_use]
@@ -169,7 +220,9 @@ impl UnlinkedModule {
         UnlinkedModuleParts {
             name: self.name,
             function: self.function,
+            declaration_order: self.declaration_order,
             link_initializers: self.link_initializers,
+            import_collisions: self.import_collisions,
             requested_modules: self.requested_modules,
             imports: self.imports,
             exports: self.exports,

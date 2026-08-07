@@ -4206,15 +4206,28 @@ impl<'source> Parser<'source> {
             if let Some((_, binding)) = self
                 .current_ir()
                 .binding_id_from_scope(self.current_ir().current_scope, name)
-                && matches!(
-                    self.current_ir().bindings[binding.0].kind,
-                    BindingKind::Lexical { .. }
-                )
             {
-                return Err(Error::syntax(
-                    "invalid redefinition of lexical identifier",
-                    source_span(conflict_span),
-                ));
+                let BindingStorage::Module(module_binding) =
+                    self.current_ir().bindings[binding.0].storage
+                else {
+                    return Err(Error::internal(
+                        "module declaration resolved to non-module storage",
+                    ));
+                };
+                if self
+                    .module
+                    .as_ref()
+                    .and_then(|module| module.binding(module_binding).ok())
+                    .and_then(|binding| binding.declaration)
+                    .is_some_and(|declaration| {
+                        matches!(declaration, module::ModuleDeclarationOrigin::Lexical { .. })
+                    })
+                {
+                    return Err(Error::syntax(
+                        "invalid redefinition of lexical identifier",
+                        source_span(conflict_span),
+                    ));
+                }
             }
             if let Some(binding) = self
                 .current_ir()
@@ -4225,11 +4238,27 @@ impl<'source> Parser<'source> {
                 else {
                     return Err(Error::internal("module var resolved to non-module storage"));
                 };
+                let first_declaration = self
+                    .module
+                    .as_ref()
+                    .and_then(|module| module.binding(module_binding).ok())
+                    .is_some_and(|binding| binding.declaration.is_none());
+                if first_declaration {
+                    let declaration_scope = self.current_ir().current_scope;
+                    let binding = self
+                        .current_ir_mut()
+                        .bindings
+                        .get_mut(binding.0)
+                        .ok_or_else(|| Error::internal("module var binding moved"))?;
+                    binding.declaration_scope = declaration_scope;
+                    binding.declaration_span = Some(declaration_span);
+                }
+                self.add_module_binding(name, module::ModuleDeclarationOrigin::Var)?;
                 self.export_module_declaration(name, module_binding, declaration_span)?;
                 return Ok(());
             }
             let module_binding =
-                self.add_module_binding(name, module::ModuleBindingOrigin::Var, false)?;
+                self.add_module_binding(name, module::ModuleDeclarationOrigin::Var)?;
             let function = self.current_ir_mut();
             function.add_binding(
                 function.var_scope,
@@ -4547,18 +4576,77 @@ impl<'source> Parser<'source> {
                 source_span(declaration_span),
             ));
         }
-        let function = &mut self.functions[self.current_function];
-        let scope = function.current_scope;
-        let scope_kind = function.scopes[scope.0].kind;
+        let scope = self.current_ir().current_scope;
+        let scope_kind = self.current_ir().scopes[scope.0].kind;
         let is_global = matches!(scope_kind, ScopeKind::ProgramBody)
-            && matches!(function.kind, FunctionKind::Script)
-            && scope == function.body_scope;
+            && matches!(self.current_ir().kind, FunctionKind::Script)
+            && scope == self.current_ir().body_scope;
         let is_eval_body = matches!(scope_kind, ScopeKind::ProgramBody)
-            && matches!(function.kind, FunctionKind::Eval(_))
-            && scope == function.body_scope;
+            && matches!(self.current_ir().kind, FunctionKind::Eval(_))
+            && scope == self.current_ir().body_scope;
         let is_module_body = matches!(scope_kind, ScopeKind::ProgramBody)
-            && matches!(function.kind, FunctionKind::Module)
-            && scope == function.body_scope;
+            && matches!(self.current_ir().kind, FunctionKind::Module)
+            && scope == self.current_ir().body_scope;
+        if is_module_body {
+            if let Some(module_binding) = self
+                .module
+                .as_ref()
+                .and_then(|module| module.binding_id(name))
+            {
+                let record = self
+                    .module
+                    .as_ref()
+                    .and_then(|module| module.binding(module_binding).ok())
+                    .ok_or_else(|| Error::internal("module lexical binding record is missing"))?;
+                if record.declaration.is_some() || record.import.is_none() {
+                    return Err(Error::syntax(
+                        "invalid redefinition of lexical identifier",
+                        source_span(conflict_span),
+                    ));
+                }
+                let existing = self
+                    .current_ir()
+                    .binding_id_in_scope(scope, name)
+                    .ok_or_else(|| {
+                        Error::internal("module import has no body-scope binding record")
+                    })?;
+                if self.current_ir().bindings[existing.0].storage
+                    != BindingStorage::Module(module_binding)
+                {
+                    return Err(Error::internal(
+                        "module lexical collision resolved to different storage",
+                    ));
+                }
+                let binding = self
+                    .current_ir_mut()
+                    .bindings
+                    .get_mut(existing.0)
+                    .ok_or_else(|| Error::internal("module lexical binding moved"))?;
+                binding.declaration_scope = scope;
+                binding.declaration_span = Some(declaration_span);
+                self.add_module_binding(
+                    name,
+                    module::ModuleDeclarationOrigin::Lexical { is_const },
+                )?;
+                self.export_module_declaration(name, module_binding, declaration_span)?;
+                return Ok(());
+            }
+            let module_binding = self
+                .add_module_binding(name, module::ModuleDeclarationOrigin::Lexical { is_const })?;
+            let function = self.current_ir_mut();
+            function.add_binding(
+                scope,
+                scope,
+                name.to_owned(),
+                BindingStorage::Module(module_binding),
+                BindingKind::Lexical { is_const },
+                Some(declaration_span),
+            );
+            self.export_module_declaration(name, module_binding, declaration_span)?;
+            return Ok(());
+        }
+
+        let function = &mut self.functions[self.current_function];
         if is_eval_body
             && (function
                 .eval_declarations
@@ -4719,21 +4807,6 @@ impl<'source> Parser<'source> {
                 BindingKind::Lexical { is_const },
                 Some(declaration_span),
             );
-            return Ok(());
-        }
-        if is_module_body {
-            let module_binding =
-                self.add_module_binding(name, module::ModuleBindingOrigin::Lexical, is_const)?;
-            let function = self.current_ir_mut();
-            function.add_binding(
-                scope,
-                scope,
-                name.to_owned(),
-                BindingStorage::Module(module_binding),
-                BindingKind::Lexical { is_const },
-                Some(declaration_span),
-            );
-            self.export_module_declaration(name, module_binding, declaration_span)?;
             return Ok(());
         }
         if function.locals.len() >= MAX_LOCAL_VARIABLES {
@@ -12180,33 +12253,57 @@ fn seed_module_bindings(tree: &mut FunctionTree) -> Result<(), Error> {
     let bindings = module
         .bindings
         .iter()
-        .map(|binding| (binding.name.clone(), binding.origin, binding.is_const))
+        .map(|binding| (binding.name.clone(), binding.declaration, binding.import))
         .collect::<Vec<_>>();
-    for (binding_index, (name, origin, is_const)) in bindings.into_iter().enumerate() {
+    for (binding_index, (name, declaration, import)) in bindings.into_iter().enumerate() {
         let name_index = ensure_string_constant(&mut tree.functions[0], &name)?;
-        let imported = matches!(origin, module::ModuleBindingOrigin::Import);
-        let is_lexical = matches!(
-            origin,
-            module::ModuleBindingOrigin::Lexical
-                | module::ModuleBindingOrigin::Import
-                | module::ModuleBindingOrigin::NamespaceImport
-        );
-        let closure_index = push_closure_variable(
-            &mut tree.functions[0],
-            ClosureVariable {
-                source: if imported {
+        let (source, is_lexical, is_const, kind) = match import {
+            Some(module::ModuleImportKind::Named) => (
+                if declaration.is_some() {
+                    ClosureSource::ModuleImportCollision
+                } else {
                     ClosureSource::ModuleImport
+                },
+                true,
+                true,
+                ClosureVariableKind::ModuleImportView,
+            ),
+            Some(module::ModuleImportKind::Namespace) => (
+                if declaration.is_some() {
+                    ClosureSource::ModuleImportCollision
                 } else {
                     ClosureSource::ModuleDeclaration
                 },
+                true,
+                true,
+                ClosureVariableKind::Normal,
+            ),
+            None => match declaration.ok_or_else(|| {
+                Error::internal("module binding has neither an import nor a declaration")
+            })? {
+                module::ModuleDeclarationOrigin::Var
+                | module::ModuleDeclarationOrigin::Function { .. } => (
+                    ClosureSource::ModuleDeclaration,
+                    false,
+                    false,
+                    ClosureVariableKind::Normal,
+                ),
+                module::ModuleDeclarationOrigin::Lexical { is_const } => (
+                    ClosureSource::ModuleDeclaration,
+                    true,
+                    is_const,
+                    ClosureVariableKind::Normal,
+                ),
+            },
+        };
+        let closure_index = push_closure_variable(
+            &mut tree.functions[0],
+            ClosureVariable {
+                source,
                 name: ClosureVariableName::Constant(name_index),
                 is_lexical,
                 is_const,
-                kind: if imported {
-                    ClosureVariableKind::ModuleImportView
-                } else {
-                    ClosureVariableKind::Normal
-                },
+                kind,
             },
         )?;
         tree.module
@@ -12268,23 +12365,25 @@ fn install_module_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Erro
     let Some(module) = tree.module.as_ref() else {
         return Ok(());
     };
-    let initializers = module
-        .bindings
-        .iter()
-        .filter_map(|binding| {
-            let value = match binding.origin {
-                module::ModuleBindingOrigin::Var => Some(None),
-                module::ModuleBindingOrigin::Function {
-                    constant,
-                    inferred_name,
-                } => Some(Some((constant, inferred_name))),
-                module::ModuleBindingOrigin::Lexical
-                | module::ModuleBindingOrigin::Import
-                | module::ModuleBindingOrigin::NamespaceImport => None,
-            }?;
-            Some((binding.closure_index, value))
-        })
-        .collect::<Vec<_>>();
+    let mut initializers = Vec::new();
+    for binding_id in &module.declaration_order {
+        let binding = module.binding(*binding_id)?;
+        let declaration = binding.declaration.ok_or_else(|| {
+            Error::internal("module declaration order referenced an import-only binding")
+        })?;
+        let value = match declaration {
+            module::ModuleDeclarationOrigin::Var if binding.import.is_none() => Some(None),
+            module::ModuleDeclarationOrigin::Function {
+                constant,
+                inferred_name,
+            } => Some(Some((constant, inferred_name))),
+            module::ModuleDeclarationOrigin::Var
+            | module::ModuleDeclarationOrigin::Lexical { .. } => None,
+        };
+        if let Some(value) = value {
+            initializers.push((binding.closure_index, value, binding.import.is_some()));
+        }
+    }
     let mut prefix = vec![
         SpannedIrOp {
             op: IrOp::Bytecode(Instruction::PushThis),
@@ -12295,7 +12394,7 @@ fn install_module_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Erro
             pc_site: None,
         },
     ];
-    for (closure_index, initializer) in initializers {
+    for (closure_index, initializer, import_collision) in initializers {
         let closure_index = closure_index
             .ok_or_else(|| Error::internal("module initializer closure was not seeded"))?;
         match initializer {
@@ -12317,7 +12416,11 @@ fn install_module_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Erro
             }
         }
         prefix.push(SpannedIrOp {
-            op: IrOp::Bytecode(Instruction::PutVarRef(closure_index)),
+            op: IrOp::Bytecode(if import_collision {
+                Instruction::InitializeModuleImportCollision(closure_index)
+            } else {
+                Instruction::PutVarRef(closure_index)
+            }),
             pc_site: None,
         });
     }
@@ -13412,12 +13515,24 @@ fn resolved_binding_operation(
         && defining_function == consuming_function
     {
         let index = module_binding_closure_index(tree, binding_id)?;
+        let import_lexical_collision = tree
+            .module
+            .as_ref()
+            .and_then(|module| module.binding(binding_id).ok())
+            .is_some_and(|binding| {
+                binding.import.is_some()
+                    && matches!(
+                        binding.declaration,
+                        Some(module::ModuleDeclarationOrigin::Lexical { .. })
+                    )
+            });
         return module_binding_operation(
             &mut tree.functions[consuming_function],
             index,
             binding.kind,
             access,
             name,
+            import_lexical_collision,
         );
     }
     if defining_function == consuming_function {
@@ -13501,8 +13616,14 @@ fn module_binding_operation(
     kind: BindingKind,
     access: IdentifierAccess,
     name: &str,
+    import_lexical_collision: bool,
 ) -> Result<IrOp, Error> {
     if access == IdentifierAccess::Initialize {
+        if import_lexical_collision {
+            return Ok(IrOp::Bytecode(
+                Instruction::InitializeModuleImportCollision(index),
+            ));
+        }
         return match kind {
             BindingKind::Lexical { .. } => Ok(IrOp::Bytecode(Instruction::InitializeVarRef(index))),
             _ => Err(Error::internal(
