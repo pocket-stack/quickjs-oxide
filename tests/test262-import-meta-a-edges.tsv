@@ -1,0 +1,2 @@
+root_path	base_path	request_index	specifier	normalized_path
+test/language/expressions/import.meta/distinct-for-each-module.js	test/language/expressions/import.meta/distinct-for-each-module.js	0	./distinct-for-each-module_FIXTURE.js	test/language/expressions/import.meta/distinct-for-each-module_FIXTURE.js

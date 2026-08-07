@@ -1,0 +1,12 @@
+test/language/expressions/import.meta/syntax/escape-sequence-import.js
+test/language/expressions/import.meta/syntax/escape-sequence-meta.js
+test/language/expressions/import.meta/syntax/goal-script.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-assignment-expr.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-for-await-of-loop.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-for-in-loop.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-for-of-loop.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js
+test/language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js

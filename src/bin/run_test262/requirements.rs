@@ -119,6 +119,57 @@ const MODULE_GENERATORS_METADATA: ModuleMetadataContract = ModuleMetadataContrac
     negative: None,
 };
 
+const MODULE_IMPORT_META_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &["import.meta"],
+    negative: None,
+};
+
+const MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["import.meta"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
+const MODULE_IMPORT_META_ASYNC_ITERATION_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["import.meta", "async-iteration"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
+const MODULE_IMPORT_META_DESTRUCTURING_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["import.meta", "destructuring-assignment"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
+const MODULE_IMPORT_META_OBJECT_REST_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["import.meta", "destructuring-assignment", "object-rest"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
 const MODULE_EXPORT_STAR_NAMESPACE_METADATA: ModuleMetadataContract = ModuleMetadataContract {
     includes: &[],
     flags: &["module"],
@@ -1724,6 +1775,195 @@ const DEFAULT_MODULE_FILE_ADMISSIONS: [ModuleGraphFileAdmission; 58] = [
     },
 ];
 
+/// The complete natural module-goal `import.meta` cohort at the pinned
+/// Test262 revision. Script-goal roots remain ordinary coordinator jobs; only
+/// these 17 module roots need exact module-host admission. One root reaches a
+/// single authenticated fixture and every other root is dependency-free.
+const IMPORT_META_MODULE_ROOT_ADMISSIONS: [ModuleGraphRootAdmission; 17] = [
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/distinct-for-each-module.js",
+        closure_file_count: 2,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/import-meta-is-an-ordinary-object.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/not-accessible-from-direct-eval.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/same-object-returned.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/escape-sequence-import.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/escape-sequence-meta.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/goal-module-nested-function.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/goal-module.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-assignment-expr.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-await-of-loop.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-in-loop.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-of-loop.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js",
+        closure_file_count: 1,
+    },
+    ModuleGraphRootAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js",
+        closure_file_count: 1,
+    },
+];
+
+const IMPORT_META_MODULE_FILE_ADMISSIONS: [ModuleGraphFileAdmission; 18] = [
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/distinct-for-each-module.js",
+        source_sha256: "22972363efdffc5fdf15259186f9512509d5ebb4d18d67007c8535a3c5dbf0e9",
+        metadata: MODULE_IMPORT_META_METADATA,
+        requests: &[ModuleRequestAdmission {
+            specifier: "./distinct-for-each-module_FIXTURE.js",
+            normalized_path: "test/language/expressions/import.meta/distinct-for-each-module_FIXTURE.js",
+        }],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/distinct-for-each-module_FIXTURE.js",
+        source_sha256: "cd9a747a0c441cc452537cdd9c92943b07282c46d7bad34985d9a70fa20b6f10",
+        metadata: MODULE_FIXTURE_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/import-meta-is-an-ordinary-object.js",
+        source_sha256: "5a8e3d8ea43bc5bb8afd0f83a840342970bf9f8c946dd880eec29bace81bef91",
+        metadata: MODULE_IMPORT_META_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/not-accessible-from-direct-eval.js",
+        source_sha256: "211f92e37e1c87e80e68a289b00efa9f4e8369e5bd8ecb6df799d744009b0a43",
+        metadata: MODULE_IMPORT_META_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/same-object-returned.js",
+        source_sha256: "0f34657774e235c23530da54eb56c87e3576e3744789ca7751965cb407f76a55",
+        metadata: MODULE_IMPORT_META_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/escape-sequence-import.js",
+        source_sha256: "ce1d9261067ef21fd9d83a4574afb78ae7d54d698902c319f79a57b942962ca0",
+        metadata: MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/escape-sequence-meta.js",
+        source_sha256: "c8fb14dd6b3c5b49959ba48b7024f7412fa70cdedb2c06c3cb9bf0d68e220a46",
+        metadata: MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/goal-module-nested-function.js",
+        source_sha256: "438ff4f1ed5818916721d5504ef7f625cb78edc2882225295efeccaa64b4c29a",
+        metadata: MODULE_IMPORT_META_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/goal-module.js",
+        source_sha256: "87cf3fe7e60f591aeb8c5a6ccbd2aeac7a5ea7c13ff82277043e3c3f8f8d3a74",
+        metadata: MODULE_IMPORT_META_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js",
+        source_sha256: "2fbc3aae223fed21950a692929b59186bee54cb2b9e15c94b8ba9378800fa0ff",
+        metadata: MODULE_IMPORT_META_DESTRUCTURING_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js",
+        source_sha256: "14e7eca195c0daaa118a53df2e243b6a749f5f188cac30b1f0f511f1f441d101",
+        metadata: MODULE_IMPORT_META_DESTRUCTURING_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-assignment-expr.js",
+        source_sha256: "494bf34ff1ba093e983262dbcc7ff86fa7be1b3cd8971316caa1cebd050ca89b",
+        metadata: MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-await-of-loop.js",
+        source_sha256: "89da6cfbea147ef365c817974955739586a19eb9455c2f3a577ee0236acc8d51",
+        metadata: MODULE_IMPORT_META_ASYNC_ITERATION_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-in-loop.js",
+        source_sha256: "21ef3b3c4a135a0673129c72765de17e63e561e3916438b7f3510ec106167115",
+        metadata: MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-of-loop.js",
+        source_sha256: "5e3c3fee53c2a9c361754a1e4f3c7b2ff42fbaf2917003edcb49d309701aaf94",
+        metadata: MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js",
+        source_sha256: "c7aa223f3adf7e0e51c0c9fa7d28c54e7faeb23877cb9b931cd36206b22fe5e4",
+        metadata: MODULE_IMPORT_META_DESTRUCTURING_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js",
+        source_sha256: "a37abbb17e395f114351b526c479b4acf9bd5ba13a0ca432c80979b2c6fe0333",
+        metadata: MODULE_IMPORT_META_OBJECT_REST_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+    ModuleGraphFileAdmission {
+        path: "test/language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js",
+        source_sha256: "fb407018303e308e808afc656092825725d860dab800da05b8b2ab7fd90c4be3",
+        metadata: MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA,
+        requests: &[],
+    },
+];
+
 /// Admit only one of the pinned, dependency-free module roots above.
 ///
 /// The coordinator and worker both call this function. An exact-path source or
@@ -1818,6 +2058,16 @@ fn exact_module_graph_admission(root_path: &Path) -> Option<ExactModuleGraphAdmi
         return Some(ExactModuleGraphAdmission {
             root_path: admission.path,
             files: &DEFAULT_MODULE_FILE_ADMISSIONS,
+            closure_file_count: admission.closure_file_count,
+        });
+    }
+    if let Some(admission) = IMPORT_META_MODULE_ROOT_ADMISSIONS
+        .iter()
+        .find(|admission| root_path == Path::new(admission.path))
+    {
+        return Some(ExactModuleGraphAdmission {
+            root_path: admission.path,
+            files: &IMPORT_META_MODULE_FILE_ADMISSIONS,
             closure_file_count: admission.closure_file_count,
         });
     }
@@ -3196,11 +3446,13 @@ mod tests {
         AGENT_HOST_ADMISSIONS, DEFAULT_MODULE_FILE_ADMISSIONS, DEFAULT_MODULE_ROOT_ADMISSIONS,
         DEPENDENCY_FREE_MODULE_ADMISSIONS, ExactModuleGraphAdmission, ExactModuleTest,
         FIXTURE_GRAPH_MODULE_ADMISSIONS, FixtureGraphModuleAdmission, HostCapabilities,
+        IMPORT_META_MODULE_FILE_ADMISSIONS, IMPORT_META_MODULE_ROOT_ADMISSIONS,
         MODULE_FIXTURE_METADATA, MODULE_METADATA, ModuleGraphFileAdmission, ModuleMetadataContract,
         ModuleRequestAdmission, NAMESPACE_MODULE_FILE_ADMISSIONS, NAMESPACE_MODULE_ROOT_ADMISSIONS,
         agent_host_metadata_matches, authenticate_dependency_free_module_test,
-        authenticate_fixture_graph_closure, authenticate_module_graph_file,
-        authenticate_module_graph_file_digest, exact_module_graph_admission, exact_module_test,
+        authenticate_exact_module_graph_closure, authenticate_fixture_graph_closure,
+        authenticate_module_graph_file, authenticate_module_graph_file_digest,
+        exact_module_graph_admission, exact_module_test,
         generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
         insert_exact_source_feature_hint, is_exact_agent_host_test,
         is_exact_dependency_free_module_test, missing_host_capability_hints,
@@ -3233,6 +3485,32 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-module-default-a-negatives.txt"
     ));
+    const IMPORT_META_SCRIPT_ROOTS: [&str; 5] = [
+        "test/language/expressions/import.meta/syntax/goal-async-function-params-or-body.js",
+        "test/language/expressions/import.meta/syntax/goal-async-generator-params-or-body.js",
+        "test/language/expressions/import.meta/syntax/goal-function-params-or-body.js",
+        "test/language/expressions/import.meta/syntax/goal-generator-params-or-body.js",
+        "test/language/expressions/import.meta/syntax/goal-script.js",
+    ];
+    const IMPORT_META_MODULE_NEGATIVES: [&str; 11] = [
+        "test/language/expressions/import.meta/syntax/escape-sequence-import.js",
+        "test/language/expressions/import.meta/syntax/escape-sequence-meta.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-assignment-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-await-of-loop.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-in-loop.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-of-loop.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js",
+    ];
+    const IMPORT_META_ADJACENT_EXCLUSIONS: [&str; 4] = [
+        "test/language/expressions/assignmenttargettype/direct-import.meta.js",
+        "test/language/expressions/assignmenttargettype/parenthesized-import.meta.js",
+        "test/language/expressions/dynamic-import/assignment-expression/import-meta.js",
+        "test/language/expressions/import.meta/distinct-for-each-module_FIXTURE.js",
+    ];
 
     fn metadata(flags: &[&str], features: &[&str], includes: &[&str]) -> Metadata {
         Metadata {
@@ -3760,13 +4038,427 @@ mod tests {
             "test/language/expressions/dynamic-import/always-create-new-promise.js",
             "test/language/module-code/top-level-await/await-expr-resolution.js",
             "test/language/module-code/import-attributes/import-attribute-empty.js",
-            "test/language/expressions/import.meta/same-object-returned.js",
             "test/language/module-code/source-phase-import/import-source.js",
         ] {
             assert!(
                 exact_module_graph_admission(Path::new(excluded)).is_none(),
                 "excluded module surface was admitted: {excluded}"
             );
+        }
+    }
+
+    #[test]
+    fn import_meta_module_admission_is_the_exact_closed_module_goal_cohort() {
+        assert_eq!(IMPORT_META_MODULE_ROOT_ADMISSIONS.len(), 17);
+        assert_eq!(IMPORT_META_MODULE_FILE_ADMISSIONS.len(), 18);
+        assert!(
+            IMPORT_META_MODULE_ROOT_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert!(
+            IMPORT_META_MODULE_FILE_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert_eq!(
+            IMPORT_META_MODULE_FILE_ADMISSIONS
+                .iter()
+                .map(|file| file.requests.len())
+                .sum::<usize>(),
+            1
+        );
+
+        let root_paths = IMPORT_META_MODULE_ROOT_ADMISSIONS
+            .iter()
+            .map(|root| root.path)
+            .collect::<BTreeSet<_>>();
+        let file_paths = IMPORT_META_MODULE_FILE_ADMISSIONS
+            .iter()
+            .map(|file| file.path)
+            .collect::<BTreeSet<_>>();
+        assert!(root_paths.is_subset(&file_paths));
+        assert_eq!(
+            file_paths
+                .difference(&root_paths)
+                .copied()
+                .collect::<Vec<_>>(),
+            ["test/language/expressions/import.meta/distinct-for-each-module_FIXTURE.js",]
+        );
+
+        let mut union = BTreeSet::new();
+        let mut rooted_request_count = 0;
+        for root in &IMPORT_META_MODULE_ROOT_ADMISSIONS {
+            assert!(!root.path.ends_with("_FIXTURE.js"));
+            let admission = exact_module_graph_admission(Path::new(root.path))
+                .expect("every import.meta module root has an exact graph admission");
+            assert_eq!(admission.root_path, root.path);
+            assert_eq!(admission.closure_file_count, root.closure_file_count);
+            assert_eq!(admission.files.len(), 18);
+
+            let reachable = reachable_module_graph_paths(admission)
+                .unwrap_or_else(|error| panic!("{}: {error}", root.path));
+            assert_eq!(reachable.len(), root.closure_file_count, "{}", root.path);
+            assert_eq!(
+                root.closure_file_count,
+                if root.path.ends_with("/distinct-for-each-module.js") {
+                    2
+                } else {
+                    1
+                },
+                "{}",
+                root.path
+            );
+            union.extend(reachable.iter().copied());
+            rooted_request_count += reachable
+                .iter()
+                .map(|path| {
+                    IMPORT_META_MODULE_FILE_ADMISSIONS
+                        .iter()
+                        .find(|file| file.path == *path)
+                        .expect("reachable import.meta source is authenticated")
+                        .requests
+                        .len()
+                })
+                .sum::<usize>();
+
+            let root_file = IMPORT_META_MODULE_FILE_ADMISSIONS
+                .iter()
+                .find(|file| file.path == root.path)
+                .expect("every import.meta root is in the source table");
+            let metadata = module_metadata(root_file.metadata);
+            assert!(metadata.is_module());
+            assert_eq!(
+                metadata.features.first().map(String::as_str),
+                Some("import.meta")
+            );
+        }
+        assert_eq!(union, file_paths);
+        assert_eq!(rooted_request_count, 1);
+
+        for file in &IMPORT_META_MODULE_FILE_ADMISSIONS {
+            assert_eq!(file.source_sha256.len(), 64, "{}", file.path);
+            assert!(
+                file.source_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "{}",
+                file.path
+            );
+            if file.path.ends_with("_FIXTURE.js") {
+                assert!(module_metadata_matches(&Metadata::default(), file.metadata));
+            }
+            let mut specifiers = BTreeSet::new();
+            for request in file.requests {
+                assert!(specifiers.insert(request.specifier));
+                assert_eq!(
+                    request.normalized_path,
+                    normalized_audited_request(file.path, request.specifier)
+                );
+                assert!(file_paths.contains(request.normalized_path));
+            }
+        }
+
+        let negatives = IMPORT_META_MODULE_ROOT_ADMISSIONS
+            .iter()
+            .filter_map(|root| {
+                IMPORT_META_MODULE_FILE_ADMISSIONS
+                    .iter()
+                    .find(|file| file.path == root.path)
+                    .filter(|file| file.metadata.negative.is_some())
+                    .map(|file| file.path)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(negatives, IMPORT_META_MODULE_NEGATIVES);
+        for negative in negatives {
+            let contract = IMPORT_META_MODULE_FILE_ADMISSIONS
+                .iter()
+                .find(|file| file.path == negative)
+                .expect("audited import.meta negative")
+                .metadata;
+            let expected = contract.negative.expect("negative metadata contract");
+            assert_eq!(expected.phase, "parse", "{negative}");
+            assert_eq!(expected.error_type, "SyntaxError", "{negative}");
+        }
+
+        for script in IMPORT_META_SCRIPT_ROOTS {
+            assert!(
+                exact_module_graph_admission(Path::new(script)).is_none(),
+                "{script}"
+            );
+        }
+        for excluded in IMPORT_META_ADJACENT_EXCLUSIONS {
+            assert!(
+                exact_module_graph_admission(Path::new(excluded)).is_none(),
+                "adjacent import.meta surface was admitted: {excluded}"
+            );
+        }
+    }
+
+    #[test]
+    fn import_meta_module_admission_matches_the_available_pinned_suite() {
+        let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/oracle/quickjs-2026-06-04/test262");
+        if !suite.is_dir() {
+            return;
+        }
+
+        let mut natural_roots = BTreeSet::new();
+        collect_non_fixture_js(
+            &suite.join("test/language/expressions/import.meta"),
+            &suite,
+            &mut natural_roots,
+        );
+        assert_eq!(natural_roots.len(), 22);
+
+        let mut module_roots = BTreeSet::new();
+        let mut script_roots = BTreeSet::new();
+        for path in &natural_roots {
+            let source = fs::read_to_string(suite.join(path))
+                .unwrap_or_else(|error| panic!("read {path}: {error}"));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {path} metadata: {error}"));
+            assert!(
+                metadata
+                    .features
+                    .iter()
+                    .any(|feature| feature == "import.meta")
+            );
+            if metadata.is_module() {
+                module_roots.insert(path.to_owned());
+            } else {
+                script_roots.insert(path.to_owned());
+            }
+        }
+        assert_eq!(module_roots.len(), 17);
+        assert_eq!(script_roots.len(), 5);
+        assert_eq!(
+            module_roots,
+            IMPORT_META_MODULE_ROOT_ADMISSIONS
+                .iter()
+                .map(|root| root.path.to_owned())
+                .collect()
+        );
+        assert_eq!(
+            script_roots,
+            IMPORT_META_SCRIPT_ROOTS
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+
+        for file in &IMPORT_META_MODULE_FILE_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(file.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", file.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", file.path));
+            authenticate_module_graph_file(Path::new(file.path), &source, &metadata, file)
+                .unwrap_or_else(|error| panic!("authenticate {}: {error}", file.path));
+            assert_eq!(
+                audited_module_specifiers(&source),
+                file.requests
+                    .iter()
+                    .map(|request| request.specifier.to_owned())
+                    .collect(),
+                "{} static requests drifted",
+                file.path
+            );
+        }
+
+        for root in &IMPORT_META_MODULE_ROOT_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(root.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", root.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", root.path));
+            assert_eq!(
+                exact_module_test(&suite, Path::new(root.path), &source, &metadata),
+                Ok(Some(ExactModuleTest::FixtureGraph)),
+                "{}",
+                root.path
+            );
+        }
+
+        for script in IMPORT_META_SCRIPT_ROOTS {
+            let source = fs::read_to_string(suite.join(script))
+                .unwrap_or_else(|error| panic!("read {script}: {error}"));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {script} metadata: {error}"));
+            assert_eq!(
+                exact_module_test(&suite, Path::new(script), &source, &metadata),
+                Ok(None),
+                "script-goal import.meta root was admitted as a module: {script}"
+            );
+        }
+
+        let dynamic_import = IMPORT_META_ADJACENT_EXCLUSIONS[2];
+        let source = fs::read_to_string(suite.join(dynamic_import))
+            .unwrap_or_else(|error| panic!("read {dynamic_import}: {error}"));
+        let metadata = parse_metadata(&source)
+            .unwrap_or_else(|error| panic!("parse {dynamic_import} metadata: {error}"));
+        assert!(metadata.is_module());
+        assert!(metadata.is_async());
+        assert_eq!(metadata.features, ["dynamic-import", "import.meta"]);
+        assert_eq!(
+            exact_module_test(&suite, Path::new(dynamic_import), &source, &metadata),
+            Ok(None)
+        );
+
+        for assignment_target in &IMPORT_META_ADJACENT_EXCLUSIONS[..2] {
+            let source = fs::read_to_string(suite.join(assignment_target))
+                .unwrap_or_else(|error| panic!("read {assignment_target}: {error}"));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {assignment_target} metadata: {error}"));
+            assert!(!metadata.is_module());
+            assert!(metadata.features.is_empty());
+            assert_eq!(
+                metadata
+                    .negative
+                    .as_ref()
+                    .and_then(|negative| negative.phase.as_deref()),
+                Some("parse")
+            );
+            assert_eq!(
+                metadata
+                    .negative
+                    .as_ref()
+                    .and_then(|negative| negative.error_type.as_deref()),
+                Some("SyntaxError")
+            );
+            assert_eq!(
+                exact_module_test(&suite, Path::new(assignment_target), &source, &metadata,),
+                Ok(None)
+            );
+        }
+    }
+
+    #[test]
+    fn import_meta_module_admission_rejects_every_authenticated_dimension_drift() {
+        let root = IMPORT_META_MODULE_FILE_ADMISSIONS
+            .iter()
+            .find(|file| file.path.ends_with("/import-meta-is-an-ordinary-object.js"))
+            .expect("positive import.meta root");
+        let exact = module_metadata(root.metadata);
+        assert_eq!(
+            authenticate_module_graph_file_digest(
+                Path::new(root.path),
+                root.source_sha256,
+                &exact,
+                root,
+            ),
+            Ok(())
+        );
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(root.path),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                &exact,
+                root,
+            )
+            .unwrap_err()
+            .contains("source drifted")
+        );
+
+        let mut feature_drift = exact;
+        feature_drift.features.clear();
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(root.path),
+                root.source_sha256,
+                &feature_drift,
+                root,
+            )
+            .unwrap_err()
+            .contains("metadata shape drifted")
+        );
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new("test/language/expressions/import.meta/unlisted.js"),
+                root.source_sha256,
+                &module_metadata(root.metadata),
+                root,
+            )
+            .unwrap_err()
+            .contains("path drifted")
+        );
+
+        let negative = IMPORT_META_MODULE_FILE_ADMISSIONS
+            .iter()
+            .find(|file| file.path.ends_with("/escape-sequence-import.js"))
+            .expect("negative import.meta root");
+        let mut negative_metadata = module_metadata(negative.metadata);
+        negative_metadata
+            .negative
+            .as_mut()
+            .expect("negative metadata")
+            .phase = Some("resolution".to_owned());
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(negative.path),
+                negative.source_sha256,
+                &negative_metadata,
+                negative,
+            )
+            .unwrap_err()
+            .contains("metadata shape drifted")
+        );
+
+        let fixture = IMPORT_META_MODULE_FILE_ADMISSIONS
+            .iter()
+            .find(|file| file.path.ends_with("_FIXTURE.js"))
+            .expect("import.meta fixture");
+        assert!(
+            authenticate_module_graph_file_digest(
+                Path::new(fixture.path),
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                &Metadata::default(),
+                fixture,
+            )
+            .unwrap_err()
+            .contains("source drifted")
+        );
+
+        let distinct = IMPORT_META_MODULE_ROOT_ADMISSIONS[0];
+        let closure_drift = authenticate_exact_module_graph_closure(
+            ExactModuleGraphAdmission {
+                root_path: distinct.path,
+                files: &IMPORT_META_MODULE_FILE_ADMISSIONS,
+                closure_file_count: 1,
+            },
+            |_| panic!("closure size drift must fail before reading source files"),
+        )
+        .unwrap_err();
+        assert!(closure_drift.contains("closure size drifted"));
+
+        let request = IMPORT_META_MODULE_FILE_ADMISSIONS[0].requests[0];
+        assert_eq!(
+            normalize_exact_module_request(
+                Path::new(distinct.path),
+                distinct.path,
+                request.specifier,
+            ),
+            Ok(request.normalized_path.to_owned())
+        );
+        assert!(
+            normalize_exact_module_request(
+                Path::new(distinct.path),
+                distinct.path,
+                "./unlisted_FIXTURE.js",
+            )
+            .unwrap_err()
+            .contains("unaudited request")
+        );
+        assert!(
+            normalize_exact_module_request(
+                Path::new(distinct.path),
+                "test/language/expressions/import.meta/unlisted.js",
+                request.specifier,
+            )
+            .unwrap_err()
+            .contains("unaudited base")
+        );
+
+        for excluded in IMPORT_META_ADJACENT_EXCLUSIONS {
+            assert!(exact_module_graph_admission(Path::new(excluded)).is_none());
         }
     }
 

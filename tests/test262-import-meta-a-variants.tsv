@@ -1,0 +1,28 @@
+path	variant	execution_goal	flags	features	negative_phase	negative_type	source_sha256
+test/language/expressions/import.meta/distinct-for-each-module.js	sloppy	module	module	import.meta			22972363efdffc5fdf15259186f9512509d5ebb4d18d67007c8535a3c5dbf0e9
+test/language/expressions/import.meta/import-meta-is-an-ordinary-object.js	sloppy	module	module	import.meta			5a8e3d8ea43bc5bb8afd0f83a840342970bf9f8c946dd880eec29bace81bef91
+test/language/expressions/import.meta/not-accessible-from-direct-eval.js	sloppy	module	module	import.meta			211f92e37e1c87e80e68a289b00efa9f4e8369e5bd8ecb6df799d744009b0a43
+test/language/expressions/import.meta/same-object-returned.js	sloppy	module	module	import.meta			0f34657774e235c23530da54eb56c87e3576e3744789ca7751965cb407f76a55
+test/language/expressions/import.meta/syntax/escape-sequence-import.js	sloppy	module	module	import.meta	parse	SyntaxError	ce1d9261067ef21fd9d83a4574afb78ae7d54d698902c319f79a57b942962ca0
+test/language/expressions/import.meta/syntax/escape-sequence-meta.js	sloppy	module	module	import.meta	parse	SyntaxError	c8fb14dd6b3c5b49959ba48b7024f7412fa70cdedb2c06c3cb9bf0d68e220a46
+test/language/expressions/import.meta/syntax/goal-async-function-params-or-body.js	sloppy	script		import.meta,async-functions			cbe2b1c3d4517a3990bd56a420cb7125195adda746591a544e8b4a82a71e27a0
+test/language/expressions/import.meta/syntax/goal-async-function-params-or-body.js	strict	script		import.meta,async-functions			cbe2b1c3d4517a3990bd56a420cb7125195adda746591a544e8b4a82a71e27a0
+test/language/expressions/import.meta/syntax/goal-async-generator-params-or-body.js	sloppy	script		import.meta,async-iteration			c89ed59d66c4c85396d1da2fa9c0f3d34f6392dd296226c28f58ce32521ddea6
+test/language/expressions/import.meta/syntax/goal-async-generator-params-or-body.js	strict	script		import.meta,async-iteration			c89ed59d66c4c85396d1da2fa9c0f3d34f6392dd296226c28f58ce32521ddea6
+test/language/expressions/import.meta/syntax/goal-function-params-or-body.js	sloppy	script		import.meta			0f0f10d06669f27d6fa67c55415952d892e82cf7037c79f0b74a755289f17bbb
+test/language/expressions/import.meta/syntax/goal-function-params-or-body.js	strict	script		import.meta			0f0f10d06669f27d6fa67c55415952d892e82cf7037c79f0b74a755289f17bbb
+test/language/expressions/import.meta/syntax/goal-generator-params-or-body.js	sloppy	script		import.meta,generators			0a24c4839d48c07a64e6c8cb0dfc9d7747d4cc5542c691bd559abc227de07f53
+test/language/expressions/import.meta/syntax/goal-generator-params-or-body.js	strict	script		import.meta,generators			0a24c4839d48c07a64e6c8cb0dfc9d7747d4cc5542c691bd559abc227de07f53
+test/language/expressions/import.meta/syntax/goal-module-nested-function.js	sloppy	module	module	import.meta			438ff4f1ed5818916721d5504ef7f625cb78edc2882225295efeccaa64b4c29a
+test/language/expressions/import.meta/syntax/goal-module.js	sloppy	module	module	import.meta			87cf3fe7e60f591aeb8c5a6ccbd2aeac7a5ea7c13ff82277043e3c3f8f8d3a74
+test/language/expressions/import.meta/syntax/goal-script.js	sloppy	script		import.meta	parse	SyntaxError	8c82c510f0f1557cf5dab7fe5c6c624094542d3b95c7701e51c5a3969fa3e171
+test/language/expressions/import.meta/syntax/goal-script.js	strict	script		import.meta	parse	SyntaxError	8c82c510f0f1557cf5dab7fe5c6c624094542d3b95c7701e51c5a3969fa3e171
+test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js	sloppy	module	module	import.meta,destructuring-assignment	parse	SyntaxError	2fbc3aae223fed21950a692929b59186bee54cb2b9e15c94b8ba9378800fa0ff
+test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js	sloppy	module	module	import.meta,destructuring-assignment	parse	SyntaxError	14e7eca195c0daaa118a53df2e243b6a749f5f188cac30b1f0f511f1f441d101
+test/language/expressions/import.meta/syntax/invalid-assignment-target-assignment-expr.js	sloppy	module	module	import.meta	parse	SyntaxError	494bf34ff1ba093e983262dbcc7ff86fa7be1b3cd8971316caa1cebd050ca89b
+test/language/expressions/import.meta/syntax/invalid-assignment-target-for-await-of-loop.js	sloppy	module	module	import.meta,async-iteration	parse	SyntaxError	89da6cfbea147ef365c817974955739586a19eb9455c2f3a577ee0236acc8d51
+test/language/expressions/import.meta/syntax/invalid-assignment-target-for-in-loop.js	sloppy	module	module	import.meta	parse	SyntaxError	21ef3b3c4a135a0673129c72765de17e63e561e3916438b7f3510ec106167115
+test/language/expressions/import.meta/syntax/invalid-assignment-target-for-of-loop.js	sloppy	module	module	import.meta	parse	SyntaxError	5e3c3fee53c2a9c361754a1e4f3c7b2ff42fbaf2917003edcb49d309701aaf94
+test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js	sloppy	module	module	import.meta,destructuring-assignment	parse	SyntaxError	c7aa223f3adf7e0e51c0c9fa7d28c54e7faeb23877cb9b931cd36206b22fe5e4
+test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js	sloppy	module	module	import.meta,destructuring-assignment,object-rest	parse	SyntaxError	a37abbb17e395f114351b526c479b4acf9bd5ba13a0ca432c80979b2c6fe0333
+test/language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js	sloppy	module	module	import.meta	parse	SyntaxError	fb407018303e308e808afc656092825725d860dab800da05b8b2ab7fd90c4be3

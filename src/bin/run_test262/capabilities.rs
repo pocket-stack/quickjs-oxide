@@ -424,6 +424,20 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-module-default-a-negatives.txt"
     ));
+    const IMPORT_META_PARSE_NEGATIVES: [&str; 12] = [
+        "test/language/expressions/import.meta/syntax/escape-sequence-import.js",
+        "test/language/expressions/import.meta/syntax/escape-sequence-meta.js",
+        "test/language/expressions/import.meta/syntax/goal-script.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-assignment-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-await-of-loop.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-in-loop.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-for-of-loop.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js",
+        "test/language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js",
+    ];
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -632,7 +646,7 @@ mod tests {
         "test/built-ins/RegExp/property-escapes/character-class.js",
         "test/built-ins/RegExp/property-escapes/special-property-value-Script_Extensions-Unknown.js",
     ];
-    const EXPECTED_FEATURES: [&str; 145] = [
+    const EXPECTED_FEATURES: [&str; 146] = [
         "AggregateError",
         "Array.prototype.at",
         "Array.prototype.flat",
@@ -743,6 +757,7 @@ mod tests {
         "host-create-realm-required",
         "host-eval-script-required",
         "host-gc-required",
+        "import.meta",
         "iterator-helpers",
         "iterator-sequencing",
         "json-parse-with-source",
@@ -2106,18 +2121,44 @@ mod tests {
             destructuring_assignment_global_candidate,
             expected_destructuring_assignment_global_candidate
         );
-        let mut expected_current_profile = destructuring_assignment_global_candidate.clone();
+        let mut expected_pre_import_meta_profile =
+            destructuring_assignment_global_candidate.clone();
         assert!(
-            expected_current_profile
+            expected_pre_import_meta_profile
                 .features
                 .insert("export-star-as-namespace-from-module".to_owned())
         );
-        expected_current_profile
+        expected_pre_import_meta_profile
             .audited_negative_tests
             .extend(EXACT_MODULE_NEGATIVES.into_iter().map(str::to_owned));
+        let mut expected_current_profile = expected_pre_import_meta_profile.clone();
+        assert!(
+            expected_current_profile
+                .features
+                .insert("import.meta".to_owned())
+        );
+        expected_current_profile
+            .audited_negative_tests
+            .extend(IMPORT_META_PARSE_NEGATIVES.into_iter().map(str::to_owned));
         assert_eq!(profile, expected_current_profile);
         assert_eq!(
             profile
+                .features
+                .difference(&expected_pre_import_meta_profile.features)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["import.meta"]
+        );
+        assert_eq!(
+            profile
+                .audited_negative_tests
+                .difference(&expected_pre_import_meta_profile.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            IMPORT_META_PARSE_NEGATIVES
+        );
+        assert_eq!(
+            expected_pre_import_meta_profile
                 .features
                 .difference(&destructuring_assignment_global_candidate.features)
                 .map(String::as_str)
@@ -2125,7 +2166,7 @@ mod tests {
             vec!["export-star-as-namespace-from-module"]
         );
         assert_eq!(
-            profile
+            expected_pre_import_meta_profile
                 .audited_negative_tests
                 .difference(&destructuring_assignment_global_candidate.audited_negative_tests)
                 .map(String::as_str)
@@ -2491,6 +2532,51 @@ mod tests {
         for path in negatives {
             assert_eq!(profile.classify(Path::new(path), &[], true), None, "{path}");
         }
+    }
+
+    #[test]
+    fn import_meta_profile_admission_is_exact_and_keeps_adjacent_frontiers_closed() {
+        let profile = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
+        let import_meta = ["import.meta".to_owned()];
+
+        assert_eq!(
+            profile.classify(
+                Path::new("test/language/expressions/import.meta/same-object-returned.js"),
+                &import_meta,
+                false,
+            ),
+            None
+        );
+        for path in IMPORT_META_PARSE_NEGATIVES {
+            assert_eq!(
+                profile.classify(Path::new(path), &import_meta, true),
+                None,
+                "{path}"
+            );
+        }
+
+        for path in [
+            "test/language/expressions/assignmenttargettype/direct-import.meta.js",
+            "test/language/expressions/assignmenttargettype/parenthesized-import.meta.js",
+        ] {
+            let classification = profile.classify(Path::new(path), &[], true).unwrap();
+            assert_eq!(classification.outcome, "unsupported-negative-provenance");
+        }
+
+        let dynamic_import = profile
+            .classify(
+                Path::new(
+                    "test/language/expressions/dynamic-import/assignment-expression/import-meta.js",
+                ),
+                &["dynamic-import".to_owned(), "import.meta".to_owned()],
+                false,
+            )
+            .unwrap();
+        assert_eq!(dynamic_import.outcome, "unsupported-feature");
+        assert_eq!(
+            dynamic_import.detail,
+            "quickjs-oxide does not declare Test262 feature support: dynamic-import"
+        );
     }
 
     #[test]
