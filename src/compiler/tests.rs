@@ -1818,11 +1818,12 @@ use super::{
     ACTIVE_FUNCTION_LOCAL_NAME, BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME,
     EvalCompileContext, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
     FunctionTree, HOME_OBJECT_LOCAL_NAME, InMode, IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
-    MAX_LOCAL_VARIABLES, NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset,
-    SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles,
-    compile_script, compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
-    compile_unlinked_script, compile_unlinked_script_with_filename, ensure_closure_variable,
-    lex_error, resolve_identifiers, validate_scope_graph,
+    MAX_LOCAL_VARIABLES, ModuleDeclarationExport, NEW_TARGET_LOCAL_NAME, Parser, ScopeId,
+    ScopeKind, SourceOffset, SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME,
+    build_scope_lifecycles, compile_script, compile_unlinked_eval_with_filename,
+    compile_unlinked_module_with_filename, compile_unlinked_script,
+    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, resolve_identifiers,
+    validate_scope_graph,
 };
 
 #[test]
@@ -1932,7 +1933,7 @@ fn module_function_redeclarations_follow_quickjs_source_order() {
     assert_eq!(allowed.link_initializers().len(), 1);
     assert!(matches!(
         allowed.link_initializers()[0].value,
-        crate::module::ModuleLinkInitializerValue::Function(_)
+        crate::module::ModuleLinkInitializerValue::Function { .. }
     ));
 
     for source in [
@@ -1973,7 +1974,7 @@ fn module_function_redeclarations_follow_quickjs_source_order() {
         .unwrap();
         assert!(matches!(
             module.link_initializers()[0].value,
-            crate::module::ModuleLinkInitializerValue::Function(_)
+            crate::module::ModuleLinkInitializerValue::Function { .. }
         ));
     }
 
@@ -2091,6 +2092,74 @@ fn module_named_imports_publish_requests_live_cells_and_local_reexports() {
         module.exports()[0].target,
         ModuleExportTarget::Local { closure_index: 0 }
     );
+}
+
+#[test]
+fn module_default_import_clauses_lower_to_named_default_cells_in_source_order() {
+    let module = compile_unlinked_module_with_filename(
+        r#"
+        import onlyDefault from "./default.js";
+        import defaultWithNamed, { value as renamed } from "./named.js";
+        import defaultWithNamespace, * as namespace from "./namespace.js";
+        void onlyDefault;
+        void defaultWithNamed;
+        void renamed;
+        void defaultWithNamespace;
+        void namespace;
+        "#,
+        "default-imports.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+
+    assert_eq!(
+        module
+            .requested_modules()
+            .iter()
+            .map(|request| request.specifier.to_utf8_lossy())
+            .collect::<Vec<_>>(),
+        ["./default.js", "./named.js", "./namespace.js"]
+    );
+    assert_eq!(module.imports().len(), 5);
+
+    for (index, request) in [0, 1, 1, 2, 2].into_iter().enumerate() {
+        assert_eq!(module.imports()[index].request.0, request);
+        assert_eq!(module.imports()[index].closure_index, index as u16);
+    }
+    for index in [0, 1, 3] {
+        assert!(matches!(
+            &module.imports()[index].import_name,
+            ModuleImportName::Name(name) if name.to_utf8_lossy() == "default"
+        ));
+    }
+    assert!(matches!(
+        &module.imports()[2].import_name,
+        ModuleImportName::Name(name) if name.to_utf8_lossy() == "value"
+    ));
+    assert!(matches!(
+        &module.imports()[4].import_name,
+        ModuleImportName::Namespace
+    ));
+
+    let import_descriptors = module
+        .function()
+        .closure_variables()
+        .iter()
+        .enumerate()
+        .filter(|(_, descriptor)| descriptor.source == ClosureSource::ModuleImport)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        import_descriptors
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+    assert!(import_descriptors.iter().all(|(_, descriptor)| {
+        descriptor.is_lexical
+            && descriptor.is_const
+            && descriptor.kind == ClosureVariableKind::ModuleImportView
+    }));
 }
 
 #[test]
@@ -2289,7 +2358,7 @@ fn module_named_generator_export_keeps_the_function_link_initializer() {
         module.link_initializers(),
         [crate::module::ModuleLinkInitializer {
             closure_index: 0,
-            value: crate::module::ModuleLinkInitializerValue::Function(_),
+            value: crate::module::ModuleLinkInitializerValue::Function { .. },
         }]
     ));
     let generator = module
@@ -2330,27 +2399,238 @@ fn module_new_export_forms_share_the_duplicate_export_table() {
 }
 
 #[test]
-fn module_default_declaration_exports_remain_fail_closed() {
-    for source in [
-        "export default function () {}",
-        "export default class {}",
-        "export default async function () {}",
+fn module_default_function_declarations_keep_quickjs_link_hoists_and_name_inference() {
+    for (source, expected_kind, expected_name) in [
+        (
+            "export default function () {}",
+            BytecodeFunctionKind::Normal,
+            None,
+        ),
+        (
+            "export default function named() {}",
+            BytecodeFunctionKind::Normal,
+            Some("named"),
+        ),
+        (
+            "export default function* () {}",
+            BytecodeFunctionKind::Generator,
+            None,
+        ),
+        (
+            "export default function* named() {}",
+            BytecodeFunctionKind::Generator,
+            Some("named"),
+        ),
+        (
+            "export default async function () {}",
+            BytecodeFunctionKind::Async,
+            None,
+        ),
+        (
+            "export default async function named() {}",
+            BytecodeFunctionKind::Async,
+            Some("named"),
+        ),
+        (
+            "export default async function* () {}",
+            BytecodeFunctionKind::AsyncGenerator,
+            None,
+        ),
+        (
+            "export default async function* named() {}",
+            BytecodeFunctionKind::AsyncGenerator,
+            Some("named"),
+        ),
     ] {
-        let error = compile_unlinked_module_with_filename(
+        let module = compile_unlinked_module_with_filename(
             source,
-            "default-declaration.mjs",
+            "default-function-declaration.mjs",
             DebugInfoMode::StripDebug,
         )
-        .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+        .unwrap_or_else(|error| panic!("{source}: {error}"));
+
+        assert!(matches!(
+            module.exports(),
+            [export]
+                if export.export_name.to_utf8_lossy() == "default"
+                    && export.target == ModuleExportTarget::Local { closure_index: 0 }
+        ));
+        assert!(matches!(
+            module.function().closure_variables(),
+            [descriptor]
+                if descriptor.source == ClosureSource::ModuleDeclaration
+                    && !descriptor.is_lexical
+                    && !descriptor.is_const
+                    && descriptor.kind == ClosureVariableKind::Normal
+        ));
+        let [initializer] = module.link_initializers() else {
+            panic!("{source}: default function lost its sole link initializer");
+        };
+        assert_eq!(initializer.closure_index, 0, "{source}");
+        let crate::module::ModuleLinkInitializerValue::Function {
+            constant,
+            inferred_name,
+        } = initializer.value
+        else {
+            panic!("{source}: default function link value changed kind");
+        };
+        let child = module.function().constants()[constant as usize]
+            .as_child()
+            .expect("default function initializer lost its child bytecode");
+        assert_eq!(child.metadata().function_kind, expected_kind, "{source}");
+        assert_eq!(
+            child.func_name().map(JsString::to_utf8_lossy),
+            expected_name.map(str::to_owned),
+            "{source}"
+        );
+
+        match expected_name {
+            Some(_) => {
+                assert_eq!(inferred_name, None, "{source}");
+                assert!(module.function().code().windows(2).any(|window| matches!(
+                    window,
+                    [Instruction::FClosure(actual), Instruction::PutVarRef(0)]
+                        if *actual == constant
+                )));
+            }
+            None => {
+                let name = inferred_name.expect("anonymous default function lost SetName");
+                assert_eq!(
+                    module.function().constants()[name as usize].as_primitive(),
+                    Some(&Value::String(JsString::from_static("default"))),
+                    "{source}"
+                );
+                assert!(module.function().code().windows(3).any(|window| matches!(
+                    window,
+                    [
+                        Instruction::FClosure(actual),
+                        Instruction::SetName(actual_name),
+                        Instruction::PutVarRef(0),
+                    ] if *actual == constant && *actual_name == name
+                )));
+            }
+        }
     }
 }
 
 #[test]
-fn module_import_frontiers_and_duplicate_bindings_fail_closed() {
+fn module_default_class_declarations_keep_evaluation_tdz_and_default_class_name() {
+    for (source, expected_name) in [
+        ("export default class {}", "default"),
+        ("export default class Named {}", "Named"),
+    ] {
+        let module = compile_unlinked_module_with_filename(
+            source,
+            "default-class-declaration.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_or_else(|error| panic!("{source}: {error}"));
+
+        assert!(module.link_initializers().is_empty(), "{source}");
+        assert!(matches!(
+            module.exports(),
+            [export]
+                if export.export_name.to_utf8_lossy() == "default"
+                    && export.target == ModuleExportTarget::Local { closure_index: 0 }
+        ));
+        assert!(matches!(
+            module.function().closure_variables(),
+            [descriptor]
+                if descriptor.source == ClosureSource::ModuleDeclaration
+                    && descriptor.is_lexical
+                    && !descriptor.is_const
+                    && descriptor.kind == ClosureVariableKind::Normal
+        ));
+        let class_name = module
+            .function()
+            .code()
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::DefineClass { name, .. } => Some(*name),
+                _ => None,
+            })
+            .expect("default class lost DefineClass");
+        assert_eq!(
+            module.function().constants()[class_name as usize].as_primitive(),
+            Some(&Value::String(
+                JsString::try_from_utf8(expected_name).unwrap()
+            )),
+            "{source}"
+        );
+        assert!(
+            module
+                .function()
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::InitializeVarRef(0))),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn module_default_export_context_does_not_escape_into_nested_class_declarations() {
     for source in [
-        "import value from './dependency.js';",
-        "import value, * as namespace from './dependency.js';",
+        "export default class { static { class {} } }",
+        "export default class { method() { class {} } }",
+        "export default class { field = (() => { class {} })(); }",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "nested-anonymous-class.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert!(
+            error
+                .to_string()
+                .contains("class statement requires a name"),
+            "{source}: {error}"
+        );
+    }
+
+    let module = compile_unlinked_module_with_filename(
+        "export default class { static { class Nested {} } }",
+        "nested-named-class.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    assert!(matches!(
+        module.exports(),
+        [export] if export.export_name.to_utf8_lossy() == "default"
+    ));
+}
+
+#[test]
+fn module_default_declarations_do_not_require_expression_terminators() {
+    for source in [
+        "export default function () {} export const answer = 42;",
+        "export default class {} export const answer = 42;",
+    ] {
+        let module = compile_unlinked_module_with_filename(
+            source,
+            "default-declaration-terminator.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_or_else(|error| panic!("{source}: {error}"));
+        assert_eq!(
+            module
+                .exports()
+                .iter()
+                .map(|export| export.export_name.to_utf8_lossy())
+                .collect::<Vec<_>>(),
+            ["default", "answer"]
+        );
+    }
+}
+
+#[test]
+fn module_import_attributes_invalid_clauses_and_duplicate_bindings_fail_closed() {
+    for source in [
+        "import value from './dependency.js' with { type: 'json' };",
+        "import value, { named } from './dependency.js' with { type: 'json' };",
+        "import value, * as namespace from './dependency.js' with { type: 'json' };",
         "import { value } from './dependency.js' with { type: 'json' };",
     ] {
         let error = compile_unlinked_module_with_filename(
@@ -2363,6 +2643,24 @@ fn module_import_frontiers_and_duplicate_bindings_fail_closed() {
     }
 
     for source in [
+        "import value, from './dependency.js';",
+        "import value from './dependency.js' globalThis.answer = value;",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "invalid-import.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+    }
+
+    for source in [
+        "import value from './a.js'; let value;",
+        "let value; import value from './a.js';",
+        "import value from './a.js'; import value from './b.js';",
+        "import value, { other as value } from './a.js';",
+        "import value, * as value from './a.js';",
         "import { value } from './a.js'; let value;",
         "let value; import { value } from './a.js';",
         "import { value } from './a.js'; import { value } from './b.js';",
@@ -10385,7 +10683,8 @@ fn parameter_assignment_prescan_retains_quickjs_bits_at_the_depth_bound() {
             .unwrap(),
         ],
         module: None,
-        exporting_module_declaration: false,
+        module_declaration_export: ModuleDeclarationExport::None,
+        module_declaration_export_target: None,
         anonymous_function_definition: None,
         pending_unsupported: None,
     };

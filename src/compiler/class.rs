@@ -73,18 +73,34 @@ impl<'source> Parser<'source> {
         } else {
             None
         };
-        if !expression && name.is_none() {
+        let default_declaration = !expression
+            && self.current_module_declaration_export() == ModuleDeclarationExport::Default;
+        if !expression && name.is_none() && !default_declaration {
             return Err(self.syntax_here("class statement requires a name"));
         }
+
+        let outer_binding = if expression {
+            None
+        } else if let Some((name, span)) = &name {
+            Some((name.clone(), *span))
+        } else {
+            Some((
+                crate::module::MODULE_DEFAULT_BINDING_NAME.to_owned(),
+                class_token.span,
+            ))
+        };
 
         // The declaration binding is distinct from the immutable inner class
         // name binding. It is registered in the surrounding scope before the
         // class evaluation scope is entered, just like QuickJS JS_VAR_DEF_LET.
-        if !expression {
-            let (name, span) = name
-                .as_ref()
-                .ok_or_else(|| Error::internal("class declaration lost its name"))?;
-            self.register_lexical_binding(name, *span, self.current().span, false, false)?;
+        if let Some((outer_name, outer_span)) = &outer_binding {
+            self.register_lexical_binding(
+                outer_name,
+                *outer_span,
+                self.current().span,
+                false,
+                false,
+            )?;
         }
 
         let class_scope = self.push_scope(ScopeKind::Block);
@@ -115,10 +131,11 @@ impl<'source> Parser<'source> {
         let private_scope = self.push_scope(ScopeKind::ClassPrivate);
 
         let constructor_placeholder = self.emit(IrOp::MakeClosure(u32::MAX))?;
-        let class_name = name.as_ref().map_or_else(
-            || Ok(JsString::from_static("")),
-            |(name, _)| JsString::try_from_utf8(name),
-        )?;
+        let class_name = match &name {
+            Some((name, _)) => JsString::try_from_utf8(name)?,
+            None if default_declaration => JsString::from_static("default"),
+            None => JsString::from_static(""),
+        };
         let class_name_constant =
             self.add_constant(IrConstant::Primitive(Value::String(class_name)))?;
         self.emit_instruction(Instruction::DefineClass {
@@ -198,9 +215,9 @@ impl<'source> Parser<'source> {
                         static_initializer_start,
                     });
         } else {
-            let (name, span) =
-                name.ok_or_else(|| Error::internal("class declaration lost its outer binding"))?;
-            self.emit_identifier(name, span, IdentifierAccess::Initialize)?;
+            let (outer_name, outer_span) = outer_binding
+                .ok_or_else(|| Error::internal("class declaration lost its outer binding"))?;
+            self.emit_identifier(outer_name, outer_span, IdentifierAccess::Initialize)?;
             self.anonymous_function_definition = None;
         }
         Ok(())

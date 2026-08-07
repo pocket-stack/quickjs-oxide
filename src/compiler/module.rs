@@ -7,14 +7,10 @@
 
 use super::*;
 use crate::module::{
-    ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportName, ModuleLinkInitializer,
-    ModuleLinkInitializerValue, ModuleRequest, ModuleStarExport, UnlinkedModule,
+    MODULE_DEFAULT_BINDING_NAME, ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportName,
+    ModuleLinkInitializer, ModuleLinkInitializerValue, ModuleRequest, ModuleStarExport,
+    UnlinkedModule,
 };
-
-// QuickJS stores expression-form default exports in its private
-// `JS_ATOM__default_` module lexical. Source text cannot spell this binding,
-// so it cannot shadow or reference the implementation-owned cell.
-const MODULE_DEFAULT_BINDING_NAME: &str = "<module-default>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ModuleBindingId(usize);
@@ -23,7 +19,10 @@ pub(super) struct ModuleBindingId(usize);
 pub(super) enum ModuleBindingOrigin {
     Var,
     Lexical,
-    Function(u32),
+    Function {
+        constant: u32,
+        inferred_name: Option<u32>,
+    },
     Import,
     NamespaceImport,
 }
@@ -185,29 +184,32 @@ impl<'source> Parser<'source> {
         self.advance()?;
         match self.current().kind {
             TokenKind::Punctuator(Punctuator::LeftBrace) => self.parse_module_export_clause(),
-            TokenKind::Keyword(Keyword::Var) => {
-                self.with_exported_module_declaration(Self::parse_var_statement)
+            TokenKind::Keyword(Keyword::Var) => self.with_module_declaration_export(
+                ModuleDeclarationExport::Named,
+                Self::parse_var_statement,
+            ),
+            TokenKind::Keyword(Keyword::Let | Keyword::Const) => self
+                .with_module_declaration_export(
+                    ModuleDeclarationExport::Named,
+                    Self::parse_lexical_statement,
+                ),
+            TokenKind::Keyword(Keyword::Function) => {
+                self.parse_module_function_declaration(ModuleDeclarationExport::Named)
             }
-            TokenKind::Keyword(Keyword::Let | Keyword::Const) => {
-                self.with_exported_module_declaration(Self::parse_lexical_statement)
-            }
-            TokenKind::Keyword(Keyword::Function) => self.parse_module_function_declaration(true),
             TokenKind::Identifier(_) if self.async_function_ahead() => {
-                self.parse_module_function_declaration(true)
+                self.parse_module_function_declaration(ModuleDeclarationExport::Named)
             }
-            TokenKind::Keyword(Keyword::Class) => {
-                self.with_exported_module_declaration(Self::parse_class_declaration)
-            }
-            TokenKind::Keyword(Keyword::Default) => {
-                self.parse_module_default_expression_export(export_span)
-            }
+            TokenKind::Keyword(Keyword::Class) => self.with_module_declaration_export(
+                ModuleDeclarationExport::Named,
+                Self::parse_class_declaration,
+            ),
+            TokenKind::Keyword(Keyword::Default) => self.parse_module_default_export(export_span),
             TokenKind::Punctuator(Punctuator::Multiply) => self.parse_module_star_export(),
             _ => Err(self.syntax_here("invalid export syntax")),
         }
     }
 
     fn parse_module_import(&mut self) -> Result<(), Error> {
-        let import_span = self.current().span;
         self.advance()?;
 
         if matches!(self.current().kind, TokenKind::String(_)) {
@@ -218,7 +220,19 @@ impl<'source> Parser<'source> {
         }
 
         let mut imports = Vec::new();
-        if self.is_punctuator(Punctuator::Multiply) {
+        let parse_secondary_clause = if matches!(self.current().kind, TokenKind::Identifier(_)) {
+            let (local_name, local_span) = self.module_binding_identifier()?;
+            let binding = self.register_module_import_binding(&local_name, local_span, false)?;
+            imports.push((
+                binding,
+                ModuleImportName::Name(JsString::try_from_utf8("default")?),
+            ));
+            self.consume_punctuator(Punctuator::Comma)?
+        } else {
+            true
+        };
+
+        if parse_secondary_clause && self.is_punctuator(Punctuator::Multiply) {
             self.advance()?;
             if !self.is_contextual_keyword("as") {
                 return Err(self.syntax_here("expecting 'as'"));
@@ -227,7 +241,7 @@ impl<'source> Parser<'source> {
             let (local_name, local_span) = self.module_binding_identifier()?;
             let binding = self.register_module_import_binding(&local_name, local_span, true)?;
             imports.push((binding, ModuleImportName::Namespace));
-        } else if self.is_punctuator(Punctuator::LeftBrace) {
+        } else if parse_secondary_clause && self.is_punctuator(Punctuator::LeftBrace) {
             self.expect_punctuator(Punctuator::LeftBrace)?;
             while !self.is_punctuator(Punctuator::RightBrace) {
                 let imported_token = self.current().clone();
@@ -258,13 +272,8 @@ impl<'source> Parser<'source> {
                 }
             }
             self.expect_punctuator(Punctuator::RightBrace)?;
-        } else {
-            // Default imports (including `default, * as namespace`) stay
-            // fail-closed until default declaration exports are implemented.
-            return Err(Error::unsupported(
-                "default imports are not implemented in this module slice",
-                source_span(import_span),
-            ));
+        } else if parse_secondary_clause {
+            return Err(self.syntax_here("default, namespace, or named imports expected"));
         }
         let request_index = self.parse_module_from_clause()?;
         let module = self.module_ir_mut()?;
@@ -417,19 +426,20 @@ impl<'source> Parser<'source> {
         self.consume_statement_terminator()
     }
 
-    fn parse_module_default_expression_export(&mut self, export_span: Span) -> Result<(), Error> {
+    fn parse_module_default_export(&mut self, export_span: Span) -> Result<(), Error> {
         let default_span = self.current().span;
         self.advance()?;
-        if matches!(
-            self.current().kind,
-            TokenKind::Keyword(Keyword::Class | Keyword::Function)
-        ) || matches!(self.current().kind, TokenKind::Identifier(_))
-            && self.async_function_ahead()
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Class)) {
+            return self.with_module_declaration_export(
+                ModuleDeclarationExport::Default,
+                Self::parse_class_declaration,
+            );
+        }
+        if matches!(self.current().kind, TokenKind::Keyword(Keyword::Function))
+            || matches!(self.current().kind, TokenKind::Identifier(_))
+                && self.async_function_ahead()
         {
-            return Err(Error::unsupported(
-                "default function and class exports are not implemented in this module slice",
-                source_span(export_span),
-            ));
+            return self.parse_module_function_declaration(ModuleDeclarationExport::Default);
         }
 
         self.parse_assignment_allow_in()?;
@@ -507,19 +517,36 @@ impl<'source> Parser<'source> {
         )
     }
 
-    fn with_exported_module_declaration(
+    fn with_module_declaration_export(
         &mut self,
+        export: ModuleDeclarationExport,
         parse: fn(&mut Self) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        if self.exporting_module_declaration {
+        if export == ModuleDeclarationExport::None
+            || self.module_declaration_export != ModuleDeclarationExport::None
+            || self.module_declaration_export_target.is_some()
+        {
             return Err(Error::internal(
                 "nested module export declaration marker is malformed",
             ));
         }
-        self.exporting_module_declaration = true;
+        self.module_declaration_export = export;
+        self.module_declaration_export_target =
+            Some((self.current_function, self.current_ir().current_scope));
         let result = parse(self);
-        self.exporting_module_declaration = false;
+        self.module_declaration_export = ModuleDeclarationExport::None;
+        self.module_declaration_export_target = None;
         result
+    }
+
+    pub(super) fn current_module_declaration_export(&self) -> ModuleDeclarationExport {
+        if self.module_declaration_export_target
+            == Some((self.current_function, self.current_ir().current_scope))
+        {
+            self.module_declaration_export
+        } else {
+            ModuleDeclarationExport::None
+        }
     }
 
     pub(super) fn add_module_binding(
@@ -530,8 +557,15 @@ impl<'source> Parser<'source> {
     ) -> Result<ModuleBindingId, Error> {
         let module = self.module_ir_mut()?;
         if let Some(id) = module.binding_id(name) {
-            if let ModuleBindingOrigin::Function(constant) = origin {
-                module.binding_mut(id)?.origin = ModuleBindingOrigin::Function(constant);
+            if let ModuleBindingOrigin::Function {
+                constant,
+                inferred_name,
+            } = origin
+            {
+                module.binding_mut(id)?.origin = ModuleBindingOrigin::Function {
+                    constant,
+                    inferred_name,
+                };
             }
             return Ok(id);
         }
@@ -551,32 +585,37 @@ impl<'source> Parser<'source> {
         binding: ModuleBindingId,
         span: Span,
     ) -> Result<(), Error> {
-        if !self.exporting_module_declaration {
-            return Ok(());
-        }
+        let export_name = match self.current_module_declaration_export() {
+            ModuleDeclarationExport::None => return Ok(()),
+            ModuleDeclarationExport::Named => JsString::try_from_utf8(name)?,
+            ModuleDeclarationExport::Default => JsString::from_static("default"),
+        };
         let module = self.module_ir_mut()?;
         let actual = module.binding(binding)?;
         if actual.name != name {
             return Err(Error::internal("module declaration binding name changed"));
         }
-        module.add_local_export(name.to_owned(), JsString::try_from_utf8(name)?, span)
+        module.add_local_export(name.to_owned(), export_name, span)
     }
 
     pub(super) fn parse_module_function_declaration(
         &mut self,
-        exported: bool,
+        export: ModuleDeclarationExport,
     ) -> Result<(), Error> {
         if !matches!(self.current_ir().kind, FunctionKind::Module) {
             return Err(Error::internal(
                 "module function declaration escaped the module root",
             ));
         }
-        let header = self.parse_function_definition_header(true)?;
-        let (name, declaration_span) = header
+        let header =
+            self.parse_function_definition_header(export != ModuleDeclarationExport::Default)?;
+        let source_name = header
             .name
             .as_ref()
-            .map(|(identifier, span)| (identifier.value.clone(), *span))
-            .ok_or_else(|| Error::internal("required module function lost its name"))?;
+            .map(|(identifier, span)| (identifier.value.clone(), *span));
+        let (name, declaration_span) = source_name
+            .clone()
+            .unwrap_or_else(|| (MODULE_DEFAULT_BINDING_NAME.to_owned(), header.span));
         // QuickJS checks only the first same-named module-global record and
         // rejects it when that record was declared at this exact scope level.
         // This is deliberately source- and scope-ordered: a later `var` may
@@ -584,13 +623,14 @@ impl<'source> Parser<'source> {
         // nested block does not reject a later Program-level function
         // (`js_parse_function_decl2`, JS_EVAL_TYPE_MODULE, including its
         // pinned `XXX: should check scope chain` behavior).
-        if self
-            .current_ir()
-            .binding_id_from_scope(self.current_ir().current_scope, &name)
-            .is_some_and(|(_, binding)| {
-                self.current_ir().bindings[binding.0].declaration_scope
-                    == self.current_ir().current_scope
-            })
+        if source_name.is_some()
+            && self
+                .current_ir()
+                .binding_id_from_scope(self.current_ir().current_scope, &name)
+                .is_some_and(|(_, binding)| {
+                    self.current_ir().bindings[binding.0].declaration_scope
+                        == self.current_ir().current_scope
+                })
         {
             return Err(Error::syntax(
                 "invalid redefinition of global identifier in module code",
@@ -598,19 +638,27 @@ impl<'source> Parser<'source> {
             ));
         }
         let parsed = self.parse_function_definition_tail(header, false)?;
-        if parsed
-            .name
-            .as_ref()
-            .is_none_or(|(parsed_name, parsed_span)| {
-                parsed_name != &name || *parsed_span != declaration_span
-            })
-        {
+        if parsed.name != source_name {
             return Err(Error::internal(
                 "module function name changed while parsing its definition",
             ));
         }
-        let binding =
-            self.add_module_binding(&name, ModuleBindingOrigin::Function(parsed.constant), false)?;
+        let inferred_name = if source_name.is_none() {
+            let name = self.add_constant(IrConstant::Primitive(Value::String(
+                JsString::from_static("default"),
+            )))?;
+            Some(name)
+        } else {
+            None
+        };
+        let binding = self.add_module_binding(
+            &name,
+            ModuleBindingOrigin::Function {
+                constant: parsed.constant,
+                inferred_name,
+            },
+            false,
+        )?;
         if self
             .current_ir()
             .binding_in_scope(self.current_ir().var_scope, &name)
@@ -626,12 +674,14 @@ impl<'source> Parser<'source> {
                 Some(declaration_span),
             );
         }
-        if exported {
-            self.module_ir_mut()?.add_local_export(
-                name.clone(),
-                JsString::try_from_utf8(&name)?,
-                declaration_span,
-            )?;
+        if export != ModuleDeclarationExport::None {
+            let export_name = match export {
+                ModuleDeclarationExport::None => unreachable!(),
+                ModuleDeclarationExport::Named => JsString::try_from_utf8(&name)?,
+                ModuleDeclarationExport::Default => JsString::from_static("default"),
+            };
+            self.module_ir_mut()?
+                .add_local_export(name.clone(), export_name, declaration_span)?;
         }
         Ok(())
     }
@@ -686,9 +736,13 @@ pub(super) fn finish_module(
         .filter_map(|binding| {
             let value = match binding.origin {
                 ModuleBindingOrigin::Var => ModuleLinkInitializerValue::Undefined,
-                ModuleBindingOrigin::Function(constant) => {
-                    ModuleLinkInitializerValue::Function(constant)
-                }
+                ModuleBindingOrigin::Function {
+                    constant,
+                    inferred_name,
+                } => ModuleLinkInitializerValue::Function {
+                    constant,
+                    inferred_name,
+                },
                 ModuleBindingOrigin::Lexical
                 | ModuleBindingOrigin::Import
                 | ModuleBindingOrigin::NamespaceImport => return None,

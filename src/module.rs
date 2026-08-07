@@ -9,6 +9,10 @@
 use crate::function::UnlinkedFunction;
 use crate::value::JsString;
 
+/// Rust spelling of QuickJS's private `JS_ATOM__default_` module binding.
+/// Source text cannot name this cell.
+pub(crate) const MODULE_DEFAULT_BINDING_NAME: &str = "<module-default>";
+
 /// Source-order index into [`UnlinkedModule::requested_modules`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ModuleRequestIndex(pub(crate) u32);
@@ -43,7 +47,13 @@ pub(crate) enum ModuleImportName {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModuleLinkInitializerValue {
     Undefined,
-    Function(u32),
+    Function {
+        constant: u32,
+        /// Optional root String constant consumed by QuickJS `OP_set_name`
+        /// between closure creation and the declaration-cell write. This is
+        /// present only for an anonymous default function declaration.
+        inferred_name: Option<u32>,
+    },
 }
 
 /// One exact link-entry write to a non-lexical module declaration cell.

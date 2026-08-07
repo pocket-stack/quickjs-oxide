@@ -1478,34 +1478,104 @@ fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError>
     }
 
     let initializer_code = &code[2..body - 2];
-    if initializer_code.len() != initializers.len().saturating_mul(2) {
-        return Err(RuntimeError::Engine(Error::internal(
-            "module link entry initializer count disagrees with declarations",
-        )));
-    }
-    for (pair, initializer) in initializer_code.chunks_exact(2).zip(initializers) {
-        let value_is_exact = match (initializer.value, &pair[0]) {
-            (ModuleLinkInitializerValue::Undefined, crate::bytecode::Instruction::Undefined) => {
-                true
+    let mut cursor = 0;
+    for initializer in initializers {
+        let value_is_exact = match initializer.value {
+            ModuleLinkInitializerValue::Undefined => {
+                let matches = matches!(
+                    initializer_code.get(cursor),
+                    Some(crate::bytecode::Instruction::Undefined)
+                );
+                cursor = cursor.saturating_add(1);
+                matches
             }
-            (
-                ModuleLinkInitializerValue::Function(expected),
-                crate::bytecode::Instruction::FClosure(actual),
-            ) => expected == *actual,
-            (ModuleLinkInitializerValue::Undefined, _)
-            | (ModuleLinkInitializerValue::Function(_), _) => false,
+            ModuleLinkInitializerValue::Function {
+                constant,
+                inferred_name,
+            } => {
+                let child = usize::try_from(constant)
+                    .ok()
+                    .and_then(|index| function.constants().get(index))
+                    .and_then(UnlinkedConstant::as_child)
+                    .ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "module function initializer referenced non-function bytecode",
+                        ))
+                    })?;
+                let descriptor = function
+                    .closure_variables()
+                    .get(usize::from(initializer.closure_index))
+                    .ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "module function initializer descriptor is out of bounds",
+                        ))
+                    })?;
+                let descriptor_name =
+                    unlinked_closure_name(function, descriptor)?.ok_or_else(|| {
+                        RuntimeError::Engine(Error::internal(
+                            "module function initializer descriptor has no name",
+                        ))
+                    })?;
+                let binding_is_exact = if inferred_name.is_some() {
+                    let mut local_exports = module.exports().iter().filter(|export| {
+                        matches!(
+                            &export.target,
+                            ModuleExportTarget::Local { closure_index }
+                                if *closure_index == initializer.closure_index
+                        )
+                    });
+                    local_exports.next().is_some_and(|export| {
+                        export.export_name == JsString::from_static("default")
+                    }) && local_exports.next().is_none()
+                        && descriptor_name
+                            == &JsString::from_static(crate::module::MODULE_DEFAULT_BINDING_NAME)
+                        && child.func_name().is_none()
+                } else {
+                    descriptor_name
+                        != &JsString::from_static(crate::module::MODULE_DEFAULT_BINDING_NAME)
+                        && child.func_name() == Some(descriptor_name)
+                };
+                let matches = matches!(
+                    initializer_code.get(cursor),
+                    Some(crate::bytecode::Instruction::FClosure(actual))
+                        if *actual == constant
+                );
+                cursor = cursor.saturating_add(1);
+                if let Some(name) = inferred_name {
+                    let name_is_default = usize::try_from(name)
+                        .ok()
+                        .and_then(|index| function.constants().get(index))
+                        .and_then(|constant| constant.as_primitive())
+                        .is_some_and(|value| {
+                            value == &Value::String(JsString::from_static("default"))
+                        });
+                    let set_name_is_exact = matches!(
+                        initializer_code.get(cursor),
+                        Some(crate::bytecode::Instruction::SetName(actual)) if *actual == name
+                    );
+                    cursor = cursor.saturating_add(1);
+                    matches && binding_is_exact && name_is_default && set_name_is_exact
+                } else {
+                    matches && binding_is_exact
+                }
+            }
         };
-        if !value_is_exact
-            || !matches!(
-                pair[1],
-                crate::bytecode::Instruction::PutVarRef(slot)
-                    if slot == initializer.closure_index
-            )
-        {
+        let target_is_exact = matches!(
+            initializer_code.get(cursor),
+            Some(crate::bytecode::Instruction::PutVarRef(slot))
+                if *slot == initializer.closure_index
+        );
+        cursor = cursor.saturating_add(1);
+        if !value_is_exact || !target_is_exact {
             return Err(RuntimeError::Engine(Error::internal(
                 "module link entry initializer is not canonical",
             )));
         }
+    }
+    if cursor != initializer_code.len() {
+        return Err(RuntimeError::Engine(Error::internal(
+            "module link entry initializer count disagrees with declarations",
+        )));
     }
     Ok(())
 }
@@ -4395,6 +4465,7 @@ mod tests {
     use crate::bytecode::Instruction;
     use crate::compiler::compile_unlinked_module_with_filename;
     use crate::debug::DebugInfoMode;
+    use crate::function::{UnlinkedFunctionParts, UnlinkedVariableDefinition};
     use crate::heap::{
         EvalBinding, EvalBindingSource, EvalEnvironment, EvalScope, EvalScopeKind,
         EvalVariableEnvironment, ParameterArgumentCell, ParameterBodyStorage,
@@ -4416,6 +4487,35 @@ mod tests {
             parts.exports.into_vec(),
             parts.star_exports.into_vec(),
         )
+    }
+
+    fn function_from_parts(parts: UnlinkedFunctionParts) -> UnlinkedFunction {
+        let UnlinkedFunctionParts {
+            code,
+            constants,
+            metadata,
+            parameter_environment,
+            func_name,
+            argument_definitions,
+            local_definitions,
+            closure_variables,
+            eval_environments,
+            debug,
+        } = parts;
+        let mut function = UnlinkedFunction::new_with_closure_variables(
+            code,
+            constants,
+            metadata,
+            closure_variables,
+        )
+        .with_parameter_environment(parameter_environment)
+        .with_name(func_name)
+        .with_variable_definitions(argument_definitions, local_definitions)
+        .with_eval_environments(eval_environments);
+        if let Some(debug) = debug {
+            function = function.with_debug(debug);
+        }
+        function
     }
 
     #[test]
@@ -4454,11 +4554,271 @@ mod tests {
         let function = initializers
             .iter_mut()
             .find(|initializer| {
-                matches!(initializer.value, ModuleLinkInitializerValue::Function(_))
+                matches!(
+                    initializer.value,
+                    ModuleLinkInitializerValue::Function { .. }
+                )
             })
             .expect("module function declaration has a link initializer");
         function.value = ModuleLinkInitializerValue::Undefined;
         let forged = module_with_link_initializers(module, initializers);
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
+
+    #[test]
+    fn anonymous_default_function_initializer_requires_exact_name_inference() {
+        let module = compile_unlinked_module_with_filename(
+            "export default function () {}",
+            "forged-default-function-name.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        verify_unlinked_module_tree(&module).unwrap();
+
+        let mut initializers = module.link_initializers().to_vec();
+        let [initializer] = initializers.as_mut_slice() else {
+            panic!("anonymous default function lost its initializer");
+        };
+        let ModuleLinkInitializerValue::Function { inferred_name, .. } = &mut initializer.value
+        else {
+            panic!("anonymous default function initializer changed kind");
+        };
+        assert!(inferred_name.take().is_some());
+        let forged = module_with_link_initializers(module, initializers);
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
+
+    #[test]
+    fn anonymous_default_function_initializer_rejects_a_coordinated_wrong_name() {
+        let module = compile_unlinked_module_with_filename(
+            "export default function () {}",
+            "forged-default-function-wrong-name.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let name = match module.link_initializers()[0].value {
+            ModuleLinkInitializerValue::Function {
+                inferred_name: Some(name),
+                ..
+            } => name,
+            _ => panic!("anonymous default function lost its inferred name"),
+        };
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        function_parts.constants[name as usize] =
+            UnlinkedConstant::primitive(Value::String(JsString::from_static("not-default")))
+                .unwrap();
+        let forged = UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            parts.link_initializers.into_vec(),
+            parts.requested_modules.into_vec(),
+            parts.imports.into_vec(),
+            parts.exports.into_vec(),
+            parts.star_exports.into_vec(),
+        );
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
+
+    #[test]
+    fn named_function_initializer_cannot_claim_default_name_inference() {
+        let module = compile_unlinked_module_with_filename(
+            "'default'; export default function named() {}",
+            "forged-named-default-function.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let name = module
+            .function()
+            .constants()
+            .iter()
+            .position(|constant| {
+                constant.as_primitive() == Some(&Value::String(JsString::from_static("default")))
+            })
+            .and_then(|index| u32::try_from(index).ok())
+            .expect("root default String constant is missing");
+        let mut initializers = module.link_initializers().to_vec();
+        let [initializer] = initializers.as_mut_slice() else {
+            panic!("named default function lost its initializer");
+        };
+        let ModuleLinkInitializerValue::Function { inferred_name, .. } = &mut initializer.value
+        else {
+            panic!("named default function initializer changed kind");
+        };
+        assert_eq!(*inferred_name, None);
+        *inferred_name = Some(name);
+        let forged = module_with_link_initializers(module, initializers);
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
+
+    #[test]
+    fn anonymous_default_function_initializer_authenticates_its_private_export_cell() {
+        let module = compile_unlinked_module_with_filename(
+            "export default function () {}",
+            "forged-default-function-export.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let parts = module.into_parts();
+        let mut exports = parts.exports.into_vec();
+        exports[0].export_name = JsString::from_static("forged");
+        let forged = UnlinkedModule::new(
+            parts.name,
+            parts.function,
+            parts.link_initializers.into_vec(),
+            parts.requested_modules.into_vec(),
+            parts.imports.into_vec(),
+            exports,
+            parts.star_exports.into_vec(),
+        );
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
+
+    #[test]
+    fn anonymous_default_function_initializer_authenticates_its_private_descriptor() {
+        let module = compile_unlinked_module_with_filename(
+            "export default function () {}",
+            "forged-default-function-descriptor.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        let forged_name = u32::try_from(function_parts.constants.len()).unwrap();
+        function_parts.constants.push(
+            UnlinkedConstant::primitive(Value::String(JsString::from_static("forged"))).unwrap(),
+        );
+        function_parts.closure_variables[0].name = ClosureVariableName::Constant(forged_name);
+        let forged = UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            parts.link_initializers.into_vec(),
+            parts.requested_modules.into_vec(),
+            parts.imports.into_vec(),
+            parts.exports.into_vec(),
+            parts.star_exports.into_vec(),
+        );
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
+
+    #[test]
+    fn anonymous_default_function_initializer_authenticates_its_anonymous_child() {
+        let module = compile_unlinked_module_with_filename(
+            "export default function () {}",
+            "forged-default-function-child.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let constant = match module.link_initializers()[0].value {
+            ModuleLinkInitializerValue::Function { constant, .. } => constant,
+            _ => panic!("anonymous default function lost its initializer"),
+        };
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        let original = std::mem::replace(
+            &mut function_parts.constants[constant as usize],
+            UnlinkedConstant::primitive(Value::Undefined).unwrap(),
+        );
+        let (_, _, child) = original.into_parts();
+        function_parts.constants[constant as usize] = UnlinkedConstant::child(
+            child
+                .expect("default function initializer stopped referencing a child")
+                .with_name(Some(JsString::from_static("forged"))),
+        );
+        let forged = UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            parts.link_initializers.into_vec(),
+            parts.requested_modules.into_vec(),
+            parts.imports.into_vec(),
+            parts.exports.into_vec(),
+            parts.star_exports.into_vec(),
+        );
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module link entry initializer is not canonical")
+        );
+    }
+
+    #[test]
+    fn named_default_function_initializer_cannot_impersonate_the_private_default_cell() {
+        let module = compile_unlinked_module_with_filename(
+            "export default function named() {}",
+            "forged-named-default-private-cell.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let (constant, closure_index) = match module.link_initializers()[0] {
+            ModuleLinkInitializer {
+                closure_index,
+                value:
+                    ModuleLinkInitializerValue::Function {
+                        constant,
+                        inferred_name: None,
+                    },
+            } => (constant, closure_index),
+            _ => panic!("named default function lost its canonical initializer"),
+        };
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        let original = std::mem::replace(
+            &mut function_parts.constants[constant as usize],
+            UnlinkedConstant::primitive(Value::Undefined).unwrap(),
+        );
+        let (_, _, child) = original.into_parts();
+        let private_name = JsString::from_static(crate::module::MODULE_DEFAULT_BINDING_NAME);
+        function_parts.constants[constant as usize] = UnlinkedConstant::child(
+            child
+                .expect("named default function stopped referencing a child")
+                .with_name(Some(private_name.clone())),
+        );
+        let private_name_index = u32::try_from(function_parts.constants.len()).unwrap();
+        function_parts
+            .constants
+            .push(UnlinkedConstant::primitive(Value::String(private_name)).unwrap());
+        function_parts.closure_variables[usize::from(closure_index)].name =
+            ClosureVariableName::Constant(private_name_index);
+        let forged = UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            parts.link_initializers.into_vec(),
+            parts.requested_modules.into_vec(),
+            parts.imports.into_vec(),
+            parts.exports.into_vec(),
+            parts.star_exports.into_vec(),
+        );
         let error = verify_unlinked_module_tree(&forged).unwrap_err();
         assert!(
             error

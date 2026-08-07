@@ -327,7 +327,8 @@ mod tests {
             in_mode: InMode::Allow,
             functions: vec![root],
             module: None,
-            exporting_module_declaration: false,
+            module_declaration_export: ModuleDeclarationExport::None,
+            module_declaration_export_target: None,
             anonymous_function_definition: None,
             pending_unsupported: None,
         };

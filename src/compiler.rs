@@ -1852,6 +1852,13 @@ enum AnonymousFunctionDefinition {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModuleDeclarationExport {
+    None,
+    Named,
+    Default,
+}
+
 struct Parser<'source> {
     lexer: Lexer<'source>,
     tokens: Vec<Token<'source>>,
@@ -1860,7 +1867,8 @@ struct Parser<'source> {
     in_mode: InMode,
     functions: Vec<FunctionIr>,
     module: Option<module::IrModule>,
-    exporting_module_declaration: bool,
+    module_declaration_export: ModuleDeclarationExport,
+    module_declaration_export_target: Option<(FunctionId, ScopeId)>,
     /// Function expression eligible for QuickJS's assignment-name inference.
     /// Operators which make the surrounding expression cease to be an
     /// AnonymousFunctionDefinition clear this marker.
@@ -2014,7 +2022,8 @@ impl<'source> Parser<'source> {
             anonymous_function_definition: None,
             pending_unsupported: None,
             module: is_module.then(module::IrModule::default),
-            exporting_module_declaration: false,
+            module_declaration_export: ModuleDeclarationExport::None,
+            module_declaration_export_target: None,
             functions: vec![FunctionIr::new(
                 None,
                 root_kind,
@@ -2216,7 +2225,7 @@ impl<'source> Parser<'source> {
         } else if matches!(self.current_ir().kind, FunctionKind::Module)
             && position == StatementPosition::ProgramBody
         {
-            self.parse_module_function_declaration(false)
+            self.parse_module_function_declaration(ModuleDeclarationExport::None)
         } else if matches!(self.current_ir().kind, FunctionKind::Eval(_))
             && position == StatementPosition::ProgramBody
         {
@@ -12265,7 +12274,10 @@ fn install_module_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Erro
         .filter_map(|binding| {
             let value = match binding.origin {
                 module::ModuleBindingOrigin::Var => Some(None),
-                module::ModuleBindingOrigin::Function(constant) => Some(Some(constant)),
+                module::ModuleBindingOrigin::Function {
+                    constant,
+                    inferred_name,
+                } => Some(Some((constant, inferred_name))),
                 module::ModuleBindingOrigin::Lexical
                 | module::ModuleBindingOrigin::Import
                 | module::ModuleBindingOrigin::NamespaceImport => None,
@@ -12283,13 +12295,27 @@ fn install_module_declaration_hoists(tree: &mut FunctionTree) -> Result<(), Erro
             pc_site: None,
         },
     ];
-    for (closure_index, constant) in initializers {
+    for (closure_index, initializer) in initializers {
         let closure_index = closure_index
             .ok_or_else(|| Error::internal("module initializer closure was not seeded"))?;
-        prefix.push(SpannedIrOp {
-            op: constant.map_or(IrOp::Bytecode(Instruction::Undefined), IrOp::MakeClosure),
-            pc_site: None,
-        });
+        match initializer {
+            None => prefix.push(SpannedIrOp {
+                op: IrOp::Bytecode(Instruction::Undefined),
+                pc_site: None,
+            }),
+            Some((constant, inferred_name)) => {
+                prefix.push(SpannedIrOp {
+                    op: IrOp::MakeClosure(constant),
+                    pc_site: None,
+                });
+                if let Some(name) = inferred_name {
+                    prefix.push(SpannedIrOp {
+                        op: IrOp::Bytecode(Instruction::SetName(name)),
+                        pc_site: None,
+                    });
+                }
+            }
+        }
         prefix.push(SpannedIrOp {
             op: IrOp::Bytecode(Instruction::PutVarRef(closure_index)),
             pc_site: None,

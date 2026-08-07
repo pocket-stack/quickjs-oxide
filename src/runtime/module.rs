@@ -3130,6 +3130,219 @@ mod tests {
     }
 
     #[test]
+    fn default_import_clauses_share_the_exporters_live_cell() {
+        let runtime = Runtime::new();
+        let (loader, loads, _) = MapModuleLoader::new([(
+            "pkg/exporter.js",
+            r#"
+            export let value = 1;
+            export { value as default };
+            export function update() { value = 42; }
+            "#,
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import onlyDefault from "./exporter.js";
+                import defaultWithNamed, { update } from "./exporter.js";
+                import defaultWithNamespace, * as namespace from "./exporter.js";
+                globalThis.__defaultImportBefore =
+                    onlyDefault === 1 &&
+                    defaultWithNamed === 1 &&
+                    defaultWithNamespace === 1 &&
+                    namespace.default === 1;
+                try {
+                    defaultWithNamed = 2;
+                } catch (error) {
+                    globalThis.__defaultImportReadOnly = true;
+                }
+                update();
+                globalThis.__defaultImportAfter =
+                    onlyDefault === 42 &&
+                    defaultWithNamed === 42 &&
+                    defaultWithNamespace === 42 &&
+                    namespace.default === 42;
+                "#,
+                "pkg/importer.js",
+            )
+            .unwrap();
+
+        assert_eq!(&*loads.borrow(), &["pkg/exporter.js"]);
+        context.execute_module(&module).unwrap();
+        assert_script_true(
+            &mut context,
+            r#"
+            __defaultImportBefore === true &&
+            __defaultImportReadOnly === true &&
+            __defaultImportAfter === true
+            "#,
+        );
+    }
+
+    #[test]
+    fn default_function_declarations_are_hoisted_named_and_live_through_self_imports() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let anonymous = context
+            .compile_module_with_filename(
+                r#"
+                import current from "./anonymous.js";
+                const descriptor = Object.getOwnPropertyDescriptor(current, "name");
+                globalThis.__anonymousDefault =
+                    current() === 23 && current.name === "default" &&
+                    descriptor.value === "default" &&
+                    descriptor.writable === false &&
+                    descriptor.enumerable === false &&
+                    descriptor.configurable === true;
+                export default function () { return 23; }
+                "#,
+                "pkg/anonymous.js",
+            )
+            .unwrap();
+        context.execute_module(&anonymous).unwrap();
+
+        let named = context
+            .compile_module_with_filename(
+                r#"
+                import current from "./named.js";
+                export default function named() { return 23; }
+                globalThis.__namedDefaultBefore =
+                    current === named && current() === 23 && current.name === "named";
+                named = function replacement() { return 42; };
+                globalThis.__namedDefaultAfter =
+                    current === named && current() === 42 && current.name === "replacement";
+                "#,
+                "pkg/named.js",
+            )
+            .unwrap();
+        context.execute_module(&named).unwrap();
+
+        assert_script_true(
+            &mut context,
+            r#"
+            __anonymousDefault === true &&
+            __namedDefaultBefore === true &&
+            __namedDefaultAfter === true
+            "#,
+        );
+    }
+
+    #[test]
+    fn anonymous_default_generator_and_async_declarations_receive_the_default_name() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let generator = context
+            .compile_module_with_filename(
+                r#"
+                import current from "./generator.js";
+                globalThis.__defaultGenerator =
+                    current.name === "default" && current().next().value === 42;
+                export default function* () { yield 42; }
+                "#,
+                "pkg/generator.js",
+            )
+            .unwrap();
+        context.execute_module(&generator).unwrap();
+
+        let async_function = context
+            .compile_module_with_filename(
+                r#"
+                import current from "./async-function.js";
+                globalThis.__defaultAsyncFunction = current.name === "default";
+                export default async function () { return 42; }
+                "#,
+                "pkg/async-function.js",
+            )
+            .unwrap();
+        context.execute_module(&async_function).unwrap();
+
+        let async_generator = context
+            .compile_module_with_filename(
+                r#"
+                import current from "./async-generator.js";
+                globalThis.__defaultAsyncGenerator = current.name === "default";
+                export default async function* () { yield 42; }
+                "#,
+                "pkg/async-generator.js",
+            )
+            .unwrap();
+        context.execute_module(&async_generator).unwrap();
+
+        assert_script_true(
+            &mut context,
+            r#"
+            __defaultGenerator === true &&
+            __defaultAsyncFunction === true &&
+            __defaultAsyncGenerator === true
+            "#,
+        );
+    }
+
+    #[test]
+    fn default_class_declarations_keep_tdz_and_name_before_static_initializers() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let anonymous = context
+            .compile_module_with_filename(
+                r#"
+                import Current from "./anonymous-class.js";
+                try {
+                    typeof Current;
+                } catch (error) {
+                    globalThis.__anonymousClassTdz = error instanceof ReferenceError;
+                }
+                export default class {
+                    static observedName = this.name;
+                }
+                globalThis.__anonymousClassName =
+                    Current.name === "default" && Current.observedName === "default";
+                "#,
+                "pkg/anonymous-class.js",
+            )
+            .unwrap();
+        context.execute_module(&anonymous).unwrap();
+
+        let named = context
+            .compile_module_with_filename(
+                r#"
+                import Current from "./named-class.js";
+                export default class Named {}
+                globalThis.__namedClassBefore = Current === Named && Current.name === "Named";
+                Named = 42;
+                globalThis.__namedClassAfter = Current === 42;
+                "#,
+                "pkg/named-class.js",
+            )
+            .unwrap();
+        context.execute_module(&named).unwrap();
+
+        let static_name = context
+            .compile_module_with_filename(
+                r#"
+                import Current from "./static-name-class.js";
+                export default class { static name() { return "name method"; } }
+                globalThis.__staticNameMethod = Current.name() === "name method";
+                "#,
+                "pkg/static-name-class.js",
+            )
+            .unwrap();
+        context.execute_module(&static_name).unwrap();
+
+        assert_script_true(
+            &mut context,
+            r#"
+            __anonymousClassTdz === true &&
+            __anonymousClassName === true &&
+            __namedClassBefore === true &&
+            __namedClassAfter === true &&
+            __staticNameMethod === true
+            "#,
+        );
+    }
+
+    #[test]
     fn imported_mutable_cell_has_an_immutable_importer_view() {
         let runtime = Runtime::new();
         let (loader, _, _) = MapModuleLoader::new([(
