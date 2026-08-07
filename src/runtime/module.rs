@@ -3474,6 +3474,8 @@ mod tests {
             ("pkg/function.js", "export function value() { return 7; }"),
             ("pkg/default-expression.js", "export default null;"),
             ("pkg/default-var.js", "export default 7;"),
+            ("pkg/destructure-array.js", "export let value = 7;"),
+            ("pkg/destructure-object.js", "export let value = 7;"),
         ]);
         let _loader_registration = runtime.set_module_loader(loader);
         let mut context = runtime.new_context();
@@ -3508,6 +3510,18 @@ mod tests {
                 import defaultVar from "./default-var.js";
                 var defaultVar;
 
+                import {
+                    value as arrayValue,
+                    value as arrayAlias,
+                } from "./destructure-array.js";
+                let [arrayValue] = [17];
+
+                import {
+                    value as objectValue,
+                    value as objectAlias,
+                } from "./destructure-object.js";
+                const { answer: objectValue } = { answer: 19 };
+
                 let readonly = 0;
                 try { letValue = 90; } catch (error) { readonly += error instanceof TypeError; }
                 try { constValue = 91; } catch (error) { readonly += error instanceof TypeError; }
@@ -3516,6 +3530,8 @@ mod tests {
                 try { first = 94; } catch (error) { readonly += error instanceof TypeError; }
                 try { defaultFunction = 95; } catch (error) { readonly += error instanceof TypeError; }
                 try { defaultVar = 96; } catch (error) { readonly += error instanceof TypeError; }
+                try { arrayValue = 97; } catch (error) { readonly += error instanceof TypeError; }
+                try { objectValue = 98; } catch (error) { readonly += error instanceof TypeError; }
 
                 globalThis.__importDeclarationCollision =
                     letValue === 11 && letAlias === 11 &&
@@ -3525,7 +3541,10 @@ mod tests {
                     classValue === classAlias && classValue.name === "classValue" &&
                     first() === 1 && second() === 1 &&
                     defaultFunction === null && defaultFunctionAlias === null &&
-                    defaultVar === 7 && readonly === 7;
+                    defaultVar === 7 &&
+                    arrayValue === 17 && arrayAlias === 17 &&
+                    objectValue === 19 && objectAlias === 19 &&
+                    readonly === 9;
                 "#,
                 "pkg/collision.js",
             )

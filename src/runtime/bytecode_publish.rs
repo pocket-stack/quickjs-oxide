@@ -1,5 +1,6 @@
 //! Validation and iterative flattening for unlinked bytecode publication.
 
+mod module_initializer_flow;
 mod private_elements;
 
 pub(super) use private_elements::prepare_private_binding_publication;
@@ -1548,44 +1549,14 @@ fn verify_module_link_entry(module: &UnlinkedModule) -> Result<(), RuntimeError>
             )));
         }
     }
-
-    let lexical_collision_slots = module
-        .import_collisions()
-        .iter()
-        .filter_map(|collision| {
-            (collision.declaration == ModuleImportCollisionDeclaration::Lexical)
-                .then_some(collision.closure_index)
-        })
-        .collect::<HashSet<_>>();
-    for (initializer_pc, instruction) in code.iter().enumerate() {
-        let evaluation_initializer = match instruction {
-            crate::bytecode::Instruction::InitializeVarRef(_) => true,
-            crate::bytecode::Instruction::InitializeModuleImportCollision(index) => {
-                lexical_collision_slots.contains(index)
-            }
-            _ => false,
-        };
-        if !evaluation_initializer {
-            continue;
-        }
-        if initializer_pc < body {
-            return Err(RuntimeError::Engine(Error::internal(
-                "module lexical initializer escaped the evaluation phase",
-            )));
-        }
-        for (source_pc, source) in code.iter().enumerate().skip(body) {
-            let Some(target) = explicit_control_flow_target(source) else {
-                continue;
-            };
-            let repeats = source_pc >= initializer_pc && target <= initializer_pc;
-            let skips = source_pc < initializer_pc && target > initializer_pc;
-            if repeats || skips {
-                return Err(RuntimeError::Engine(Error::internal(
-                    "module lexical initializer is not a one-shot control-flow cut",
-                )));
-            }
-        }
-    }
+    // Establish one stack-valid unwind/Gosub shape per PC before the
+    // module-specific summary analysis projects and follows that shape.
+    verify_parts(
+        function.code(),
+        function.constants().len(),
+        function.metadata().max_stack,
+    )?;
+    module_initializer_flow::verify(module, body)?;
 
     let function_collision_slots = module
         .import_collisions()
@@ -4765,6 +4736,30 @@ mod tests {
         )
     }
 
+    fn module_with_code(
+        module: UnlinkedModule,
+        code: Vec<Instruction>,
+        max_stack: u16,
+    ) -> UnlinkedModule {
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        function_parts.code = code;
+        function_parts.metadata.max_stack = max_stack;
+        UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
+        )
+    }
+
     fn function_from_parts(parts: UnlinkedFunctionParts) -> UnlinkedFunction {
         let UnlinkedFunctionParts {
             code,
@@ -4881,58 +4876,252 @@ mod tests {
     }
 
     #[test]
-    fn module_evaluation_cannot_reenter_link_or_repeat_a_collision_initializer() {
-        for (target, expected) in [
+    fn module_evaluation_cannot_reenter_link_phase() {
+        let module = compile_unlinked_module_with_filename(
+            "import { value } from './dependency.js'; let value = 1;",
+            "forged-collision-control-flow.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let parts = module.into_parts();
+        let mut function_parts = parts.function.into_parts();
+        let insertion = function_parts.code.len() - 2;
+        function_parts.code.insert(insertion, Instruction::Goto(2));
+        let forged = UnlinkedModule::new(
+            parts.name,
+            function_from_parts(function_parts),
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
+        );
+        let error = verify_unlinked_module_tree(&forged).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("module evaluation control flow entered the link phase"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn module_initializer_flow_rejects_stack_valid_skips_repeats_and_shared_gosubs() {
+        let cases = [
             (
-                None,
-                "module lexical initializer is not a one-shot control-flow cut",
+                "forward-skip",
+                vec![
+                    Instruction::PushThis,
+                    Instruction::IfFalse(4),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::PushFalse,
+                    Instruction::IfFalse(9),
+                    Instruction::PushI32(1),
+                    Instruction::InitializeModuleImportCollision(0),
+                    Instruction::Goto(9),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                1,
             ),
             (
-                Some(2_u32),
-                "module evaluation control flow entered the link phase",
+                "back-edge-repeat",
+                vec![
+                    Instruction::PushThis,
+                    Instruction::IfFalse(4),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::PushI32(1),
+                    Instruction::InitializeModuleImportCollision(0),
+                    Instruction::PushI32(2),
+                    Instruction::Goto(5),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                1,
             ),
-        ] {
+            (
+                "shared-gosub-repeat",
+                vec![
+                    Instruction::PushThis,
+                    Instruction::IfFalse(4),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::Gosub(7),
+                    Instruction::Gosub(7),
+                    Instruction::Goto(10),
+                    Instruction::PushI32(1),
+                    Instruction::InitializeModuleImportCollision(0),
+                    Instruction::Ret,
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                2,
+            ),
+            (
+                "caught-call-skip",
+                vec![
+                    Instruction::PushThis,
+                    Instruction::IfFalse(4),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::Catch(13),
+                    Instruction::Undefined,
+                    Instruction::Call(0),
+                    Instruction::Drop,
+                    Instruction::PushI32(1),
+                    Instruction::InitializeModuleImportCollision(0),
+                    Instruction::DropCatch,
+                    Instruction::Goto(14),
+                    Instruction::Nop,
+                    Instruction::Return,
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                2,
+            ),
+        ];
+
+        for (label, code, max_stack) in cases {
             let module = compile_unlinked_module_with_filename(
                 "import { value } from './dependency.js'; let value = 1;",
-                "forged-collision-control-flow.mjs",
+                "forged-stack-valid-initializer-flow.mjs",
                 DebugInfoMode::StripDebug,
             )
             .unwrap();
-            let collision_pc = module
-                .function()
-                .code()
-                .iter()
-                .position(|instruction| {
-                    matches!(instruction, Instruction::InitializeModuleImportCollision(_))
-                })
-                .unwrap();
-            let parts = module.into_parts();
-            let mut function_parts = parts.function.into_parts();
-            let target = target.unwrap_or_else(|| u32::try_from(collision_pc).unwrap());
-            let insertion = function_parts.code.len() - 2;
-            function_parts
-                .code
-                .insert(insertion, Instruction::Goto(target));
-            let forged = UnlinkedModule::new(
-                parts.name,
-                function_from_parts(function_parts),
-                UnlinkedModuleTables {
-                    declaration_order: parts.declaration_order.into_vec(),
-                    link_initializers: parts.link_initializers.into_vec(),
-                    import_collisions: parts.import_collisions.into_vec(),
-                    requested_modules: parts.requested_modules.into_vec(),
-                    imports: parts.imports.into_vec(),
-                    exports: parts.exports.into_vec(),
-                    star_exports: parts.star_exports.into_vec(),
-                },
-            );
+            let forged = module_with_code(module, code, max_stack);
+            verify_parts(
+                forged.function().code(),
+                forged.function().constants().len(),
+                forged.function().metadata().max_stack,
+            )
+            .unwrap_or_else(|error| panic!("{label}: generic verifier rejected fixture: {error}"));
             let error = verify_unlinked_module_tree(&forged).unwrap_err();
-            assert!(error.to_string().contains(expected), "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("module lexical initializer is not a one-shot control-flow cut"),
+                "{label}: {error}"
+            );
         }
     }
 
     #[test]
-    fn module_lexical_initializers_allow_expression_joins_but_not_forward_skips() {
+    fn module_initializer_flow_tracks_cleanup_discarded_gosub_returns() {
+        let cases = [
+            (
+                "nip-catch",
+                vec![
+                    Instruction::PushThis,
+                    Instruction::IfFalse(4),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::Gosub(7),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::Catch(18),
+                    Instruction::Gosub(13),
+                    Instruction::PushI32(1),
+                    Instruction::InitializeModuleImportCollision(0),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::Undefined,
+                    Instruction::NipCatch,
+                    Instruction::Gosub(20),
+                    Instruction::Drop,
+                    Instruction::Ret,
+                    Instruction::Throw,
+                    Instruction::Nop,
+                    Instruction::Ret,
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                4,
+            ),
+            (
+                "iterator-drop-preserve",
+                vec![
+                    Instruction::PushThis,
+                    Instruction::IfFalse(4),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::Gosub(7),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::ArrayFrom(0),
+                    Instruction::ForOfStart,
+                    Instruction::Gosub(14),
+                    Instruction::PushI32(1),
+                    Instruction::InitializeModuleImportCollision(0),
+                    Instruction::Undefined,
+                    Instruction::Throw,
+                    Instruction::Undefined,
+                    Instruction::IteratorDropPreserve,
+                    Instruction::Gosub(20),
+                    Instruction::Drop,
+                    Instruction::Ret,
+                    Instruction::Nop,
+                    Instruction::Ret,
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                6,
+            ),
+            (
+                "return-derived-throw",
+                vec![
+                    Instruction::PushThis,
+                    Instruction::IfFalse(4),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                    Instruction::PushI32(1),
+                    Instruction::InitializeModuleImportCollision(0),
+                    Instruction::Catch(13),
+                    Instruction::Catch(10),
+                    Instruction::Undefined,
+                    Instruction::Throw,
+                    Instruction::ReturnDerived(0),
+                    Instruction::Nop,
+                    Instruction::Nop,
+                    Instruction::Goto(5),
+                    Instruction::Undefined,
+                    Instruction::Return,
+                ],
+                3,
+            ),
+        ];
+
+        for (label, code, max_stack) in cases {
+            let module = compile_unlinked_module_with_filename(
+                "import { value } from './dependency.js'; let value = 1;",
+                "forged-cleanup-initializer-flow.mjs",
+                DebugInfoMode::StripDebug,
+            )
+            .unwrap();
+            let forged = module_with_code(module, code, max_stack);
+            verify_parts(
+                forged.function().code(),
+                forged.function().constants().len(),
+                forged.function().metadata().max_stack,
+            )
+            .unwrap_or_else(|error| panic!("{label}: generic verifier rejected fixture: {error}"));
+            let error = verify_unlinked_module_tree(&forged).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("module lexical initializer is not a one-shot control-flow cut"),
+                "{label}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn module_lexical_initializers_allow_expression_joins() {
         for import in [
             "",
             "import value from './dependency.js';",
@@ -4976,57 +5165,156 @@ mod tests {
                     .unwrap_or_else(|error| panic!("{source}: {error}"));
             }
         }
+    }
+
+    #[test]
+    fn module_import_collision_destructuring_initializers_publish() {
+        for source in [
+            "import { value } from './dependency.js'; let [value] = [1];",
+            "import { value } from './dependency.js'; const [value] = [1];",
+            "import { value } from './dependency.js';\
+             let { answer: value } = { answer: 1 };",
+            "import { value } from './dependency.js';\
+             const { answer: value } = { answer: 1 };",
+            "import { first, second } from './dependency.js';\
+             let [first, second] = [1, 2];",
+            "import { first, second } from './dependency.js';\
+             const { first, nested: { second } } =\
+                 { first: 1, nested: { second: 2 } };",
+            "import { value } from './dependency.js';\
+             let [[value] = [1]] = [];",
+            "import { first, second } from './dependency.js';\
+             let [[first] = [1], second] = [[], 2];",
+            "export let [first, ...second] = [1, 2, 3];",
+        ] {
+            let module = compile_unlinked_module_with_filename(
+                source,
+                "module-import-collision-destructuring.mjs",
+                DebugInfoMode::StripDebug,
+            )
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+            verify_unlinked_module_tree(&module).unwrap_or_else(|error| {
+                panic!(
+                    "{source}: {error}\nbytecode: {:#?}",
+                    module.function().code()
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn module_initializer_flow_handles_many_shared_finally_entries() {
+        let mut source = String::from("outer: { try {");
+        for _ in 0..384 {
+            source.push_str("if (globalThis.flag) break outer;");
+        }
+        source.push_str("} finally {");
+        for _ in 0..384 {
+            source.push_str("globalThis.observed;");
+        }
+        source.push_str("} } export let answer = 42;");
 
         let module = compile_unlinked_module_with_filename(
-            "import { value } from './dependency.js';\
-             let value = globalThis.flag ? 1 : 2;",
-            "forged-forward-skip-collision.mjs",
+            &source,
+            "module-many-finally-entries.mjs",
             DebugInfoMode::StripDebug,
         )
         .unwrap();
-        let initializer_pc = module
-            .function()
-            .code()
-            .iter()
-            .position(|instruction| {
-                matches!(instruction, Instruction::InitializeModuleImportCollision(_))
-            })
-            .unwrap();
-        let join_pc = module.function().code()[..initializer_pc]
-            .iter()
-            .position(|instruction| {
-                explicit_control_flow_target(instruction) == Some(initializer_pc)
-            })
-            .unwrap();
-        let parts = module.into_parts();
-        let mut function_parts = parts.function.into_parts();
-        let skip_target = u32::try_from(initializer_pc + 1).unwrap();
-        match &mut function_parts.code[join_pc] {
-            Instruction::Goto(target)
-            | Instruction::IfFalse(target)
-            | Instruction::IfTrue(target) => *target = skip_target,
-            instruction => panic!("unexpected initializer join edge: {instruction:?}"),
+        verify_unlinked_module_tree(&module).unwrap();
+    }
+
+    #[test]
+    fn module_initializer_flow_summarizes_nested_shared_gosubs() {
+        const DEPTH: usize = 48;
+
+        let mut code = vec![
+            Instruction::PushThis,
+            Instruction::IfFalse(4),
+            Instruction::Undefined,
+            Instruction::Return,
+            Instruction::Gosub(0),
+            Instruction::Goto(0),
+        ];
+        let mut layers = Vec::with_capacity(DEPTH);
+        for _ in 0..DEPTH {
+            let start = code.len();
+            layers.push(start);
+            code.extend([
+                Instruction::PushTrue,
+                Instruction::IfFalse(u32::try_from(start + 4).unwrap()),
+                Instruction::Gosub(0),
+                Instruction::Goto(u32::try_from(start + 5).unwrap()),
+                Instruction::Gosub(0),
+                Instruction::Ret,
+            ]);
         }
-        let forged = UnlinkedModule::new(
-            parts.name,
-            function_from_parts(function_parts),
-            UnlinkedModuleTables {
-                declaration_order: parts.declaration_order.into_vec(),
-                link_initializers: parts.link_initializers.into_vec(),
-                import_collisions: parts.import_collisions.into_vec(),
-                requested_modules: parts.requested_modules.into_vec(),
-                imports: parts.imports.into_vec(),
-                exports: parts.exports.into_vec(),
-                star_exports: parts.star_exports.into_vec(),
-            },
+        let leaf = code.len();
+        code.extend([
+            Instruction::PushI32(1),
+            Instruction::InitializeModuleImportCollision(0),
+            Instruction::Ret,
+        ]);
+        let end = code.len();
+        code.extend([Instruction::Undefined, Instruction::Return]);
+
+        code[4] = Instruction::Gosub(u32::try_from(layers[0]).unwrap());
+        code[5] = Instruction::Goto(u32::try_from(end).unwrap());
+        for (index, start) in layers.iter().copied().enumerate() {
+            let next = layers.get(index + 1).copied().unwrap_or(leaf);
+            code[start + 2] = Instruction::Gosub(u32::try_from(next).unwrap());
+            code[start + 4] = Instruction::Gosub(u32::try_from(next).unwrap());
+        }
+
+        let module = compile_unlinked_module_with_filename(
+            "import { value } from './dependency.js'; let value = 1;",
+            "nested-shared-gosub-initializer-flow.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let max_stack = u16::try_from(DEPTH + 2).unwrap();
+        let forged = module_with_code(module, code, max_stack);
+        verify_parts(
+            forged.function().code(),
+            forged.function().constants().len(),
+            forged.function().metadata().max_stack,
+        )
+        .unwrap();
+        verify_unlinked_module_tree(&forged).unwrap();
+    }
+
+    #[test]
+    fn module_initializer_flow_does_not_invent_throws_for_pure_bytecode() {
+        let module = compile_unlinked_module_with_filename(
+            "import { value } from './dependency.js'; let value = 1;",
+            "pure-catch-initializer-flow.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap();
+        let forged = module_with_code(
+            module,
+            vec![
+                Instruction::PushThis,
+                Instruction::IfFalse(4),
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::Catch(9),
+                Instruction::PushI32(1),
+                Instruction::InitializeModuleImportCollision(0),
+                Instruction::DropCatch,
+                Instruction::Goto(10),
+                Instruction::Return,
+                Instruction::Undefined,
+                Instruction::Return,
+            ],
+            2,
         );
-        let error = verify_unlinked_module_tree(&forged).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("module lexical initializer is not a one-shot control-flow cut"),
-            "{error}"
-        );
+        verify_parts(
+            forged.function().code(),
+            forged.function().constants().len(),
+            forged.function().metadata().max_stack,
+        )
+        .unwrap();
+        verify_unlinked_module_tree(&forged).unwrap();
     }
 
     #[test]
