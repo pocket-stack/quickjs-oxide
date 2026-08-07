@@ -4,6 +4,48 @@ Last audited: 2026-08-07. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ea-A default module declarations admission
+
+R3ea-A adds default imports plus default function, class, and expression
+exports to the static module graph. The three public checkpoints are
+`1ac950a` (declarations), `a6af606` (QuickJS import/declaration collisions),
+and `55a98e7` (the admitted Test262 cohort). Default aliases retain the same
+exporter cell as their named form, and default expressions publish the final
+evaluation value through the module's synthetic default binding.
+
+Pinned QuickJS 2026-06-04 exposes one non-obvious compatibility rule: a named
+or default import and an allowed same-name `var` or function declaration share
+one physical closure slot. Namespace imports instead keep their importer-local
+cell. The implementation records that provenance separately, preserves
+source-order function hoisting, treats `var` without an initializer as a
+no-op, and routes later declaration writes through the ordinary read-only
+import error where QuickJS does. Lexical redeclarations still fail at parse
+time. A dedicated collision ledger, initializer opcode, and publication CFG
+checks prevent malformed bytecode from fabricating or skipping that state.
+The compiler's 30-case matrix covers three import forms, five declaration
+kinds, and both source orders; focused runtime differentials lock the
+observable QuickJS behavior. Upstream Test262 has no exact coverage for these
+import/declaration collisions, so they remain independently oracle-guarded
+rather than being inferred from the cohort.
+
+The dependency-authenticated `module-default-a` cohort contains exactly 38
+roots, 58 source files, 45 rooted request edges, and five negative roots.
+Oxide passes 38/38 twice after a fresh build; both runs are byte-identical.
+The canonical focused TSV and JSONL SHA-256 values are
+`45491d38f6b5f34a2c2ce8fabc2e2043b9d13e26d234c11f377fa6ee113b8bc3`
+and
+`a5920d436e00e624c35999cf8b7c2690f06c50239d0d4c26809b1d03b7cdadab`.
+The promoted capability profile is
+`f0491c4688be5e7741e39158a40a65424129f09c18036946e2897f6b5ae7a2a5`.
+Unlisted module roots, dependency drift, and mismatched negative phases remain
+fail-closed. This is a scoped pre-parity admission; `import.meta`, import
+attributes, dynamic import, and top-level await remain module frontiers.
+
+```sh
+node scripts/generate-test262-module-default-a.mjs
+cargo test --locked --workspace --all-targets
+```
+
 ## R3dz-A module namespace admission
 
 R3dz-A admits the natural pinned Test262 namespace cohort: all 36 non-fixture
