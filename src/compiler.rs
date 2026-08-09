@@ -5491,6 +5491,20 @@ impl<'source> Parser<'source> {
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Await)) {
             if matches!(self.current_ir().kind, FunctionKind::Module) {
+                // QuickJS parses a module-goal `await` as the start of an
+                // AwaitExpression before it diagnoses the following token.
+                // Preserve that source-order syntax error for `await:`, while
+                // keeping a genuine top-level AwaitExpression on the explicit
+                // synchronous-module Unsupported frontier.
+                let mut lexer = self.lexer.clone();
+                lexer.seek(self.current().span.end);
+                let next = lexer.next_token().map_err(lex_error)?;
+                if matches!(next.kind, TokenKind::Punctuator(Punctuator::Colon)) {
+                    return Err(Error::syntax(
+                        "unexpected token in expression: ':'",
+                        source_span(next.span),
+                    ));
+                }
                 return Err(Error::unsupported(
                     "top-level await is not implemented in this synchronous module slice",
                     source_span(self.current().span),
@@ -6810,7 +6824,13 @@ impl<'source> Parser<'source> {
             TokenKind::Keyword(Keyword::Super) => {
                 self.parse_super_property(token.span)?;
             }
-            TokenKind::Keyword(keyword @ (Keyword::Enum | Keyword::Export | Keyword::Extends)) => {
+            TokenKind::Keyword(
+                keyword @ (Keyword::Const
+                | Keyword::Enum
+                | Keyword::Export
+                | Keyword::Extends
+                | Keyword::Var),
+            ) => {
                 return Err(self.syntax_here(format!(
                     "unexpected token in expression: '{}'",
                     keyword.as_str()

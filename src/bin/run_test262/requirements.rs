@@ -233,6 +233,49 @@ const MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
         }),
     };
 
+const MODULE_EXPORT_STAR_NAMESPACE_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["export-star-as-namespace-from-module"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
+const MODULE_LET_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract = ModuleMetadataContract {
+    includes: &[],
+    flags: &["module"],
+    features: &["let"],
+    negative: Some(NegativeMetadataContract {
+        phase: "parse",
+        error_type: "SyntaxError",
+    }),
+};
+
+const MODULE_LET_CONST_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["let", "const"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
+const MODULE_NEW_TARGET_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["new.target"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
 /// The complete pinned declaration-position parse-negative cohort selected by
 /// the two natural import/export filename families. Source, metadata, and the
 /// filename-derived 43/43 partition are frozen by
@@ -666,6 +709,349 @@ const DECL_POSITION_MODULE_ADMISSIONS: [DependencyFreeModuleAdmission; 86] = [
     DependencyFreeModuleAdmission {
         path: "test/language/module-code/parse-err-decl-pos-import-while.js",
         source_sha256: "d06ef1fedc6b78317a7c0a2067b1e11096b3844ea6a12231a0c09de5aeede9c6",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+];
+
+/// The remaining pinned static-module parse-negative frontier selected from
+/// the full suite after subtracting every previously audited negative. The
+/// exact selector, source/frontmatter digests, request-shaped parse canaries,
+/// and adjacent unsupported syntax are frozen by
+/// `scripts/generate-test262-module-static-negative-a.mjs`.
+const STATIC_NEGATIVE_MODULE_ADMISSIONS: [DependencyFreeModuleAdmission; 67] = [
+    DependencyFreeModuleAdmission {
+        path: "test/language/export/escaped-as-export-specifier.js",
+        source_sha256: "d49a0f074128a9ad3f84655b12d9332a8a3df9cf40bd53545b43330923c902b5",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/export/escaped-default.js",
+        source_sha256: "b8bb67c1db599f90eecf75542bccf4991e71aadcdd969a33d00ff166fbcc2b60",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/export/escaped-from.js",
+        source_sha256: "25aa13b6d9c98f872c1b90a92f1188dba7365a2ddef2cfb671a19bcd5e6d3079",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/expressions/class/class-name-ident-await-escaped-module.js",
+        source_sha256: "2a47a664d19373761ab9ad843961dea1dc614b88e422133016a1184bfadd4f75",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/expressions/class/class-name-ident-await-module.js",
+        source_sha256: "20bf0d767ef141072f3a6f5e854248c18d536cd11e723a3ff111eb67515c8000",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/import/dup-bound-names.js",
+        source_sha256: "713377cef5d18a264594cc81330d0c2d400c4a49d435be7d8585747188cc2519",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/import/escaped-as-import-specifier.js",
+        source_sha256: "5df8fa3fd6b4e09fc6e450056073a2ab49e583f41ab7b5d8f313ebd66e28c846",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/import/escaped-as-namespace-import.js",
+        source_sha256: "ea1861604b38c5262c0fd324ef297fa63ea3584a116c72ed904fc3864c73ccfc",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/import/escaped-from.js",
+        source_sha256: "caee3ce2bfcbd50910856d98488036d93a252a1a5962ffc75fa2c0a7fac806de",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/comment-multi-line-html-close.js",
+        source_sha256: "fc3fae0f513b1db887ec33ec7fc35fe698248bdfe20df2cc6380592033080faf",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/comment-single-line-html-close.js",
+        source_sha256: "3b43fff901f4d1cac508995fdc369375b621ce3842fa29cc2f39cb9ae51524c1",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-export-as-star-as.js",
+        source_sha256: "96fc4545bac6f801fe346217784f6bca9e31c1f21025a26c665b395212f9e541",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-export-decl.js",
+        source_sha256: "32ecbf5b749af83757b28c851d8f98ed9b9d014a2025eb5d200ba0525899e5af",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-export-dflt-id.js",
+        source_sha256: "60fa7477ce1dd373895d75ef3049f495b5f138ebec5e477f3dc6d724dea91183",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-export-dflt.js",
+        source_sha256: "4e3b96290553bee9582fcbb7f341f50aef504f8787a31d184b0cb97a1fb3f4e2",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-export-id-as.js",
+        source_sha256: "4ea88ead4c37cc05d806cadfa02dfa171ace946959d6031a22adbbb37a165cc3",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-export-star-as-dflt.js",
+        source_sha256: "87d3bbb5dd4d155e192e6c4f96679ca4593e95c42174d6d8bb2bda70fe6725d5",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-lables.js",
+        source_sha256: "7e0e0bd8fa857e82af0745ccc4a641523d5609039fe309f07288d892bbbc4616",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-lex.js",
+        source_sha256: "972107d1b37f59ff142b00f4eab902f80dc2d09e2484c896695da1ddf6376caa",
+        metadata: MODULE_LET_CONST_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-top-function-async-generator.js",
+        source_sha256: "2568ac9f9b933ff2f796736d78268fd3d744779afe65eb457c4ea0f1b017954f",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-top-function-async.js",
+        source_sha256: "bc4fda16ce29bca61ae5da38666714f4a3a23bd7ea45cd6946a23a58606c4c3c",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-top-function-generator.js",
+        source_sha256: "0790cc57a63c540f475fe95ddaaa9593089079d61ab5a57042ec1793bbaf5906",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-dup-top-function.js",
+        source_sha256: "a31b3adb15b94dd1a5411511e73c4c3d1fba61783d44e86703a852fea726d01d",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-export-global.js",
+        source_sha256: "93d50d0d347b0dc2c2e25a7d57a093b166b358f83da7afb36091cea3b73242c4",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-export-unresolvable.js",
+        source_sha256: "b1fd3fd7568179bb4dff65c65bab75feaac235b933ee0c048062c3091ca7df25",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-import-arguments.js",
+        source_sha256: "f7bd4a8d7f839d89ed84922588b5242f5bdd9d9e01114ebe2b1dbe827cc8fd50",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-import-as-arguments.js",
+        source_sha256: "d2761605cdd1657cb54fdbca1b45d9d46a6a6063523e884783c2c80909cae753",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-import-as-eval.js",
+        source_sha256: "742fbd6917df4cb1fe5e0058504c83afe15ac2588ef370977962672d61ccf230",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-import-eval.js",
+        source_sha256: "8cea44aabd764438b542ff89ec3696fa2ecc12506add61a2d07723bc64d32788",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-lex-and-var.js",
+        source_sha256: "cc69022adc5206e0eea03f5588579e81ade90693598e397384454c280e9f456a",
+        metadata: MODULE_LET_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-new-target.js",
+        source_sha256: "4219adeb88786bf138e92c6472e2b7f3cd20f0d775950d5136c9570b29f9daa1",
+        metadata: MODULE_NEW_TARGET_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-super.js",
+        source_sha256: "183fb7d0634760339e7e79e32930a1ec6e154d03397b97c353beeda53b17f6aa",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-undef-break.js",
+        source_sha256: "aacd79e538054f0473434091f3a658bccbd67a025fb7b28d55293e129e2114de",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/early-undef-continue.js",
+        source_sha256: "a61065224aa4649b3a7198c9bee2dee1b29584c3e077eabca993404130863f09",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/export-default-asyncfunction-declaration-binding-exists.js",
+        source_sha256: "d98193819df758ee15af97f1c4d23c2f8fa9a4edb185269c8404627d5a45f521",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/export-default-asyncgenerator-declaration-binding-exists.js",
+        source_sha256: "ee3fed6aa4c9e83681025cc99633cb8f7b98e2b77c5cfb16aa7435a0fa835095",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/export-default-function-declaration-binding-exists.js",
+        source_sha256: "bbe2acaa3668ea6b180f8da0ec42b303896a6e5cb6bcf2a61e954a8e0ab30d91",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/export-default-generator-declaration-binding-exists.js",
+        source_sha256: "ab8509b914794616ddbf8c86923d2378243c2f33f5ba28b96369139ee6052cf8",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-export-dflt-const.js",
+        source_sha256: "741df6cfa5fb8914617c5f772dbe9d0b05195d321692183dc59f99433b44030d",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-export-dflt-expr.js",
+        source_sha256: "7c548ba4e9d7884d67be5bb80113c6be043ce535a4bb2c89e294e10d19ea185a",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-export-dflt-let.js",
+        source_sha256: "fd5262ec065a167f874ade7a3e7b47a0797d3020e5b271848a0aacd78e510139",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-export-dflt-var.js",
+        source_sha256: "15b4beeaaa05b262340b9e6fc952f6d8a07afa4621d6f0bcbfbb7b2c40a5a2cc",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-hoist-lex-fun.js",
+        source_sha256: "9d340acc95e544197f78a4426019d855ad8b82326326cdc8b806a05eae08edc8",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-hoist-lex-gen.js",
+        source_sha256: "aa619a56e408c433fe25c41a3ccd7069b554bace0cdc37593d2f16952bab94e4",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-invoke-anon-fun-decl.js",
+        source_sha256: "2b2e40e0ef3ad446cd58b0bff201d510478fd84ab337be133037a4c53c83b8e4",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-invoke-anon-gen-decl.js",
+        source_sha256: "a52c94752e16f24ec162fc7faa7ebe1c52e82877667a340b6846528eb020be1e",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-return.js",
+        source_sha256: "2974d66d5ce1676c234e6d7d4ad909a4d41dbba3842e6fbec335010062d8a8de",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-semi-dflt-expr.js",
+        source_sha256: "7e4ca7c13a3c4707a4d1f8c1527f3a59c91a4b171aef7fb55aa47ce036076e82",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-semi-export-star.js",
+        source_sha256: "687ef880aaf279bc309e211836b7e0cb7237e448a155e46bc29e9fa5a62671bf",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-semi-name-space-export.js",
+        source_sha256: "b87f75e52e0071380668d3dc4297f20aab31f4949ed43f30564ef86650f21f54",
+        metadata: MODULE_EXPORT_STAR_NAMESPACE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-semi-named-export-from.js",
+        source_sha256: "abb1fcd8e0960fa00473ae3a28266df21bf8cd91dc93464a4a018d9cfaab246d",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-semi-named-export.js",
+        source_sha256: "d99ad4930ef415ca9a1b693cc4f1a48f415b4f63c4b4686f477398ba398a5b03",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-syntax-1.js",
+        source_sha256: "9f10e1bd0f7207a4bf9bef31d1f39f0f7d026692b968ef1f804276bacb80ef2b",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-syntax-2.js",
+        source_sha256: "af3a93ff480f49725ef6d8311754a8d5cfe9997ced28a7f22a40f5c400ab9b21",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-yield.js",
+        source_sha256: "12ccea4f76e1fdcb62b1ab4171d723d9a8f74284ce1a268bdb88d456fa14f2ad",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/reserved-words/await-module.js",
+        source_sha256: "44edf8299f089ae5a58c536e57d8796867171da8237c93c6e28a752661c86a62",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/statements/class/class-name-ident-await-escaped-module.js",
+        source_sha256: "00f02236fb308fa6e6a14ae2bc38d09e7ddf85437d915f60e884d947d8dd59c7",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/statements/class/class-name-ident-await-module.js",
+        source_sha256: "ea1e0387dca386e8ba340eeee172d1f79e1586908e3a5c833c2d9375add9f29b",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/statements/labeled/value-await-module-escaped.js",
+        source_sha256: "495a2a433b655c08b6035b81023f624ee6a17817f3b97dec99955c0853c6bd42",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/statements/labeled/value-await-module.js",
+        source_sha256: "39de9daf4b36b4f9644b1b92a5203d306d8ad0c9f70d82f6467713d9149c02d9",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/staging/sm/async-functions/async-contains-unicode-escape-module.js",
+        source_sha256: "1e867c1b31b5c1d2de9bbc9602ccda4d0b1ccda97a891e67f370e4fde2c2bb9a",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/staging/sm/fields/await-identifier-module-1.js",
+        source_sha256: "f1e499ee086e8aad54d60df9bdee33f7e5e272d18773c014bc611b696867e80d",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/staging/sm/fields/await-identifier-module-2.js",
+        source_sha256: "141a03470fbb0faeb21bb06f386d20618ff698145c5506a0096e5492d038a802",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/staging/sm/fields/await-identifier-module-3.js",
+        source_sha256: "c53782f32159445d24f3e136feaa2e100d1db2e3c0e69f7baa6db25902dbc673",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/staging/sm/module/await-restricted-nested.js",
+        source_sha256: "7c18e2a04b04deeed814b78b7103f19889be6c95a55562f4851a9d88f151848d",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/staging/sm/module/duplicate-exported-names-in-single-export-declaration.js",
+        source_sha256: "f29db520cc3ef595bf2d581992c3bf8a353ef2069a3e4181f6ecb548fddc48a8",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/staging/sm/module/duplicate-exported-names-in-single-export-var-declaration.js",
+        source_sha256: "153b0bfe37c6f8f38f82f8f6a2138f4cd455de1c3aaf48b7e05c4c2ea2386ec3",
         metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
     },
 ];
@@ -2425,6 +2811,7 @@ pub(super) fn is_exact_dependency_free_module_test(
     let Some(admission) = DEPENDENCY_FREE_MODULE_ADMISSIONS
         .iter()
         .chain(DECL_POSITION_MODULE_ADMISSIONS.iter())
+        .chain(STATIC_NEGATIVE_MODULE_ADMISSIONS.iter())
         .find(|admission| path == Path::new(admission.path))
     else {
         return Ok(false);
@@ -3887,7 +4274,7 @@ const fn is_ascii_identifier_continue(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -3899,10 +4286,10 @@ mod tests {
         IMPORT_META_MODULE_ROOT_ADMISSIONS, MODULE_FIXTURE_METADATA, MODULE_METADATA,
         ModuleGraphFileAdmission, ModuleMetadataContract, ModuleRequestAdmission,
         NAMESPACE_MODULE_FILE_ADMISSIONS, NAMESPACE_MODULE_ROOT_ADMISSIONS,
-        agent_host_metadata_matches, authenticate_dependency_free_module_test,
-        authenticate_exact_module_graph_closure, authenticate_fixture_graph_closure,
-        authenticate_module_graph_file, authenticate_module_graph_file_digest,
-        exact_module_graph_admission, exact_module_test,
+        STATIC_NEGATIVE_MODULE_ADMISSIONS, agent_host_metadata_matches,
+        authenticate_dependency_free_module_test, authenticate_exact_module_graph_closure,
+        authenticate_fixture_graph_closure, authenticate_module_graph_file,
+        authenticate_module_graph_file_digest, exact_module_graph_admission, exact_module_test,
         generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
         insert_exact_source_feature_hint, is_exact_agent_host_test,
         is_exact_dependency_free_module_test, missing_host_capability_hints,
@@ -3942,6 +4329,26 @@ mod tests {
     const DECL_POSITION_MODULE_LEDGER: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-module-decl-position-a-ledger.tsv"
+    ));
+    const STATIC_NEGATIVE_MODULE_MANIFEST: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-static-negative-a.txt"
+    ));
+    const STATIC_NEGATIVE_MODULE_LEDGER: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-static-negative-a-ledger.tsv"
+    ));
+    const STATIC_NEGATIVE_MODULE_REQUESTS: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-static-negative-a-requests.tsv"
+    ));
+    const STATIC_NEGATIVE_MODULE_EXCLUSIONS: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-static-negative-a-exclusions.tsv"
+    ));
+    const STATIC_NEGATIVE_MODULE_PROVENANCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-static-negative-a-provenance.tsv"
     ));
     const IMPORT_META_SCRIPT_ROOTS: [&str; 5] = [
         "test/language/expressions/import.meta/syntax/goal-async-function-params-or-body.js",
@@ -4222,8 +4629,19 @@ mod tests {
             assert_eq!(negative.error_type, "SyntaxError");
         }
 
+        let adjacent = "test/language/module-code/parse-err-export-dflt-const.js";
+        assert!(
+            !DECL_POSITION_MODULE_ADMISSIONS
+                .iter()
+                .any(|admission| admission.path == adjacent)
+        );
+        assert!(
+            STATIC_NEGATIVE_MODULE_ADMISSIONS
+                .iter()
+                .any(|admission| admission.path == adjacent)
+        );
+
         for excluded in [
-            "test/language/module-code/parse-err-export-dflt-const.js",
             "test/language/module-code/import-attributes/import-attribute-empty.js",
             "test/language/module-code/top-level-await/await-expr-resolution.js",
         ] {
@@ -4285,6 +4703,256 @@ mod tests {
             .unwrap_err()
             .contains("metadata shape drifted")
         );
+    }
+
+    #[test]
+    fn static_negative_module_admission_is_exact_sorted_and_source_authenticated() {
+        assert_eq!(STATIC_NEGATIVE_MODULE_ADMISSIONS.len(), 67);
+        assert!(
+            STATIC_NEGATIVE_MODULE_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert_eq!(
+            STATIC_NEGATIVE_MODULE_MANIFEST.lines().collect::<Vec<_>>(),
+            STATIC_NEGATIVE_MODULE_ADMISSIONS
+                .iter()
+                .map(|admission| admission.path)
+                .collect::<Vec<_>>()
+        );
+
+        let mut feature_counts = BTreeMap::new();
+        for admission in &STATIC_NEGATIVE_MODULE_ADMISSIONS {
+            *feature_counts
+                .entry(admission.metadata.features.join(","))
+                .or_insert(0usize) += 1;
+            assert!(admission.metadata.includes.is_empty());
+            assert_eq!(admission.metadata.flags, ["module"]);
+            let negative = admission.metadata.negative.expect("negative contract");
+            assert_eq!(negative.phase, "parse");
+            assert_eq!(negative.error_type, "SyntaxError");
+            assert_eq!(
+                authenticate_dependency_free_module_test(
+                    Path::new(admission.path),
+                    admission.source_sha256,
+                    &module_metadata(admission.metadata),
+                    admission,
+                ),
+                Ok(true),
+                "{}",
+                admission.path
+            );
+            assert!(exact_module_graph_admission(Path::new(admission.path)).is_none());
+        }
+        assert_eq!(
+            feature_counts,
+            BTreeMap::from([
+                (String::new(), 57),
+                ("export-star-as-namespace-from-module".to_owned(), 4),
+                ("generators".to_owned(), 3),
+                ("let".to_owned(), 1),
+                ("let,const".to_owned(), 1),
+                ("new.target".to_owned(), 1),
+            ])
+        );
+
+        let ledger_rows = STATIC_NEGATIVE_MODULE_LEDGER
+            .lines()
+            .skip(1)
+            .map(|row| {
+                let fields = row.split('\t').collect::<Vec<_>>();
+                assert_eq!(fields.len(), 9, "{} ledger width", fields[0]);
+                (fields[0], fields)
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(ledger_rows.len(), 67);
+        for admission in &STATIC_NEGATIVE_MODULE_ADMISSIONS {
+            let fields = &ledger_rows[admission.path];
+            assert_eq!(fields[1], "");
+            assert_eq!(fields[2], "module");
+            assert_eq!(fields[3], admission.metadata.features.join(","));
+            assert_eq!(fields[4], "parse");
+            assert_eq!(fields[5], "SyntaxError");
+            assert!(matches!(fields[6], "0" | "1"));
+            assert_eq!(fields[7], admission.source_sha256);
+            assert_eq!(fields[8].len(), 64);
+        }
+
+        let mut request_rows = BTreeMap::<&str, Vec<(usize, &str)>>::new();
+        for row in STATIC_NEGATIVE_MODULE_REQUESTS.lines().skip(1) {
+            let fields = row.split('\t').collect::<Vec<_>>();
+            assert_eq!(fields.len(), 3);
+            assert!(ledger_rows.contains_key(fields[0]));
+            request_rows
+                .entry(fields[0])
+                .or_default()
+                .push((fields[1].parse().expect("request index"), fields[2]));
+        }
+        assert_eq!(request_rows.values().map(Vec::len).sum::<usize>(), 13);
+        for (path, rows) in &request_rows {
+            assert_eq!(rows.len(), 1, "{path}");
+            assert_eq!(rows[0].0, 0, "{path}");
+            assert_eq!(ledger_rows[path][6], "1", "{path}");
+        }
+
+        assert_eq!(
+            STATIC_NEGATIVE_MODULE_PROVENANCE,
+            concat!(
+                "metric\tvalue\n",
+                "selector\tincludes=[];flags=[module];negative=parse/SyntaxError;features in {[],[export-star-as-namespace-from-module],[generators],[let],[let,const],[new.target]};subtract prior audited negatives\n",
+                "parent_profile_sha256\t364f45501f0b3655e801200b4e1ecb24040384a73489da1994528c911574e362\n",
+                "parent_audited_negatives\t1450\n",
+                "selected_roots\t67\n",
+                "manifest_sha256\tdd8e65fab5447123ad48aa383a835893b72a5e899d34d2dce3a81660bdacc145\n",
+            )
+        );
+
+        let mut surfaces = BTreeMap::new();
+        let exclusions = STATIC_NEGATIVE_MODULE_EXCLUSIONS
+            .lines()
+            .skip(1)
+            .map(|row| row.split('\t').collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        assert_eq!(exclusions.len(), 25);
+        for fields in &exclusions {
+            assert_eq!(fields.len(), 10, "{} exclusion width", fields[1]);
+            *surfaces.entry(fields[0]).or_insert(0usize) += 1;
+            assert!(!ledger_rows.contains_key(fields[1]));
+            assert_ne!(fields[2], "selected");
+            assert_eq!(fields[8].len(), 64);
+            assert_eq!(fields[9].len(), 64);
+        }
+        assert_eq!(
+            surfaces,
+            BTreeMap::from([
+                ("adjacent-syntax", 4),
+                ("class-private", 3),
+                ("dynamic-import", 1),
+                ("hidden-dynamic-import", 2),
+                ("import-attributes", 3),
+                ("import-defer", 2),
+                ("source-phase-import", 2),
+                ("top-level-await", 8),
+            ])
+        );
+    }
+
+    #[test]
+    fn static_negative_module_admission_matches_the_available_pinned_suite() {
+        let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/oracle/quickjs-2026-06-04/test262");
+        if !suite.is_dir() {
+            return;
+        }
+
+        let ledger_rows = STATIC_NEGATIVE_MODULE_LEDGER
+            .lines()
+            .skip(1)
+            .map(|row| {
+                let fields = row.split('\t').collect::<Vec<_>>();
+                (fields[0], fields)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut request_rows = BTreeMap::<&str, BTreeSet<String>>::new();
+        for row in STATIC_NEGATIVE_MODULE_REQUESTS.lines().skip(1) {
+            let fields = row.split('\t').collect::<Vec<_>>();
+            request_rows
+                .entry(fields[0])
+                .or_default()
+                .insert(fields[2].to_owned());
+        }
+
+        for admission in &STATIC_NEGATIVE_MODULE_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(admission.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", admission.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", admission.path));
+            assert_eq!(
+                is_exact_dependency_free_module_test(Path::new(admission.path), &source, &metadata),
+                Ok(true),
+                "{}",
+                admission.path
+            );
+            assert_eq!(
+                exact_module_test(&suite, Path::new(admission.path), &source, &metadata),
+                Ok(Some(ExactModuleTest::DependencyFree)),
+                "{}",
+                admission.path
+            );
+            assert_eq!(
+                source_sha256(complete_frontmatter(&source)).unwrap(),
+                ledger_rows[admission.path][8],
+                "{} frontmatter",
+                admission.path
+            );
+            assert_eq!(
+                audited_module_specifiers(&source),
+                request_rows
+                    .get(admission.path)
+                    .cloned()
+                    .unwrap_or_default(),
+                "{} static requests",
+                admission.path
+            );
+        }
+
+        let admission = STATIC_NEGATIVE_MODULE_ADMISSIONS
+            .iter()
+            .find(|admission| {
+                admission.path == "test/language/export/escaped-as-export-specifier.js"
+            })
+            .expect("request-shaped drift canary");
+        let source = fs::read_to_string(suite.join(admission.path)).expect("read drift canary");
+        let metadata = parse_metadata(&source).expect("parse drift canary metadata");
+        assert!(
+            is_exact_dependency_free_module_test(
+                Path::new(admission.path),
+                &format!("{source}\n// source drift"),
+                &metadata
+            )
+            .unwrap_err()
+            .contains("source drifted")
+        );
+        let mut metadata_drift = metadata;
+        metadata_drift.flags.insert("generated".to_owned());
+        assert!(
+            is_exact_dependency_free_module_test(
+                Path::new(admission.path),
+                &source,
+                &metadata_drift
+            )
+            .unwrap_err()
+            .contains("metadata shape drifted")
+        );
+
+        for fields in STATIC_NEGATIVE_MODULE_EXCLUSIONS
+            .lines()
+            .skip(1)
+            .map(|row| row.split('\t').collect::<Vec<_>>())
+        {
+            let source = fs::read_to_string(suite.join(fields[1]))
+                .unwrap_or_else(|error| panic!("read {}: {error}", fields[1]));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", fields[1]));
+            assert_eq!(
+                source_sha256(&source).unwrap(),
+                fields[8],
+                "{} source",
+                fields[1]
+            );
+            assert_eq!(
+                source_sha256(complete_frontmatter(&source)).unwrap(),
+                fields[9],
+                "{} frontmatter",
+                fields[1]
+            );
+            assert_eq!(
+                is_exact_dependency_free_module_test(Path::new(fields[1]), &source, &metadata),
+                Ok(false),
+                "excluded surface entered dependency-free admission: {}",
+                fields[1]
+            );
+        }
     }
 
     #[test]

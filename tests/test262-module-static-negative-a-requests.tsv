@@ -1,0 +1,14 @@
+path	request_index	specifier
+test/language/export/escaped-as-export-specifier.js	0	./escaped-as-export-specifier.js
+test/language/import/dup-bound-names.js	0	z
+test/language/import/escaped-as-import-specifier.js	0	./escaped-as-import-specifier.js
+test/language/import/escaped-as-namespace-import.js	0	./escaped-as-namespace-import.js
+test/language/module-code/early-dup-export-as-star-as.js	0	./early-dup-export-as-star-as.js
+test/language/module-code/early-dup-export-star-as-dflt.js	0	./early-dup-export-start-as-dflt.js
+test/language/module-code/early-import-arguments.js	0	./early-import-arguments.js
+test/language/module-code/early-import-as-arguments.js	0	./early-import-as-arguments.js
+test/language/module-code/early-import-as-eval.js	0	./early-import-as-eval.js
+test/language/module-code/early-import-eval.js	0	./early-import-eval.js
+test/language/module-code/parse-err-semi-export-star.js	0	./parse-err-semi-export-star.js
+test/language/module-code/parse-err-semi-name-space-export.js	0	./parse-err-semi-name-space-export.js
+test/language/module-code/parse-err-semi-named-export-from.js	0	./parse-err-semi-export-clause-from.js

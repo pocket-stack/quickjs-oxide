@@ -1,0 +1,6 @@
+metric	value
+selector	includes=[];flags=[module];negative=parse/SyntaxError;features in {[],[export-star-as-namespace-from-module],[generators],[let],[let,const],[new.target]};subtract prior audited negatives
+parent_profile_sha256	364f45501f0b3655e801200b4e1ecb24040384a73489da1994528c911574e362
+parent_audited_negatives	1450
+selected_roots	67
+manifest_sha256	dd8e65fab5447123ad48aa383a835893b72a5e899d34d2dce3a81660bdacc145

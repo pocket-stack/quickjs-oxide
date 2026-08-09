@@ -2866,6 +2866,46 @@ fn module_function_collision_hoists_follow_declaration_not_import_order() {
 }
 
 #[test]
+fn module_parse_negative_diagnostics_precede_unsupported_frontiers_like_quickjs() {
+    for (source, message, column) in [
+        (
+            "export default var x = null; export default var x = null;",
+            "unexpected token in expression: 'var'",
+            16,
+        ),
+        (
+            "export default const x = null;",
+            "unexpected token in expression: 'const'",
+            16,
+        ),
+        (
+            "export default var x;",
+            "unexpected token in expression: 'var'",
+            16,
+        ),
+        ("await: 1;", "unexpected token in expression: ':'", 6),
+        (r"\u0061wait: 1;", "'await' is a reserved identifier", 1),
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "module-parse-negative-precedence.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), message, "{source}");
+        assert_eq!(
+            (
+                error.span().unwrap().start.line,
+                error.span().unwrap().start.column
+            ),
+            (1, column),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn top_level_await_remains_an_explicit_synchronous_module_frontier() {
     for source in ["await 1;", "for await (const value of []) {}"] {
         let error = compile_unlinked_module_with_filename(

@@ -1138,6 +1138,38 @@ mod tests {
     }
 
     #[test]
+    fn dependency_free_request_shaped_module_negatives_stop_during_parse() {
+        let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/oracle/quickjs-2026-06-04/test262");
+        if !suite.is_dir() {
+            return;
+        }
+
+        // Each source contains a static import/export request, but this exact
+        // cohort is admitted only as dependency-free parse-negative input.
+        // The worker therefore installs no fixture loader and must observe the
+        // SyntaxError while compiling, before link or module resolution.
+        for relative in [
+            "test/language/export/escaped-as-export-specifier.js",
+            "test/language/import/dup-bound-names.js",
+            "test/language/module-code/early-dup-export-as-star-as.js",
+            "test/language/module-code/parse-err-semi-named-export-from.js",
+        ] {
+            let result = run_worker(&WorkerOptions {
+                suite: suite.clone(),
+                test: PathBuf::from(relative),
+                variant: Variant::Sloppy,
+                allow_async_host: false,
+                allow_agent_host: false,
+            })
+            .unwrap_or_else(|error| panic!("run {relative}: {error}"));
+            assert_eq!(result.outcome, "pass", "{relative}: {}", result.detail);
+            assert_eq!(result.actual_phase, "parse", "{relative}");
+            assert_eq!(result.actual_type, "SyntaxError", "{relative}");
+        }
+    }
+
+    #[test]
     fn async_worker_host_is_explicit_and_requires_one_done_report() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

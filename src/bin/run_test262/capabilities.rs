@@ -442,6 +442,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-module-decl-position-a-negatives.txt"
     ));
+    const STATIC_NEGATIVE_MODULE_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-static-negative-a-negatives.txt"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -2144,10 +2148,14 @@ mod tests {
         expected_import_meta_profile
             .audited_negative_tests
             .extend(IMPORT_META_PARSE_NEGATIVES.into_iter().map(str::to_owned));
-        let mut expected_current_profile = expected_import_meta_profile.clone();
-        expected_current_profile
+        let mut expected_declaration_position_profile = expected_import_meta_profile.clone();
+        expected_declaration_position_profile
             .audited_negative_tests
             .extend(DECL_POSITION_MODULE_NEGATIVES.lines().map(str::to_owned));
+        let mut expected_current_profile = expected_declaration_position_profile.clone();
+        expected_current_profile
+            .audited_negative_tests
+            .extend(STATIC_NEGATIVE_MODULE_NEGATIVES.lines().map(str::to_owned));
         assert_eq!(profile, expected_current_profile);
         assert_eq!(
             expected_import_meta_profile
@@ -2167,12 +2175,24 @@ mod tests {
         );
         assert_eq!(profile.features, expected_import_meta_profile.features);
         assert_eq!(
-            profile
+            expected_declaration_position_profile
                 .audited_negative_tests
                 .difference(&expected_import_meta_profile.audited_negative_tests)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             DECL_POSITION_MODULE_NEGATIVES.lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            profile.features,
+            expected_declaration_position_profile.features
+        );
+        assert_eq!(
+            profile
+                .audited_negative_tests
+                .difference(&expected_declaration_position_profile.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            STATIC_NEGATIVE_MODULE_NEGATIVES.lines().collect::<Vec<_>>()
         );
         assert_eq!(
             expected_pre_import_meta_profile
@@ -2620,14 +2640,18 @@ mod tests {
             assert_eq!(profile.classify(Path::new(path), &[], true), None, "{path}");
         }
 
-        let adjacent = profile
-            .classify(
-                Path::new("test/language/module-code/parse-err-export-dflt-const.js"),
-                &[],
-                true,
-            )
-            .unwrap();
-        assert_eq!(adjacent.outcome, "unsupported-negative-provenance");
+        let adjacent = "test/language/module-code/parse-err-export-dflt-const.js";
+        assert!(
+            !DECL_POSITION_MODULE_NEGATIVES
+                .lines()
+                .any(|path| path == adjacent)
+        );
+        assert!(
+            STATIC_NEGATIVE_MODULE_NEGATIVES
+                .lines()
+                .any(|path| path == adjacent)
+        );
+        assert_eq!(profile.classify(Path::new(adjacent), &[], true), None);
 
         for (path, features) in [
             (
@@ -2640,6 +2664,73 @@ mod tests {
             ),
         ] {
             let classification = profile.classify(Path::new(path), &features, false).unwrap();
+            assert_eq!(classification.outcome, "unsupported-feature", "{path}");
+        }
+    }
+
+    #[test]
+    fn static_negative_module_profile_delta_is_exact_and_feature_neutral() {
+        let profile = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
+        let negatives = STATIC_NEGATIVE_MODULE_NEGATIVES.lines().collect::<Vec<_>>();
+        assert_eq!(negatives.len(), 67);
+        assert!(negatives.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            negatives
+                .iter()
+                .filter(|path| path.starts_with("test/language/"))
+                .count(),
+            60
+        );
+        assert_eq!(
+            negatives
+                .iter()
+                .filter(|path| path.starts_with("test/staging/"))
+                .count(),
+            7
+        );
+        for path in negatives {
+            assert_eq!(profile.classify(Path::new(path), &[], true), None, "{path}");
+        }
+
+        for path in [
+            "test/language/expressions/assignmenttargettype/direct-importcall.js",
+            "test/language/expressions/assignmenttargettype/parenthesized-importcall.js",
+            "test/language/module-code/invalid-private-names-call-expression-bad-reference.js",
+            "test/language/module-code/private-identifiers-not-empty.js",
+            "test/language/module-code/privatename-not-valid-earlyerr-module-1.js",
+        ] {
+            let classification = profile.classify(Path::new(path), &[], true).unwrap();
+            assert_eq!(
+                classification.outcome, "unsupported-negative-provenance",
+                "{path}"
+            );
+        }
+
+        for (path, feature) in [
+            (
+                "test/language/expressions/dynamic-import/escape-sequence-import.js",
+                "dynamic-import",
+            ),
+            (
+                "test/language/module-code/import-attributes/early-dup-attribute-key-export.js",
+                "import-attributes",
+            ),
+            (
+                "test/language/module-code/top-level-await/new-await.js",
+                "top-level-await",
+            ),
+            (
+                "test/language/expressions/assignmenttargettype/direct-importcall-source.js",
+                "source-phase-imports",
+            ),
+            (
+                "test/language/expressions/assignmenttargettype/direct-importcall-defer.js",
+                "import-defer",
+            ),
+        ] {
+            let classification = profile
+                .classify(Path::new(path), &[feature.to_owned()], false)
+                .unwrap();
             assert_eq!(classification.outcome, "unsupported-feature", "{path}");
         }
     }
