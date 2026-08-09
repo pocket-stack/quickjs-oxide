@@ -98,3 +98,5 @@ check_registry updates Updates tests/oracle_updates.rs \
 check_registry function_declarations "Function declarations" \
     tests/oracle_function_declarations.rs tests/oracle/function_declarations \
     oracle/function_declarations oracle_
+check_registry errors Errors tests/oracle_error_semantics.rs \
+    tests/oracle/errors oracle/errors oracle_
