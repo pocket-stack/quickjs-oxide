@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      QJS_ORACLE_CACHE: ${{ github.workspace }}/.ci-cache/oracle
+      QJS_ORACLE_CACHE: ${{ runner.temp }}/quickjs-oxide-oracle
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,7 +124,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            .ci-cache/oracle
+            ${{ runner.temp }}/quickjs-oxide-oracle
           key: >-
             ${{ runner.os }}-differential-${{ env.RUST_VERSION }}-${{
             hashFiles('Cargo.lock', 'compat/upstream.toml',
@@ -145,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      QJS_ORACLE_CACHE: ${{ github.workspace }}/.ci-cache/oracle
+      QJS_ORACLE_CACHE: ${{ runner.temp }}/quickjs-oxide-oracle
       TEST262_WORKERS: "2"
     steps:
       - name: Check out repository
@@ -170,7 +170,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            .ci-cache/oracle
+            ${{ runner.temp }}/quickjs-oxide-oracle
           key: >-
             ${{ runner.os }}-test262-${{ env.RUST_VERSION }}-${{
             hashFiles('Cargo.lock', 'compat/upstream.toml',
