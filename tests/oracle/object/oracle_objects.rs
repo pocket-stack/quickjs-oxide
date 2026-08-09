@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
 use quickjs_oxide::{
     CompleteOrdinaryPropertyDescriptor, Context, DescriptorField, JsString,
     OrdinaryPropertyDescriptor, PropertyKey, Runtime, Value, WellKnownSymbol,
@@ -89,7 +86,10 @@ fn ordinary_object_core_matches_quickjs_oracle() {
         eprintln!("SKIP object oracle differential: set QJS_ORACLE to upstream qjs");
         return;
     };
-    assert_eq!(rust_observations(), oracle_observations(&oracle));
+    assert_eq!(
+        rust_observations(),
+        super::quickjs_oracle::eval_std_lines(&oracle, ORACLE_PROBE, "ordinary object core",)
+    );
 }
 
 fn rust_observations() -> Vec<String> {
@@ -302,24 +302,6 @@ fn rust_observations() -> Vec<String> {
         well_known == registry
     ));
     output
-}
-
-fn oracle_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["-e", ORACLE_PROBE])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run object oracle: {error}"));
-    assert!(
-        output.status.success(),
-        "object oracle failed with {}:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("object oracle emitted UTF-8")
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }
 
 fn set(

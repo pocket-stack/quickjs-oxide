@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
 use quickjs_oxide::{
     CallableRef, CompleteOrdinaryPropertyDescriptor, Context, DescriptorField, JsBigInt, JsString,
     ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, Runtime, RuntimeError, Value,
@@ -137,7 +134,8 @@ fn string_utf16_prefix_matches_pinned_quickjs() {
         return;
     };
     let rust = rust_observations();
-    let upstream = oracle_observations(&oracle);
+    let upstream =
+        super::quickjs_oracle::eval_std_lines(&oracle, ORACLE_PROBE, "String UTF-16 prefix");
     assert_eq!(rust.len(), 11, "Rust probe breadth changed unexpectedly");
     assert_eq!(
         upstream.len(),
@@ -860,22 +858,5 @@ fn hex(value: &JsString) -> String {
     value
         .utf16_units()
         .map(|unit| format!("{unit:04x}"))
-        .collect()
-}
-
-fn oracle_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["-e", ORACLE_PROBE])
-        .output()
-        .expect("run QuickJS String UTF-16 prefix oracle");
-    assert!(
-        output.status.success(),
-        "QuickJS String UTF-16 prefix oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS String UTF-16 prefix oracle emitted non-UTF-8 output")
-        .lines()
-        .map(str::to_owned)
         .collect()
 }

@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
 use quickjs_oxide::{
     CallableRef, Context, DescriptorField, JsString, ObjectRef, OrdinaryPropertyDescriptor,
     Runtime, RuntimeError, Value,
@@ -133,7 +130,8 @@ fn string_rope_matches_pinned_quickjs() {
     };
 
     let rust = rust_observations();
-    let upstream = oracle_observations(&oracle);
+    let source = format!("{ORACLE_SETUP}\nprint({PROBE});");
+    let upstream = super::quickjs_oracle::eval_std_lines(&oracle, &source, "String rope semantics");
     assert_eq!(rust.len(), 6, "Rust String rope probe breadth changed");
     assert_eq!(
         upstream.len(),
@@ -499,23 +497,4 @@ fn error_string(
         panic!("Error.{name} was not a String");
     };
     value
-}
-
-fn oracle_observations(oracle: &OsStr) -> Vec<String> {
-    let source = format!("{ORACLE_SETUP}\nprint({PROBE});");
-    let output = Command::new(oracle)
-        .arg("-e")
-        .arg(source)
-        .output()
-        .expect("run QuickJS String rope oracle");
-    assert!(
-        output.status.success(),
-        "QuickJS String rope oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS String rope oracle emitted non-UTF-8 output")
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }

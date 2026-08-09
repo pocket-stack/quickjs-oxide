@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
 use quickjs_oxide::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, Context, DescriptorField,
     JsString, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, Runtime, Value,
@@ -132,7 +129,7 @@ fn string_wrapper_exotic_matches_pinned_quickjs() {
     };
     assert_eq!(
         rust,
-        oracle_observations(&oracle),
+        super::quickjs_oracle::eval_std_lines(&oracle, ORACLE_PROBE, "String exotic object"),
         "String wrapper exotic behavior differed from pinned QuickJS"
     );
 }
@@ -631,21 +628,4 @@ fn render_value(value: &Value) -> String {
         .to_js_string()
         .expect("String exotic observation must stringify")
         .to_utf8_lossy()
-}
-
-fn oracle_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["-e", ORACLE_PROBE])
-        .output()
-        .expect("run QuickJS String exotic oracle");
-    assert!(
-        output.status.success(),
-        "QuickJS String exotic oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS String exotic oracle emitted non-UTF-8 output")
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }

@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
 use quickjs_oxide::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, Context, DescriptorField,
     JsString, ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, Runtime, RuntimeError, Value,
@@ -117,7 +114,7 @@ fn string_conversion_core_matches_pinned_quickjs() {
     };
     assert_eq!(
         rust_observations(),
-        oracle_observations(&oracle),
+        super::quickjs_oracle::eval_std_lines(&oracle, ORACLE_PROBE, "String conversion-core",),
         "String conversion-core behavior differed from pinned QuickJS"
     );
 }
@@ -652,22 +649,5 @@ fn hex(value: &JsString) -> String {
     value
         .utf16_units()
         .map(|unit| format!("{unit:04x}"))
-        .collect()
-}
-
-fn oracle_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["-e", ORACLE_PROBE])
-        .output()
-        .expect("run QuickJS String conversion-core oracle");
-    assert!(
-        output.status.success(),
-        "QuickJS String conversion-core oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS String conversion-core oracle emitted non-UTF-8 output")
-        .lines()
-        .map(str::to_owned)
         .collect()
 }
