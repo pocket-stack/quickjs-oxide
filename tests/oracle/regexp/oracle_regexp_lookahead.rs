@@ -486,7 +486,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_lookahead_cases.length; __qjo_i++)
     print(__qjo_i + "|" + __qjo_observe_lookahead(__qjo_lookahead_cases[__qjo_i]));
 "#,
     );
-    super::quickjs_oracle::eval_indexed_plain_lines(
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),
@@ -519,7 +519,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_lookahead_compile_cases.length; __qjo_i++)
 }
 "#,
     );
-    super::quickjs_oracle::eval_indexed_plain_lines(
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),

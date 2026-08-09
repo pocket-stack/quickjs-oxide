@@ -259,7 +259,12 @@ for (var __qjo_i = 0; __qjo_i < __qjo_regexp_cases.length; __qjo_i++)
 "#,
     );
 
-    super::quickjs_oracle::eval_indexed_plain_lines(oracle, &source, cases.len(), "RegExp matching")
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
+        oracle,
+        &source,
+        cases.len(),
+        "RegExp matching",
+    )
 }
 
 fn js_utf16(units: &[u16]) -> String {

@@ -352,7 +352,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_cases.length; __qjo_i++)
 "#,
     );
 
-    super::quickjs_oracle::eval_indexed_plain_lines(
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),
@@ -378,7 +378,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_cases.length; __qjo_i++) {
 }
 "#,
     );
-    super::quickjs_oracle::eval_indexed_plain_lines(
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),

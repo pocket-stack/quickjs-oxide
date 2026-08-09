@@ -661,7 +661,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_unicode_property_cases.length; __qjo_i++)
           __qjo_observe_unicode_property(__qjo_unicode_property_cases[__qjo_i]));
 "#,
     );
-    super::quickjs_oracle::eval_indexed_plain_lines(
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),
@@ -694,7 +694,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_unicode_property_compile_cases.length; __q
 }
 "#,
     );
-    super::quickjs_oracle::eval_indexed_plain_lines(
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),

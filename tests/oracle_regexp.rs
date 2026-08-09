@@ -1,6 +1,8 @@
 // Keep the RegExp oracle implementations in separate modules so their private
 // helpers remain isolated while Cargo builds one integration target.
 
+#[path = "support/quickjs_indexed_oracle.rs"]
+mod quickjs_indexed_oracle;
 #[path = "support/quickjs_oracle.rs"]
 mod quickjs_oracle;
 
@@ -8,7 +10,8 @@ mod quickjs_oracle;
 mod quickjs_oracle_contract {
     use std::any::Any;
 
-    use super::quickjs_oracle::{eval_indexed_plain_lines, eval_std_lines, observe_completion};
+    use super::quickjs_indexed_oracle::eval_indexed_plain_lines;
+    use super::quickjs_oracle::{eval_std_lines, observe_completion};
 
     fn oracle() -> Option<std::ffi::OsString> {
         let oracle = std::env::var_os("QJS_ORACLE");

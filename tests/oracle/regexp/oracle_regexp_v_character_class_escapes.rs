@@ -273,7 +273,7 @@ fn observe_quickjs(oracle: &OsStr, cases: &[MatchCase]) -> Vec<String> {
         .unwrap();
     }
 
-    super::quickjs_oracle::eval_indexed_plain_lines(
+    super::quickjs_indexed_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),
