@@ -91,3 +91,5 @@ check_registry promise Promise tests/oracle_promise.rs \
     tests/oracle/promise oracle/promise oracle_promise_
 check_registry collections Collections tests/oracle_collections.rs \
     tests/oracle/collections oracle/collections oracle_
+check_registry number_kernels "Number kernels" tests/oracle_number_kernels.rs \
+    tests/oracle/number_kernels oracle/number_kernels oracle_
