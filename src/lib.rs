@@ -7,8 +7,8 @@
 
 pub mod atom;
 pub mod bigint;
-pub mod bytecode;
-pub mod compiler;
+pub(crate) mod bytecode;
+pub(crate) mod compiler;
 pub mod debug;
 pub mod error;
 pub mod function;
@@ -30,7 +30,7 @@ mod unicode_normalize;
 mod unicode_property;
 mod uri;
 pub mod value;
-pub mod vm;
+pub(crate) mod vm;
 
 pub use bigint::{BigIntError, JsBigInt};
 pub use compiler::CompileOptions;

@@ -11,11 +11,14 @@
 //! diagnostic on the current token. Directive-prologue probes clone and seek
 //! the lexer, then the committed stream is rescanned under its strict context.
 
+#[cfg(test)]
 use crate::atom::AtomTable;
 use crate::bigint::JsBigInt;
+#[cfg(test)]
+use crate::bytecode::BytecodeFunction;
 use crate::bytecode::{
-    ApplyKind, ArgumentsKind, BytecodeFunction, DynamicEnvironmentSource, EvalVariableSource,
-    Instruction, MAX_LOCAL_SLOTS, PrivateNameSource, WithObjectSource, verify_parts,
+    ApplyKind, ArgumentsKind, DynamicEnvironmentSource, EvalVariableSource, Instruction,
+    MAX_LOCAL_SLOTS, PrivateNameSource, WithObjectSource, verify_parts,
 };
 use crate::debug::{DebugInfoMode, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset};
 use crate::error::{Error, ErrorKind, NativeErrorMessage, SourceLocation, SourceSpan};
@@ -219,7 +222,8 @@ impl EvalCompileContext {
 /// # Errors
 /// Returns a syntax error for invalid source and an unsupported diagnostic for
 /// grammar which has not yet reached the feature-parity implementation path.
-pub fn compile_script(source: &str) -> Result<BytecodeFunction, Error> {
+#[cfg(test)]
+pub(crate) fn compile_script(source: &str) -> Result<BytecodeFunction, Error> {
     let mut tree = Parser::parse(source, JsString::from_static(DEFAULT_EVAL_FILENAME))?;
     resolve_identifiers(&mut tree)?;
     if let Some(error) = tree.pending_unsupported.take() {
@@ -14854,6 +14858,7 @@ fn build_scope_lifecycles(
         .collect()
 }
 
+#[cfg(test)]
 fn lower_detached_script(tree: FunctionTree) -> Result<BytecodeFunction, Error> {
     let mut functions = tree.functions;
     let function = functions

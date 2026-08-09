@@ -1,7 +1,9 @@
 use crate::bigint::{BigIntError, JsBigInt};
+#[cfg(test)]
+use crate::bytecode::BytecodeFunction;
 use crate::bytecode::{
-    ApplyKind, ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
-    EvalVariableSource, Instruction, IteratorCallKind, PrivateNameSource,
+    ApplyKind, ArgumentsKind, DefineMethodKind, DynamicEnvironmentSource, EvalVariableSource,
+    Instruction, IteratorCallKind, PrivateNameSource,
 };
 use crate::error::{Error, ErrorKind, NativeErrorKind};
 use crate::heap::{ContextId, FunctionMetadata};
@@ -21,7 +23,7 @@ use std::collections::VecDeque;
 /// activation into a [`VmSuspension`] instead, so no Rust interpreter frame is
 /// retained between calls.
 #[derive(Default)]
-pub struct Vm;
+pub(crate) struct Vm;
 
 /// Private JavaScript control completion. A thrown value remains a rooted
 /// ordinary [`Value`]; no exception sentinel is exposed through the public
@@ -730,6 +732,7 @@ pub(crate) trait VmHost {
     fn return_derived(&mut self, index: u16, value: Value) -> Result<Completion, Error>;
 }
 
+#[cfg(test)]
 enum DetachedLocal {
     Initialized(Value),
     Uninitialized,
@@ -758,6 +761,7 @@ enum DetachedDynamicEnvironmentOperation {
     PutRef(Value, u32, Value, bool),
 }
 
+#[cfg(test)]
 struct DetachedHost<'a> {
     function: &'a BytecodeFunction,
     locals: Vec<DetachedLocal>,
@@ -849,6 +853,7 @@ struct DetachedHost<'a> {
     get_property_inputs: Vec<(Value, Value)>,
 }
 
+#[cfg(test)]
 impl<'a> DetachedHost<'a> {
     fn new(function: &'a BytecodeFunction) -> Self {
         Self {
@@ -958,6 +963,7 @@ impl<'a> DetachedHost<'a> {
     }
 }
 
+#[cfg(test)]
 impl VmHost for DetachedHost<'_> {
     fn update_active_bytecode_pc(&mut self, _pc: BytecodePc) -> Result<(), Error> {
         Ok(())
@@ -1970,7 +1976,7 @@ impl VmHost for DetachedHost<'_> {
 
 impl Vm {
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self
     }
 
@@ -1979,7 +1985,8 @@ impl Vm {
     /// # Errors
     /// Returns an internal error for malformed bytecode and a JavaScript-style
     /// type error for an operation not valid for the operand types.
-    pub fn execute(&mut self, function: &BytecodeFunction) -> Result<Value, Error> {
+    #[cfg(test)]
+    pub(crate) fn execute(&mut self, function: &BytecodeFunction) -> Result<Value, Error> {
         let verified = function.verify()?;
         let mut host = DetachedHost::new(function);
         match VmActivation::new(usize::from(verified.max_stack))
@@ -2403,6 +2410,7 @@ impl VmSuspension {
 }
 
 impl VmActivation {
+    #[cfg(test)]
     fn new(max_stack: usize) -> Self {
         Self {
             stack: Vec::with_capacity(max_stack),

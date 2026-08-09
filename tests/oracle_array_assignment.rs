@@ -1,7 +1,11 @@
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
-use quickjs_oxide::{Context, ErrorKind, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
+
+mod support;
+
+use support::compile_syntax_error;
 
 // Pins QuickJS 2026-06-04 ArrayAssignmentPattern lowering. Array binding
 // declarations are covered separately: this target keeps AssignmentExpression
@@ -645,10 +649,11 @@ fn invalid_object_assignment_leaf_is_syntax() {
         "var a,x;({p:[{x}],q:true&&a}={});",
         "'use strict';var x;({eval}={});",
     ] {
-        let error = quickjs_oxide::compiler::compile_script(source)
-            .expect_err("invalid object assignment unexpectedly compiled");
-        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
-        assert_eq!(error.message(), "invalid destructuring target", "{source}");
+        assert_eq!(
+            compile_syntax_error(source),
+            "invalid destructuring target",
+            "{source}"
+        );
     }
 }
 
@@ -677,10 +682,7 @@ fn array_assignment_rest_diagnostics_have_quickjs_priority() {
             "rest element must be the last one",
         ),
     ] {
-        let error = quickjs_oxide::compiler::compile_script(source)
-            .expect_err("invalid rest assignment unexpectedly compiled");
-        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
-        assert_eq!(error.message(), message, "{source}");
+        assert_eq!(compile_syntax_error(source), message, "{source}");
     }
 }
 
@@ -694,10 +696,11 @@ fn invalid_array_assignment_leaf_is_syntax_after_object_patterns() {
         "var a;[a()]=[];",
         "var a;[new a]=[];",
     ] {
-        let error = quickjs_oxide::compiler::compile_script(source)
-            .expect_err("invalid array assignment unexpectedly compiled");
-        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
-        assert_eq!(error.message(), "invalid destructuring target", "{source}");
+        assert_eq!(
+            compile_syntax_error(source),
+            "invalid destructuring target",
+            "{source}"
+        );
     }
 }
 

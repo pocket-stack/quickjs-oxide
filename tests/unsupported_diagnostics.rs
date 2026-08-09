@@ -1,5 +1,9 @@
 use quickjs_oxide::{ErrorKind, Runtime, RuntimeError, Value};
 
+mod support;
+
+use support::compile_syntax_error;
+
 fn assert_unsupported<T>(
     label: &str,
     result: Result<T, RuntimeError>,
@@ -61,10 +65,8 @@ fn object_rest_bindings_preserve_lexical_conflict_diagnostics() {
         "const {value, ...value} = {value: 1};",
         "let value; var {...value} = {};",
     ] {
-        let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
         assert_eq!(
-            error.message(),
+            compile_syntax_error(source),
             "invalid redefinition of lexical identifier",
             "{source}"
         );
@@ -92,15 +94,6 @@ fn object_rest_bindings_preserve_later_source_error_priority() {
             "invalid redefinition of a variable",
         ),
     ] {
-        let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
-        assert_eq!(error.message(), expected, "{source}");
+        assert_eq!(compile_syntax_error(source), expected, "{source}");
     }
-}
-
-#[test]
-fn detached_nested_function_limit_is_an_engine_frontier() {
-    let error = quickjs_oxide::compiler::compile_script("function nested() {}").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert!(error.message().contains("requires runtime publication"));
 }

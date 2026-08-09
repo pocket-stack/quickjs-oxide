@@ -1,7 +1,11 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-use quickjs_oxide::{ErrorKind, Runtime, Value};
+use quickjs_oxide::{Runtime, Value};
+
+mod support;
+
+use support::compile_syntax_error;
 
 // Pins the base-class portion of QuickJS 2026-06-04 `js_parse_class` and
 // `OP_define_class`. Heritage is covered by the derived-class oracle and gate;
@@ -223,9 +227,8 @@ fn base_class_early_errors_are_rejected_during_compilation() {
             "class declarations can't appear in single-statement context",
         ),
     ] {
-        let error = quickjs_oxide::compiler::compile_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
-        assert!(error.message().contains(expected), "{source}: {error}");
+        let message = compile_syntax_error(source);
+        assert!(message.contains(expected), "{source}: {message}");
     }
 }
 

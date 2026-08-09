@@ -1,4 +1,5 @@
 use crate::Error;
+#[cfg(test)]
 use crate::value::Value;
 use std::collections::VecDeque;
 
@@ -61,6 +62,7 @@ pub enum DynamicEnvironmentSource {
     With(WithObjectSource),
 }
 
+#[cfg(test)]
 const fn dynamic_environment_local(source: DynamicEnvironmentSource) -> Option<u16> {
     match source {
         DynamicEnvironmentSource::Eval(EvalVariableSource::Local(index))
@@ -890,8 +892,12 @@ impl Instruction {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
-pub struct BytecodeFunction {
+pub(crate) struct BytecodeFunction {
+    // Keep the historical detached metadata shape available to bytecode forge
+    // tests even though the test VM does not inspect function names.
+    #[allow(dead_code)]
     pub name: Option<String>,
     pub code: Vec<Instruction>,
     pub constants: Vec<Value>,
@@ -901,6 +907,7 @@ pub struct BytecodeFunction {
     pub max_stack: u16,
 }
 
+#[cfg(test)]
 impl BytecodeFunction {
     #[must_use]
     pub fn constant(&self, index: u32) -> Option<&Value> {
@@ -1043,7 +1050,7 @@ impl BytecodeFunction {
 /// Constant kinds are runtime-owned after linking, but control-flow validation
 /// only needs the pool length. Keeping this verifier representation-neutral
 /// lets publication validate child-function constants without manufacturing
-/// temporary public [`Value`]s.
+/// temporary public [`crate::Value`]s.
 pub(crate) fn verify_parts(
     code: &[Instruction],
     constant_count: usize,
@@ -1757,8 +1764,8 @@ fn record_maximum_depth(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VerifiedBytecode {
-    pub max_stack: u16,
+pub(crate) struct VerifiedBytecode {
+    pub(crate) max_stack: u16,
 }
 
 fn enqueue_target(
