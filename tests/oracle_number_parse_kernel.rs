@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use quickjs_oxide::JsString;
 use quickjs_oxide::number_parse::{parse_float, parse_int};
@@ -119,9 +120,24 @@ for (var i = 0; i < inputs.length; i++)
 for (var i = 0; i < inputs.length; i++) print(bits(parseFloat(inputs[i])));
 "#
     );
-    let output = Command::new(oracle)
-        .args(["-e", &source])
-        .output()
+    // Keep the generated corpus out of argv: Linux CI has a substantially
+    // smaller ARG_MAX than macOS, while QuickJS can consume the exact same
+    // source through its standard input stream.
+    let mut child = Command::new(oracle)
+        .args(["--std", "-e", "std.evalScript(std.in.readAsString())"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn QuickJS Number parser oracle");
+    child
+        .stdin
+        .take()
+        .expect("open QuickJS Number parser oracle stdin")
+        .write_all(source.as_bytes())
+        .expect("write QuickJS Number parser oracle source");
+    let output = child
+        .wait_with_output()
         .expect("run QuickJS Number parser oracle");
     assert!(
         output.status.success(),
