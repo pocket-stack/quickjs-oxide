@@ -1,8 +1,60 @@
 // Keep the Object oracle implementations in separate modules so their private
 // helpers remain isolated while Cargo builds one integration target.
 
+#[path = "support/quickjs_object_pattern_oracle.rs"]
+mod quickjs_object_pattern_oracle;
 #[path = "support/quickjs_oracle.rs"]
 mod quickjs_oracle;
+
+#[cfg(test)]
+mod quickjs_object_pattern_oracle_contract {
+    use super::quickjs_object_pattern_oracle::{observe_completion_strip_one_lf, run_cli_exact};
+
+    fn oracle() -> Option<std::ffi::OsString> {
+        let oracle = std::env::var_os("QJS_ORACLE");
+        if oracle.is_none() {
+            eprintln!(
+                "SKIP object-pattern oracle helper regressions: set QJS_ORACLE to upstream qjs"
+            );
+        }
+        oracle
+    }
+
+    #[test]
+    fn completion_removes_only_the_print_line_feed() {
+        let Some(oracle) = oracle() else {
+            return;
+        };
+        assert_eq!(
+            observe_completion_strip_one_lf(
+                &oracle,
+                "'tail  \\n\\t'",
+                "object-pattern trailing whitespace",
+            ),
+            "return|string|tail  \n\t",
+        );
+    }
+
+    #[test]
+    fn exact_cli_keeps_stdout_and_cmdline_diagnostics() {
+        let Some(oracle) = oracle() else {
+            return;
+        };
+
+        let success = run_cli_exact(&oracle, "print('ok')", "successful raw CLI contract");
+        assert!(success.status.success());
+        assert_eq!(String::from_utf8(success.stdout).unwrap(), "ok\n");
+        assert!(success.stderr.is_empty());
+
+        let syntax = run_cli_exact(&oracle, "let {", "syntax raw CLI contract");
+        assert!(!syntax.status.success());
+        assert_eq!(syntax.status.code(), Some(1));
+        assert!(syntax.stdout.is_empty());
+        let stderr = String::from_utf8(syntax.stderr).unwrap();
+        assert!(stderr.contains("SyntaxError: variable name expected"));
+        assert!(stderr.contains("at <cmdline>:1:5"));
+    }
+}
 
 #[path = "oracle/object/oracle_object_accessors.rs"]
 mod oracle_object_accessors;

@@ -27,6 +27,12 @@ const STD_LINES_EVALUATOR: &str = r#"
 "#;
 
 pub(super) fn observe_completion(oracle: &OsStr, source: &str, description: &str) -> String {
+    observe_completion_output(oracle, source, description)
+        .trim_end()
+        .to_owned()
+}
+
+pub(super) fn observe_completion_output(oracle: &OsStr, source: &str, description: &str) -> String {
     run_stdin_utf8(
         oracle,
         COMPLETION_OBSERVER,
@@ -35,8 +41,6 @@ pub(super) fn observe_completion(oracle: &OsStr, source: &str, description: &str
         description,
         "observer",
     )
-    .trim_end()
-    .to_owned()
 }
 
 pub(super) fn eval_std_lines(oracle: &OsStr, source: &str, description: &str) -> Vec<String> {

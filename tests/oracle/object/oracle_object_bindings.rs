@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
 // This target pins the object-binding declaration path shared by direct
@@ -401,8 +398,13 @@ fn object_binding_parser_diagnostics_match_pinned_quickjs() {
         return;
     };
     for &(description, source) in PARSER_CASES {
-        let rust = run_cli(env!("CARGO_BIN_EXE_qjs").as_ref(), source, description);
-        let quickjs = run_cli(&oracle, source, description);
+        let rust = super::quickjs_object_pattern_oracle::run_cli_exact(
+            env!("CARGO_BIN_EXE_qjs").as_ref(),
+            source,
+            description,
+        );
+        let quickjs =
+            super::quickjs_object_pattern_oracle::run_cli_exact(&oracle, source, description);
         assert_eq!(rust.status.code(), quickjs.status.code(), "{description}");
         assert_eq!(rust.stdout, quickjs.stdout, "{description}");
         assert_eq!(rust.stderr, quickjs.stderr, "{description}");
@@ -419,7 +421,11 @@ fn compare_cases(group: &str, cases: &[(&str, &str)]) {
         let mut context = runtime.new_context();
         assert_eq!(
             observe_rust_eval(&runtime, &mut context, source, description),
-            observe_oracle(&oracle, source, description),
+            super::quickjs_object_pattern_oracle::observe_completion_strip_one_lf(
+                &oracle,
+                source,
+                description,
+            ),
             "{group} drifted for {description}: {source:?}",
         );
     }
@@ -457,39 +463,6 @@ fn observe_rust_eval(
         }
         Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
     }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let wrapper = r#"
-try {
-  var value = std.evalScript(scriptArgs[0]);
-  print('return|' + typeof value + '|' + String(value));
-} catch (error) {
-  if (error !== null && typeof error === 'object')
-    print('throw|object|' + error.name + '|' + error.message);
-  else
-    print('throw|' + typeof error + '|' + String(error));
-}
-"#;
-    let output = Command::new(oracle)
-        .args(["--std", "-e", wrapper, source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {description}: {error}"));
-    assert!(
-        output.status.success(),
-        "QuickJS observer failed for {description}: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| panic!("QuickJS output was not UTF-8 for {description}: {error}"));
-    stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned()
-}
-
-fn run_cli(program: &OsStr, source: &str, description: &str) -> std::process::Output {
-    Command::new(program)
-        .args(["-e", source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run CLI for {description}: {error}"))
 }
 
 fn error_string_property(
