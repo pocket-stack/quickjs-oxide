@@ -95,3 +95,6 @@ check_registry number_kernels "Number kernels" tests/oracle_number_kernels.rs \
     tests/oracle/number_kernels oracle/number_kernels oracle_
 check_registry updates Updates tests/oracle_updates.rs \
     tests/oracle/update oracle/update oracle_update_
+check_registry function_declarations "Function declarations" \
+    tests/oracle_function_declarations.rs tests/oracle/function_declarations \
+    oracle/function_declarations oracle_
