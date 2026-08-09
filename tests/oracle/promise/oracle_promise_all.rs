@@ -1,7 +1,7 @@
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
-const FIXTURE: &str = include_str!("fixtures/r3p_promise_all.js");
-const EXPECTED: &str = include_str!("fixtures/r3p_promise_all.quickjs-2026-06-04.txt");
+const FIXTURE: &str = include_str!("../../fixtures/r3p_promise_all.js");
+const EXPECTED: &str = include_str!("../../fixtures/r3p_promise_all.quickjs-2026-06-04.txt");
 
 fn eval(context: &mut Context, source: &str) -> Value {
     context.eval(source).unwrap_or_else(|error| {

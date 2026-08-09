@@ -87,3 +87,5 @@ check_registry object Object tests/oracle_object_semantics.rs \
     tests/oracle/object oracle/object oracle_object
 check_registry regexp RegExp tests/oracle_regexp.rs \
     tests/oracle/regexp oracle/regexp oracle_regexp_
+check_registry promise Promise tests/oracle_promise.rs \
+    tests/oracle/promise oracle/promise oracle_promise_
