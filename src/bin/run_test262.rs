@@ -110,6 +110,7 @@ struct CoordinatorOptions {
     suite: PathBuf,
     config: PathBuf,
     oxide_profile: PathBuf,
+    engine_semantics_sha256: String,
     manifest: Option<PathBuf>,
     tests: Vec<PathBuf>,
     all: bool,
@@ -206,6 +207,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let mut suite = None;
     let mut config = None;
     let mut oxide_profile = None;
+    let mut engine_semantics_sha256 = None;
     let mut manifest = None;
     let mut tests = Vec::new();
     let mut report = None;
@@ -240,6 +242,17 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             "--config" => config = Some(PathBuf::from(take_value("--config")?)),
             "--oxide-profile" => {
                 oxide_profile = Some(PathBuf::from(take_value("--oxide-profile")?));
+            }
+            "--engine-semantics-sha256" => {
+                let value = take_value("--engine-semantics-sha256")?;
+                if value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err("--engine-semantics-sha256 must be a lowercase SHA-256".to_owned());
+                }
+                engine_semantics_sha256 = Some(value);
             }
             "--manifest" => manifest = Some(PathBuf::from(take_value("--manifest")?)),
             "--test" => tests.push(PathBuf::from(take_value("--test")?)),
@@ -285,6 +298,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || report.is_some()
             || config.is_some()
             || oxide_profile.is_some()
+            || engine_semantics_sha256.is_some()
             || variant.is_some()
             || allow_failures
             || mode_explicit
@@ -307,6 +321,7 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || report.is_some()
             || config.is_some()
             || oxide_profile.is_some()
+            || engine_semantics_sha256.is_some()
             || allow_failures
             || mode_explicit
             || timeout_explicit
@@ -343,11 +358,14 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             .join("test262.conf")
     });
     let oxide_profile = oxide_profile.ok_or_else(|| "--oxide-profile is required".to_owned())?;
+    let engine_semantics_sha256 = engine_semantics_sha256
+        .ok_or_else(|| "--engine-semantics-sha256 is required".to_owned())?;
     let report = report.ok_or_else(|| "--report is required".to_owned())?;
     Ok(Invocation::Coordinator(CoordinatorOptions {
         suite,
         config,
         oxide_profile,
+        engine_semantics_sha256,
         manifest,
         tests,
         all,
@@ -363,8 +381,10 @@ fn print_help() {
     let default_workers = default_worker_count();
     println!(
         "run-test262 (quickjs-oxide)\n\
-usage: run-test262 --suite DIR --config FILE --oxide-profile FILE (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
+usage: run-test262 --suite DIR --config FILE --oxide-profile FILE --engine-semantics-sha256 SHA256 (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
 \n\
+  --engine-semantics-sha256 SHA256\n\
+                       canonical source fingerprint supplied by the gate\n\
   --mode MODE          both, strict, sloppy, default-strict, or default-sloppy\n\
   --timeout-ms N       hard per-variant worker timeout (default: {DEFAULT_TIMEOUT_MS})\n\
   --workers N          maximum concurrent subprocesses (default: {default_workers})\n\
@@ -900,6 +920,8 @@ mod cli_tests {
             "suite",
             "--oxide-profile",
             "profiles/current.conf",
+            "--engine-semantics-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
             "--manifest",
             "manifest",
             "--report",
@@ -912,6 +934,10 @@ mod cli_tests {
             panic!("coordinator arguments selected another invocation");
         };
         assert_eq!(options.oxide_profile, Path::new("profiles/current.conf"));
+        assert_eq!(
+            options.engine_semantics_sha256,
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
         assert_eq!(options.workers, 3);
     }
 
@@ -940,6 +966,36 @@ mod cli_tests {
 
         let missing = parse_error(&["--suite", "suite", "--all", "--report", "report.tsv"]);
         assert_eq!(missing, "--oxide-profile is required");
+    }
+
+    #[test]
+    fn coordinator_requires_a_canonical_engine_semantics_fingerprint() {
+        let missing = parse_error(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "profile",
+            "--all",
+            "--report",
+            "report.tsv",
+        ]);
+        assert_eq!(missing, "--engine-semantics-sha256 is required");
+
+        let invalid = parse_error(&[
+            "--suite",
+            "suite",
+            "--oxide-profile",
+            "profile",
+            "--engine-semantics-sha256",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "--all",
+            "--report",
+            "report.tsv",
+        ]);
+        assert_eq!(
+            invalid,
+            "--engine-semantics-sha256 must be a lowercase SHA-256"
+        );
     }
 
     #[test]

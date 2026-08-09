@@ -128,7 +128,10 @@ pub(super) fn write_report(
         );
     }
     let mut output = String::new();
-    output.push_str("# quickjs-oxide Test262 outcome vector v2\n");
+    output.push_str(&format!(
+        "# quickjs-oxide Test262 outcome vector v3 engine_semantics_sha256={}\n",
+        options.engine_semantics_sha256
+    ));
     output.push_str(&format!("# quickjs={QUICKJS_VERSION}\n"));
     output.push_str(&format!("# test262={TEST262_COMMIT}\n"));
     output.push_str(&format!("# test262_patch_sha256={TEST262_PATCH_SHA256}\n"));
@@ -169,13 +172,14 @@ pub(super) fn write_report(
 
     let mut json = String::new();
     json.push_str(&format!(
-        "{{\"kind\":\"metadata\",\"schema\":2,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"oxide_profile_sha256\":{},\"profile\":\"test262-canonical-classified-v2\",\"mode\":{}}}\n",
+        "{{\"kind\":\"metadata\",\"schema\":3,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"oxide_profile_sha256\":{},\"engine_semantics_sha256\":{},\"profile\":\"test262-canonical-classified-v2\",\"mode\":{}}}\n",
         json_string(QUICKJS_VERSION),
         json_string(TEST262_COMMIT),
         json_string(TEST262_PATCH_SHA256),
         json_string(TEST262_CONFIG_SHA256),
         json_string(TEST262_METADATA_SHA256),
         json_string(oxide_profile_sha256),
+        json_string(&options.engine_semantics_sha256),
         json_string(options.mode.name()),
     ));
     for row in rows {

@@ -5,6 +5,13 @@ the current profile, focused manifest and receipts, full-corpus metrics, line
 counts, summaries, and SHA-256 hashes. The gate parses it as inert `key=value`
 data; it is never sourced or evaluated by a shell.
 
+The baseline also names the exact source commit and a canonical engine-semantics
+fingerprint. The fingerprint hashes sorted repository paths and exact contents
+for `Cargo.toml`, `Cargo.lock`, `src/**`, the active profile/upstream pins, and
+the central preparation/gate scripts. It excludes generated caches, vendors,
+historical vectors, receipts, and `current.conf` itself. The spec remains
+separately authenticated, so excluding it avoids a circular checksum.
+
 Use the one parameterized entry point:
 
 ```sh
@@ -12,6 +19,13 @@ Use the one parameterized entry point:
 ./scripts/test-test262.sh --focused
 TEST262_WORKERS=2 ./scripts/test-test262.sh --full
 ```
+
+`--check` authenticates the pinned baseline and prints whether the working tree
+is current or stale; staleness is explicit but does not fail fast CI. Focused
+byte-for-byte replay refuses a stale source. A full run may produce a new
+current-source receipt for promotion, but cannot authenticate against the old
+baseline hashes. Promotion updates the pinned source commit and result hashes
+only after report metadata matches the recomputed workspace fingerprint.
 
 The repository keeps only the current profile and focused receipt plus the
 small semantic ledgers used by runner unit tests. Earlier milestone profiles,

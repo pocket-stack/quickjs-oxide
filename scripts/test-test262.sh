@@ -11,7 +11,7 @@ default_spec=dev-support/test262/current.conf
 
 usage() {
     printf 'usage: %s [--spec FILE] [--check|--focused|--full]\n' "${0##*/}"
-    printf '  --check    authenticate the spec and its frozen inputs and receipts\n'
+    printf '  --check    authenticate the baseline and report source freshness\n'
     printf '  --focused  rerun and byte-compare the focused milestone receipt\n'
     printf '  --full     rerun and authenticate the complete Test262 result vector\n'
 }
@@ -51,7 +51,7 @@ case $spec_arg in
 esac
 [[ -f "$spec" && ! -L "$spec" ]] || die "spec is not a regular file: $spec_arg"
 
-required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 upstream upstream_lines upstream_sha256 profile profile_lines profile_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
+required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 engine_fingerprint_tool engine_fingerprint_tool_lines engine_fingerprint_tool_sha256 engine_semantics_source engine_semantics_files engine_semantics_trees engine_semantics_sha256 upstream upstream_lines upstream_sha256 profile profile_lines profile_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
 
 # Parse as inert data. In particular, this gate never sources or evaluates a spec.
 awk -v required="$required_keys" '
@@ -179,6 +179,16 @@ report_header() {
     ' "$report"
 }
 
+report_engine_semantics_sha256() {
+    awk '
+        NR == 1 && /^# quickjs-oxide Test262 outcome vector v3 engine_semantics_sha256=/ {
+            print substr($0, length("# quickjs-oxide Test262 outcome vector v3 engine_semantics_sha256=")+1)
+            found++
+        }
+        END { if (found != 1) exit 1 }
+    ' "$1"
+}
+
 report_summary() { tail -n 1 "$1" | sed 's/^# summary //'; }
 report_variants() { report_rows "$1" | awk 'END { print NR+0 }'; }
 report_runnable() {
@@ -199,25 +209,28 @@ verify_json_projection() {
     local json=$2
     local expected_variants=$3
     local expected_summary=$4
+    local expected_engine_semantics_sha256=$5
     node - "$json" "$expected_variants" "$expected_summary" \
         "$(spec_value quickjs)" "$(spec_value test262)" \
         "$(spec_value test262_patch_sha256)" "$(spec_value test262_config_sha256)" \
         "$(spec_value test262_metadata_sha256)" "$(spec_value profile_sha256)" \
-        "$(spec_value mode)" <<'NODE' >"$tmp/json.rows"
+        "$expected_engine_semantics_sha256" "$(spec_value mode)" \
+        <<'NODE' >"$tmp/json.rows"
 const fs = require("node:fs");
 const [path, variantsText, expectedSummary, quickjs, test262, patch, config,
-  metadataHash, profileHash, mode] = process.argv.slice(2);
+  metadataHash, profileHash, engineHash, mode] = process.argv.slice(2);
 const lines = fs.readFileSync(path, "utf8").trimEnd().split("\n");
 const records = lines.map((line) => JSON.parse(line));
 const variants = Number(variantsText);
 if (records.length !== variants + 2) process.exit(2);
 const metadata = records[0];
-if (metadata.kind !== "metadata" || metadata.schema !== 2 ||
+if (metadata.kind !== "metadata" || metadata.schema !== 3 ||
     metadata.quickjs !== quickjs || metadata.test262 !== test262 ||
     metadata.test262_patch_sha256 !== patch ||
     metadata.test262_config_sha256 !== config ||
     metadata.test262_metadata_sha256 !== metadataHash ||
     metadata.oxide_profile_sha256 !== profileHash ||
+    metadata.engine_semantics_sha256 !== engineHash ||
     metadata.profile !== "test262-canonical-classified-v2" ||
     metadata.mode !== mode) process.exit(3);
 const summary = records.at(-1);
@@ -258,6 +271,7 @@ verify_report() {
     local report=$1
     local json=$2
     local prefix=$3
+    local expected_engine_semantics_sha256=$4
     local expected_variants expected_eligible expected_runnable expected_passes
     local expected_summary expected_tsv_lines expected_jsonl_lines
     local expected_tsv_sha expected_jsonl_sha
@@ -271,12 +285,20 @@ verify_report() {
     expected_tsv_sha=$(spec_value "${prefix}_tsv_sha256")
     expected_jsonl_sha=$(spec_value "${prefix}_jsonl_sha256")
 
-    check_file "$report" "$expected_tsv_lines" "$expected_tsv_sha" "$prefix TSV receipt"
-    check_file "$json" "$expected_jsonl_lines" "$expected_jsonl_sha" "$prefix JSONL receipt"
+    [[ -f "$report" && ! -L "$report" ]] \
+        || die "$prefix TSV receipt is not a regular file: $report"
+    [[ -f "$json" && ! -L "$json" ]] \
+        || die "$prefix JSONL receipt is not a regular file: $json"
     [[ "$(report_header "$report" oxide_profile_sha256)" == "$(spec_value profile_sha256)" \
+        && "$(report_engine_semantics_sha256 "$report")" \
+            == "$expected_engine_semantics_sha256" \
         && "$(report_header "$report" profile)" == test262-canonical-classified-v2 \
         && "$(report_header "$report" mode)" == "$(spec_value mode)" ]] \
         || die "$prefix report metadata drifted"
+    verify_json_projection "$report" "$json" "$expected_variants" \
+        "$expected_summary" "$expected_engine_semantics_sha256"
+    check_file "$report" "$expected_tsv_lines" "$expected_tsv_sha" "$prefix TSV receipt"
+    check_file "$json" "$expected_jsonl_lines" "$expected_jsonl_sha" "$prefix JSONL receipt"
     [[ "$(report_variants "$report")" == "$expected_variants" \
         && "$(report_runnable "$report")" == "$expected_eligible" \
         && "$expected_eligible" == "$expected_runnable" \
@@ -284,10 +306,9 @@ verify_report() {
         && "$(report_summary "$report")" == "$expected_summary" \
         && "$(computed_summary "$report")" == "$expected_summary" ]] \
         || die "$prefix classified result vector drifted"
-    verify_json_projection "$report" "$json" "$expected_variants" "$expected_summary"
 }
 
-for key in upstream profile manifest focused_tsv focused_jsonl; do
+for key in engine_fingerprint_tool upstream profile manifest focused_tsv focused_jsonl; do
     relative=$(spec_value "$key")
     case "/$relative/" in
         *//*|*'/./'*|*'/../'*|*\\*) die "unsafe repository path in $key: $relative" ;;
@@ -297,7 +318,7 @@ for key in upstream profile manifest focused_tsv focused_jsonl; do
     esac
 done
 
-for key in upstream_lines profile_lines manifest_lines focused_tsv_lines \
+for key in engine_fingerprint_tool_lines upstream_lines profile_lines manifest_lines focused_tsv_lines \
     focused_jsonl_lines test262_metadata_records timeout_ms focused_variants \
     focused_eligible focused_runnable focused_passes full_variants full_eligible \
     full_runnable full_passes full_tsv_lines full_jsonl_lines; do
@@ -306,12 +327,16 @@ for key in upstream_lines profile_lines manifest_lines focused_tsv_lines \
         || die "non-canonical numeric Test262 spec value for $key"
 done
 for key in test262_patch_sha256 test262_config_sha256 test262_metadata_sha256 \
-    upstream_sha256 profile_sha256 manifest_sha256 focused_tsv_sha256 \
+    engine_fingerprint_tool_sha256 engine_semantics_sha256 upstream_sha256 \
+    profile_sha256 manifest_sha256 focused_tsv_sha256 \
     focused_jsonl_sha256 full_tsv_sha256 full_jsonl_sha256; do
     value=$(spec_value "$key")
     [[ "$value" =~ ^[0-9a-f]{64}$ ]] || die "invalid SHA-256 in Test262 spec for $key"
 done
-[[ "$(spec_value schema)" == test262-gate-v1 \
+value=$(spec_value engine_semantics_source)
+[[ "$value" =~ ^[0-9a-f]{40}$ ]] \
+    || die 'invalid full commit SHA in Test262 spec for engine_semantics_source'
+[[ "$(spec_value schema)" == test262-gate-v2 \
     && "$(spec_value mode)" == both \
     && "$(spec_value focused_eligible)" == "$(spec_value focused_runnable)" \
     && "$(spec_value full_eligible)" == "$(spec_value full_runnable)" ]] \
@@ -361,12 +386,15 @@ profile=$(repo_path profile)
 manifest=$(repo_path manifest)
 focused_tsv=$(repo_path focused_tsv)
 focused_jsonl=$(repo_path focused_jsonl)
+engine_fingerprint_tool=$(repo_path engine_fingerprint_tool)
 output_dir=$root/target
 [[ ! -e "$output_dir" || (-d "$output_dir" && ! -L "$output_dir") ]] \
     || die 'target output directory must not be a symbolic link'
 full_report=$output_dir/test262-full.tsv
 full_json=$output_dir/test262-full.jsonl
 
+check_file "$engine_fingerprint_tool" "$(spec_value engine_fingerprint_tool_lines)" \
+    "$(spec_value engine_fingerprint_tool_sha256)" 'engine fingerprint tool'
 check_file "$upstream" "$(spec_value upstream_lines)" \
     "$(spec_value upstream_sha256)" 'upstream pin'
 check_file "$profile" "$(spec_value profile_lines)" \
@@ -388,17 +416,43 @@ check_file "$manifest" "$(spec_value manifest_lines)" \
         == "$(spec_value profile_sha256)" ]] \
     || die 'upstream pin and Test262 gate spec disagree'
 
+baseline_engine_semantics_sha256=$(node "$engine_fingerprint_tool" --root "$root" \
+    --commit "$(spec_value engine_semantics_source)" \
+    --files "$(spec_value engine_semantics_files)" \
+    --trees "$(spec_value engine_semantics_trees)")
+[[ "$baseline_engine_semantics_sha256" == "$(spec_value engine_semantics_sha256)" ]] \
+    || die 'baseline engine semantics fingerprint does not match its pinned source commit'
+workspace_engine_semantics_sha256=$(node "$engine_fingerprint_tool" --root "$root" \
+    --worktree --files "$(spec_value engine_semantics_files)" \
+    --trees "$(spec_value engine_semantics_trees)")
+
 sort "$manifest" >"$tmp/manifest.sorted"
 cmp -s "$manifest" "$tmp/manifest.sorted" || die 'focused manifest is not bytewise sorted'
 [[ -z "$(uniq -d "$manifest")" ]] || die 'focused manifest contains duplicate paths'
-verify_report "$focused_tsv" "$focused_jsonl" focused
+verify_report "$focused_tsv" "$focused_jsonl" focused \
+    "$baseline_engine_semantics_sha256"
 report_rows "$focused_tsv" | cut -f1 >"$tmp/focused.paths"
 cmp -s "$manifest" "$tmp/focused.paths" \
     || die 'focused receipt paths do not exactly match the manifest'
 
 if [[ "$mode" == check ]]; then
     printf '%s Test262 spec and frozen receipts are authenticated.\n' "$(spec_value milestone)"
+    if [[ "$workspace_engine_semantics_sha256" == "$baseline_engine_semantics_sha256" ]]; then
+        printf 'Test262 baseline source is current: %s\n' \
+            "$workspace_engine_semantics_sha256"
+    else
+        printf 'Test262 baseline source is stale: baseline=%s current=%s\n' \
+            "$baseline_engine_semantics_sha256" "$workspace_engine_semantics_sha256"
+    fi
     exit 0
+fi
+
+if [[ "$mode" == focused ]]; then
+    [[ "$workspace_engine_semantics_sha256" == "$baseline_engine_semantics_sha256" ]] \
+        || die "Test262 baseline is stale: baseline=$baseline_engine_semantics_sha256 current=$workspace_engine_semantics_sha256; promote the milestone before focused replay"
+elif [[ "$workspace_engine_semantics_sha256" != "$baseline_engine_semantics_sha256" ]]; then
+    printf 'Test262 full run will produce a current-source receipt for promotion: baseline=%s current=%s\n' \
+        "$baseline_engine_semantics_sha256" "$workspace_engine_semantics_sha256" >&2
 fi
 
 workers=${TEST262_WORKERS:-2}
@@ -439,10 +493,12 @@ if [[ "$mode" == focused ]]; then
     replay=$tmp/focused.tsv
     run_output=$("$runner" --suite "$suite" --config "$source_dir/test262.conf" \
         --oxide-profile "$profile" --manifest "$manifest" --report "$replay" \
+        --engine-semantics-sha256 "$workspace_engine_semantics_sha256" \
         --mode "$(spec_value mode)" --workers "$workers" \
         --timeout-ms "$(spec_value timeout_ms)" --allow-failures)
     printf '%s\n' "$run_output"
-    verify_report "$replay" "${replay%.tsv}.jsonl" focused
+    verify_report "$replay" "${replay%.tsv}.jsonl" focused \
+        "$workspace_engine_semantics_sha256"
     cmp -s "$focused_tsv" "$replay" || die 'focused TSV replay is not byte-identical'
     cmp -s "$focused_jsonl" "${replay%.tsv}.jsonl" \
         || die 'focused JSONL replay is not byte-identical'
@@ -466,6 +522,7 @@ mkdir -p "$output_dir"
 rm -f -- "$full_report" "$full_json"
 run_output=$("$runner" --suite "$suite" --config "$source_dir/test262.conf" \
     --oxide-profile "$profile" --all --report "$full_report" \
+    --engine-semantics-sha256 "$workspace_engine_semantics_sha256" \
     --mode "$(spec_value mode)" --workers "$workers" \
     --timeout-ms "$(spec_value timeout_ms)" --allow-failures)
 printf '%s\n' "$run_output"
@@ -473,9 +530,10 @@ execution_line=$(printf '%s\n' "$run_output" | \
     awk '/^execution: runnable=/ { print; found++ } END { if (found!=1) exit 1 }')
 actual_runnable=${execution_line#*runnable=}
 actual_runnable=${actual_runnable%% *}
+verify_report "$full_report" "$full_json" full \
+    "$workspace_engine_semantics_sha256"
 [[ "$actual_runnable" == "$(spec_value full_runnable)" ]] \
     || die 'full runner eligible/runnable count drifted'
-verify_report "$full_report" "$full_json" full
 printf '%s complete Test262 vector matches: %s pass of %s eligible (%s total) variants.\n' \
     "$(spec_value milestone)" "$(spec_value full_passes)" \
     "$(spec_value full_eligible)" "$(spec_value full_variants)"
