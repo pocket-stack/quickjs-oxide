@@ -108,3 +108,5 @@ check_registry async_methods "Async methods" tests/oracle_async_methods.rs \
     tests/oracle/async_methods oracle/async_methods oracle_async_
 check_registry control_flow "Control flow" tests/oracle_control_flow.rs \
     tests/oracle/control_flow oracle/control_flow oracle_
+check_registry typed_array TypedArray tests/oracle_typed_array_methods.rs \
+    tests/oracle/typed_array oracle/typed_array oracle_typed_array_
