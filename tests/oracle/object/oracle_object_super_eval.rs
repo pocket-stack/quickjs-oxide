@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
 use quickjs_oxide::{Runtime, RuntimeError, Value};
 
 struct Case {
@@ -445,7 +442,12 @@ fn pinned_quickjs_object_super_eval_semantics_match_expectations() {
 
     for case in CASES {
         assert_eq!(
-            oracle_observation(&oracle, case),
+            super::quickjs_object_super_oracle::observe_completion_name_only(
+                &oracle,
+                case.source,
+                case.group,
+                case.description,
+            ),
             case.expected,
             "pinned QuickJS object-super-eval vector drifted for {} / {}: {:?}",
             case.group,
@@ -463,7 +465,12 @@ fn object_super_eval_semantics_match_pinned_quickjs() {
     };
 
     for case in CASES {
-        let quickjs = oracle_observation(&oracle, case);
+        let quickjs = super::quickjs_object_super_oracle::observe_completion_name_only(
+            &oracle,
+            case.source,
+            case.group,
+            case.description,
+        );
         assert_eq!(
             rust_observation(case),
             quickjs,
@@ -539,45 +546,6 @@ fn error_name(
         );
     };
     value.to_utf8_lossy()
-}
-
-fn oracle_observation(oracle: &OsStr, case: &Case) -> String {
-    let wrapper = r#"
-try {
-  var value = std.evalScript(scriptArgs[0]);
-  print('return|' + typeof value + '|' + String(value));
-} catch (error) {
-  if (error !== null && typeof error === 'object')
-    print('throw|object|' + error.name);
-  else
-    print('throw|' + typeof error + '|' + String(error));
-}
-"#;
-    let output = Command::new(oracle)
-        .args(["--std", "-e", wrapper, case.source])
-        .output()
-        .unwrap_or_else(|error| {
-            panic!(
-                "could not run QuickJS for {} / {}: {error}",
-                case.group, case.description,
-            )
-        });
-    assert!(
-        output.status.success(),
-        "QuickJS observer failed for {} / {}: {}",
-        case.group,
-        case.description,
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| {
-            panic!(
-                "QuickJS output was not UTF-8 for {} / {}: {error}",
-                case.group, case.description,
-            )
-        })
-        .trim_end()
-        .to_owned()
 }
 
 fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
