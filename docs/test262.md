@@ -4,7 +4,48 @@ Test262 is now a pinned progress instrument, not yet a completion claim. The
 authoritative compatibility target remains QuickJS 2026-06-04; focused QuickJS
 differentials still decide exact behavior inside each implemented slice.
 
-Last audited: 2026-08-07.
+Last audited: 2026-08-09.
+
+## R3eb-A default and `import.meta` canonical successor
+
+R3eb-A combines the source-authenticated 38-variant default-module cohort and
+the exact 27-variant `import.meta` cohort into a 60-root / 65-variant canonical
+successor. The latter is partitioned into 17 Module-goal variants and ten
+sloppy/strict Script-goal variants. Its generator freezes the complete source
+closure, one static request edge, execution goals, metadata, variant keys,
+negative provenance, and three adjacent fail-closed canaries.
+
+The current focused reports pass 65/65 twice and are byte-identical. Their TSV
+and JSONL hashes are
+`d3b81e363404940ee3adb23478c65dd593c6682d6056e02e5509f691c5b9bd8b`
+and
+`d5dfa96247c6e4f3558e2c7f4c97e85024a715680c619daab5911528594902b1`.
+An independently built runner at the frozen R3dz-A commit classifies those
+same keys as one pass, 54 `unsupported-module`, and ten
+`unsupported-feature`; an exact reverse transform reproduces its focused TSV
+and JSONL hashes. This distinction prevents the one previously passing loader
+test from being counted as a new gain.
+
+Two independent whole-suite runs produce identical 102,037-row TSV and JSONL
+reports: 68,209 pass / 68,261 runnable, with hashes
+`f7ddf75ec0c8d06128cd723ff1f0e72fd067b112bcf62ca52bfbffe470635ba3`
+and
+`e90a44287ce68fd3a3d8a409c85b0795852957652c1651715c778b356882a3cb`.
+The full gate requires its 65-row projection to equal the checked-in focused
+receipt before reversal, then reproduces the prior R3dz-A canonical hashes
+exactly. The exact join records 64 pass gains, zero detail-only changes, zero
+regressions, and 101,973 byte-identical rows.
+
+This admission proves the core `import.meta` language semantics in the listed
+cohort; it does not claim the QuickJS CLI/loader's host-populated properties,
+dynamic import, import attributes, top-level await, or general module
+admission. Those remain fail-closed and outside this progress count.
+
+```sh
+./scripts/test-test262-import-meta-a-global.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-import-meta-a-global.sh --focused
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-import-meta-a-global.sh --full
+```
 
 ## R3dz-A module namespace cohort
 

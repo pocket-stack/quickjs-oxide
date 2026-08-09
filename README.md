@@ -1,34 +1,27 @@
 # quickjs-oxide
 
-An independent Rust rewrite of QuickJS, targeting semantic feature parity with
+An unsafe-free Rust rewrite of QuickJS, targeting semantic Feature Parity with
 the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
-The `unsafe`-free engine is runnable, but it is not at Feature Parity yet. Its
-strongest implemented slices cover ArrayBuffer/DataView/TypedArray,
-SharedArrayBuffer and Atomics, collections and weak references, Promise jobs,
-Unicode normalization, synchronous static-module graphs with namespace
-objects, and a growing parser/VM surface.
+The engine is runnable, but it is not at Feature Parity yet. Implemented slices
+include binary data and Atomics, collections and weak references, Promise jobs,
+Unicode behavior, and synchronous static-module graphs with default exports,
+live namespace objects, and core `import.meta` semantics. Dynamic import,
+import attributes, top-level await, and QuickJS host-populated `import.meta`
+properties remain parity work.
 
-The admitted R3dz-A milestone adds namespace imports, named indirect, star,
-and namespace re-exports, iterative `ResolveExport`/`GetExportedNames`, and live
-module namespace exotic objects. Its source-authenticated gate covers the
-natural 37-root namespace cohort, a 48-file recursive closure, and 46 static
-request edges; pinned QuickJS and Oxide both pass 37/37. Default imports,
-default function/class exports, `import.meta`, attributes, and top-level await
-remain fail-closed. The full Feature Parity goal is unchanged.
-
-The latest admitted canonical vector is 68,145 passes / 68,197 runnable /
-102,037 total variants. R3dz-A adds exactly 37 passes over R3dy-A; eight other
-rows change only their remaining unsupported-feature detail, 101,992 rows are
-byte-identical, and the two full replays match byte-for-byte. Detailed hashes
-and historical bookkeeping live in the status documents below.
+The latest frozen Test262 vector is **68,209 passes / 68,261 runnable /
+102,037 total variants**. R3eb-A passes its combined 65-variant default-module
+and `import.meta` cohort; 64 are new canonical gains, the other 101,973 rows are
+byte-identical to R3dz-A, and there are zero regressions. Detailed receipts and
+historical bookkeeping live in the status documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
-page reports its exact build commit, QuickJS target, and non-blocking browser
-host policy. Curated examples include a function returning 42 and the
-`Atomics.wait` host-policy boundary. The playground is a pre-parity milestone,
-not a Feature Parity claim.
+page reports its exact build commit, QuickJS target, and browser host policy.
+Its curated Script-goal examples include a function returning 42 and the
+`Atomics.wait` boundary. The playground is a pre-parity milestone, not a
+Feature Parity claim.
 
 ## Try it
 

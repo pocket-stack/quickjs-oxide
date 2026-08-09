@@ -558,7 +558,11 @@ async function runAcceptance(url, serverErrors) {
     );
     assert.match(
       (await page.locator("#frozen-global-vector").textContent()) || "",
-      /68,145 passes\s*\/\s*68,197 runnable\s*\/\s*102,037 total[\s\S]*R3dz-A module namespace admission[\s\S]*\+37 namespace passes[\s\S]*8 detail-only rows[\s\S]*pre-parity/,
+      /68,209 passes\s*\/\s*68,261 runnable\s*\/\s*102,037 total[\s\S]*R3eb-A default \+ import\.meta admission[\s\S]*65\/65 focused[\s\S]*\+64 canonical passes[\s\S]*zero regressions[\s\S]*pre-parity/,
+    );
+    assert.match(
+      (await page.locator(".project-note-copy").textContent()) || "",
+      /This editor currently exposes the Script goal/u,
     );
 
     assert.ok(

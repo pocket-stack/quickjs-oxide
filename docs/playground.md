@@ -7,6 +7,11 @@ editor submission through the public `Runtime` and `Context` APIs. It does not
 delegate JavaScript execution to the browser's `eval` or `Function`
 implementations.
 
+The editor currently evaluates Script-goal source through the public
+`eval_with_filename` path. The Rust engine's static-module and core
+`import.meta` support is real but is not exposed through this browser UI until
+it has a module-loader interface of its own.
+
 Each run gets a fresh runtime and realm. The WebAssembly boundary returns a
 small record:
 

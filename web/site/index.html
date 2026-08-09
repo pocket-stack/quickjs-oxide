@@ -289,6 +289,11 @@
               checkpoints—not hidden fallbacks.
             </p>
             <p>
+              This editor currently exposes the Script goal. Static modules
+              and core <code>import.meta</code> run in the Rust engine, but the
+              browser UI does not yet expose its module-loader API.
+            </p>
+            <p>
               The engine version, compatibility target, host policy, and build
               commit shown above are reported by the loaded WASM package.
             </p>
@@ -305,11 +310,10 @@
         </p>
         <p id="frozen-global-vector" class="footer-vector">
           Frozen global Test262 vector
-          <strong>68,145 passes / 68,197 runnable / 102,037 total</strong>
+          <strong>68,209 passes / 68,261 runnable / 102,037 total</strong>
           <span>
-            R3dz-A module namespace admission · +37 namespace passes ·
-            8 detail-only rows ·
-            pre-parity
+            R3eb-A default + import.meta admission · 65/65 focused ·
+            +64 canonical passes · zero regressions · pre-parity
           </span>
         </p>
       </div>

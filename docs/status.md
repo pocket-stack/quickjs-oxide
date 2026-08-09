@@ -1,8 +1,54 @@
 # Implementation status
 
-Last audited: 2026-08-07. The completion definition remains
+Last audited: 2026-08-09. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
+
+## R3eb-A default and `import.meta` canonical successor
+
+R3eb-A promotes the already implemented default-module and core `import.meta`
+slices into the latest checksum-bound global baseline. The implementation
+checkpoints are `1ac950a`/`a6af606` for default declarations and collisions,
+`f8bba5f` for `import.meta`, `f913c9b` for its exact Test262 admission, and
+`3c73953` for the canonical successor receipt.
+
+`import.meta` is parsed only in Module goal code. Each instantiated module owns
+one cached, extensible ordinary object with a null prototype; nested and
+exported functions retain their defining module's identity, direct eval cannot
+gain access to it, and different modules receive different objects. The
+compiler publishes that identity as an authenticated module-root closure cell,
+so malformed bytecode cannot fabricate a second or child-local `import.meta`.
+This is the language core. QuickJS's host-populated `url`/`main` properties and
+any future host resolver surface remain separate qjs/loader parity work.
+
+The combined focused receipt covers 60 roots / 65 variants: 38 default-module
+variants and 27 `import.meta` variants. Current Oxide passes all 65 twice with
+byte-identical TSV and JSONL hashes
+`d3b81e363404940ee3adb23478c65dd593c6682d6056e02e5509f691c5b9bd8b`
+and
+`d5dfa96247c6e4f3558e2c7f4c97e85024a715680c619daab5911528594902b1`.
+The historical R3dz-A runner independently classifies that same key set as one
+existing pass, 54 unsupported modules, and 10 unsupported `import.meta` Script
+variants; reversing the current receipt reproduces its historical focused
+hashes exactly.
+
+Two complete 102,037-variant candidate runs are byte-identical at 68,209
+passes / 68,261 runnable. Their TSV and JSONL SHA-256 values are
+`f7ddf75ec0c8d06128cd723ff1f0e72fd067b112bcf62ca52bfbffe470635ba3`
+and
+`e90a44287ce68fd3a3d8a409c85b0795852957652c1651715c778b356882a3cb`.
+Exactly 64 rows change from unsupported to pass, one focused row was already a
+pass, 101,973 rows are byte-identical, and there are no detail-only changes or
+regressions. The gate first matches the 65 full-report rows against the focused
+receipt, then reverse-derives the exact R3dz-A full hashes. Dynamic import,
+import attributes, top-level await, JSON modules, and remaining QuickJS module
+host callbacks are still open Feature Parity work.
+
+```sh
+./scripts/test-test262-import-meta-a-global.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-import-meta-a-global.sh --focused
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-import-meta-a-global.sh --full
+```
 
 ## R3ea-A default module declarations admission
 
