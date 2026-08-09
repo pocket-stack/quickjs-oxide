@@ -59,6 +59,8 @@ QUICKJS_OXIDE_COMMIT="${build_commit}" \
 rm -rf "${pages_dir}"
 mkdir -p "${pages_dir}/pkg"
 cp -R "${site_dir}/." "${pages_dir}/"
+node "${repo_root}/scripts/current-test262-metrics.mjs" \
+  --render "${pages_dir}/index.html"
 wasm-bindgen \
   "${wasm_file}" \
   --out-dir "${pages_dir}/pkg" \

@@ -17,6 +17,7 @@ import {
   sha256Bytes,
   verifyPagesDeployment,
 } from "./test-live-pages.mjs";
+import { readCurrentTest262Metrics } from "./current-test262-metrics.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const pagesDir = path.resolve(
@@ -32,6 +33,7 @@ const requiredArtifactFiles = [
   "pkg/quickjs_oxide_web_bg.wasm",
 ];
 const contentDigestPattern = "[0-9a-f]{64}";
+const currentTest262Metrics = readCurrentTest262Metrics();
 const requiredBrowserResources = [
   [new RegExp(`^${pagesBasePath}app\\.${contentDigestPattern}\\.js$`, "u"), "app"],
   [
@@ -556,9 +558,13 @@ async function runAcceptance(url, serverErrors) {
       await test262Progress.getAttribute("data-repository-ref"),
       expectedDocumentationRef,
     );
-    assert.match(
-      (await page.locator("#frozen-global-vector").textContent()) || "",
-      /68,295 passes\s*\/\s*68,347 runnable\s*\/\s*102,037 total[\s\S]*R3ec-A module declaration-position admission[\s\S]*86\/86 focused[\s\S]*\+86 canonical passes[\s\S]*zero regressions[\s\S]*pre-parity/,
+    assert.equal(
+      (await page.locator("#test262-primary-metrics").textContent())?.trim(),
+      currentTest262Metrics.primaryText,
+    );
+    assert.equal(
+      (await page.locator("#test262-detail-metrics").textContent())?.trim(),
+      currentTest262Metrics.detailText,
     );
     assert.match(
       (await page.locator(".project-note-copy").textContent()) || "",

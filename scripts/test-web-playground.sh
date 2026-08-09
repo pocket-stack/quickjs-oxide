@@ -57,8 +57,41 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
+const metricsModulePath = path.resolve(
+  process.cwd(),
+  "scripts/current-test262-metrics.mjs",
+);
+const { parseCurrentTest262Metrics } = await import(
+  pathToFileURL(metricsModulePath)
+);
+const currentSpec = await readFile(
+  path.resolve(process.cwd(), "dev-support/test262/current.conf"),
+  "utf8",
+);
+const currentMetrics = parseCurrentTest262Metrics(currentSpec);
+const renderedIndex = await readFile(
+  path.resolve(process.cwd(), "target/pages/index.html"),
+  "utf8",
+);
+assert.ok(renderedIndex.includes(currentMetrics.primaryText));
+assert.ok(renderedIndex.includes(currentMetrics.detailText));
+assert.throws(
+  () => parseCurrentTest262Metrics(`${currentSpec}\nfull_passes=1\n`),
+  /duplicate Test262 spec key full_passes/u,
+);
+assert.throws(
+  () => parseCurrentTest262Metrics(
+    currentSpec.replace(
+      `pass=${currentMetrics.fullPasses}`,
+      `pass=${currentMetrics.fullPasses - 1}`,
+    ),
+  ),
+  /summaries disagree with the official metrics/u,
+);
+
 const wrapperPath = path.resolve(
   process.cwd(),
   "target/web-playground-node/quickjs_oxide_web.js",
@@ -184,6 +217,6 @@ assert.equal(syntaxError.kind, "exception");
 assert.match(syntaxError.text, /^SyntaxError:/);
 
 console.log(
-  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples and build metadata passed; direct eval and quickjs-oxide returned 42; deep yield-star overflow stayed catchable`,
+  `Node/WASM smoke: ${examplesModule.EXAMPLES.length} playground examples, current Test262 metrics, and build metadata passed; direct eval and quickjs-oxide returned 42; deep yield-star overflow stayed catchable`,
 );
 NODE

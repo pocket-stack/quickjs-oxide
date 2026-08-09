@@ -13,6 +13,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readCurrentTest262Metrics } from "./current-test262-metrics.mjs";
 
 const DEFAULT_ATTEMPTS = 15;
 const DEFAULT_RETRY_BASE_MS = 2_000;
@@ -20,6 +21,7 @@ const DEFAULT_RETRY_MAX_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_CHILD_TIMEOUT_MS = 15_000;
 const CHILD_OUTPUT_LIMIT = 16_384;
+const CURRENT_TEST262_METRICS = readCurrentTest262Metrics();
 const JAVASCRIPT_MIME_TYPES = new Set([
   "application/javascript",
   "text/javascript",
@@ -265,11 +267,8 @@ function validatePageAndBuildLabel(page, wasm, expectedCommit) {
     "function that returns 42",
     "real quickjs-oxide Rust interpreter compiled to WebAssembly",
     "This editor currently exposes the Script goal",
-    "68,295 passes / 68,347 runnable / 102,037 total",
-    "R3ec-A module declaration-position admission",
-    "86/86 focused",
-    "+86 canonical passes",
-    "zero regressions",
+    CURRENT_TEST262_METRICS.primaryText,
+    CURRENT_TEST262_METRICS.detailText,
     "pre-parity",
   ];
   const missingPageMarker = requiredPageMarkers.find(
