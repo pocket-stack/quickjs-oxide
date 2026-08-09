@@ -93,3 +93,5 @@ check_registry collections Collections tests/oracle_collections.rs \
     tests/oracle/collections oracle/collections oracle_
 check_registry number_kernels "Number kernels" tests/oracle_number_kernels.rs \
     tests/oracle/number_kernels oracle/number_kernels oracle_
+check_registry updates Updates tests/oracle_updates.rs \
+    tests/oracle/update oracle/update oracle_update_
