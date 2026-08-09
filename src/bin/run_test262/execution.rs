@@ -859,13 +859,9 @@ fn exception_diagnostic(runtime: &Runtime, exception: Value) -> ExceptionDiagnos
         };
     };
 
-    let name_key = match runtime.intern_property_key("name") {
-        Ok(key) => key,
-        Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
-    };
-    let error_type = match runtime.raw_string_property_for_diagnostics(&object, &name_key) {
-        Ok(Some(value)) if !value.is_empty() => value.to_utf8_lossy(),
-        Ok(Some(_) | None) => "ThrownObject".to_owned(),
+    let error_type = match side_effect_free_error_name(runtime, &object) {
+        Ok(Some(value)) => value,
+        Ok(None) => "ThrownObject".to_owned(),
         Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
     let message = match own_string_property(runtime, &object, "message") {
@@ -887,6 +883,68 @@ fn exception_diagnostic(runtime: &Runtime, exception: Value) -> ExceptionDiagnos
         line,
         column,
     }
+}
+
+enum OwnDiagnosticString {
+    Missing,
+    String(String),
+    Other,
+}
+
+fn side_effect_free_error_name(
+    runtime: &Runtime,
+    object: &ObjectRef,
+) -> Result<Option<String>, RuntimeError> {
+    let name_key = runtime.intern_property_key("name")?;
+    match own_diagnostic_string(runtime, object, &name_key)? {
+        OwnDiagnosticString::String(name) if !name.is_empty() => return Ok(Some(name)),
+        OwnDiagnosticString::String(_) | OwnDiagnosticString::Other => return Ok(None),
+        OwnDiagnosticString::Missing => {}
+    }
+
+    let Some(prototype) = runtime.get_prototype_of(object)? else {
+        return Ok(None);
+    };
+    match own_diagnostic_string(runtime, &prototype, &name_key)? {
+        OwnDiagnosticString::String(name) if !name.is_empty() => return Ok(Some(name)),
+        OwnDiagnosticString::String(_) | OwnDiagnosticString::Other => return Ok(None),
+        OwnDiagnosticString::Missing => {}
+    }
+
+    let constructor_key = runtime.intern_property_key("constructor")?;
+    let constructor = match runtime.get_own_property(&prototype, &constructor_key)? {
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::Object(constructor),
+            ..
+        }) => constructor,
+        Some(CompleteOrdinaryPropertyDescriptor::Data { .. })
+        | Some(CompleteOrdinaryPropertyDescriptor::Accessor { .. })
+        | None => return Ok(None),
+    };
+    Ok(
+        match own_diagnostic_string(runtime, &constructor, &name_key)? {
+            OwnDiagnosticString::String(name) if !name.is_empty() && name != "Object" => Some(name),
+            OwnDiagnosticString::Missing
+            | OwnDiagnosticString::String(_)
+            | OwnDiagnosticString::Other => None,
+        },
+    )
+}
+
+fn own_diagnostic_string(
+    runtime: &Runtime,
+    object: &ObjectRef,
+    key: &quickjs_oxide::PropertyKey,
+) -> Result<OwnDiagnosticString, RuntimeError> {
+    Ok(match runtime.get_own_property(object, key)? {
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::String(value),
+            ..
+        }) => OwnDiagnosticString::String(value.to_utf8_lossy()),
+        Some(CompleteOrdinaryPropertyDescriptor::Data { .. })
+        | Some(CompleteOrdinaryPropertyDescriptor::Accessor { .. }) => OwnDiagnosticString::Other,
+        None => OwnDiagnosticString::Missing,
+    })
 }
 
 fn own_string_property(
@@ -943,7 +1001,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError};
+    use quickjs_oxide::{CompileOptions, Context, ErrorKind, Runtime, RuntimeError, Value};
 
     use super::{
         ExceptionDiagnostic, classify_async_print_log, classify_completion,
@@ -951,6 +1009,26 @@ mod tests {
     };
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
+
+    fn execute_thrown(
+        runtime: &Runtime,
+        context: &mut Context,
+        source: &str,
+    ) -> ExceptionDiagnostic {
+        let function = context
+            .compile_with_options(source, &CompileOptions::new("diagnostic-test.js"))
+            .unwrap();
+        let error = context.execute(&function).unwrap_err();
+        assert_eq!(error, RuntimeError::Exception);
+        take_error(runtime, context, error)
+    }
+
+    fn evaluate(context: &mut Context, source: &str) -> Value {
+        let function = context
+            .compile_with_options(source, &CompileOptions::new("diagnostic-observer.js"))
+            .unwrap();
+        context.execute(&function).unwrap()
+    }
 
     #[test]
     fn worker_configures_can_block_from_test262_metadata() {
@@ -1144,6 +1222,96 @@ mod tests {
         assert_eq!(diagnostic.error_type, "SyntaxError");
         assert_eq!(diagnostic.message, "invalid import binding");
         assert_eq!((diagnostic.line, diagnostic.column), (Some(1), Some(15)));
+    }
+
+    #[test]
+    fn test262_error_uses_its_side_effect_free_constructor_name() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let diagnostic = execute_thrown(
+            &runtime,
+            &mut context,
+            r#"
+function Test262Error(message) {
+  this.message = message || "";
+}
+Test262Error.prototype.toString = function () {
+  return "Test262Error: " + this.message;
+};
+throw new Test262Error("sentinel");
+"#,
+        );
+
+        assert_eq!(diagnostic.error_type, "Test262Error");
+        assert_eq!(diagnostic.message, "sentinel");
+    }
+
+    #[test]
+    fn ordinary_thrown_object_does_not_claim_the_object_constructor_name() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let diagnostic = execute_thrown(&runtime, &mut context, "throw {};");
+
+        assert_eq!(diagnostic.error_type, "ThrownObject");
+    }
+
+    #[test]
+    fn diagnostic_constructor_fallback_does_not_run_getters_or_proxy_traps() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let getter = execute_thrown(
+            &runtime,
+            &mut context,
+            r#"
+var diagnosticGetterReads = 0;
+var getterPrototype = {};
+Object.defineProperty(getterPrototype, "constructor", {
+  get: function () {
+    diagnosticGetterReads += 1;
+    return function GetterConstructor() {};
+  }
+});
+throw Object.create(getterPrototype);
+"#,
+        );
+        assert_eq!(getter.error_type, "ThrownObject");
+        assert_eq!(
+            evaluate(&mut context, "diagnosticGetterReads;"),
+            Value::Int(0)
+        );
+
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let proxy = execute_thrown(
+            &runtime,
+            &mut context,
+            r#"
+var diagnosticProxyReads = 0;
+var proxyPrototype = new Proxy(
+  { constructor: function ProxyConstructor() {} },
+  {
+    get: function (target, key, receiver) {
+      diagnosticProxyReads += 1;
+      return Reflect.get(target, key, receiver);
+    },
+    getOwnPropertyDescriptor: function (target, key) {
+      diagnosticProxyReads += 1;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    getPrototypeOf: function (target) {
+      diagnosticProxyReads += 1;
+      return Reflect.getPrototypeOf(target);
+    }
+  }
+);
+throw Object.create(proxyPrototype);
+"#,
+        );
+        assert_eq!(proxy.error_type, "ThrownObject");
+        assert_eq!(
+            evaluate(&mut context, "diagnosticProxyReads;"),
+            Value::Int(0)
+        );
     }
 
     #[test]
