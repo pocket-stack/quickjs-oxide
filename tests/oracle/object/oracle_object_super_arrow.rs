@@ -256,46 +256,34 @@ const CASES: &[Case] = &[
 ];
 
 #[test]
-fn pinned_quickjs_object_super_arrow_semantics_match_expectations() {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP object-super-arrow oracle: set QJS_ORACLE to pinned upstream qjs");
-        return;
-    };
-
-    for case in CASES {
-        assert_eq!(
-            super::quickjs_object_super_oracle::observe_completion_name_only(
-                &oracle,
-                case.source,
-                case.group,
-                case.description,
-            ),
-            case.expected,
-            "pinned QuickJS object-super-arrow vector drifted for {} / {}: {:?}",
-            case.group,
-            case.description,
-            case.source,
-        );
-    }
-}
-
-#[test]
 fn object_super_arrow_semantics_match_pinned_quickjs() {
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!("SKIP object-super-arrow oracle: set QJS_ORACLE to pinned upstream qjs");
         return;
     };
 
-    for case in CASES {
-        let quickjs = super::quickjs_object_super_oracle::observe_completion_name_only(
-            &oracle,
-            case.source,
-            case.group,
-            case.description,
+    let quickjs = CASES
+        .iter()
+        .map(|case| {
+            super::quickjs_object_super_oracle::observe_completion_name_only(
+                &oracle,
+                case.source,
+                case.group,
+                case.description,
+            )
+        })
+        .collect::<Vec<_>>();
+    for (case, observation) in CASES.iter().zip(&quickjs) {
+        assert_eq!(
+            observation, case.expected,
+            "pinned QuickJS object-super-arrow vector drifted for {} / {}: {:?}",
+            case.group, case.description, case.source,
         );
+    }
+    for (case, observation) in CASES.iter().zip(&quickjs) {
         assert_eq!(
             rust_observation(case),
-            quickjs,
+            *observation,
             "object-super-arrow behavior differed from pinned QuickJS for {} / {}: {:?}",
             case.group,
             case.description,
