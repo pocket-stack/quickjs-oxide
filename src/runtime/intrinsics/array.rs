@@ -2926,7 +2926,20 @@ impl Runtime {
                 return Ok(Completion::Throw(value));
             }
         }
-        if let Some(value) = self.set_array_like_length(realm, &object, new_length)? {
+        // QuickJS appends directly when a writable dense Array can grow. Our
+        // indexed Set path has already performed that Array-exotic length
+        // update. Repeating the same ordinary writable data-property Set is
+        // not observable, but every generic, mismatched, non-writable, or
+        // Uint32-overflow case must still execute the specified final Set.
+        let length_set_is_redundant = kind == ArrayPushKind::Push
+            && new_length <= u64::from(u32::MAX)
+            && matches!(
+                self.array_length_state_if_genuine(&object)?,
+                Some((length, true)) if u64::from(length) == new_length
+            );
+        if !length_set_is_redundant
+            && let Some(value) = self.set_array_like_length(realm, &object, new_length)?
+        {
             return Ok(Completion::Throw(value));
         }
         Ok(Completion::Return(Value::number(new_length as f64)))

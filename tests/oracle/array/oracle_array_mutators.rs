@@ -141,6 +141,22 @@ const LENGTH_AND_ORDER_CASES: &[(&str, &str)] = &[
         })()"#,
     ),
     (
+        "push through a Proxy still exposes the final length Set",
+        r#"(function(){
+            var target=[],log=[],handler=Object();
+            handler.get=function(target,key,receiver){
+                log.push("get:"+key);return Reflect.get(target,key,receiver);
+            };
+            handler.set=function(target,key,value,receiver){
+                log.push("set:"+key+":"+value);
+                return Reflect.set(target,key,value,receiver);
+            };
+            var proxy=new Proxy(target,handler);
+            var result=Array.prototype.push.call(proxy,"x");
+            return result+"|"+target.length+"|"+target[0]+"|"+log.join(",");
+        })()"#,
+    ),
+    (
         "empty pop converts length then Sets zero without indexed access",
         r#"(function(){
             var source=Object(),number=Object(),descriptor=Object(),log="";
@@ -265,6 +281,42 @@ const PARTIAL_AND_LIMIT_CASES: &[(&str, &str)] = &[
         })()"#,
     ),
     (
+        "genuine Array push retains the final non-writable length failure",
+        r#"(function(){
+            var source=[],proto=Array.prototype,descriptor=Object(),log="";
+            descriptor.configurable=true;
+            descriptor.set=function(value){
+                log+="S"+value;this.length=1;
+                Object.defineProperty(this,"length",{writable:false});
+            };
+            Object.defineProperty(proto,"0",descriptor);
+            try{
+                try{source.push("x");return "missing"}
+                catch(error){
+                    return error.name+"|"+error.message+"|"+source.length+"|"+
+                        Object.prototype.hasOwnProperty.call(source,"0")+"|"+log;
+                }
+            }finally{delete proto[0]}
+        })()"#,
+    ),
+    (
+        "genuine Array push restores a length changed by an inherited setter",
+        r#"(function(){
+            var source=[],proto=Array.prototype,descriptor=Object(),log="";
+            descriptor.configurable=true;
+            descriptor.set=function(value){
+                log+="S"+value;this.length=3;this[2]="tail";
+            };
+            Object.defineProperty(proto,"0",descriptor);
+            try{
+                var result=source.push("x");
+                return result+"|"+source.length+"|"+
+                    Object.prototype.hasOwnProperty.call(source,"0")+"|"+
+                    Object.prototype.hasOwnProperty.call(source,"2")+"|"+log;
+            }finally{delete proto[0]}
+        })()"#,
+    ),
+    (
         "MAX_SAFE overflow throws before indexed or final length writes",
         r#"(function(){
             var source=Object(),descriptor=Object(),log="";
@@ -302,6 +354,15 @@ const PARTIAL_AND_LIMIT_CASES: &[(&str, &str)] = &[
                     source[4294967295]+"|"+
                     Object.prototype.hasOwnProperty.call(source,"4294967295");
             }
+        })()"#,
+    ),
+    (
+        "maximum writable Array index grows length through the Uint32 boundary",
+        r#"(function(){
+            var source=[];source.length=4294967294;
+            var result=source.push("last");
+            return result+"|"+source.length+"|"+source[4294967294]+"|"+
+                Object.prototype.hasOwnProperty.call(source,"4294967294");
         })()"#,
     ),
 ];

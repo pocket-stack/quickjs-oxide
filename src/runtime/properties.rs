@@ -852,19 +852,18 @@ impl Runtime {
     }
 
     /// Read and structurally validate a genuine Array's mandatory first
-    /// `length` slot. The numeric payload is always an exact Uint32, using an
-    /// Int for the compact half and a Float above `i32::MAX`.
-    pub(in crate::runtime) fn array_length_state(
+    /// `length` slot, returning `None` for every other object class. The
+    /// numeric payload is always an exact Uint32, using an Int for the compact
+    /// half and a Float above `i32::MAX`.
+    pub(in crate::runtime) fn array_length_state_if_genuine(
         &self,
         object: &ObjectRef,
-    ) -> Result<(u32, bool), RuntimeError> {
+    ) -> Result<Option<(u32, bool)>, RuntimeError> {
         let length = self.intern_property_key("length")?;
         let state = self.0.state.borrow();
         let object_data = state.heap.object(object.object_id())?;
         if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
-            return Err(RuntimeError::Invariant(
-                "Array length state requested for a non-Array object",
-            ));
+            return Ok(None);
         }
         let shape = state.heap.shape(object_data.shape)?;
         let index = shape
@@ -908,7 +907,17 @@ impl Runtime {
                 ));
             }
         };
-        Ok((value, entry.flags.writable))
+        Ok(Some((value, entry.flags.writable)))
+    }
+
+    pub(in crate::runtime) fn array_length_state(
+        &self,
+        object: &ObjectRef,
+    ) -> Result<(u32, bool), RuntimeError> {
+        self.array_length_state_if_genuine(object)?
+            .ok_or(RuntimeError::Invariant(
+                "Array length state requested for a non-Array object",
+            ))
     }
 
     pub(in crate::runtime) fn array_length_value(length: u32) -> Value {
