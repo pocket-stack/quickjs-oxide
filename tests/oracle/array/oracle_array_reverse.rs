@@ -1,7 +1,6 @@
 use super::support::*;
 
 use std::ffi::OsStr;
-use std::process::Command;
 
 use quickjs_oxide::{
     CompleteOrdinaryPropertyDescriptor, Context, ObjectRef, Runtime, RuntimeError, Value,
@@ -534,22 +533,7 @@ fn rust_graph_observations() -> Vec<String> {
 }
 
 fn oracle_graph_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["--std", "-e", GRAPH_ORACLE])
-        .output()
-        .unwrap_or_else(|error| {
-            panic!("could not run QuickJS Array reverse graph oracle: {error}")
-        });
-    assert!(
-        output.status.success(),
-        "QuickJS Array reverse graph oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS Array reverse graph output was not UTF-8")
-        .lines()
-        .map(str::to_owned)
-        .collect()
+    super::quickjs_oracle::eval_std_lines(oracle, GRAPH_ORACLE, "Array reverse graph oracle")
 }
 
 fn method_metadata(

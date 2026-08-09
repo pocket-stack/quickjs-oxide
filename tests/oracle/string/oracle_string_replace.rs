@@ -539,7 +539,7 @@ fn observe_rust_eval(
 
 fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
     let source = observed_source(source);
-    super::quickjs_completion::observe(oracle, &source, description)
+    super::quickjs_oracle::observe_completion(oracle, &source, description)
 }
 
 fn eval_optional_callable(

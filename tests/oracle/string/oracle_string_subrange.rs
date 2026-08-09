@@ -724,7 +724,7 @@ fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
 }
 
 fn observe_oracle_source(oracle: &OsStr, source: &str, description: &str) -> String {
-    super::quickjs_completion::observe(oracle, source, description)
+    super::quickjs_oracle::observe_completion(oracle, source, description)
 }
 
 fn property_callable(

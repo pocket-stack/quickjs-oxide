@@ -334,7 +334,7 @@ fn rust_observation(case: &Case) -> String {
 
 fn oracle_observation(oracle: &OsStr, case: &Case) -> String {
     let description = format!("{} / {}", case.group, case.description);
-    super::quickjs_completion::observe(oracle, case.source, &description)
+    super::quickjs_oracle::observe_completion(oracle, case.source, &description)
 }
 
 fn value_type(runtime: &Runtime, value: &Value) -> &'static str {

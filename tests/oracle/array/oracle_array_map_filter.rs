@@ -1,7 +1,6 @@
 use super::support::*;
 
 use std::ffi::OsStr;
-use std::process::Command;
 
 use quickjs_oxide::{
     CallableRef, CompleteOrdinaryPropertyDescriptor, Context, JsString, ObjectRef, Runtime,
@@ -651,22 +650,7 @@ fn rust_graph_observations() -> Vec<String> {
 }
 
 fn oracle_graph_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["--std", "-e", GRAPH_ORACLE])
-        .output()
-        .unwrap_or_else(|error| {
-            panic!("could not run QuickJS Array map/filter graph oracle: {error}")
-        });
-    assert!(
-        output.status.success(),
-        "QuickJS Array map/filter graph oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS Array map/filter graph output was not UTF-8")
-        .lines()
-        .map(str::to_owned)
-        .collect()
+    super::quickjs_oracle::eval_std_lines(oracle, GRAPH_ORACLE, "Array map/filter graph oracle")
 }
 
 fn method_metadata(

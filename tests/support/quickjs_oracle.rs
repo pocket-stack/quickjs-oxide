@@ -17,9 +17,56 @@ try {
 }
 "#;
 
-pub(super) fn observe(oracle: &OsStr, source: &str, description: &str) -> String {
-    let mut child = Command::new(oracle)
-        .args(["--std", "-e", COMPLETION_OBSERVER, "--", STDIN_SENTINEL])
+const STD_LINES_EVALUATOR: &str = r#"
+(function(){
+  if(os.platform==='win32')os.ttySetRaw(0);
+  var source=std.in.readAsString();
+  std.in.clearerr();
+  std.evalScript(source);
+})();
+"#;
+
+pub(super) fn observe_completion(oracle: &OsStr, source: &str, description: &str) -> String {
+    run_stdin_utf8(
+        oracle,
+        COMPLETION_OBSERVER,
+        Some(STDIN_SENTINEL),
+        source,
+        description,
+        "observer",
+    )
+    .trim_end()
+    .to_owned()
+}
+
+pub(super) fn eval_std_lines(oracle: &OsStr, source: &str, description: &str) -> Vec<String> {
+    run_stdin_utf8(
+        oracle,
+        STD_LINES_EVALUATOR,
+        None,
+        source,
+        description,
+        "std-lines evaluation",
+    )
+    .lines()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn run_stdin_utf8(
+    oracle: &OsStr,
+    bootstrap: &str,
+    script_argument: Option<&str>,
+    source: &str,
+    description: &str,
+    failure_label: &str,
+) -> String {
+    let mut command = Command::new(oracle);
+    command.args(["--std", "-e", bootstrap]);
+    if let Some(script_argument) = script_argument {
+        command.args(["--", script_argument]);
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -42,7 +89,7 @@ pub(super) fn observe(oracle: &OsStr, source: &str, description: &str) -> String
         .unwrap_or_else(|error| panic!("could not wait for QuickJS for {description}: {error}"));
     assert!(
         output.status.success(),
-        "QuickJS observer failed for {description}: {}",
+        "QuickJS {failure_label} failed for {description}: {}",
         String::from_utf8_lossy(&output.stderr),
     );
     write_result
@@ -52,6 +99,4 @@ pub(super) fn observe(oracle: &OsStr, source: &str, description: &str) -> String
         });
     String::from_utf8(output.stdout)
         .unwrap_or_else(|error| panic!("QuickJS output was not UTF-8 for {description}: {error}"))
-        .trim_end()
-        .to_owned()
 }

@@ -1,8 +1,8 @@
 // Keep the Array-method oracle implementations in separate modules so their
 // private helpers remain isolated while Cargo builds one integration target.
 
-#[path = "support/quickjs_completion.rs"]
-mod quickjs_completion;
+#[path = "support/quickjs_oracle.rs"]
+mod quickjs_oracle;
 
 mod support {
     use std::ffi::OsStr;
@@ -66,7 +66,7 @@ mod support {
     }
 
     pub(super) fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-        super::quickjs_completion::observe(oracle, source, description)
+        super::quickjs_oracle::observe_completion(oracle, source, description)
     }
 
     pub(super) fn data_descriptor_bits(descriptor: &CompleteOrdinaryPropertyDescriptor) -> String {
