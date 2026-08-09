@@ -1,6 +1,9 @@
 // Keep the String oracle implementations in separate modules so their private
 // helpers remain isolated while Cargo builds one integration target.
 
+#[path = "support/quickjs_completion.rs"]
+mod quickjs_completion;
+
 #[path = "oracle/string/oracle_string_byte_codec.rs"]
 mod oracle_string_byte_codec;
 #[path = "oracle/string/oracle_string_case.rs"]
