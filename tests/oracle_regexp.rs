@@ -6,7 +6,9 @@ mod quickjs_oracle;
 
 #[cfg(test)]
 mod quickjs_oracle_contract {
-    use super::quickjs_oracle::{eval_std_lines, observe_completion};
+    use std::any::Any;
+
+    use super::quickjs_oracle::{eval_indexed_plain_lines, eval_std_lines, observe_completion};
 
     fn oracle() -> Option<std::ffi::OsString> {
         let oracle = std::env::var_os("QJS_ORACLE");
@@ -14,6 +16,14 @@ mod quickjs_oracle_contract {
             eprintln!("SKIP QuickJS oracle helper regressions: set QJS_ORACLE to upstream qjs");
         }
         oracle
+    }
+
+    fn panic_message(payload: &(dyn Any + Send)) -> &str {
+        payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string panic")
     }
 
     #[test]
@@ -199,6 +209,77 @@ mod quickjs_oracle_contract {
                 .all(|byte| *byte == b'o')
         );
         assert!(lines[0].ends_with("done"));
+    }
+
+    #[test]
+    fn indexed_plain_lines_hide_bootstrap_state() {
+        let Some(oracle) = oracle() else {
+            return;
+        };
+        assert_eq!(
+            eval_indexed_plain_lines(
+                &oracle,
+                r#"
+print("0|" + [
+  typeof std,
+  Object.prototype.hasOwnProperty.call(globalThis, "std"),
+  typeof os,
+  Object.prototype.hasOwnProperty.call(globalThis, "os"),
+  scriptArgs.length,
+  typeof input,
+  typeof system,
+  typeof source
+].join("|"));
+"#,
+                1,
+                "plain global surface",
+            ),
+            ["undefined|false|undefined|false|0|undefined|undefined|undefined"],
+        );
+    }
+
+    #[test]
+    fn indexed_plain_lines_stream_large_unicode_and_nul_source() {
+        let Some(oracle) = oracle() else {
+            return;
+        };
+        let source = format!("/*\0{}*/\nprint('0|雪😀')", "x".repeat(2 * 1024 * 1024 + 1),);
+        assert_eq!(
+            eval_indexed_plain_lines(&oracle, &source, 1, "large plain indexed source"),
+            ["雪😀"],
+        );
+    }
+
+    #[test]
+    fn indexed_plain_lines_reject_count_and_index_drift() {
+        let Some(oracle) = oracle() else {
+            return;
+        };
+
+        let wrong_count = std::panic::catch_unwind(|| {
+            eval_indexed_plain_lines(
+                &oracle,
+                "print('0|first');print('1|second')",
+                1,
+                "wrong count contract",
+            )
+        })
+        .expect_err("wrong indexed line count was accepted");
+        assert!(
+            panic_message(wrong_count.as_ref()).contains("wrong line count"),
+            "unexpected wrong-count panic: {}",
+            panic_message(wrong_count.as_ref()),
+        );
+
+        let wrong_index = std::panic::catch_unwind(|| {
+            eval_indexed_plain_lines(&oracle, "print('1|value')", 1, "wrong index contract")
+        })
+        .expect_err("wrong indexed prefix was accepted");
+        assert!(
+            panic_message(wrong_index.as_ref()).contains("index mismatch"),
+            "unexpected wrong-index panic: {}",
+            panic_message(wrong_index.as_ref()),
+        );
     }
 }
 

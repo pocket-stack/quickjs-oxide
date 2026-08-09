@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::process::Command;
 
 use quickjs_oxide::JsString;
 use quickjs_oxide::regexp::{CompileErrorKind, compile, execute};
@@ -662,7 +661,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_unicode_property_cases.length; __qjo_i++)
           __qjo_observe_unicode_property(__qjo_unicode_property_cases[__qjo_i]));
 "#,
     );
-    run_indexed_oracle(
+    super::quickjs_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),
@@ -695,44 +694,12 @@ for (var __qjo_i = 0; __qjo_i < __qjo_unicode_property_compile_cases.length; __q
 }
 "#,
     );
-    run_indexed_oracle(
+    super::quickjs_oracle::eval_indexed_plain_lines(
         oracle,
         &source,
         cases.len(),
         "RegExp Unicode property grammar",
     )
-}
-
-fn run_indexed_oracle(oracle: &OsStr, source: &str, expected: usize, label: &str) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["-e", source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not execute QJS_ORACLE {label} batch: {error}"));
-    assert!(
-        output.status.success(),
-        "QJS_ORACLE {label} batch failed with {}:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr),
-    );
-
-    let stdout = String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| panic!("QJS_ORACLE {label} emitted non-UTF-8 output: {error}"));
-    let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(
-        lines.len(),
-        expected,
-        "QJS_ORACLE {label} emitted the wrong line count",
-    );
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(index, line)| {
-            let prefix = format!("{index}|");
-            line.strip_prefix(&prefix)
-                .unwrap_or_else(|| panic!("QJS_ORACLE {label} index mismatch: {line:?}"))
-                .to_owned()
-        })
-        .collect()
 }
 
 fn js_utf16(units: &[u16]) -> String {

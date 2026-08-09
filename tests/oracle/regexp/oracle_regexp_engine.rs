@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::process::Command;
 
 use quickjs_oxide::JsString;
 use quickjs_oxide::regexp::{compile, execute};
@@ -260,34 +259,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_regexp_cases.length; __qjo_i++)
 "#,
     );
 
-    let output = Command::new(oracle)
-        .args(["-e", &source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not execute QJS_ORACLE RegExp batch: {error}"));
-    assert!(
-        output.status.success(),
-        "QJS_ORACLE RegExp batch failed with {}:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout =
-        String::from_utf8(output.stdout).expect("QJS_ORACLE RegExp batch emitted non-UTF-8 output");
-    let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(
-        lines.len(),
-        cases.len(),
-        "QJS_ORACLE RegExp batch emitted the wrong number of observations"
-    );
-    lines
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            line.strip_prefix(&format!("{index}|"))
-                .unwrap_or_else(|| panic!("malformed QJS_ORACLE observation: {line:?}"))
-                .to_owned()
-        })
-        .collect()
+    super::quickjs_oracle::eval_indexed_plain_lines(oracle, &source, cases.len(), "RegExp matching")
 }
 
 fn js_utf16(units: &[u16]) -> String {

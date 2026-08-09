@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::process::Command;
 
 use quickjs_oxide::JsString;
 use quickjs_oxide::regexp::{CompileErrorKind, UnsupportedFeature, compile, execute};
@@ -274,28 +273,12 @@ fn observe_quickjs(oracle: &OsStr, cases: &[MatchCase]) -> Vec<String> {
         .unwrap();
     }
 
-    let output = Command::new(oracle)
-        .args(["-e", &source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not execute QJS_ORACLE: {error}"));
-    assert!(
-        output.status.success(),
-        "QJS_ORACLE failed with {}:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8(output.stdout).expect("QJS_ORACLE emitted non-UTF-8 output");
-    let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), cases.len(), "QJS_ORACLE line count");
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(index, line)| {
-            line.strip_prefix(&format!("{index}|"))
-                .unwrap_or_else(|| panic!("malformed QJS_ORACLE observation: {line:?}"))
-                .to_owned()
-        })
-        .collect()
+    super::quickjs_oracle::eval_indexed_plain_lines(
+        oracle,
+        &source,
+        cases.len(),
+        "RegExp v character class escapes",
+    )
 }
 
 fn js_utf16(units: &[u16]) -> String {
