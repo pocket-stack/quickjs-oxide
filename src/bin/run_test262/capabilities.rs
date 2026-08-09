@@ -438,6 +438,10 @@ mod tests {
         "test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js",
         "test/language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js",
     ];
+    const DECL_POSITION_MODULE_NEGATIVES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-decl-position-a-negatives.txt"
+    ));
     const PROPERTY_MANIFEST: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-regexp-unicode-properties.txt"
@@ -2131,18 +2135,22 @@ mod tests {
         expected_pre_import_meta_profile
             .audited_negative_tests
             .extend(EXACT_MODULE_NEGATIVES.into_iter().map(str::to_owned));
-        let mut expected_current_profile = expected_pre_import_meta_profile.clone();
+        let mut expected_import_meta_profile = expected_pre_import_meta_profile.clone();
         assert!(
-            expected_current_profile
+            expected_import_meta_profile
                 .features
                 .insert("import.meta".to_owned())
         );
-        expected_current_profile
+        expected_import_meta_profile
             .audited_negative_tests
             .extend(IMPORT_META_PARSE_NEGATIVES.into_iter().map(str::to_owned));
+        let mut expected_current_profile = expected_import_meta_profile.clone();
+        expected_current_profile
+            .audited_negative_tests
+            .extend(DECL_POSITION_MODULE_NEGATIVES.lines().map(str::to_owned));
         assert_eq!(profile, expected_current_profile);
         assert_eq!(
-            profile
+            expected_import_meta_profile
                 .features
                 .difference(&expected_pre_import_meta_profile.features)
                 .map(String::as_str)
@@ -2150,12 +2158,21 @@ mod tests {
             vec!["import.meta"]
         );
         assert_eq!(
-            profile
+            expected_import_meta_profile
                 .audited_negative_tests
                 .difference(&expected_pre_import_meta_profile.audited_negative_tests)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             IMPORT_META_PARSE_NEGATIVES
+        );
+        assert_eq!(profile.features, expected_import_meta_profile.features);
+        assert_eq!(
+            profile
+                .audited_negative_tests
+                .difference(&expected_import_meta_profile.audited_negative_tests)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            DECL_POSITION_MODULE_NEGATIVES.lines().collect::<Vec<_>>()
         );
         assert_eq!(
             expected_pre_import_meta_profile
@@ -2577,6 +2594,54 @@ mod tests {
             dynamic_import.detail,
             "quickjs-oxide does not declare Test262 feature support: dynamic-import"
         );
+    }
+
+    #[test]
+    fn declaration_position_module_negative_profile_delta_is_exact() {
+        let profile = OxideProfile::parse(CHECKED_IN_PROFILE).unwrap();
+        let negatives = DECL_POSITION_MODULE_NEGATIVES.lines().collect::<Vec<_>>();
+        assert_eq!(negatives.len(), 86);
+        assert!(negatives.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            negatives
+                .iter()
+                .filter(|path| path.contains("-export-"))
+                .count(),
+            43
+        );
+        assert_eq!(
+            negatives
+                .iter()
+                .filter(|path| path.contains("-import-"))
+                .count(),
+            43
+        );
+        for path in negatives {
+            assert_eq!(profile.classify(Path::new(path), &[], true), None, "{path}");
+        }
+
+        let adjacent = profile
+            .classify(
+                Path::new("test/language/module-code/parse-err-export-dflt-const.js"),
+                &[],
+                true,
+            )
+            .unwrap();
+        assert_eq!(adjacent.outcome, "unsupported-negative-provenance");
+
+        for (path, features) in [
+            (
+                "test/language/module-code/import-attributes/import-attribute-empty.js",
+                vec!["globalThis".to_owned(), "import-attributes".to_owned()],
+            ),
+            (
+                "test/language/module-code/top-level-await/await-expr-resolution.js",
+                vec!["top-level-await".to_owned()],
+            ),
+        ] {
+            let classification = profile.classify(Path::new(path), &features, false).unwrap();
+            assert_eq!(classification.outcome, "unsupported-feature", "{path}");
+        }
     }
 
     #[test]

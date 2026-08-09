@@ -1,0 +1,4 @@
+test262.conf:44: ignoring testdir=test262/test
+43 SyntaxError: expecting '('
+43 SyntaxError: unsupported keyword: export
+Average memory statistics for 86 tests:

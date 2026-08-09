@@ -222,6 +222,454 @@ const MODULE_FIXTURE_METADATA: ModuleMetadataContract = ModuleMetadataContract {
     negative: None,
 };
 
+const MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA: ModuleMetadataContract =
+    ModuleMetadataContract {
+        includes: &[],
+        flags: &["module"],
+        features: &["generators"],
+        negative: Some(NegativeMetadataContract {
+            phase: "parse",
+            error_type: "SyntaxError",
+        }),
+    };
+
+/// The complete pinned declaration-position parse-negative cohort selected by
+/// the two natural import/export filename families. Source, metadata, and the
+/// filename-derived 43/43 partition are frozen by
+/// `scripts/generate-test262-module-decl-position-a.mjs`.
+const DECL_POSITION_MODULE_ADMISSIONS: [DependencyFreeModuleAdmission; 86] = [
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-arrow-function.js",
+        source_sha256: "f40cb30b08cbb5ef6457ccad910e7decfe3185f2eaa1a287c180238249484b08",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-block-stmt-list.js",
+        source_sha256: "9b9121f54dec42011053db4bafbd35a9b34533d9aa491449bda81a953dbc8b8e",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-block-stmt.js",
+        source_sha256: "672b0286eac70d63e6947973efe993889bb0c561e2aa912f484703121a74b644",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-decl-meth-static.js",
+        source_sha256: "d95d5f2c7124efa8dbb3f9a1dbea0c89288d4fe3ed922b52c381d97c2cba36d3",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-decl-meth.js",
+        source_sha256: "2702e8175d968af6812c9b1908c85589604c01c76300c4301d0ad854c35c5837",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-decl-method-gen-static.js",
+        source_sha256: "999907d4e92e1202550a291c08758661fbecacd292b59d4573ca0008b849ecd8",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-decl-method-gen.js",
+        source_sha256: "38062e032b642b33af5a2abaa150129af9e92aa3b088bfca0a3b28fa9ba682ae",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-expr-meth-gen-static.js",
+        source_sha256: "6bebf2ee3a7b0cde12ae758d1db7744526ea7e8bd5945532302b1f17e29337be",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-expr-meth-gen.js",
+        source_sha256: "6088e65e1d851175f25a6a0b9179f299fd8f3850c8acf33206c08555569042c3",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-expr-meth-static.js",
+        source_sha256: "7bbeca7b791a54e260e74b9b09489ed5c89259c22ee46778b2694927a4e43181",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-class-expr-meth.js",
+        source_sha256: "f9e2478786dd29037564802af92888e24a75a00e6b17ffe2ef7ac327f94bef24",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-do-while.js",
+        source_sha256: "03f3a82dfef2663a8789889bb91ed4a5f88366bc6054311488f6ac9316d947b6",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-const.js",
+        source_sha256: "6f03002ff9645f4fddf352fe9f755ed559a7771612a732711a5cbf0c5f064b96",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-in-const.js",
+        source_sha256: "0c032333f847b5146e03ea58af7bffd56becb6692d447b55b41a62c074c39d0b",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-in-let.js",
+        source_sha256: "98b67cc4ea08693663dbbe67a5e0f60ee231932e7d95db251ec1e831032828bb",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-in-lhs.js",
+        source_sha256: "d7af620c52aa277dc309fe723fbce73653c4ed4d1289e92512e2a32fb1893dc5",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-in-var.js",
+        source_sha256: "8badb79bc86208a3fc85332d70125202c91dc3c2cc2b364d14f575aa3e92f291",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-let.js",
+        source_sha256: "320b67dab853b0e2039cb21878967abe295d134f688e550564f850ad1641d761",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-lhs.js",
+        source_sha256: "6090a5f964bc59edd0ee3a615a3f0911bdc21dc0c83b751c3444b00d4f512f34",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-of-const.js",
+        source_sha256: "b9ef024ed8440a85ac08c3d72d3bcb0696f6bf19103156a89770c51e266f2d77",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-of-let.js",
+        source_sha256: "eeff61837e4904633583ca37f8762132f291d55bcf7467d97e6cc2e0beab7d64",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-of-lhs.js",
+        source_sha256: "be4cabd5028e6d6e307849cbde88c18e289d1c13131d3865787f033e6f0581e6",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-of-var.js",
+        source_sha256: "cfda820f094b9bc41021a485356527d4d3058b1394a89a40794dac2f7bfaa24a",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-for-var.js",
+        source_sha256: "7b9419c84e7bf2de54cb2fb09c1bbbd19ff6e18d8ae8228959710e69a6440a65",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-function-decl.js",
+        source_sha256: "dd514b21b5b3d1efda22f89f95abb9ee3c53c9a98a14078fceac4194e8f0b35b",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-function-expr.js",
+        source_sha256: "52cddc21d492109d11a1961ac45622bb334e7c0aeb03b6379c7e990b0ae8dc35",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-generator-decl.js",
+        source_sha256: "253300aabceb53e210d66cd996d9133cf92785eb753071d03a5800ccff928eff",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-generator-expr.js",
+        source_sha256: "42583588a5fe403080bd0472717c228c6ed87f184c10b5f74fd86650bc9de0af",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-if-else.js",
+        source_sha256: "11637912575c0476877fa4bcee226f6bba740def26e905478c3b4da937a7b42c",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-if-if.js",
+        source_sha256: "1af08c701e665927515ebffb4271e429cd7bb23870bb024d750e590d7c31a9e9",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-labeled.js",
+        source_sha256: "3a04f8b3b45adda66a448476401deb86facf0741f05a5a6bc06b82eedfbb85b8",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-object-gen-method.js",
+        source_sha256: "33699c38f19f2d37ee9fe3d6a52a3fa5506ff44db49c7f7ba66abd4115b2f11c",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-object-getter.js",
+        source_sha256: "6361a65f77e29a919367450ccfa6137a0ac2993c9b9794d062db5bb9a3a77d7d",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-object-method.js",
+        source_sha256: "cdb94f604834a9d06ba622c98052aae0c4da8b68c5337502caced561396b5663",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-object-setter.js",
+        source_sha256: "8387154afb4ace34b08a6d5f869274b718ec050a906b821725e43c9e719ff8d5",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-switch-case-dflt.js",
+        source_sha256: "a6b483ba9aa25157f7dcb3f43df4e9c7f8d8a942ad78e11c7dd4b73b566bfff4",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-switch-case.js",
+        source_sha256: "29228932e7a4d943b2aad870a48c37493ebb81ec50c36fc8a2a2bee03f0f15b9",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-switch-dftl.js",
+        source_sha256: "519daa3e06db9bce77d591a9818d3cf4dac296e3a58f3800132745dd5e2d0c73",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-try-catch-finally.js",
+        source_sha256: "2d7f5a05304ba7dbfb66c6f811070ab1bc679066cc056269fb8825b58f545100",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-try-catch.js",
+        source_sha256: "aa0cb27846dec10af3526f732f74d3d6b349dc79651fd5a2059cd841a0a088e6",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-try-finally.js",
+        source_sha256: "ac0b29087da49f4479f1f1c1a1926675d515fc31332f488a4f827f033124f400",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-try-try.js",
+        source_sha256: "3a568259eecfb0598f8c6305b7664e6ddae1af03fdfa1670b4c8e1b9e4828232",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-export-while.js",
+        source_sha256: "674fe906049b9e85b6e04795c4589b199b70e4cc2425a3ab01af698c0ba8d89b",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-arrow-function.js",
+        source_sha256: "7464f0c2346f5bc39d0b2a081ef40b190bf4c4902aa47fff84efd021a9b5ac0f",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-block-stmt-list.js",
+        source_sha256: "b09db37247c97fb96c84dd164201569c2b67dac65b689786645825c6bb619c36",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-block-stmt.js",
+        source_sha256: "aa8ed707204e405c64c6ae59b3335c2d56e192ad09ba264b1852ae9c58e1b983",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-decl-meth-static.js",
+        source_sha256: "8f21921c9bd146e06b8a3886c1ae1dbc4ec734bad94feff3b901d124a2df525f",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-decl-meth.js",
+        source_sha256: "d7bc0622f0fbcd5dc658c7f1050ab924213ad4b5c21f72b8b1ee298479173fc6",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-decl-method-gen-static.js",
+        source_sha256: "b073223ff067ada91d48cc9c0fe28cff4c0f41c575cebc6a20bbaa247092f450",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-decl-method-gen.js",
+        source_sha256: "37808143dc7555a443256b6d81924ca099bf54850bad08a944c1cc578228d538",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-expr-meth-gen-static.js",
+        source_sha256: "e3aafffee8b0932bd2c784256cd48d6fd5fcc71d36f4560c648b82ceb60f8b76",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-expr-meth-gen.js",
+        source_sha256: "6dad1bcc3d0c8a984aeda7a9d7bbebfbc09302c198e3da5a183c243b5b6b8d1d",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-expr-meth-static.js",
+        source_sha256: "bb141d26c7fa3a7a21566abe253b1420a563c08a93f244787d355d4b3fe3275b",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-class-expr-meth.js",
+        source_sha256: "8fc56be322e4b8c550c80138e0c6f457cb076f085b2a92a3a2626cf116392987",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-do-while.js",
+        source_sha256: "377b795da559280f58114f84dcebd0d1fe8d7a2cbcddc107ca11cbf4c1246024",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-const.js",
+        source_sha256: "a2360e23f781052e560ef97d6681e0377f6f859dfc1201b362cff76de022f576",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-in-const.js",
+        source_sha256: "1c2b112a7341a1074aa21e8c7635cb7920cf4a3517ae0bef9aa02920f9818c79",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-in-let.js",
+        source_sha256: "6d5517f5d5718b12275a4a1766daa1301cb457732e3bf826d067fe7528d08b4b",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-in-lhs.js",
+        source_sha256: "d5572270fcd20392cd29f4c8cb49438b979e124aeaefd4039fb602a79f66fd94",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-in-var.js",
+        source_sha256: "f6829e8fc4ea8f8222d0a9d5f182ed13b2dd64f6dd804f2451c88ba95044d4a7",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-let.js",
+        source_sha256: "69415ec4642192d32d664966a5ec816b3a390d2a0deea2e3c2520d69c6ede986",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-lhs.js",
+        source_sha256: "e1d79087c1588f7496f6724c309f07eb4cc09851b159e0736fac76971a481111",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-of-const.js",
+        source_sha256: "a374c6a7ca512cb77b5ef1aead876efccf86c36d0961037e80c3e997c67b5c03",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-of-let.js",
+        source_sha256: "703259aea5c83ab5e92df77379a5918ba34affae6d643bd6488c5e2c084d1e26",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-of-lhs.js",
+        source_sha256: "2d9050b67200ac9bcfe4741f028a526ed68b694e0fa5a4da4fa4e5c4150043dc",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-of-var.js",
+        source_sha256: "6f1a620011275b58112ae5d5fd8b45c77659894bd3a38267de2bc4d1c1ff5322",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-for-var.js",
+        source_sha256: "38fc2e55f93a932e61a33f2451940302b9fbc4b696d62e03756ca9ec2f2229f5",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-function-decl.js",
+        source_sha256: "3251561f8947e8e1cb5cb41b971498238a93a6ccabe5ba767a677ed56315e127",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-function-expr.js",
+        source_sha256: "82df99af92d5b72ab0e9c15f097645691280697e290b8152862266d18fbee03a",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-generator-decl.js",
+        source_sha256: "c0c635ccd90df35de5d5057ac02884151f5a4364be5bd24e530a8a0b7e317b29",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-generator-expr.js",
+        source_sha256: "87505f3264569c5434dd6a47067eac982e695540c7e3d83584ae318b53f49906",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-if-else.js",
+        source_sha256: "938da0b8f3698c56e20368575c7c1b5dbe7e79070cbb178a4d9ca4930fe93d78",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-if-if.js",
+        source_sha256: "66a59fa74993d9a5d689b0b75d593930d2643aec2432ee04ce4661adc73c0ac8",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-labeled.js",
+        source_sha256: "1d48d676f41c18e9cb8db64871c2a36d22c3c9c218e90aef713b8edd9d1e26ef",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-object-gen-method.js",
+        source_sha256: "b62e49f7d57eff2a2254f0b4477e30aec5e967e55857dfe09545cb52d27224c4",
+        metadata: MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-object-getter.js",
+        source_sha256: "b88c8027d36d409f34bc0bac702bb1a069dfbcba3cb2399deab101b26ca8a5ce",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-object-method.js",
+        source_sha256: "44ead756fae51763fb46ffb54f2ed5b2adf4bc2845fc9da19e82da8b803e68e2",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-object-setter.js",
+        source_sha256: "98f35df77aa0f663054a229873e2f4cea1ff466c1e8da8f94537e2c22f4657b2",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-switch-case-dflt.js",
+        source_sha256: "2af707bc0ad27b1a298eea1698b30086baf1b85069bf63ab7b9eafd535ba19fb",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-switch-case.js",
+        source_sha256: "af3ffa2f1a2901115e0c4d25f490bab2b006a66cbd6367a35495764df0654e9e",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-switch-dftl.js",
+        source_sha256: "90700e40c5e5a06ab776ba70e10ebbd08bcdf35b21b70acf1dc9718f190e8faa",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-try-catch-finally.js",
+        source_sha256: "ca1e5bc814b4f60916aa050264bab37435bd69f23cacca3413a6cd5def1e7826",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-try-catch.js",
+        source_sha256: "d15e6be87b02aff9c55de0915b1ab54caff359349f084b1b05e3effa9dfaac44",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-try-finally.js",
+        source_sha256: "f90bf492891ca47c40fb1948902522d152489716fdf0ef328f175f8f6e1dd363",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-try-try.js",
+        source_sha256: "a5cd4624b3b2f5dd032a2f4f8a2aec43241bddc5739198a37878a393b446d055",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+    DependencyFreeModuleAdmission {
+        path: "test/language/module-code/parse-err-decl-pos-import-while.js",
+        source_sha256: "d06ef1fedc6b78317a7c0a2067b1e11096b3844ea6a12231a0c09de5aeede9c6",
+        metadata: MODULE_PARSE_SYNTAX_ERROR_METADATA,
+    },
+];
+
 /// Source- and metadata-authenticated dependency-free module roots admitted by
 /// the first static-module Test262 milestone. This is deliberately not a
 /// general module capability switch: every other module retains the
@@ -1976,6 +2424,7 @@ pub(super) fn is_exact_dependency_free_module_test(
 ) -> Result<bool, String> {
     let Some(admission) = DEPENDENCY_FREE_MODULE_ADMISSIONS
         .iter()
+        .chain(DECL_POSITION_MODULE_ADMISSIONS.iter())
         .find(|admission| path == Path::new(admission.path))
     else {
         return Ok(false);
@@ -3443,12 +3892,13 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AGENT_HOST_ADMISSIONS, DEFAULT_MODULE_FILE_ADMISSIONS, DEFAULT_MODULE_ROOT_ADMISSIONS,
-        DEPENDENCY_FREE_MODULE_ADMISSIONS, ExactModuleGraphAdmission, ExactModuleTest,
-        FIXTURE_GRAPH_MODULE_ADMISSIONS, FixtureGraphModuleAdmission, HostCapabilities,
-        IMPORT_META_MODULE_FILE_ADMISSIONS, IMPORT_META_MODULE_ROOT_ADMISSIONS,
-        MODULE_FIXTURE_METADATA, MODULE_METADATA, ModuleGraphFileAdmission, ModuleMetadataContract,
-        ModuleRequestAdmission, NAMESPACE_MODULE_FILE_ADMISSIONS, NAMESPACE_MODULE_ROOT_ADMISSIONS,
+        AGENT_HOST_ADMISSIONS, DECL_POSITION_MODULE_ADMISSIONS, DEFAULT_MODULE_FILE_ADMISSIONS,
+        DEFAULT_MODULE_ROOT_ADMISSIONS, DEPENDENCY_FREE_MODULE_ADMISSIONS,
+        ExactModuleGraphAdmission, ExactModuleTest, FIXTURE_GRAPH_MODULE_ADMISSIONS,
+        FixtureGraphModuleAdmission, HostCapabilities, IMPORT_META_MODULE_FILE_ADMISSIONS,
+        IMPORT_META_MODULE_ROOT_ADMISSIONS, MODULE_FIXTURE_METADATA, MODULE_METADATA,
+        ModuleGraphFileAdmission, ModuleMetadataContract, ModuleRequestAdmission,
+        NAMESPACE_MODULE_FILE_ADMISSIONS, NAMESPACE_MODULE_ROOT_ADMISSIONS,
         agent_host_metadata_matches, authenticate_dependency_free_module_test,
         authenticate_exact_module_graph_closure, authenticate_fixture_graph_closure,
         authenticate_module_graph_file, authenticate_module_graph_file_digest,
@@ -3484,6 +3934,14 @@ mod tests {
     const DEFAULT_MODULE_NEGATIVES: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/test262-module-default-a-negatives.txt"
+    ));
+    const DECL_POSITION_MODULE_MANIFEST: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-decl-position-a.txt"
+    ));
+    const DECL_POSITION_MODULE_LEDGER: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test262-module-decl-position-a-ledger.tsv"
     ));
     const IMPORT_META_SCRIPT_ROOTS: [&str; 5] = [
         "test/language/expressions/import.meta/syntax/goal-async-function-params-or-body.js",
@@ -3700,6 +4158,133 @@ mod tests {
         )
         .unwrap_err();
         assert!(metadata_drift.contains("metadata shape drifted"));
+    }
+
+    #[test]
+    fn declaration_position_module_admission_is_the_exact_natural_cohort() {
+        assert_eq!(DECL_POSITION_MODULE_ADMISSIONS.len(), 86);
+        assert!(
+            DECL_POSITION_MODULE_ADMISSIONS
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
+        assert_eq!(
+            DECL_POSITION_MODULE_MANIFEST.lines().collect::<Vec<_>>(),
+            DECL_POSITION_MODULE_ADMISSIONS
+                .iter()
+                .map(|admission| admission.path)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            DECL_POSITION_MODULE_ADMISSIONS
+                .iter()
+                .filter(|admission| admission.path.contains("-export-"))
+                .count(),
+            43
+        );
+        assert_eq!(
+            DECL_POSITION_MODULE_ADMISSIONS
+                .iter()
+                .filter(|admission| admission.path.contains("-import-"))
+                .count(),
+            43
+        );
+        assert_eq!(
+            DECL_POSITION_MODULE_ADMISSIONS
+                .iter()
+                .filter(|admission| admission.metadata.features == ["generators"])
+                .count(),
+            12
+        );
+
+        let ledger_rows = DECL_POSITION_MODULE_LEDGER.lines().skip(1);
+        assert_eq!(ledger_rows.clone().count(), 86);
+        for (admission, row) in DECL_POSITION_MODULE_ADMISSIONS.iter().zip(ledger_rows) {
+            let fields = row.split('\t').collect::<Vec<_>>();
+            assert_eq!(fields.len(), 9, "{} ledger width", admission.path);
+            assert_eq!(fields[0], admission.path);
+            assert_eq!(
+                fields[1],
+                if admission.path.contains("-export-") {
+                    "export"
+                } else {
+                    "import"
+                }
+            );
+            assert_eq!(fields[2], "");
+            assert_eq!(fields[3], "module");
+            assert_eq!(fields[4], admission.metadata.features.join(","));
+            assert_eq!(fields[5], "parse");
+            assert_eq!(fields[6], "SyntaxError");
+            assert_eq!(fields[7], admission.source_sha256);
+            let negative = admission.metadata.negative.expect("negative contract");
+            assert_eq!(negative.phase, "parse");
+            assert_eq!(negative.error_type, "SyntaxError");
+        }
+
+        for excluded in [
+            "test/language/module-code/parse-err-export-dflt-const.js",
+            "test/language/module-code/import-attributes/import-attribute-empty.js",
+            "test/language/module-code/top-level-await/await-expr-resolution.js",
+        ] {
+            assert_eq!(
+                is_exact_dependency_free_module_test(Path::new(excluded), "", &Metadata::default()),
+                Ok(false),
+                "adjacent module surface was admitted: {excluded}"
+            );
+        }
+    }
+
+    #[test]
+    fn declaration_position_module_admission_matches_the_available_pinned_suite() {
+        let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/oracle/quickjs-2026-06-04/test262");
+        if !suite.is_dir() {
+            return;
+        }
+
+        for admission in &DECL_POSITION_MODULE_ADMISSIONS {
+            let source = fs::read_to_string(suite.join(admission.path))
+                .unwrap_or_else(|error| panic!("read {}: {error}", admission.path));
+            let metadata = parse_metadata(&source)
+                .unwrap_or_else(|error| panic!("parse {} metadata: {error}", admission.path));
+            assert_eq!(
+                is_exact_dependency_free_module_test(Path::new(admission.path), &source, &metadata),
+                Ok(true),
+                "{}",
+                admission.path
+            );
+            assert_eq!(
+                exact_module_test(&suite, Path::new(admission.path), &source, &metadata),
+                Ok(Some(ExactModuleTest::DependencyFree)),
+                "{}",
+                admission.path
+            );
+        }
+
+        let admission = &DECL_POSITION_MODULE_ADMISSIONS[0];
+        let source = fs::read_to_string(suite.join(admission.path)).expect("read drift canary");
+        let metadata = parse_metadata(&source).expect("parse drift canary metadata");
+        assert!(
+            is_exact_dependency_free_module_test(
+                Path::new(admission.path),
+                &format!("{source}\n// source drift"),
+                &metadata
+            )
+            .unwrap_err()
+            .contains("source drifted")
+        );
+        let mut metadata_drift = metadata;
+        metadata_drift.features.push("import.meta".to_owned());
+        assert!(
+            is_exact_dependency_free_module_test(
+                Path::new(admission.path),
+                &source,
+                &metadata_drift
+            )
+            .unwrap_err()
+            .contains("metadata shape drifted")
+        );
     }
 
     #[test]
