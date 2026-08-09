@@ -83,3 +83,5 @@ check_registry array Array tests/oracle_array_methods.rs \
     tests/oracle/array oracle/array oracle_array_
 check_registry string String tests/oracle_string_methods.rs \
     tests/oracle/string oracle/string oracle_string_
+check_registry object Object tests/oracle_object_semantics.rs \
+    tests/oracle/object oracle/object oracle_object
