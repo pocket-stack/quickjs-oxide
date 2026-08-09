@@ -10,11 +10,11 @@ live namespace objects, and core `import.meta` semantics. Dynamic import,
 import attributes, top-level await, and QuickJS host-populated `import.meta`
 properties remain parity work.
 
-The latest frozen Test262 vector is **68,209 passes / 68,261 runnable /
-102,037 total variants**. R3eb-A passes its combined 65-variant default-module
-and `import.meta` cohort; 64 are new canonical gains, the other 101,973 rows are
-byte-identical to R3dz-A, and there are zero regressions. Detailed receipts and
-historical bookkeeping live in the status documents below.
+The latest frozen Test262 vector is **68,295 passes / 68,347 runnable /
+102,037 total variants**. R3ec-A passes all 86 audited module
+declaration-position parse negatives; all 86 are new canonical gains, the
+other 101,951 rows are unchanged, and there are zero regressions. Detailed
+receipts and historical bookkeeping live in the status documents below.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The

@@ -4,6 +4,35 @@ Last audited: 2026-08-09. The completion definition remains
 [`parity.md`](parity.md); this file records progress and must not be used to
 claim full parity.
 
+## R3ec-A module declaration-position negative admission
+
+R3ec-A promotes the exact 86-root pinned Test262 cohort named
+`parse-err-decl-pos-{export,import}-*.js`: 43 `export` roots and 43 `import`
+roots, including 12 generator-bearing cases. All are Module-goal tests with no
+includes and a parse-phase `SyntaxError`; they use the dependency-free
+parse-negative execution path, so no resolution or loader activity occurs. The
+`c1ff63f` admission keeps this fail-closed: it adds no feature tag and admits
+only source- and frontmatter-authenticated paths whose negative provenance
+matches the generated ledger.
+
+Oxide and pinned QuickJS 2026-06-04 each pass 86/86 twice. The canonical global
+successor is 68,295 passes / 68,347 runnable / 102,037 total variants. Exactly
+86 rows move from `unsupported-module` to `pass`, the other 101,951 rows are
+unchanged, and there are zero detail-only changes or regressions. The global
+gate authenticates the focused projection and two byte-identical full replays,
+then reverses the transition to the frozen R3eb-A receipt.
+
+This milestone proves only the top-level grammar restriction for static
+`import` and `export` declarations. An adjacent parse-negative root, import
+attributes, and top-level await remain explicit fail-closed canaries; dynamic
+import and the broader module frontier remain open Feature Parity work.
+
+```sh
+./scripts/test-test262-module-decl-position-a-global.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-module-decl-position-a-global.sh --focused
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-module-decl-position-a-global.sh --full
+```
+
 ## R3eb-A default and `import.meta` canonical successor
 
 R3eb-A promotes the already implemented default-module and core `import.meta`

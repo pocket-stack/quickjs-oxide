@@ -6,6 +6,34 @@ differentials still decide exact behavior inside each implemented slice.
 
 Last audited: 2026-08-09.
 
+## R3ec-A module declaration-position canonical successor
+
+R3ec-A freezes the complete pinned cohort named
+`parse-err-decl-pos-{export,import}-*.js`: 43 `export` roots and 43 `import`
+roots. Every root is Module-goal and expects a parse-phase `SyntaxError`; all
+use the dependency-free parse-negative path, so resolution never begins. Twelve
+carry `generators`, none require includes, and the profile adds only these 86
+exact audited negatives—no feature-wide admission.
+
+Oxide and pinned QuickJS 2026-06-04 each pass the 86/86 focused cohort twice.
+The frozen 102,037-variant successor records 68,295 passes / 68,347 runnable:
+all 86 cohort rows move from `unsupported-module` to `pass`, 101,951 rows are
+unchanged, and there are no detail-only changes or regressions. The gate binds
+the generated source/frontmatter ledger, focused projection, predecessor
+receipt, and two byte-identical full replays before reverse-deriving the exact
+R3eb-A hashes.
+
+This proves the grammar restriction that static `import` and `export`
+declarations cannot appear in nested declaration positions. Adjacent module
+parse negatives, import attributes, and top-level await remain explicit
+fail-closed canaries rather than implied coverage.
+
+```sh
+./scripts/test-test262-module-decl-position-a-global.sh --check
+TEST262_WORKERS=4 ./scripts/test-test262-module-decl-position-a-global.sh --focused
+TEST262_FULL_WORKERS=2 ./scripts/test-test262-module-decl-position-a-global.sh --full
+```
+
 ## R3eb-A default and `import.meta` canonical successor
 
 R3eb-A combines the source-authenticated 38-variant default-module cohort and
