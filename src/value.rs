@@ -569,6 +569,7 @@ impl JsStringBuilder {
     /// infallible `Vec` growth path. Callers which can compute their exact
     /// UTF-16 result length use this to mirror QuickJS's `StringBuffer`
     /// preallocation and surface allocator failure as `JsStringError`.
+    #[cfg(feature = "test262-host")]
     pub(crate) fn try_with_exact_capacity(capacity: usize) -> Result<Self, JsStringError> {
         if capacity > JsString::MAX_LEN {
             return Err(JsStringError::TooLong);

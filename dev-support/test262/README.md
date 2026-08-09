@@ -20,6 +20,11 @@ status ledgers are preserved in the public
 [`test262-history-r3ed`](https://github.com/pocket-stack/quickjs-oxide/releases/tag/test262-history-r3ed)
 release asset. Its authenticated inventory is in `archive/index.tsv`.
 
+The `$262` realm and agent host is excluded from default library, CLI, and
+WASM builds. The central gate explicitly enables the non-default
+`test262-host` feature when it builds `run-test262`. Feature-specific checks
+can be run with `cargo test --locked --features test262-host --lib --bins`.
+
 Official progress reports lead with full pass and eligible coverage. Runnable
 pass rate is secondary. A new admission must be expressed in profile data and
 must validate the correct negative phase/type and QuickJS diagnostic rule; the

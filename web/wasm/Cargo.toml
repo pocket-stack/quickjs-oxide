@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 js-sys = { version = "=0.3.103", default-features = false }
-quickjs-oxide = { path = "../.." }
+quickjs-oxide = { path = "../..", default-features = false }
 wasm-bindgen = "=0.2.126"
 
 [lints.rust]

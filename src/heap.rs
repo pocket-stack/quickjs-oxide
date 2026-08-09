@@ -6443,6 +6443,7 @@ pub enum PromiseResolvingKind {
 }
 
 /// Selector for QuickJS's Test262-only `$262.agent` host functions.
+#[cfg(feature = "test262-host")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Test262AgentKind {
     Start,
@@ -6561,18 +6562,25 @@ pub enum NativeFunctionId {
     PrimitiveConstructor(PrimitiveKind),
     StringStatic(StringStaticKind),
     /// QuickJS's test262-only `js_string_codePointRange` helper.
+    #[cfg(feature = "test262-host")]
     StringCodePointRange,
     /// QuickJS's test262-only `$262.detachArrayBuffer` host hook.
+    #[cfg(feature = "test262-host")]
     Test262DetachArrayBuffer,
     /// QuickJS's test262-only `$262.evalScript` host hook.
+    #[cfg(feature = "test262-host")]
     Test262EvalScript,
     /// QuickJS's test262-only `$262.createRealm` host hook.
+    #[cfg(feature = "test262-host")]
     Test262CreateRealm,
     /// QuickJS's test262-only callable Annex B `IsHTMLDDA` object.
+    #[cfg(feature = "test262-host")]
     Test262IsHtmlDda,
     /// QuickJS's test262-only `$262.gc` host hook.
+    #[cfg(feature = "test262-host")]
     Test262Gc,
     /// QuickJS's test262-only `$262.agent` host hooks.
+    #[cfg(feature = "test262-host")]
     Test262Agent(Test262AgentKind),
     /// qjs-host `print`, installed explicitly by the CLI rather than as an
     /// ECMAScript intrinsic in every Context.
@@ -6955,6 +6963,16 @@ impl NativeFunctionId {
     #[must_use]
     pub const fn descriptor(self) -> NativeFunctionDescriptor {
         match self {
+            #[cfg(feature = "test262-host")]
+            Self::StringCodePointRange
+            | Self::Test262DetachArrayBuffer
+            | Self::Test262EvalScript
+            | Self::Test262CreateRealm
+            | Self::Test262IsHtmlDda
+            | Self::Test262Gc
+            | Self::Test262Agent(_) => NativeFunctionDescriptor {
+                cproto: NativeCProto::Generic,
+            },
             Self::FunctionPrototype
             | Self::ThrowTypeError
             | Self::FunctionPrototypeCall
@@ -7108,13 +7126,6 @@ impl NativeFunctionId {
             | Self::PrimitivePrototypeToString(_)
             | Self::PrimitivePrototypeValueOf(_)
             | Self::StringStatic(_)
-            | Self::StringCodePointRange
-            | Self::Test262DetachArrayBuffer
-            | Self::Test262EvalScript
-            | Self::Test262CreateRealm
-            | Self::Test262IsHtmlDda
-            | Self::Test262Gc
-            | Self::Test262Agent(_)
             | Self::QjsPrint
             | Self::StringPrototypeCharCodeAt
             | Self::StringPrototypeConcat
@@ -11157,6 +11168,7 @@ impl Heap {
     }
 
     /// Set QuickJS's identity-local Annex B `is_HTMLDDA` bit.
+    #[cfg(feature = "test262-host")]
     pub(crate) fn set_object_is_html_dda(&mut self, id: ObjectId) -> Result<(), HeapError> {
         self.object_mut(id)?.is_html_dda = true;
         Ok(())
@@ -20845,7 +20857,6 @@ mod tests {
             NativeFunctionId::StringPrototypeRepeat,
             NativeFunctionId::StringPrototypeNormalize,
             NativeFunctionId::StringPrototypeLocaleCompare,
-            NativeFunctionId::StringCodePointRange,
             NativeFunctionId::MathHypot,
             NativeFunctionId::MathRandom,
             NativeFunctionId::MathImul,
@@ -20854,6 +20865,12 @@ mod tests {
         ];
 
         for target in targets {
+            assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
+            assert!(!target.descriptor().cproto.default_is_constructor());
+        }
+        #[cfg(feature = "test262-host")]
+        {
+            let target = NativeFunctionId::StringCodePointRange;
             assert_eq!(target.descriptor().cproto, NativeCProto::Generic);
             assert!(!target.descriptor().cproto.default_is_constructor());
         }

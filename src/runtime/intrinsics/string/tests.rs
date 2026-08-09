@@ -63,6 +63,7 @@ fn string_subrange_selectors_use_pinned_generic_cproto() {
     assert_eq!(string_to_int32_clamp(f64::INFINITY, 6, 6), 6);
 }
 
+#[cfg(feature = "test262-host")]
 #[test]
 fn code_point_range_context_api_preserves_quickjs_native_contract() {
     let runtime = Runtime::new();

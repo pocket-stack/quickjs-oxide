@@ -1,3 +1,5 @@
+#![cfg(feature = "test262-host")]
+
 use quickjs_oxide::heap::{NativeCProto, NativeFunctionId};
 use quickjs_oxide::{Context, PendingJobOutcome, Runtime, RuntimeError, Value};
 

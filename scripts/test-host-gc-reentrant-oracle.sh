@@ -94,6 +94,7 @@ fi
 
 if [[ "$run_oxide" == true ]]; then
     cargo test --locked --manifest-path "$root/Cargo.toml" \
+        --features test262-host \
         --test oracle_host_gc \
         test262_gc_reentry_matches_pinned_quickjs_lifecycle_transcript \
         -- --exact

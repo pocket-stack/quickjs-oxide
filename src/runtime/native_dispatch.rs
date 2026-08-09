@@ -685,18 +685,25 @@ impl Runtime {
             NativeFunctionId::StringStatic(selector) => {
                 self.call_string_static(realm, selector, invocation, arguments)
             }
+            #[cfg(feature = "test262-host")]
             NativeFunctionId::StringCodePointRange => {
                 self.call_string_code_point_range(realm, invocation, arguments)
             }
+            #[cfg(feature = "test262-host")]
             NativeFunctionId::Test262DetachArrayBuffer => {
                 self.call_test262_detach_array_buffer(invocation, arguments)
             }
+            #[cfg(feature = "test262-host")]
             NativeFunctionId::Test262EvalScript => {
                 self.call_test262_eval_script(realm, invocation, arguments)
             }
+            #[cfg(feature = "test262-host")]
             NativeFunctionId::Test262CreateRealm => self.call_test262_create_realm(invocation),
+            #[cfg(feature = "test262-host")]
             NativeFunctionId::Test262IsHtmlDda => self.call_test262_is_html_dda(invocation),
+            #[cfg(feature = "test262-host")]
             NativeFunctionId::Test262Gc => self.call_test262_gc(invocation),
+            #[cfg(feature = "test262-host")]
             NativeFunctionId::Test262Agent(kind) => {
                 self.call_test262_agent(realm, kind, invocation, arguments)
             }

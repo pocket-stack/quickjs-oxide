@@ -1120,6 +1120,7 @@ fn array_slots_and_realm_roots_survive_gc_then_collect() {
     assert_eq!(runtime.heap_counts().live, 0);
 }
 
+#[cfg(feature = "test262-host")]
 #[test]
 fn test262_gc_host_is_quickjs_shaped_reentrant_and_preserves_active_roots() {
     let runtime = Runtime::new();

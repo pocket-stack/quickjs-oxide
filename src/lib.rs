@@ -47,8 +47,10 @@ pub use object::{
 pub use runtime::{
     Context, EvalOptions, HostServices, ModuleBytecodeRef, ModuleLoader, ModuleLoaderError,
     ModuleLoaderRegistration, PendingJobError, PendingJobOutcome, PromiseRejectionEvent, Runtime,
-    RuntimeError, Test262AgentError, Test262AgentSession,
+    RuntimeError,
 };
+#[cfg(feature = "test262-host")]
+pub use runtime::{Test262AgentError, Test262AgentSession};
 pub use value::{JsString, JsStringError, Value};
 
 /// The version of this quickjs-oxide engine crate.

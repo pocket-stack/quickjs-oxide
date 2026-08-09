@@ -4,6 +4,9 @@ mod support;
 
 use support::compile_syntax_error;
 
+const IMPORT_SOURCE: &str = "import('dependency')";
+const IMPORT_MESSAGE: &str = "import syntax is not implemented yet";
+
 fn assert_unsupported<T>(
     label: &str,
     result: Result<T, RuntimeError>,
@@ -19,10 +22,7 @@ fn assert_unsupported<T>(
 }
 
 #[test]
-fn public_and_conformance_entrypoints_share_unsupported_semantics() {
-    const IMPORT_SOURCE: &str = "import('dependency')";
-    const IMPORT_MESSAGE: &str = "import syntax is not implemented yet";
-
+fn public_entrypoints_preserve_unsupported_semantics() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
 
@@ -35,10 +35,6 @@ fn public_and_conformance_entrypoints_share_unsupported_semantics() {
     let result = context.eval(r#"Function("import('dependency')")"#);
     assert_unsupported("Function constructor", result, &mut context, IMPORT_MESSAGE);
 
-    context.install_test262_host().unwrap();
-    let result = context.eval(r#"$262.evalScript("import('dependency')")"#);
-    assert_unsupported("$262.evalScript", result, &mut context, IMPORT_MESSAGE);
-
     let result = context.compile_module("await 1;");
     assert_unsupported(
         "Context::compile_module",
@@ -46,6 +42,17 @@ fn public_and_conformance_entrypoints_share_unsupported_semantics() {
         &mut context,
         "top-level await is not implemented in this synchronous module slice",
     );
+}
+
+#[cfg(feature = "test262-host")]
+#[test]
+fn conformance_eval_script_preserves_unsupported_semantics() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    context.install_test262_host().unwrap();
+
+    let result = context.eval(r#"$262.evalScript("import('dependency')")"#);
+    assert_unsupported("$262.evalScript", result, &mut context, IMPORT_MESSAGE);
 }
 
 #[test]

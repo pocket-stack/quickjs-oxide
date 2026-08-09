@@ -29,8 +29,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 - native command-line execution and a Rust/WASM browser playground
 
 The public API and Test262 runner now report the same engine diagnostics.
-Detached public bytecode/VM execution has been retired, and the Test262 runner
-loads a data profile instead of compiling historical milestone identity tables.
+Detached public bytecode/VM execution has been retired, the Test262 runner
+loads a data profile instead of compiling historical milestone identity tables,
+and its `$262` realm/agent host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
@@ -40,14 +41,15 @@ recorded by the current Test262 vector. A Feature Parity claim additionally
 requires the acceptance contract in [`parity.md`](parity.md), including QuickJS
 differential evidence and non-Test262 behavior.
 
-Architecture hygiene remains ahead of new admission batches: move the `$262`
-host behind a non-default dev-support feature, consolidate integration targets
-and oracle helpers, and strengthen negative diagnostic comparison.
+Architecture hygiene remains ahead of new admission batches: consolidate
+integration targets and oracle helpers, then strengthen negative diagnostic
+comparison.
 
 ## Verification
 
 ```sh
 cargo test --locked --workspace --all-targets
+cargo test --locked --features test262-host --lib --bins
 ./scripts/test-test262.sh --check
 ./scripts/test-test262.sh --focused
 TEST262_WORKERS=2 ./scripts/test-test262.sh --full

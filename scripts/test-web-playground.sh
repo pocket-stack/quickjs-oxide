@@ -18,8 +18,10 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! grep -Fqx 'quickjs-oxide = { path = "../.." }' web/wasm/Cargo.toml; then
-  echo "web wrapper must path-depend on the repository's quickjs-oxide crate" >&2
+if ! grep -Fqx \
+  'quickjs-oxide = { path = "../..", default-features = false }' \
+  web/wasm/Cargo.toml; then
+  echo "web wrapper must path-depend on quickjs-oxide without dev-support features" >&2
   exit 1
 fi
 

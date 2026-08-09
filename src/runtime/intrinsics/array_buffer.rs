@@ -958,6 +958,7 @@ impl Runtime {
         Ok(())
     }
 
+    #[cfg(feature = "test262-host")]
     pub(in crate::runtime) fn call_test262_detach_array_buffer(
         &self,
         invocation: NativeInvocation,
@@ -981,6 +982,7 @@ impl Context {
     ///
     /// The function is not an ECMAScript intrinsic. Embedders choose whether
     /// and where to publish it.
+    #[cfg(feature = "test262-host")]
     pub fn new_detach_array_buffer_function(&mut self) -> Result<CallableRef, RuntimeError> {
         let function_prototype = self.function_prototype()?;
         self.runtime.new_native_builtin(

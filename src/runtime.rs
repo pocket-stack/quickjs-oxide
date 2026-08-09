@@ -28,7 +28,9 @@ mod private_elements;
 mod properties;
 mod qjs_host;
 mod template_object;
+#[cfg(feature = "test262-host")]
 mod test262_agent;
+#[cfg(feature = "test262-host")]
 mod test262_host;
 mod vm_host;
 
@@ -40,6 +42,7 @@ pub use self::intrinsics::promise::PromiseRejectionEvent;
 pub use self::jobs::{PendingJobError, PendingJobOutcome};
 pub use self::module::ModuleBytecodeRef;
 pub use self::module::{ModuleLoader, ModuleLoaderError, ModuleLoaderRegistration};
+#[cfg(feature = "test262-host")]
 pub use self::test262_agent::{Test262AgentError, Test262AgentSession};
 
 use std::cell::{Cell, RefCell};
@@ -59,6 +62,8 @@ use crate::function::{
     FunctionBytecodeRef, UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug,
     UnlinkedVariableDefinition,
 };
+#[cfg(feature = "test262-host")]
+use crate::heap::Test262AgentKind;
 use crate::heap::{
     ArrayFindKind, ArrayFlattenKind, ArrayIterationKind, ArrayIteratorKind, ArrayJoinKind,
     ArrayPopKind, ArrayPushKind, ArrayReduceKind, ArraySearchKind, ArraySliceKind,
@@ -77,8 +82,7 @@ use crate::heap::{
     PublishedPrivateBindings, RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind,
     StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
     StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
-    SymbolRegistryKind, Test262AgentKind, VarRefData, VarRefId, VariableDefinition,
-    WeakSymbolGcEvent,
+    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition, WeakSymbolGcEvent,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -4176,6 +4180,7 @@ impl Runtime {
     /// deliberately does not drain the pending-job queue. Active JavaScript
     /// and native frames keep their ordinary stack-owned roots while the
     /// collector runs.
+    #[cfg(feature = "test262-host")]
     fn call_test262_gc(&self, invocation: NativeInvocation) -> Result<Completion, RuntimeError> {
         let NativeInvocation::Call { .. } = invocation else {
             return Err(RuntimeError::Invariant(
@@ -8544,6 +8549,7 @@ impl Runtime {
     }
 
     /// Mirror `JS_SetIsHTMLDDA` for a runtime-owned object.
+    #[cfg(feature = "test262-host")]
     fn set_object_is_html_dda(&self, object: &ObjectRef) -> Result<(), RuntimeError> {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("IsHTMLDDA object"));
@@ -9808,6 +9814,7 @@ impl Context {
     ///
     /// The helper is intentionally not installed as an ECMAScript intrinsic;
     /// embedders such as the Test262 runner decide where to publish it.
+    #[cfg(feature = "test262-host")]
     pub fn new_code_point_range_function(&mut self) -> Result<CallableRef, RuntimeError> {
         let function_prototype = self.function_prototype()?;
         self.runtime.new_native_builtin(
@@ -9824,6 +9831,7 @@ impl Context {
     ///
     /// The function is not an ECMAScript intrinsic. Embedders choose whether
     /// and where to publish it.
+    #[cfg(feature = "test262-host")]
     pub fn new_test262_gc_function(&mut self) -> Result<CallableRef, RuntimeError> {
         let function_prototype = self.function_prototype()?;
         self.runtime.new_native_builtin(

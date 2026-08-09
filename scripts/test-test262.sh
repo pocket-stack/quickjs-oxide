@@ -416,7 +416,7 @@ else
     esac
     build_host=$(rustc -vV | awk '$1=="host:" { print $2; found++ } END { if (found!=1) exit 1 }')
     cargo build --locked --release --target "$build_host" \
-        --target-dir "$target_dir" --bin run-test262
+        --target-dir "$target_dir" --features test262-host --bin run-test262
     runner=$target_dir/$build_host/release/run-test262
 fi
 [[ -f "$runner" && -x "$runner" && ! -L "$runner" ]] \

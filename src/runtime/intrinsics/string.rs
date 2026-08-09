@@ -477,6 +477,7 @@ impl Runtime {
     /// past the Unicode limit. The result contains every code point in the
     /// ascending half-open range encoded as UTF-16, including lone surrogate
     /// values when the requested range crosses the surrogate interval.
+    #[cfg(feature = "test262-host")]
     pub(in crate::runtime) fn call_string_code_point_range(
         &self,
         realm: ContextId,
