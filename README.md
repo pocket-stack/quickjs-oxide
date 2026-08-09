@@ -25,7 +25,7 @@ Feature Parity claim.
 
 ## Try it
 
-Rust 1.85 or newer is required.
+Rust 1.88 or newer is required.
 
 ```sh
 git clone https://github.com/pocket-stack/quickjs-oxide.git

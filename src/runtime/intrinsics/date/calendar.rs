@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn maketime_and_makedate_preserve_specified_fp_evaluation_order() {
-        // test262: built-ins/Date/UTC/fp-evaluation-order.js
+        // Preserve the specified left-to-right IEEE-754 evaluation order.
         assert_eq!(
             set_date_fields_checked(
                 [

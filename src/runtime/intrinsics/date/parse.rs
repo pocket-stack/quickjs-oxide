@@ -200,15 +200,13 @@ fn get_time_zone_offset(
         if digit_count > 2 {
             minutes = hours % 100;
             hours /= 100;
+        } else if skip_char(bytes, &mut position, b':') {
+            minutes = get_digits(bytes, &mut position, 2, 2)?;
         } else {
-            if skip_char(bytes, &mut position, b':') {
-                minutes = get_digits(bytes, &mut position, 2, 2)?;
-            } else {
-                if strict {
-                    return None;
-                }
-                minutes = 0;
+            if strict {
+                return None;
             }
+            minutes = 0;
         }
 
         if hours > 23 || minutes > 59 {

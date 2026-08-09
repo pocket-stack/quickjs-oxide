@@ -1198,10 +1198,8 @@ impl Runtime {
                             {
                                 stack.pop();
                                 completed = Some(ModuleExportResolveResult::Ambiguous);
-                            } else {
-                                if found.is_none() {
-                                    *found = Some(binding);
-                                }
+                            } else if found.is_none() {
+                                *found = Some(binding);
                             }
                         }
                         ModuleExportResolveResult::Ambiguous => {

@@ -90,6 +90,7 @@ pub enum DefineMethodKind {
 /// nullish methods preserve the input value and return a true missing flag;
 /// present methods replace that value with their result and return false.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(clippy::enum_variant_names)]
 pub enum IteratorCallKind {
     ReturnWithValue,
     ThrowWithValue,

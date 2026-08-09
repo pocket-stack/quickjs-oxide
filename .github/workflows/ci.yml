@@ -1,0 +1,178 @@
+name: Engine CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 9 * * *"
+    - cron: "47 18 * * *"
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: Validation tier to run
+        required: true
+        default: fast
+        type: choice
+        options:
+          - fast
+          - quickjs-differential
+          - test262-full
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  RUST_VERSION: "1.88.0"
+
+jobs:
+  fast:
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier == 'fast')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --component rustfmt,clippy
+          rustup default "${RUST_VERSION}"
+
+      - name: Install gate dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+
+      - name: Cache Cargo inputs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-
+
+      - name: Check formatting and architecture gates
+        run: |
+          cargo fmt --all -- --check
+          ./scripts/check-no-test262-special-casing.sh
+          ./scripts/check-rust-only.sh
+
+      - name: Run fast engine tests
+        run: |
+          cargo test --locked --workspace --lib --bins
+          cargo test --locked --test cli --test unsupported_diagnostics
+
+      - name: Lint production targets
+        run: cargo clippy --locked --workspace --lib --bins -- -D warnings
+
+  quickjs-differential:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '23 9 * * *') ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier == 'quickjs-differential')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      QJS_ORACLE_CACHE: ${{ github.workspace }}/.ci-cache/oracle
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Install oracle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential curl git ripgrep xz-utils
+
+      - name: Restore authenticated input caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci-cache/oracle
+          key: >-
+            ${{ runner.os }}-differential-${{ env.RUST_VERSION }}-${{
+            hashFiles('Cargo.lock', 'compat/upstream.toml',
+            'scripts/build-quickjs-oracle.sh', 'scripts/prepare-test262.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-differential-${{ env.RUST_VERSION }}-
+
+      - name: Run the pinned QuickJS differential corpus
+        run: |
+          oracle=$(./scripts/build-quickjs-oracle.sh)
+          QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
+
+  test262-full:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '47 18 * * *') ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier == 'test262-full')
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      QJS_ORACLE_CACHE: ${{ github.workspace }}/.ci-cache/oracle
+      TEST262_WORKERS: "2"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Install Test262 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential curl git ripgrep xz-utils
+
+      - name: Restore authenticated input caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci-cache/oracle
+          key: >-
+            ${{ runner.os }}-test262-${{ env.RUST_VERSION }}-${{
+            hashFiles('Cargo.lock', 'compat/upstream.toml',
+            'scripts/build-quickjs-oracle.sh', 'scripts/prepare-test262.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-test262-${{ env.RUST_VERSION }}-
+
+      - name: Run the complete frozen Test262 vector
+        run: |
+          set -o pipefail
+          mkdir -p target
+          ./scripts/test-test262-full.sh 2>&1 | tee target/test262-full.log
+
+      - name: Upload complete Test262 receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test262-full-${{ github.sha }}
+          path: |
+            target/test262-full.tsv
+            target/test262-full.jsonl
+            target/test262-full.log
+            tests/test262-full-baseline.txt
+            compat/upstream.toml
+          if-no-files-found: warn
+          retention-days: 30

@@ -1030,8 +1030,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
                     | OxideProfileKind::DestructuringAssignmentGlobalCandidate
             ) {
                 return Err(format!(
-                    "Test262 agent host opt-in is unavailable to profile {:?}",
-                    oxide_profile_kind
+                    "Test262 agent host opt-in is unavailable to profile {oxide_profile_kind:?}"
                 ));
             }
             if !is_exact_agent_host_test(&relative, &source, &metadata)? {
