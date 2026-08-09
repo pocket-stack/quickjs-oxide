@@ -173,6 +173,35 @@ const VALUE_CASES: &[(&str, &str)] = &[
         })()"#,
     ),
     (
+        "acosh keeps portable accuracy across its fdlibm branches",
+        r#"(function(){
+            var floats=new Float64Array(2),words=new Uint32Array(floats.buffer),little=true;
+            floats[0]=2;floats[1]=4;
+            if(Math.abs((words[3]-words[1])*4294967296+words[2]-words[0])===1048576)
+                little=false;
+            function distance(left,right){
+                floats[0]=left;floats[1]=right;
+                var leftHigh=words[little?1:0],leftLow=words[little?0:1];
+                var rightHigh=words[little?3:2],rightLow=words[little?2:3];
+                return Math.abs((rightHigh-leftHigh)*4294967296+rightLow-leftLow);
+            }
+            var vectors=[
+                [1.0000014305114746,0.0016914556651292944],
+                [1.0000000001,0.000014142136208675862],
+                [2,1.3169578969248166],
+                [498.234130859375,6.9042162822876465],
+                [1e300,691.4686750787737]
+            ];
+            var result=[];
+            for(var index=0;index<vectors.length;index++)
+                result.push(distance(Math.acosh(vectors[index][0]),vectors[index][1])<=9);
+            result.push(1/Math.acosh(1)===Infinity);
+            result.push(Math.acosh(0)!==Math.acosh(0));
+            result.push(Math.acosh(Infinity)===Infinity);
+            return result;
+        })()"#,
+    ),
+    (
         "round implements ties toward positive infinity and large-number edges",
         r#"(function(){
             function show(x){

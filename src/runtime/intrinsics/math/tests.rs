@@ -122,6 +122,42 @@ fn atanh_restores_the_sign_after_both_log1p_branches() {
 }
 
 #[test]
+fn acosh_fdlibm_branches_are_stable_near_one_and_at_large_magnitudes() {
+    // The first vector regressed by 42 ULP on Linux when f64::acosh selected
+    // the cancellation-prone log(x + sqrt(x*x - 1)) formula. The remaining
+    // values cover both finite branches and the large-value overflow guard.
+    for (input, expected, tolerance) in [
+        (1.000_001_430_511_474_6, 0.001_691_455_665_129_294_4, 1),
+        (1.000_000_000_1, 0.000_014_142_136_208_675_862, 2),
+        (2.0, 1.316_957_896_924_816_6, 2),
+        (498.234_130_859_375, 6.904_216_282_287_646_5, 2),
+        (1.0e300, 691.468_675_078_773_7, 2),
+    ] {
+        let actual = quickjs_acosh(input);
+        assert!(
+            ulp_distance(actual, expected) <= tolerance,
+            "acosh({input:?}) = {actual:?}, expected {expected:?}, distance={} ULP",
+            ulp_distance(actual, expected),
+        );
+    }
+}
+
+#[test]
+fn acosh_preserves_ecmascript_domain_boundaries() {
+    assert_eq!(quickjs_acosh(1.0).to_bits(), 0.0_f64.to_bits());
+    assert_eq!(quickjs_acosh(f64::INFINITY), f64::INFINITY);
+    for value in [
+        f64::from_bits(1.0_f64.to_bits() - 1),
+        0.0,
+        -0.0,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ] {
+        assert!(quickjs_acosh(value).is_nan(), "{value:?}");
+    }
+}
+
+#[test]
 fn power_keeps_quickjs_non_ieee_infinite_exponent_case() {
     assert!(crate::number::pow(1.0, f64::INFINITY).is_nan());
     assert!(crate::number::pow(-1.0, f64::NEG_INFINITY).is_nan());

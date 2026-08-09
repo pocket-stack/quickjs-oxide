@@ -289,6 +289,30 @@ fn quickjs_atanh(value: f64) -> f64 {
     result.copysign(value)
 }
 
+fn quickjs_acosh(value: f64) -> f64 {
+    if value.is_nan() || value < 1.0 {
+        return f64::NAN;
+    }
+    if value == 1.0 {
+        return 0.0;
+    }
+    if value.is_infinite() {
+        return value;
+    }
+
+    // Keep the fdlibm-shaped branches used by accurate QuickJS host libm
+    // implementations. A direct log(x + sqrt(x*x - 1)) loses dozens of ULPs
+    // immediately above one on some Linux Rust targets.
+    if value < 2.0 {
+        let delta = value - 1.0;
+        return (delta + (delta * delta + 2.0 * delta).sqrt()).ln_1p();
+    }
+    if value < 268_435_456.0 {
+        return (2.0 * value - 1.0 / (value + (value * value - 1.0).sqrt())).ln();
+    }
+    value.ln() + std::f64::consts::LN_2
+}
+
 fn float16_to_f64(value: u16) -> f64 {
     let mut magnitude = u32::from(value & 0x7fff);
     if magnitude >= 0x7c00 {
@@ -350,7 +374,7 @@ fn quickjs_unary(selector: MathUnaryKind, value: f64) -> f64 {
         MathUnaryKind::Cosh => value.cosh(),
         MathUnaryKind::Sinh => value.sinh(),
         MathUnaryKind::Tanh => value.tanh(),
-        MathUnaryKind::Acosh => value.acosh(),
+        MathUnaryKind::Acosh => quickjs_acosh(value),
         MathUnaryKind::Asinh => value.asinh(),
         MathUnaryKind::Atanh => quickjs_atanh(value),
         MathUnaryKind::Expm1 => value.exp_m1(),
