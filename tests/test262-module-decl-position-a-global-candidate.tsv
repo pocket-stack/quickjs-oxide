@@ -1,0 +1,97 @@
+# quickjs-oxide Test262 outcome vector v2
+# quickjs=2026-06-04
+# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
+# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
+# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
+# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
+# oxide_profile_sha256=364f45501f0b3655e801200b4e1ecb24040384a73489da1994528c911574e362
+# profile=test262-canonical-classified-v2
+# mode=both
+path	variant	flags	features	expected_phase	expected_type	outcome	actual_phase	actual_type	detail
+test/language/module-code/parse-err-decl-pos-export-arrow-function.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-block-stmt-list.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-block-stmt.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-decl-meth-static.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-decl-meth.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-decl-method-gen-static.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-decl-method-gen.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-expr-meth-gen-static.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-expr-meth-gen.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-expr-meth-static.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-class-expr-meth.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-do-while.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-const.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-in-const.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-in-let.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-in-lhs.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-in-var.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-let.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-lhs.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-of-const.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-of-let.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-of-lhs.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-of-var.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-for-var.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-function-decl.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-function-expr.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-generator-decl.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-generator-expr.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-if-else.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-if-if.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-labeled.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-object-gen-method.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-object-getter.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-object-method.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-object-setter.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-switch-case-dflt.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-switch-case.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-switch-dftl.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-try-catch-finally.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-try-catch.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-try-finally.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-try-try.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-export-while.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	unsupported keyword: export
+test/language/module-code/parse-err-decl-pos-import-arrow-function.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-block-stmt-list.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-block-stmt.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-decl-meth-static.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-decl-meth.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-decl-method-gen-static.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-decl-method-gen.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-expr-meth-gen-static.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-expr-meth-gen.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-expr-meth-static.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-class-expr-meth.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-do-while.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-const.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-in-const.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-in-let.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-in-lhs.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-in-var.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-let.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-lhs.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-of-const.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-of-let.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-of-lhs.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-of-var.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-for-var.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-function-decl.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-function-expr.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-generator-decl.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-generator-expr.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-if-else.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-if-if.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-labeled.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-object-gen-method.js	sloppy	module	generators	parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-object-getter.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-object-method.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-object-setter.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-switch-case-dflt.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-switch-case.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-switch-dftl.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-try-catch-finally.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-try-catch.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-try-finally.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-try-try.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+test/language/module-code/parse-err-decl-pos-import-while.js	sloppy	module		parse	SyntaxError	pass	parse	SyntaxError	expecting '('
+# summary pass=86
