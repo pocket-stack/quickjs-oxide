@@ -359,7 +359,7 @@ for (var __qjo_i = 0; __qjo_i < __qjo_cases.length; __qjo_i++)
 fn run_compile_oracle(oracle: &OsStr, cases: &[(&str, &str)]) -> Vec<String> {
     let mut source = String::from("var __qjo_cases = [\n");
     for (pattern, flags) in cases {
-        writeln!(source, "[{:?},{:?}],", pattern, flags).unwrap();
+        writeln!(source, "[{pattern:?},{flags:?}],").unwrap();
     }
     source.push_str(
         r#"];
