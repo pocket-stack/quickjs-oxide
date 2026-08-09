@@ -106,3 +106,5 @@ check_registry exponentiation Exponentiation tests/oracle_exponentiation.rs \
     tests/oracle/exponentiation oracle/exponentiation oracle_power_
 check_registry async_methods "Async methods" tests/oracle_async_methods.rs \
     tests/oracle/async_methods oracle/async_methods oracle_async_
+check_registry control_flow "Control flow" tests/oracle_control_flow.rs \
+    tests/oracle/control_flow oracle/control_flow oracle_
