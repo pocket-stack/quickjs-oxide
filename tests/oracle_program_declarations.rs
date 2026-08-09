@@ -1,0 +1,9 @@
+// Keep the program declaration oracle implementations in isolated modules
+// while Cargo builds one integration target.
+
+#[path = "oracle/program_declarations/oracle_program_functions.rs"]
+mod oracle_program_functions;
+#[path = "oracle/program_declarations/oracle_program_lexicals.rs"]
+mod oracle_program_lexicals;
+#[path = "oracle/program_declarations/oracle_program_vars.rs"]
+mod oracle_program_vars;
