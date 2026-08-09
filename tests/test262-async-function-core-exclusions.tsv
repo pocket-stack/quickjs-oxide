@@ -1,4 +1,0 @@
-host_or_cross_realm	test/built-ins/AsyncFunction/is-a-constructor.js
-host_or_cross_realm	test/built-ins/AsyncFunction/proto-from-ctor-realm.js
-async_generator_or_for_await	test/language/expressions/await/async-generator-interleaved.js
-async_generator_or_for_await	test/language/expressions/await/for-await-of-interleaved.js

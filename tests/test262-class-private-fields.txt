@@ -1,6 +1,6 @@
 # R3h private instance/static data fields and private-in checks.
-# Paths are the complete pinned metadata cohort after the audited adjacency
-# exclusions reproduced by scripts/test-test262-class-private-fields.sh.
+# Paths are the complete pinned metadata cohort from the archived R3h milestone
+# after its audited adjacency exclusions.
 test/language/expressions/class/elements/after-same-line-method-grammar-privatename-identifier-semantics-stringvalue.js
 test/language/expressions/class/elements/after-same-line-method-private-field-usage.js
 test/language/expressions/class/elements/after-same-line-method-private-names.js

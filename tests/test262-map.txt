@@ -8,7 +8,7 @@
 #
 # The audit excludes every path that directly depends on Set, WeakMap, class
 # syntax, $262.createRealm, unsupported host/config/module/parser behavior, or
-# an unclaimed feature outside tests/test262-map.conf. In particular,
+# an unclaimed feature outside the archived R2n profile. In particular,
 # Symbol.species and Symbol.toStringTag remain in the global frontier. Scoped
 # admission of Symbol.iterator and upsert exercises only these audited Map
 # paths; it is not a global Test262 feature claim. SpiderMonkey's symbols.js

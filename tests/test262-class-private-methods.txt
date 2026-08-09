@@ -1,6 +1,6 @@
 # R3i ordinary synchronous private instance/static methods and brands.
-# Paths are the dependency-audited method-only partition reproduced by
-# scripts/test-test262-class-private-methods.sh.
+# Paths are the dependency-audited method-only partition from the archived R3i
+# milestone; its former gate and profile are in the Test262 history release.
 test/built-ins/Function/prototype/toString/private-method-class-expression.js
 test/built-ins/Function/prototype/toString/private-method-class-statement.js
 test/built-ins/Function/prototype/toString/private-static-method-class-expression.js

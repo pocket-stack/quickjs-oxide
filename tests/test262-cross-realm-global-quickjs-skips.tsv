@@ -1,5 +1,0 @@
-kind	selector	paths	variants
-config-exclude	test262/test/intl402/	10	20
-feature	ShadowRealm	3	6
-feature	explicit-resource-management	8	16
-feature	legacy-regexp	7	14

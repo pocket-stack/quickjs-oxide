@@ -1,7 +1,0 @@
-# Exhaustive R3cx for-of async member transition.
-# parent_commit=30c9ad528968005a11da54cc98153eeaab12ad19
-# oxide_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
-# manifest_sha256=a4d8c570908bb500728aca7dad45b0e064d9f43394e5d8e9bece95be74bc40a5
-path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
-test/language/statements/for-of/head-lhs-async-dot.js	sloppy			normal		fail-parse	parse	SyntaxError	'for of' expression cannot start with 'async'	pass	normal		
-test/language/statements/for-of/head-lhs-async-dot.js	strict			normal		fail-parse	parse	SyntaxError	'for of' expression cannot start with 'async'	pass	normal		

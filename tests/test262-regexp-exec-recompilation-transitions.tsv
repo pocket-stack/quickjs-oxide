@@ -1,9 +1,0 @@
-# Exhaustive R3cw RegExp exec recompilation transition.
-# parent_commit=d8bc5156c1cf7da61cb3976752f77881215e3838
-# oxide_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
-# manifest_sha256=2d272e6f86d0cb3f041e824008771750a833d30209971d6dbebc2c0598726aa3
-path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
-test/staging/sm/RegExp/match-local-tolength-recompilation.js	sloppy			normal		fail-runtime	runtime	Test262Error	Expected SameValue(«false», «true») to be true	pass	normal		
-test/staging/sm/RegExp/match-local-tolength-recompilation.js	strict			normal		fail-runtime	runtime	Test262Error	Expected SameValue(«false», «true») to be true	pass	normal		
-test/staging/sm/RegExp/replace-local-tolength-recompilation.js	sloppy			normal		fail-runtime	runtime	Test262Error	Expected SameValue(«"b"», «"pass"») to be true	pass	normal		
-test/staging/sm/RegExp/replace-local-tolength-recompilation.js	strict			normal		fail-runtime	runtime	Test262Error	Expected SameValue(«"b"», «"pass"») to be true	pass	normal		

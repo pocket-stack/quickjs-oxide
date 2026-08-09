@@ -1,7 +1,0 @@
-# Exhaustive R3cz class-field await-context transition.
-# parent_commit=93ea4fc31b38f170c7cdfbeba316fe1715b11084
-# oxide_profile_sha256=7c186f132e1228136085fe37322c9baf821741b10af3378d5a16217c98896775
-# manifest_sha256=beea6c8fc86db377966dbe2454b23ef7c227bf07f66661d676b4cb1f323e7c3a
-path	variant	flags	features	expected_phase	expected_type	before_outcome	before_actual_phase	before_actual_type	before_detail	after_outcome	after_actual_phase	after_actual_type	after_detail
-test/staging/sm/fields/await-identifier-script.js	sloppy			normal		fail-parse	parse	SyntaxError	unexpected 'await' keyword	pass	normal		
-test/staging/sm/fields/await-identifier-script.js	strict			normal		fail-parse	parse	SyntaxError	unexpected 'await' keyword	pass	normal		

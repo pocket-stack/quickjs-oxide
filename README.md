@@ -10,11 +10,10 @@ live namespace objects, and core `import.meta` semantics. Dynamic import,
 import attributes, top-level await, and QuickJS host-populated `import.meta`
 properties remain parity work.
 
-The latest frozen Test262 vector is **68,295 passes / 68,347 runnable /
-102,037 total variants**. R3ec-A passes all 86 audited module
-declaration-position parse negatives; all 86 are new canonical gains, the
-other 101,951 rows are unchanged, and there are zero regressions. Detailed
-receipts and historical bookkeeping live in the status documents below.
+The authoritative R3ed-A Test262 baseline records **68,362 full-corpus passes
+out of 102,037 variants (66.997%)**, with **68,414 eligible variants
+(67.048%)**. The 68,362 / 68,414 runnable pass rate (99.924%) is a secondary
+quality measure, not the headline compatibility metric.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
@@ -37,24 +36,23 @@ cargo run --quiet --bin qjs -- --print-result -e \
 
 ## Status
 
-- [Implementation status and milestone ledger](docs/status.md)
-- [Pinned Test262 progress baseline](docs/test262.md)
+- [Current implementation status](docs/status.md)
+- [Pinned Test262 baseline and metric definitions](docs/test262.md)
 - [Parity acceptance contract](docs/parity.md)
 - [Playground build and trust boundary](docs/playground.md)
 - [Pinned upstream release](compat/upstream.toml)
+- [Test262 gate data and archived history](dev-support/test262/README.md)
 
 ## Verify
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262-current-global.sh --check  # latest frozen receipt
-./scripts/test-test262-full.sh
+./scripts/test-test262.sh --check
+./scripts/test-test262.sh --focused
+TEST262_WORKERS=2 ./scripts/test-test262.sh --full
 ./scripts/test-web-playground.sh
 npm ci && npx playwright install chromium && npm run test:browser
 ```
-
-Historical focused gates and their checksum-bound receipts are indexed in the
-status documents above.
 
 ## License
 

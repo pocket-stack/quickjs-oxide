@@ -1,9 +1,0 @@
-schema=test262-canonical-classified-v2
-timeout_ms=30000
-paths=225
-variants=450
-runnable=450
-passes=450
-tsv_sha256=63d8d28bc50556eab5b6394406ed55f559ff9f134124ccfb1885ac87267889c8
-jsonl_sha256=c6110eb5fbbf6b0cfd544406bc0bfbf8132ec080bc26e56f8f68b2a049cd8783
-summary=pass=450

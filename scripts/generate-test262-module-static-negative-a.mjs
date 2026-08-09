@@ -412,12 +412,26 @@ if (mode === "rust") {
 } else {
   assert(roots.every((relativePath) => audited.has(relativePath)), "profile is missing an admission");
   for (const [relativePath, contents] of evidence) {
-    assert.equal(readFileSync(join(root, relativePath), "utf8"), contents, `${relativePath} drifted`);
     if (expected.evidenceSha256[relativePath] !== "PENDING") {
       assert.equal(
         sha256(contents),
         expected.evidenceSha256[relativePath],
         `${relativePath} changed`,
+      );
+    }
+    if (
+      [
+        "tests/test262-module-static-negative-a.txt",
+        "tests/test262-module-static-negative-a-ledger.tsv",
+        "tests/test262-module-static-negative-a-requests.tsv",
+        "tests/test262-module-static-negative-a-exclusions.tsv",
+        "tests/test262-module-static-negative-a-provenance.tsv",
+      ].includes(relativePath)
+    ) {
+      assert.equal(
+        readFileSync(join(root, relativePath), "utf8"),
+        contents,
+        `${relativePath} drifted`,
       );
     }
   }

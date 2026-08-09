@@ -1,4 +1,0 @@
-surface	canary_path	includes	flags	features	negative_phase	negative_type	source_sha256	frontmatter_sha256
-adjacent-parse-negative	test/language/module-code/parse-err-export-dflt-const.js		module		parse	SyntaxError	741df6cfa5fb8914617c5f772dbe9d0b05195d321692183dc59f99433b44030d	a7a3691d67bf907f0dc7ec4a7c4135b33bbb641fd229969f4080f68112d3140d
-import-attributes	test/language/module-code/import-attributes/import-attribute-empty.js		module	import-attributes,globalThis			484e91ad3743fab50b0971dd2df2be7d8a52d53ed23a8f1e84103c057926f535	1375f0a9ae11745ae6834e1340f54c3c85b03400531a70ace3101602c558c0e9
-top-level-await	test/language/module-code/top-level-await/await-expr-resolution.js		module,async	top-level-await			8d174bfc4457c1f0c28503dcf71a7839fe0253fdd9d5136da4b75b1c2ddf61b7	7bf59c62c232b32264b8b41a7b64ee17a34c07578e97531f1e4ce42021ebe342

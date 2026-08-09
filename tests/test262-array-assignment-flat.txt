@@ -2,7 +2,7 @@
 #
 # The frozen cohort selects array-* paths directly under assignment/dstr,
 # excludes nested array/object and rest cases, and admits only the five features
-# pinned by tests/test262-array-assignment-flat.conf.
+# pinned by the archived R2u profile.
 
 test/language/expressions/assignment/dstr/array-elem-init-assignment.js
 test/language/expressions/assignment/dstr/array-elem-init-evaluation.js

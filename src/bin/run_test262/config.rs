@@ -106,7 +106,21 @@ pub(super) fn validate_config(path: &Path) -> Result<(), String> {
     verify_sha256(path, TEST262_CONFIG_SHA256, "QuickJS Test262 config")
 }
 
+pub(super) fn sha256_file(path: &Path) -> Result<String, String> {
+    calculate_sha256(path, &format!("file {}", path.display()))
+}
+
 pub(super) fn verify_sha256(path: &Path, expected: &str, label: &str) -> Result<(), String> {
+    let actual = calculate_sha256(path, label)?;
+    if actual != expected {
+        return Err(format!(
+            "{label} checksum mismatch: expected {expected}, found {actual}"
+        ));
+    }
+    Ok(())
+}
+
+fn calculate_sha256(path: &Path, label: &str) -> Result<String, String> {
     if !path.is_file() {
         return Err(format!("{label} is missing: {}", path.display()));
     }
@@ -132,12 +146,7 @@ pub(super) fn verify_sha256(path: &Path, expected: &str, label: &str) -> Result<
             .next()
             .unwrap_or_default()
             .to_owned();
-        if actual != expected {
-            return Err(format!(
-                "{label} checksum mismatch: expected {expected}, found {actual}"
-            ));
-        }
-        return Ok(());
+        return Ok(actual);
     }
     Err(format!(
         "cannot hash {label}: commands are unavailable: {}",

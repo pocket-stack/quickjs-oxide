@@ -65,6 +65,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           ./scripts/check-no-test262-special-casing.sh
+          ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
           ./scripts/check-rust-only.sh
 
       - name: Run fast engine tests
@@ -161,7 +162,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p target
-          ./scripts/test-test262-full.sh 2>&1 | tee target/test262-full.log
+          ./scripts/test-test262.sh --spec dev-support/test262/current.conf --full \
+            2>&1 | tee target/test262-full.log
 
       - name: Upload complete Test262 receipts
         if: always()
@@ -172,7 +174,7 @@ jobs:
             target/test262-full.tsv
             target/test262-full.jsonl
             target/test262-full.log
-            tests/test262-full-baseline.txt
+            dev-support/test262/current.conf
             compat/upstream.toml
           if-no-files-found: warn
           retention-days: 30

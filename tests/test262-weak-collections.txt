@@ -16,7 +16,7 @@
 #
 # Separately, WeakMap lets sm/non262-TypedArray-shell.js advance for 29 paths
 # currently recorded in the TypedArray core exclusion ledger. They are audited
-# by scripts/test-test262-weak-collections.sh but deliberately absent here:
+# by the archived weak-collections gate but deliberately absent here:
 # removing the harness blocker is not evidence that their TypedArray,
 # SharedArrayBuffer, or other downstream semantics pass.
 test/built-ins/Map/prototype/clear/context-is-weakmap-object-throws.js
