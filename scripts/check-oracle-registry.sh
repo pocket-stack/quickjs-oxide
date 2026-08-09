@@ -100,3 +100,5 @@ check_registry function_declarations "Function declarations" \
     oracle/function_declarations oracle_
 check_registry errors Errors tests/oracle_error_semantics.rs \
     tests/oracle/errors oracle/errors oracle_
+check_registry parameters Parameters tests/oracle_parameters.rs \
+    tests/oracle/parameters oracle/parameters oracle_
