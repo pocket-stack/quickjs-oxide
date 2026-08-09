@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError, Value};
@@ -1274,7 +1275,7 @@ fn compiler_call_capacity_matches_quickjs_error_classes() {
 }
 
 fn run_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let script = format!("var __qjo_value = ({source});\n{}", ORACLE_NORMALIZER);
+    let script = format!("var __qjo_value = ({source});\n{ORACLE_NORMALIZER}");
     let output = Command::new(oracle)
         .arg("-e")
         .arg(script)
@@ -1311,13 +1312,28 @@ fn run_oracle_error(oracle: &OsStr, source: &str, description: &str) -> String {
     let script = format!(
         "try {{ eval(\"{quoted}\"); print(\"<no error>\"); }} catch (error) {{ print(error.name + \"|\" + error.message); }}"
     );
-    let output = Command::new(oracle)
-        .arg("-e")
-        .arg(script)
-        .output()
+    // The call-capacity boundary corpus is larger than Linux ARG_MAX. Feed the
+    // exact same script through QuickJS's standard input instead of argv.
+    let mut child = Command::new(oracle)
+        .args(["--std", "-e", "std.evalScript(std.in.readAsString())"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap_or_else(|error| {
             panic!("could not execute QJS_ORACLE for {description:?} ({source:?}): {error}")
         });
+    child
+        .stdin
+        .take()
+        .expect("QJS_ORACLE stdin was not piped")
+        .write_all(script.as_bytes())
+        .unwrap_or_else(|error| {
+            panic!("could not write QJS_ORACLE source for {description:?}: {error}")
+        });
+    let output = child.wait_with_output().unwrap_or_else(|error| {
+        panic!("could not wait for QJS_ORACLE for {description:?}: {error}")
+    });
     assert!(
         output.status.success(),
         "QJS_ORACLE failed for {description:?} ({source:?}): {}",
