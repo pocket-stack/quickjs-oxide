@@ -10301,6 +10301,30 @@ fn always_reserved_words_use_quickjs_syntax_diagnostics() {
 }
 
 #[test]
+fn statement_keywords_in_primary_expression_use_quickjs_syntax_diagnostics() {
+    for (source, keyword, column) in [
+        ("({[if (0) 0;]})", "if", 4),
+        ("[for (x of [1]) x]", "for", 2),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}: {error}");
+        assert_eq!(
+            error.message(),
+            format!("unexpected token in expression: '{keyword}'"),
+            "{source:?}"
+        );
+        let span = error
+            .span()
+            .unwrap_or_else(|| panic!("missing syntax span for {source:?}"));
+        assert_eq!(
+            (span.start.line, span.start.column),
+            (1, column),
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
 fn reserved_property_names_and_import_frontiers_remain_distinct() {
     for source in [
         "import('module')",

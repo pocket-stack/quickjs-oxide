@@ -6860,7 +6860,9 @@ impl<'source> Parser<'source> {
                 )));
             }
             TokenKind::Keyword(
-                keyword @ (Keyword::Else
+                keyword @ (Keyword::If
+                | Keyword::For
+                | Keyword::Else
                 | Keyword::In
                 | Keyword::Case
                 | Keyword::Default

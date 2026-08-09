@@ -160,6 +160,22 @@ try {
           text(error.lineNumber) + ":" + text(error.columnNumber) + "|" +
           firstTwoFrames(error.stack));
 }
+try {
+    Function("({[if (0) 0;]})");
+    print("computed-if-error=missing");
+} catch (error) {
+    print("computed-if-error=" + error.name + ":" + error.message + "|" +
+          text(error.fileName) + ":" + text(error.lineNumber) + ":" +
+          text(error.columnNumber) + "|" + firstTwoFrames(error.stack));
+}
+try {
+    Function("[for (x of [1]) x]");
+    print("array-for-error=missing");
+} catch (error) {
+    print("array-for-error=" + error.name + ":" + error.message + "|" +
+          text(error.fileName) + ":" + text(error.lineNumber) + ":" +
+          text(error.columnNumber) + "|" + firstTwoFrames(error.stack));
+}
 "#;
 
 #[test]
@@ -535,6 +551,22 @@ fn rust_observations(mode: DebugInfoMode) -> Vec<String> {
         &constructor,
         "formal-error",
         &[string("null"), string("return 1")],
+        &mut output,
+    );
+    observe_constructor_syntax_error(
+        &runtime,
+        &mut context,
+        &constructor,
+        "computed-if-error",
+        &[string("({[if (0) 0;]})")],
+        &mut output,
+    );
+    observe_constructor_syntax_error(
+        &runtime,
+        &mut context,
+        &constructor,
+        "array-for-error",
+        &[string("[for (x of [1]) x]")],
         &mut output,
     );
 
