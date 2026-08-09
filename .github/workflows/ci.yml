@@ -197,6 +197,7 @@ jobs:
             target/test262-full.jsonl
             target/test262-full.log
             dev-support/test262/current.conf
+            dev-support/test262/negative-diagnostics.tsv
             compat/upstream.toml
           if-no-files-found: warn
           retention-days: 30

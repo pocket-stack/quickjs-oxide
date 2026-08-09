@@ -41,9 +41,11 @@ recorded by the current Test262 vector. A Feature Parity claim additionally
 requires the acceptance contract in [`parity.md`](parity.md), including QuickJS
 differential evidence and non-Test262 behavior.
 
-Architecture hygiene remains ahead of new admission batches: consolidate
-integration targets and oracle helpers, then strengthen negative diagnostic
-comparison.
+Architecture hygiene remains ahead of new admission batches: continue
+consolidating integration targets and oracle helpers. Negative diagnostics now
+use a source-authenticated data contract; its first natural ModuleImportBinding
+cohort gates the exact QuickJS error message and line/column as well as phase
+and type.
 
 ## Verification
 

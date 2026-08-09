@@ -34,15 +34,17 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
   --spec dev-support/test262/current.conf --full
 ```
 
-`--check` authenticates the current upstream pin, profile, focused manifest,
-and frozen TSV/JSONL receipts. `--focused` replays the 67-case R3ed-A vector and
-requires byte-identical output. `--full` runs every 102,037 variant and checks
-the complete summary and report hashes.
+`--check` authenticates the current upstream pin, profile, negative-diagnostic
+contract, focused manifest, and frozen TSV/JSONL receipts. `--focused` replays
+the 67-case R3ed-A vector and requires byte-identical output. `--full` runs
+every 102,037 variant and checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
 its exact path is present in the audited-negative data, and execution still
-must produce the required phase and error type. New negative admissions must
-also add focused QuickJS comparisons for the diagnostic rule and location.
+must produce the required phase and error type. Contracted variants additionally
+require the exact pinned-QuickJS message and an `exact` or `absent` location
+policy. Schema-v4 receipts record the contract hash and expected/actual
+diagnostic fields; new negative admissions must extend this data contract.
 
 Historical per-milestone profiles, copied shell gates, and result vectors are
 not executable policy. They are preserved in the release archive listed in
