@@ -66,7 +66,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           ./scripts/check-no-test262-special-casing.sh
-          ./scripts/check-oracle-array-registry.sh
+          ./scripts/check-oracle-registry.sh
           ./scripts/check-test262-host-boundary.sh
           ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
           ./scripts/check-rust-only.sh
@@ -77,6 +77,7 @@ jobs:
           cargo test --locked -p quickjs-oxide --features test262-host --lib --bins
           cargo test --locked --test cli
           cargo test --locked --test oracle_array_methods
+          cargo test --locked --test oracle_string_methods
           cargo test --locked --features test262-host \
             --test unsupported_diagnostics \
             --test oracle_create_realm --test oracle_host_gc --test oracle_is_html_dda
@@ -85,6 +86,7 @@ jobs:
         run: |
           cargo clippy --locked --workspace --lib --bins -- -D warnings
           cargo clippy --locked --test oracle_array_methods -- -D warnings
+          cargo clippy --locked --test oracle_string_methods -- -D warnings
           cargo clippy --locked -p quickjs-oxide --features test262-host \
             --lib --bins -- -D warnings
           cargo clippy --locked -p quickjs-oxide --features test262-host \
