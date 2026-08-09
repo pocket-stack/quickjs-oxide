@@ -104,3 +104,5 @@ check_registry parameters Parameters tests/oracle_parameters.rs \
     tests/oracle/parameters oracle/parameters oracle_
 check_registry exponentiation Exponentiation tests/oracle_exponentiation.rs \
     tests/oracle/exponentiation oracle/exponentiation oracle_power_
+check_registry async_methods "Async methods" tests/oracle_async_methods.rs \
+    tests/oracle/async_methods oracle/async_methods oracle_async_
