@@ -2707,6 +2707,27 @@ fn module_import_attributes_invalid_clauses_and_duplicate_bindings_fail_closed()
 }
 
 #[test]
+fn module_import_eval_and_arguments_follow_quickjs_binding_diagnostics() {
+    for (source, expected_column) in [
+        ("import { eval } from './dependency.js';", 15),
+        ("import { arguments } from './dependency.js';", 20),
+        ("import { value as eval } from './dependency.js';", 24),
+        ("import { value as arguments } from './dependency.js';", 29),
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "invalid-import-binding.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), "invalid import binding", "{source}");
+        let start = error.span().expect("syntax error lost its span").start;
+        assert_eq!((start.line, start.column), (1, expected_column), "{source}");
+    }
+}
+
+#[test]
 fn module_import_declaration_collisions_use_one_authenticated_import_slot() {
     let imports = [
         (

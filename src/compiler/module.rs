@@ -266,7 +266,7 @@ impl<'source> Parser<'source> {
                             source_span(imported_token.span),
                         ));
                     };
-                    validate_identifier(
+                    validate_identifier_reservation(
                         &identifier,
                         imported_token.span,
                         true,
@@ -346,7 +346,17 @@ impl<'source> Parser<'source> {
         let TokenKind::Identifier(identifier) = token.kind else {
             return Err(self.syntax_here("identifier expected"));
         };
-        validate_identifier(&identifier, token.span, true, IdentifierContext::Variable)?;
+        // QuickJS parses a ModuleImportBinding before `add_import` applies the
+        // module-specific `eval`/`arguments` early error. Keep the ordinary
+        // reserved-word validation here, but let those two strict names reach
+        // `register_module_import_binding` so the observable diagnostic and
+        // current-token location follow the module grammar path.
+        validate_identifier_reservation(
+            &identifier,
+            token.span,
+            true,
+            IdentifierContext::Variable,
+        )?;
         self.advance()?;
         Ok((identifier.value, token.span))
     }
@@ -357,6 +367,13 @@ impl<'source> Parser<'source> {
         span: Span,
         is_namespace: bool,
     ) -> Result<ModuleBindingId, Error> {
+        if matches!(name, "eval" | "arguments") {
+            // QuickJS `add_import` diagnoses the binding after its parser has
+            // advanced to the following token. `syntax_here` intentionally
+            // preserves that current-token position instead of pointing back
+            // at the local identifier.
+            return Err(self.syntax_here("invalid import binding"));
+        }
         if !matches!(self.current_ir().kind, FunctionKind::Module)
             || self.current_ir().current_scope != self.current_ir().body_scope
         {

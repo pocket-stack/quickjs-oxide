@@ -13,6 +13,8 @@ mod config;
 mod execution;
 #[path = "run_test262/metadata.rs"]
 mod metadata;
+#[path = "run_test262/negative_diagnostics.rs"]
+mod negative_diagnostics;
 #[path = "run_test262/report.rs"]
 mod report;
 #[path = "run_test262/requirements.rs"]
@@ -33,6 +35,7 @@ use capabilities::OxideProfile;
 use config::{parse_config, sha256_file, skip_reason, validate_config, validate_suite};
 use execution::{run_isolated_worker, run_worker};
 use metadata::{Metadata, parse_metadata};
+use negative_diagnostics::NegativeDiagnostics;
 use report::{WorkerResult, report_row, write_report};
 use requirements::{
     exact_module_test, generator_destructuring_source_needs_async_guard, is_exact_agent_host_test,
@@ -50,7 +53,7 @@ const TEST262_METADATA_SHA256: &str =
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Variant {
     Sloppy,
     Strict,
@@ -110,6 +113,8 @@ struct CoordinatorOptions {
     suite: PathBuf,
     config: PathBuf,
     oxide_profile: PathBuf,
+    negative_diagnostics: PathBuf,
+    negative_diagnostics_sha256: String,
     engine_semantics_sha256: String,
     manifest: Option<PathBuf>,
     tests: Vec<PathBuf>,
@@ -207,6 +212,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let mut suite = None;
     let mut config = None;
     let mut oxide_profile = None;
+    let mut negative_diagnostics = None;
+    let mut negative_diagnostics_sha256 = None;
     let mut engine_semantics_sha256 = None;
     let mut manifest = None;
     let mut tests = Vec::new();
@@ -242,6 +249,22 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             "--config" => config = Some(PathBuf::from(take_value("--config")?)),
             "--oxide-profile" => {
                 oxide_profile = Some(PathBuf::from(take_value("--oxide-profile")?));
+            }
+            "--negative-diagnostics" => {
+                negative_diagnostics = Some(PathBuf::from(take_value("--negative-diagnostics")?));
+            }
+            "--negative-diagnostics-sha256" => {
+                let value = take_value("--negative-diagnostics-sha256")?;
+                if value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(
+                        "--negative-diagnostics-sha256 must be a lowercase SHA-256".to_owned()
+                    );
+                }
+                negative_diagnostics_sha256 = Some(value);
             }
             "--engine-semantics-sha256" => {
                 let value = take_value("--engine-semantics-sha256")?;
@@ -298,6 +321,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || report.is_some()
             || config.is_some()
             || oxide_profile.is_some()
+            || negative_diagnostics.is_some()
+            || negative_diagnostics_sha256.is_some()
             || engine_semantics_sha256.is_some()
             || variant.is_some()
             || allow_failures
@@ -321,6 +346,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || report.is_some()
             || config.is_some()
             || oxide_profile.is_some()
+            || negative_diagnostics.is_some()
+            || negative_diagnostics_sha256.is_some()
             || engine_semantics_sha256.is_some()
             || allow_failures
             || mode_explicit
@@ -360,11 +387,17 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let oxide_profile = oxide_profile.ok_or_else(|| "--oxide-profile is required".to_owned())?;
     let engine_semantics_sha256 = engine_semantics_sha256
         .ok_or_else(|| "--engine-semantics-sha256 is required".to_owned())?;
+    let negative_diagnostics =
+        negative_diagnostics.ok_or_else(|| "--negative-diagnostics is required".to_owned())?;
+    let negative_diagnostics_sha256 = negative_diagnostics_sha256
+        .ok_or_else(|| "--negative-diagnostics-sha256 is required".to_owned())?;
     let report = report.ok_or_else(|| "--report is required".to_owned())?;
     Ok(Invocation::Coordinator(CoordinatorOptions {
         suite,
         config,
         oxide_profile,
+        negative_diagnostics,
+        negative_diagnostics_sha256,
         engine_semantics_sha256,
         manifest,
         tests,
@@ -381,7 +414,7 @@ fn print_help() {
     let default_workers = default_worker_count();
     println!(
         "run-test262 (quickjs-oxide)\n\
-usage: run-test262 --suite DIR --config FILE --oxide-profile FILE --engine-semantics-sha256 SHA256 (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
+usage: run-test262 --suite DIR --config FILE --oxide-profile FILE --negative-diagnostics FILE --negative-diagnostics-sha256 SHA256 --engine-semantics-sha256 SHA256 (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
 \n\
   --engine-semantics-sha256 SHA256\n\
                        canonical source fingerprint supplied by the gate\n\
@@ -435,6 +468,22 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     let config = parse_config(&options.config)?;
     let oxide_profile = OxideProfile::load(&options.oxide_profile)?;
     validate_oxide_profile(&oxide_profile, &options.suite)?;
+    let negative_diagnostics = NegativeDiagnostics::load(
+        &options.negative_diagnostics,
+        &options.negative_diagnostics_sha256,
+        &options.suite,
+    )?;
+    let audited_negative_paths = oxide_profile
+        .audited_negative_paths()
+        .collect::<BTreeSet<_>>();
+    for expectation in negative_diagnostics.iter() {
+        if !audited_negative_paths.contains(expectation.path.as_str()) {
+            return Err(format!(
+                "negative diagnostic contract is not admitted by the Oxide profile: {}",
+                expectation.path
+            ));
+        }
+    }
     let oxide_profile_sha256 = sha256_file(&options.oxide_profile)?;
     let harness_dir = config
         .harness_dir
@@ -572,7 +621,11 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             test.allow_agent_host,
         )
     })?;
-    for (job, result) in runnable_jobs.iter().zip(worker_results) {
+    for (job, mut result) in runnable_jobs.iter().zip(worker_results) {
+        let test = &planned_tests[job.test_index];
+        if let Some(expectation) = negative_diagnostics.get(&test.relative, job.variant) {
+            expectation.classify(&mut result);
+        }
         planned_rows[job.row_index].result = Some(result);
     }
 
@@ -583,11 +636,15 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         let result = row
             .result
             .ok_or_else(|| format!("missing result for {}", test.relative.display()))?;
+        let expectation = row
+            .variant
+            .and_then(|variant| negative_diagnostics.get(&test.relative, variant));
         *summary.entry(result.outcome.clone()).or_default() += 1;
         rows.push(report_row(
             &test.relative,
             row.variant.map_or("none", Variant::name),
             &test.metadata,
+            expectation,
             &result,
         ));
     }
@@ -920,6 +977,10 @@ mod cli_tests {
             "suite",
             "--oxide-profile",
             "profiles/current.conf",
+            "--negative-diagnostics",
+            "dev-support/test262/negative-diagnostics.tsv",
+            "--negative-diagnostics-sha256",
+            "1111111111111111111111111111111111111111111111111111111111111111",
             "--engine-semantics-sha256",
             "0000000000000000000000000000000000000000000000000000000000000000",
             "--manifest",
@@ -934,6 +995,10 @@ mod cli_tests {
             panic!("coordinator arguments selected another invocation");
         };
         assert_eq!(options.oxide_profile, Path::new("profiles/current.conf"));
+        assert_eq!(
+            options.negative_diagnostics,
+            Path::new("dev-support/test262/negative-diagnostics.tsv")
+        );
         assert_eq!(
             options.engine_semantics_sha256,
             "0000000000000000000000000000000000000000000000000000000000000000"

@@ -8,8 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quickjs_oxide::{
-    CompileOptions, Context, ErrorKind, JsString, ModuleLoader, ModuleLoaderError, Runtime,
-    RuntimeError, Test262AgentSession, Value,
+    CompileOptions, CompleteOrdinaryPropertyDescriptor, Context, ErrorKind, JsString, ModuleLoader,
+    ModuleLoaderError, ObjectRef, Runtime, RuntimeError, Test262AgentSession, Value,
 };
 
 use super::metadata::{Metadata, parse_metadata};
@@ -66,6 +66,25 @@ const ASYNC_WORKER_HOST_SOURCE: &str = r#"
 "#;
 const ASYNC_COMPLETE: &str = "Test262:AsyncTestComplete";
 const ASYNC_FAILURE_PREFIX: &str = "Test262:AsyncTestFailure:";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExceptionDiagnostic {
+    error_type: String,
+    message: String,
+    line: Option<u32>,
+    column: Option<u32>,
+}
+
+impl ExceptionDiagnostic {
+    fn engine(message: impl Into<String>) -> Self {
+        Self {
+            error_type: "EngineError".to_owned(),
+            message: message.into(),
+            line: None,
+            column: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct ExactTest262ModuleLoader {
@@ -319,13 +338,14 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                 ));
             }
             Err(RuntimeError::Exception) => {
-                let (error_type, detail) =
-                    take_error(&runtime, &mut context, RuntimeError::Exception);
-                return Ok(WorkerResult::failure(
+                let diagnostic = take_error(&runtime, &mut context, RuntimeError::Exception);
+                return Ok(WorkerResult::failure_with_diagnostic(
                     "harness-error",
                     "harness",
-                    error_type,
-                    format!("{include}: {detail}"),
+                    diagnostic.error_type,
+                    format!("{include}: {}", diagnostic.message),
+                    diagnostic.line,
+                    diagnostic.column,
                 ));
             }
             Err(error) => {
@@ -348,13 +368,14 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                     )
                 }
                 RuntimeError::Exception => {
-                    let (error_type, detail) =
-                        take_error(&runtime, &mut context, RuntimeError::Exception);
-                    WorkerResult::failure(
+                    let diagnostic = take_error(&runtime, &mut context, RuntimeError::Exception);
+                    WorkerResult::failure_with_diagnostic(
                         "harness-error",
                         "harness-runtime",
-                        error_type,
-                        format!("{include}: {detail}"),
+                        diagnostic.error_type,
+                        format!("{include}: {}", diagnostic.message),
+                        diagnostic.line,
+                        diagnostic.column,
                     )
                 }
                 error => engine_fault(
@@ -402,13 +423,8 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
             ));
         }
         Err(RuntimeError::Exception) => {
-            let (error_type, detail) = take_error(&runtime, &mut context, RuntimeError::Exception);
-            return Ok(classify_completion(
-                &metadata,
-                "parse",
-                &error_type,
-                &detail,
-            ));
+            let diagnostic = take_error(&runtime, &mut context, RuntimeError::Exception);
+            return Ok(classify_completion(&metadata, "parse", &diagnostic));
         }
         Err(error) => return Ok(engine_fault("engine-fault", "parse", error, None)),
     };
@@ -432,13 +448,8 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
             ))
         }
         Err(RuntimeError::Exception) => {
-            let (error_type, detail) = take_error(&runtime, &mut context, RuntimeError::Exception);
-            Ok(classify_completion(
-                &metadata,
-                "runtime",
-                &error_type,
-                &detail,
-            ))
+            let diagnostic = take_error(&runtime, &mut context, RuntimeError::Exception);
+            Ok(classify_completion(&metadata, "runtime", &diagnostic))
         }
         Err(error) => Ok(engine_fault("engine-fault", "runtime", error, None)),
     };
@@ -481,12 +492,11 @@ fn run_exact_module(
             );
         }
         Err(RuntimeError::Exception) => {
-            let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
+            let diagnostic = take_error(runtime, context, RuntimeError::Exception);
             return classify_completion(
                 metadata,
                 module_compile_failure_phase(exact_module, resolution_started),
-                &error_type,
-                &detail,
+                &diagnostic,
             );
         }
         Err(error) => {
@@ -517,8 +527,8 @@ fn run_exact_module(
             );
         }
         Err(RuntimeError::Exception) => {
-            let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
-            return classify_completion(metadata, "resolution", &error_type, &detail);
+            let diagnostic = take_error(runtime, context, RuntimeError::Exception);
+            return classify_completion(metadata, "resolution", &diagnostic);
         }
         Err(error) => return engine_fault("engine-fault", "resolution", error, None),
     }
@@ -541,8 +551,8 @@ fn run_exact_module(
             )
         }
         Err(RuntimeError::Exception) => {
-            let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
-            classify_completion(metadata, "runtime", &error_type, &detail)
+            let diagnostic = take_error(runtime, context, RuntimeError::Exception);
+            classify_completion(metadata, "runtime", &diagnostic)
         }
         Err(error) => engine_fault("engine-fault", "runtime", error, None),
     }
@@ -588,8 +598,8 @@ fn finish_async_test(
                 );
             }
             Err(RuntimeError::Exception) => {
-                let (error_type, detail) = take_error(runtime, context, RuntimeError::Exception);
-                return classify_completion(metadata, "runtime", &error_type, &detail);
+                let diagnostic = take_error(runtime, context, RuntimeError::Exception);
+                return classify_completion(metadata, "runtime", &diagnostic);
             }
             Err(error) => return engine_fault("engine-fault", "async-job", error, None),
         }
@@ -712,8 +722,11 @@ fn worker_host_error(
     error: RuntimeError,
 ) -> String {
     if error == RuntimeError::Exception {
-        let (error_type, detail) = take_error(runtime, context, error);
-        format!("Test262 worker host {phase} threw {error_type}: {detail}")
+        let diagnostic = take_error(runtime, context, error);
+        format!(
+            "Test262 worker host {phase} threw {}: {}",
+            diagnostic.error_type, diagnostic.message
+        )
     } else {
         format!("Test262 worker host {phase} failed: {error}")
     }
@@ -759,15 +772,16 @@ fn classify_normal(metadata: &Metadata) -> WorkerResult {
 fn classify_completion(
     metadata: &Metadata,
     actual_phase: &str,
-    actual_type: &str,
-    detail: &str,
+    diagnostic: &ExceptionDiagnostic,
 ) -> WorkerResult {
     let Some(negative) = &metadata.negative else {
-        return WorkerResult::failure(
+        return WorkerResult::failure_with_diagnostic(
             format!("fail-{actual_phase}"),
             actual_phase,
-            actual_type,
-            detail,
+            &diagnostic.error_type,
+            &diagnostic.message,
+            diagnostic.line,
+            diagnostic.column,
         );
     };
     let expected_phase = negative.phase.as_deref();
@@ -781,41 +795,51 @@ fn classify_completion(
     let type_matches = negative
         .error_type
         .as_deref()
-        .is_none_or(|expected| expected == actual_type);
+        .is_none_or(|expected| expected == diagnostic.error_type);
     if phase_matches && type_matches {
-        WorkerResult::pass_with_detail(actual_phase, actual_type, detail)
+        WorkerResult::pass_with_diagnostic(
+            actual_phase,
+            &diagnostic.error_type,
+            &diagnostic.message,
+            diagnostic.line,
+            diagnostic.column,
+        )
     } else {
-        WorkerResult::failure(
+        WorkerResult::failure_with_diagnostic(
             "fail-negative-mismatch",
             actual_phase,
-            actual_type,
-            format!(
-                "expected phase={} type={}; {detail}",
-                expected_phase.unwrap_or("any"),
-                negative.error_type.as_deref().unwrap_or("any")
-            ),
+            &diagnostic.error_type,
+            &diagnostic.message,
+            diagnostic.line,
+            diagnostic.column,
         )
     }
 }
 
-fn take_error(runtime: &Runtime, context: &mut Context, error: RuntimeError) -> (String, String) {
+fn take_error(
+    runtime: &Runtime,
+    context: &mut Context,
+    error: RuntimeError,
+) -> ExceptionDiagnostic {
     if error != RuntimeError::Exception {
-        return ("EngineError".to_owned(), error.to_string());
+        return ExceptionDiagnostic::engine(error.to_string());
     }
     let exception = match context.take_exception() {
         Ok(Some(exception)) => exception,
         Ok(None) => {
-            return (
-                "MissingException".to_owned(),
-                "pending exception was empty".to_owned(),
-            );
+            return ExceptionDiagnostic {
+                error_type: "MissingException".to_owned(),
+                message: "pending exception was empty".to_owned(),
+                line: None,
+                column: None,
+            };
         }
-        Err(error) => return ("EngineError".to_owned(), error.to_string()),
+        Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
-    exception_text(runtime, context, exception)
+    exception_diagnostic(runtime, exception)
 }
 
-fn exception_text(runtime: &Runtime, context: &mut Context, exception: Value) -> (String, String) {
+fn exception_diagnostic(runtime: &Runtime, exception: Value) -> ExceptionDiagnostic {
     let Value::Object(object) = exception else {
         let kind = match &exception {
             Value::Undefined => "undefined",
@@ -827,41 +851,76 @@ fn exception_text(runtime: &Runtime, context: &mut Context, exception: Value) ->
             Value::Symbol(_) => "symbol",
             Value::Object(_) => unreachable!(),
         };
-        return (format!("Thrown{kind}"), primitive_text(exception));
+        return ExceptionDiagnostic {
+            error_type: format!("Thrown{kind}"),
+            message: primitive_text(exception),
+            line: None,
+            column: None,
+        };
     };
 
     let name_key = match runtime.intern_property_key("name") {
         Ok(key) => key,
-        Err(error) => return ("EngineError".to_owned(), error.to_string()),
+        Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
-    let message_key = match runtime.intern_property_key("message") {
-        Ok(key) => key,
-        Err(error) => return ("EngineError".to_owned(), error.to_string()),
+    let error_type = match runtime.raw_string_property_for_diagnostics(&object, &name_key) {
+        Ok(Some(value)) if !value.is_empty() => value.to_utf8_lossy(),
+        Ok(Some(_) | None) => "ThrownObject".to_owned(),
+        Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
-    let constructor_key = match runtime.intern_property_key("constructor") {
-        Ok(key) => key,
-        Err(error) => return ("EngineError".to_owned(), error.to_string()),
+    let message = match own_string_property(runtime, &object, "message") {
+        Ok(Some(value)) => value,
+        Ok(None) => String::new(),
+        Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
-    let mut name = String::new();
-    if let Ok(Value::Object(constructor)) = context.get_property(&object, &constructor_key) {
-        if let Ok(Value::String(value)) = context.get_property(&constructor, &name_key) {
-            name = value.to_utf8_lossy();
-        }
+    let line = match own_positive_u32_property(runtime, &object, "lineNumber") {
+        Ok(value) => value,
+        Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
+    };
+    let column = match own_positive_u32_property(runtime, &object, "columnNumber") {
+        Ok(value) => value,
+        Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
+    };
+    ExceptionDiagnostic {
+        error_type,
+        message,
+        line,
+        column,
     }
-    if name.is_empty() {
-        name = match context.get_property(&object, &name_key) {
-            Ok(Value::String(value)) if !value.is_empty() => value.to_utf8_lossy(),
-            _ => String::new(),
-        };
-    }
-    if name.is_empty() {
-        name = "ThrownObject".to_owned();
-    }
-    let message = match context.get_property(&object, &message_key) {
-        Ok(Value::String(value)) => value.to_utf8_lossy(),
-        _ => String::new(),
-    };
-    (name, message)
+}
+
+fn own_string_property(
+    runtime: &Runtime,
+    object: &ObjectRef,
+    name: &str,
+) -> Result<Option<String>, RuntimeError> {
+    let key = runtime.intern_property_key(name)?;
+    Ok(match runtime.get_own_property(object, &key)? {
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::String(value),
+            ..
+        }) => Some(value.to_utf8_lossy()),
+        Some(CompleteOrdinaryPropertyDescriptor::Data { .. })
+        | Some(CompleteOrdinaryPropertyDescriptor::Accessor { .. })
+        | None => None,
+    })
+}
+
+fn own_positive_u32_property(
+    runtime: &Runtime,
+    object: &ObjectRef,
+    name: &str,
+) -> Result<Option<u32>, RuntimeError> {
+    let key = runtime.intern_property_key(name)?;
+    Ok(match runtime.get_own_property(object, &key)? {
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::Int(value),
+            ..
+        }) if value > 0 => u32::try_from(value).ok(),
+        Some(CompleteOrdinaryPropertyDescriptor::Data { .. })
+        | Some(CompleteOrdinaryPropertyDescriptor::Accessor { .. })
+        | None => None,
+    })
 }
 
 fn primitive_text(value: Value) -> String {
@@ -887,7 +946,8 @@ mod tests {
     use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError};
 
     use super::{
-        classify_async_print_log, classify_completion, configure_runtime_can_block, run_worker,
+        ExceptionDiagnostic, classify_async_print_log, classify_completion,
+        configure_runtime_can_block, run_worker, take_error,
     };
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
@@ -1051,14 +1111,39 @@ mod tests {
         let result = classify_completion(
             &metadata,
             "parse",
-            "SyntaxError",
-            "unexpected token in expression: '}'",
+            &ExceptionDiagnostic {
+                error_type: "SyntaxError".to_owned(),
+                message: "unexpected token in expression: '}'".to_owned(),
+                line: Some(3),
+                column: Some(7),
+            },
         );
 
         assert_eq!(result.outcome, "pass");
         assert_eq!(result.actual_phase, "parse");
         assert_eq!(result.actual_type, "SyntaxError");
         assert_eq!(result.detail, "unexpected token in expression: '}'");
+        assert_eq!(
+            (result.actual_line, result.actual_column),
+            (Some(3), Some(7))
+        );
+    }
+
+    #[test]
+    fn native_syntax_error_own_data_exposes_message_and_location() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let error = context
+            .compile_module_with_filename(
+                "import { eval } from './dependency.js';",
+                "invalid-import-binding.mjs",
+            )
+            .unwrap_err();
+        assert_eq!(error, RuntimeError::Exception);
+        let diagnostic = take_error(&runtime, &mut context, error);
+        assert_eq!(diagnostic.error_type, "SyntaxError");
+        assert_eq!(diagnostic.message, "invalid import binding");
+        assert_eq!((diagnostic.line, diagnostic.column), (Some(1), Some(15)));
     }
 
     #[test]

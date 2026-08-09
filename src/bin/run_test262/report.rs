@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::Path;
 
 use super::metadata::Metadata;
+use super::negative_diagnostics::NegativeDiagnosticExpectation;
 use super::{
     CoordinatorOptions, QUICKJS_VERSION, TEST262_COMMIT, TEST262_CONFIG_SHA256,
     TEST262_METADATA_SHA256, TEST262_PATCH_SHA256,
@@ -15,6 +16,8 @@ pub(super) struct WorkerResult {
     pub(super) actual_phase: String,
     pub(super) actual_type: String,
     pub(super) detail: String,
+    pub(super) actual_line: Option<u32>,
+    pub(super) actual_column: Option<u32>,
 }
 
 impl WorkerResult {
@@ -27,11 +30,23 @@ impl WorkerResult {
         actual_type: impl Into<String>,
         detail: impl Into<String>,
     ) -> Self {
+        Self::pass_with_diagnostic(actual_phase, actual_type, detail, None, None)
+    }
+
+    pub(super) fn pass_with_diagnostic(
+        actual_phase: impl Into<String>,
+        actual_type: impl Into<String>,
+        detail: impl Into<String>,
+        actual_line: Option<u32>,
+        actual_column: Option<u32>,
+    ) -> Self {
         Self {
             outcome: "pass".to_owned(),
             actual_phase: actual_phase.into(),
             actual_type: actual_type.into(),
             detail: detail.into(),
+            actual_line,
+            actual_column,
         }
     }
 
@@ -41,20 +56,43 @@ impl WorkerResult {
         actual_type: impl Into<String>,
         detail: impl Into<String>,
     ) -> Self {
+        Self::failure_with_diagnostic(outcome, actual_phase, actual_type, detail, None, None)
+    }
+
+    pub(super) fn failure_with_diagnostic(
+        outcome: impl Into<String>,
+        actual_phase: impl Into<String>,
+        actual_type: impl Into<String>,
+        detail: impl Into<String>,
+        actual_line: Option<u32>,
+        actual_column: Option<u32>,
+    ) -> Self {
         Self {
             outcome: outcome.into(),
             actual_phase: actual_phase.into(),
             actual_type: actual_type.into(),
             detail: detail.into(),
+            actual_line,
+            actual_column,
         }
     }
 
     pub(super) fn encode(&self) -> String {
+        let actual_line = self
+            .actual_line
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let actual_column = self
+            .actual_column
+            .map(|value| value.to_string())
+            .unwrap_or_default();
         [
             self.outcome.as_str(),
             self.actual_phase.as_str(),
             self.actual_type.as_str(),
             self.detail.as_str(),
+            actual_line.as_str(),
+            actual_column.as_str(),
         ]
         .map(escape_field)
         .join("\t")
@@ -65,9 +103,9 @@ impl WorkerResult {
             .trim_end_matches(['\r', '\n'])
             .split('\t')
             .collect::<Vec<_>>();
-        if fields.len() != 4 {
+        if fields.len() != 6 {
             return Err(format!(
-                "worker returned {} fields instead of four: {value:?}",
+                "worker returned {} fields instead of six: {value:?}",
                 fields.len()
             ));
         }
@@ -76,6 +114,8 @@ impl WorkerResult {
             actual_phase: unescape_field(fields[1])?,
             actual_type: unescape_field(fields[2])?,
             detail: unescape_field(fields[3])?,
+            actual_line: decode_coordinate(fields[4])?,
+            actual_column: decode_coordinate(fields[5])?,
         })
     }
 }
@@ -84,6 +124,7 @@ pub(super) fn report_row(
     relative: &Path,
     variant: &str,
     metadata: &Metadata,
+    expectation: Option<&NegativeDiagnosticExpectation>,
     result: &WorkerResult,
 ) -> String {
     let relative = relative.to_string_lossy();
@@ -99,6 +140,33 @@ pub(super) fn report_row(
             )
         })
         .unwrap_or(("normal", ""));
+    let (expected_rule, expected_message, expected_line, expected_column, location_policy) =
+        expectation.map_or_else(
+            || ("", "", String::new(), String::new(), ""),
+            |expectation| {
+                (
+                    expectation.rule.as_str(),
+                    expectation.message.as_str(),
+                    expectation
+                        .line
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    expectation
+                        .column
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    expectation.location_policy.name(),
+                )
+            },
+        );
+    let actual_line = result
+        .actual_line
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let actual_column = result
+        .actual_column
+        .map(|value| value.to_string())
+        .unwrap_or_default();
     [
         relative.as_ref(),
         variant,
@@ -110,6 +178,13 @@ pub(super) fn report_row(
         result.actual_phase.as_str(),
         result.actual_type.as_str(),
         result.detail.as_str(),
+        expected_rule,
+        expected_message,
+        expected_line.as_str(),
+        expected_column.as_str(),
+        location_policy,
+        actual_line.as_str(),
+        actual_column.as_str(),
     ]
     .map(escape_field)
     .join("\t")
@@ -129,7 +204,7 @@ pub(super) fn write_report(
     }
     let mut output = String::new();
     output.push_str(&format!(
-        "# quickjs-oxide Test262 outcome vector v3 engine_semantics_sha256={}\n",
+        "# quickjs-oxide Test262 outcome vector v4 engine_semantics_sha256={}\n",
         options.engine_semantics_sha256
     ));
     output.push_str(&format!("# quickjs={QUICKJS_VERSION}\n"));
@@ -142,9 +217,13 @@ pub(super) fn write_report(
         "# test262_metadata_sha256={TEST262_METADATA_SHA256}\n"
     ));
     output.push_str(&format!("# oxide_profile_sha256={oxide_profile_sha256}\n"));
+    output.push_str(&format!(
+        "# negative_diagnostics_sha256={}\n",
+        options.negative_diagnostics_sha256
+    ));
     output.push_str("# profile=test262-canonical-classified-v2\n");
     output.push_str(&format!("# mode={}\n", options.mode.name()));
-    output.push_str("path\tvariant\tflags\tfeatures\texpected_phase\texpected_type\toutcome\tactual_phase\tactual_type\tdetail\n");
+    output.push_str("path\tvariant\tflags\tfeatures\texpected_phase\texpected_type\toutcome\tactual_phase\tactual_type\tdetail\texpected_rule\texpected_message\texpected_line\texpected_column\tlocation_policy\tactual_line\tactual_column\n");
     for row in rows {
         output.push_str(row);
         output.push('\n');
@@ -172,13 +251,14 @@ pub(super) fn write_report(
 
     let mut json = String::new();
     json.push_str(&format!(
-        "{{\"kind\":\"metadata\",\"schema\":3,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"oxide_profile_sha256\":{},\"engine_semantics_sha256\":{},\"profile\":\"test262-canonical-classified-v2\",\"mode\":{}}}\n",
+        "{{\"kind\":\"metadata\",\"schema\":4,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"oxide_profile_sha256\":{},\"negative_diagnostics_sha256\":{},\"engine_semantics_sha256\":{},\"profile\":\"test262-canonical-classified-v2\",\"mode\":{}}}\n",
         json_string(QUICKJS_VERSION),
         json_string(TEST262_COMMIT),
         json_string(TEST262_PATCH_SHA256),
         json_string(TEST262_CONFIG_SHA256),
         json_string(TEST262_METADATA_SHA256),
         json_string(oxide_profile_sha256),
+        json_string(&options.negative_diagnostics_sha256),
         json_string(&options.engine_semantics_sha256),
         json_string(options.mode.name()),
     ));
@@ -200,7 +280,7 @@ pub(super) fn write_report(
 }
 
 fn json_report_row(row: &str) -> Result<String, String> {
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 17] = [
         "path",
         "variant",
         "flags",
@@ -211,6 +291,13 @@ fn json_report_row(row: &str) -> Result<String, String> {
         "actual_phase",
         "actual_type",
         "detail",
+        "expected_rule",
+        "expected_message",
+        "expected_line",
+        "expected_column",
+        "location_policy",
+        "actual_line",
+        "actual_column",
     ];
     let fields = row.split('\t').collect::<Vec<_>>();
     if fields.len() != NAMES.len() {
@@ -301,6 +388,22 @@ fn unescape_field(value: &str) -> Result<String, String> {
     Ok(output)
 }
 
+fn decode_coordinate(value: &str) -> Result<Option<u32>, String> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.starts_with('0') {
+        return Err(format!("worker coordinate is not canonical: {value:?}"));
+    }
+    let coordinate = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid worker coordinate: {value:?}"))?;
+    if coordinate == 0 {
+        return Err("worker coordinate must be positive".to_owned());
+    }
+    Ok(Some(coordinate))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{WorkerResult, escape_field, unescape_field};
@@ -315,6 +418,18 @@ mod tests {
         assert_eq!(
             WorkerResult::decode(&result.encode()).unwrap().detail,
             value
+        );
+        let diagnostic = WorkerResult::pass_with_diagnostic(
+            "parse",
+            "SyntaxError",
+            "sentinel",
+            Some(3),
+            Some(7),
+        );
+        let decoded = WorkerResult::decode(&diagnostic.encode()).unwrap();
+        assert_eq!(
+            (decoded.actual_line, decoded.actual_column),
+            (Some(3), Some(7))
         );
     }
 }

@@ -2,8 +2,18 @@
 
 `current.conf` is the single authoritative Test262 gate specification. It pins
 the current profile, focused manifest and receipts, full-corpus metrics, line
-counts, summaries, and SHA-256 hashes. The gate parses it as inert `key=value`
-data; it is never sourced or evaluated by a shell.
+counts, summaries, SHA-256 hashes, and the current negative-diagnostic contract.
+The gate parses it as inert `key=value` data; it is never sourced or evaluated
+by a shell.
+
+`negative-diagnostics.tsv` is a strict, source-authenticated overlay for
+negative variants whose QuickJS failure reason and location are part of the
+gate. Its path/variant rows carry the pinned source hash, phase/type, semantic
+rule, exact QuickJS message, and an `exact` or `absent` location policy. The
+runner validates the table and source metadata before scheduling tests. A
+contracted variant passes only when phase, type, message, and location all
+match; Test262 paths and source hashes remain dev-support data and never enter
+the production parser.
 
 The baseline also names the exact source commit and a canonical engine-semantics
 fingerprint. The fingerprint hashes sorted repository paths and exact contents

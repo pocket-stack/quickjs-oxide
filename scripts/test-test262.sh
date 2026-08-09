@@ -51,7 +51,7 @@ case $spec_arg in
 esac
 [[ -f "$spec" && ! -L "$spec" ]] || die "spec is not a regular file: $spec_arg"
 
-required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 engine_fingerprint_tool engine_fingerprint_tool_lines engine_fingerprint_tool_sha256 engine_semantics_source engine_semantics_files engine_semantics_trees engine_semantics_sha256 upstream upstream_lines upstream_sha256 profile profile_lines profile_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
+required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 engine_fingerprint_tool engine_fingerprint_tool_lines engine_fingerprint_tool_sha256 engine_semantics_source engine_semantics_files engine_semantics_trees engine_semantics_sha256 upstream upstream_lines upstream_sha256 profile profile_lines profile_sha256 negative_diagnostics negative_diagnostics_lines negative_diagnostics_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
 
 # Parse as inert data. In particular, this gate never sources or evaluates a spec.
 awk -v required="$required_keys" '
@@ -181,8 +181,23 @@ report_header() {
 
 report_engine_semantics_sha256() {
     awk '
-        NR == 1 && /^# quickjs-oxide Test262 outcome vector v3 engine_semantics_sha256=/ {
-            print substr($0, length("# quickjs-oxide Test262 outcome vector v3 engine_semantics_sha256=")+1)
+        NR == 1 && /^# quickjs-oxide Test262 outcome vector v[34] engine_semantics_sha256=/ {
+            line=$0
+            sub(/^# quickjs-oxide Test262 outcome vector v[34] engine_semantics_sha256=/, "", line)
+            print line
+            found++
+        }
+        END { if (found != 1) exit 1 }
+    ' "$1"
+}
+
+report_vector_version() {
+    awk '
+        NR == 1 && /^# quickjs-oxide Test262 outcome vector v[34] engine_semantics_sha256=/ {
+            line=$0
+            sub(/^# quickjs-oxide Test262 outcome vector v/, "", line)
+            sub(/ engine_semantics_sha256=.*/, "", line)
+            print line
             found++
         }
         END { if (found != 1) exit 1 }
@@ -210,26 +225,33 @@ verify_json_projection() {
     local expected_variants=$3
     local expected_summary=$4
     local expected_engine_semantics_sha256=$5
+    local expected_schema=$6
     node - "$json" "$expected_variants" "$expected_summary" \
         "$(spec_value quickjs)" "$(spec_value test262)" \
         "$(spec_value test262_patch_sha256)" "$(spec_value test262_config_sha256)" \
         "$(spec_value test262_metadata_sha256)" "$(spec_value profile_sha256)" \
-        "$expected_engine_semantics_sha256" "$(spec_value mode)" \
+        "$(spec_value negative_diagnostics_sha256)" \
+        "$expected_engine_semantics_sha256" "$(spec_value mode)" "$expected_schema" \
         <<'NODE' >"$tmp/json.rows"
 const fs = require("node:fs");
 const [path, variantsText, expectedSummary, quickjs, test262, patch, config,
-  metadataHash, profileHash, engineHash, mode] = process.argv.slice(2);
+  metadataHash, profileHash, negativeDiagnosticsHash, engineHash, mode,
+  expectedSchemaText] = process.argv.slice(2);
 const lines = fs.readFileSync(path, "utf8").trimEnd().split("\n");
 const records = lines.map((line) => JSON.parse(line));
 const variants = Number(variantsText);
+const expectedSchema = Number(expectedSchemaText);
 if (records.length !== variants + 2) process.exit(2);
 const metadata = records[0];
-if (metadata.kind !== "metadata" || metadata.schema !== 3 ||
+if (metadata.kind !== "metadata" || metadata.schema !== expectedSchema ||
+    ![3, 4].includes(metadata.schema) ||
     metadata.quickjs !== quickjs || metadata.test262 !== test262 ||
     metadata.test262_patch_sha256 !== patch ||
     metadata.test262_config_sha256 !== config ||
     metadata.test262_metadata_sha256 !== metadataHash ||
     metadata.oxide_profile_sha256 !== profileHash ||
+    (metadata.schema === 4 &&
+      metadata.negative_diagnostics_sha256 !== negativeDiagnosticsHash) ||
     metadata.engine_semantics_sha256 !== engineHash ||
     metadata.profile !== "test262-canonical-classified-v2" ||
     metadata.mode !== mode) process.exit(3);
@@ -238,9 +260,14 @@ if (summary.kind !== "summary") process.exit(4);
 const actualSummary = Object.entries(summary.outcomes)
   .map(([name, count]) => `${name}=${count}`).join(" ");
 if (actualSummary !== expectedSummary) process.exit(5);
-const fields = [
+const fieldsV3 = [
   "path", "variant", "flags", "features", "expected_phase",
   "expected_type", "outcome", "actual_phase", "actual_type", "detail",
+];
+const fields = metadata.schema === 3 ? fieldsV3 : [
+  ...fieldsV3,
+  "expected_rule", "expected_message", "expected_line", "expected_column",
+  "location_policy", "actual_line", "actual_column",
 ];
 function escapeField(value) {
   let output = "";
@@ -275,6 +302,7 @@ verify_report() {
     local expected_variants expected_eligible expected_runnable expected_passes
     local expected_summary expected_tsv_lines expected_jsonl_lines
     local expected_tsv_sha expected_jsonl_sha
+    local report_schema expected_report_lines
     expected_variants=$(spec_value "${prefix}_variants")
     expected_eligible=$(spec_value "${prefix}_eligible")
     expected_runnable=$(spec_value "${prefix}_runnable")
@@ -289,6 +317,18 @@ verify_report() {
         || die "$prefix TSV receipt is not a regular file: $report"
     [[ -f "$json" && ! -L "$json" ]] \
         || die "$prefix JSONL receipt is not a regular file: $json"
+    report_schema=$(report_vector_version "$report") \
+        || die "$prefix report has an unsupported vector version"
+    if [[ "$report_schema" == 4 ]]; then
+        [[ "$(report_header "$report" negative_diagnostics_sha256)" \
+            == "$(spec_value negative_diagnostics_sha256)" ]] \
+            || die "$prefix report diagnostic contract drifted"
+        expected_report_lines=$((expected_variants + 12))
+    else
+        expected_report_lines=$((expected_variants + 11))
+    fi
+    [[ "$expected_tsv_lines" == "$expected_report_lines" ]] \
+        || die "$prefix report line count does not match vector v$report_schema"
     [[ "$(report_header "$report" oxide_profile_sha256)" == "$(spec_value profile_sha256)" \
         && "$(report_engine_semantics_sha256 "$report")" \
             == "$expected_engine_semantics_sha256" \
@@ -296,7 +336,7 @@ verify_report() {
         && "$(report_header "$report" mode)" == "$(spec_value mode)" ]] \
         || die "$prefix report metadata drifted"
     verify_json_projection "$report" "$json" "$expected_variants" \
-        "$expected_summary" "$expected_engine_semantics_sha256"
+        "$expected_summary" "$expected_engine_semantics_sha256" "$report_schema"
     check_file "$report" "$expected_tsv_lines" "$expected_tsv_sha" "$prefix TSV receipt"
     check_file "$json" "$expected_jsonl_lines" "$expected_jsonl_sha" "$prefix JSONL receipt"
     [[ "$(report_variants "$report")" == "$expected_variants" \
@@ -308,7 +348,7 @@ verify_report() {
         || die "$prefix classified result vector drifted"
 }
 
-for key in engine_fingerprint_tool upstream profile manifest focused_tsv focused_jsonl; do
+for key in engine_fingerprint_tool upstream profile negative_diagnostics manifest focused_tsv focused_jsonl; do
     relative=$(spec_value "$key")
     case "/$relative/" in
         *//*|*'/./'*|*'/../'*|*\\*) die "unsafe repository path in $key: $relative" ;;
@@ -318,7 +358,7 @@ for key in engine_fingerprint_tool upstream profile manifest focused_tsv focused
     esac
 done
 
-for key in engine_fingerprint_tool_lines upstream_lines profile_lines manifest_lines focused_tsv_lines \
+for key in engine_fingerprint_tool_lines upstream_lines profile_lines negative_diagnostics_lines manifest_lines focused_tsv_lines \
     focused_jsonl_lines test262_metadata_records timeout_ms focused_variants \
     focused_eligible focused_runnable focused_passes full_variants full_eligible \
     full_runnable full_passes full_tsv_lines full_jsonl_lines; do
@@ -328,7 +368,7 @@ for key in engine_fingerprint_tool_lines upstream_lines profile_lines manifest_l
 done
 for key in test262_patch_sha256 test262_config_sha256 test262_metadata_sha256 \
     engine_fingerprint_tool_sha256 engine_semantics_sha256 upstream_sha256 \
-    profile_sha256 manifest_sha256 focused_tsv_sha256 \
+    profile_sha256 negative_diagnostics_sha256 manifest_sha256 focused_tsv_sha256 \
     focused_jsonl_sha256 full_tsv_sha256 full_jsonl_sha256; do
     value=$(spec_value "$key")
     [[ "$value" =~ ^[0-9a-f]{64}$ ]] || die "invalid SHA-256 in Test262 spec for $key"
@@ -368,7 +408,8 @@ validate_summary_contract() {
                 variants-ineligible != eligible) exit 1
         }
     ' || die "$prefix summary/count contract is inconsistent"
-    ((tsv_lines == variants + 11 && jsonl_lines == variants + 2)) \
+    (( (tsv_lines == variants + 11 || tsv_lines == variants + 12) \
+        && jsonl_lines == variants + 2 )) \
         || die "$prefix report line-count contract is inconsistent"
 }
 
@@ -383,6 +424,7 @@ trap 'exit 143' TERM
 
 upstream=$(repo_path upstream)
 profile=$(repo_path profile)
+negative_diagnostics=$(repo_path negative_diagnostics)
 manifest=$(repo_path manifest)
 focused_tsv=$(repo_path focused_tsv)
 focused_jsonl=$(repo_path focused_jsonl)
@@ -399,6 +441,8 @@ check_file "$upstream" "$(spec_value upstream_lines)" \
     "$(spec_value upstream_sha256)" 'upstream pin'
 check_file "$profile" "$(spec_value profile_lines)" \
     "$(spec_value profile_sha256)" 'Oxide profile'
+check_file "$negative_diagnostics" "$(spec_value negative_diagnostics_lines)" \
+    "$(spec_value negative_diagnostics_sha256)" 'negative diagnostic contract'
 check_file "$manifest" "$(spec_value manifest_lines)" \
     "$(spec_value manifest_sha256)" 'focused manifest'
 [[ "$(toml_value quickjs version "$upstream")" == "$(spec_value quickjs)" \
@@ -492,7 +536,9 @@ grep -Fqx "Test262 metadata: files=$(spec_value test262_metadata_records)" \
 if [[ "$mode" == focused ]]; then
     replay=$tmp/focused.tsv
     run_output=$("$runner" --suite "$suite" --config "$source_dir/test262.conf" \
-        --oxide-profile "$profile" --manifest "$manifest" --report "$replay" \
+        --oxide-profile "$profile" --negative-diagnostics "$negative_diagnostics" \
+        --negative-diagnostics-sha256 "$(spec_value negative_diagnostics_sha256)" \
+        --manifest "$manifest" --report "$replay" \
         --engine-semantics-sha256 "$workspace_engine_semantics_sha256" \
         --mode "$(spec_value mode)" --workers "$workers" \
         --timeout-ms "$(spec_value timeout_ms)" --allow-failures)
@@ -508,7 +554,7 @@ if [[ "$mode" == focused ]]; then
     exit 0
 fi
 
-for protected in "$spec" "$upstream" "$profile" "$manifest" "$focused_tsv" "$focused_jsonl"; do
+for protected in "$spec" "$upstream" "$profile" "$negative_diagnostics" "$manifest" "$focused_tsv" "$focused_jsonl"; do
     [[ "$full_report" != "$protected" && "$full_json" != "$protected" ]] \
         || die "full output aliases protected input: $protected"
     if [[ -e "$full_report" && "$full_report" -ef "$protected" ]] \
@@ -521,7 +567,9 @@ mkdir -p "$output_dir"
     || die 'target output directory must be a real directory'
 rm -f -- "$full_report" "$full_json"
 run_output=$("$runner" --suite "$suite" --config "$source_dir/test262.conf" \
-    --oxide-profile "$profile" --all --report "$full_report" \
+    --oxide-profile "$profile" --negative-diagnostics "$negative_diagnostics" \
+    --negative-diagnostics-sha256 "$(spec_value negative_diagnostics_sha256)" \
+    --all --report "$full_report" \
     --engine-semantics-sha256 "$workspace_engine_semantics_sha256" \
     --mode "$(spec_value mode)" --workers "$workers" \
     --timeout-ms "$(spec_value timeout_ms)" --allow-failures)

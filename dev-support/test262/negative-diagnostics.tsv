@@ -1,0 +1,5 @@
+path	variant	source_sha256	phase	type	rule	message	line	column	location_policy
+test/language/module-code/early-import-arguments.js	sloppy	f7bd4a8d7f839d89ed84922588b5242f5bdd9d9e01114ebe2b1dbe827cc8fd50	parse	SyntaxError	module.invalid-import-binding	invalid import binding	35	20	exact
+test/language/module-code/early-import-as-arguments.js	sloppy	d2761605cdd1657cb54fdbca1b45d9d46a6a6063523e884783c2c80909cae753	parse	SyntaxError	module.invalid-import-binding	invalid import binding	35	25	exact
+test/language/module-code/early-import-as-eval.js	sloppy	742fbd6917df4cb1fe5e0058504c83afe15ac2588ef370977962672d61ccf230	parse	SyntaxError	module.invalid-import-binding	invalid import binding	35	20	exact
+test/language/module-code/early-import-eval.js	sloppy	8cea44aabd764438b542ff89ec3696fa2ecc12506add61a2d07723bc64d32788	parse	SyntaxError	module.invalid-import-binding	invalid import binding	35	15	exact
