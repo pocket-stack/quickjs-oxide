@@ -130,6 +130,17 @@ fn unsupported_source_fails_instead_of_falling_back_to_an_external_engine() {
 }
 
 #[test]
+fn unsupported_grammar_is_not_rewritten_as_a_javascript_syntax_error() {
+    let output = qjs().args(["-e", "import('fixture')"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "UnsupportedError at 1:1: import syntax is not implemented yet\n"
+    );
+}
+
+#[test]
 fn version_names_the_pinned_compatibility_target() {
     let output = qjs().arg("--version").output().unwrap();
     assert!(output.status.success());

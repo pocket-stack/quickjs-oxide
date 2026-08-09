@@ -525,9 +525,7 @@ fn rust_string_observation(source: &str, description: &str) -> String {
 fn assert_compile_syntax_error(source: &str, description: &str) {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
-    match context
-        .compile_with_options_preserving_unsupported_diagnostics(source, &CompileOptions::default())
-    {
+    match context.compile_with_options(source, &CompileOptions::default()) {
         Err(RuntimeError::Exception) => {}
         Err(error) => panic!(
             "{description} was an engine/frontier diagnostic instead of SyntaxError: {error}"

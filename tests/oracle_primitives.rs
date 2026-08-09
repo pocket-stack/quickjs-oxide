@@ -1090,10 +1090,10 @@ fn future_reserved_words_match_quickjs_oracle() {
     let import_options = CompileOptions::new("future-reserved-import.js");
     for &(description, source) in FUTURE_RESERVED_UNSUPPORTED_IMPORT_CASES {
         let RuntimeError::Engine(error) = context
-            .compile_with_options_preserving_unsupported_diagnostics(source, &import_options)
+            .compile_with_options(source, &import_options)
             .unwrap_err()
         else {
-            panic!("Rust did not preserve Unsupported for {description:?} ({source:?})");
+            panic!("Rust did not report Unsupported for {description:?} ({source:?})");
         };
         assert_eq!(error.kind(), ErrorKind::Unsupported, "{description:?}");
         assert_eq!(error.message(), "import syntax is not implemented yet");

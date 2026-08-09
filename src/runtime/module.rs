@@ -645,20 +645,12 @@ impl Runtime {
         graph: &Rc<ModuleGraph>,
         source: &str,
         name: &JsString,
-        preserve_unsupported_diagnostics: bool,
     ) -> Result<ModuleCompilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let debug_info = self.debug_info_mode();
         let module = match compile_unlinked_module_with_name(source, name.clone(), debug_info) {
             Ok(module) => module,
-            Err(mut error) => {
-                if error.kind() == ErrorKind::Unsupported && !preserve_unsupported_diagnostics {
-                    let span = error.span();
-                    error = Error::new(ErrorKind::Syntax, error.message().to_owned());
-                    if let Some(span) = span {
-                        error = error.with_span(span);
-                    }
-                }
+            Err(error) => {
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
                     return Err(RuntimeError::Engine(error));
                 };
@@ -700,20 +692,13 @@ impl Runtime {
         graph: &Rc<ModuleGraph>,
         source: &str,
         filename: &str,
-        preserve_unsupported_diagnostics: bool,
     ) -> Result<ModuleCompilation, RuntimeError> {
         let name = module_c_string_view(&JsString::try_from_utf8(filename)?)?;
-        let compilation = self.compile_module_record_in_realm(
-            realm,
-            graph,
-            source,
-            &name,
-            preserve_unsupported_diagnostics,
-        )?;
+        let compilation = self.compile_module_record_in_realm(realm, graph, source, &name)?;
         let ModuleCompilation::Published(module) = compilation else {
             return Ok(compilation);
         };
-        self.resolve_module_graph(realm, &module, preserve_unsupported_diagnostics)?;
+        self.resolve_module_graph(realm, &module)?;
         Ok(ModuleCompilation::Published(module))
     }
 
@@ -721,7 +706,6 @@ impl Runtime {
         &self,
         realm: ContextId,
         module: &ModuleBytecodeRef,
-        preserve_unsupported_diagnostics: bool,
     ) -> Result<(), RuntimeError> {
         if !module.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("module bytecode"));
@@ -819,7 +803,6 @@ impl Runtime {
                         &current.graph,
                         &source,
                         &normalized_name,
-                        preserve_unsupported_diagnostics,
                     )? {
                         ModuleCompilation::Published(dependency) => dependency,
                         ModuleCompilation::Throw(exception) => {
@@ -2414,36 +2397,21 @@ impl Context {
     }
 
     /// Compile one static module with named compilation options.
+    ///
+    /// Implemented JavaScript early errors become pending exceptions. Grammar
+    /// which is not implemented remains an engine [`ErrorKind::Unsupported`]
+    /// diagnostic, including unsupported source loaded through the module
+    /// graph.
     pub fn compile_module_with_options(
         &mut self,
         source: &str,
         options: &CompileOptions,
-    ) -> Result<ModuleBytecodeRef, RuntimeError> {
-        self.compile_module_with_options_internal(source, options, false)
-    }
-
-    /// Compile a module while retaining an implementation-frontier
-    /// [`ErrorKind::Unsupported`] diagnostic for conformance harnesses.
-    pub fn compile_module_with_options_preserving_unsupported_diagnostics(
-        &mut self,
-        source: &str,
-        options: &CompileOptions,
-    ) -> Result<ModuleBytecodeRef, RuntimeError> {
-        self.compile_module_with_options_internal(source, options, true)
-    }
-
-    fn compile_module_with_options_internal(
-        &mut self,
-        source: &str,
-        options: &CompileOptions,
-        preserve_unsupported_diagnostics: bool,
     ) -> Result<ModuleBytecodeRef, RuntimeError> {
         match self.runtime.compile_module_in_realm(
             self.realm,
             &self.module_graph,
             source,
             &options.filename,
-            preserve_unsupported_diagnostics,
         )? {
             ModuleCompilation::Published(module) => Ok(module),
             ModuleCompilation::Throw(exception) => {
@@ -3034,6 +3002,28 @@ mod tests {
             &mut loader_context.borrow_mut(),
             "__reentryRecovered === 42",
         );
+    }
+
+    #[test]
+    fn unsupported_loader_dependency_remains_an_engine_diagnostic() {
+        let runtime = Runtime::new();
+        let (loader, loads, _) = MapModuleLoader::new([("pkg/dependency.js", "await 1;")]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+
+        let RuntimeError::Engine(error) = context
+            .compile_module_with_filename("import './dependency.js';", "pkg/entry.js")
+            .unwrap_err()
+        else {
+            panic!("loader dependency did not retain its engine diagnostic");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert_eq!(
+            error.message(),
+            "top-level await is not implemented in this synchronous module slice"
+        );
+        assert!(context.take_exception().unwrap().is_none());
+        assert_eq!(&*loads.borrow(), &["pkg/dependency.js"]);
     }
 
     #[test]

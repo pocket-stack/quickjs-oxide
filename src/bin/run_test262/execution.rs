@@ -308,9 +308,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         let harness = fs::read_to_string(&include_path)
             .map_err(|error| format!("read {}: {error}", include_path.display()))?;
         let compile_options = CompileOptions::new(include_path.to_string_lossy());
-        let function = match context
-            .compile_with_options_preserving_unsupported_diagnostics(&harness, &compile_options)
-        {
+        let function = match context.compile_with_options(&harness, &compile_options) {
             Ok(function) => function,
             Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
                 return Ok(WorkerResult::failure(
@@ -393,9 +391,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     };
     let filename = path.to_string_lossy();
     let compile_options = CompileOptions::new(filename.as_ref());
-    let function = match context
-        .compile_with_options_preserving_unsupported_diagnostics(&authored, &compile_options)
-    {
+    let function = match context.compile_with_options(&authored, &compile_options) {
         Ok(function) => function,
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
             return Ok(WorkerResult::failure(
@@ -469,9 +465,7 @@ fn run_exact_module(
         path.to_string_lossy()
     };
     let compile_options = CompileOptions::new(filename.as_ref());
-    let module = match context
-        .compile_module_with_options_preserving_unsupported_diagnostics(source, &compile_options)
-    {
+    let module = match context.compile_module_with_options(source, &compile_options) {
         Ok(module) => module,
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
             let phase = module_compile_failure_phase(exact_module, resolution_started);
@@ -696,7 +690,7 @@ fn install_worker_host(
         WORKER_HOST_SOURCE
     };
     let function = context
-        .compile_with_options_preserving_unsupported_diagnostics(source, &options)
+        .compile_with_options(source, &options)
         .map_err(|error| worker_host_error(runtime, context, "compile", error))?;
     context
         .execute(&function)
@@ -1611,28 +1605,34 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
     }
 
     #[test]
-    fn unsupported_parser_provenance_is_opt_in_at_the_context_boundary() {
+    fn unsupported_parser_provenance_is_uniform_at_the_context_boundary() {
         const UNSUPPORTED_SOURCE: &str = "import('fixture');";
 
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
+        let RuntimeError::Engine(default_error) = context.compile(UNSUPPORTED_SOURCE).unwrap_err()
+        else {
+            panic!("default compile did not retain its engine error");
+        };
+        assert_eq!(default_error.kind(), ErrorKind::Unsupported);
         assert_eq!(
-            context.compile(UNSUPPORTED_SOURCE).unwrap_err(),
-            RuntimeError::Exception
+            default_error.message(),
+            "import syntax is not implemented yet"
         );
-        assert!(context.take_exception().unwrap().is_some());
+        assert!(context.take_exception().unwrap().is_none());
 
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         let options = CompileOptions::new("unsupported.js");
         let RuntimeError::Engine(error) = context
-            .compile_with_options_preserving_unsupported_diagnostics(UNSUPPORTED_SOURCE, &options)
+            .compile_with_options(UNSUPPORTED_SOURCE, &options)
             .unwrap_err()
         else {
             panic!("diagnostic compile did not retain its engine error");
         };
         assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert_eq!(error.message(), "import syntax is not implemented yet");
+        assert_eq!(error.span(), default_error.span());
         assert!(context.take_exception().unwrap().is_none());
     }
 }

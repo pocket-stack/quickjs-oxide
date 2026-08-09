@@ -192,7 +192,7 @@ impl Runtime {
             }
         };
 
-        let script = match self.compile_in_realm(realm, &source, EVAL_SCRIPT_FILENAME, false)? {
+        let script = match self.compile_in_realm(realm, &source, EVAL_SCRIPT_FILENAME)? {
             Compilation::Published(script) => script,
             Compilation::Throw(value) => return Ok(Completion::Throw(value)),
         };
