@@ -146,3 +146,5 @@ check_registry number "Number semantics" tests/oracle_number_semantics.rs \
     tests/oracle/number oracle/number oracle_number_
 check_registry eval "Eval semantics" tests/oracle_eval_semantics.rs \
     tests/oracle/eval oracle/eval oracle_eval_
+check_registry async_functions "Async functions" tests/oracle_async_functions.rs \
+    tests/oracle/async_functions oracle/async_functions oracle_async_
