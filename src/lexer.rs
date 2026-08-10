@@ -2617,7 +2617,7 @@ mod tests {
 
     #[test]
     fn template_invalid_escape_is_preserved_for_tagged_semantics() {
-        let source = format!("{}bad\\8{}", TEMPLATE_QUOTE, TEMPLATE_QUOTE);
+        let source = format!("{TEMPLATE_QUOTE}bad\\8{TEMPLATE_QUOTE}");
         let token = Lexer::new(&source).next_token().unwrap();
         let TokenKind::Template(part) = token.kind else {
             panic!("expected template");
@@ -2690,7 +2690,7 @@ mod tests {
 
     #[test]
     fn template_raw_value_normalizes_only_physical_crlf() {
-        let source = format!("{}a\r\n\\nb{}", TEMPLATE_QUOTE, TEMPLATE_QUOTE);
+        let source = format!("{TEMPLATE_QUOTE}a\r\n\\nb{TEMPLATE_QUOTE}");
         let token = Lexer::new(&source).next_token().unwrap();
         let TokenKind::Template(part) = token.kind else {
             panic!("expected template");
@@ -3081,7 +3081,7 @@ mod tests {
         assert_eq!(comment.span.start.column, 1);
         assert!(comment.to_string().starts_with("2:1"));
 
-        let template_source = format!("{}missing", TEMPLATE_QUOTE);
+        let template_source = format!("{TEMPLATE_QUOTE}missing");
         assert_eq!(
             Lexer::new(&template_source).next_token().unwrap_err().kind,
             LexErrorKind::UnterminatedTemplate
