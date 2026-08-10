@@ -92,6 +92,7 @@ jobs:
           cargo test --locked --test oracle_control_flow
           cargo test --locked --test oracle_typed_array_methods
           cargo test --locked --test oracle_program_declarations
+          cargo test --locked --test oracle_json
           cargo test --locked --features test262-host \
             --test unsupported_diagnostics \
             --test oracle_create_realm --test oracle_host_gc --test oracle_is_html_dda
@@ -115,6 +116,7 @@ jobs:
           cargo clippy --locked --test oracle_control_flow -- -D warnings
           cargo clippy --locked --test oracle_typed_array_methods -- -D warnings
           cargo clippy --locked --test oracle_program_declarations -- -D warnings
+          cargo clippy --locked --test oracle_json -- -D warnings
           cargo clippy --locked -p quickjs-oxide --features test262-host \
             --lib --bins -- -D warnings
           cargo clippy --locked -p quickjs-oxide --features test262-host \

@@ -113,3 +113,5 @@ check_registry typed_array TypedArray tests/oracle_typed_array_methods.rs \
 check_registry program_declarations "Program declarations" \
     tests/oracle_program_declarations.rs tests/oracle/program_declarations \
     oracle/program_declarations oracle_program_
+check_registry json JSON tests/oracle_json.rs \
+    tests/oracle/json oracle/json oracle_json_
