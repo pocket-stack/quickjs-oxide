@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
+use super::quickjs_plain_eval_oracle::eval_plain_lines;
 use quickjs_oxide::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, Context, DescriptorField,
     ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, Runtime, RuntimeError, Value,
@@ -219,7 +217,7 @@ fn global_this_matches_pinned_quickjs() {
         eprintln!("SKIP globalThis differential: set QJS_ORACLE to upstream qjs");
         return;
     };
-    let oracle = oracle_observations(&oracle);
+    let oracle = eval_plain_lines(&oracle, ORACLE_PROBE);
     assert_eq!(
         oracle, EXPECTED_OBSERVATIONS,
         "the pinned QuickJS globalThis contract drifted"
@@ -640,22 +638,4 @@ fn value_text(value: Value) -> String {
         Value::String(value) => value.to_utf8_lossy(),
         Value::Object(_) | Value::Symbol(_) => panic!("unexpected scalar observation value"),
     }
-}
-
-fn oracle_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["-e", ORACLE_PROBE])
-        .output()
-        .unwrap_or_else(|error| panic!("could not execute QJS_ORACLE: {error}"));
-    assert!(
-        output.status.success(),
-        "QJS_ORACLE failed with {}:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QJS_ORACLE emitted non-UTF-8 output")
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }

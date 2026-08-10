@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
+use super::quickjs_plain_eval_oracle::eval_plain_lines;
 use quickjs_oxide::{
     CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, JsString,
     OrdinaryPropertyDescriptor, PropertyKey, Runtime, Value, WellKnownSymbol,
@@ -140,13 +138,13 @@ fn global_to_string_tag_matches_pinned_quickjs() {
         return;
     };
     assert_eq!(
-        oracle_observations(&oracle),
+        eval_plain_lines(&oracle, ORACLE_PROBE),
         EXPECTED_OBSERVATIONS,
         "the pinned QuickJS global @@toStringTag contract drifted"
     );
     assert_eq!(
         rust,
-        oracle_observations(&oracle),
+        eval_plain_lines(&oracle, ORACLE_PROBE),
         "global @@toStringTag behavior differed from pinned QuickJS"
     );
 }
@@ -523,22 +521,4 @@ fn plain_value(value: Value) -> String {
         Value::Symbol(_) => "symbol".to_owned(),
         Value::Object(_) => "[object]".to_owned(),
     }
-}
-
-fn oracle_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["-e", ORACLE_PROBE])
-        .output()
-        .unwrap_or_else(|error| panic!("could not execute QJS_ORACLE: {error}"));
-    assert!(
-        output.status.success(),
-        "QJS_ORACLE failed with {}:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QJS_ORACLE emitted non-UTF-8 output")
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }
