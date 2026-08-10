@@ -5,14 +5,15 @@ the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
 The engine is runnable, but it is not at Feature Parity yet. Implemented slices
 include binary data and Atomics, collections and weak references, Promise jobs,
-Unicode behavior, and synchronous static-module graphs with default exports,
-live namespace objects, and core `import.meta` semantics. Dynamic import,
-import attributes, top-level await, and QuickJS host-populated `import.meta`
-properties remain parity work.
+Unicode behavior, public/private class fields and private callable elements,
+and synchronous static-module graphs with default exports, live namespace
+objects, and core `import.meta` semantics. Dynamic import, import attributes,
+top-level await, and QuickJS host-populated `import.meta` properties remain
+parity work.
 
-The authoritative R3eg-A Test262 baseline records **71,852 full-corpus passes
-out of 102,037 variants (70.418%)**, with **71,902 eligible variants
-(70.467%)**. The 71,852 / 71,902 runnable pass rate (99.930%) is a secondary
+The authoritative R3eg-B Test262 baseline records **78,234 full-corpus passes
+out of 102,037 variants (76.672%)**, with **78,284 eligible variants
+(76.721%)**. The 78,234 / 78,284 runnable pass rate (99.936%) is a secondary
 quality measure, not the headline compatibility metric.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**

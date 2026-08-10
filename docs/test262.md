@@ -9,18 +9,18 @@ QuickJS 2026-06-04 patch and configuration recorded in
 
 Metrics are reported in this order:
 
-1. **Full pass:** 71,852 / 102,037 (70.418%). Every frozen Test262 variant is in
+1. **Full pass:** 78,234 / 102,037 (76.672%). Every frozen Test262 variant is in
    the denominator.
-2. **Eligible coverage:** 71,902 / 102,037 (70.467%). This measures how much of
+2. **Eligible coverage:** 78,284 / 102,037 (76.721%). This measures how much of
    the full vector the current profile admits to execution.
-3. **Runnable pass quality:** 71,852 / 71,902 (99.930%). This is useful for
+3. **Runnable pass quality:** 78,234 / 78,284 (99.936%). This is useful for
    diagnosing admitted behavior, but it must not replace either coverage
    metric above.
 
 The frozen outcome summary is:
 
 ```text
-fail-parse=7 fail-runtime=43 pass=71852 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=7850 unsupported-module=418 unsupported-negative-provenance=3392
+fail-parse=7 fail-runtime=43 pass=78234 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1468 unsupported-module=418 unsupported-negative-provenance=3392
 ```
 
 ## Reproduce
@@ -36,11 +36,11 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
 contract, focused manifest, and frozen TSV/JSONL receipts. `--focused` replays
-the 2,089-variant R3eg-A dependency-closed private-data-field vector and
-requires byte-identical output. It covers `class-fields-private`,
-`class-fields-private-in`, and `class-static-fields-private`; 14 module-host
-rows remain independently host-gated. `--full` runs every 102,037 variant and
-checks the complete summary and report hashes.
+the 6,382-variant R3eg-B dependency-closed private-callable vector and requires
+byte-identical output. It covers `class-methods-private` and
+`class-static-methods-private`, including ordinary methods, accessors,
+generators, async methods, and async generators. `--full` runs every 102,037
+variant and checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
 its exact path is present in the audited-negative data, and execution still

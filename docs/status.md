@@ -7,11 +7,11 @@ Parity.
 
 ## Current baseline
 
-The authoritative R3eg-A Test262 vector has:
+The authoritative R3eg-B Test262 vector has:
 
-- 71,852 full-corpus passes out of 102,037 variants (70.418%)
-- 71,902 eligible variants out of 102,037 (70.467%)
-- 71,852 passes out of 71,902 runnable variants (99.930%, secondary quality
+- 78,234 full-corpus passes out of 102,037 variants (76.672%)
+- 78,284 eligible variants out of 102,037 (76.721%)
+- 78,234 passes out of 78,284 runnable variants (99.936%, secondary quality
   metric)
 - 50 classified failures and no timeouts among eligible variants
 
@@ -30,8 +30,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 - collections, weak references, finalization, Promises, and iterator slices
 - Unicode 17 case, identifier, normalization, and property data
 - physical dense Array storage shared by literals, builtin results, and JSON
-- public and private instance/static data fields, static blocks, and private
-  brand checks with `#name in object`, including QuickJS-matched early errors
+- public and private instance/static data fields, private methods and
+  accessors across ordinary, generator, async, and async-generator forms,
+  static blocks, and private brand checks with `#name in object`, including
+  QuickJS-matched early errors
 - synchronous static-module graphs, live namespaces, default exports, and core
   `import.meta` semantics
 - native command-line execution and a Rust/WASM browser playground
@@ -43,21 +45,22 @@ and its `$262` realm/agent host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include private methods/accessors, dynamic import, import
-attributes, top-level await, remaining module-host behavior, and the
-unsupported/failed leaves recorded by the current Test262 vector. A Feature
-Parity claim additionally requires the acceptance contract in
-[`parity.md`](parity.md), including QuickJS differential evidence and
-non-Test262 behavior.
+Major open frontiers include dynamic import, import attributes, top-level
+await, remaining module-host behavior, and the unsupported/failed leaves
+recorded by the current Test262 vector. A Feature Parity claim additionally
+requires the acceptance contract in [`parity.md`](parity.md), including QuickJS
+differential evidence and non-Test262 behavior.
 
 The initial architecture-hygiene pass is complete. Cargo integration-test
 targets fell from 186 to 60 (56 oracle targets), and repeated QuickJS transport
 helpers now share support code. Path-sensitive and feature-sensitive targets
 remain separate where aggregation would change their contract. Negative
 diagnostics use a source-authenticated data contract. The ModuleImportBinding,
-public-class-field, public-static-initialization, and private-data-field cohorts
-gate the exact QuickJS error message and line/column policy as well as phase and
-type.
+public-class-field, public-static-initialization, private-data-field, and
+private-callable cohorts gate the exact QuickJS error message and line/column
+policy as well as phase and type. Logical-assignment, optional-chain-assignment,
+and generator-yield collateral cases discovered during admission are
+exact-contracted too.
 
 ## Verification
 
