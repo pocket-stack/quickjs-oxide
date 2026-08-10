@@ -3,6 +3,8 @@
 
 #[path = "support/quickjs_argv_completion_oracle.rs"]
 mod quickjs_argv_completion_oracle;
+#[path = "support/quickjs_program_property_oracle.rs"]
+mod quickjs_program_property_oracle;
 
 #[path = "oracle/program_declarations/oracle_program_functions.rs"]
 mod oracle_program_functions;

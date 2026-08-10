@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::process::{Command, Output};
 
 use super::quickjs_argv_completion_oracle::observe_completion_argv_sequence_strip_one_lf as observe_oracle_sequence;
+use super::quickjs_program_property_oracle::observe_program_property_lines;
 use quickjs_oxide::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, Context, DescriptorField,
     OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
@@ -278,7 +279,7 @@ fn program_var_global_property_and_preflight_matrix_matches_pinned_quickjs() {
 
     assert_eq!(
         rust_property_observations(),
-        oracle_property_observations(&oracle),
+        observe_program_property_lines(&oracle, ORACLE_PROPERTY_PROBE, "var"),
         "Program var global-property or preflight behavior drifted"
     );
 }
@@ -500,23 +501,6 @@ fn rust_property_observations() -> Vec<String> {
     ));
 
     output
-}
-
-fn oracle_property_observations(oracle: &OsStr) -> Vec<String> {
-    let output = Command::new(oracle)
-        .args(["--std", "-e", ORACLE_PROPERTY_PROBE])
-        .output()
-        .expect("run QuickJS Program-var property oracle");
-    assert!(
-        output.status.success(),
-        "QuickJS Program-var property oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS Program-var property output was not UTF-8")
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }
 
 fn define_global_data(
