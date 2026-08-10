@@ -125,3 +125,5 @@ check_registry binary_data "Binary data" tests/oracle_binary_data.rs \
     tests/oracle/binary_data oracle/binary_data oracle_
 check_registry member_access "Member access" tests/oracle_member_access.rs \
     tests/oracle/member_access oracle/member_access oracle_member_
+check_registry templates "Template semantics" tests/oracle_template_semantics.rs \
+    tests/oracle/templates oracle/templates oracle_
