@@ -9,18 +9,18 @@ QuickJS 2026-06-04 patch and configuration recorded in
 
 Metrics are reported in this order:
 
-1. **Full pass:** 69,763 / 102,037 (68.370%). Every frozen Test262 variant is in
+1. **Full pass:** 71,852 / 102,037 (70.418%). Every frozen Test262 variant is in
    the denominator.
-2. **Eligible coverage:** 69,813 / 102,037 (68.419%). This measures how much of
+2. **Eligible coverage:** 71,902 / 102,037 (70.467%). This measures how much of
    the full vector the current profile admits to execution.
-3. **Runnable pass quality:** 69,763 / 69,813 (99.928%). This is useful for
+3. **Runnable pass quality:** 71,852 / 71,902 (99.930%). This is useful for
    diagnosing admitted behavior, but it must not replace either coverage
    metric above.
 
 The frozen outcome summary is:
 
 ```text
-fail-parse=7 fail-runtime=43 pass=69763 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=9939 unsupported-module=418 unsupported-negative-provenance=3392
+fail-parse=7 fail-runtime=43 pass=71852 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=7850 unsupported-module=418 unsupported-negative-provenance=3392
 ```
 
 ## Reproduce
@@ -36,9 +36,11 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
 contract, focused manifest, and frozen TSV/JSONL receipts. `--focused` replays
-the 480-variant R3ef-B public-static-initialization vector and requires
-byte-identical output. `--full` runs
-every 102,037 variant and checks the complete summary and report hashes.
+the 2,089-variant R3eg-A dependency-closed private-data-field vector and
+requires byte-identical output. It covers `class-fields-private`,
+`class-fields-private-in`, and `class-static-fields-private`; 14 module-host
+rows remain independently host-gated. `--full` runs every 102,037 variant and
+checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
 its exact path is present in the audited-negative data, and execution still
