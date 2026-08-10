@@ -144,3 +144,5 @@ check_registry primitive_intrinsics "Primitive intrinsics" \
     oracle/primitive_intrinsics oracle_
 check_registry number "Number semantics" tests/oracle_number_semantics.rs \
     tests/oracle/number oracle/number oracle_number_
+check_registry eval "Eval semantics" tests/oracle_eval_semantics.rs \
+    tests/oracle/eval oracle/eval oracle_eval_
