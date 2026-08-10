@@ -129,3 +129,5 @@ check_registry templates "Template semantics" tests/oracle_template_semantics.rs
     tests/oracle/templates oracle/templates oracle_
 check_registry global "Global semantics" tests/oracle_global_semantics.rs \
     tests/oracle/global oracle/global oracle_global_
+check_registry proxy_reflect "Proxy and Reflect" tests/oracle_proxy_reflect.rs \
+    tests/oracle/proxy_reflect oracle/proxy_reflect oracle_
