@@ -10,9 +10,9 @@ live namespace objects, and core `import.meta` semantics. Dynamic import,
 import attributes, top-level await, and QuickJS host-populated `import.meta`
 properties remain parity work.
 
-The authoritative R3ee-A Test262 baseline records **68,364 full-corpus passes
-out of 102,037 variants (66.999%)**, with **68,414 eligible variants
-(67.048%)**. The 68,364 / 68,414 runnable pass rate (99.927%) is a secondary
+The authoritative R3ef-A Test262 baseline records **69,283 full-corpus passes
+out of 102,037 variants (67.900%)**, with **69,333 eligible variants
+(67.949%)**. The 69,283 / 69,333 runnable pass rate (99.928%) is a secondary
 quality measure, not the headline compatibility metric.
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**

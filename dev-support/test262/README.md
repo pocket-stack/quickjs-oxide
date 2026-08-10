@@ -6,6 +6,10 @@ counts, summaries, SHA-256 hashes, and the current negative-diagnostic contract.
 The gate parses it as inert `key=value` data; it is never sourced or evaluated
 by a shell.
 
+The focused manifest is a sorted set of source paths. Its receipt remains a
+full `(path, variant)` vector, so one path may produce multiple metadata-driven
+variants.
+
 `negative-diagnostics.tsv` is a strict, source-authenticated overlay for
 negative variants whose QuickJS failure reason and location are part of the
 gate. Its path/variant rows carry the pinned source hash, phase/type, semantic

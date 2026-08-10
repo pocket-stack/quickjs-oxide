@@ -9,18 +9,18 @@ QuickJS 2026-06-04 patch and configuration recorded in
 
 Metrics are reported in this order:
 
-1. **Full pass:** 68,364 / 102,037 (66.999%). Every frozen Test262 variant is in
+1. **Full pass:** 69,283 / 102,037 (67.900%). Every frozen Test262 variant is in
    the denominator.
-2. **Eligible coverage:** 68,414 / 102,037 (67.048%). This measures how much of
+2. **Eligible coverage:** 69,333 / 102,037 (67.949%). This measures how much of
    the full vector the current profile admits to execution.
-3. **Runnable pass quality:** 68,364 / 68,414 (99.927%). This is useful for
+3. **Runnable pass quality:** 69,283 / 69,333 (99.928%). This is useful for
    diagnosing admitted behavior, but it must not replace either coverage
    metric above.
 
 The frozen outcome summary is:
 
 ```text
-fail-parse=7 fail-runtime=43 pass=68364 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=11338 unsupported-module=418 unsupported-negative-provenance=3392
+fail-parse=7 fail-runtime=43 pass=69283 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=10419 unsupported-module=418 unsupported-negative-provenance=3392
 ```
 
 ## Reproduce
@@ -36,7 +36,8 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
 contract, focused manifest, and frozen TSV/JSONL receipts. `--focused` replays
-the 67-case R3ee-A vector and requires byte-identical output. `--full` runs
+the 919-variant R3ef-A public-class-field vector and requires byte-identical
+output. `--full` runs
 every 102,037 variant and checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
