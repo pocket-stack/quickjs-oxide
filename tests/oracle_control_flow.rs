@@ -3,6 +3,8 @@
 
 #[path = "support/quickjs_argv_completion_oracle.rs"]
 mod quickjs_argv_completion_oracle;
+#[path = "support/quickjs_syntax_diagnostic_oracle.rs"]
+mod quickjs_syntax_diagnostic_oracle;
 
 #[path = "oracle/control_flow/oracle_statement_control_flow.rs"]
 mod oracle_statement_control_flow;

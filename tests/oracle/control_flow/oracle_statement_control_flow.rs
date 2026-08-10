@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
+use super::quickjs_syntax_diagnostic_oracle::observe_cmdline_syntax_error as oracle_error_observation;
 use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
@@ -759,26 +760,6 @@ fn take_rust_error(runtime: &Runtime, context: &mut Context) -> String {
         "{}|{}|{line}:{column}",
         name.to_utf8_lossy(),
         message.to_utf8_lossy()
-    )
-}
-
-fn oracle_error_observation(oracle: &OsStr, source: &str) -> String {
-    let output = Command::new(oracle)
-        .args(["--std", "-e", source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {source:?}: {error}"));
-    assert!(!output.status.success(), "QuickJS accepted {source:?}");
-    let stderr = String::from_utf8(output.stderr).expect("QuickJS error output was not UTF-8");
-    let mut lines = stderr.lines();
-    let first = lines
-        .find(|line| line.starts_with("SyntaxError: "))
-        .unwrap_or_else(|| panic!("QuickJS emitted no SyntaxError for {source:?}: {stderr}"));
-    let location = lines
-        .find_map(|line| line.trim().strip_prefix("at <cmdline>:"))
-        .unwrap_or_else(|| panic!("QuickJS emitted no location for {source:?}: {stderr}"));
-    format!(
-        "SyntaxError|{}|{location}",
-        first.strip_prefix("SyntaxError: ").unwrap()
     )
 }
 
