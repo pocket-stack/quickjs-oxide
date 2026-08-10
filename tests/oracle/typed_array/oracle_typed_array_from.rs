@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
+use super::quickjs_typed_array_oracle::observe_string_value;
 use quickjs_oxide::{
     CallableRef, Context, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, Runtime,
     RuntimeError, Value,
@@ -552,7 +550,7 @@ fn typed_array_from_oracle_vectors_self_check() {
     };
     for case in CASES {
         assert_eq!(
-            oracle_observation(&oracle, case),
+            observe_string_value(&oracle, case.source, case.description),
             case.expected,
             "{}",
             case.description,
@@ -569,7 +567,7 @@ fn typed_array_from_matches_pinned_quickjs() {
     for case in CASES {
         assert_eq!(
             oxide_observation(case),
-            oracle_observation(&oracle, case),
+            observe_string_value(&oracle, case.source, case.description),
             "{}",
             case.description,
         );
@@ -818,31 +816,6 @@ fn oxide_observation(case: &Case) -> String {
         }
         Err(error) => panic!("Oxide failed for {}: {error}", case.description),
     }
-}
-
-fn oracle_observation(oracle: &OsStr, case: &Case) -> String {
-    let wrapper = r#"
-try {
-  var value = std.evalScript(scriptArgs[0]);
-  print(String(value));
-} catch (error) {
-  print("UNEXPECTED THROW: " + error.name + ": " + error.message);
-}
-"#;
-    let output = Command::new(oracle)
-        .args(["--std", "-e", wrapper, case.source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {}: {error}", case.description));
-    assert!(
-        output.status.success(),
-        "QuickJS failed for {}: {}",
-        case.description,
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .trim_end()
-        .to_owned()
 }
 
 fn eval_callable(
