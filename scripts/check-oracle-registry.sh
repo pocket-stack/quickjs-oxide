@@ -142,3 +142,5 @@ check_registry function_semantics "Function semantics" \
 check_registry primitive_intrinsics "Primitive intrinsics" \
     tests/oracle_primitive_intrinsics.rs tests/oracle/primitive_intrinsics \
     oracle/primitive_intrinsics oracle_
+check_registry number "Number semantics" tests/oracle_number_semantics.rs \
+    tests/oracle/number oracle/number oracle_number_
