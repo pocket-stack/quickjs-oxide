@@ -134,3 +134,5 @@ check_registry proxy_reflect "Proxy and Reflect" tests/oracle_proxy_reflect.rs \
 check_registry class_initialization "Class initialization" \
     tests/oracle_class_initialization.rs tests/oracle/class_initialization \
     oracle/class_initialization oracle_class_
+check_registry operators "Expression operators" tests/oracle_operator_semantics.rs \
+    tests/oracle/operators oracle/operators oracle_
