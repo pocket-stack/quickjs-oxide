@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
+use super::quickjs_control_value_oracle::observe_normalized_value;
 use super::quickjs_syntax_diagnostic_oracle::observe_cmdline_syntax_error as oracle_error_observation;
 use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
@@ -247,7 +248,7 @@ fn switch_values_match_pinned_quickjs() {
             .unwrap_or_else(|error| panic!("Rust rejected {description:?} ({source:?}): {error}"));
         assert_eq!(
             normalize_rust_value(&value),
-            oracle_value_observation(&oracle, source, description),
+            observe_normalized_value(&oracle, source, description, ORACLE_NORMALIZER),
             "value mismatch for {description:?} ({source:?})"
         );
     }
@@ -290,23 +291,6 @@ fn switch_abrupt_values_match_pinned_quickjs() {
             "throw mismatch for {description:?} ({source:?})"
         );
     }
-}
-
-fn oracle_value_observation(oracle: &OsStr, source: &str, description: &str) -> String {
-    let script = format!("var __qjo_value = std.evalScript(scriptArgs[0]);\n{ORACLE_NORMALIZER}");
-    let output = Command::new(oracle)
-        .args(["--std", "-e", &script, source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {description:?}: {error}"));
-    assert!(
-        output.status.success(),
-        "QuickJS rejected {description:?} ({source:?}): {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("QuickJS value output was not UTF-8")
-        .trim_end()
-        .to_owned()
 }
 
 fn oracle_throw_observation(oracle: &OsStr, source: &str, description: &str) -> String {
