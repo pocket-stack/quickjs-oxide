@@ -488,12 +488,23 @@ impl<'source> Parser<'source> {
         let has_line_terminator = quickjs_simple_lookahead_has_line_terminator(
             &self.lexer.source()[self.current().span.end.byte_offset..],
         );
+        // QuickJS first treats `async` as an ordinary property name only for
+        // the five tokens which can immediately finish or continue that
+        // property. Every other same-line token enters the async-method path;
+        // a malformed key is then diagnosed at that token by the shared class
+        // property-name parser. This includes `;`, invalid punctuation, and a
+        // raw backslash from an attempted escaped `#` token.
         Ok(!has_line_terminator
-            && (Self::class_property_name_starts(&next.kind)
-                || matches!(
-                    next.kind,
-                    TokenKind::Punctuator(Punctuator::Multiply | Punctuator::Semicolon)
-                )))
+            && !matches!(
+                next.kind,
+                TokenKind::Punctuator(
+                    Punctuator::Colon
+                        | Punctuator::Comma
+                        | Punctuator::RightBrace
+                        | Punctuator::LeftParen
+                        | Punctuator::Equal
+                )
+            ))
     }
 
     fn class_property_name_starts(kind: &TokenKind<'_>) -> bool {

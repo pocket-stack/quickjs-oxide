@@ -141,10 +141,7 @@ impl<'source> Parser<'source> {
                             .to_js_string()?
                     }
                     TokenKind::PrivateIdentifier(_) => {
-                        return Err(Error::syntax(
-                            "private identifiers are not valid in object literals",
-                            source_span(token.span),
-                        ));
+                        return Err(self.syntax_here("invalid property name"));
                     }
                     _ => return Err(self.syntax_here("invalid property name")),
                 };
@@ -155,6 +152,7 @@ impl<'source> Parser<'source> {
                         | TokenKind::Keyword(_)
                         | TokenKind::String(_)
                         | TokenKind::Number(_)
+                        | TokenKind::PrivateIdentifier(_)
                         | TokenKind::Punctuator(Punctuator::LeftBracket)
                 );
                 let async_prefix_has_line_terminator = method_prefix.as_deref() == Some("async")
@@ -332,10 +330,7 @@ impl<'source> Parser<'source> {
                 return Ok(ObjectMethodPropertyKey::Computed);
             }
             TokenKind::PrivateIdentifier(_) => {
-                return Err(Error::syntax(
-                    "private identifiers are not valid in object literals",
-                    source_span(token.span),
-                ));
+                return Err(self.syntax_here("invalid property name"));
             }
             _ => return Err(self.syntax_here("invalid property name")),
         };

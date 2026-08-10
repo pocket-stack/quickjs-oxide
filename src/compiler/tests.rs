@@ -821,6 +821,12 @@ fn class_field_early_error_diagnostics_match_quickjs() {
             "invalid first character of private name",
             24,
         ),
+        (
+            r"class C { async \u0023m() {} }",
+            "invalid property name",
+            17,
+        ),
+        ("class C { async @() {} }", "invalid property name", 17),
     ] {
         let error = compile_unlinked_script(source).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
@@ -897,7 +903,17 @@ fn private_field_early_error_diagnostics_match_quickjs() {
 
 #[test]
 fn invalid_assignment_diagnostics_advance_to_rhs_like_quickjs() {
-    for (source, column) in [("1 = 0", 5), ("f() += 0", 8), ("1 = @", 5)] {
+    for (source, column) in [
+        ("1 = 0", 5),
+        ("f() += 0", 8),
+        ("1 = @", 5),
+        ("1 &&= 0", 7),
+        ("f() ||= 0", 9),
+        ("a?.b = 0", 8),
+        ("a?.b += 0", 9),
+        ("a?.b ??= 0", 10),
+        ("class C { #x; m(){ #x in {} &&= 0; } }", 33),
+    ] {
         let error = compile_unlinked_script(source).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
         assert_eq!(
@@ -1848,6 +1864,14 @@ fn generator_method_frontiers_keep_async_delegation_explicit() {
             .message(),
         "invalid property name"
     );
+    let yield_reference = compile_unlinked_script("class C { *#gen() { void yield; } }")
+        .expect_err("yield must not parse as an IdentifierReference in a generator method");
+    assert_eq!(yield_reference.kind(), ErrorKind::Syntax);
+    assert_eq!(
+        yield_reference.message(),
+        "unexpected token in expression: 'yield'"
+    );
+    assert_eq!(yield_reference.span().unwrap().start.column, 26);
 
     compile_unlinked_script("class C { async *method(){ yield 1; } }")
         .expect("public class async-generator method should use the independent async driver");
@@ -13344,8 +13368,27 @@ fn object_literal_grammar_is_fail_closed_at_remaining_method_frontiers() {
         compile_unlinked_script("({#private:1})")
             .unwrap_err()
             .message(),
-        "private identifiers are not valid in object literals"
+        "invalid property name"
     );
+
+    for (source, column) in [
+        ("({#private: 1})", 3),
+        ("({#private() {}})", 3),
+        ("({*#private() {}})", 4),
+        ("({get #private() {}})", 7),
+        ("({set #private(value) {}})", 7),
+        ("({async #private() {}})", 9),
+        ("({async *#private() {}})", 10),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
+        assert_eq!(error.message(), "invalid property name", "{source:?}");
+        let start = error
+            .span()
+            .expect("object-literal error lost its span")
+            .start;
+        assert_eq!((start.line, start.column), (1, column), "{source:?}");
+    }
 }
 
 #[test]

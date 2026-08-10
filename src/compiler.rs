@@ -4890,10 +4890,6 @@ impl<'source> Parser<'source> {
         if self.array_assignment_pattern_ahead() {
             return self.parse_array_assignment_expression();
         }
-        let leading_assignment_pattern_literal = matches!(
-            self.current().kind,
-            TokenKind::Punctuator(Punctuator::LeftBracket | Punctuator::LeftBrace)
-        );
         // QuickJS's `name0` is captured only when the AssignmentExpression
         // starts with the identifier token itself. Parenthesized lvalues are
         // valid References but intentionally do not trigger NamedEvaluation.
@@ -4925,6 +4921,10 @@ impl<'source> Parser<'source> {
                 )
             )
         {
+            // QuickJS consumes every assignment operator before get_lvalue
+            // rejects an optional-chain Reference, so the diagnostic points
+            // at the first RHS token.
+            self.advance()?;
             return Err(self.syntax_here("invalid assignment left-hand side"));
         }
         let logical = match self.current().kind {
@@ -4940,8 +4940,7 @@ impl<'source> Parser<'source> {
                 let infer_name = direct_identifier_name.as_deref() == Some(target.name.as_str());
                 return self.parse_logical_identifier_assignment(target, logical, infer_name);
             }
-            return self
-                .parse_logical_member_assignment(logical, leading_assignment_pattern_literal);
+            return self.parse_logical_member_assignment(logical);
         }
 
         let assignment_span = self.current().span;
@@ -5145,18 +5144,11 @@ impl<'source> Parser<'source> {
     /// as QuickJS `js_parse_assign_expr2`. The kept member Reference is used
     /// only by the assignment branch; the short-circuit branch removes its
     /// base/key operands with `Nip` and returns the original property value.
-    fn parse_logical_member_assignment(
-        &mut self,
-        logical: LogicalAssignment,
-        leading_assignment_pattern_literal: bool,
-    ) -> Result<(), Error> {
+    fn parse_logical_member_assignment(&mut self, logical: LogicalAssignment) -> Result<(), Error> {
         let Some(target) = self.promote_tail_member_get_for_compound()? else {
-            // QuickJS consumes a logical-assignment operator after an
-            // Array/Object literal before get_lvalue rejects that literal,
-            // matching the arithmetic compound-assignment diagnostic path.
-            if leading_assignment_pattern_literal {
-                self.advance()?;
-            }
+            // As with every other assignment operator, QuickJS advances to
+            // the RHS before get_lvalue rejects a non-Reference left side.
+            self.advance()?;
             return Err(self.syntax_here("invalid assignment left-hand side"));
         };
         let lvalue_depth = match &target {
@@ -6822,7 +6814,7 @@ impl<'source> Parser<'source> {
                     BytecodeFunctionKind::Generator | BytecodeFunctionKind::AsyncGenerator
                 ) =>
             {
-                return Err(self.syntax_here("unexpected 'yield' keyword"));
+                return Err(self.syntax_here("unexpected token in expression: 'yield'"));
             }
             TokenKind::Keyword(keyword)
                 if self.current_ir().strict && strict_reserved_identifier(keyword) =>
