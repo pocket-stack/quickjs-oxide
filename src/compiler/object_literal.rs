@@ -95,7 +95,12 @@ impl<'source> Parser<'source> {
                 let key = match token.kind {
                     TokenKind::Identifier(identifier) => {
                         let name = identifier.value.clone();
-                        shorthand = Some(identifier.clone());
+                        // IdentifierName accepts escaped reserved words as a
+                        // property key, but QuickJS does not reinterpret that
+                        // key as an IdentifierReference shorthand.
+                        if !identifier.escaped_reserved_word {
+                            shorthand = Some(identifier.clone());
+                        }
                         if !identifier.has_escape
                             && matches!(name.as_str(), "get" | "set" | "async")
                         {
@@ -248,15 +253,10 @@ impl<'source> Parser<'source> {
                         self.emit_instruction(Instruction::DefineField(key_constant))?;
                     }
                 } else if let Some(identifier) = shorthand {
-                    // Pinned QuickJS enforces the static-block await error
-                    // here, but its class-initializer `arguments` check misses
-                    // object shorthand and can capture an enclosing binding.
-                    if identifier.value == "await" && self.current_ir().await_forbidden {
-                        return Err(Error::syntax(
-                            "'await' is not allowed in a class static block",
-                            source_span(token.span),
-                        ));
-                    }
+                    // Pinned QuickJS's class-initializer `arguments` check
+                    // misses object shorthand and can capture an enclosing
+                    // binding. Static-block `await` arrives as a keyword and
+                    // therefore takes the grammar's `expecting ':'` branch.
                     validate_identifier(
                         &identifier,
                         token.span,

@@ -45,14 +45,20 @@ impl<'source> Parser<'source> {
         )?);
         self.functions[child].class_initializer_kind = Some(ClassInitializerKind::StaticBlock);
         self.functions[child].arguments_forbidden = true;
-        self.functions[child].await_forbidden = true;
-        self.functions[child].await_binding_forbidden = true;
         self.functions[child].needs_home_object = true;
 
         self.current_function = child;
+        // QuickJS's JS_PARSE_FUNC_CLASS_STATIC_INIT makes an unescaped
+        // `await` a keyword while retaining a synchronous function kind. Let
+        // each surrounding grammar production choose its own diagnostic.
+        let parent_context = self.lexer.context();
+        let mut block_context = parent_context;
+        block_context.async_function = true;
+        self.set_future_lex_context(block_context);
         self.expect_punctuator(Punctuator::LeftBrace)?;
         self.parse_function_body()?;
         let closing = self.current().span;
+        self.relex_current_with_context(parent_context)?;
         self.expect_punctuator(Punctuator::RightBrace)?;
         self.functions[child].source.range = Some(source_offset(span)?..source_offset(closing)?);
 

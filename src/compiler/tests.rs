@@ -902,13 +902,148 @@ fn class_field_await_context_diagnostics_keep_neighboring_boundaries() {
         ),
         (
             "class Fields { static { await; } }",
-            "'await' is not allowed in a class static block",
+            "unexpected 'await' keyword",
         ),
     ] {
         let error = compile_unlinked_script(source).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}");
         assert_eq!(error.message(), expected, "{source:?}");
     }
+}
+
+#[test]
+fn class_static_block_diagnostic_precedence_matches_quickjs() {
+    for (source, message, column) in [
+        (
+            "class C { static { (await => 0); } }",
+            "unexpected 'await' keyword",
+            21,
+        ),
+        (
+            "class C { static { (class await {}); } }",
+            "expecting '{'",
+            27,
+        ),
+        ("class C { static { ({ await }); } }", "expecting ':'", 29),
+        (
+            "class C { static { await: 0; } }",
+            "unexpected 'await' keyword",
+            20,
+        ),
+        (
+            "class C { static { class await {} } }",
+            "class statement requires a name",
+            26,
+        ),
+        (
+            "class C { static { return; } }",
+            "return in a static initializer block",
+            20,
+        ),
+        (
+            "class C { static { const await = 0; } }",
+            "variable name expected",
+            26,
+        ),
+        (
+            "class C { static { function await() {} } }",
+            "function name expected",
+            29,
+        ),
+        (
+            "class C { static { let await; } }",
+            "variable name expected",
+            24,
+        ),
+        (
+            "class C { static { try {} catch (await) {} } }",
+            "identifier expected",
+            34,
+        ),
+        (
+            "class C { static { var [await] = []; } }",
+            "invalid destructuring target",
+            25,
+        ),
+        (
+            "class C { static { var {await} = {}; } }",
+            "invalid destructuring target",
+            32,
+        ),
+        (
+            "class C { static { var await; } }",
+            "variable name expected",
+            24,
+        ),
+        (
+            "class C { static { await; } }",
+            "unexpected 'await' keyword",
+            20,
+        ),
+        (
+            r"class C { static { ({ \u0061wait }); } }",
+            "expecting ':'",
+            34,
+        ),
+        (
+            r"class C { static { try {} catch (\u0061wait) {} } }",
+            "identifier expected",
+            34,
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), message, "{source}");
+        let span = error
+            .span()
+            .expect("class-static-block syntax error lost its span");
+        assert_eq!(
+            (span.start.line, span.start.column),
+            (1, column),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn await_arrow_like_sequences_keep_async_diagnostic_precedence() {
+    for (source, message, column) in [
+        (
+            "async function outer(){ (await => 0); }",
+            "unexpected token in expression: '=>'",
+            32,
+        ),
+        (
+            "async(a = await => {}) => {}",
+            "await in default expression",
+            11,
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), message, "{source}");
+        let span = error
+            .span()
+            .expect("await/arrow syntax error lost its span");
+        assert_eq!(
+            (span.start.line, span.start.column),
+            (1, column),
+            "{source}"
+        );
+    }
+
+    let error = compile_unlinked_module_with_filename(
+        "await => 0;",
+        "await-arrow.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Syntax);
+    assert_eq!(error.message(), "unexpected token in expression: '=>'");
+    let span = error
+        .span()
+        .expect("module await/arrow error lost its span");
+    assert_eq!((span.start.line, span.start.column), (1, 7));
 }
 
 #[test]

@@ -84,12 +84,6 @@ impl<'source> Parser<'source> {
         )?);
         self.functions[child].execution_kind = execution_kind;
         self.functions[child].arguments_forbidden = self.functions[parent].arguments_forbidden;
-        // ClassStaticBlock ContainsAwait includes immediate arrow parameter
-        // initializer expressions. A nested arrow is another function
-        // boundary, so this authority comes from the immediate static-block
-        // parent rather than being copied transitively through arrows.
-        self.functions[child].await_forbidden = parent_is_class_static_block;
-        self.functions[child].await_binding_forbidden = parent_is_class_static_block;
         self.current_function = child;
 
         let mut parameter_context = parent_context;
@@ -223,8 +217,6 @@ impl<'source> Parser<'source> {
         child_context.generator = false;
         child_context.async_function = execution_kind == BytecodeFunctionKind::Async;
         self.relex_current_with_context(child_context)?;
-        self.functions[child].await_forbidden = false;
-        self.functions[child].await_binding_forbidden = false;
         let block_body = self.is_punctuator(Punctuator::LeftBrace);
         if block_body {
             self.advance()?;

@@ -1142,16 +1142,6 @@ struct FunctionIr {
     super_call_allowed: bool,
     super_allowed: bool,
     arguments_forbidden: bool,
-    /// ClassStaticBlock's grammar forbids direct `await` bindings,
-    /// references, and labels without making nested function syntax async.
-    /// Unlike `arguments_forbidden`, arrows establish a boundary for this
-    /// early-error capability and therefore do not inherit it.
-    await_forbidden: bool,
-    /// BindingIdentifier/LabelIdentifier restriction of ClassStaticBlock.
-    /// This does not cross an arrow/function/class-expression boundary even
-    /// though parameter initializer expressions can still carry
-    /// `await_forbidden`.
-    await_binding_forbidden: bool,
     source: FunctionSourceInfo,
     /// Intrinsic function name, independent of contextual `SetName` inference
     /// for anonymous definitions.
@@ -1460,8 +1450,6 @@ impl FunctionIr {
             super_call_allowed: super_capabilities.super_call_allowed,
             super_allowed: super_capabilities.super_allowed,
             arguments_forbidden: false,
-            await_forbidden: false,
-            await_binding_forbidden: false,
             source,
             function_name: options.function_name,
             private_name_binding: options.private_name_binding,
@@ -2266,12 +2254,6 @@ impl<'source> Parser<'source> {
         label_name: String,
         position: StatementPosition,
     ) -> Result<(), Error> {
-        if label_name == "await" && self.current_ir().await_binding_forbidden {
-            return Err(Error::syntax(
-                "'await' is not allowed in a class static block",
-                source_span(self.current().span),
-            ));
-        }
         if self
             .current_ir()
             .break_controls
@@ -3299,6 +3281,9 @@ impl<'source> Parser<'source> {
                     let TokenKind::Identifier(identifier) = token.kind else {
                         return Err(self.syntax_here("identifier expected"));
                     };
+                    if identifier.escaped_reserved_word {
+                        return Err(self.syntax_here("identifier expected"));
+                    }
                     validate_identifier_reservation(
                         &identifier,
                         token.span,
@@ -3446,12 +3431,6 @@ impl<'source> Parser<'source> {
         } else {
             None
         };
-        if label_name.as_deref() == Some("await") && self.current_ir().await_binding_forbidden {
-            return Err(Error::syntax(
-                "'await' is not allowed in a class static block",
-                source_span(self.current().span),
-            ));
-        }
         let target = self
             .current_ir()
             .break_controls
@@ -3811,7 +3790,7 @@ impl<'source> Parser<'source> {
 
     fn parse_return_statement(&mut self) -> Result<(), Error> {
         if self.current_ir().class_initializer_kind == Some(ClassInitializerKind::StaticBlock) {
-            return Err(self.syntax_here("return not in a function"));
+            return Err(self.syntax_here("return in a static initializer block"));
         }
         let statement_depth = self.current_ir().stack_depth;
         let return_span = self.current().span;
@@ -4205,12 +4184,6 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
         conflict_span: Span,
     ) -> Result<(), Error> {
-        if name == "await" && self.current_ir().await_binding_forbidden {
-            return Err(Error::syntax(
-                "'await' is not allowed in a class static block",
-                source_span(declaration_span),
-            ));
-        }
         if matches!(self.current_ir().kind, FunctionKind::Eval(_)) {
             return self.register_eval_var_binding(name, declaration_span, conflict_span);
         }
@@ -4582,12 +4555,6 @@ impl<'source> Parser<'source> {
         is_const: bool,
         allow_body_parameter_shadow: bool,
     ) -> Result<(), Error> {
-        if name == "await" && self.current_ir().await_binding_forbidden {
-            return Err(Error::syntax(
-                "'await' is not allowed in a class static block",
-                source_span(declaration_span),
-            ));
-        }
         let scope = self.current_ir().current_scope;
         let scope_kind = self.current_ir().scopes[scope.0].kind;
         let is_global = matches!(scope_kind, ScopeKind::ProgramBody)
@@ -4905,7 +4872,9 @@ impl<'source> Parser<'source> {
         if let Some(head) = self.async_arrow_ahead() {
             return self.parse_async_arrow_function(head);
         }
-        if self.reserved_arrow_head_ahead() {
+        if self.reserved_arrow_head_ahead()
+            && !matches!(self.current().kind, TokenKind::Keyword(Keyword::Await))
+        {
             return Err(self.syntax_here("invalid arrow function parameter"));
         }
         if let Some(head) = self.arrow_head_ahead() {
@@ -5503,9 +5472,14 @@ impl<'source> Parser<'source> {
                 let mut lexer = self.lexer.clone();
                 lexer.seek(self.current().span.end);
                 let next = lexer.next_token().map_err(lex_error)?;
-                if matches!(next.kind, TokenKind::Punctuator(Punctuator::Colon)) {
+                let invalid_follow = match next.kind {
+                    TokenKind::Punctuator(Punctuator::Colon) => Some(":"),
+                    TokenKind::Punctuator(Punctuator::Arrow) => Some("=>"),
+                    _ => None,
+                };
+                if let Some(invalid_follow) = invalid_follow {
                     return Err(Error::syntax(
-                        "unexpected token in expression: ':'",
+                        format!("unexpected token in expression: '{invalid_follow}'"),
                         source_span(next.span),
                     ));
                 }
@@ -6947,12 +6921,6 @@ impl<'source> Parser<'source> {
         if name == "arguments" && self.current_ir().arguments_forbidden {
             return Err(Error::syntax(
                 "'arguments' identifier is not allowed in class field initializer",
-                source_span(span),
-            ));
-        }
-        if name == "await" && self.current_ir().await_forbidden {
-            return Err(Error::syntax(
-                "'await' is not allowed in a class static block",
                 source_span(span),
             ));
         }
@@ -8450,12 +8418,6 @@ impl<'source> Parser<'source> {
     /// independent parameter environment while retaining these slots as the
     /// call-frame input ABI.
     fn append_identifier_parameter(&mut self, name: String, span: Span) -> Result<u16, Error> {
-        if name == "await" && self.current_ir().await_binding_forbidden {
-            return Err(Error::syntax(
-                "'await' is not allowed in a class static block",
-                source_span(span),
-            ));
-        }
         let function = self.current_ir_mut();
         if function.parameter_scope.is_some()
             && function
@@ -8550,12 +8512,6 @@ impl<'source> Parser<'source> {
         declaration_span: Span,
         conflict_span: Span,
     ) -> Result<(), Error> {
-        if name == "await" && self.current_ir().await_binding_forbidden {
-            return Err(Error::syntax(
-                "'await' is not allowed in a class static block",
-                source_span(declaration_span),
-            ));
-        }
         let expected_scope = self
             .current_ir()
             .parameter_scope
@@ -13364,18 +13320,6 @@ fn resolve_identifier_path(
     span: Span,
     access: IdentifierAccess,
 ) -> Result<ResolvedIdentifierPath, Error> {
-    let authored_reference = !matches!(
-        access,
-        IdentifierAccess::Initialize
-            | IdentifierAccess::InitializeDerivedThis
-            | IdentifierAccess::AnnexBPut
-    );
-    if authored_reference && name == "await" && tree.functions[consuming_function].await_forbidden {
-        return Err(Error::syntax(
-            "'await' is not allowed in a class static block",
-            source_span(span),
-        ));
-    }
     let mut sources = Vec::new();
     let pseudo = PseudoBinding::from_name(name);
     if pseudo.is_some()
