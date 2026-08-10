@@ -1,6 +1,9 @@
 // Keep the program declaration oracle implementations in isolated modules
 // while Cargo builds one integration target.
 
+#[path = "support/quickjs_argv_completion_oracle.rs"]
+mod quickjs_argv_completion_oracle;
+
 #[path = "oracle/program_declarations/oracle_program_functions.rs"]
 mod oracle_program_functions;
 #[path = "oracle/program_declarations/oracle_program_lexicals.rs"]

@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
+use super::quickjs_argv_completion_oracle::observe_completion_argv_sequence_strip_one_lf as observe_oracle_sequence;
 use quickjs_oxide::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, Context, DescriptorField,
     JsString, ObjectRef, OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
@@ -1021,37 +1022,6 @@ fn primitive_value_text(value: Value) -> String {
         Value::Object(_) => "<object>".to_owned(),
         Value::Symbol(_) => "<symbol>".to_owned(),
     }
-}
-
-fn observe_oracle_sequence(oracle: &OsStr, sources: &[&str], description: &str) -> String {
-    let wrapper = r#"
-(function () {
-for (var index = 0; index < scriptArgs.length; index++) {
-  try {
-    var value = std.evalScript(scriptArgs[index]);
-    print('return|' + typeof value + '|' + String(value));
-  } catch (error) {
-    if (error !== null && typeof error === 'object')
-      print('throw|object|' + error.name + '|' + error.message);
-    else
-      print('throw|' + typeof error + '|' + String(error));
-  }
-}
-})();
-"#;
-    let output = Command::new(oracle)
-        .args(["--std", "-e", wrapper])
-        .args(sources)
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {description}: {error}"));
-    assert!(
-        output.status.success(),
-        "QuickJS sequence failed for {description}: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| panic!("QuickJS output was not UTF-8 for {description}: {error}"));
-    stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned()
 }
 
 fn compare_cli(oracle: &OsStr, options: &[&str], source: &str, description: &str) {
