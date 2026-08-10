@@ -231,11 +231,7 @@ impl JsonParser<'_> {
         let mut index = 0_u32;
         loop {
             let (element, child_record) = self.parse_value(depth + 1)?;
-            let key = self
-                .runtime
-                .intern_property_key(&index.to_string())
-                .map_err(RuntimeError::from)?;
-            self.define_json_property(&array, &key, element)?;
+            self.runtime.append_fresh_array_value(&array, element)?;
             if let Some(record) = child_record {
                 elements.push(record);
             }

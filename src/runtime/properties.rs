@@ -136,6 +136,22 @@ impl Runtime {
         }))
     }
 
+    fn dense_array_index_value(
+        &self,
+        object: &ObjectRef,
+        key: &PropertyKey,
+    ) -> Result<Option<RawValue>, RuntimeError> {
+        let state = self.0.state.borrow();
+        let object = state.heap.object(object.object_id())?;
+        let ObjectPayload::Array { dense: Some(dense) } = &object.payload else {
+            return Ok(None);
+        };
+        let Some(index) = state.atoms.array_index(key.atom())? else {
+            return Ok(None);
+        };
+        Ok(dense.get(index as usize).cloned())
+    }
+
     /// Snapshot an own property as a complete descriptor, including the
     /// virtual UTF-16 index properties of genuine String wrappers.
     pub fn get_own_property(
@@ -157,6 +173,14 @@ impl Runtime {
         }
         if let Some(property) = self.string_exotic_own_property(object, key)? {
             return Ok(Some(property));
+        }
+        if let Some(value) = self.dense_array_index_value(object, key)? {
+            return Ok(Some(CompleteOrdinaryPropertyDescriptor::Data {
+                value: self.root_raw_value(&value)?,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            }));
         }
         let snapshot = {
             let state = self.0.state.borrow();
@@ -792,7 +816,8 @@ impl Runtime {
     }
 
     /// Return QuickJS's representation state for a genuine Array. `Some(n)`
-    /// is the dense `u.array.count`; `None` is the irreversible slow form.
+    /// is the physical dense `u.array.count`; `None` is the irreversible slow
+    /// form.
     pub(in crate::runtime) fn array_fast_len(
         &self,
         object: &ObjectRef,
@@ -802,53 +827,96 @@ impl Runtime {
             .state
             .borrow()
             .heap
-            .array_fast_len(object.object_id())?)
+            .array_dense_len(object.object_id())?)
     }
 
-    fn set_array_fast_len(
-        &self,
-        object: &ObjectRef,
-        fast_len: Option<u32>,
-    ) -> Result<(), RuntimeError> {
+    fn materialize_dense_array(&self, object: &ObjectRef) -> Result<(), RuntimeError> {
+        let (prototype, dense_len, mut entries) =
+            {
+                let state = self.0.state.borrow();
+                let object_data = state.heap.object(object.object_id())?;
+                let ObjectPayload::Array { dense: Some(dense) } = &object_data.payload else {
+                    return Ok(());
+                };
+                let shape = state.heap.shape(object_data.shape)?;
+                for entry in shape.entries() {
+                    if state.atoms.array_index(entry.atom)?.is_some() {
+                        return Err(RuntimeError::Invariant(
+                            "fast Array shape already contained a numeric property",
+                        ));
+                    }
+                }
+                let entry_count = shape.entries().len().checked_add(dense.len()).ok_or(
+                    RuntimeError::Invariant("materialized Array shape length overflowed"),
+                )?;
+                let mut entries = Vec::new();
+                entries
+                    .try_reserve_exact(entry_count)
+                    .map_err(|_| HeapError::Allocation {
+                        operation: "materializing fast Array shape",
+                    })?;
+                entries.extend_from_slice(shape.entries());
+                (shape.prototype(), dense.len(), entries)
+            };
+
+        let mut keys = Vec::new();
+        keys.try_reserve(dense_len)
+            .map_err(|_| HeapError::Allocation {
+                operation: "rooting materialized Array indices",
+            })?;
+        for index in 0..dense_len {
+            let index = u32::try_from(index)
+                .map_err(|_| RuntimeError::Invariant("fast Array count exceeded Uint32"))?;
+            let key = self.intern_property_key(&index.to_string())?;
+            entries.push(ShapeEntry {
+                atom: key.atom(),
+                flags: PropertyFlags::data(true, true, true),
+            });
+            keys.push(key);
+        }
+
         self.0
             .state
             .borrow_mut()
-            .heap
-            .set_array_fast_len(object.object_id(), fast_len)?;
-        Ok(())
+            .materialize_array_layout(object.object_id(), prototype, &entries)
     }
 
-    fn update_array_fast_state_after_index_define(
+    fn append_dense_array_value(
         &self,
         object: &ObjectRef,
-        key: &PropertyKey,
-        index: u32,
-        prior_fast_len: Option<u32>,
+        value: &Value,
     ) -> Result<(), RuntimeError> {
-        let Some(fast_len) = prior_fast_len else {
-            return Ok(());
-        };
-        let compatible = matches!(
-            self.get_own_property(object, key)?,
-            Some(CompleteOrdinaryPropertyDescriptor::Data {
-                writable: true,
-                enumerable: true,
-                configurable: true,
-                ..
-            })
-        );
-        let next = if index < fast_len && compatible {
-            Some(fast_len)
-        } else if index == fast_len && compatible {
-            Some(
-                fast_len
-                    .checked_add(1)
-                    .ok_or(RuntimeError::Invariant("fast Array exceeded Uint32"))?,
-            )
-        } else {
-            None
-        };
-        self.set_array_fast_len(object, next)
+        let raw = self.raw_property_value(value)?;
+        let mut state = self.0.state.borrow_mut();
+        let retained_atoms = state.retain_raw_value_atoms(std::iter::once(&raw))?;
+        match state.heap.append_array_dense_value(object.object_id(), raw) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                state.release_atoms(retained_atoms)?;
+                Err(error.into())
+            }
+        }
+    }
+
+    fn replace_dense_array_value(
+        &self,
+        object: &ObjectRef,
+        index: u32,
+        value: &Value,
+    ) -> Result<(), RuntimeError> {
+        let raw = self.raw_property_value(value)?;
+        let mut state = self.0.state.borrow_mut();
+        let retained_atoms = state.retain_raw_value_atoms(std::iter::once(&raw))?;
+        match state
+            .heap
+            .replace_array_dense_value(object.object_id(), index, raw)
+        {
+            Ok(cleanup) => state.apply_cleanup(cleanup),
+            Err(error) => {
+                state.release_atoms(retained_atoms)?;
+                Err(error.into())
+            }
+        }
     }
 
     /// Read and structurally validate a genuine Array's mandatory first
@@ -935,15 +1003,91 @@ impl Runtime {
         index: u32,
         descriptor: &OrdinaryPropertyDescriptor,
     ) -> Result<PropertyDefineOutcome, RuntimeError> {
-        let prior_fast_len = self.array_fast_len(object)?;
         let (old_length, length_writable) = self.array_length_state(object)?;
         if index >= old_length && !length_writable {
             return Ok(PropertyDefineOutcome::Defined(false));
         }
+
+        if let Some(dense_len) = self.array_fast_len(object)? {
+            let current =
+                if index < dense_len {
+                    let value = self.dense_array_index_value(object, key)?.ok_or(
+                        RuntimeError::Invariant("validated dense Array index disappeared"),
+                    )?;
+                    Some(CompleteOrdinaryPropertyDescriptor::Data {
+                        value: self.root_raw_value(&value)?,
+                        writable: true,
+                        enumerable: true,
+                        configurable: true,
+                    })
+                } else {
+                    None
+                };
+            let descriptor_record = descriptor_to_validation_record(descriptor);
+            let current_record = current.as_ref().map(complete_to_validation_record);
+            let complete = match validate_and_apply_property_descriptor(
+                self.is_extensible(object)?,
+                &descriptor_record,
+                current_record.as_ref(),
+                &Value::Undefined,
+                Value::same_value,
+            ) {
+                Ok(complete) => validation_record_to_complete(complete)?,
+                Err(PropertyDefinitionError::InvalidDescriptor) => {
+                    return Err(PropertyDefinitionError::InvalidDescriptor.into());
+                }
+                Err(_) => return Ok(PropertyDefineOutcome::Defined(false)),
+            };
+            let compatible_value = match &complete {
+                CompleteOrdinaryPropertyDescriptor::Data {
+                    value,
+                    writable: true,
+                    enumerable: true,
+                    configurable: true,
+                } => Some(value),
+                CompleteOrdinaryPropertyDescriptor::Data { .. }
+                | CompleteOrdinaryPropertyDescriptor::Accessor { .. } => None,
+            };
+            if index < dense_len
+                && let Some(value) = compatible_value
+            {
+                if matches!(descriptor.value, DescriptorField::Present(_)) {
+                    self.replace_dense_array_value(object, index, value)?;
+                }
+                return Ok(PropertyDefineOutcome::Defined(true));
+            }
+            if index == dense_len
+                && let Some(value) = compatible_value
+            {
+                self.append_dense_array_value(object, value)?;
+                if index < old_length {
+                    return Ok(PropertyDefineOutcome::Defined(true));
+                }
+                let length = self.intern_property_key("length")?;
+                let next_length = index
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Invariant("Array index exceeded Uint32 range"))?;
+                let updated = self.define_ordinary_own_property(
+                    object,
+                    &length,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Self::array_length_value(next_length)),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )?;
+                if !updated {
+                    return Err(RuntimeError::Invariant(
+                        "writable Array length rejected dense index growth",
+                    ));
+                }
+                return Ok(PropertyDefineOutcome::Defined(true));
+            }
+            self.materialize_dense_array(object)?;
+        }
+
         if !self.define_ordinary_own_property(object, key, descriptor)? {
             return Ok(PropertyDefineOutcome::Defined(false));
         }
-        self.update_array_fast_state_after_index_define(object, key, index, prior_fast_len)?;
         if index < old_length {
             return Ok(PropertyDefineOutcome::Defined(true));
         }
@@ -1002,8 +1146,49 @@ impl Runtime {
         if finish_read_only {
             canonical.writable = DescriptorField::Present(true);
         }
+        self.validate_descriptor_domains(&canonical)?;
+        let current = self
+            .get_own_property(object, key)?
+            .ok_or(RuntimeError::Invariant(
+                "genuine Array lost its mandatory length property",
+            ))?;
+        let descriptor_record = descriptor_to_validation_record(&canonical);
+        let current_record = complete_to_validation_record(&current);
+        match validate_and_apply_property_descriptor(
+            self.is_extensible(object)?,
+            &descriptor_record,
+            Some(&current_record),
+            &Value::Undefined,
+            Value::same_value,
+        ) {
+            Ok(_) => {}
+            Err(PropertyDefinitionError::InvalidDescriptor) => {
+                return Err(PropertyDefinitionError::InvalidDescriptor.into());
+            }
+            Err(_) => return Ok(PropertyDefineOutcome::Defined(false)),
+        }
+        let dense_truncation = if self
+            .array_fast_len(object)?
+            .is_some_and(|dense_len| new_length < dense_len)
+        {
+            Some(
+                self.0
+                    .state
+                    .borrow()
+                    .heap
+                    .prepare_array_dense_truncation(object.object_id(), new_length)?,
+            )
+        } else {
+            None
+        };
         if !self.define_ordinary_own_property(object, key, &canonical)? {
             return Ok(PropertyDefineOutcome::Defined(false));
+        }
+
+        if let Some(prepared) = dense_truncation {
+            let mut state = self.0.state.borrow_mut();
+            let cleanup = state.heap.commit_array_dense_truncation(prepared)?;
+            state.apply_cleanup(cleanup)?;
         }
 
         for index in self.array_indices_at_or_above(object, new_length)? {
@@ -1219,6 +1404,9 @@ impl Runtime {
         if self.string_exotic_index_value(object, key)?.is_some() {
             return Ok(true);
         }
+        if self.dense_array_index_value(object, key)?.is_some() {
+            return Ok(true);
+        }
         let state = self.0.state.borrow();
         let object = state.heap.object(object.object_id())?;
         Ok(state.heap.shape(object.shape)?.find(key.atom()).is_some())
@@ -1244,6 +1432,9 @@ impl Runtime {
             };
         }
         if self.string_exotic_index_value(object, key)?.is_some() {
+            return Ok(true);
+        }
+        if self.dense_array_index_value(object, key)?.is_some() {
             return Ok(true);
         }
         let state = self.0.state.borrow();
@@ -1280,6 +1471,18 @@ impl Runtime {
             ArrayOwnKey::Index(index) => Some(index),
             ArrayOwnKey::Length | ArrayOwnKey::Other => None,
         };
+        if let Some(index) = array_index
+            && let Some(dense_len) = self.array_fast_len(object)?
+            && index < dense_len
+        {
+            if index.checked_add(1) == Some(dense_len) {
+                let mut state = self.0.state.borrow_mut();
+                let cleanup = state.heap.truncate_array_dense(object.object_id(), index)?;
+                state.apply_cleanup(cleanup)?;
+                return Ok(true);
+            }
+            self.materialize_dense_array(object)?;
+        }
         let arguments_index = self
             .arguments_index_state(object, key)?
             .map(|(index, _, _)| index);
@@ -1396,18 +1599,6 @@ impl Runtime {
             return Ok(false);
         }
 
-        let fast_update = if let Some(array_index) = array_index {
-            match state.heap.array_fast_len(object_id)? {
-                Some(fast_len) if array_index < fast_len => Some(if array_index + 1 == fast_len {
-                    Some(array_index)
-                } else {
-                    None
-                }),
-                Some(_) | None => None,
-            }
-        } else {
-            None
-        };
         let arguments_fast_update = if let Some(arguments_index) = arguments_index {
             match state.heap.arguments_state(object_id)?.1 {
                 Some(fast_len) if arguments_index < fast_len => {
@@ -1427,9 +1618,6 @@ impl Runtime {
         next_entries.remove(index);
         slots.remove(index);
         state.replace_layout(object_id, prototype, &next_entries, slots)?;
-        if let Some(next_fast_len) = fast_update {
-            state.heap.set_array_fast_len(object_id, next_fast_len)?;
-        }
         if let Some(next_fast_len) = arguments_fast_update {
             state
                 .heap
@@ -1452,13 +1640,20 @@ impl Runtime {
             .typed_array_is_object(object)?
             .then(|| self.typed_array_current_length(object))
             .transpose()?;
-        let atoms = {
+        let (atoms, dense_array_len) = {
             let state = self.0.state.borrow();
             let object = state.heap.object(object.object_id())?;
             let atoms = state
                 .heap
                 .shape(object.shape)?
                 .ordered_own_keys(&state.atoms)?;
+            let dense_array_len = match &object.payload {
+                ObjectPayload::Array { dense: Some(dense) } => Some(
+                    u32::try_from(dense.len())
+                        .map_err(|_| RuntimeError::Invariant("fast Array count exceeded Uint32"))?,
+                ),
+                _ => None,
+            };
             if let Some(length) = string_length {
                 for atom in &atoms {
                     if state.atoms.array_index(*atom)?.is_some_and(|index| {
@@ -1470,7 +1665,16 @@ impl Runtime {
                     }
                 }
             }
-            atoms
+            if dense_array_len.is_some() {
+                for atom in &atoms {
+                    if state.atoms.array_index(*atom)?.is_some() {
+                        return Err(RuntimeError::Invariant(
+                            "fast Array shape contained an ordinary indexed property",
+                        ));
+                    }
+                }
+            }
+            (atoms, dense_array_len)
         };
         let mut keys = Vec::new();
         if let Some(length) = string_length {
@@ -1482,6 +1686,11 @@ impl Runtime {
             }
         }
         if let Some(length) = typed_array_length {
+            for index in 0..length {
+                keys.push(self.intern_property_key(&index.to_string())?);
+            }
+        }
+        if let Some(length) = dense_array_len {
             for index in 0..length {
                 keys.push(self.intern_property_key(&index.to_string())?);
             }

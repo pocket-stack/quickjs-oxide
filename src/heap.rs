@@ -5212,15 +5212,16 @@ pub enum ObjectPayload {
     /// text remains in the object's frozen ordinary `rawJSON` data slot, so
     /// the payload needs no duplicate GC edge or string owner.
     RawJson,
-    /// A genuine `JS_CLASS_ARRAY` exotic object. Indexed elements and the
-    /// mandatory length property remain in the ordinary shape/slot arrays;
-    /// this class marker selects ArraySetLength and index-growth semantics at
-    /// the runtime boundary without disguising an Array as an ordinary object.
+    /// A genuine `JS_CLASS_ARRAY` exotic object. The mandatory `length`
+    /// property and every named or slow indexed property remain in the
+    /// ordinary shape/slot arrays. QuickJS's contiguous C/W/E prefix lives in
+    /// `dense` instead and therefore does not allocate decimal property atoms.
     Array {
-        /// QuickJS's observable dense `fast_array` representation. `Some`
-        /// stores `u.array.count`; `None` means the object was irreversibly
-        /// converted to ordinary indexed properties.
-        fast_len: Option<u32>,
+        /// QuickJS `u.array.values[0..count]`. `Some` is the fast form and
+        /// `None` records its irreversible conversion to ordinary properties.
+        /// A fast Array has no holes inside this vector; its logical `length`
+        /// slot may nevertheless be greater than `dense.len()`.
+        dense: Option<Vec<RawValue>>,
     },
     /// QuickJS's two arguments classes share the same fast indexed storage
     /// protocol. Mapped entries use `PropertySlot::VarRef`; unmapped entries
@@ -7491,7 +7492,9 @@ impl ObjectData {
             immutable_prototype: false,
             is_constructor: false,
             kind: ObjectKind::Array,
-            payload: ObjectPayload::Array { fast_len: Some(0) },
+            payload: ObjectPayload::Array {
+                dense: Some(Vec::new()),
+            },
         }
     }
 
@@ -8430,6 +8433,21 @@ pub struct HeapCleanup {
     pub finalized_shape_ids: Vec<ShapeId>,
     /// Owned non-GC atom edges detached from shapes and symbol values.
     pub atoms: Vec<Atom>,
+}
+
+/// Allocation-complete plan for shortening one fast Array prefix.
+///
+/// Preparing the plan does not mutate the Array. Once prepared, committing it
+/// moves the removed values into already-reserved storage before detaching
+/// their heap and atom ownership, so the representation change itself cannot
+/// fail because of a container allocation.
+pub(crate) struct PreparedArrayDenseTruncation {
+    object: ObjectId,
+    original_len: usize,
+    new_len: usize,
+    removed_atom_count: usize,
+    removed: Vec<RawValue>,
+    cleanup: HeapCleanup,
 }
 
 impl HeapCleanup {
@@ -13577,6 +13595,21 @@ impl Heap {
         Ok(cleanup)
     }
 
+    fn release_raw_values_into(
+        &mut self,
+        values: Vec<RawValue>,
+        mut cleanup: HeapCleanup,
+    ) -> Result<HeapCleanup, HeapError> {
+        for value in values {
+            cleanup.atoms.extend(raw_value_atom(&value));
+            if let RawValue::Object(object) = value {
+                self.release_raw_no_drain(RawId::Object(object))?;
+            }
+        }
+        cleanup.merge(self.drain_zero_queue()?);
+        Ok(cleanup)
+    }
+
     /// Update the helper's signed 64-bit limit/callback index.
     pub(crate) fn set_iterator_helper_count(
         &mut self,
@@ -13628,31 +13661,260 @@ impl Heap {
         Ok(())
     }
 
-    /// Read the representation-sensitive dense prefix tracked for a genuine
-    /// QuickJS Array. `None` means the Array has converted to slow properties.
-    pub fn array_fast_len(&self, id: ObjectId) -> Result<Option<u32>, HeapError> {
+    /// Read QuickJS's representation-sensitive dense count for a genuine
+    /// Array. `None` means the Array has converted to slow properties.
+    pub fn array_dense_len(&self, id: ObjectId) -> Result<Option<u32>, HeapError> {
         match &self.object(id)?.payload {
-            ObjectPayload::Array { fast_len } => Ok(*fast_len),
+            ObjectPayload::Array { dense: Some(dense) } => {
+                Ok(Some(u32::try_from(dense.len()).map_err(|_| {
+                    HeapError::Invariant("fast Array count exceeded Uint32")
+                })?))
+            }
+            ObjectPayload::Array { dense: None } => Ok(None),
             _ => Err(HeapError::Invariant(
-                "Array fast state requested for an object with the wrong class",
+                "Array dense state requested for an object with the wrong class",
             )),
         }
     }
 
-    /// Update the logical QuickJS fast-Array representation after a property
-    /// operation. Converting to `None` is intentionally irreversible.
-    pub fn set_array_fast_len(
+    /// Borrow QuickJS's physical dense prefix. The returned values own no
+    /// additional arena or AtomTable references.
+    pub fn array_dense_values(&self, id: ObjectId) -> Result<Option<&[RawValue]>, HeapError> {
+        match &self.object(id)?.payload {
+            ObjectPayload::Array { dense } => Ok(dense.as_deref()),
+            _ => Err(HeapError::Invariant(
+                "Array dense values requested for an object with the wrong class",
+            )),
+        }
+    }
+
+    /// Append one consecutive C/W/E element to a fast Array. Object edges are
+    /// retained before publication. A Symbol atom must already be owned by the
+    /// caller and transfers to the Array only when this operation succeeds.
+    pub fn append_array_dense_value(
         &mut self,
         id: ObjectId,
-        fast_len: Option<u32>,
+        value: RawValue,
     ) -> Result<(), HeapError> {
-        let ObjectPayload::Array { fast_len: current } = &mut self.object_mut(id)?.payload else {
+        if !is_map_storable_value(&value) {
             return Err(HeapError::Invariant(
-                "Array fast state update reached an object with the wrong class",
+                "fast Array contains an internal value sentinel",
+            ));
+        }
+        {
+            let ObjectPayload::Array { dense: Some(dense) } = &mut self.object_mut(id)?.payload
+            else {
+                return Err(HeapError::Invariant(
+                    "dense append reached a slow Array or an object with the wrong class",
+                ));
+            };
+            if dense.len() >= u32::MAX as usize {
+                return Err(HeapError::Overflow {
+                    operation: "growing fast Array count",
+                });
+            }
+            dense.try_reserve(1).map_err(|_| HeapError::Allocation {
+                operation: "growing fast Array storage",
+            })?;
+        }
+        self.retain_edges_transactionally(&raw_value_edges(&value))?;
+        let ObjectPayload::Array { dense: Some(dense) } = &mut self.object_mut(id)?.payload else {
+            unreachable!("fast Array changed representation while retaining its new value")
+        };
+        dense.push(value);
+        Ok(())
+    }
+
+    /// Append to a newly constructed Array whose logical length still equals
+    /// its dense count. This is QuickJS's `add_fast_array_element` substrate
+    /// for literals, builtin result arrays, and JSON parsing: allocation and
+    /// edge retention complete before the infallible length-slot publication.
+    pub fn append_fresh_array_dense_value(
+        &mut self,
+        id: ObjectId,
+        value: RawValue,
+    ) -> Result<(), HeapError> {
+        let next_len = {
+            let object = self.object(id)?;
+            let ObjectPayload::Array { dense: Some(dense) } = &object.payload else {
+                return Err(HeapError::Invariant(
+                    "fresh dense append reached a slow Array or wrong object class",
+                ));
+            };
+            let dense_len = u32::try_from(dense.len())
+                .map_err(|_| HeapError::Invariant("fast Array count exceeded Uint32"))?;
+            let shape = self.shape(object.shape)?;
+            let length = shape.entries().first().ok_or(HeapError::Invariant(
+                "fresh Array has no physical length entry",
+            ))?;
+            let stored_len = match object.slots.first() {
+                Some(PropertySlot::Data(RawValue::Int(length))) if *length >= 0 => *length as u32,
+                Some(PropertySlot::Data(RawValue::Float(length)))
+                    if length.is_finite()
+                        && *length >= 0.0
+                        && *length <= f64::from(u32::MAX)
+                        && length.fract() == 0.0 =>
+                {
+                    *length as u32
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "fresh Array length is not an exact Uint32 data value",
+                    ));
+                }
+            };
+            if !length.flags.writable || stored_len != dense_len {
+                return Err(HeapError::Invariant(
+                    "fresh Array length diverged from its dense count",
+                ));
+            }
+            dense_len.checked_add(1).ok_or(HeapError::Overflow {
+                operation: "growing fresh Array length",
+            })?
+        };
+
+        self.append_array_dense_value(id, value)?;
+        let replacement = if let Ok(length) = i32::try_from(next_len) {
+            RawValue::Int(length)
+        } else {
+            RawValue::Float(f64::from(next_len))
+        };
+        let object = self
+            .object_mut(id)
+            .expect("fresh Array disappeared after retaining its appended value");
+        let Some(PropertySlot::Data(length)) = object.slots.first_mut() else {
+            unreachable!("fresh Array length slot changed after preflight")
+        };
+        *length = replacement;
+        Ok(())
+    }
+
+    /// Replace one existing fast element transactionally. New edges are
+    /// retained before the previous value and its Symbol atom are detached.
+    pub fn replace_array_dense_value(
+        &mut self,
+        id: ObjectId,
+        index: u32,
+        replacement: RawValue,
+    ) -> Result<HeapCleanup, HeapError> {
+        if !is_map_storable_value(&replacement) {
+            return Err(HeapError::Invariant(
+                "fast Array contains an internal value sentinel",
+            ));
+        }
+        let index = index as usize;
+        match &self.object(id)?.payload {
+            ObjectPayload::Array { dense: Some(dense) } if index < dense.len() => {}
+            ObjectPayload::Array { dense: Some(_) } => {
+                return Err(HeapError::Invariant(
+                    "fast Array replacement index is outside its dense prefix",
+                ));
+            }
+            ObjectPayload::Array { dense: None } => {
+                return Err(HeapError::Invariant(
+                    "fast Array replacement reached a slow Array",
+                ));
+            }
+            _ => {
+                return Err(HeapError::Invariant(
+                    "fast Array replacement reached an object with the wrong class",
+                ));
+            }
+        }
+        self.retain_edges_transactionally(&raw_value_edges(&replacement))?;
+        let previous = {
+            let ObjectPayload::Array { dense: Some(dense) } = &mut self.object_mut(id)?.payload
+            else {
+                unreachable!("fast Array changed representation during value replacement")
+            };
+            std::mem::replace(&mut dense[index], replacement)
+        };
+        self.release_replaced_raw_value(previous)
+    }
+
+    /// Reserve every container needed to shorten a fast Array prefix without
+    /// changing either its dense storage or logical `length` slot.
+    pub(crate) fn prepare_array_dense_truncation(
+        &self,
+        id: ObjectId,
+        new_len: u32,
+    ) -> Result<PreparedArrayDenseTruncation, HeapError> {
+        let ObjectPayload::Array { dense: Some(dense) } = &self.object(id)?.payload else {
+            return Err(HeapError::Invariant(
+                "fast Array truncation reached a slow Array or wrong object class",
             ));
         };
-        *current = fast_len;
-        Ok(())
+        let new_len = new_len as usize;
+        let removal_count = dense
+            .len()
+            .checked_sub(new_len)
+            .ok_or(HeapError::Invariant(
+                "fast Array truncation attempted to grow its dense prefix",
+            ))?;
+        let removed_atom_count = dense[new_len..]
+            .iter()
+            .filter(|value| raw_value_atom(value).is_some())
+            .count();
+        let mut removed = Vec::new();
+        removed
+            .try_reserve_exact(removal_count)
+            .map_err(|_| HeapError::Allocation {
+                operation: "detaching fast Array tail",
+            })?;
+        let mut cleanup = HeapCleanup::default();
+        cleanup
+            .atoms
+            .try_reserve(removed_atom_count)
+            .map_err(|_| HeapError::Allocation {
+                operation: "recording detached fast Array atoms",
+            })?;
+        Ok(PreparedArrayDenseTruncation {
+            object: id,
+            original_len: dense.len(),
+            new_len,
+            removed_atom_count,
+            removed,
+            cleanup,
+        })
+    }
+
+    /// Publish an allocation-complete fast Array truncation and detach every
+    /// removed edge and Symbol atom.
+    pub(crate) fn commit_array_dense_truncation(
+        &mut self,
+        mut prepared: PreparedArrayDenseTruncation,
+    ) -> Result<HeapCleanup, HeapError> {
+        {
+            let ObjectPayload::Array { dense: Some(dense) } =
+                &mut self.object_mut(prepared.object)?.payload
+            else {
+                unreachable!("fast Array changed representation before tail truncation")
+            };
+            if dense.len() != prepared.original_len
+                || dense[prepared.new_len..]
+                    .iter()
+                    .filter(|value| raw_value_atom(value).is_some())
+                    .count()
+                    != prepared.removed_atom_count
+            {
+                return Err(HeapError::Invariant(
+                    "fast Array changed after truncation preparation",
+                ));
+            }
+            prepared.removed.extend(dense.drain(prepared.new_len..));
+        }
+        self.release_raw_values_into(prepared.removed, prepared.cleanup)
+    }
+
+    /// Truncate the contiguous fast prefix without changing the Array's
+    /// logical `length` slot. Every removed edge and Symbol atom is detached.
+    pub fn truncate_array_dense(
+        &mut self,
+        id: ObjectId,
+        new_len: u32,
+    ) -> Result<HeapCleanup, HeapError> {
+        let prepared = self.prepare_array_dense_truncation(id, new_len)?;
+        self.commit_array_dense_truncation(prepared)
     }
 
     /// Read one Arguments object's representation-sensitive indexed prefix.
@@ -14686,6 +14948,69 @@ impl Heap {
         Ok(cleanup)
     }
 
+    /// Atomically materialize a fast Array's dense prefix into the indexed
+    /// suffix of a prepared shape. Existing slots and dense values move in
+    /// place, preserving their edge and Symbol-atom ownership without cloning
+    /// or temporarily retaining a second copy of the payload.
+    pub fn materialize_array_dense_shape(
+        &mut self,
+        id: ObjectId,
+        shape: ShapeId,
+    ) -> Result<HeapCleanup, HeapError> {
+        let (previous_shape, previous_slot_len, dense_len) = {
+            let object = self.object(id)?;
+            let ObjectPayload::Array { dense: Some(dense) } = &object.payload else {
+                return Err(HeapError::Invariant(
+                    "dense materialization reached a slow Array or wrong object class",
+                ));
+            };
+            (object.shape, object.slots.len(), dense.len())
+        };
+        let previous = self.shape(previous_shape)?;
+        let replacement = self.shape(shape)?;
+        let replacement_len =
+            previous_slot_len
+                .checked_add(dense_len)
+                .ok_or(HeapError::Overflow {
+                    operation: "materializing fast Array slots",
+                })?;
+        if replacement.prototype() != previous.prototype()
+            || replacement.entries().len() != replacement_len
+            || replacement.entries().get(..previous_slot_len) != Some(previous.entries())
+            || replacement.entries()[previous_slot_len..]
+                .iter()
+                .any(|entry| entry.flags != PropertyFlags::data(true, true, true))
+        {
+            return Err(HeapError::Invariant(
+                "materialized Array shape does not extend its dense layout",
+            ));
+        }
+        self.object_mut(id)?
+            .slots
+            .try_reserve(dense_len)
+            .map_err(|_| HeapError::Allocation {
+                operation: "materializing fast Array slots",
+            })?;
+        self.retain_shape(shape)?;
+
+        let detached_shape = {
+            let object = self
+                .object_mut(id)
+                .expect("authenticated Array disappeared during dense materialization");
+            let ObjectPayload::Array { dense } = &mut object.payload else {
+                unreachable!("Array changed class during dense materialization")
+            };
+            let previous_dense = dense
+                .take()
+                .expect("fast Array changed representation during materialization");
+            object
+                .slots
+                .extend(previous_dense.into_iter().map(PropertySlot::Data));
+            std::mem::replace(&mut object.shape, shape)
+        };
+        self.release_and_drain(RawId::Shape(detached_shape))
+    }
+
     /// Change only the object's `[[Construct]]` capability bit.
     /// QuickJS keeps this bit independent from the native cproto used to
     /// initialize it, so changing it must not rewrite callable metadata.
@@ -15607,6 +15932,14 @@ impl Heap {
         }
         self.validate_property_layout(object.shape, &object.slots)?;
         let shape = self.shape(object.shape)?;
+        if let ObjectPayload::Array { dense: Some(dense) } = &object.payload
+            && (u32::try_from(dense.len()).is_err()
+                || dense.iter().any(|value| !is_map_storable_value(value)))
+        {
+            return Err(HeapError::Invariant(
+                "fast Array contains an invalid dense value prefix",
+            ));
+        }
         if let ObjectPayload::Proxy(data) = &object.payload {
             let target = self.object(data.target)?;
             self.object(data.handler)?;
@@ -16803,9 +17136,14 @@ fn try_shrink_array_buffer_allocation(bytes: &[u8], new_length: usize) -> Option
 
 fn object_edges(object: &ObjectData) -> Vec<RawId> {
     let closure_count = match &object.payload {
+        ObjectPayload::Array { dense } => dense.as_ref().map_or(0, |dense| {
+            dense
+                .iter()
+                .filter(|value| matches!(value, RawValue::Object(_)))
+                .count()
+        }),
         ObjectPayload::Ordinary
         | ObjectPayload::RawJson
-        | ObjectPayload::Array { .. }
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::ArrayIterator { .. }
         | ObjectPayload::ForInIterator(_)
@@ -16916,9 +17254,17 @@ fn object_edges(object: &ObjectData) -> Vec<RawId> {
     }
     edges.push(RawId::Shape(object.shape));
     match &object.payload {
+        ObjectPayload::Array { dense } => {
+            if let Some(dense) = dense {
+                for value in dense {
+                    if let RawValue::Object(object) = value {
+                        edges.push(RawId::Object(*object));
+                    }
+                }
+            }
+        }
         ObjectPayload::Ordinary
         | ObjectPayload::RawJson
-        | ObjectPayload::Array { .. }
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::Primitive(_)
         | ObjectPayload::Date(_)
@@ -17514,6 +17860,9 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
                     .filter_map(|item| raw_value_atom(&item.method)),
             )
             .collect(),
+        ObjectPayload::Array { dense } => {
+            dense.iter().flatten().filter_map(raw_value_atom).collect()
+        }
         ObjectPayload::Proxy(_) => Vec::new(),
         ObjectPayload::NativeFunction {
             internal: Some(internal),
@@ -17521,7 +17870,6 @@ fn object_atoms(object: &ObjectData) -> impl Iterator<Item = Atom> + '_ {
         } => internal_callable_atoms(internal),
         ObjectPayload::Ordinary
         | ObjectPayload::RawJson
-        | ObjectPayload::Array { .. }
         | ObjectPayload::Arguments { .. }
         | ObjectPayload::ArrayIterator { .. }
         | ObjectPayload::ForInIterator(_)
@@ -21444,6 +21792,42 @@ mod tests {
     fn leaf(heap: &mut Heap, shape: ShapeId) -> ObjectId {
         heap.allocate_object(ObjectData::ordinary(shape, Vec::new()))
             .unwrap()
+    }
+
+    #[test]
+    fn prepared_array_dense_truncation_is_inert_until_commit() {
+        let mut heap = Heap::new();
+        let target_shape = empty_shape(&mut heap);
+        let target = leaf(&mut heap, target_shape);
+        let array_shape = one_slot_shape(&mut heap);
+        let array = heap
+            .allocate_object(ObjectData::array(
+                array_shape,
+                vec![PropertySlot::Data(RawValue::Int(0))],
+            ))
+            .unwrap();
+        heap.append_fresh_array_dense_value(array, RawValue::Object(target))
+            .unwrap();
+        assert_eq!(heap.array_dense_len(array), Ok(Some(1)));
+        assert_eq!(heap.object_strong_count(target), Ok(2));
+
+        let prepared = heap.prepare_array_dense_truncation(array, 0).unwrap();
+        assert_eq!(heap.array_dense_len(array), Ok(Some(1)));
+        assert_eq!(heap.object_strong_count(target), Ok(2));
+        drop(prepared);
+        assert_eq!(heap.array_dense_len(array), Ok(Some(1)));
+        assert_eq!(heap.object_strong_count(target), Ok(2));
+
+        let prepared = heap.prepare_array_dense_truncation(array, 0).unwrap();
+        heap.commit_array_dense_truncation(prepared).unwrap();
+        assert_eq!(heap.array_dense_len(array), Ok(Some(0)));
+        assert_eq!(heap.object_strong_count(target), Ok(1));
+
+        heap.release_object(array).unwrap();
+        heap.release_object(target).unwrap();
+        heap.release_shape(array_shape).unwrap();
+        heap.release_shape(target_shape).unwrap();
+        assert_eq!(heap.counts().live, 0);
     }
 
     #[test]

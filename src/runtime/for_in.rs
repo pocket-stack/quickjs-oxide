@@ -143,18 +143,21 @@ impl Runtime {
     /// Mirror the representation-sensitive branch in
     /// `build_for_in_iterator`: a QuickJS fast Array, Arguments, or TypedArray
     /// stays count-only only when its ordinary shape has no other enumerable
-    /// field. Rust stores Array/Arguments dense elements in that shape too, so
-    /// their tracked prefix is excluded from this check. TypedArray integer
-    /// indices are virtual and therefore never occur in the ordinary shape.
+    /// field. Array and TypedArray integer indices are virtual to the ordinary
+    /// shape; Arguments keeps its mapped/unmapped indexed slots there, so only
+    /// that tracked prefix is excluded from the named-field check.
     fn for_in_fast_array_count(&self, object: &ObjectRef) -> Result<Option<u32>, RuntimeError> {
         let (dense_length, typed_array, shape_id) = {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
             let (dense_length, typed_array) = match &object_data.payload {
-                ObjectPayload::Array {
-                    fast_len: Some(fast_len),
-                }
-                | ObjectPayload::Arguments {
+                ObjectPayload::Array { dense: Some(dense) } => (
+                    Some(u32::try_from(dense.len()).map_err(|_| {
+                        RuntimeError::Invariant("fast Array count exceeded Uint32")
+                    })?),
+                    None,
+                ),
+                ObjectPayload::Arguments {
                     fast_len: Some(fast_len),
                     ..
                 } => (Some(*fast_len), None),
@@ -168,7 +171,7 @@ impl Runtime {
                 | ObjectPayload::ArrayBuffer(_)
                 | ObjectPayload::SharedArrayBuffer(_)
                 | ObjectPayload::DataView(_)
-                | ObjectPayload::Array { fast_len: None }
+                | ObjectPayload::Array { dense: None }
                 | ObjectPayload::Arguments { fast_len: None, .. }
                 | ObjectPayload::ArrayIterator { .. }
                 | ObjectPayload::IteratorHelper(_)

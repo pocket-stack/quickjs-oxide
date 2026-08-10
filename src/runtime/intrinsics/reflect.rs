@@ -16,11 +16,10 @@ const MAX_APPLY_ARGUMENTS: u64 = 65_534;
 impl Runtime {
     /// Snapshot QuickJS's fast Array/Arguments storage in numeric-index order.
     ///
-    /// Oxide keeps dense values in ordinary shape slots, where named
-    /// properties may be interleaved. Walk the shape once and reconstruct the
-    /// numeric prefix instead of performing one observable-style property
-    /// lookup per index. The owning object stays rooted while raw values are
-    /// promoted to public roots.
+    /// Arrays expose their physical dense payload directly. Arguments retain
+    /// their distinct mapped/unmapped shape-slot representation and are
+    /// reconstructed without observable property lookup. The owning object
+    /// stays rooted while raw values are promoted to public roots.
     pub(in crate::runtime) fn fast_array_like_values(
         &self,
         object: &ObjectRef,
@@ -29,62 +28,80 @@ impl Runtime {
         let raw_values = {
             let state = self.0.state.borrow();
             let object_data = state.heap.object(object.object_id())?;
-            let (mapped, fast_len) = match &object_data.payload {
-                ObjectPayload::Array { fast_len } => (false, *fast_len),
-                ObjectPayload::Arguments { mapped, fast_len } => (*mapped, *fast_len),
-                _ => return Ok(None),
-            };
-            if fast_len != Some(expected_len) {
-                return Ok(None);
-            }
-            let shape = state.heap.shape(object_data.shape)?;
-            let capacity = usize::try_from(expected_len)
-                .map_err(|_| RuntimeError::Invariant("fast argument length does not fit usize"))?;
-            let mut ordered = vec![None; capacity];
-            for (entry, slot) in shape.entries().iter().zip(&object_data.slots) {
-                let Some(index) = state.atoms.array_index(entry.atom)? else {
-                    continue;
+            if let ObjectPayload::Array { dense } = &object_data.payload {
+                let Some(dense) = dense else {
+                    return Ok(None);
                 };
-                if index >= expected_len {
-                    continue;
+                if dense.len() != expected_len as usize {
+                    return Ok(None);
                 }
-                if !entry.flags.writable || !entry.flags.enumerable || !entry.flags.configurable {
-                    return Err(RuntimeError::Invariant(
-                        "fast argument index is not a C/W/E property",
-                    ));
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(dense.len())
+                    .map_err(|_| HeapError::Allocation {
+                        operation: "snapshotting fast Array values",
+                    })?;
+                values.extend_from_slice(dense);
+                values
+            } else {
+                let (mapped, fast_len) = match &object_data.payload {
+                    ObjectPayload::Arguments { mapped, fast_len } => (*mapped, *fast_len),
+                    _ => return Ok(None),
+                };
+                if fast_len != Some(expected_len) {
+                    return Ok(None);
                 }
-                let value = match slot {
-                    PropertySlot::Data(value) if !mapped => value.clone(),
-                    PropertySlot::VarRef(var_ref) if mapped => {
-                        state.heap.var_ref(*var_ref)?.value.clone()
+                let shape = state.heap.shape(object_data.shape)?;
+                let capacity = usize::try_from(expected_len).map_err(|_| {
+                    RuntimeError::Invariant("fast argument length does not fit usize")
+                })?;
+                let mut ordered = vec![None; capacity];
+                for (entry, slot) in shape.entries().iter().zip(&object_data.slots) {
+                    let Some(index) = state.atoms.array_index(entry.atom)? else {
+                        continue;
+                    };
+                    if index >= expected_len {
+                        continue;
                     }
-                    _ => {
+                    if !entry.flags.writable || !entry.flags.enumerable || !entry.flags.configurable
+                    {
                         return Err(RuntimeError::Invariant(
-                            "fast argument index has the wrong storage kind",
+                            "fast argument index is not a C/W/E property",
                         ));
                     }
-                };
-                let destination = ordered
-                    .get_mut(usize::try_from(index).map_err(|_| {
-                        RuntimeError::Invariant("fast argument index does not fit usize")
-                    })?)
-                    .ok_or(RuntimeError::Invariant(
-                        "fast argument index escaped its dense prefix",
-                    ))?;
-                if destination.replace(value).is_some() {
-                    return Err(RuntimeError::Invariant(
-                        "fast argument prefix contains a duplicate index",
-                    ));
+                    let value = match slot {
+                        PropertySlot::VarRef(var_ref) if mapped => {
+                            state.heap.var_ref(*var_ref)?.value.clone()
+                        }
+                        PropertySlot::Data(value) if !mapped => value.clone(),
+                        _ => {
+                            return Err(RuntimeError::Invariant(
+                                "fast argument index has the wrong storage kind",
+                            ));
+                        }
+                    };
+                    let destination = ordered
+                        .get_mut(usize::try_from(index).map_err(|_| {
+                            RuntimeError::Invariant("fast argument index does not fit usize")
+                        })?)
+                        .ok_or(RuntimeError::Invariant(
+                            "fast argument index escaped its dense prefix",
+                        ))?;
+                    if destination.replace(value).is_some() {
+                        return Err(RuntimeError::Invariant(
+                            "fast argument prefix contains a duplicate index",
+                        ));
+                    }
                 }
+                ordered
+                    .into_iter()
+                    .map(|value| {
+                        value.ok_or(RuntimeError::Invariant(
+                            "fast argument prefix is missing an indexed value",
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
             }
-            ordered
-                .into_iter()
-                .map(|value| {
-                    value.ok_or(RuntimeError::Invariant(
-                        "fast argument prefix is missing an indexed value",
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?
         };
 
         raw_values

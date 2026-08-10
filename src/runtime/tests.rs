@@ -676,6 +676,23 @@ fn array_class_roots_length_layout_values_and_realm_prototype() {
     assert_eq!(keys, ["0", "1", "length"]);
     let zero = runtime.intern_property_key("0").unwrap();
     assert_eq!(first.get_property(&array, &zero).unwrap(), Value::Int(10));
+    {
+        let state = runtime.0.state.borrow();
+        let object = state.heap.object(array.object_id()).unwrap();
+        let ObjectPayload::Array { dense: Some(dense) } = &object.payload else {
+            panic!("fresh Array did not retain its physical dense payload");
+        };
+        assert_eq!(dense.len(), 2);
+        let shape = state.heap.shape(object.shape).unwrap();
+        assert_eq!(shape.entries().len(), 1);
+        assert!(
+            state
+                .atoms
+                .array_index(shape.entries()[0].atom)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     let other_runtime = Runtime::new();
     let mut other_context = other_runtime.new_context();
@@ -684,6 +701,44 @@ fn array_class_roots_length_layout_values_and_realm_prototype() {
         first.new_array_from_values(vec![Value::Object(wrong_runtime_value)]),
         Err(RuntimeError::WrongRuntime("Array element"))
     ));
+}
+
+#[test]
+fn array_dense_tail_delete_and_interior_delete_match_quickjs_conversion() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let array = context
+        .new_array_from_values(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+        .unwrap();
+    let length = runtime.intern_property_key("length").unwrap();
+    let zero = runtime.intern_property_key("0").unwrap();
+    let one = runtime.intern_property_key("1").unwrap();
+    let two = runtime.intern_property_key("2").unwrap();
+
+    assert!(runtime.delete_property(&array, &two).unwrap());
+    assert_eq!(
+        context.get_property(&array, &length).unwrap(),
+        Value::Int(3)
+    );
+    assert!(!runtime.has_own_property(&array, &two).unwrap());
+    assert_eq!(runtime.array_fast_len(&array).unwrap(), Some(2));
+
+    assert!(context.set_property(&array, &two, Value::Int(31)).unwrap());
+    assert_eq!(
+        context.get_property(&array, &length).unwrap(),
+        Value::Int(3)
+    );
+    assert_eq!(runtime.array_fast_len(&array).unwrap(), Some(3));
+
+    assert!(runtime.delete_property(&array, &zero).unwrap());
+    assert_eq!(runtime.array_fast_len(&array).unwrap(), None);
+    assert!(!runtime.has_own_property(&array, &zero).unwrap());
+    assert_eq!(context.get_property(&array, &one).unwrap(), Value::Int(20));
+    assert_eq!(context.get_property(&array, &two).unwrap(), Value::Int(31));
+    assert_eq!(
+        context.get_property(&array, &length).unwrap(),
+        Value::Int(3)
+    );
 }
 
 #[test]
@@ -1099,14 +1154,32 @@ fn array_length_uses_quickjs_double_conversion_and_caller_realm_errors() {
 #[test]
 fn array_slots_and_realm_roots_survive_gc_then_collect() {
     let runtime = Runtime::new();
-    let (array, zero) = {
+    let baseline_atoms = runtime.test_atom_count();
+    let (array, zero, one) = {
         let mut context = runtime.new_context();
         let element = context.new_object().unwrap();
+        let symbol = runtime
+            .new_symbol(Some(JsString::from_static("dense")))
+            .unwrap();
         let array = context
-            .new_array_from_values(vec![Value::Object(element.clone())])
+            .new_array_from_values(vec![Value::Object(element.clone()), Value::Symbol(symbol)])
             .unwrap();
         let zero = runtime.intern_property_key("0").unwrap();
-        (array, zero)
+        let one = runtime.intern_property_key("1").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &array,
+                    &zero,
+                    &OrdinaryPropertyDescriptor {
+                        enumerable: DescriptorField::Present(false),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(runtime.array_fast_len(&array).unwrap(), None);
+        (array, zero, one)
     };
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().context_nodes, 1);
@@ -1114,8 +1187,31 @@ fn array_slots_and_realm_roots_survive_gc_then_collect() {
         get_property(&runtime, &array, &zero).unwrap(),
         Value::Object(_)
     ));
+    assert!(matches!(
+        get_property(&runtime, &array, &one).unwrap(),
+        Value::Symbol(_)
+    ));
     drop(array);
     drop(zero);
+    drop(one);
+    runtime.run_gc().unwrap();
+    assert_eq!(runtime.heap_counts().live, 0);
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+}
+
+#[test]
+fn array_dense_self_cycle_is_visible_to_cycle_collection() {
+    let runtime = Runtime::new();
+    {
+        let mut context = runtime.new_context();
+        let array = context.new_array().unwrap();
+        let zero = runtime.intern_property_key("0").unwrap();
+        assert!(
+            context
+                .set_property(&array, &zero, Value::Object(array.clone()))
+                .unwrap()
+        );
+    }
     runtime.run_gc().unwrap();
     assert_eq!(runtime.heap_counts().live, 0);
 }

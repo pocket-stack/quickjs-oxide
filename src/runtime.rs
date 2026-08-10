@@ -1408,6 +1408,35 @@ impl Runtime {
         self.new_empty_array_with_prototype(&prototype)
     }
 
+    /// Append one element to an Array that has not observed any mutation
+    /// outside its consecutive construction path. This is the common
+    /// QuickJS `add_fast_array_element` substrate used by VM literals,
+    /// builtin result arrays, and JSON parsing; no decimal property atom is
+    /// created for the dense index.
+    pub(in crate::runtime) fn append_fresh_array_value(
+        &self,
+        array: &ObjectRef,
+        value: Value,
+    ) -> Result<(), RuntimeError> {
+        if !array.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("Array"));
+        }
+        self.validate_value_domain(&value, "Array element")?;
+        let raw = self.raw_property_value(&value)?;
+        let mut state = self.0.state.borrow_mut();
+        let retained_atoms = state.retain_raw_value_atoms(std::iter::once(&raw))?;
+        match state
+            .heap
+            .append_fresh_array_dense_value(array.object_id(), raw)
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                state.release_atoms(retained_atoms)?;
+                Err(error.into())
+            }
+        }
+    }
+
     /// Allocate a realm-correct Array and create consecutive C/W/E indexed
     /// data properties from `values`. This is the final VM-facing substrate
     /// for QuickJS `OP_array_from` and the dense prefix of Array literals.
@@ -1420,33 +1449,8 @@ impl Runtime {
             self.validate_value_domain(value, "Array element")?;
         }
         let array = self.new_array(realm)?;
-        for (index, value) in values.into_iter().enumerate() {
-            let index = u32::try_from(index).map_err(|_| {
-                RuntimeError::Engine(Error::new(ErrorKind::Range, "invalid array length"))
-            })?;
-            if index == u32::MAX {
-                return Err(RuntimeError::Engine(Error::new(
-                    ErrorKind::Range,
-                    "invalid array length",
-                )));
-            }
-            let key = self.intern_property_key(&index.to_string())?;
-            let defined = self.define_own_property(
-                &array,
-                &key,
-                &OrdinaryPropertyDescriptor {
-                    value: DescriptorField::Present(value),
-                    writable: DescriptorField::Present(true),
-                    enumerable: DescriptorField::Present(true),
-                    configurable: DescriptorField::Present(true),
-                    ..OrdinaryPropertyDescriptor::new()
-                },
-            )?;
-            if !defined {
-                return Err(RuntimeError::Invariant(
-                    "fresh Array element definition was rejected",
-                ));
-            }
+        for value in values {
+            self.append_fresh_array_value(&array, value)?;
         }
         Ok(array)
     }
@@ -9333,6 +9337,26 @@ impl RuntimeState {
             Ok(cleanup) => cleanup,
             Err(error) => {
                 self.release_atoms(retained_atoms)?;
+                let cleanup = self.heap.release_shape(shape)?;
+                self.apply_cleanup(cleanup)?;
+                return Err(error.into());
+            }
+        };
+        let shape_cleanup = self.heap.release_shape(shape)?;
+        self.apply_cleanup(layout_cleanup)?;
+        self.apply_cleanup(shape_cleanup)
+    }
+
+    fn materialize_array_layout(
+        &mut self,
+        object: ObjectId,
+        prototype: Option<ObjectId>,
+        entries: &[ShapeEntry],
+    ) -> Result<(), RuntimeError> {
+        let shape = self.get_or_create_shape(prototype, entries)?;
+        let layout_cleanup = match self.heap.materialize_array_dense_shape(object, shape) {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
                 let cleanup = self.heap.release_shape(shape)?;
                 self.apply_cleanup(cleanup)?;
                 return Err(error.into());
