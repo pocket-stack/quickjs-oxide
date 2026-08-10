@@ -123,3 +123,5 @@ check_registry unicode_lexical "Unicode lexical" tests/oracle_unicode_lexical.rs
     tests/oracle/unicode_lexical oracle/unicode_lexical oracle_unicode_
 check_registry binary_data "Binary data" tests/oracle_binary_data.rs \
     tests/oracle/binary_data oracle/binary_data oracle_
+check_registry member_access "Member access" tests/oracle_member_access.rs \
+    tests/oracle/member_access oracle/member_access oracle_member_
