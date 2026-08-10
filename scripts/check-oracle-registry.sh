@@ -119,3 +119,5 @@ check_registry arguments Arguments tests/oracle_argument_semantics.rs \
     tests/oracle/arguments oracle/arguments oracle_argument
 check_registry iterator Iterator tests/oracle_iterator_methods.rs \
     tests/oracle/iterator oracle/iterator oracle_iterator_
+check_registry unicode_lexical "Unicode lexical" tests/oracle_unicode_lexical.rs \
+    tests/oracle/unicode_lexical oracle/unicode_lexical oracle_unicode_
