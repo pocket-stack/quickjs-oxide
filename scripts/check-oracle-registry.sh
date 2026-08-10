@@ -131,3 +131,6 @@ check_registry global "Global semantics" tests/oracle_global_semantics.rs \
     tests/oracle/global oracle/global oracle_global_
 check_registry proxy_reflect "Proxy and Reflect" tests/oracle_proxy_reflect.rs \
     tests/oracle/proxy_reflect oracle/proxy_reflect oracle_
+check_registry class_initialization "Class initialization" \
+    tests/oracle_class_initialization.rs tests/oracle/class_initialization \
+    oracle/class_initialization oracle_class_
