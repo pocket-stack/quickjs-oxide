@@ -15,6 +15,11 @@ The authoritative R3ed-A Test262 vector has:
   metric)
 - 50 classified failures and 2 timeouts among eligible variants
 
+The pass count includes three exact `(path, variant)` results where Rust passes
+a test listed in pinned QuickJS's known-error file. These narrow target
+deviations are registered in [`deviations.md`](deviations.md); they do not imply
+that the pinned engine passes those tests.
+
 The exact profile, inputs, summary, line counts, and report hashes live in
 [`dev-support/test262/current.conf`](../dev-support/test262/current.conf).
 

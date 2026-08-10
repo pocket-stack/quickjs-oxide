@@ -1,9 +1,106 @@
 # Deviation ledger
 
-This ledger is subordinate to [`parity.md`](parity.md). There are currently no
-approved observable differences from QuickJS 2026-06-04. An unsupported feature
-or an unresolved mismatch blocks the relevant parity claim; it is not silently
+This ledger is subordinate to [`parity.md`](parity.md). Approved target
+deviations are limited to the exact observable behavior and test variants named
+below; they do not authorize adjacent differences. An unsupported feature or an
+unresolved mismatch still blocks the relevant parity claim and is not silently
 accepted as a deviation.
+
+## Approved target deviations
+
+### TEST262-ANNEXB-EVAL-001
+
+- Status: approved target deviation on 2026-08-09.
+- Approved by: the architecture-hygiene milestone review, under the repository
+  maintainer's standing delegation of Feature Parity implementation judgment.
+- Surface: Annex B eval function declarations inside a `with` environment.
+- Exact Test262 key:
+  `test/staging/sm/lexical-environment/block-scoped-functions-annex-b-eval.js`
+  in the `sloppy` variant (`noStrict`).
+- Upstream anchor: the pinned release's `test262_errors.txt` records the
+  location `block-scoped-functions-annex-b-eval.js:11`. Pinned QuickJS produces
+  `outer-gouter-geval-gtruefalseq`; the assertion expects
+  `outer-geval-gwith-gtruefalseq`.
+- Rationale: retain the Rust engine's Test262-conforming Annex B.3.3.3 result
+  instead of reproducing this pinned QuickJS known failure. The declaration
+  updates the eval variable environment without replacing the `with` object's
+  own `g` property.
+- Compatibility impact: code depending on the pinned bug observes the outer
+  binding change and the `with` property remain unchanged in Rust. The
+  deviation is limited to the exact binding interaction represented by the
+  Test262 key above.
+
+Minimal probe:
+
+```js
+var log = "";
+function f() {
+  log += g();
+  function g() { return "outer-g"; }
+  var o = { g: function () { return "with-g"; } };
+  with (o) {
+    eval('{ function g() { return "eval-g"; } }');
+  }
+  log += g();
+  log += o.g();
+}
+f();
+print(log);
+```
+
+From the repository root, run the probe as one line with the pinned oracle and
+the Rust CLI:
+
+```sh
+./target/oracle/quickjs-2026-06-04/qjs -e 'var log="";function f(){log+=g();function g(){return "outer-g"}var o={g:function(){return "with-g"}};with(o){eval("{ function g(){ return \"eval-g\"; } }")}log+=g();log+=o.g()}f();print(log)'
+cargo run --quiet --locked --bin qjs -- -e 'var log="";function f(){log+=g();function g(){return "outer-g"}var o={g:function(){return "with-g"}};with(o){eval("{ function g(){ return \"eval-g\"; } }")}log+=g();log+=o.g()}f();print(log)'
+```
+
+Pinned QuickJS prints `outer-gouter-geval-g`; Rust prints
+`outer-geval-gwith-g`.
+
+### TEST262-ARROW-FOR-HEAD-001
+
+- Status: approved target deviation on 2026-08-09.
+- Approved by: the architecture-hygiene milestone review, under the repository
+  maintainer's standing delegation of Feature Parity implementation judgment.
+- Surface: early-error parsing of an arrow expression in a classic `for`
+  statement head created through the `Function` constructor.
+- Exact Test262 keys:
+  - `test/staging/sm/statements/arrow-function-in-for-statement-head.js` in the
+    `sloppy` variant;
+  - the same path in the `strict` variant.
+- Upstream anchor: the pinned release's `test262_errors.txt` records both
+  variants at `arrow-function-in-for-statement-head.js:13` because no
+  `SyntaxError` is thrown.
+- Rationale: retain the Rust parser's Test262-conforming early `SyntaxError`
+  instead of reproducing this pinned QuickJS known failure. The constructed
+  function body is parsed independently, so the same target difference is
+  observable from both outer Test262 variants.
+- Compatibility impact: source relying on pinned QuickJS accepting
+  `for (x => 0 in 1;;) break;` through `Function` is rejected by Rust. The
+  deviation does not broaden which arrow or `for` forms are rejected beyond
+  this invalid grammar family.
+
+Minimal probe:
+
+```js
+try {
+  Function("for (x => 0 in 1;;) break;");
+  print("accepted");
+} catch (error) {
+  print(error.name);
+}
+```
+
+From the repository root:
+
+```sh
+./target/oracle/quickjs-2026-06-04/qjs -e 'try{Function("for (x => 0 in 1;;) break;");print("accepted")}catch(e){print(e.name)}'
+cargo run --quiet --locked --bin qjs -- -e 'try{Function("for (x => 0 in 1;;) break;");print("accepted")}catch(e){print(e.name)}'
+```
+
+Pinned QuickJS prints `accepted`; Rust prints `SyntaxError`.
 
 ## Resolved findings
 
