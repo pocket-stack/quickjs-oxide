@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
-use std::process::Command;
-
+use super::quickjs_string_result_oracle::observe_string_result;
 use quickjs_oxide::{CallableRef, Context, ObjectRef, Runtime, RuntimeError, Value};
 
 struct Case {
@@ -9,6 +7,13 @@ struct Case {
     source: &'static str,
     expected: &'static str,
 }
+
+const ORACLE_WRAPPER: &str = r#"
+var value = std.evalScript(scriptArgs[0]);
+if (typeof value !== "string")
+  throw new TypeError("Iterator.concat observer returned a non-String");
+print(value);
+"#;
 
 // Differential lock for `Iterator.concat` in pinned QuickJS 2026-06-04.
 // Every observer catches its own JavaScript failures and returns ASCII-only
@@ -676,7 +681,7 @@ fn iterator_concat_oracle_vectors_self_check() {
     };
     let mut failures = Vec::new();
     for case in CASES {
-        let actual = observe_oracle(&oracle, case);
+        let actual = observe_string_result(&oracle, case.source, case.description, ORACLE_WRAPPER);
         if actual != case.expected {
             failures.push(format!(
                 "{} / {}\nsource: {:?}\nactual: {:?}\nexpected: {:?}",
@@ -706,7 +711,7 @@ fn iterator_concat_matches_pinned_quickjs() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         let oxide = observe_oxide(&mut context, case);
-        let quickjs = observe_oracle(&oracle, case);
+        let quickjs = observe_string_result(&oracle, case.source, case.description, ORACLE_WRAPPER);
         if oxide != quickjs {
             failures.push(format!(
                 "{} / {}\nsource: {:?}\noxide: {:?}\nquickjs: {:?}",
@@ -868,34 +873,6 @@ fn observe_oxide(context: &mut Context, case: &Case) -> String {
         );
     };
     value.to_utf8_lossy()
-}
-
-fn observe_oracle(oracle: &OsStr, case: &Case) -> String {
-    let wrapper = r#"
-var value = std.evalScript(scriptArgs[0]);
-if (typeof value !== "string")
-  throw new TypeError("Iterator.concat observer returned a non-String");
-print(value);
-"#;
-    let output = Command::new(oracle)
-        .args(["--std", "-e", wrapper, case.source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {}: {error}", case.description));
-    assert!(
-        output.status.success(),
-        "QuickJS observer failed for {}: {}",
-        case.description,
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| {
-            panic!(
-                "QuickJS output was not UTF-8 for {}: {error}",
-                case.description
-            )
-        })
-        .trim_end()
-        .to_owned()
 }
 
 fn property_callable(
