@@ -139,3 +139,6 @@ check_registry operators "Expression operators" tests/oracle_operator_semantics.
 check_registry function_semantics "Function semantics" \
     tests/oracle_function_semantics.rs tests/oracle/function_semantics \
     oracle/function_semantics oracle_function
+check_registry primitive_intrinsics "Primitive intrinsics" \
+    tests/oracle_primitive_intrinsics.rs tests/oracle/primitive_intrinsics \
+    oracle/primitive_intrinsics oracle_
