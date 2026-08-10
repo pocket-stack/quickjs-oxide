@@ -127,3 +127,5 @@ check_registry member_access "Member access" tests/oracle_member_access.rs \
     tests/oracle/member_access oracle/member_access oracle_member_
 check_registry templates "Template semantics" tests/oracle_template_semantics.rs \
     tests/oracle/templates oracle/templates oracle_
+check_registry global "Global semantics" tests/oracle_global_semantics.rs \
+    tests/oracle/global oracle/global oracle_global_

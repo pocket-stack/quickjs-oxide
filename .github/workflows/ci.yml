@@ -99,6 +99,7 @@ jobs:
           cargo test --locked --test oracle_binary_data
           cargo test --locked --test oracle_member_access
           cargo test --locked --test oracle_template_semantics
+          cargo test --locked --test oracle_global_semantics
           cargo test --locked --features test262-host \
             --test unsupported_diagnostics \
             --test oracle_create_realm --test oracle_host_gc --test oracle_is_html_dda
@@ -129,6 +130,7 @@ jobs:
           cargo clippy --locked --test oracle_binary_data -- -D warnings
           cargo clippy --locked --test oracle_member_access -- -D warnings
           cargo clippy --locked --test oracle_template_semantics -- -D warnings
+          cargo clippy --locked --test oracle_global_semantics -- -D warnings
           cargo clippy --locked -p quickjs-oxide --features test262-host \
             --lib --bins -- -D warnings
           cargo clippy --locked -p quickjs-oxide --features test262-host \
