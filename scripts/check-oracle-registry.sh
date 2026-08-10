@@ -115,3 +115,5 @@ check_registry program_declarations "Program declarations" \
     oracle/program_declarations oracle_program_
 check_registry json JSON tests/oracle_json.rs \
     tests/oracle/json oracle/json oracle_json_
+check_registry arguments Arguments tests/oracle_argument_semantics.rs \
+    tests/oracle/arguments oracle/arguments oracle_argument
