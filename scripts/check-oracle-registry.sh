@@ -136,3 +136,6 @@ check_registry class_initialization "Class initialization" \
     oracle/class_initialization oracle_class_
 check_registry operators "Expression operators" tests/oracle_operator_semantics.rs \
     tests/oracle/operators oracle/operators oracle_
+check_registry function_semantics "Function semantics" \
+    tests/oracle_function_semantics.rs tests/oracle/function_semantics \
+    oracle/function_semantics oracle_function
