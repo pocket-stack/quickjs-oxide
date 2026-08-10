@@ -117,3 +117,5 @@ check_registry json JSON tests/oracle_json.rs \
     tests/oracle/json oracle/json oracle_json_
 check_registry arguments Arguments tests/oracle_argument_semantics.rs \
     tests/oracle/arguments oracle/arguments oracle_argument
+check_registry iterator Iterator tests/oracle_iterator_methods.rs \
+    tests/oracle/iterator oracle/iterator oracle_iterator_
