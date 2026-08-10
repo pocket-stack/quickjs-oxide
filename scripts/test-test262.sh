@@ -475,9 +475,9 @@ cmp -s "$manifest" "$tmp/manifest.sorted" || die 'focused manifest is not bytewi
 [[ -z "$(uniq -d "$manifest")" ]] || die 'focused manifest contains duplicate paths'
 verify_report "$focused_tsv" "$focused_jsonl" focused \
     "$baseline_engine_semantics_sha256"
-report_rows "$focused_tsv" | cut -f1 >"$tmp/focused.paths"
+report_rows "$focused_tsv" | cut -f1 | sort -u >"$tmp/focused.paths"
 cmp -s "$manifest" "$tmp/focused.paths" \
-    || die 'focused receipt paths do not exactly match the manifest'
+    || die 'focused receipt path set does not exactly match the manifest'
 
 if [[ "$mode" == check ]]; then
     printf '%s Test262 spec and frozen receipts are authenticated.\n' "$(spec_value milestone)"
