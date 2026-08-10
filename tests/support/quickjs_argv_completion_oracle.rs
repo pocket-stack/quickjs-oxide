@@ -13,11 +13,30 @@ try {
 }
 "#;
 
+// Each integration target path-includes this module and may need only one
+// output-normalization variant.
+#[allow(dead_code)]
 pub(super) fn observe_completion_argv_trim_end(
     oracle: &OsStr,
     source: &str,
     description: &str,
 ) -> String {
+    observe_completion_argv_output(oracle, source, description)
+        .trim_end()
+        .to_owned()
+}
+
+#[allow(dead_code)]
+pub(super) fn observe_completion_argv_strip_one_lf(
+    oracle: &OsStr,
+    source: &str,
+    description: &str,
+) -> String {
+    let stdout = observe_completion_argv_output(oracle, source, description);
+    stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned()
+}
+
+fn observe_completion_argv_output(oracle: &OsStr, source: &str, description: &str) -> String {
     let output = Command::new(oracle)
         .args(["--std", "-e", COMPLETION_OBSERVER, source])
         .output()
@@ -29,6 +48,4 @@ pub(super) fn observe_completion_argv_trim_end(
     );
     String::from_utf8(output.stdout)
         .unwrap_or_else(|error| panic!("QuickJS output was not UTF-8 for {description}: {error}"))
-        .trim_end()
-        .to_owned()
 }

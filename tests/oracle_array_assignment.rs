@@ -1,6 +1,10 @@
+#[path = "support/quickjs_argv_completion_oracle.rs"]
+mod quickjs_argv_completion_oracle;
+
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
+use quickjs_argv_completion_oracle::observe_completion_argv_strip_one_lf as observe_oracle;
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
 mod support;
@@ -767,32 +771,6 @@ fn observe_rust_eval(
         }
         Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
     }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let wrapper = r#"
-try {
-  var value = std.evalScript(scriptArgs[0]);
-  print('return|' + typeof value + '|' + String(value));
-} catch (error) {
-  if (error !== null && typeof error === 'object')
-    print('throw|object|' + error.name + '|' + error.message);
-  else
-    print('throw|' + typeof error + '|' + String(error));
-}
-"#;
-    let output = Command::new(oracle)
-        .args(["--std", "-e", wrapper, source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {description}: {error}"));
-    assert!(
-        output.status.success(),
-        "QuickJS observer failed for {description}: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| panic!("QuickJS output was not UTF-8 for {description}: {error}"));
-    stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned()
 }
 
 fn run_cli(program: &OsStr, source: &str, description: &str) -> Output {
