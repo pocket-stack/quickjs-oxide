@@ -1,6 +1,10 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
+#[path = "support/quickjs_array_completion_oracle.rs"]
+mod quickjs_array_completion_oracle;
+
+use quickjs_array_completion_oracle::observe_array_completion;
 use quickjs_oxide::{
     CallableRef, CompleteOrdinaryPropertyDescriptor, Context, ObjectRef, PropertyKey, Runtime,
     RuntimeError, Value, WellKnownSymbol,
@@ -633,7 +637,7 @@ fn compare_value_cases(group: &str, cases: &[(&str, &str)]) {
         return;
     };
     for &(description, source) in cases {
-        let expected = observe_oracle(&oracle, source, description);
+        let expected = observe_array_completion(&oracle, source, description);
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
         assert_eq!(
@@ -680,42 +684,6 @@ fn observe_rust_eval(
         }
         Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
     }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let wrapper = r#"
-try {
-  var value = std.evalScript(scriptArgs[0]);
-  if (Array.isArray(value)) {
-    var text = '';
-    for (var index = 0; index < value.length; index++) {
-      if (index) text += ',';
-      text += String(value[index]);
-    }
-    print('return|array|' + text);
-  } else {
-    print('return|' + typeof value + '|' + String(value));
-  }
-} catch (error) {
-  if (error !== null && typeof error === 'object')
-    print('throw|object|' + error.name + '|' + error.message);
-  else
-    print('throw|' + typeof error + '|' + String(error));
-}
-"#;
-    let output = Command::new(oracle)
-        .args(["--std", "-e", wrapper, source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run QuickJS for {description}: {error}"));
-    assert!(
-        output.status.success(),
-        "QuickJS observer failed for {description}: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| panic!("QuickJS output was not UTF-8 for {description}: {error}"))
-        .trim_end()
-        .to_owned()
 }
 
 fn array_value_text(
