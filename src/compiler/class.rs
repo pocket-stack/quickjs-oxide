@@ -458,13 +458,15 @@ impl<'source> Parser<'source> {
                 return Ok(ClassPropertyKey::Computed);
             }
             TokenKind::PrivateIdentifier(identifier) => {
-                if identifier.value == "constructor" {
-                    return Err(Error::syntax(
-                        "invalid method name",
-                        source_span(token.span),
-                    ));
-                }
+                let is_constructor = identifier.value == "constructor";
                 self.advance()?;
+                // QuickJS checks `JS_ATOM_hash_constructor` only after
+                // `js_parse_property_name` has advanced to the following
+                // token. Preserve that diagnostic location for every private
+                // field, method, and accessor spelling.
+                if is_constructor {
+                    return Err(self.syntax_here("invalid method name"));
+                }
                 return Ok(ClassPropertyKey::Private {
                     name: private_reference::private_binding_name(&identifier.value),
                     span: token.span,

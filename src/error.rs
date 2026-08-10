@@ -49,9 +49,9 @@ pub enum ErrorKind {
     /// reached the current implementation frontier.
     ///
     /// This is deliberately not a JavaScript-visible native error kind. Public
-    /// eval preserves the historical temporary `SyntaxError` boundary, while
-    /// diagnostic compiler clients can retain the provenance and avoid
-    /// mistaking an implementation gap for a conforming early error.
+    /// compiler and runtime APIs preserve this provenance so ordinary callers
+    /// and conformance tooling cannot mistake an implementation gap for a
+    /// conforming early error.
     Unsupported,
 }
 

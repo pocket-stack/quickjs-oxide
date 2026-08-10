@@ -795,6 +795,32 @@ fn class_field_early_error_diagnostics_match_quickjs() {
             27,
         ),
         ("class C { *constructor() {} }", "invalid method name", 23),
+        ("class C { #constructor; }", "invalid method name", 23),
+        (
+            "class C { static #constructor; }",
+            "invalid method name",
+            30,
+        ),
+        (
+            "class C { get #constructor() {} }",
+            "invalid method name",
+            27,
+        ),
+        (
+            "class C { static get #constructor() {} }",
+            "invalid method name",
+            34,
+        ),
+        (
+            r"class C { static #constr\u0075ctor; }",
+            "invalid method name",
+            35,
+        ),
+        (
+            "class C { #constructor # }",
+            "invalid first character of private name",
+            24,
+        ),
     ] {
         let error = compile_unlinked_script(source).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
@@ -802,6 +828,86 @@ fn class_field_early_error_diagnostics_match_quickjs() {
         let span = error
             .span()
             .expect("class-field syntax error lost its span");
+        assert_eq!(
+            (span.start.line, span.start.column),
+            (1, column),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn private_field_early_error_diagnostics_match_quickjs() {
+    let undefined = compile_unlinked_script("class C { m(){ return this.#missing; } }")
+        .expect_err("an undeclared private name must be rejected");
+    assert_eq!(undefined.kind(), ErrorKind::Syntax);
+    assert_eq!(undefined.message(), "undefined private field '#missing'");
+    assert_eq!(undefined.span(), None);
+
+    for (source, message, column) in [
+        (
+            "class C { #x; m(o){ delete o.#x; } }",
+            "cannot delete a private class field",
+            32,
+        ),
+        (
+            "class C { #x; m(){ #x; } }",
+            "unexpected token in expression: '#x'",
+            20,
+        ),
+        (
+            r"class C { #x; m(){ #\u0078; } }",
+            r"unexpected token in expression: '#\u0078'",
+            20,
+        ),
+        (
+            "class C { #x; #x; }",
+            "private class field is already defined",
+            17,
+        ),
+        (
+            "class C { static #x; static #x; }",
+            "private class field is already defined",
+            31,
+        ),
+        (
+            "class C { #x; m(){ #x in {} = 0; } }",
+            "invalid assignment left-hand side",
+            31,
+        ),
+        (
+            "class C { #x; m(){ #x in {} += 0; } }",
+            "invalid assignment left-hand side",
+            32,
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), message, "{source}");
+        let span = error
+            .span()
+            .expect("private-field syntax error lost its span");
+        assert_eq!(
+            (span.start.line, span.start.column),
+            (1, column),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn invalid_assignment_diagnostics_advance_to_rhs_like_quickjs() {
+    for (source, column) in [("1 = 0", 5), ("f() += 0", 8), ("1 = @", 5)] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "invalid assignment left-hand side",
+            "{source}"
+        );
+        let span = error
+            .span()
+            .expect("invalid-assignment syntax error lost its span");
         assert_eq!(
             (span.start.line, span.start.column),
             (1, column),

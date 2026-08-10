@@ -222,15 +222,15 @@ pub(super) fn resolve_private_field_operation(
     consuming_function: FunctionId,
     use_scope: ScopeId,
     name: &str,
-    span: Span,
     access: PrivateFieldAccess,
 ) -> Result<IrOp, Error> {
     let Some(primary) = resolve_private_binding(tree, consuming_function, use_scope, name)? else {
-        return Err(syntax_atom_error(
+        // QuickJS resolves private names during bytecode finalization and
+        // explicitly emits no line information for this early error.
+        return Err(syntax_atom_error_without_span(
             "undefined private field '",
             name,
             "'",
-            span,
         )?);
     };
 

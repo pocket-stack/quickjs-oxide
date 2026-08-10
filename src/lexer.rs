@@ -918,7 +918,7 @@ impl<'a> Lexer<'a> {
                     return Err(self.error_from(
                         start,
                         LexErrorKind::InvalidPrivateIdentifier,
-                        "private identifier is missing a name",
+                        "invalid first character of private name",
                     ));
                 }
                 break;
@@ -1023,7 +1023,7 @@ impl<'a> Lexer<'a> {
                         LexErrorKind::UnexpectedCharacter
                     },
                     if private {
-                        "invalid first character of private identifier"
+                        "invalid first character of private name"
                     } else {
                         "invalid first character of identifier"
                     },
@@ -2280,10 +2280,11 @@ mod tests {
             }
             other => panic!("expected private identifier, got {other:?}"),
         }
-        assert_eq!(
-            Lexer::new("#1").next_token().unwrap_err().kind,
-            LexErrorKind::InvalidPrivateIdentifier
-        );
+        for source in ["#", "#1", "# "] {
+            let error = Lexer::new(source).next_token().unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::InvalidPrivateIdentifier);
+            assert_eq!(error.message, "invalid first character of private name");
+        }
         for source in [r"#\u{}", r"#\u{2d}", r"#\u{d800}"] {
             let error = Lexer::new(source).next_token().unwrap_err();
             assert_eq!(error.kind, LexErrorKind::InvalidPrivateIdentifier);

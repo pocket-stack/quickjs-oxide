@@ -18,9 +18,9 @@ impl<'source> Parser<'source> {
         span: Span,
         kind: BindingKind,
     ) -> Result<u16, Error> {
-        let function = self.current_ir_mut();
-        let scope = function.current_scope;
-        if function
+        let scope = self.current_ir().current_scope;
+        if self
+            .current_ir()
             .scopes
             .get(scope.0)
             .is_none_or(|scope| scope.kind != ScopeKind::ClassPrivate)
@@ -29,12 +29,10 @@ impl<'source> Parser<'source> {
                 "private field declaration escaped the class-private scope",
             ));
         }
-        if function.binding_id_in_scope(scope, name).is_some() {
-            return Err(Error::syntax(
-                "private class field is already defined",
-                source_span(span),
-            ));
+        if self.current_ir().binding_id_in_scope(scope, name).is_some() {
+            return Err(self.syntax_here("private class field is already defined"));
         }
+        let function = self.current_ir_mut();
         if function.locals.len() >= MAX_LOCAL_VARIABLES {
             return Err(
                 Error::new(ErrorKind::JsInternal, "too many local variables")
@@ -106,10 +104,7 @@ impl<'source> Parser<'source> {
                 ) if existing_static == incoming_static
             );
             if !pairable {
-                return Err(Error::syntax(
-                    "private class field is already defined",
-                    source_span(span),
-                ));
+                return Err(self.syntax_here("private class field is already defined"));
             }
             self.current_ir_mut().bindings[binding_id.0].kind =
                 BindingKind::PrivateGetterSetter { is_static };
@@ -148,7 +143,7 @@ impl<'source> Parser<'source> {
         span: Span,
     ) -> Result<(), Error> {
         if name == "#constructor" {
-            return Err(Error::syntax("invalid method name", source_span(span)));
+            return Err(self.syntax_here("invalid method name"));
         }
 
         let local =
@@ -206,7 +201,7 @@ impl<'source> Parser<'source> {
         flavor: ClassMethodFlavor,
     ) -> Result<(), Error> {
         if name == "#constructor" {
-            return Err(Error::syntax("invalid method name", source_span(span)));
+            return Err(self.syntax_here("invalid method name"));
         }
 
         let method = match flavor {
@@ -257,7 +252,7 @@ impl<'source> Parser<'source> {
         method_kind: DefineMethodKind,
     ) -> Result<(), Error> {
         if name == "#constructor" {
-            return Err(Error::syntax("invalid method name", source_span(span)));
+            return Err(self.syntax_here("invalid method name"));
         }
         if method_kind == DefineMethodKind::Method {
             return Err(Error::internal(

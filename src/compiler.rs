@@ -4989,13 +4989,10 @@ impl<'source> Parser<'source> {
                 return Ok(());
             }
             let Some(target) = self.promote_tail_member_get_for_compound()? else {
-                // QuickJS consumes a compound operator after an Array/Object
-                // literal before reporting that the literal is not an lvalue,
-                // so the diagnostic points at the first RHS token rather than
-                // `+=`.
-                if leading_assignment_pattern_literal {
-                    self.advance()?;
-                }
+                // QuickJS consumes the assignment operator before rejecting
+                // a non-Reference left side, so the diagnostic points at the
+                // first RHS token rather than the operator.
+                self.advance()?;
                 return Err(self.syntax_here("invalid assignment left-hand side"));
             };
             self.advance()?;
@@ -5044,6 +5041,9 @@ impl<'source> Parser<'source> {
         }
 
         let Some(target) = self.take_tail_member_reference()? else {
+            // As with compound assignment, QuickJS has already advanced to
+            // the RHS before reporting a non-Reference left side.
+            self.advance()?;
             return Err(self.syntax_here("invalid assignment left-hand side"));
         };
         self.advance()?;
@@ -5561,11 +5561,11 @@ impl<'source> Parser<'source> {
                     MemberReference::Super { site } => {
                         self.emit_instruction_at(Instruction::ThrowDeleteSuper, site)?;
                     }
-                    MemberReference::Private { span, .. } => {
-                        return Err(Error::syntax(
-                            "private class fields cannot be deleted",
-                            source_span(span),
-                        ));
+                    MemberReference::Private { .. } => {
+                        // QuickJS diagnoses after the complete operand has
+                        // been parsed, so the current token is the one after
+                        // the private reference.
+                        return Err(self.syntax_here("cannot delete a private class field"));
                     }
                 }
                 if let Some(chain) = terminal_optional_chain {
@@ -6892,11 +6892,13 @@ impl<'source> Parser<'source> {
                 )?;
                 self.advance()?;
             }
-            TokenKind::PrivateIdentifier(_) => {
-                return Err(Error::syntax(
-                    "private identifier is only valid in a private field reference or '#x in obj'",
-                    source_span(token.span),
-                ));
+            TokenKind::PrivateIdentifier(identifier) => {
+                let mut message = NativeErrorMessage::new();
+                message.push_utf8("unexpected token in expression: '");
+                message.push_utf8(identifier.raw);
+                message.push_utf8("'");
+                return Err(Error::from_native_message(ErrorKind::Syntax, message)
+                    .with_span(source_span(token.span)));
             }
             TokenKind::Punctuator(punctuator) => {
                 return Err(self.syntax_here(format!(
@@ -9111,12 +9113,20 @@ fn syntax_atom_error(
     suffix: &str,
     span: Span,
 ) -> Result<Error, JsStringError> {
+    Ok(syntax_atom_error_without_span(prefix, atom, suffix)?.with_span(source_span(span)))
+}
+
+fn syntax_atom_error_without_span(
+    prefix: &str,
+    atom: &str,
+    suffix: &str,
+) -> Result<Error, JsStringError> {
     let atom = JsString::try_from_utf8(atom)?;
     let mut message = NativeErrorMessage::new();
     message.push_utf8(prefix);
     atom.push_atom_get_str_to(&mut message);
     message.push_utf8(suffix);
-    Ok(Error::from_native_message(ErrorKind::Syntax, message).with_span(source_span(span)))
+    Ok(Error::from_native_message(ErrorKind::Syntax, message))
 }
 
 const fn strict_reserved_identifier(keyword: Keyword) -> bool {
@@ -11414,7 +11424,6 @@ fn resolve_identifiers(tree: &mut FunctionTree) -> Result<(), Error> {
                                 function_id,
                                 scope,
                                 &name,
-                                span,
                                 access,
                             )?
                         }
