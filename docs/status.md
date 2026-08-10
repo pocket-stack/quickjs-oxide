@@ -7,13 +7,13 @@ Parity.
 
 ## Current baseline
 
-The authoritative R3ed-A Test262 vector has:
+The authoritative R3ee-A Test262 vector has:
 
-- 68,362 full-corpus passes out of 102,037 variants (66.997%)
+- 68,364 full-corpus passes out of 102,037 variants (66.999%)
 - 68,414 eligible variants out of 102,037 (67.048%)
-- 68,362 passes out of 68,414 runnable variants (99.924%, secondary quality
+- 68,364 passes out of 68,414 runnable variants (99.927%, secondary quality
   metric)
-- 50 classified failures and 2 timeouts among eligible variants
+- 50 classified failures and no timeouts among eligible variants
 
 The pass count includes three exact `(path, variant)` results where Rust passes
 a test listed in pinned QuickJS's known-error file. These narrow target
@@ -29,6 +29,7 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 - binary data, typed arrays, shared memory, and Atomics slices
 - collections, weak references, finalization, Promises, and iterator slices
 - Unicode 17 case, identifier, normalization, and property data
+- physical dense Array storage shared by literals, builtin results, and JSON
 - synchronous static-module graphs, live namespaces, default exports, and core
   `import.meta` semantics
 - native command-line execution and a Rust/WASM browser playground
