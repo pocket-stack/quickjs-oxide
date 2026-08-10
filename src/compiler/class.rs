@@ -292,11 +292,14 @@ impl<'source> Parser<'source> {
         }
         let key = self.parse_class_property_key()?;
         if !self.is_punctuator(Punctuator::LeftParen) {
-            if generator || asynchronous {
+            if generator || asynchronous || method_kind != DefineMethodKind::Method {
                 return Err(self.syntax_here("invalid property name"));
             }
-            if method_kind != DefineMethodKind::Method {
-                return Err(self.syntax_here("invalid class field"));
+            if is_static
+                && matches!(&key, ClassPropertyKey::Fixed { value }
+                    if *value == JsString::from_static("prototype"))
+            {
+                return Err(self.syntax_here("invalid method name"));
             }
             match key {
                 ClassPropertyKey::Private { name, span } => {
@@ -356,16 +359,10 @@ impl<'source> Parser<'source> {
             && is_constructor_name
             && (method_kind != DefineMethodKind::Method || generator || asynchronous)
         {
-            return Err(Error::syntax(
-                "invalid method name",
-                source_span(function_span),
-            ));
+            return Err(self.syntax_here("invalid method name"));
         }
         if is_static && fixed.is_some_and(|name| *name == JsString::from_static("prototype")) {
-            return Err(Error::syntax(
-                "invalid method name",
-                source_span(function_span),
-            ));
+            return Err(self.syntax_here("invalid method name"));
         }
 
         if !is_static

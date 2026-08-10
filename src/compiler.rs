@@ -6528,10 +6528,9 @@ impl<'source> Parser<'source> {
         self.advance()?;
         if self.is_punctuator(Punctuator::LeftParen) {
             if !self.current_ir().super_call_allowed {
-                return Err(Error::syntax(
-                    "super() is only valid in a derived class constructor",
-                    source_span(super_span),
-                ));
+                return Err(
+                    self.syntax_here("super() is only valid in a derived class constructor")
+                );
             }
             let call_span = self.current().span;
             // Match QuickJS's `this_active_func; get_super; new.target`
@@ -6947,7 +6946,7 @@ impl<'source> Parser<'source> {
     fn reject_forbidden_identifier_reference(&self, name: &str, span: Span) -> Result<(), Error> {
         if name == "arguments" && self.current_ir().arguments_forbidden {
             return Err(Error::syntax(
-                "'arguments' is not allowed in class field initializer or static block",
+                "'arguments' identifier is not allowed in class field initializer",
                 source_span(span),
             ));
         }

@@ -749,6 +749,68 @@ fn async_class_method_contextual_boundaries_match_quickjs() {
 }
 
 #[test]
+fn class_field_early_error_diagnostics_match_quickjs() {
+    for (source, message, column) in [
+        (
+            "class C { field = arguments; }",
+            "'arguments' identifier is not allowed in class field initializer",
+            19,
+        ),
+        (
+            "class C { static { arguments; } }",
+            "'arguments' identifier is not allowed in class field initializer",
+            20,
+        ),
+        (
+            "class C { field = () => super(); }",
+            "super() is only valid in a derived class constructor",
+            30,
+        ),
+        ("class C { constructor; }", "invalid field name", 22),
+        ("class C { static prototype; }", "invalid method name", 27),
+        (
+            "class C { static async prototype; }",
+            "invalid property name",
+            33,
+        ),
+        (
+            "class C { static *prototype; }",
+            "invalid property name",
+            28,
+        ),
+        (
+            "class C { static get prototype; }",
+            "invalid property name",
+            31,
+        ),
+        (
+            "class C { static set prototype; }",
+            "invalid property name",
+            31,
+        ),
+        ("class C { get field; }", "invalid property name", 20),
+        (
+            "class C { static prototype() {} }",
+            "invalid method name",
+            27,
+        ),
+        ("class C { *constructor() {} }", "invalid method name", 23),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), message, "{source}");
+        let span = error
+            .span()
+            .expect("class-field syntax error lost its span");
+        assert_eq!(
+            (span.start.line, span.start.column),
+            (1, column),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn class_field_initializers_reset_async_lexing_to_the_normal_hidden_child() {
     let source = r#"
         var aw\u0061it = 40;

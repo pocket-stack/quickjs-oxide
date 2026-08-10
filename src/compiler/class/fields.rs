@@ -139,7 +139,7 @@ impl<'source> Parser<'source> {
             // Pinned QuickJS 2026-06-04 rejects only syntactically fixed
             // constructor/prototype fields. A computed key which canonicalizes
             // to either spelling remains valid.
-            return Err(Error::syntax("invalid field name", source_span(span)));
+            return Err(self.syntax_here("invalid field name"));
         }
 
         let child = self.ensure_class_initializer(elements, is_static, span)?;
