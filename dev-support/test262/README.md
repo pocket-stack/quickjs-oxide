@@ -51,6 +51,25 @@ node scripts/audit-negative-diagnostics.mjs --suite /path/to/test262 \
   --qjs /path/to/pinned/qjs
 ```
 
+For new Script-goal admissions, prepare a bytewise-sorted candidate TSV with
+the header `path\tvariant\trule`, then generate source-authenticated rows with:
+
+```sh
+node scripts/audit-negative-diagnostics.mjs \
+  --generate /path/to/candidates.tsv --output /path/to/contracts.tsv \
+  --suite /path/to/test262 --qjs /path/to/pinned/qjs \
+  --oxide target/debug/qjs
+```
+
+Generation first inserts a leading runtime sentinel and requires both engines
+to report the same source diagnostic one line later, proving that parsing fails
+before execution. It then succeeds only when the original pinned QuickJS and
+Oxide diagnostics match exactly. The candidate file assigns reviewed semantic
+rules explicitly; the tool never infers a rule from a fixture path or error
+string. Module candidates still use the runner's module path rather than this
+Script-only CLI helper. Scheduled differential CI runs the checked-in smoke
+cohort plus runtime-deception, metadata, and A/A regression checks.
+
 `--check` authenticates the pinned baseline and prints whether the working tree
 is current or stale; staleness is explicit but does not fail fast CI. Focused
 byte-for-byte replay refuses a stale source. A full run may produce a new

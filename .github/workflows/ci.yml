@@ -67,6 +67,7 @@ jobs:
           cargo fmt --all -- --check
           ./scripts/check-no-test262-special-casing.sh
           node scripts/check-test262-artifact-inventory.mjs
+          node --check scripts/test-negative-diagnostic-generator.mjs
           ./scripts/check-oracle-registry.sh
           ./scripts/test-quickjs-fixtures.sh --validate
           ./scripts/check-test262-host-boundary.sh
@@ -143,6 +144,8 @@ jobs:
             --rules dev-support/test262/negative-diagnostic-rules.tsv \
             --suite "$suite" --qjs "$oracle"
           cargo build --locked --bin qjs
+          node scripts/test-negative-diagnostic-generator.mjs \
+            --suite "$suite" --qjs "$oracle" --oxide ./target/debug/qjs
           ./scripts/test-quickjs-fixtures.sh --all --oxide ./target/debug/qjs
           QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets \
             --features test262-host

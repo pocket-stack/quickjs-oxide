@@ -1,4 +1,15 @@
 rule	quickjs_anchor	description
+assignment-target.arrow-statement-boundary	js_parse_expect_semi	direct arrow expressions must end before a following assignment token
+assignment-target.class-declaration-name	js_parse_class	class syntax at statement start requires a declaration name
+assignment-target.for-iteration	get_lvalue	for-in and for-of left-hand sides must be assignable references
+assignment-target.function-declaration-name	js_parse_function_decl2	function syntax at statement start requires a declaration name
+assignment-target.import-meta-script-goal	js_parse_postfix_expr	import.meta is rejected before assignment-target validation in Script code
+assignment-target.non-simple	get_lvalue	non-reference expressions are invalid direct assignment targets
+assignment-target.object-block-follow-up	js_parse_postfix_expr	an object block at statement start cannot be followed by an assignment token
+assignment-target.strict-restricted-identifier	get_lvalue	strict eval and arguments references are invalid assignment targets
+assignment-target.update-operand	get_lvalue	increment and decrement operands must be assignable references
+assignment-target.yield-keyword-context	js_parse_assign_expr2	yield is reserved outside generator expression contexts in strict code
+assignment-target.yield-statement-boundary	js_parse_expect_semi	sloppy Script yield identifier parsing reaches a statement boundary before assignment-target validation
 class-field.contains-arguments	js_parse_class	arguments is forbidden in class field initializers
 class-field.contains-super-call	js_parse_class	super calls are forbidden in class field initializers
 class-field.invalid-name	js_parse_class	class field name is not a valid property name

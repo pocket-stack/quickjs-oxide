@@ -1,0 +1,4 @@
+path	variant	rule
+test/language/expressions/assignmenttargettype/direct-callexpression-as-for-in-lhs.js	strict	assignment-target.for-iteration
+test/language/expressions/assignmenttargettype/direct-primaryexpression-objectliteral.js	sloppy	assignment-target.object-block-follow-up
+test/language/expressions/assignmenttargettype/direct-primaryexpression-objectliteral.js	strict	assignment-target.object-block-follow-up
