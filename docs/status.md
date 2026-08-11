@@ -8,7 +8,7 @@ Parity.
 ## Current baseline
 
 <!-- current-test262-metrics:start -->
-The authoritative R3eg-B Test262 vector has:
+The authoritative R3eh Test262 vector has:
 
 - 78,234 full-corpus passes out of 102,037 variants (76.672%)
 - 78,284 eligible variants out of 102,037 (76.721%)
