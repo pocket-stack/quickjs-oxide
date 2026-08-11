@@ -10,10 +10,13 @@ import { pathToFileURL } from "node:url";
 
 export const PRIMARY_METRICS_TOKEN = "@@QUICKJS_OXIDE_TEST262_PRIMARY@@";
 export const DETAIL_METRICS_TOKEN = "@@QUICKJS_OXIDE_TEST262_DETAIL@@";
+export const DOC_METRICS_START = "<!-- current-test262-metrics:start -->";
+export const DOC_METRICS_END = "<!-- current-test262-metrics:end -->";
 
+const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const DEFAULT_SPEC_PATH = path.resolve(
-  import.meta.dirname,
-  "../dev-support/test262/current.conf",
+  DEFAULT_REPO_ROOT,
+  "dev-support/test262/current.conf",
 );
 const NUMERIC_KEYS = [
   "focused_variants",
@@ -95,6 +98,10 @@ function formatInteger(value) {
   return String(value).replace(/\B(?=(?:[0-9]{3})+(?![0-9]))/gu, ",");
 }
 
+function formatPercent(numerator, denominator) {
+  return ((numerator / denominator) * 100).toFixed(3);
+}
+
 function displayMilestone(value) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)) {
     throw new TypeError("invalid Test262 milestone name");
@@ -166,18 +173,25 @@ export function parseCurrentTest262Metrics(source) {
   }
 
   const milestone = displayMilestone(required(values, "milestone"));
-  const runnableQuality = ((fullPasses / fullRunnable) * 100).toFixed(3);
+  const fullPassPercent = formatPercent(fullPasses, fullVariants);
+  const eligiblePercent = formatPercent(fullEligible, fullVariants);
+  const runnableQuality = formatPercent(fullPasses, fullRunnable);
   return Object.freeze({
     detailText:
       `${milestone} authenticated vector · ` +
       `${formatInteger(focusedPasses)}/${formatInteger(focusedEligible)} focused · ` +
       `runnable quality ${formatInteger(fullPasses)}/${formatInteger(fullRunnable)} ` +
       `(${runnableQuality}%, secondary) · pre-parity`,
+    eligibleFailures: fullRunnable - fullPasses,
+    eligiblePercent,
+    eligibleTimeouts: fullSummary.get("timeout") ?? 0,
     focusedEligible,
     focusedPasses,
     fullEligible,
+    fullPassPercent,
     fullPasses,
     fullRunnable,
+    fullSummaryText: required(values, "full_summary"),
     fullVariants,
     milestone,
     primaryText:
@@ -222,17 +236,109 @@ export function renderCurrentTest262Metrics(
   return metrics;
 }
 
+function markedDocument(source, body, filePath) {
+  const startCount = source.split(DOC_METRICS_START).length - 1;
+  const endCount = source.split(DOC_METRICS_END).length - 1;
+  if (startCount !== 1 || endCount !== 1) {
+    throw new TypeError(
+      `${filePath} must contain exactly one Test262 metrics marker pair`,
+    );
+  }
+  const start = source.indexOf(DOC_METRICS_START);
+  const end = source.indexOf(DOC_METRICS_END, start);
+  if (end < start) {
+    throw new TypeError(`${filePath} has reversed Test262 metrics markers`);
+  }
+  const before = source.slice(0, start);
+  const after = source.slice(end + DOC_METRICS_END.length);
+  return `${before}${DOC_METRICS_START}\n${body}\n${DOC_METRICS_END}${after}`;
+}
+
+function currentTest262DocumentBlocks(metrics) {
+  const fullPasses = formatInteger(metrics.fullPasses);
+  const fullEligible = formatInteger(metrics.fullEligible);
+  const fullVariants = formatInteger(metrics.fullVariants);
+  const fullRunnable = formatInteger(metrics.fullRunnable);
+  const timeoutText = metrics.eligibleTimeouts === 0
+    ? "no timeouts"
+    : `${formatInteger(metrics.eligibleTimeouts)} timeouts`;
+  return new Map([
+    [
+      "README.md",
+      `The authoritative ${metrics.milestone} Test262 baseline records **${fullPasses} full-corpus passes\n` +
+        `out of ${fullVariants} variants (${metrics.fullPassPercent}%)**, with **${fullEligible} eligible variants\n` +
+        `(${metrics.eligiblePercent}%)**. The ${fullPasses} / ${fullRunnable} runnable pass rate (${metrics.runnableQuality}%) is a secondary\n` +
+        "quality measure, not the headline compatibility metric.",
+    ],
+    [
+      "docs/status.md",
+      `The authoritative ${metrics.milestone} Test262 vector has:\n\n` +
+        `- ${fullPasses} full-corpus passes out of ${fullVariants} variants (${metrics.fullPassPercent}%)\n` +
+        `- ${fullEligible} eligible variants out of ${fullVariants} (${metrics.eligiblePercent}%)\n` +
+        `- ${fullPasses} passes out of ${fullRunnable} runnable variants (${metrics.runnableQuality}%, secondary quality\n` +
+        "  metric)\n" +
+        `- ${formatInteger(metrics.eligibleFailures)} classified failures and ${timeoutText} among eligible variants`,
+    ],
+    [
+      "docs/test262.md",
+      "Metrics are reported in this order:\n\n" +
+        `1. **Full pass:** ${fullPasses} / ${fullVariants} (${metrics.fullPassPercent}%). Every frozen Test262 variant is in\n` +
+        "   the denominator.\n" +
+        `2. **Eligible coverage:** ${fullEligible} / ${fullVariants} (${metrics.eligiblePercent}%). This measures how much of\n` +
+        "   the full vector the current profile admits to execution.\n" +
+        `3. **Runnable pass quality:** ${fullPasses} / ${fullRunnable} (${metrics.runnableQuality}%). This is useful for\n` +
+        "   diagnosing admitted behavior, but it must not replace either coverage\n" +
+        "   metric above.\n\n" +
+        "The frozen outcome summary is:\n\n" +
+        "```text\n" +
+        `${metrics.fullSummaryText}\n` +
+        "```",
+    ],
+  ]);
+}
+
+export function syncCurrentTest262Docs({
+  check = false,
+  repoRoot = DEFAULT_REPO_ROOT,
+  specPath = DEFAULT_SPEC_PATH,
+} = {}) {
+  const metrics = readCurrentTest262Metrics(specPath);
+  for (const [relativePath, body] of currentTest262DocumentBlocks(metrics)) {
+    const filePath = path.resolve(repoRoot, relativePath);
+    const source = readFileSync(filePath, "utf8");
+    const rendered = markedDocument(source, body, relativePath);
+    if (check) {
+      if (rendered !== source) {
+        throw new TypeError(
+          `${relativePath} Test262 metrics drifted; run ` +
+            "node scripts/current-test262-metrics.mjs --write-docs",
+        );
+      }
+    } else {
+      writeFileSync(filePath, rendered);
+    }
+  }
+  return metrics;
+}
+
 const invokedAsScript = process.argv[1]
   ? pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url
   : false;
 if (invokedAsScript) {
-  if (process.argv.length !== 4 || process.argv[2] !== "--render") {
-    console.error(
-      "usage: current-test262-metrics.mjs --render PATH_TO_INDEX_HTML",
-    );
-    process.exitCode = 2;
-  } else {
+  if (process.argv.length === 3 && process.argv[2] === "--check-docs") {
+    const metrics = syncCurrentTest262Docs({ check: true });
+    console.log(`Test262 documentation metrics passed: ${metrics.primaryText}`);
+  } else if (process.argv.length === 3 && process.argv[2] === "--write-docs") {
+    const metrics = syncCurrentTest262Docs();
+    console.log(`Rendered Test262 documentation metrics: ${metrics.primaryText}`);
+  } else if (process.argv.length === 4 && process.argv[2] === "--render") {
     const metrics = renderCurrentTest262Metrics(path.resolve(process.argv[3]));
     console.log(`Rendered Pages metrics: ${metrics.primaryText}`);
+  } else {
+    console.error(
+      "usage: current-test262-metrics.mjs " +
+        "--check-docs | --write-docs | --render PATH_TO_INDEX_HTML",
+    );
+    process.exitCode = 2;
   }
 }

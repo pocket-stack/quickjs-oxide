@@ -7,6 +7,7 @@ Parity.
 
 ## Current baseline
 
+<!-- current-test262-metrics:start -->
 The authoritative R3eg-B Test262 vector has:
 
 - 78,234 full-corpus passes out of 102,037 variants (76.672%)
@@ -14,6 +15,7 @@ The authoritative R3eg-B Test262 vector has:
 - 78,234 passes out of 78,284 runnable variants (99.936%, secondary quality
   metric)
 - 50 classified failures and no timeouts among eligible variants
+<!-- current-test262-metrics:end -->
 
 The pass count includes three exact `(path, variant)` results where Rust passes
 a test listed in pinned QuickJS's known-error file. These narrow target

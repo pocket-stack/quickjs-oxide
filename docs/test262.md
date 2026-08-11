@@ -7,6 +7,7 @@ QuickJS 2026-06-04 patch and configuration recorded in
 
 ## Official metrics
 
+<!-- current-test262-metrics:start -->
 Metrics are reported in this order:
 
 1. **Full pass:** 78,234 / 102,037 (76.672%). Every frozen Test262 variant is in
@@ -22,6 +23,7 @@ The frozen outcome summary is:
 ```text
 fail-parse=7 fail-runtime=43 pass=78234 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1468 unsupported-module=418 unsupported-negative-provenance=3392
 ```
+<!-- current-test262-metrics:end -->
 
 ## Reproduce
 

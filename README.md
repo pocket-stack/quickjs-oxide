@@ -11,10 +11,12 @@ objects, and core `import.meta` semantics. Dynamic import, import attributes,
 top-level await, and QuickJS host-populated `import.meta` properties remain
 parity work.
 
+<!-- current-test262-metrics:start -->
 The authoritative R3eg-B Test262 baseline records **78,234 full-corpus passes
 out of 102,037 variants (76.672%)**, with **78,284 eligible variants
 (76.721%)**. The 78,234 / 78,284 runnable pass rate (99.936%) is a secondary
 quality measure, not the headline compatibility metric.
+<!-- current-test262-metrics:end -->
 
 **[Open the browser playground →](https://pocket-stack.github.io/quickjs-oxide/)**
 — it runs this Rust engine's actual WebAssembly build, not host `eval`. The
