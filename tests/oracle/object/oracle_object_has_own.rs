@@ -1,3 +1,8 @@
+use crate::quickjs_oracle::observe_completion as observe_oracle;
+use crate::runtime_completion_oracle::compare_eval_completion_cases as compare_cases;
+use crate::runtime_observation::{
+    property_callable, string_property, take_pending_exception_object as take_exception_object,
+};
 use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 
@@ -465,60 +470,6 @@ fn object_has_own_method_is_per_realm_and_retain_then_releases_its_realm() {
     assert_eq!(runtime.heap_counts().live, 0);
 }
 
-fn compare_cases(group: &str, cases: &[(&str, &str)]) {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP {group}: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-    for &(description, source) in cases {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        assert_eq!(
-            observe_rust_eval(&runtime, &mut context, source, description),
-            observe_oracle(&oracle, source, description),
-            "{group} drifted for {description}: {source:?}",
-        );
-    }
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    match context.eval(source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    string_property(runtime, context, &error, "name"),
-                    string_property(runtime, context, &error, "message"),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    super::quickjs_oracle::observe_completion(oracle, source, description)
-}
-
 fn rust_graph_observations() -> Vec<String> {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -609,24 +560,6 @@ fn global_callable(runtime: &Runtime, context: &mut Context, name: &str) -> Call
     property_callable(runtime, context, &global, name)
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    owner: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let Value::Object(object) = context
-        .get_property(owner, &runtime.intern_property_key(name).unwrap())
-        .unwrap()
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&object)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn intrinsic_prototype(
     runtime: &Runtime,
     context: &mut Context,
@@ -650,13 +583,6 @@ fn eval_object(context: &mut Context, source: &str) -> ObjectRef {
         panic!("{source:?} did not evaluate to an object");
     };
     object
-}
-
-fn take_exception_object(context: &mut Context) -> ObjectRef {
-    let Some(Value::Object(error)) = context.take_exception().unwrap() else {
-        panic!("pending exception was not an object");
-    };
-    error
 }
 
 fn own_key_names(runtime: &Runtime, object: &ObjectRef) -> Vec<String> {
@@ -693,21 +619,6 @@ fn data_descriptor(
     (value, writable, enumerable, configurable)
 }
 
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let Value::String(value) = context
-        .get_property(object, &runtime.intern_property_key(name).unwrap())
-        .unwrap()
-    else {
-        panic!("{name} was not a String property");
-    };
-    value.to_utf8_lossy()
-}
-
 fn int_property(runtime: &Runtime, context: &mut Context, object: &ObjectRef, name: &str) -> i32 {
     let Value::Int(value) = context
         .get_property(object, &runtime.intern_property_key(name).unwrap())
@@ -725,20 +636,6 @@ fn data_bits(writable: bool, enumerable: bool, configurable: bool) -> String {
         Number(enumerable),
         Number(configurable),
     )
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }
 
 struct Number(bool);

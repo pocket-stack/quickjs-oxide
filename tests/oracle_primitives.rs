@@ -1139,6 +1139,8 @@ fn future_reserved_words_match_quickjs_oracle() {
 
 #[test]
 fn primitive_expressions_match_quickjs_oracle() {
+    crate::runtime_completion_oracle::assert_runtime_completion_helper_contracts();
+
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!(
             "SKIP primitive oracle differential: set QJS_ORACLE to an upstream qjs executable"

@@ -1,12 +1,12 @@
+use crate::runtime_completion_oracle::observe_legacy_float_eval_completion as observe_rust_eval;
+
 use crate::quickjs_argv_completion_oracle;
 
-use crate::runtime_oracle::error_string_property;
-use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
 use quickjs_argv_completion_oracle::observe_completion_argv_strip_one_lf as observe_oracle;
-use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
+use quickjs_oxide::Runtime;
 
 use crate::support::compile_syntax_error;
 
@@ -738,57 +738,9 @@ fn compare_cases(group: &str, cases: &[(&str, &str)]) {
     }
 }
 
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    match context.eval(source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value)
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    error_string_property(runtime, context, &error, "name", description),
-                    error_string_property(runtime, context, &error, "message", description),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value)
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
 fn run_cli(program: &OsStr, source: &str, description: &str) -> Output {
     Command::new(program)
         .args(["-e", source])
         .output()
         .unwrap_or_else(|error| panic!("could not run CLI for {description}: {error}"))
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => value.to_string(),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

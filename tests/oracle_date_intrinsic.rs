@@ -1,6 +1,9 @@
+use crate::runtime_completion_oracle::observe_read_context_eval_completion_with_prelude;
+use crate::runtime_observation::{
+    property_callable_with_read_context as property_callable, take_exception_object,
+};
 use crate::runtime_oracle::eval_callable;
 use crate::runtime_oracle::eval_object;
-use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -630,7 +633,13 @@ fn compare_cases(group: &str, cases: &[(&str, &str)]) {
     for &(description, source) in cases {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
-        let actual = observe_rust_eval(&runtime, &mut context, source, description);
+        let actual = observe_read_context_eval_completion_with_prelude(
+            &runtime,
+            &mut context,
+            PRELUDE,
+            source,
+            description,
+        );
         let expected = observe_oracle(&oracle, source, description);
         if actual != expected {
             failures.push(format!(
@@ -648,41 +657,6 @@ fn compare_cases(group: &str, cases: &[(&str, &str)]) {
 
 fn observed_source(source: &str) -> String {
     format!("{PRELUDE}\n{source}")
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    let source = observed_source(source);
-    match context.eval(&source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    string_property(runtime, context, &error, "name"),
-                    string_property(runtime, context, &error, "message"),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
 }
 
 fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
@@ -721,69 +695,9 @@ fn date_prototype_callable(runtime: &Runtime, context: &mut Context, name: &str)
     property_callable(runtime, context, &prototype, name)
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(function) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read callable {name}: {error}"))
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&function)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn expect_object(value: Value, description: &str) -> ObjectRef {
     let Value::Object(object) = value else {
         panic!("{description} was not an object");
     };
     object
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read string property {name}: {error}"))
-    else {
-        panic!("{name} was not a string");
-    };
-    value.to_utf8_lossy()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

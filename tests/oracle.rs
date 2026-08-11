@@ -8,6 +8,10 @@ mod quickjs_array_completion_oracle;
 mod quickjs_oracle;
 #[path = "support/quickjs_syntax_diagnostic_oracle.rs"]
 mod quickjs_syntax_diagnostic_oracle;
+#[path = "support/runtime_completion_oracle.rs"]
+mod runtime_completion_oracle;
+#[path = "support/runtime_observation.rs"]
+mod runtime_observation;
 #[path = "support/runtime_oracle.rs"]
 mod runtime_oracle;
 #[path = "support/mod.rs"]

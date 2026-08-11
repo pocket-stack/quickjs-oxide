@@ -6,9 +6,13 @@ use crate::quickjs_oracle;
 mod support {
     use std::ffi::OsStr;
 
+    pub(super) use crate::runtime_observation::{
+        error_string_property, primitive_value_text,
+        property_callable_with_read_context as property_callable, take_exception_object,
+    };
+
     use quickjs_oxide::{
-        CallableRef, CompleteOrdinaryPropertyDescriptor, Context, ObjectRef, Runtime, RuntimeError,
-        Value,
+        CompleteOrdinaryPropertyDescriptor, Context, ObjectRef, Runtime, RuntimeError, Value,
     };
 
     pub(super) fn compare_value_cases(group: &str, cases: &[(&str, &str)]) {
@@ -86,23 +90,58 @@ mod support {
         )
     }
 
-    pub(super) fn property_callable(
+    pub(super) fn method_metadata(
         runtime: &Runtime,
         context: &mut Context,
-        object: &ObjectRef,
+        owner: &ObjectRef,
+        function_prototype: &ObjectRef,
         name: &str,
-    ) -> CallableRef {
+    ) -> String {
         let key = runtime.intern_property_key(name).unwrap();
-        let Value::Object(function) = context
-            .get_property(object, &key)
-            .unwrap_or_else(|error| panic!("read callable {name}: {error}"))
-        else {
-            panic!("{name} was not an object");
-        };
-        runtime
-            .as_callable(&function)
+        let descriptor = runtime
+            .get_own_property(owner, &key)
             .unwrap()
-            .unwrap_or_else(|| panic!("{name} was not callable"))
+            .unwrap_or_else(|| panic!("missing Array.prototype.{name}"));
+        let CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::Object(function),
+            writable,
+            enumerable,
+            configurable,
+        } = &descriptor
+        else {
+            panic!("Array.prototype.{name} was not a function data property");
+        };
+        let callable = runtime
+            .as_callable(function)
+            .unwrap()
+            .unwrap_or_else(|| panic!("Array.prototype.{name} was not callable"));
+        let function_name = context
+            .get_property(function, &runtime.intern_property_key("name").unwrap())
+            .unwrap();
+        let function_length = context
+            .get_property(function, &runtime.intern_property_key("length").unwrap())
+            .unwrap();
+        let name_descriptor = runtime
+            .get_own_property(function, &runtime.intern_property_key("name").unwrap())
+            .unwrap()
+            .unwrap_or_else(|| panic!("Array.{name} name descriptor was missing"));
+        let length_descriptor = runtime
+            .get_own_property(function, &runtime.intern_property_key("length").unwrap())
+            .unwrap()
+            .unwrap_or_else(|| panic!("Array.{name} length descriptor was missing"));
+        format!(
+            "{name}:{}:{}:D{}{}{}:{}:{}:{}:{}:{}",
+            primitive_value_text(function_name),
+            primitive_value_text(function_length),
+            Number(*writable),
+            Number(*enumerable),
+            Number(*configurable),
+            data_descriptor_bits(&name_descriptor),
+            data_descriptor_bits(&length_descriptor),
+            true,
+            runtime.get_prototype_of(function).unwrap().as_ref() == Some(function_prototype),
+            runtime.is_constructor(callable.as_object()).unwrap(),
+        )
     }
 
     pub(super) fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
@@ -113,34 +152,6 @@ mod support {
             panic!("Rust {description} did not evaluate to an object");
         };
         object
-    }
-
-    pub(super) fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-        let Value::Object(error) = context
-            .take_exception()
-            .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-            .unwrap_or_else(|| panic!("{description} was missing"))
-        else {
-            panic!("{description} was not an object");
-        };
-        error
-    }
-
-    pub(super) fn error_string_property(
-        runtime: &Runtime,
-        context: &mut Context,
-        error: &ObjectRef,
-        name: &str,
-        description: &str,
-    ) -> String {
-        let key = runtime.intern_property_key(name).unwrap();
-        let Value::String(value) = context
-            .get_property(error, &key)
-            .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-        else {
-            panic!("Error.{name} was not a string for {description}");
-        };
-        value.to_utf8_lossy()
     }
 
     pub(super) fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
@@ -159,20 +170,6 @@ mod support {
                 }
             }
             Value::Symbol(_) => "symbol",
-        }
-    }
-
-    pub(super) fn primitive_value_text(value: Value) -> String {
-        match value {
-            Value::Undefined => "undefined".to_owned(),
-            Value::Null => "null".to_owned(),
-            Value::Bool(value) => value.to_string(),
-            Value::Int(value) => value.to_string(),
-            Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-            Value::BigInt(value) => value.to_string(),
-            Value::String(value) => value.to_utf8_lossy(),
-            Value::Object(_) => "<object>".to_owned(),
-            Value::Symbol(_) => "<symbol>".to_owned(),
         }
     }
 

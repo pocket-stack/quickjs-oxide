@@ -1,8 +1,12 @@
+use crate::runtime_observation::{checked_value_type as value_type, primitive_value_text};
+use crate::runtime_observation::{
+    property_callable_with_read_context as property_callable, take_exception_object,
+};
 use crate::runtime_oracle::eval_object;
 use std::ffi::OsStr;
 use std::process::Command;
 
-use quickjs_oxide::{CallableRef, Context, ObjectRef, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Context, ObjectRef, Runtime, RuntimeError, Value};
 
 struct Case {
     group: &'static str,
@@ -776,36 +780,6 @@ fn error_string_property(
     value.to_utf8_lossy()
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(function) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read callable {name}: {error}"))
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&function)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
-}
-
 fn oracle_observation(oracle: &OsStr, case: &Case) -> String {
     let wrapper = r#"
 try {
@@ -843,41 +817,4 @@ try {
         })
         .trim_end()
         .to_owned()
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime
-                .as_callable(object)
-                .expect("inspect callable")
-                .is_some()
-            {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

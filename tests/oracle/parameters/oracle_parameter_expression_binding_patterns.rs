@@ -1,4 +1,5 @@
 use super::quickjs_argv_completion_oracle::observe_completion_argv_trim_end as observe_oracle;
+use crate::runtime_observation::primitive_value_text_with_rust_float as primitive_text;
 use crate::runtime_oracle::error_string_property;
 use crate::runtime_oracle::value_type;
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
@@ -304,19 +305,5 @@ fn observe_rust(
             }
         }
         Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
-fn primitive_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => value.to_string(),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
     }
 }

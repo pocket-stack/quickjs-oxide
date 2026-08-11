@@ -1,3 +1,6 @@
+use crate::runtime_observation::{
+    plain_value_type as value_type, primitive_value_text_with_rust_float as primitive_value_text,
+};
 use crate::runtime_oracle::error_string_property;
 use crate::runtime_oracle::run_cli;
 use std::ffi::OsStr;
@@ -641,33 +644,6 @@ fn observe_rust_eval(
             }
         }
         Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
-fn value_type(value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(_) => "object",
-        Value::Symbol(_) => "symbol",
-    }
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => value.to_string(),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
     }
 }
 

@@ -21,6 +21,7 @@ case ${1:-} in
 esac
 
 command -v rg >/dev/null 2>&1 || die 'rg is required'
+command -v node >/dev/null 2>&1 || die 'node is required'
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-oracle-registry.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -245,6 +246,7 @@ check_registry() {
 }
 
 check_harness
+node "$script_dir/check-oracle-helper-duplication.mjs"
 check_registry array Array tests/oracle_array_methods.rs \
     tests/oracle/array oracle/array oracle_array_
 check_registry string String tests/oracle_string_methods.rs \

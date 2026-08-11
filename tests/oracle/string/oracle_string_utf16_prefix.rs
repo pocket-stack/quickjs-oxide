@@ -1,3 +1,4 @@
+use crate::runtime_observation::{property_callable, take_error_object as take_exception_object};
 use quickjs_oxide::{
     CallableRef, CompleteOrdinaryPropertyDescriptor, Context, DescriptorField, JsBigInt, JsString,
     ObjectRef, OrdinaryPropertyDescriptor, PropertyKey, Runtime, RuntimeError, Value,
@@ -718,22 +719,6 @@ fn eval_callable(runtime: &Runtime, context: &mut Context, source: &str) -> Call
         .unwrap_or_else(|| panic!("source did not produce a callable: {source:?}"))
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(value) = context.get_property(object, &key).unwrap() else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&value)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn global_value(runtime: &Runtime, context: &mut Context, global: &ObjectRef, name: &str) -> Value {
     context
         .get_property(global, &runtime.intern_property_key(name).unwrap())
@@ -810,13 +795,6 @@ fn take_error(runtime: &Runtime, context: &mut Context) -> String {
     let name = error_string(runtime, context, &error, "name");
     let message = error_string(runtime, context, &error, "message");
     format!("throw:{}:{}", hex(&name), hex(&message))
-}
-
-fn take_exception_object(context: &mut Context) -> ObjectRef {
-    let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
-        panic!("operation did not throw an Error object");
-    };
-    error
 }
 
 fn error_string(

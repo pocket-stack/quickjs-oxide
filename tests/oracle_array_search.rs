@@ -1,13 +1,16 @@
+use crate::runtime_completion_oracle::observe_eval_completion_with_error_context as observe_rust_eval;
+
 use crate::quickjs_argv_completion_oracle;
 
-use crate::runtime_oracle::value_type;
+use crate::runtime_observation::{
+    primitive_value_text, property_callable_with_read_context as property_callable,
+};
 use std::ffi::OsStr;
 use std::process::Command;
 
 use quickjs_argv_completion_oracle::observe_completion_argv_trim_end as observe_oracle;
 use quickjs_oxide::{
-    CallableRef, CompleteOrdinaryPropertyDescriptor, Context, JsString, ObjectRef, Runtime,
-    RuntimeError, Value,
+    CompleteOrdinaryPropertyDescriptor, Context, JsString, ObjectRef, Runtime, RuntimeError, Value,
 };
 
 // This differential pins the first Array.prototype algorithm slice after the
@@ -355,40 +358,6 @@ fn compare_value_cases(group: &str, cases: &[(&str, &str)]) {
     }
 }
 
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    match context.eval(source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    error_string_property(runtime, context, &error, "name", description),
-                    error_string_property(runtime, context, &error, "message", description),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
 fn rust_graph_observations() -> Vec<String> {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -490,56 +459,6 @@ fn method_metadata(
         runtime.get_prototype_of(&function).unwrap().as_ref() == Some(function_prototype),
         runtime.is_constructor(callable.as_object()).unwrap(),
     )
-}
-
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(function) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read callable {name}: {error}"))
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&function)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
-fn error_string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    error: &ObjectRef,
-    name: &str,
-    description: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(error, &key)
-        .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-    else {
-        panic!("Error.{name} was not a string for {description}");
-    };
-    value.to_utf8_lossy()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }
 
 struct Number(bool);

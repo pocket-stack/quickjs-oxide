@@ -1,9 +1,12 @@
+use crate::runtime_observation::{
+    string_property_with_read_context as string_property, take_exception_object,
+};
 use crate::runtime_oracle::eval_callable;
 use crate::runtime_oracle::eval_object;
 use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 
-use quickjs_oxide::{Context, JsString, ObjectRef, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Context, JsString, Runtime, RuntimeError, Value};
 
 // Differential lock for pinned QuickJS 2026-06-04 `js_string_match`'s
 // Symbol.match branch (`quickjs.c` 45609-45657), abstract RegExpExec
@@ -789,33 +792,6 @@ fn observe_rust_eval(
 fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
     let source = observed_source(source);
     super::quickjs_oracle::observe_completion(oracle, &source, description)
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read string property {name}: {error}"))
-    else {
-        panic!("{name} was not a string");
-    };
-    value.to_utf8_lossy()
 }
 
 fn string_value(value: &str) -> Value {

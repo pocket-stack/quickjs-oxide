@@ -1,3 +1,5 @@
+use crate::runtime_observation::property_callable_with_read_context as property_callable;
+use crate::runtime_observation::{error_string_property, primitive_value_text};
 use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 
@@ -967,25 +969,6 @@ fn global_callable(runtime: &Runtime, context: &mut Context, name: &str) -> Call
     property_callable(runtime, context, &global, name)
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(function) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read callable {name}: {error}"))
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&function)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn eval_callable(runtime: &Runtime, context: &mut Context, source: &str) -> CallableRef {
     let Value::Object(function) = context.eval(source).expect("evaluate callable") else {
         panic!("callable source did not return an object");
@@ -994,37 +977,6 @@ fn eval_callable(runtime: &Runtime, context: &mut Context, source: &str) -> Call
         .as_callable(&function)
         .unwrap()
         .expect("evaluated object was not callable")
-}
-
-fn error_string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    error: &ObjectRef,
-    name: &str,
-    description: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(error, &key)
-        .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-    else {
-        panic!("Error.{name} was not a string for {description}");
-    };
-    value.to_utf8_lossy()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }
 
 struct Number(bool);

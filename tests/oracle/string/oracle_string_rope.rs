@@ -1,6 +1,7 @@
+use crate::runtime_observation::{property_callable, take_error_object as take_exception_object};
 use quickjs_oxide::{
-    CallableRef, Context, DescriptorField, JsString, ObjectRef, OrdinaryPropertyDescriptor,
-    Runtime, RuntimeError, Value,
+    Context, DescriptorField, JsString, ObjectRef, OrdinaryPropertyDescriptor, Runtime,
+    RuntimeError, Value,
 };
 
 const ORACLE_SETUP: &str = r#"
@@ -423,22 +424,6 @@ fn define_data(runtime: &Runtime, object: &ObjectRef, name: &str, value: Value) 
     );
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(value) = context.get_property(object, &key).unwrap() else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&value)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn intrinsic_prototype(runtime: &Runtime, context: &mut Context, name: &str) -> ObjectRef {
     let global = context.global_object().unwrap();
     let constructor = property_callable(runtime, context, &global, name);
@@ -452,13 +437,6 @@ fn intrinsic_prototype(runtime: &Runtime, context: &mut Context, name: &str) -> 
         panic!("{name}.prototype was not an object");
     };
     prototype
-}
-
-fn take_exception_object(context: &mut Context) -> ObjectRef {
-    let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
-        panic!("operation did not throw an Error object");
-    };
-    error
 }
 
 fn assert_internal_string_too_long(runtime: &Runtime, context: &mut Context, error: &ObjectRef) {

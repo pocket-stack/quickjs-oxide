@@ -1,3 +1,4 @@
+use crate::runtime_observation::{checked_value_type as value_type, primitive_value_text};
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -643,41 +644,4 @@ try {
         })
         .trim_end()
         .to_owned()
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime
-                .as_callable(object)
-                .expect("inspect callable")
-                .is_some()
-            {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

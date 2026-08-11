@@ -1,8 +1,9 @@
 use super::quickjs_typed_array_oracle::observe_string_value;
+use crate::runtime_observation::take_exception_object;
 use crate::runtime_oracle::eval_callable;
 use crate::runtime_oracle::eval_object;
 use quickjs_oxide::{
-    Context, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
+    Context, DescriptorField, OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
 };
 
 // These observations pin QuickJS 2026-06-04's `js_typed_array_from`,
@@ -851,15 +852,4 @@ fn define_global(runtime: &Runtime, context: &mut Context, name: &str, value: Va
             .unwrap(),
         "could not define {name}",
     );
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
 }

@@ -1,7 +1,8 @@
-use crate::runtime_oracle::error_string_property;
+use crate::runtime_completion_oracle::observe_checked_legacy_float_eval_completion as observe_rust_eval;
+
 use std::process::Command;
 
-use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Runtime, Value};
 
 use super::quickjs_argv_completion_oracle::observe_completion_argv_strip_one_lf as observe_oracle;
 
@@ -165,75 +166,4 @@ fn for_in_rust_smoke_runs_without_an_oracle() {
         panic!("for-in smoke did not return a String");
     };
     assert_eq!(value.to_utf8_lossy(), "ba");
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    match context.eval(source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value)
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    error_string_property(runtime, context, &error, "name", description),
-                    error_string_property(runtime, context, &error, "message", description),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value)
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime
-                .as_callable(object)
-                .expect("inspect callable")
-                .is_some()
-            {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => value.to_string(),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

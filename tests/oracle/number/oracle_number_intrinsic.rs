@@ -1,3 +1,4 @@
+use crate::runtime_observation::property_callable;
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
@@ -2116,22 +2117,6 @@ fn eval_callable(runtime: &Runtime, context: &mut Context, source: &str) -> Call
         .as_callable(&object)
         .unwrap()
         .unwrap_or_else(|| panic!("source did not produce a callable: {source:?}"))
-}
-
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(value) = context.get_property(object, &key).unwrap() else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&value)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
 }
 
 fn global_property(

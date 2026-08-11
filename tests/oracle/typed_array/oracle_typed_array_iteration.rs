@@ -1,9 +1,11 @@
 use super::quickjs_typed_array_oracle::observe_string_value;
+use crate::runtime_observation::{
+    property_callable_with_read_context as property_callable, take_exception_object,
+};
 use crate::runtime_oracle::eval_callable;
 use crate::runtime_oracle::eval_object;
 use quickjs_oxide::{
-    CallableRef, Context, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, Runtime,
-    RuntimeError, Value,
+    Context, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
 };
 
 // These observations pin QuickJS 2026-06-04's shared
@@ -359,25 +361,6 @@ fn oxide_observation(case: &Case) -> String {
     }
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(function) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read callable {name}: {error}"))
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&function)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn object_property(
     runtime: &Runtime,
     context: &mut Context,
@@ -392,17 +375,6 @@ fn object_property(
         panic!("{name} was not an object");
     };
     value
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
 }
 
 fn data_descriptor(value: Value) -> OrdinaryPropertyDescriptor {

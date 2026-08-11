@@ -1,9 +1,15 @@
+use crate::runtime_completion_oracle::{
+    compare_read_context_eval_completion_cases_with_prelude,
+    observe_quickjs_completion_with_prelude,
+};
+
+use crate::runtime_observation::{
+    string_property_with_read_context as string_property, take_exception_object,
+};
 use crate::runtime_oracle::eval_callable;
 use crate::runtime_oracle::eval_object;
-use crate::runtime_oracle::value_type;
-use std::ffi::OsStr;
 
-use quickjs_oxide::{Context, JsString, ObjectRef, Runtime, RuntimeError, Value};
+use quickjs_oxide::{JsString, Runtime, RuntimeError, Value};
 
 // Differential lock for pinned QuickJS 2026-06-04
 // `js_regexp_Symbol_split` (`quickjs.c` 48875-48990), including
@@ -505,7 +511,8 @@ fn regexp_split_oracle_vectors_self_check() {
         ("recursion", RECURSION_CASES),
     ] {
         for &(description, source) in cases {
-            let observation = observe_oracle(&oracle, source, description);
+            let observation =
+                observe_quickjs_completion_with_prelude(PRELUDE, &oracle, source, description);
             assert!(
                 observation.starts_with("return|"),
                 "{group} oracle vector unexpectedly threw for {description}: {observation:?}",
@@ -516,8 +523,13 @@ fn regexp_split_oracle_vectors_self_check() {
 
 #[test]
 fn regexp_split_metadata_autoinit_and_string_activation_match_pinned_quickjs() {
-    compare_cases("RegExp split metadata", METADATA_CASES);
-    compare_cases(
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp split metadata",
+        METADATA_CASES,
+    );
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
         "String to RegExp split integration",
         STRING_INTEGRATION_CASES,
     );
@@ -525,29 +537,58 @@ fn regexp_split_metadata_autoinit_and_string_activation_match_pinned_quickjs() {
 
 #[test]
 fn regexp_split_species_order_defaults_and_errors_match_pinned_quickjs() {
-    compare_cases("RegExp split SpeciesConstructor", SPECIES_ORDER_CASES);
-    compare_cases("RegExp split native errors", ERROR_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp split SpeciesConstructor",
+        SPECIES_ORDER_CASES,
+    );
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp split native errors",
+        ERROR_CASES,
+    );
 }
 
 #[test]
 fn regexp_split_flags_limits_empty_and_captures_match_pinned_quickjs() {
-    compare_cases("RegExp split flags and advance", FLAGS_AND_ADVANCE_CASES);
-    compare_cases("RegExp split limits and empty input", LIMIT_AND_EMPTY_CASES);
-    compare_cases("RegExp split captures", CAPTURE_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp split flags and advance",
+        FLAGS_AND_ADVANCE_CASES,
+    );
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp split limits and empty input",
+        LIMIT_AND_EMPTY_CASES,
+    );
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp split captures",
+        CAPTURE_CASES,
+    );
 }
 
 #[test]
 fn regexp_split_last_index_abstract_exec_and_abrupt_boundaries_match_pinned_quickjs() {
-    compare_cases(
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
         "RegExp split lastIndex and abstract exec",
         LAST_INDEX_AND_EXEC_CASES,
     );
-    compare_cases("RegExp split abrupt completion", ABRUPT_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp split abrupt completion",
+        ABRUPT_CASES,
+    );
 }
 
 #[test]
 fn regexp_split_recursion_is_catchable_and_recovers_like_pinned_quickjs() {
-    compare_cases("String/RegExp split recursion", RECURSION_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "String/RegExp split recursion",
+        RECURSION_CASES,
+    );
 }
 
 #[test]
@@ -779,116 +820,6 @@ fn mixed_string_and_regexp_split_recursion_guard_is_catchable_and_recovers() {
         .expect("2 MiB String/RegExp split stack-proof thread panicked");
 }
 
-fn compare_cases(group: &str, cases: &[(&str, &str)]) {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP {group}: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-    let mut failures = Vec::new();
-    for &(description, source) in cases {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let actual = observe_rust_eval(&runtime, &mut context, source, description);
-        let expected = observe_oracle(&oracle, source, description);
-        if actual != expected {
-            failures.push(format!(
-                "{description}\nsource: {source:?}\noxide: {actual:?}\noracle: {expected:?}",
-            ));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{group} drifted in {} case(s):\n\n{}",
-        failures.len(),
-        failures.join("\n\n"),
-    );
-}
-
-fn observed_source(source: &str) -> String {
-    format!("{PRELUDE}\n{source}")
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    let source = observed_source(source);
-    match context.eval(&source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    string_property(runtime, context, &error, "name"),
-                    string_property(runtime, context, &error, "message"),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let source = observed_source(source);
-    super::quickjs_oracle::observe_completion(oracle, &source, description)
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read string property {name}: {error}"))
-    else {
-        panic!("{name} was not a string");
-    };
-    value.to_utf8_lossy()
-}
-
 fn string_value(value: &str) -> Value {
     Value::String(JsString::try_from_utf8(value).unwrap())
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

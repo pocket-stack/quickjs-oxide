@@ -1,10 +1,14 @@
+use crate::runtime_completion_oracle::{
+    compare_read_context_eval_completion_cases_with_prelude,
+    observe_quickjs_completion_with_prelude,
+};
+
+use crate::runtime_observation::take_exception_object;
 use crate::runtime_oracle::eval_object;
-use crate::runtime_oracle::value_type;
-use std::ffi::OsStr;
 
 use quickjs_oxide::{
-    AccessorValue, CallableRef, Context, DescriptorField, JsString, ObjectRef,
-    OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
+    AccessorValue, CallableRef, Context, DescriptorField, JsString, OrdinaryPropertyDescriptor,
+    Runtime, RuntimeError, Value,
 };
 
 // Differential lock for pinned QuickJS 2026-06-04
@@ -621,7 +625,8 @@ fn regexp_replace_oracle_vectors_self_check() {
         ("recursion", RECURSION_CASES),
     ] {
         for &(description, source) in cases {
-            let observation = observe_oracle(&oracle, source, description);
+            let observation =
+                observe_quickjs_completion_with_prelude(PRELUDE, &oracle, source, description);
             assert!(
                 observation.starts_with("return|") || observation.starts_with("throw|"),
                 "{group} oracle vector had no completion for {description}: {observation:?}",
@@ -632,12 +637,17 @@ fn regexp_replace_oracle_vectors_self_check() {
 
 #[test]
 fn regexp_replace_metadata_matches_pinned_quickjs() {
-    compare_cases("RegExp replace metadata", METADATA_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp replace metadata",
+        METADATA_CASES,
+    );
 }
 
 #[test]
 fn regexp_replace_prefix_and_abstract_exec_match_pinned_quickjs() {
-    compare_cases(
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
         "RegExp replace prefix and abstract exec",
         PREFIX_AND_ABSTRACT_EXEC_CASES,
     );
@@ -645,12 +655,17 @@ fn regexp_replace_prefix_and_abstract_exec_match_pinned_quickjs() {
 
 #[test]
 fn regexp_replace_two_phase_execution_matches_pinned_quickjs() {
-    compare_cases("RegExp replace two-phase execution", TWO_PHASE_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp replace two-phase execution",
+        TWO_PHASE_CASES,
+    );
 }
 
 #[test]
 fn regexp_replace_length_captures_and_groups_match_pinned_quickjs() {
-    compare_cases(
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
         "RegExp replace length captures and groups",
         LENGTH_CAPTURE_GROUP_CASES,
     );
@@ -658,13 +673,25 @@ fn regexp_replace_length_captures_and_groups_match_pinned_quickjs() {
 
 #[test]
 fn regexp_replace_position_and_last_index_match_pinned_quickjs() {
-    compare_cases("RegExp replace positions", POSITION_CASES);
-    compare_cases("RegExp replace lastIndex", LAST_INDEX_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp replace positions",
+        POSITION_CASES,
+    );
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp replace lastIndex",
+        LAST_INDEX_CASES,
+    );
 }
 
 #[test]
 fn regexp_replace_standard_fast_path_matches_pinned_quickjs() {
-    compare_cases("RegExp replace standard fast path", FAST_PATH_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp replace standard fast path",
+        FAST_PATH_CASES,
+    );
 }
 
 #[test]
@@ -853,79 +880,16 @@ fn regexp_replace_recursion_matches_pinned_quickjs() {
     std::thread::Builder::new()
         .name("regexp-replace-oracle-stack".into())
         .stack_size(2 * 1024 * 1024)
-        .spawn(|| compare_cases("RegExp replace recursion", RECURSION_CASES))
+        .spawn(|| {
+            compare_read_context_eval_completion_cases_with_prelude(
+                PRELUDE,
+                "RegExp replace recursion",
+                RECURSION_CASES,
+            )
+        })
         .unwrap()
         .join()
         .unwrap();
-}
-
-fn compare_cases(group: &str, cases: &[(&str, &str)]) {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP {group}: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-    let mut failures = Vec::new();
-    for &(description, source) in cases {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let actual = observe_rust_eval(&runtime, &mut context, source, description);
-        let expected = observe_oracle(&oracle, source, description);
-        if actual != expected {
-            failures.push(format!(
-                "{description}\nsource: {source:?}\noxide: {actual:?}\noracle: {expected:?}",
-            ));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{group} drifted in {} case(s):\n\n{}",
-        failures.len(),
-        failures.join("\n\n"),
-    );
-}
-
-fn observed_source(source: &str) -> String {
-    format!("{PRELUDE}\n{source}")
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    let source = observed_source(source);
-    match context.eval(&source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    string_property(runtime, context, &error, "name"),
-                    string_property(runtime, context, &error, "message"),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let source = observed_source(source);
-    super::quickjs_oracle::observe_completion(oracle, &source, description)
 }
 
 fn eval_optional_callable(
@@ -945,47 +909,6 @@ fn eval_optional_callable(
         .unwrap_or_else(|error| panic!("inspect {description}: {error}"))
 }
 
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read string property {name}: {error}"))
-    else {
-        panic!("{name} was not a string");
-    };
-    value.to_utf8_lossy()
-}
-
 fn string_value(value: &str) -> Value {
     Value::String(JsString::try_from_utf8(value).unwrap())
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

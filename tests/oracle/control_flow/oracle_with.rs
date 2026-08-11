@@ -1,5 +1,6 @@
 //! Differential coverage for `with` statement semantics.
 
+use crate::runtime_observation::primitive_value_text;
 use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 use std::process::Command;
@@ -658,18 +659,4 @@ try {
         .expect("QuickJS global-reference output was not UTF-8")
         .trim_end()
         .to_owned()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

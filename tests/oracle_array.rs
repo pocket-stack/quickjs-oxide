@@ -1,8 +1,9 @@
+use crate::runtime_completion_oracle::observe_eval_completion_with_error_context as observe_rust_eval;
+
 use crate::quickjs_argv_completion_oracle;
 
 use crate::runtime_oracle::eval_object;
 use crate::runtime_oracle::run_cli;
-use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -10,7 +11,7 @@ use quickjs_argv_completion_oracle::observe_completion_argv_trim_end as observe_
 use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{
     CompleteOrdinaryPropertyDescriptor, Context, DescriptorField, JsString, ObjectRef,
-    OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
+    OrdinaryPropertyDescriptor, Runtime, Value,
 };
 
 // This target deliberately describes the complete first Array vertical slice,
@@ -385,40 +386,6 @@ fn compare_value_cases(group: &str, cases: &[(&str, &str)]) {
     }
 }
 
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    match context.eval(source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value)
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    error_string_property(runtime, context, &error, "name", description),
-                    error_string_property(runtime, context, &error, "message", description),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value)
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
 fn array_snapshot(runtime: &Runtime, context: &mut Context, array: &ObjectRef) -> String {
     runtime
         .own_property_keys(array)
@@ -713,37 +680,6 @@ fn compare_cli(oracle: &OsStr, options: &[&str], source: &str, description: &str
     assert_eq!(rust.status.code(), quickjs.status.code(), "{description}");
     assert_eq!(rust.stdout, quickjs.stdout, "{description}");
     assert_eq!(rust.stderr, quickjs.stderr, "{description}");
-}
-
-fn error_string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    error: &ObjectRef,
-    name: &str,
-    description: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(error, &key)
-        .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-    else {
-        panic!("Error.{name} was not a string for {description}");
-    };
-    value.to_utf8_lossy()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }
 
 fn value_token(value: Value) -> String {

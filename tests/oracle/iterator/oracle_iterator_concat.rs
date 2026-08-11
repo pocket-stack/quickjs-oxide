@@ -1,6 +1,9 @@
 use super::quickjs_string_result_oracle::observe_string_result;
+use crate::runtime_observation::{
+    property_callable_with_read_context as property_callable, take_exception_object,
+};
 use crate::runtime_oracle::eval_object;
-use quickjs_oxide::{CallableRef, Context, ObjectRef, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Context, ObjectRef, Runtime, RuntimeError, Value};
 
 struct Case {
     group: &'static str,
@@ -876,25 +879,6 @@ fn observe_oxide(context: &mut Context, case: &Case) -> String {
     value.to_utf8_lossy()
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(function) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read callable {name}: {error}"))
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&function)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn object_property(
     runtime: &Runtime,
     context: &mut Context,
@@ -905,15 +889,4 @@ fn object_property(
     context
         .get_property(object, &key)
         .unwrap_or_else(|error| panic!("read {name}: {error}"))
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
 }

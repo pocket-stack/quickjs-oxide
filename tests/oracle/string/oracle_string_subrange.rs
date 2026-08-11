@@ -1,5 +1,10 @@
-use crate::runtime_oracle::value_type;
-use std::ffi::OsStr;
+use crate::runtime_completion_oracle::{
+    compare_eval_completion_cases_with_prelude, observe_quickjs_completion_with_prelude,
+};
+
+use crate::runtime_observation::{
+    property_callable, take_pending_exception_object as take_exception_object,
+};
 
 use quickjs_oxide::{
     CallableRef, Context, DescriptorField, JsString, ObjectRef, OrdinaryPropertyDescriptor,
@@ -426,7 +431,8 @@ fn string_subrange_oracle_vectors_self_check() {
         ("stack", STACK_CASES),
     ] {
         for &(description, source) in cases {
-            let observation = observe_oracle(&oracle, source, description);
+            let observation =
+                observe_quickjs_completion_with_prelude(CASE_PRELUDE, &oracle, source, description);
             assert!(
                 observation.starts_with("return|"),
                 "{group} oracle vector unexpectedly threw for {description}: {observation:?}",
@@ -434,7 +440,8 @@ fn string_subrange_oracle_vectors_self_check() {
         }
     }
     for &(description, source) in ERROR_CASES {
-        let observation = observe_oracle(&oracle, source, description);
+        let observation =
+            observe_quickjs_completion_with_prelude(CASE_PRELUDE, &oracle, source, description);
         assert!(
             observation.starts_with("throw|"),
             "error oracle vector unexpectedly returned for {description}: {observation:?}",
@@ -444,33 +451,45 @@ fn string_subrange_oracle_vectors_self_check() {
 
 #[test]
 fn string_subrange_graph_and_autoinit_match_pinned_quickjs() {
-    compare_cases("String subrange graph", GRAPH_CASES);
-    compare_cases("String subrange AutoInit", AUTOINIT_CASES);
+    compare_eval_completion_cases_with_prelude(CASE_PRELUDE, "String subrange graph", GRAPH_CASES);
+    compare_eval_completion_cases_with_prelude(
+        CASE_PRELUDE,
+        "String subrange AutoInit",
+        AUTOINIT_CASES,
+    );
 }
 
 #[test]
 fn string_subrange_values_and_saturated_clamping_match_pinned_quickjs() {
-    compare_cases("String subrange values", VALUE_CASES);
+    compare_eval_completion_cases_with_prelude(CASE_PRELUDE, "String subrange values", VALUE_CASES);
 }
 
 #[test]
 fn string_subrange_utf16_and_large_ropes_match_pinned_quickjs() {
-    compare_cases("String subrange UTF-16", UTF16_CASES);
+    compare_eval_completion_cases_with_prelude(CASE_PRELUDE, "String subrange UTF-16", UTF16_CASES);
 }
 
 #[test]
 fn string_subrange_conversion_order_and_abrupt_completion_match_pinned_quickjs() {
-    compare_cases("String subrange conversion order", ORDER_CASES);
+    compare_eval_completion_cases_with_prelude(
+        CASE_PRELUDE,
+        "String subrange conversion order",
+        ORDER_CASES,
+    );
 }
 
 #[test]
 fn string_subrange_errors_and_nonconstructors_match_pinned_quickjs() {
-    compare_cases("String subrange errors", ERROR_CASES);
+    compare_eval_completion_cases_with_prelude(CASE_PRELUDE, "String subrange errors", ERROR_CASES);
 }
 
 #[test]
 fn string_subrange_recursion_is_catchable_and_runtime_recovers() {
-    compare_cases("String subrange stack recovery", STACK_CASES);
+    compare_eval_completion_cases_with_prelude(
+        CASE_PRELUDE,
+        "String subrange stack recovery",
+        STACK_CASES,
+    );
 }
 
 #[test]
@@ -668,84 +687,6 @@ fn string_subrange_stack_overflow_uses_the_caller_realm_and_recovers() {
     );
 }
 
-fn compare_cases(group: &str, cases: &[(&str, &str)]) {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP {group}: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-    for &(description, source) in cases {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let source = format!("{CASE_PRELUDE}\n{source}");
-        assert_eq!(
-            observe_rust_eval(&runtime, &mut context, &source, description),
-            observe_oracle_source(&oracle, &source, description),
-            "{group} drifted for {description}",
-        );
-    }
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    match context.eval(source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    string_property(runtime, context, &error, "name"),
-                    string_property(runtime, context, &error, "message"),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description}: {error}"),
-    }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let source = format!("{CASE_PRELUDE}\n{source}");
-    observe_oracle_source(oracle, &source, description)
-}
-
-fn observe_oracle_source(oracle: &OsStr, source: &str, description: &str) -> String {
-    super::quickjs_oracle::observe_completion(oracle, source, description)
-}
-
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    owner: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let Value::Object(object) = context
-        .get_property(owner, &runtime.intern_property_key(name).unwrap())
-        .unwrap()
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&object)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn intrinsic_prototype(
     runtime: &Runtime,
     context: &mut Context,
@@ -763,13 +704,6 @@ fn intrinsic_prototype(
         panic!("{constructor_name}.prototype was not an object");
     };
     prototype
-}
-
-fn take_exception_object(context: &mut Context) -> ObjectRef {
-    let Some(Value::Object(error)) = context.take_exception().unwrap() else {
-        panic!("pending exception was not an object");
-    };
-    error
 }
 
 fn assert_native_type_error(
@@ -809,33 +743,4 @@ fn define_data(runtime: &Runtime, object: &ObjectRef, name: &str, value: Value) 
             )
             .unwrap()
     );
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let Value::String(value) = context
-        .get_property(object, &runtime.intern_property_key(name).unwrap())
-        .unwrap()
-    else {
-        panic!("{name} was not a String property");
-    };
-    value.to_utf8_lossy()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

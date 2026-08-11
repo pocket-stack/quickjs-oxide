@@ -2,10 +2,7 @@ use super::support::*;
 
 use std::ffi::OsStr;
 
-use quickjs_oxide::{
-    CallableRef, CompleteOrdinaryPropertyDescriptor, Context, JsString, ObjectRef, Runtime,
-    RuntimeError, Value,
-};
+use quickjs_oxide::{CallableRef, Context, JsString, Runtime, RuntimeError, Value};
 
 // This target pins QuickJS 2026-06-04's shared `js_array_reduce` kernel:
 // reduce and reduceRight, including their omitted-initial-value scan.
@@ -518,60 +515,6 @@ fn rust_graph_observations() -> Vec<String> {
 
 fn oracle_graph_observations(oracle: &OsStr) -> Vec<String> {
     super::quickjs_oracle::eval_std_lines(oracle, GRAPH_ORACLE, "Array.reduce graph oracle")
-}
-
-fn method_metadata(
-    runtime: &Runtime,
-    context: &mut Context,
-    owner: &ObjectRef,
-    function_prototype: &ObjectRef,
-    name: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let descriptor = runtime
-        .get_own_property(owner, &key)
-        .unwrap()
-        .unwrap_or_else(|| panic!("missing Array.prototype.{name}"));
-    let CompleteOrdinaryPropertyDescriptor::Data {
-        value: Value::Object(function),
-        writable,
-        enumerable,
-        configurable,
-    } = &descriptor
-    else {
-        panic!("Array.prototype.{name} was not a function data property");
-    };
-    let callable = runtime
-        .as_callable(function)
-        .unwrap()
-        .unwrap_or_else(|| panic!("Array.prototype.{name} was not callable"));
-    let function_name = context
-        .get_property(function, &runtime.intern_property_key("name").unwrap())
-        .unwrap();
-    let function_length = context
-        .get_property(function, &runtime.intern_property_key("length").unwrap())
-        .unwrap();
-    let name_descriptor = runtime
-        .get_own_property(function, &runtime.intern_property_key("name").unwrap())
-        .unwrap()
-        .unwrap_or_else(|| panic!("Array.{name} name descriptor was missing"));
-    let length_descriptor = runtime
-        .get_own_property(function, &runtime.intern_property_key("length").unwrap())
-        .unwrap()
-        .unwrap_or_else(|| panic!("Array.{name} length descriptor was missing"));
-    format!(
-        "{name}:{}:{}:D{}{}{}:{}:{}:{}:{}:{}",
-        primitive_value_text(function_name),
-        primitive_value_text(function_length),
-        Number(*writable),
-        Number(*enumerable),
-        Number(*configurable),
-        data_descriptor_bits(&name_descriptor),
-        data_descriptor_bits(&length_descriptor),
-        true,
-        runtime.get_prototype_of(function).unwrap().as_ref() == Some(function_prototype),
-        runtime.is_constructor(callable.as_object()).unwrap(),
-    )
 }
 
 fn eval_callable(

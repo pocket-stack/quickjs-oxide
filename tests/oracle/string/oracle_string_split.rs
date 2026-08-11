@@ -1,6 +1,7 @@
+use crate::runtime_observation::{property_callable, string_property};
 use std::ffi::OsStr;
 
-use quickjs_oxide::{CallableRef, Context, JsString, ObjectRef, Runtime, RuntimeError, Value};
+use quickjs_oxide::{Context, JsString, ObjectRef, Runtime, RuntimeError, Value};
 
 // Differential lock for pinned QuickJS 2026-06-04 `js_string_split`
 // (`quickjs.c` 45894-45980) and its prototype-table entry (46640).
@@ -775,24 +776,6 @@ fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
     super::quickjs_oracle::observe_completion(oracle, &source, description)
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    owner: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let Value::Object(object) = context
-        .get_property(owner, &runtime.intern_property_key(name).unwrap())
-        .unwrap()
-    else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&object)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn intrinsic_prototype(
     runtime: &Runtime,
     context: &mut Context,
@@ -840,21 +823,6 @@ fn int_property(runtime: &Runtime, context: &mut Context, object: &ObjectRef, na
         panic!("{name} was not an Int property");
     };
     value
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let Value::String(value) = context
-        .get_property(object, &runtime.intern_property_key(name).unwrap())
-        .unwrap()
-    else {
-        panic!("{name} was not a String property");
-    };
-    value.to_utf8_lossy()
 }
 
 fn value_type(runtime: &Runtime, value: &Value) -> &'static str {

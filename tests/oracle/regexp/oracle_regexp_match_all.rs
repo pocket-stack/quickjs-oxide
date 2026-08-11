@@ -1,3 +1,4 @@
+use crate::runtime_observation::take_exception_object;
 use crate::runtime_oracle::eval_callable;
 use crate::runtime_oracle::eval_object;
 use crate::runtime_oracle::value_type;
@@ -637,17 +638,6 @@ fn object_property(
     context
         .get_property(object, &key)
         .unwrap_or_else(|error| panic!("read property {name}: {error}"))
-}
-
-fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
-    let Value::Object(error) = context
-        .take_exception()
-        .unwrap_or_else(|failure| panic!("take {description}: {failure}"))
-        .unwrap_or_else(|| panic!("{description} was missing"))
-    else {
-        panic!("{description} was not an object");
-    };
-    error
 }
 
 fn string_property(

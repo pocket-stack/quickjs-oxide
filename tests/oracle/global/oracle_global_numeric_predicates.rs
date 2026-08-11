@@ -1,3 +1,4 @@
+use crate::runtime_observation::{property_callable, take_thrown_object as take_exception_object};
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -668,22 +669,6 @@ fn global_callable(runtime: &Runtime, context: &mut Context, name: &str) -> Call
     property_callable(runtime, context, &global, name)
 }
 
-fn property_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> CallableRef {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::Object(value) = context.get_property(object, &key).unwrap() else {
-        panic!("{name} was not an object");
-    };
-    runtime
-        .as_callable(&value)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
 fn intrinsic_prototype(runtime: &Runtime, context: &mut Context, name: &str) -> ObjectRef {
     let constructor = global_callable(runtime, context, name);
     let prototype = runtime.intern_property_key("prototype").unwrap();
@@ -838,13 +823,6 @@ fn observe_call(
         }
         Err(error) => panic!("numeric predicate returned engine error: {error}"),
     }
-}
-
-fn take_exception_object(context: &mut Context) -> ObjectRef {
-    let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
-        panic!("operation did not throw an object");
-    };
-    error
 }
 
 fn error_text(runtime: &Runtime, context: &mut Context, error: &ObjectRef, name: &str) -> String {

@@ -1,8 +1,8 @@
-use crate::runtime_oracle::value_type;
+use crate::runtime_completion_oracle::observe_read_context_eval_completion_with_prelude;
 use std::ffi::OsStr;
 use std::process::Command;
 
-use quickjs_oxide::{Context, ObjectRef, Runtime, RuntimeError, Value};
+use quickjs_oxide::Runtime;
 
 // Differential lock for the pinned QuickJS 2026-06-04 treatment of U+180E
 // MONGOLIAN VOWEL SEPARATOR. Unicode 17 classifies it as a format character,
@@ -186,7 +186,13 @@ fn compare_cases(group: &str, cases: &[(&str, &str)]) {
     for &(description, source) in cases {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
-        let actual = observe_rust_eval(&runtime, &mut context, source, description);
+        let actual = observe_read_context_eval_completion_with_prelude(
+            &runtime,
+            &mut context,
+            PRELUDE,
+            source,
+            description,
+        );
         let expected = observe_oracle(&oracle, source, description);
         if actual != expected {
             failures.push(format!(
@@ -204,41 +210,6 @@ fn compare_cases(group: &str, cases: &[(&str, &str)]) {
 
 fn observed_source(source: &str) -> String {
     format!("{PRELUDE}\n{source}")
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    let source = observed_source(source);
-    match context.eval(&source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    string_property(runtime, context, &error, "name"),
-                    string_property(runtime, context, &error, "message"),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
 }
 
 fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
@@ -265,34 +236,4 @@ try {
         .unwrap_or_else(|error| panic!("QuickJS output was not UTF-8 for {description}: {error}"))
         .trim_end()
         .to_owned()
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read string property {name}: {error}"))
-    else {
-        panic!("{name} was not a string");
-    };
-    value.to_utf8_lossy()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }

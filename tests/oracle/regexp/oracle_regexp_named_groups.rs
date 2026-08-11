@@ -1,7 +1,11 @@
-use crate::runtime_oracle::value_type;
-use std::ffi::OsStr;
+use crate::runtime_completion_oracle::{
+    compare_read_context_eval_completion_cases_with_prelude,
+    observe_quickjs_completion_with_prelude,
+};
 
-use quickjs_oxide::{CallableRef, Context, ObjectRef, Runtime, RuntimeError, Value};
+use crate::runtime_observation::string_property_with_read_context as string_property;
+
+use quickjs_oxide::{CallableRef, Context, ObjectRef, Runtime, Value};
 
 // Differential lock for pinned QuickJS 2026-06-04 named RegExp captures.
 //
@@ -283,7 +287,8 @@ fn regexp_named_groups_oracle_vectors_self_check() {
     };
     for (group, cases) in case_groups() {
         for (index, &(description, source)) in cases.iter().enumerate() {
-            let observation = observe_oracle(&oracle, source, description);
+            let observation =
+                observe_quickjs_completion_with_prelude(PRELUDE, &oracle, source, description);
             let should_return = group != "grammar and names" || matches!(index, 0 | 12 | 14);
             if should_return {
                 assert!(
@@ -302,7 +307,8 @@ fn regexp_named_groups_oracle_vectors_self_check() {
 
 #[test]
 fn regexp_named_group_grammar_and_names_match_pinned_quickjs() {
-    compare_cases(
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
         "RegExp named-group grammar and names",
         GRAMMAR_AND_NAME_CASES,
     );
@@ -310,7 +316,8 @@ fn regexp_named_group_grammar_and_names_match_pinned_quickjs() {
 
 #[test]
 fn regexp_named_captures_and_backreferences_match_pinned_quickjs() {
-    compare_cases(
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
         "RegExp named captures and backreferences",
         CAPTURE_AND_BACKREFERENCE_CASES,
     );
@@ -318,17 +325,26 @@ fn regexp_named_captures_and_backreferences_match_pinned_quickjs() {
 
 #[test]
 fn regexp_named_groups_and_indices_match_pinned_quickjs() {
-    compare_cases("RegExp groups and indices.groups", GROUPS_AND_INDICES_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp groups and indices.groups",
+        GROUPS_AND_INDICES_CASES,
+    );
 }
 
 #[test]
 fn regexp_named_group_replacement_matches_pinned_quickjs() {
-    compare_cases("RegExp named replacement", REPLACEMENT_CASES);
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
+        "RegExp named replacement",
+        REPLACEMENT_CASES,
+    );
 }
 
 #[test]
 fn regexp_named_group_construction_and_compile_match_pinned_quickjs() {
-    compare_cases(
+    compare_read_context_eval_completion_cases_with_prelude(
+        PRELUDE,
         "RegExp named construction and compile",
         CONSTRUCTION_AND_COMPILE_CASES,
     );
@@ -404,75 +420,6 @@ fn case_groups() -> [(&'static str, &'static [(&'static str, &'static str)]); 5]
     ]
 }
 
-fn compare_cases(group: &str, cases: &[(&str, &str)]) {
-    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
-        eprintln!("SKIP {group}: set QJS_ORACLE to upstream qjs");
-        return;
-    };
-    let mut failures = Vec::new();
-    for &(description, source) in cases {
-        let runtime = Runtime::new();
-        let mut context = runtime.new_context();
-        let actual = observe_rust_eval(&runtime, &mut context, source, description);
-        let expected = observe_oracle(&oracle, source, description);
-        if actual != expected {
-            failures.push(format!(
-                "{description}\nsource: {source:?}\noxide: {actual:?}\noracle: {expected:?}",
-            ));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{group} drifted in {} case(s):\n\n{}",
-        failures.len(),
-        failures.join("\n\n"),
-    );
-}
-
-fn observed_source(source: &str) -> String {
-    format!("{PRELUDE}\n{source}")
-}
-
-fn observe_rust_eval(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> String {
-    let source = observed_source(source);
-    match context.eval(&source) {
-        Ok(value) => format!(
-            "return|{}|{}",
-            value_type(runtime, &value),
-            primitive_value_text(value),
-        ),
-        Err(RuntimeError::Exception) => {
-            let exception = context
-                .take_exception()
-                .unwrap_or_else(|error| panic!("take Rust exception for {description}: {error}"))
-                .unwrap_or_else(|| panic!("Rust exception was missing for {description}"));
-            match exception {
-                Value::Object(error) => format!(
-                    "throw|object|{}|{}",
-                    string_property(runtime, context, &error, "name"),
-                    string_property(runtime, context, &error, "message"),
-                ),
-                value => format!(
-                    "throw|{}|{}",
-                    value_type(runtime, &value),
-                    primitive_value_text(value),
-                ),
-            }
-        }
-        Err(error) => panic!("Rust engine failure for {description} ({source:?}): {error}"),
-    }
-}
-
-fn observe_oracle(oracle: &OsStr, source: &str, description: &str) -> String {
-    let source = observed_source(source);
-    super::quickjs_oracle::observe_completion(oracle, &source, description)
-}
-
 fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
     expect_object(
         context
@@ -515,34 +462,4 @@ fn object_property(
             .unwrap_or_else(|error| panic!("read object property {name}: {error}")),
         name,
     )
-}
-
-fn string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    object: &ObjectRef,
-    name: &str,
-) -> String {
-    let key = runtime.intern_property_key(name).unwrap();
-    let Value::String(value) = context
-        .get_property(object, &key)
-        .unwrap_or_else(|error| panic!("read string property {name}: {error}"))
-    else {
-        panic!("{name} was not a string");
-    };
-    value.to_utf8_lossy()
-}
-
-fn primitive_value_text(value: Value) -> String {
-    match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) => quickjs_oxide::value::number_to_string(value),
-        Value::BigInt(value) => value.to_string(),
-        Value::String(value) => value.to_utf8_lossy(),
-        Value::Object(_) => "<object>".to_owned(),
-        Value::Symbol(_) => "<symbol>".to_owned(),
-    }
 }
