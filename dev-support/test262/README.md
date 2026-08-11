@@ -19,6 +19,13 @@ contracted variant passes only when phase, type, message, and location all
 match; Test262 paths and source hashes remain dev-support data and never enter
 the production parser.
 
+`negative-diagnostic-rules.tsv` is the complete registry for the semantic
+`rule` column and names the corresponding pinned QuickJS parser anchor. The
+authenticated audit tool rejects unknown or unused rules. Scheduled
+differential CI replays every exact contract through pinned QuickJS using the
+same Script/Module goal and strict-prefix policy and compares error type,
+message, line, and column.
+
 `negative-diagnostic-exemptions.tsv` freezes the legacy variants admitted
 before exact diagnostic contracts became mandatory. Every audited negative
 variant must belong to exactly one of the two files: an exact contract or this
@@ -40,6 +47,8 @@ Use the one parameterized entry point:
 ./scripts/test-test262.sh --check
 ./scripts/test-test262.sh --focused
 TEST262_WORKERS=2 ./scripts/test-test262.sh --full
+node scripts/audit-negative-diagnostics.mjs --suite /path/to/test262 \
+  --qjs /path/to/pinned/qjs
 ```
 
 `--check` authenticates the pinned baseline and prints whether the working tree

@@ -1,0 +1,44 @@
+rule	quickjs_anchor	description
+class-field.contains-arguments	js_parse_class	arguments is forbidden in class field initializers
+class-field.contains-super-call	js_parse_class	super calls are forbidden in class field initializers
+class-field.invalid-name	js_parse_class	class field name is not a valid property name
+class-field.invalid-property-name	js_parse_class	class field property name is malformed
+class-field.invalid-static-name	js_parse_class	static class element name is reserved
+class-field.missing-separator	js_parse_class	class fields require a valid element boundary
+class-private-accessor.static-mismatch	js_parse_class	private getter and setter staticness must agree
+class-private-environment.heritage	js_parse_class	private names are not in scope in class heritage
+class-private-field.delete	js_parse_postfix_expr	private fields cannot be deleted
+class-private-field.missing-separator	js_parse_class	private fields require a valid element boundary
+class-private-field.object-destructuring	js_parse_destructuring_element	private names are invalid object binding properties
+class-private-field.super-access	js_parse_postfix_expr	private fields cannot be selected from super
+class-private-in.disallowed-context	js_parse_postfix_expr	private-in is restricted to a declaring class environment
+class-private-in.invalid-assignment-reference	get_lvalue	private-in does not produce an assignable reference
+class-private-in.invalid-assignment-target	get_lvalue	private-in is not a valid assignment target
+class-private-in.invalid-rhs	js_parse_postfix_expr	private-in requires a right-hand expression
+class-private-in.yield-context	js_parse_unary	private-in respects generator yield grammar
+class-private-method.await-context	js_parse_class	private methods respect async await grammar
+class-private-method.contains-super-call	js_parse_class	super calls are forbidden in private field-style initializers
+class-private-method.yield-context	js_parse_class	private methods respect generator yield grammar
+class-private-name.constructor	js_parse_class	constructor cannot be declared as a private name
+class-private-name.duplicate	js_parse_class	private names cannot be declared twice incompatibly
+class-private-name.escape-hash	js_parse_class	the private-name hash cannot be escaped
+class-private-name.invalid-first-character	js_parse_class	private names require a valid identifier start
+class-private-name.undefined	js_parse_postfix_expr	private references require a declaration in scope
+class-static-block.await-context	js_parse_class	static blocks reject await in the synchronous grammar
+class-static-block.break	js_parse_class	static blocks cannot break across their boundary
+class-static-block.contains-arguments	js_parse_class	arguments is forbidden in static blocks
+class-static-block.contains-super-call	js_parse_class	super calls are forbidden in static blocks
+class-static-block.continue	js_parse_class	static blocks cannot continue across their boundary
+class-static-block.duplicate-label	js_parse_class	static block labels remain unique within their body
+class-static-block.lexical-redeclaration	js_parse_class	static block lexical declarations cannot conflict
+class-static-block.return	js_parse_class	static blocks cannot return
+class-static-block.undefined-label	js_parse_class	static block break and continue labels must resolve locally
+class-static-block.yield	js_parse_class	static blocks reject yield
+function-parameter.rest-default	js_parse_function_decl2	rest parameters cannot have default initializers
+function-parameter.rest-not-final	js_parse_function_decl2	rest parameters must be final
+generator.yield-identifier-reference	js_parse_unary	yield cannot be used as an identifier reference in generators
+generator.yield-weak-binding	js_parse_unary	yield parsing preserves QuickJS weak-binding diagnostics
+logical-assignment.non-simple-target	get_lvalue	logical assignment requires a simple assignment target
+module.invalid-import-binding	js_parse_import	import bindings cannot use restricted identifiers
+object-literal.private-name	js_parse_object_literal	private names are invalid object literal properties
+optional-chaining.invalid-assignment-target	get_lvalue	optional chains are not assignment targets

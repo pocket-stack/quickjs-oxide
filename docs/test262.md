@@ -51,6 +51,9 @@ contracts require the pinned-QuickJS phase, type, message, and `exact` or
 that still check phase and type only. Schema-v5 receipts authenticate both data
 files and record expected/actual diagnostic fields. New negative admissions
 must add exact contracts; they cannot add implicit phase/type-only cases.
+The semantic rule registry is separately authenticated, and scheduled QuickJS
+differential CI replays all 1,756 exact variants against QuickJS 2026-06-04 so
+the stored message and location cannot drift into an Oxide-only oracle.
 
 Historical per-milestone profiles, copied shell gates, and result vectors are
 not executable policy. They are preserved in the release archive listed in

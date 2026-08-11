@@ -51,7 +51,7 @@ case $spec_arg in
 esac
 [[ -f "$spec" && ! -L "$spec" ]] || die "spec is not a regular file: $spec_arg"
 
-required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 engine_fingerprint_tool engine_fingerprint_tool_lines engine_fingerprint_tool_sha256 engine_semantics_source engine_semantics_files engine_semantics_trees engine_semantics_sha256 upstream upstream_lines upstream_sha256 profile profile_lines profile_sha256 negative_diagnostics negative_diagnostics_lines negative_diagnostics_sha256 negative_diagnostic_exemptions negative_diagnostic_exemptions_lines negative_diagnostic_exemptions_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
+required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 engine_fingerprint_tool engine_fingerprint_tool_lines engine_fingerprint_tool_sha256 engine_semantics_source engine_semantics_files engine_semantics_trees engine_semantics_sha256 upstream upstream_lines upstream_sha256 profile profile_lines profile_sha256 negative_diagnostics negative_diagnostics_lines negative_diagnostics_sha256 negative_diagnostic_rules negative_diagnostic_rules_lines negative_diagnostic_rules_sha256 negative_diagnostic_audit_tool negative_diagnostic_audit_tool_lines negative_diagnostic_audit_tool_sha256 negative_diagnostic_exemptions negative_diagnostic_exemptions_lines negative_diagnostic_exemptions_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
 
 # Parse as inert data. In particular, this gate never sources or evaluates a spec.
 awk -v required="$required_keys" '
@@ -359,7 +359,7 @@ verify_report() {
         || die "$prefix classified result vector drifted"
 }
 
-for key in engine_fingerprint_tool upstream profile negative_diagnostics negative_diagnostic_exemptions manifest focused_tsv focused_jsonl; do
+for key in engine_fingerprint_tool upstream profile negative_diagnostics negative_diagnostic_rules negative_diagnostic_audit_tool negative_diagnostic_exemptions manifest focused_tsv focused_jsonl; do
     relative=$(spec_value "$key")
     case "/$relative/" in
         *//*|*'/./'*|*'/../'*|*\\*) die "unsafe repository path in $key: $relative" ;;
@@ -369,7 +369,7 @@ for key in engine_fingerprint_tool upstream profile negative_diagnostics negativ
     esac
 done
 
-for key in engine_fingerprint_tool_lines upstream_lines profile_lines negative_diagnostics_lines negative_diagnostic_exemptions_lines manifest_lines focused_tsv_lines \
+for key in engine_fingerprint_tool_lines upstream_lines profile_lines negative_diagnostics_lines negative_diagnostic_rules_lines negative_diagnostic_audit_tool_lines negative_diagnostic_exemptions_lines manifest_lines focused_tsv_lines \
     focused_jsonl_lines test262_metadata_records timeout_ms focused_variants \
     focused_eligible focused_runnable focused_passes full_variants full_eligible \
     full_runnable full_passes full_tsv_lines full_jsonl_lines; do
@@ -379,7 +379,7 @@ for key in engine_fingerprint_tool_lines upstream_lines profile_lines negative_d
 done
 for key in test262_patch_sha256 test262_config_sha256 test262_metadata_sha256 \
     engine_fingerprint_tool_sha256 engine_semantics_sha256 upstream_sha256 \
-    profile_sha256 negative_diagnostics_sha256 negative_diagnostic_exemptions_sha256 manifest_sha256 focused_tsv_sha256 \
+    profile_sha256 negative_diagnostics_sha256 negative_diagnostic_rules_sha256 negative_diagnostic_audit_tool_sha256 negative_diagnostic_exemptions_sha256 manifest_sha256 focused_tsv_sha256 \
     focused_jsonl_sha256 full_tsv_sha256 full_jsonl_sha256; do
     value=$(spec_value "$key")
     [[ "$value" =~ ^[0-9a-f]{64}$ ]] || die "invalid SHA-256 in Test262 spec for $key"
@@ -437,6 +437,8 @@ trap 'exit 143' TERM
 upstream=$(repo_path upstream)
 profile=$(repo_path profile)
 negative_diagnostics=$(repo_path negative_diagnostics)
+negative_diagnostic_rules=$(repo_path negative_diagnostic_rules)
+negative_diagnostic_audit_tool=$(repo_path negative_diagnostic_audit_tool)
 negative_diagnostic_exemptions=$(repo_path negative_diagnostic_exemptions)
 manifest=$(repo_path manifest)
 focused_tsv=$(repo_path focused_tsv)
@@ -456,10 +458,18 @@ check_file "$profile" "$(spec_value profile_lines)" \
     "$(spec_value profile_sha256)" 'Oxide profile'
 check_file "$negative_diagnostics" "$(spec_value negative_diagnostics_lines)" \
     "$(spec_value negative_diagnostics_sha256)" 'negative diagnostic contract'
+check_file "$negative_diagnostic_rules" "$(spec_value negative_diagnostic_rules_lines)" \
+    "$(spec_value negative_diagnostic_rules_sha256)" 'negative diagnostic rule registry'
+check_file "$negative_diagnostic_audit_tool" \
+    "$(spec_value negative_diagnostic_audit_tool_lines)" \
+    "$(spec_value negative_diagnostic_audit_tool_sha256)" \
+    'negative diagnostic audit tool'
 check_file "$negative_diagnostic_exemptions" \
     "$(spec_value negative_diagnostic_exemptions_lines)" \
     "$(spec_value negative_diagnostic_exemptions_sha256)" \
     'negative diagnostic exemption ledger'
+node "$negative_diagnostic_audit_tool" --check \
+    --contracts "$negative_diagnostics" --rules "$negative_diagnostic_rules"
 check_file "$manifest" "$(spec_value manifest_lines)" \
     "$(spec_value manifest_sha256)" 'focused manifest'
 [[ "$(toml_value quickjs version "$upstream")" == "$(spec_value quickjs)" \

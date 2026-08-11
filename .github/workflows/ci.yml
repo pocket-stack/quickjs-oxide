@@ -195,6 +195,11 @@ jobs:
       - name: Run the pinned QuickJS differential corpus
         run: |
           oracle=$(./scripts/build-quickjs-oracle.sh)
+          suite=$(./scripts/prepare-test262.sh)
+          node scripts/audit-negative-diagnostics.mjs \
+            --contracts dev-support/test262/negative-diagnostics.tsv \
+            --rules dev-support/test262/negative-diagnostic-rules.tsv \
+            --suite "$suite" --qjs "$oracle"
           QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets \
             --features test262-host
 
