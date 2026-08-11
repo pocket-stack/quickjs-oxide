@@ -68,6 +68,7 @@ jobs:
           ./scripts/check-no-test262-special-casing.sh
           node scripts/check-test262-artifact-inventory.mjs
           ./scripts/check-oracle-registry.sh
+          ./scripts/test-quickjs-fixtures.sh --validate
           ./scripts/check-test262-host-boundary.sh
           ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
           ./scripts/check-rust-only.sh
@@ -201,6 +202,8 @@ jobs:
             --contracts dev-support/test262/negative-diagnostics.tsv \
             --rules dev-support/test262/negative-diagnostic-rules.tsv \
             --suite "$suite" --qjs "$oracle"
+          cargo build --locked --bin qjs
+          ./scripts/test-quickjs-fixtures.sh --all --oxide ./target/debug/qjs
           QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets \
             --features test262-host
 
