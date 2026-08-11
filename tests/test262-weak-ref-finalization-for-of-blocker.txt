@@ -1,1 +1,0 @@
-test/built-ins/FinalizationRegistry/returns-new-object-from-constructor.js

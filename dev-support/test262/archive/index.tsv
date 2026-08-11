@@ -1,4 +1,5 @@
-milestone	source_commit	release_tag	asset	sha256	files	gates	profiles	result_vectors	baselines	exclusion_ledgers	documents
-r3ed-a	c14adeadb943f3ffd98e73117fbbea70e4d17551	test262-history-r3ed	quickjs-oxide-test262-history-r3ed.tar.xz	f75be32ddefb2be354257778ed137ee14cba533ba73b399b63e8d5e042349ce6	769	168	146	292	160	1	2
-r3ef-b	8eeaa58419085722d95b41f18ec1b52e76d85668	test262-history-r3ef	quickjs-oxide-test262-history-r3ef.tar.xz	47186c1f567c4961a6a6ee1297436f93dd6db98d6ce8bf9873ccb93aafb84006	36	0	9	12	3	3	9
-r3eg-a	8ef6aa492ca2f17a8cac3221adabc2e0f61b11d5	test262-history-r3eg	quickjs-oxide-test262-history-r3eg.tar.xz	b8658c5cc10ec6ef7eedfdc865d6826064ebd95edfedb8390921c574781cb0c1	12	0	3	4	1	1	3
+milestone	source_commit	release_tag	asset	sha256	files	gates	profiles	result_vectors	baselines	exclusion_ledgers	manifests	documents
+r3ed-a	c14adeadb943f3ffd98e73117fbbea70e4d17551	test262-history-r3ed	quickjs-oxide-test262-history-r3ed.tar.xz	f75be32ddefb2be354257778ed137ee14cba533ba73b399b63e8d5e042349ce6	769	168	146	292	160	1	0	2
+r3ef-b	8eeaa58419085722d95b41f18ec1b52e76d85668	test262-history-r3ef	quickjs-oxide-test262-history-r3ef.tar.xz	47186c1f567c4961a6a6ee1297436f93dd6db98d6ce8bf9873ccb93aafb84006	36	0	9	12	3	3	0	9
+r3eg-a	8ef6aa492ca2f17a8cac3221adabc2e0f61b11d5	test262-history-r3eg	quickjs-oxide-test262-history-r3eg.tar.xz	b8658c5cc10ec6ef7eedfdc865d6826064ebd95edfedb8390921c574781cb0c1	12	0	3	4	1	1	0	3
+r3eh	e388f6d3e831392f29bef34b6d26d0c9fd24a4d8	test262-history-r3eh	quickjs-oxide-test262-history-r3eh.tar.xz	b6209c1523cc2a21c2360a9c5524293a8185279890b46cddfc9b2733cfcc1556	315	0	0	0	0	0	313	2

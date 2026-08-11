@@ -1,1 +1,0 @@
-test/staging/sm/generators/delegating-yield-5.js

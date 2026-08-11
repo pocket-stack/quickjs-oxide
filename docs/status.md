@@ -62,6 +62,10 @@ policy as well as phase and type. Logical-assignment, optional-chain-assignment,
 and generator-yield collateral cases discovered during admission are
 exact-contracted too.
 
+The active tree now retains only 23 referenced `tests/test262-*` artifacts; 313
+superseded manifests and ledgers are authenticated in the R3eh history release.
+Fast CI rejects any new unreferenced Test262 bookkeeping file.
+
 ## Verification
 
 ```sh

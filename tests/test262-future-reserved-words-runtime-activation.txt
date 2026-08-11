@@ -1,1 +1,0 @@
-test/staging/sm/misc/future-reserved-words.js

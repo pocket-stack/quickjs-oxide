@@ -1,4 +1,0 @@
-test/language/module-code/comment-single-line-html-open.js
-test/language/module-code/early-dup-export-id.js
-test/language/module-code/early-strict-mode.js
-test/language/module-code/eval-self-abrupt.js

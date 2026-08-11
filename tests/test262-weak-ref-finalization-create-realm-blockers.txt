@@ -1,2 +1,0 @@
-test/built-ins/FinalizationRegistry/proto-from-ctor-realm.js
-test/built-ins/WeakRef/proto-from-ctor-realm.js

@@ -1,3 +1,0 @@
-test/language/destructuring/binding/syntax/destructuring-array-parameters-function-arguments-length.js
-test/language/destructuring/binding/syntax/destructuring-object-parameters-function-arguments-length.js
-test/language/expressions/await/await-in-nested-generator.js

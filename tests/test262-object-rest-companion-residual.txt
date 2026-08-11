@@ -1,1 +1,0 @@
-test/language/statements/class/elements/privatefieldset-typeerror-11.js

@@ -1,4 +1,0 @@
-test/built-ins/Atomics/notify/notify-in-order-one-time.js
-test/built-ins/Atomics/notify/notify-in-order.js
-test/built-ins/Atomics/wait/bigint/waiterlist-order-of-operations-is-fifo.js
-test/built-ins/Atomics/wait/waiterlist-order-of-operations-is-fifo.js

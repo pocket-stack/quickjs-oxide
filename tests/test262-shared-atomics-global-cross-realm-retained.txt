@@ -1,4 +1,0 @@
-test/built-ins/DataView/proto-from-ctor-realm-sab.js
-test/built-ins/SharedArrayBuffer/proto-from-ctor-realm.js
-test/built-ins/TypedArrayConstructors/ctors-bigint/buffer-arg/proto-from-ctor-realm-sab.js
-test/built-ins/TypedArrayConstructors/ctors/buffer-arg/proto-from-ctor-realm-sab.js

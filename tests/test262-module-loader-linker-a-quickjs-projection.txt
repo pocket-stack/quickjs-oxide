@@ -1,4 +1,0 @@
-test262.conf:44: ignoring testdir=test262/test
-TypeError
-SyntaxError: invalid increment/decrement operand
-Average memory statistics for 4 tests:

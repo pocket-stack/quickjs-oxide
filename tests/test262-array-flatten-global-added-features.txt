@@ -1,2 +1,0 @@
-Array.prototype.flat
-Array.prototype.flatMap

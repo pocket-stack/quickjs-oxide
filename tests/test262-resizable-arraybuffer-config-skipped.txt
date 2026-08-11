@@ -1,2 +1,0 @@
-test/built-ins/ArrayBuffer/prototype/resize/this-is-immutable-arraybuffer-object.js
-test/built-ins/Atomics/waitAsync/retrieve-length-before-index-coercion.js

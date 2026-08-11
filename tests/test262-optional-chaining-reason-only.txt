@@ -1,4 +1,0 @@
-test/language/expressions/class/elements/grammar-private-field-optional-chaining.js
-test/language/expressions/class/elements/private-field-after-optional-chain.js
-test/language/statements/class/elements/grammar-private-field-optional-chaining.js
-test/language/statements/class/elements/private-field-after-optional-chain.js

@@ -1,4 +1,0 @@
-test/intl402/DateTimeFormat/prototype/format/temporal-zoneddatetime-not-supported.js
-test/intl402/DateTimeFormat/prototype/formatRange/temporal-zoneddatetime-not-supported.js
-test/intl402/DateTimeFormat/prototype/formatRangeToParts/temporal-zoneddatetime-not-supported.js
-test/intl402/DateTimeFormat/prototype/formatToParts/temporal-zoneddatetime-not-supported.js

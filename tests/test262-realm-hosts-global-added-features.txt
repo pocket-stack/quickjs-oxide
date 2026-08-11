@@ -1,2 +1,0 @@
-host-create-realm-required
-host-eval-script-required

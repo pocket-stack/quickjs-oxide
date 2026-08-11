@@ -1,1 +1,0 @@
-test/staging/sm/fields/await-identifier-script.js

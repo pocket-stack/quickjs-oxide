@@ -66,6 +66,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           ./scripts/check-no-test262-special-casing.sh
+          node scripts/check-test262-artifact-inventory.mjs
           ./scripts/check-oracle-registry.sh
           ./scripts/check-test262-host-boundary.sh
           ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check

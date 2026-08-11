@@ -1,1 +1,0 @@
-test/staging/sm/Function/function-name-binding.js

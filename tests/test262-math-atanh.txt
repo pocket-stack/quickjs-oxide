@@ -1,7 +1,0 @@
-test/built-ins/Math/atanh/atanh-specialVals.js
-test/built-ins/Math/atanh/length.js
-test/built-ins/Math/atanh/name.js
-test/built-ins/Math/atanh/not-a-constructor.js
-test/built-ins/Math/atanh/prop-desc.js
-test/staging/sm/Math/atanh-approx.js
-test/staging/sm/Math/atanh-exact.js

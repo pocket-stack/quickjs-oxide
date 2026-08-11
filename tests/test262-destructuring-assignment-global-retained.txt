@@ -1,4 +1,0 @@
-test/language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js
-test/language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js
-test/language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js
-test/language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js

@@ -1,9 +1,0 @@
-test/language/expressions/class/cpn-class-expr-accessors-computed-property-name-from-await-expression.js
-test/language/expressions/class/cpn-class-expr-computed-property-name-from-await-expression.js
-test/language/expressions/class/cpn-class-expr-fields-computed-property-name-from-await-expression.js
-test/language/expressions/class/cpn-class-expr-fields-methods-computed-property-name-from-await-expression.js
-test/language/expressions/object/cpn-obj-lit-computed-property-name-from-await-expression.js
-test/language/statements/class/cpn-class-decl-accessors-computed-property-name-from-await-expression.js
-test/language/statements/class/cpn-class-decl-computed-property-name-from-await-expression.js
-test/language/statements/class/cpn-class-decl-fields-computed-property-name-from-await-expression.js
-test/language/statements/class/cpn-class-decl-fields-methods-computed-property-name-from-await-expression.js

@@ -1,2 +1,0 @@
-test/language/statements/for-of/body-dstr-assign-error.js
-test/language/statements/for-of/body-dstr-assign.js

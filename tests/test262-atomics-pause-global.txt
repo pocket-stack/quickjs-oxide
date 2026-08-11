@@ -1,6 +1,0 @@
-test/built-ins/Atomics/pause/descriptor.js
-test/built-ins/Atomics/pause/length.js
-test/built-ins/Atomics/pause/name.js
-test/built-ins/Atomics/pause/non-integral-iterationnumber-throws.js
-test/built-ins/Atomics/pause/not-a-constructor.js
-test/built-ins/Atomics/pause/returns-undefined.js

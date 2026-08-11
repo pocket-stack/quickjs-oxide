@@ -1,5 +1,0 @@
-test/language/statements/class/elements/privatefieldset-typeerror-11.js
-test/staging/sm/BigInt/property-name.js
-test/staging/sm/destructuring/bug1396261.js
-test/staging/sm/expressions/destructuring-object-__proto__-1.js
-test/staging/sm/expressions/destructuring-object-__proto__-2.js

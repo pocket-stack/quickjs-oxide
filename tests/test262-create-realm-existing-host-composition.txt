@@ -1,7 +1,0 @@
-test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/BigInt/detached-buffer-throws-realm.js
-test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/detached-buffer-throws-realm.js
-test/staging/sm/TypedArray/constructor-buffer-sequence.js
-test/staging/sm/TypedArray/iterator-next-with-detached.js
-test/staging/sm/TypedArray/set-wrapped.js
-test/staging/sm/TypedArray/sort_errors.js
-test/staging/sm/extensions/dataview.js

@@ -1,1 +1,0 @@
-test/staging/sm/Atomics/cross-compartment.js

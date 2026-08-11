@@ -59,10 +59,12 @@ baseline hashes. Promotion updates the pinned source commit and result hashes
 only after report metadata matches the recomputed workspace fingerprint.
 
 The repository keeps only the current profile and focused receipt plus the
-small semantic ledgers used by runner unit tests. Earlier milestone profiles,
-168 cohort-specific gates, result vectors, baselines, and former long-form
-status ledgers are preserved in the public `test262-history-*` release assets.
-Their authenticated inventory is in `archive/index.tsv`.
+small semantic ledgers used by runner unit tests. A fast inventory gate requires
+every tracked `tests/test262-*` artifact to be referenced by the current spec,
+runner, or a generator. Earlier milestone profiles, 168 cohort-specific gates,
+result vectors, baselines, 313 superseded manifests, and former long-form status
+ledgers are preserved in the public `test262-history-*` release assets. Their
+authenticated inventory is in `archive/index.tsv`.
 
 The `$262` realm and agent host is excluded from default library, CLI, and
 WASM builds. The central gate explicitly enables the non-default

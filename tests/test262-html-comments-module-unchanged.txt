@@ -1,3 +1,0 @@
-test/language/module-code/comment-multi-line-html-close.js
-test/language/module-code/comment-single-line-html-close.js
-test/language/module-code/comment-single-line-html-open.js
