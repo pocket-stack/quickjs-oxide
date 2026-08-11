@@ -5,14 +5,21 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, posix, relative, resolve } from "node:path";
 
+import {
+  admissionRecord,
+  assertAdmissionGroup,
+  renderAdmissionRows,
+} from "./test262-admission-data.mjs";
+
 const root = resolve(import.meta.dirname, "..");
 const checkedSuite = join(root, "target/oracle/quickjs-2026-06-04/test262");
+const checkedAdmissions = join(root, "dev-support/test262/admissions.tsv");
 const args = process.argv.slice(2);
 const suiteIndex = args.indexOf("--suite");
 const outputIndex = args.indexOf("--output");
 const suite = resolve(suiteIndex === -1 ? checkedSuite : args[suiteIndex + 1]);
-const mode = args.includes("--rust")
-  ? "rust"
+const mode = args.includes("--admissions")
+  ? "admissions"
   : outputIndex === -1
     ? "check"
     : "output";
@@ -31,7 +38,6 @@ const expected = {
   rootedEdges: 1,
   variants: 27,
   negatives: 12,
-  rustSha256: "d35e2377f2bcd630b677412de88f6f5c6be5ab5bbb8b04d69a6c3eeb2fc1d27f",
   evidenceSha256: {
     "tests/test262-import-meta-a.txt":
       "e74868cc1620f70e5e1cb4528bd2af6915cf1ada5895406869004de7d857def6",
@@ -302,65 +308,47 @@ for (const [relativePath, contents] of evidence) {
   assert.equal(sha256(contents), expected.evidenceSha256[relativePath], `${relativePath} changed`);
 }
 
-function metadataConstant(relativePath) {
-  const shape = metadata(relativePath);
-  if (shape.flags.length === 0) return "MODULE_FIXTURE_METADATA";
-  if (!shape.negativePhase) return "MODULE_IMPORT_META_METADATA";
-  if (shape.features.includes("object-rest")) {
-    return "MODULE_IMPORT_META_OBJECT_REST_PARSE_SYNTAX_ERROR_METADATA";
-  }
-  if (shape.features.includes("destructuring-assignment")) {
-    return "MODULE_IMPORT_META_DESTRUCTURING_PARSE_SYNTAX_ERROR_METADATA";
-  }
-  if (shape.features.includes("async-iteration")) {
-    return "MODULE_IMPORT_META_ASYNC_ITERATION_PARSE_SYNTAX_ERROR_METADATA";
-  }
-  return "MODULE_IMPORT_META_PARSE_SYNTAX_ERROR_METADATA";
-}
+const admissionGroup = "import-meta-a";
+const admissionRecords = [
+  ...moduleSources.map((relativePath) => {
+    const shape = metadata(relativePath);
+    return admissionRecord({
+      kind: "graph-file",
+      group: admissionGroup,
+      path: relativePath,
+      source_sha256: sha256(source(relativePath)),
+      includes: shape.includes,
+      flags: shape.flags,
+      features: shape.features,
+      negative_phase: shape.negativePhase,
+      negative_type: shape.negativeType,
+    });
+  }),
+  ...moduleSources.flatMap((relativePath) =>
+    fileEdges.get(relativePath).map((request, requestIndex) =>
+      admissionRecord({
+        kind: "graph-request",
+        group: admissionGroup,
+        path: relativePath,
+        request_index: requestIndex,
+        specifier: request.specifier,
+        normalized_path: request.normalized,
+      }),
+    ),
+  ),
+  ...moduleRoots.map((rootPath) =>
+    admissionRecord({
+      kind: "graph-root",
+      group: admissionGroup,
+      path: rootPath,
+      closure_file_count: closure(rootPath).length,
+      priority: 1,
+    }),
+  ),
+];
 
-function rustAdmissions() {
-  const outputLines = [];
-  outputLines.push(
-    `const IMPORT_META_MODULE_ROOT_ADMISSIONS: [ModuleGraphRootAdmission; ${moduleRoots.length}] = [`,
-  );
-  for (const rootPath of moduleRoots) {
-    outputLines.push("    ModuleGraphRootAdmission {");
-    outputLines.push(`        path: ${JSON.stringify(rootPath)},`);
-    outputLines.push(`        closure_file_count: ${closure(rootPath).length},`);
-    outputLines.push("    },");
-  }
-  outputLines.push("];", "");
-  outputLines.push(
-    `const IMPORT_META_MODULE_FILE_ADMISSIONS: [ModuleGraphFileAdmission; ${moduleSources.length}] = [`,
-  );
-  for (const relativePath of moduleSources) {
-    outputLines.push("    ModuleGraphFileAdmission {");
-    outputLines.push(`        path: ${JSON.stringify(relativePath)},`);
-    outputLines.push(`        source_sha256: ${JSON.stringify(sha256(source(relativePath)))},`);
-    outputLines.push(`        metadata: ${metadataConstant(relativePath)},`);
-    const requests = fileEdges.get(relativePath);
-    if (requests.length === 0) {
-      outputLines.push("        requests: &[],");
-    } else {
-      outputLines.push("        requests: &[");
-      for (const request of requests) {
-        outputLines.push("            ModuleRequestAdmission {");
-        outputLines.push(`                specifier: ${JSON.stringify(request.specifier)},`);
-        outputLines.push(`                normalized_path: ${JSON.stringify(request.normalized)},`);
-        outputLines.push("            },");
-      }
-      outputLines.push("        ],");
-    }
-    outputLines.push("    },");
-  }
-  outputLines.push("];", "");
-  return outputLines.join("\n");
-}
-
-if (mode === "rust") {
-  const contents = rustAdmissions();
-  assert.equal(sha256(contents), expected.rustSha256, "Rust admissions changed");
-  process.stdout.write(contents);
+if (mode === "admissions") {
+  process.stdout.write(renderAdmissionRows(admissionRecords));
 } else if (mode === "output") {
   assert(output, "--output requires a directory");
   for (const [relativePath, contents] of evidence) {
@@ -369,6 +357,7 @@ if (mode === "rust") {
   }
   console.log(`generated ${evidence.size} authenticated evidence files in ${output}`);
 } else {
+  assertAdmissionGroup(checkedAdmissions, admissionGroup, admissionRecords);
   console.log(
     `import-meta-a generated evidence authenticated: roots=${roots.length} sources=${sources.length} module_roots=${moduleRoots.length} script_roots=${scriptRoots.length} rooted_edges=${rootedEdges.length} variants=${variantRecords.length} canaries=${exclusionCanaries.length}`,
   );

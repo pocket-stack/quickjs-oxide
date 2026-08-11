@@ -51,7 +51,7 @@ case $spec_arg in
 esac
 [[ -f "$spec" && ! -L "$spec" ]] || die "spec is not a regular file: $spec_arg"
 
-required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 engine_fingerprint_tool engine_fingerprint_tool_lines engine_fingerprint_tool_sha256 engine_semantics_source engine_semantics_files engine_semantics_trees engine_semantics_sha256 upstream upstream_lines upstream_sha256 profile profile_lines profile_sha256 negative_diagnostics negative_diagnostics_lines negative_diagnostics_sha256 negative_diagnostic_rules negative_diagnostic_rules_lines negative_diagnostic_rules_sha256 negative_diagnostic_audit_tool negative_diagnostic_audit_tool_lines negative_diagnostic_audit_tool_sha256 negative_diagnostic_exemptions negative_diagnostic_exemptions_lines negative_diagnostic_exemptions_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
+required_keys='schema milestone quickjs test262 test262_patch_sha256 test262_config_sha256 test262_metadata_records test262_metadata_sha256 engine_fingerprint_tool engine_fingerprint_tool_lines engine_fingerprint_tool_sha256 engine_semantics_source engine_semantics_files engine_semantics_trees engine_semantics_sha256 upstream upstream_lines upstream_sha256 admissions admissions_lines admissions_sha256 profile profile_lines profile_sha256 negative_diagnostics negative_diagnostics_lines negative_diagnostics_sha256 negative_diagnostic_rules negative_diagnostic_rules_lines negative_diagnostic_rules_sha256 negative_diagnostic_audit_tool negative_diagnostic_audit_tool_lines negative_diagnostic_audit_tool_sha256 negative_diagnostic_exemptions negative_diagnostic_exemptions_lines negative_diagnostic_exemptions_sha256 manifest manifest_lines manifest_sha256 focused_tsv focused_tsv_lines focused_tsv_sha256 focused_jsonl focused_jsonl_lines focused_jsonl_sha256 mode timeout_ms focused_variants focused_eligible focused_runnable focused_passes focused_summary full_variants full_eligible full_runnable full_passes full_tsv_lines full_tsv_sha256 full_jsonl_lines full_jsonl_sha256 full_summary'
 
 # Parse as inert data. In particular, this gate never sources or evaluates a spec.
 awk -v required="$required_keys" '
@@ -435,6 +435,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 upstream=$(repo_path upstream)
+admissions=$(repo_path admissions)
 profile=$(repo_path profile)
 negative_diagnostics=$(repo_path negative_diagnostics)
 negative_diagnostic_rules=$(repo_path negative_diagnostic_rules)
@@ -454,6 +455,8 @@ check_file "$engine_fingerprint_tool" "$(spec_value engine_fingerprint_tool_line
     "$(spec_value engine_fingerprint_tool_sha256)" 'engine fingerprint tool'
 check_file "$upstream" "$(spec_value upstream_lines)" \
     "$(spec_value upstream_sha256)" 'upstream pin'
+check_file "$admissions" "$(spec_value admissions_lines)" \
+    "$(spec_value admissions_sha256)" 'Test262 admission data'
 check_file "$profile" "$(spec_value profile_lines)" \
     "$(spec_value profile_sha256)" 'Oxide profile'
 check_file "$negative_diagnostics" "$(spec_value negative_diagnostics_lines)" \
@@ -563,6 +566,8 @@ grep -Fqx "Test262 metadata: files=$(spec_value test262_metadata_records)" \
 if [[ "$mode" == focused ]]; then
     replay=$tmp/focused.tsv
     run_output=$("$runner" --suite "$suite" --config "$source_dir/test262.conf" \
+        --admissions "$admissions" \
+        --admissions-sha256 "$(spec_value admissions_sha256)" \
         --oxide-profile "$profile" --negative-diagnostics "$negative_diagnostics" \
         --negative-diagnostics-sha256 "$(spec_value negative_diagnostics_sha256)" \
         --negative-diagnostic-exemptions "$negative_diagnostic_exemptions" \
@@ -584,7 +589,7 @@ if [[ "$mode" == focused ]]; then
     exit 0
 fi
 
-for protected in "$spec" "$upstream" "$profile" "$negative_diagnostics" "$negative_diagnostic_exemptions" "$manifest" "$focused_tsv" "$focused_jsonl"; do
+for protected in "$spec" "$upstream" "$admissions" "$profile" "$negative_diagnostics" "$negative_diagnostic_exemptions" "$manifest" "$focused_tsv" "$focused_jsonl"; do
     [[ "$full_report" != "$protected" && "$full_json" != "$protected" ]] \
         || die "full output aliases protected input: $protected"
     if [[ -e "$full_report" && "$full_report" -ef "$protected" ]] \
@@ -597,6 +602,8 @@ mkdir -p "$output_dir"
     || die 'target output directory must be a real directory'
 rm -f -- "$full_report" "$full_json"
 run_output=$("$runner" --suite "$suite" --config "$source_dir/test262.conf" \
+    --admissions "$admissions" \
+    --admissions-sha256 "$(spec_value admissions_sha256)" \
     --oxide-profile "$profile" --negative-diagnostics "$negative_diagnostics" \
     --negative-diagnostics-sha256 "$(spec_value negative_diagnostics_sha256)" \
     --negative-diagnostic-exemptions "$negative_diagnostic_exemptions" \

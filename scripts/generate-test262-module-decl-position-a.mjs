@@ -5,14 +5,21 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import {
+  admissionRecord,
+  assertAdmissionGroup,
+  renderAdmissionRows,
+} from "./test262-admission-data.mjs";
+
 const root = resolve(import.meta.dirname, "..");
 const checkedSuite = join(root, "target/oracle/quickjs-2026-06-04/test262");
+const checkedAdmissions = join(root, "dev-support/test262/admissions.tsv");
 const args = process.argv.slice(2);
 const suiteIndex = args.indexOf("--suite");
 const outputIndex = args.indexOf("--output");
 const suite = resolve(suiteIndex === -1 ? checkedSuite : args[suiteIndex + 1]);
-const mode = args.includes("--rust")
-  ? "rust"
+const mode = args.includes("--admissions")
+  ? "admissions"
   : outputIndex === -1
     ? "check"
     : "output";
@@ -26,7 +33,6 @@ const expected = {
   exportRoots: 43,
   importRoots: 43,
   generatorRoots: 12,
-  rustSha256: "9ebc2b3d9f8d237efa6245fd9aa3a26d33f274155ad84d47d4c0e9ab2f968896",
   evidenceSha256: {
     "tests/test262-module-decl-position-a.txt":
       "5e70969f0a3f4ed428f69e868fdd69fe2b6821d42733e97cc13c1e24837ef182",
@@ -171,28 +177,24 @@ for (const [relativePath, contents] of evidence) {
   assert.equal(sha256(contents), expected.evidenceSha256[relativePath], `${relativePath} changed`);
 }
 
-function rustAdmissions() {
-  const outputLines = [];
-  outputLines.push(
-    `const DECL_POSITION_MODULE_ADMISSIONS: [DependencyFreeModuleAdmission; ${roots.length}] = [`,
-  );
-  for (const relativePath of roots) {
-    outputLines.push("    DependencyFreeModuleAdmission {");
-    outputLines.push(`        path: ${JSON.stringify(relativePath)},`);
-    outputLines.push(`        source_sha256: ${JSON.stringify(sha256(source(relativePath)))},`);
-    outputLines.push(
-      `        metadata: ${metadata(relativePath).features.includes("generators") ? "MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA" : "MODULE_PARSE_SYNTAX_ERROR_METADATA"},`,
-    );
-    outputLines.push("    },");
-  }
-  outputLines.push("];", "");
-  return outputLines.join("\n");
-}
+const admissionGroup = "module-decl-position-a";
+const admissionRecords = roots.map((relativePath) => {
+  const shape = metadata(relativePath);
+  return admissionRecord({
+    kind: "module",
+    group: admissionGroup,
+    path: relativePath,
+    source_sha256: sha256(source(relativePath)),
+    includes: shape.includes,
+    flags: shape.flags,
+    features: shape.features,
+    negative_phase: shape.negativePhase,
+    negative_type: shape.negativeType,
+  });
+});
 
-if (mode === "rust") {
-  const contents = rustAdmissions();
-  assert.equal(sha256(contents), expected.rustSha256, "Rust admissions changed");
-  process.stdout.write(contents);
+if (mode === "admissions") {
+  process.stdout.write(renderAdmissionRows(admissionRecords));
 } else if (mode === "output") {
   assert(output, "--output requires a directory");
   for (const [relativePath, contents] of evidence) {
@@ -200,6 +202,7 @@ if (mode === "rust") {
   }
   console.log(`generated ${evidence.size} authenticated evidence files in ${output}`);
 } else {
+  assertAdmissionGroup(checkedAdmissions, admissionGroup, admissionRecords);
   for (const [relativePath, contents] of evidence) {
     if (relativePath === "tests/test262-module-decl-position-a-ledger.tsv") {
       assert.equal(

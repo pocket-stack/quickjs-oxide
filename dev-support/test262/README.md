@@ -3,12 +3,23 @@
 `current.conf` is the single authoritative Test262 gate specification. It pins
 the current profile, focused manifest and receipts, full-corpus metrics, line
 counts, summaries, SHA-256 hashes, and the current negative-diagnostic contract.
+It also pins the exact admission catalog by repository path, line count, and
+SHA-256.
 The gate parses it as inert `key=value` data; it is never sourced or evaluated
 by a shell.
 
 The focused manifest is a sorted set of source paths. Its receipt remains a
 full `(path, variant)` vector, so one path may produce multiple metadata-driven
 variants.
+
+`admissions.tsv` is the hash-pinned source of exact Module-goal graphs,
+dependency-free module roots, `$262.agent` host paths, and supplemental feature
+contracts. Its strict 16-column TSV schema records source hashes, complete
+metadata shapes, graph edges and closure sizes, lookup priority, and host
+cohort policy. Both coordinator and isolated worker parse and authenticate the
+same file; malformed, unsorted, duplicate, open-graph, or checksum-drifted data
+fails closed. The four cohort generators emit `--admissions` rows and compare
+their owned group against this file in normal check mode.
 
 `negative-diagnostics.tsv` is a strict, source-authenticated overlay for
 negative variants whose QuickJS failure reason and location are part of the

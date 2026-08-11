@@ -12,6 +12,7 @@ use quickjs_oxide::{
     ModuleLoaderError, ObjectRef, Runtime, RuntimeError, Test262AgentSession, Value,
 };
 
+use super::admissions::AdmissionCatalog;
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
 use super::requirements::{
@@ -88,6 +89,7 @@ impl ExceptionDiagnostic {
 
 #[derive(Debug)]
 struct ExactTest262ModuleLoader {
+    admissions: Rc<AdmissionCatalog>,
     suite: PathBuf,
     root: PathBuf,
     resolution_started: Rc<Cell<bool>>,
@@ -111,8 +113,9 @@ impl ModuleLoader for ExactTest262ModuleLoader {
         self.resolution_started.set(true);
         let base_name = exact_module_utf8_name(base_name)?;
         let specifier = exact_module_utf8_name(specifier)?;
-        let normalized = normalize_exact_module_request(&self.root, &base_name, &specifier)
-            .map_err(ModuleLoaderError::new)?;
+        let normalized =
+            normalize_exact_module_request(&self.admissions, &self.root, &base_name, &specifier)
+                .map_err(ModuleLoaderError::new)?;
         JsString::try_from_utf8(&normalized)
             .map_err(|error| ModuleLoaderError::new(error.to_string()))
     }
@@ -120,7 +123,7 @@ impl ModuleLoader for ExactTest262ModuleLoader {
     fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
         self.resolution_started.set(true);
         let normalized_name = exact_module_utf8_name(normalized_name)?;
-        load_exact_module_fixture(&self.suite, &self.root, &normalized_name)
+        load_exact_module_fixture(&self.admissions, &self.suite, &self.root, &normalized_name)
             .map_err(ModuleLoaderError::new)
     }
 }
@@ -165,15 +168,32 @@ impl Drop for AgentRunGuard {
     }
 }
 
+pub(super) struct IsolatedWorkerOptions<'a> {
+    pub(super) executable: &'a Path,
+    pub(super) suite: &'a Path,
+    pub(super) test: &'a Path,
+    pub(super) admissions: &'a Path,
+    pub(super) admissions_sha256: &'a str,
+    pub(super) variant: Variant,
+    pub(super) timeout: Duration,
+    pub(super) allow_async_host: bool,
+    pub(super) allow_agent_host: bool,
+}
+
 pub(super) fn run_isolated_worker(
-    executable: &Path,
-    suite: &Path,
-    test: &Path,
-    variant: Variant,
-    timeout: Duration,
-    allow_async_host: bool,
-    allow_agent_host: bool,
+    options: IsolatedWorkerOptions<'_>,
 ) -> Result<WorkerResult, String> {
+    let IsolatedWorkerOptions {
+        executable,
+        suite,
+        test,
+        admissions,
+        admissions_sha256,
+        variant,
+        timeout,
+        allow_async_host,
+        allow_agent_host,
+    } = options;
     let mut command = Command::new(executable);
     command
         .arg("--worker-one")
@@ -181,6 +201,10 @@ pub(super) fn run_isolated_worker(
         .arg(suite)
         .arg("--test")
         .arg(test)
+        .arg("--admissions")
+        .arg(admissions)
+        .arg("--admissions-sha256")
+        .arg(admissions_sha256)
         .arg("--variant")
         .arg(variant.name());
     if allow_async_host {
@@ -277,12 +301,24 @@ fn join_pipe_reader(
 
 pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String> {
     validate_relative_test_path(&options.test)?;
+    let admissions = Rc::new(AdmissionCatalog::load(
+        &options.admissions,
+        &options.admissions_sha256,
+    )?);
     let path = options.suite.join(&options.test);
     let source =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let metadata = parse_metadata(&source)?;
-    let exact_module = exact_module_test(&options.suite, &options.test, &source, &metadata)?;
-    if options.allow_agent_host && !is_exact_agent_host_test(&options.test, &source, &metadata)? {
+    let exact_module = exact_module_test(
+        &admissions,
+        &options.suite,
+        &options.test,
+        &source,
+        &metadata,
+    )?;
+    if options.allow_agent_host
+        && !is_exact_agent_host_test(&admissions, &options.test, &source, &metadata)?
+    {
         return Err(format!(
             "Test262 agent host worker rejected unaudited path: {}",
             options.test.display()
@@ -300,6 +336,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let _module_loader_registration =
         (exact_module == Some(ExactModuleTest::FixtureGraph)).then(|| {
             runtime.set_module_loader(ExactTest262ModuleLoader {
+                admissions: admissions.clone(),
                 suite: options.suite.clone(),
                 root: options.test.clone(),
                 resolution_started: module_resolution_started.clone(),
@@ -1010,6 +1047,13 @@ mod tests {
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
 
+    const ADMISSIONS_SHA256: &str =
+        "d31a7d3464e3badfafbe4900cbb8bc7fbd9c2abcbbe8fdfbd9a24d21073fc2ba";
+
+    fn admissions_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dev-support/test262/admissions.tsv")
+    }
+
     fn execute_thrown(
         runtime: &Runtime,
         context: &mut Context,
@@ -1070,6 +1114,8 @@ mod tests {
         let error = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: wrong_path,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1086,6 +1132,8 @@ mod tests {
         let error = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: exact_path,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1104,6 +1152,8 @@ mod tests {
         let error = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: broadcast_path,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1120,6 +1170,8 @@ mod tests {
         let bounded_wait_error = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: bounded_wait_path,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1137,6 +1189,8 @@ mod tests {
         let wake_count_location_error = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: wake_count_location_path,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1153,6 +1207,8 @@ mod tests {
         let fifo_wake_order_error = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: fifo_wake_order_path,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1372,6 +1428,8 @@ throw Object.create(proxyPrototype);
         let result = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,
@@ -1405,6 +1463,8 @@ throw Object.create(proxyPrototype);
             let result = run_worker(&WorkerOptions {
                 suite: suite.clone(),
                 test: PathBuf::from(relative),
+                admissions: admissions_path(),
+                admissions_sha256: ADMISSIONS_SHA256.to_owned(),
                 variant: Variant::Sloppy,
                 allow_async_host: false,
                 allow_agent_host: false,
@@ -1443,6 +1503,8 @@ throw Object.create(proxyPrototype);
         let denied = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: relative.clone(),
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,
@@ -1453,6 +1515,8 @@ throw Object.create(proxyPrototype);
         let result = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: true,
             allow_agent_host: false,
@@ -1486,6 +1550,8 @@ throw Object.create(proxyPrototype);
         let result = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: true,
             allow_agent_host: false,
@@ -1541,6 +1607,8 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
         let result = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,
@@ -1846,6 +1914,8 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
         let result = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,

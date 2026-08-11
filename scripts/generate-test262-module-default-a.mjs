@@ -5,14 +5,21 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
 
+import {
+  admissionRecord,
+  assertAdmissionGroup,
+  renderAdmissionRows,
+} from "./test262-admission-data.mjs";
+
 const root = resolve(import.meta.dirname, "..");
 const checkedSuite = join(root, "target/oracle/quickjs-2026-06-04/test262");
+const checkedAdmissions = join(root, "dev-support/test262/admissions.tsv");
 const args = process.argv.slice(2);
 const suiteIndex = args.indexOf("--suite");
 const outputIndex = args.indexOf("--output");
 const suite = resolve(suiteIndex === -1 ? checkedSuite : args[suiteIndex + 1]);
-const mode = args.includes("--rust")
-  ? "rust"
+const mode = args.includes("--admissions")
+  ? "admissions"
   : outputIndex === -1
     ? "check"
     : "output";
@@ -218,57 +225,47 @@ const evidence = new Map([
   ["tests/test262-module-default-a-exclusions.tsv", exclusions],
 ]);
 
-function metadataConstant(relative) {
-  const shape = metadata(relative);
-  if (shape.flags.length === 0) return "MODULE_FIXTURE_METADATA";
-  if (shape.negativePhase === "resolution") return "MODULE_RESOLUTION_SYNTAX_ERROR_METADATA";
-  if (shape.features[0] === "generators") return "MODULE_GENERATORS_METADATA";
-  if (shape.features[0] === "export-star-as-namespace-from-module") {
-    return shape.includes[0] === "fnGlobalObject.js"
-      ? "MODULE_EXPORT_STAR_NAMESPACE_FN_GLOBAL_OBJECT_METADATA"
-      : "MODULE_EXPORT_STAR_NAMESPACE_METADATA";
-  }
-  if (shape.includes[0] === "fnGlobalObject.js") return "MODULE_FN_GLOBAL_OBJECT_METADATA";
-  return "MODULE_METADATA";
-}
+const admissionGroup = "module-default-a";
+const admissionRecords = [
+  ...sources.map((relative) => {
+    const shape = metadata(relative);
+    return admissionRecord({
+      kind: "graph-file",
+      group: admissionGroup,
+      path: relative,
+      source_sha256: sha256(source(relative)),
+      includes: shape.includes,
+      flags: shape.flags,
+      features: shape.features,
+      negative_phase: shape.negativePhase,
+      negative_type: shape.negativeType,
+    });
+  }),
+  ...sources.flatMap((relative) =>
+    fileEdges.get(relative).map((request, requestIndex) =>
+      admissionRecord({
+        kind: "graph-request",
+        group: admissionGroup,
+        path: relative,
+        request_index: requestIndex,
+        specifier: request.specifier,
+        normalized_path: request.normalized,
+      }),
+    ),
+  ),
+  ...roots.map((rootPath) =>
+    admissionRecord({
+      kind: "graph-root",
+      group: admissionGroup,
+      path: rootPath,
+      closure_file_count: closure(rootPath).length,
+      priority: 0,
+    }),
+  ),
+];
 
-function rustAdmissions() {
-  const output = [];
-  output.push(`const DEFAULT_MODULE_ROOT_ADMISSIONS: [ModuleGraphRootAdmission; ${roots.length}] = [`);
-  for (const rootPath of roots) {
-    output.push("    ModuleGraphRootAdmission {");
-    output.push(`        path: ${JSON.stringify(rootPath)},`);
-    output.push(`        closure_file_count: ${closure(rootPath).length},`);
-    output.push("    },");
-  }
-  output.push("];", "");
-  output.push(`const DEFAULT_MODULE_FILE_ADMISSIONS: [ModuleGraphFileAdmission; ${sources.length}] = [`);
-  for (const relative of sources) {
-    output.push("    ModuleGraphFileAdmission {");
-    output.push(`        path: ${JSON.stringify(relative)},`);
-    output.push(`        source_sha256: ${JSON.stringify(sha256(source(relative)))},`);
-    output.push(`        metadata: ${metadataConstant(relative)},`);
-    const requests = fileEdges.get(relative);
-    if (requests.length === 0) {
-      output.push("        requests: &[],");
-    } else {
-      output.push("        requests: &[");
-      for (const request of requests) {
-        output.push("            ModuleRequestAdmission {");
-        output.push(`                specifier: ${JSON.stringify(request.specifier)},`);
-        output.push(`                normalized_path: ${JSON.stringify(request.normalized)},`);
-        output.push("            },");
-      }
-      output.push("        ],");
-    }
-    output.push("    },");
-  }
-  output.push("];", "");
-  return output.join("\n");
-}
-
-if (mode === "rust") {
-  process.stdout.write(rustAdmissions());
+if (mode === "admissions") {
+  process.stdout.write(renderAdmissionRows(admissionRecords));
 } else if (mode === "output") {
   assert(output, "--output requires a directory");
   for (const [relative, contents] of evidence) {
@@ -277,6 +274,7 @@ if (mode === "rust") {
   }
   console.log(`generated ${evidence.size} authenticated evidence files in ${output}`);
 } else {
+  assertAdmissionGroup(checkedAdmissions, admissionGroup, admissionRecords);
   for (const [relative, contents] of evidence) {
     if (
       ![

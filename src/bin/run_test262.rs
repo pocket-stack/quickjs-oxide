@@ -5,6 +5,8 @@
 //! future engine crash or an already-possible infinite loop is reported
 //! without taking down the coordinator.
 
+#[path = "run_test262/admissions.rs"]
+mod admissions;
 #[path = "run_test262/capabilities.rs"]
 mod capabilities;
 #[path = "run_test262/config.rs"]
@@ -33,9 +35,10 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
+use admissions::AdmissionCatalog;
 use capabilities::OxideProfile;
 use config::{parse_config, sha256_file, skip_reason, validate_config, validate_suite};
-use execution::{run_isolated_worker, run_worker};
+use execution::{IsolatedWorkerOptions, run_isolated_worker, run_worker};
 use metadata::{Metadata, parse_metadata};
 use negative_diagnostic_exemptions::NegativeDiagnosticExemptions;
 use negative_diagnostics::NegativeDiagnostics;
@@ -115,6 +118,8 @@ impl TestMode {
 struct CoordinatorOptions {
     suite: PathBuf,
     config: PathBuf,
+    admissions: PathBuf,
+    admissions_sha256: String,
     oxide_profile: PathBuf,
     negative_diagnostics: PathBuf,
     negative_diagnostics_sha256: String,
@@ -135,6 +140,8 @@ struct CoordinatorOptions {
 struct WorkerOptions {
     suite: PathBuf,
     test: PathBuf,
+    admissions: PathBuf,
+    admissions_sha256: String,
     variant: Variant,
     allow_async_host: bool,
     allow_agent_host: bool,
@@ -216,6 +223,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let worker = arguments.iter().any(|argument| argument == "--worker-one");
     let mut suite = None;
     let mut config = None;
+    let mut admissions = None;
+    let mut admissions_sha256 = None;
     let mut oxide_profile = None;
     let mut negative_diagnostics = None;
     let mut negative_diagnostics_sha256 = None;
@@ -254,6 +263,20 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             "--allow-agent-host" => allow_agent_host = true,
             "--suite" => suite = Some(PathBuf::from(take_value("--suite")?)),
             "--config" => config = Some(PathBuf::from(take_value("--config")?)),
+            "--admissions" => {
+                admissions = Some(PathBuf::from(take_value("--admissions")?));
+            }
+            "--admissions-sha256" => {
+                let value = take_value("--admissions-sha256")?;
+                if value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err("--admissions-sha256 must be a lowercase SHA-256".to_owned());
+                }
+                admissions_sha256 = Some(value);
+            }
             "--oxide-profile" => {
                 oxide_profile = Some(PathBuf::from(take_value("--oxide-profile")?));
             }
@@ -346,6 +369,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || !tests.is_empty()
             || report.is_some()
             || config.is_some()
+            || admissions.is_some()
+            || admissions_sha256.is_some()
             || oxide_profile.is_some()
             || negative_diagnostics.is_some()
             || negative_diagnostics_sha256.is_some()
@@ -386,9 +411,15 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
         {
             return Err("invalid coordinator option passed to --worker-one".to_owned());
         }
+        let admissions =
+            admissions.ok_or_else(|| "--worker-one requires --admissions".to_owned())?;
+        let admissions_sha256 = admissions_sha256
+            .ok_or_else(|| "--worker-one requires --admissions-sha256".to_owned())?;
         return Ok(Invocation::Worker(WorkerOptions {
             suite,
             test: tests.remove(0),
+            admissions,
+            admissions_sha256,
             variant: variant.ok_or_else(|| "--worker-one requires --variant".to_owned())?,
             allow_async_host,
             allow_agent_host,
@@ -415,6 +446,9 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             .join("test262.conf")
     });
     let oxide_profile = oxide_profile.ok_or_else(|| "--oxide-profile is required".to_owned())?;
+    let admissions = admissions.ok_or_else(|| "--admissions is required".to_owned())?;
+    let admissions_sha256 =
+        admissions_sha256.ok_or_else(|| "--admissions-sha256 is required".to_owned())?;
     let engine_semantics_sha256 = engine_semantics_sha256
         .ok_or_else(|| "--engine-semantics-sha256 is required".to_owned())?;
     let negative_diagnostics =
@@ -429,6 +463,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     Ok(Invocation::Coordinator(Box::new(CoordinatorOptions {
         suite,
         config,
+        admissions,
+        admissions_sha256,
         oxide_profile,
         negative_diagnostics,
         negative_diagnostics_sha256,
@@ -450,8 +486,11 @@ fn print_help() {
     let default_workers = default_worker_count();
     println!(
         "run-test262 (quickjs-oxide)\n\
-usage: run-test262 --suite DIR --config FILE --oxide-profile FILE --negative-diagnostics FILE --negative-diagnostics-sha256 SHA256 --negative-diagnostic-exemptions FILE --negative-diagnostic-exemptions-sha256 SHA256 --engine-semantics-sha256 SHA256 (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
+usage: run-test262 --suite DIR --config FILE --admissions FILE --admissions-sha256 SHA256 --oxide-profile FILE --negative-diagnostics FILE --negative-diagnostics-sha256 SHA256 --negative-diagnostic-exemptions FILE --negative-diagnostic-exemptions-sha256 SHA256 --engine-semantics-sha256 SHA256 (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
 \n\
+  --admissions FILE   source-authenticated module and host admission data\n\
+  --admissions-sha256 SHA256\n\
+                       expected checksum for the admission data\n\
   --engine-semantics-sha256 SHA256\n\
                        canonical source fingerprint supplied by the gate\n\
   --mode MODE          both, strict, sloppy, default-strict, or default-sloppy\n\
@@ -502,6 +541,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     validate_suite(&options.suite)?;
     validate_config(&options.config)?;
     let config = parse_config(&options.config)?;
+    let admissions = AdmissionCatalog::load(&options.admissions, &options.admissions_sha256)?;
     let oxide_profile = OxideProfile::load(&options.oxide_profile)?;
     let negative_diagnostics = NegativeDiagnostics::load(
         &options.negative_diagnostics,
@@ -514,6 +554,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         &options.suite,
     )?;
     validate_oxide_profile(
+        &admissions,
         &oxide_profile,
         &negative_diagnostics,
         &negative_diagnostic_exemptions,
@@ -581,9 +622,10 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             .map_err(|error| format!("read {}: {error}", path.display()))?;
         let metadata = parse_metadata(&source)
             .map_err(|error| format!("parse metadata for {}: {error}", relative.display()))?;
-        let exact_module = exact_module_test(&options.suite, &relative, &source, &metadata)?;
+        let exact_module =
+            exact_module_test(&admissions, &options.suite, &relative, &source, &metadata)?;
         let allow_agent_host = if oxide_profile.allows_agent_host(&relative) {
-            if !is_exact_agent_host_test(&relative, &source, &metadata)? {
+            if !is_exact_agent_host_test(&admissions, &relative, &source, &metadata)? {
                 return Err(format!(
                     "Test262 agent host profile admitted an unaudited path: {}",
                     relative.display()
@@ -608,7 +650,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         worker_host_capabilities.agent = allow_agent_host;
         worker_host_capabilities.retain_missing(&mut missing_host);
         let mut required_features = metadata.features.clone();
-        required_features.extend(supplemental_feature_hints(&relative, &source)?);
+        required_features.extend(supplemental_feature_hints(&admissions, &relative, &source)?);
         let capability =
             oxide_profile.classify(&relative, &required_features, metadata.negative.is_some());
         let selection_result = if let Some((outcome, detail)) = &skip {
@@ -675,15 +717,17 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     let worker_results = run_bounded(runnable_jobs.len(), options.workers, |job_index| {
         let job = runnable_jobs[job_index];
         let test = &planned_tests[job.test_index];
-        run_isolated_worker(
-            &executable,
-            &options.suite,
-            &test.relative,
-            job.variant,
-            options.timeout,
-            oxide_profile.allows_async_execution(),
-            test.allow_agent_host,
-        )
+        run_isolated_worker(IsolatedWorkerOptions {
+            executable: &executable,
+            suite: &options.suite,
+            test: &test.relative,
+            admissions: &options.admissions,
+            admissions_sha256: &options.admissions_sha256,
+            variant: job.variant,
+            timeout: options.timeout,
+            allow_async_host: oxide_profile.allows_async_execution(),
+            allow_agent_host: test.allow_agent_host,
+        })
     })?;
     for (job, mut result) in runnable_jobs.iter().zip(worker_results) {
         let test = &planned_tests[job.test_index];
@@ -740,6 +784,7 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
 }
 
 fn validate_oxide_profile(
+    admissions: &AdmissionCatalog,
     profile: &OxideProfile,
     diagnostics: &NegativeDiagnostics,
     exemptions: &NegativeDiagnosticExemptions,
@@ -792,7 +837,7 @@ fn validate_oxide_profile(
                 relative.display()
             )
         })?;
-        if !is_exact_agent_host_test(relative, &source, &metadata)? {
+        if !is_exact_agent_host_test(admissions, relative, &source, &metadata)? {
             return Err(format!(
                 "oxide profile agent host path is not source-audited: {}",
                 relative.display()
@@ -1045,7 +1090,16 @@ mod cli_tests {
     use super::{Invocation, default_worker_count, parse_args, sha256_file};
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
-        parse_args(values.iter().map(OsString::from))
+        let mut values = values.to_vec();
+        if !values.contains(&"--validate-metadata") && !values.contains(&"--admissions") {
+            values.extend([
+                "--admissions",
+                "dev-support/test262/admissions.tsv",
+                "--admissions-sha256",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ]);
+        }
+        parse_args(values.into_iter().map(OsString::from))
     }
 
     fn parse_error(values: &[&str]) -> String {
@@ -1085,6 +1139,10 @@ mod cli_tests {
         };
         assert_eq!(options.oxide_profile, Path::new("profiles/current.conf"));
         assert_eq!(
+            options.admissions,
+            Path::new("dev-support/test262/admissions.tsv")
+        );
+        assert_eq!(
             options.negative_diagnostics,
             Path::new("dev-support/test262/negative-diagnostics.tsv")
         );
@@ -1105,6 +1163,39 @@ mod cli_tests {
         let hash = sha256_file(&path).unwrap();
         assert_eq!(hash.len(), 64);
         assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn execution_requires_hash_pinned_admissions() {
+        let missing = parse_args(
+            [
+                "--suite",
+                "suite",
+                "--oxide-profile",
+                "profile",
+                "--all",
+                "--report",
+                "report.tsv",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .err()
+        .expect("missing admissions must fail");
+        assert_eq!(missing, "--admissions is required");
+
+        let invalid = parse_error(&[
+            "--suite",
+            "suite",
+            "--admissions",
+            "admissions.tsv",
+            "--admissions-sha256",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "--all",
+            "--report",
+            "report.tsv",
+        ]);
+        assert_eq!(invalid, "--admissions-sha256 must be a lowercase SHA-256");
     }
 
     #[test]

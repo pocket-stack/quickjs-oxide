@@ -5,15 +5,22 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
+import {
+  admissionRecord,
+  assertAdmissionGroup,
+  renderAdmissionRows,
+} from "./test262-admission-data.mjs";
+
 const root = resolve(import.meta.dirname, "..");
 const checkedSuite = join(root, "target/oracle/quickjs-2026-06-04/test262");
 const checkedProfile = join(root, "compat/test262-oxide.conf");
+const checkedAdmissions = join(root, "dev-support/test262/admissions.tsv");
 const args = process.argv.slice(2);
 const suiteIndex = args.indexOf("--suite");
 const outputIndex = args.indexOf("--output");
 const suite = resolve(suiteIndex === -1 ? checkedSuite : args[suiteIndex + 1]);
-const mode = args.includes("--rust")
-  ? "rust"
+const mode = args.includes("--admissions")
+  ? "admissions"
   : outputIndex === -1
     ? "check"
     : "output";
@@ -34,8 +41,6 @@ const expected = {
   blockListFlags: 7,
   canaries: 25,
   manifestSha256: "dd8e65fab5447123ad48aa383a835893b72a5e899d34d2dce3a81660bdacc145",
-  parentProfileSha256: "364f45501f0b3655e801200b4e1ecb24040384a73489da1994528c911574e362",
-  rustSha256: "47a29a0eaeee570197544e6f493b63c29eb3fcc3afa3eccc08d69a4dcb8c6e9e",
   evidenceSha256: {
     "tests/test262-module-static-negative-a.txt":
       "dd8e65fab5447123ad48aa383a835893b72a5e899d34d2dce3a81660bdacc145",
@@ -352,7 +357,6 @@ assert.equal(
 );
 assert.equal(exclusionCanaries.length, expected.canaries);
 assert.equal(sha256(manifest), expected.manifestSha256);
-assert.equal(sha256(previousProfile), expected.parentProfileSha256);
 assert(roots.every((relativePath) => !previouslyAudited.has(relativePath)));
 assert.equal(new Set(roots).size, roots.length);
 assert(roots.every((relativePath) => !relativePath.endsWith("_FIXTURE.js")));
@@ -362,47 +366,24 @@ for (const [surface, relativePath] of exclusionCanaries) {
   assert.notEqual(selectorReason(relativePath), "selected", `${surface} canary became eligible`);
 }
 
-function metadataConstant(relativePath) {
-  switch (metadata(relativePath).features.join(",")) {
-    case "":
-      return "MODULE_PARSE_SYNTAX_ERROR_METADATA";
-    case "export-star-as-namespace-from-module":
-      return "MODULE_EXPORT_STAR_NAMESPACE_PARSE_SYNTAX_ERROR_METADATA";
-    case "generators":
-      return "MODULE_GENERATORS_PARSE_SYNTAX_ERROR_METADATA";
-    case "let":
-      return "MODULE_LET_PARSE_SYNTAX_ERROR_METADATA";
-    case "let,const":
-      return "MODULE_LET_CONST_PARSE_SYNTAX_ERROR_METADATA";
-    case "new.target":
-      return "MODULE_NEW_TARGET_PARSE_SYNTAX_ERROR_METADATA";
-    default:
-      throw new Error(`unmapped metadata for ${relativePath}`);
-  }
-}
+const admissionGroup = "module-static-negative-a";
+const admissionRecords = roots.map((relativePath) => {
+  const shape = metadata(relativePath);
+  return admissionRecord({
+    kind: "module",
+    group: admissionGroup,
+    path: relativePath,
+    source_sha256: sha256(source(relativePath)),
+    includes: shape.includes,
+    flags: shape.flags,
+    features: shape.features,
+    negative_phase: shape.negativePhase,
+    negative_type: shape.negativeType,
+  });
+});
 
-function rustAdmissions() {
-  const outputLines = [];
-  outputLines.push(
-    `const STATIC_NEGATIVE_MODULE_ADMISSIONS: [DependencyFreeModuleAdmission; ${roots.length}] = [`,
-  );
-  for (const relativePath of roots) {
-    outputLines.push("    DependencyFreeModuleAdmission {");
-    outputLines.push(`        path: ${JSON.stringify(relativePath)},`);
-    outputLines.push(`        source_sha256: ${JSON.stringify(sha256(source(relativePath)))},`);
-    outputLines.push(`        metadata: ${metadataConstant(relativePath)},`);
-    outputLines.push("    },");
-  }
-  outputLines.push("];", "");
-  return outputLines.join("\n");
-}
-
-if (mode === "rust") {
-  const contents = rustAdmissions();
-  if (expected.rustSha256 !== "PENDING") {
-    assert.equal(sha256(contents), expected.rustSha256, "Rust admissions changed");
-  }
-  process.stdout.write(contents);
+if (mode === "admissions") {
+  process.stdout.write(renderAdmissionRows(admissionRecords));
 } else if (mode === "output") {
   assert(output, "--output requires a directory");
   for (const [relativePath, contents] of evidence) {
@@ -410,8 +391,21 @@ if (mode === "rust") {
   }
   console.log(`generated ${evidence.size} authenticated evidence files in ${output}`);
 } else {
+  assertAdmissionGroup(checkedAdmissions, admissionGroup, admissionRecords);
   assert(roots.every((relativePath) => audited.has(relativePath)), "profile is missing an admission");
   for (const [relativePath, contents] of evidence) {
+    if (relativePath === "tests/test262-module-static-negative-a-provenance.tsv") {
+      // This receipt records the profile as it stood when the cohort was
+      // promoted. Later milestones legitimately extend that live profile, so
+      // authenticate the historical receipt instead of regenerating it from
+      // today's parent profile.
+      assert.equal(
+        sha256(readFileSync(join(root, relativePath), "utf8")),
+        expected.evidenceSha256[relativePath],
+        `${relativePath} historical receipt changed`,
+      );
+      continue;
+    }
     if (expected.evidenceSha256[relativePath] !== "PENDING") {
       assert.equal(
         sha256(contents),
