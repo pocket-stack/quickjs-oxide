@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regenerate exact Unicode property ranges by calling the checksum-pinned
-# QuickJS 2026-06-04 libunicode implementation in a test-only generator.
+# Regenerate exact Unicode property ranges and code-point sequences through the
+# checksum-pinned QuickJS 2026-06-04 libunicode implementation in a test-only
+# generator.
 # Product builds consume only the generated Rust arrays.
 
 set -euo pipefail

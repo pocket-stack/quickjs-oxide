@@ -1,8 +1,9 @@
 //! Checksum-pinned Unicode 17 property sets used by RegExp property escapes.
 //!
-//! The generated half-open ranges are materialized from the pinned QuickJS
-//! `libunicode.c` implementation. Product builds consume only these Rust
-//! arrays; the C helper under `tests/fixtures/` is a regeneration oracle.
+//! The generated half-open ranges and code-point sequences are materialized
+//! from the pinned QuickJS `libunicode.c` implementation. Product builds
+//! consume only these Rust arrays; the C helper under `tests/fixtures/` is a
+//! regeneration oracle.
 
 mod tables {
     include!("unicode_property_tables.rs");
@@ -43,9 +44,18 @@ pub(crate) fn binary_property(name: &str) -> Option<&'static [u32]> {
     )
 }
 
+pub(crate) fn sequence_property(name: &str) -> Option<&'static [&'static [u32]]> {
+    let index = tables::SEQUENCE_PROPERTY_ALIASES
+        .iter()
+        .find_map(|(alias, index)| (*alias == name).then_some(usize::from(*index)))?;
+    tables::SEQUENCE_PROPERTY_SEQUENCES.get(index).copied()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{binary_property, general_category, script, tables};
+    use std::collections::HashSet;
+
+    use super::{binary_property, general_category, script, sequence_property, tables};
 
     fn assert_valid_half_open_tables(ranges: &[&[u32]]) {
         for range_set in ranges {
@@ -69,6 +79,8 @@ mod tests {
         assert_eq!(tables::GENERAL_CATEGORY_ALIASES.len(), 80);
         assert_eq!(tables::SCRIPT_ALIASES.len(), 354);
         assert_eq!(tables::BINARY_PROPERTY_ALIASES.len(), 102);
+        assert_eq!(tables::SEQUENCE_PROPERTY_SEQUENCES.len(), 7);
+        assert_eq!(tables::SEQUENCE_PROPERTY_ALIASES.len(), 7);
 
         for (aliases, range_count) in [
             (
@@ -92,6 +104,64 @@ mod tests {
         assert_valid_half_open_tables(tables::SCRIPT_RANGES);
         assert_valid_half_open_tables(tables::SCRIPT_EXTENSIONS_RANGES);
         assert_valid_half_open_tables(tables::BINARY_PROPERTY_RANGES);
+    }
+
+    #[test]
+    fn generated_sequence_property_catalog_matches_pinned_quickjs_shape() {
+        let names = tables::SEQUENCE_PROPERTY_ALIASES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "Basic_Emoji",
+                "Emoji_Keycap_Sequence",
+                "RGI_Emoji_Modifier_Sequence",
+                "RGI_Emoji_Flag_Sequence",
+                "RGI_Emoji_Tag_Sequence",
+                "RGI_Emoji_ZWJ_Sequence",
+                "RGI_Emoji",
+            ]
+        );
+
+        assert!(
+            tables::SEQUENCE_PROPERTY_ALIASES
+                .iter()
+                .enumerate()
+                .all(|(index, (_, property_index))| index == usize::from(*property_index))
+        );
+        for (alias, property_index) in tables::SEQUENCE_PROPERTY_ALIASES {
+            assert_eq!(
+                sequence_property(alias),
+                Some(tables::SEQUENCE_PROPERTY_SEQUENCES[usize::from(*property_index)])
+            );
+        }
+
+        let counts = tables::SEQUENCE_PROPERTY_SEQUENCES
+            .iter()
+            .map(|sequences| sequences.len())
+            .collect::<Vec<_>>();
+        assert_eq!(counts, [1400, 12, 670, 259, 3, 1614, 3958]);
+
+        for (property_index, sequences) in tables::SEQUENCE_PROPERTY_SEQUENCES.iter().enumerate() {
+            let mut unique = HashSet::with_capacity(sequences.len());
+            for sequence in *sequences {
+                assert!(!sequence.is_empty());
+                assert!(sequence.iter().all(|code_point| *code_point < 0x11_0000));
+                assert!(
+                    unique.insert(*sequence),
+                    "duplicate sequence in property {}",
+                    names[property_index]
+                );
+            }
+        }
+
+        assert_eq!(
+            sequence_property("Basic_Emoji"),
+            Some(tables::SEQUENCE_PROPERTY_SEQUENCES[0])
+        );
+        assert!(sequence_property("basic_emoji").is_none());
     }
 
     #[test]

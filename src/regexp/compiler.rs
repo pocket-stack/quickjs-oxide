@@ -3,15 +3,15 @@
 //! This is a safe Rust port of the front-end structure in pinned QuickJS
 //! `libregexp.c` (`re_parse_disjunction` through `lre_compile`, lines
 //! 1848-2612). It deliberately emits typed instructions instead of the C
-//! engine's packed byte buffer. Unsupported advanced syntax is rejected with
-//! a distinct error kind so later milestones cannot accidentally accept it
-//! with different semantics.
+//! engine's packed byte buffer while preserving QuickJS's parse and execution
+//! semantics.
 
 use super::RegExpFlags;
 use super::flags::{FlagParseErrorKind, parse_flags};
 use super::group_name::{self, CaptureSummary};
 use super::opcode::{CharacterRange, Instruction};
 use crate::value::JsString;
+use std::collections::BTreeSet;
 
 const INFINITE_REPETITION: u32 = i32::MAX as u32;
 const MAX_CODE_POINT: u32 = 0x10_ffff;
@@ -107,26 +107,9 @@ pub enum CompileErrorSource {
     Flags,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnsupportedFeature {
-    UnicodePropertyEscape,
-    UnicodeSetOperation,
-    NamedCapture,
-    Backreference,
-    /// Retained for source compatibility; supported lookahead/lookbehind
-    /// syntax no longer produces this classification.
-    Lookaround,
-    InlineModifier,
-    LegacyOctalEscape,
-    /// Retained for source compatibility; Annex B control escapes no longer
-    /// produce this classification.
-    LegacyControlEscape,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileErrorKind {
     Syntax,
-    Unsupported(UnsupportedFeature),
     TooManyCaptures,
     TooManyRegisters,
 }
@@ -167,15 +150,6 @@ impl CompileError {
             source: CompileErrorSource::Pattern,
             position,
             message: message.into(),
-        }
-    }
-
-    fn unsupported(position: usize, feature: UnsupportedFeature) -> Self {
-        Self {
-            kind: CompileErrorKind::Unsupported(feature),
-            source: CompileErrorSource::Pattern,
-            position,
-            message: format!("unsupported regular-expression syntax: {feature:?}"),
         }
     }
 
@@ -336,7 +310,8 @@ impl Atom {
             Self::BackReference { .. } => true,
             Self::LookAround { .. } => true,
             Self::Group { expression, .. } => expression.can_match_empty(),
-            Self::Literal(_) | Self::Dot | Self::Space { .. } | Self::Class(_) => false,
+            Self::Class(class) => class.strings.iter().any(|string| string.is_empty()),
+            Self::Literal(_) | Self::Dot | Self::Space { .. } => false,
         }
     }
 
@@ -399,7 +374,18 @@ struct Quantifier {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CharacterClass {
     ranges: Vec<CharacterRange>,
+    /// Multi-code-point and empty members of a Unicode Sets class. One-code-
+    /// point members are canonicalized into `ranges`, matching QuickJS's
+    /// `REStringList` representation and keeping the executor's fast range
+    /// path intact.
+    strings: Vec<Box<[u32]>>,
     inverted: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct UnicodeSet {
+    ranges: Vec<CharacterRange>,
+    strings: BTreeSet<Vec<u32>>,
 }
 
 enum ClassAtom {
@@ -407,6 +393,7 @@ enum ClassAtom {
     Set(Vec<CharacterRange>),
     ComplementSet(Vec<CharacterRange>),
     PreparedSet(Vec<CharacterRange>),
+    UnicodeSet(UnicodeSet),
 }
 
 struct Parser<'a> {
@@ -421,14 +408,12 @@ struct Parser<'a> {
     parsed_group_names: Vec<(JsString, u8, u8)>,
     group_name_scope: u8,
     group_depth: usize,
-    saw_unicode_sets_character_class_escape: bool,
 }
 
 struct ParsedPattern {
     expression: Expression,
     capture_count: u8,
     group_names: Option<Box<[Option<JsString>]>>,
-    saw_unicode_sets_character_class_escape: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -449,7 +434,6 @@ impl<'a> Parser<'a> {
             parsed_group_names: Vec::new(),
             group_name_scope: 0,
             group_depth: 0,
-            saw_unicode_sets_character_class_escape: false,
         }
     }
 
@@ -476,7 +460,6 @@ impl<'a> Parser<'a> {
             expression,
             capture_count,
             group_names,
-            saw_unicode_sets_character_class_escape: self.saw_unicode_sets_character_class_escape,
         })
     }
 
@@ -485,12 +468,6 @@ impl<'a> Parser<'a> {
         loop {
             alternatives.push(self.parse_sequence(in_group)?);
             if self.peek() == Some(u16::from(b'|')) {
-                if self.flags.contains(RegExpFlags::UNICODE_SETS) {
-                    return Err(CompileError::unsupported(
-                        self.position,
-                        UnsupportedFeature::UnicodeSetOperation,
-                    ));
-                }
                 self.position += 1;
                 self.group_name_scope = self.group_name_scope.wrapping_add(1);
                 continue;
@@ -544,15 +521,9 @@ impl<'a> Parser<'a> {
             .take()
             .ok_or_else(|| CompileError::syntax(position, "unexpected end of pattern"))?;
         match unit {
-            0x2e if self.flags.contains(RegExpFlags::UNICODE_SETS) => Err(
-                CompileError::unsupported(position, UnsupportedFeature::UnicodeSetOperation),
-            ),
             0x2e => Ok(Atom::Dot),
             0x5e => Ok(Atom::LineStart),
             0x24 => Ok(Atom::LineEnd),
-            0x28 if self.flags.contains(RegExpFlags::UNICODE_SETS) => Err(
-                CompileError::unsupported(position, UnsupportedFeature::UnicodeSetOperation),
-            ),
             0x28 => self.parse_group(position),
             0x5b => self.parse_character_class(position).map(Atom::Class),
             0x5c => self.parse_escape(false),
@@ -567,10 +538,6 @@ impl<'a> Parser<'a> {
             0x7b if self.flags.is_unicode() => Err(CompileError::syntax(
                 position,
                 "regular expression syntax error",
-            )),
-            _ if self.flags.contains(RegExpFlags::UNICODE_SETS) => Err(CompileError::unsupported(
-                position,
-                UnsupportedFeature::UnicodeSetOperation,
             )),
             first => Ok(Atom::Literal(self.finish_code_point(first))),
         }
@@ -728,48 +695,23 @@ impl<'a> Parser<'a> {
         let unit = self
             .take()
             .ok_or_else(|| CompileError::syntax(escape_position, "trailing backslash"))?;
-        if self.flags.contains(RegExpFlags::UNICODE_SETS)
-            && !matches!(unit, 0x64 | 0x44 | 0x73 | 0x53 | 0x77 | 0x57)
-        {
-            return Err(CompileError::unsupported(
-                escape_position,
-                UnsupportedFeature::UnicodeSetOperation,
-            ));
-        }
         match unit {
             0x62 if !in_class => Ok(Atom::WordBoundary { inverted: false }),
             0x42 if !in_class => Ok(Atom::WordBoundary { inverted: true }),
-            0x64 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(Atom::Class(
-                    self.make_character_class(digit_ranges(), false),
-                ))
-            }
-            0x44 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(Atom::Class(self.make_character_class(digit_ranges(), true)))
-            }
-            0x73 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(Atom::Space { inverted: false })
-            }
-            0x53 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(Atom::Space { inverted: true })
-            }
-            0x77 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(Atom::Class(self.make_character_class(word_ranges(), false)))
-            }
-            0x57 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(Atom::Class(self.make_character_class(word_ranges(), true)))
-            }
+            0x64 => Ok(Atom::Class(
+                self.make_character_class(digit_ranges(), false),
+            )),
+            0x44 => Ok(Atom::Class(self.make_character_class(digit_ranges(), true))),
+            0x73 => Ok(Atom::Space { inverted: false }),
+            0x53 => Ok(Atom::Space { inverted: true }),
+            0x77 => Ok(Atom::Class(self.make_character_class(word_ranges(), false))),
+            0x57 => Ok(Atom::Class(self.make_character_class(word_ranges(), true))),
             property @ (0x70 | 0x50) if self.flags.is_unicode() => self
                 .parse_unicode_property_escape(escape_position, property == u16::from(b'P'))
-                .map(|ranges| {
+                .map(|set| {
                     Atom::Class(CharacterClass {
-                        ranges,
+                        ranges: set.ranges,
+                        strings: set.strings.into_iter().map(Vec::into_boxed_slice).collect(),
                         inverted: false,
                     })
                 }),
@@ -888,7 +830,7 @@ impl<'a> Parser<'a> {
         &mut self,
         position: usize,
         inverted: bool,
-    ) -> Result<Vec<CharacterRange>, CompileError> {
+    ) -> Result<UnicodeSet, CompileError> {
         if self.take() != Some(u16::from(b'{')) {
             return Err(CompileError::syntax(position, "expecting '{' after \\p"));
         }
@@ -904,38 +846,63 @@ impl<'a> Parser<'a> {
         }
 
         let endpoints = match name.as_str() {
-            "Script" | "sc" => crate::unicode_property::script(&value, false)
-                .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
-            "Script_Extensions" | "scx" => crate::unicode_property::script(&value, true)
-                .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
-            "General_Category" | "gc" => crate::unicode_property::general_category(&value)
-                .ok_or_else(|| {
+            "Script" | "sc" => Some(
+                crate::unicode_property::script(&value, false)
+                    .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
+            ),
+            "Script_Extensions" | "scx" => Some(
+                crate::unicode_property::script(&value, true)
+                    .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
+            ),
+            "General_Category" | "gc" => Some(
+                crate::unicode_property::general_category(&value).ok_or_else(|| {
                     CompileError::syntax(position, "unknown unicode general category")
                 })?,
+            ),
             _ if value.is_empty() => crate::unicode_property::general_category(&name)
-                .or_else(|| crate::unicode_property::binary_property(&name))
-                .ok_or_else(|| CompileError::syntax(position, "unknown unicode property name"))?,
-            _ => {
-                return Err(CompileError::syntax(
-                    position,
-                    "unknown unicode property name",
-                ));
-            }
+                .or_else(|| crate::unicode_property::binary_property(&name)),
+            _ => None,
         };
 
-        let mut ranges = endpoints
-            .chunks_exact(2)
-            .map(|pair| CharacterRange::new(pair[0], pair[1] - 1))
-            .collect::<Vec<_>>();
-        if inverted {
-            ranges = complement_ranges(&ranges, MAX_CODE_POINT);
-        }
-        if self.modifiers.ignore_case {
-            ranges = canonicalize_ranges(&ranges, true);
+        let mut set = if let Some(endpoints) = endpoints {
+            UnicodeSet {
+                ranges: endpoints
+                    .chunks_exact(2)
+                    .map(|pair| CharacterRange::new(pair[0], pair[1] - 1))
+                    .collect(),
+                strings: BTreeSet::new(),
+            }
+        } else if value.is_empty() && !inverted && self.flags.contains(RegExpFlags::UNICODE_SETS) {
+            let sequences = crate::unicode_property::sequence_property(&name)
+                .ok_or_else(|| CompileError::syntax(position, "unknown unicode property name"))?;
+            let mut set = UnicodeSet::default();
+            for sequence in sequences {
+                add_unicode_set_sequence(&mut set, sequence);
+            }
+            set
         } else {
-            ranges = normalize_ranges(ranges);
+            return Err(CompileError::syntax(
+                position,
+                "unknown unicode property name",
+            ));
+        };
+
+        // Pinned QuickJS intentionally changes this ordering in Unicode Sets
+        // mode: canonicalize before complement for `iv`, while legacy `iu`
+        // keeps its historical complement-before-canonicalize behavior.
+        if self.modifiers.ignore_case && self.flags.contains(RegExpFlags::UNICODE_SETS) {
+            canonicalize_unicode_set(&mut set, true);
         }
-        Ok(ranges)
+        if inverted {
+            debug_assert!(set.strings.is_empty());
+            set.ranges = complement_ranges(&set.ranges, MAX_CODE_POINT);
+        }
+        if self.modifiers.ignore_case && !self.flags.contains(RegExpFlags::UNICODE_SETS) {
+            canonicalize_unicode_set(&mut set, true);
+        } else {
+            set.ranges = normalize_ranges(set.ranges);
+        }
+        Ok(set)
     }
 
     fn parse_unicode_property_word(
@@ -1132,6 +1099,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_character_class(&mut self, position: usize) -> Result<CharacterClass, CompileError> {
+        if self.flags.contains(RegExpFlags::UNICODE_SETS) {
+            return self.parse_unicode_set_class(position);
+        }
+        self.parse_legacy_character_class(position)
+    }
+
+    fn parse_legacy_character_class(
+        &mut self,
+        position: usize,
+    ) -> Result<CharacterClass, CompileError> {
         let inverted = if self.peek() == Some(u16::from(b'^')) {
             self.position += 1;
             true
@@ -1139,7 +1116,6 @@ impl<'a> Parser<'a> {
             false
         };
         let mut ranges = Vec::new();
-        let mut saw_character_class_escape = false;
         loop {
             let Some(unit) = self.peek() else {
                 return Err(CompileError::syntax(
@@ -1148,49 +1124,11 @@ impl<'a> Parser<'a> {
                 ));
             };
             if unit == u16::from(b']') {
-                if self.flags.contains(RegExpFlags::UNICODE_SETS) && !saw_character_class_escape {
-                    return Err(CompileError::unsupported(
-                        position,
-                        UnsupportedFeature::UnicodeSetOperation,
-                    ));
-                }
                 self.position += 1;
                 break;
             }
-            if self.flags.contains(RegExpFlags::UNICODE_SETS)
-                && (unit == u16::from(b'[')
-                    || (unit == u16::from(b'&') && self.peek_n(1) == Some(u16::from(b'&')))
-                    || (unit == u16::from(b'-') && self.peek_n(1) == Some(u16::from(b'-'))))
-            {
-                return Err(CompileError::unsupported(
-                    self.position,
-                    UnsupportedFeature::UnicodeSetOperation,
-                ));
-            }
-            if self.flags.contains(RegExpFlags::UNICODE_SETS) && unit != u16::from(b'\\') {
-                if matches!(unit, 0x28 | 0x29 | 0x7b | 0x7d | 0x2f | 0x2d | 0x7c) {
-                    return Err(CompileError::syntax(
-                        self.position,
-                        "invalid character in class in regular expression",
-                    ));
-                }
-                return Err(CompileError::unsupported(
-                    self.position,
-                    UnsupportedFeature::UnicodeSetOperation,
-                ));
-            }
             let first_position = self.position;
             let first = self.parse_class_atom()?;
-            saw_character_class_escape = true;
-            if self.flags.contains(RegExpFlags::UNICODE_SETS)
-                && self.peek() == Some(u16::from(b'-'))
-                && self.peek_n(1) == Some(u16::from(b'-'))
-            {
-                return Err(CompileError::unsupported(
-                    self.position,
-                    UnsupportedFeature::UnicodeSetOperation,
-                ));
-            }
             if self.peek() == Some(u16::from(b'-')) && self.peek_n(1) != Some(u16::from(b']')) {
                 if self.flags.is_unicode() && !matches!(&first, ClassAtom::Single(_)) {
                     return Err(CompileError::syntax(first_position, "invalid class range"));
@@ -1244,6 +1182,7 @@ impl<'a> Parser<'a> {
         }
         Ok(CharacterClass {
             ranges: normalize_ranges(ranges),
+            strings: Vec::new(),
             inverted,
         })
     }
@@ -1254,61 +1193,23 @@ impl<'a> Parser<'a> {
             .take()
             .ok_or_else(|| CompileError::syntax(position, "unterminated character class"))?;
         if unit != u16::from(b'\\') {
-            if self.flags.contains(RegExpFlags::UNICODE_SETS) {
-                return Err(CompileError::unsupported(
-                    position,
-                    UnsupportedFeature::UnicodeSetOperation,
-                ));
-            }
             return Ok(ClassAtom::Single(self.finish_code_point(unit)));
         }
         let escaped_position = self.position.saturating_sub(1);
         let escaped = self
             .take()
             .ok_or_else(|| CompileError::syntax(escaped_position, "trailing backslash"))?;
-        if self.flags.contains(RegExpFlags::UNICODE_SETS)
-            && !matches!(escaped, 0x64 | 0x44 | 0x73 | 0x53 | 0x77 | 0x57)
-        {
-            return Err(CompileError::unsupported(
-                escaped_position,
-                UnsupportedFeature::UnicodeSetOperation,
-            ));
-        }
         match escaped {
-            0x64 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(ClassAtom::Set(digit_ranges()))
-            }
-            0x44 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(ClassAtom::ComplementSet(digit_ranges()))
-            }
-            0x73 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(ClassAtom::Set(space_ranges()))
-            }
-            0x53 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(ClassAtom::ComplementSet(space_ranges()))
-            }
-            0x77 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(ClassAtom::Set(word_ranges()))
-            }
-            0x57 => {
-                self.note_unicode_sets_character_class_escape();
-                Ok(ClassAtom::ComplementSet(word_ranges()))
-            }
+            0x64 => Ok(ClassAtom::Set(digit_ranges())),
+            0x44 => Ok(ClassAtom::ComplementSet(digit_ranges())),
+            0x73 => Ok(ClassAtom::Set(space_ranges())),
+            0x53 => Ok(ClassAtom::ComplementSet(space_ranges())),
+            0x77 => Ok(ClassAtom::Set(word_ranges())),
+            0x57 => Ok(ClassAtom::ComplementSet(word_ranges())),
             property @ (0x70 | 0x50) if self.flags.is_unicode() => self
                 .parse_unicode_property_escape(escaped_position, property == u16::from(b'P'))
-                .map(ClassAtom::PreparedSet),
+                .map(|set| ClassAtom::PreparedSet(set.ranges)),
             property @ (0x70 | 0x50) => Ok(ClassAtom::Single(self.finish_code_point(property))),
-            0x71 if self.flags.contains(RegExpFlags::UNICODE_SETS) => {
-                Err(CompileError::unsupported(
-                    escaped_position,
-                    UnsupportedFeature::UnicodeSetOperation,
-                ))
-            }
             0x62 => Ok(ClassAtom::Single(0x08)),
             0x66 => Ok(ClassAtom::Single(0x0c)),
             0x6e => Ok(ClassAtom::Single(0x0a)),
@@ -1363,6 +1264,309 @@ impl<'a> Parser<'a> {
             )),
             unit => Ok(ClassAtom::Single(self.finish_code_point(unit))),
         }
+    }
+
+    /// Parse one complete Unicode Sets class after its opening `[` has been
+    /// consumed. This follows pinned QuickJS `re_parse_nested_class`: plain
+    /// adjacency is union, while intersection and subtraction are homogeneous
+    /// operator chains whose operands may themselves be nested classes.
+    fn parse_unicode_set_class(&mut self, position: usize) -> Result<CharacterClass, CompileError> {
+        if self.group_depth >= MAX_GROUP_NESTING {
+            return Err(CompileError::syntax(position, "stack overflow"));
+        }
+        self.group_depth += 1;
+        let result = self.parse_unicode_set_class_inner(position);
+        self.group_depth -= 1;
+        result
+    }
+
+    fn parse_unicode_set_class_inner(
+        &mut self,
+        position: usize,
+    ) -> Result<CharacterClass, CompileError> {
+        let inverted = if self.peek() == Some(u16::from(b'^')) {
+            self.position += 1;
+            true
+        } else {
+            false
+        };
+        let mut set = UnicodeSet::default();
+        let mut first = true;
+
+        loop {
+            let Some(unit) = self.peek() else {
+                return Err(CompileError::syntax(
+                    position,
+                    "unterminated character class",
+                ));
+            };
+            if unit == u16::from(b']') {
+                self.position += 1;
+                break;
+            }
+
+            let atom_position = self.position;
+            let nested = unit == u16::from(b'[');
+            let (atom, scalar) = if nested {
+                self.position += 1;
+                let class = self.parse_unicode_set_class(self.position - 1)?;
+                (
+                    UnicodeSet {
+                        ranges: class.ranges,
+                        strings: class
+                            .strings
+                            .into_iter()
+                            .map(|string| string.into_vec())
+                            .collect(),
+                    },
+                    None,
+                )
+            } else {
+                let atom = self.parse_unicode_set_atom(true, true)?;
+                let scalar = match &atom {
+                    ClassAtom::Single(value) => Some(*value),
+                    ClassAtom::Set(_)
+                    | ClassAtom::ComplementSet(_)
+                    | ClassAtom::PreparedSet(_)
+                    | ClassAtom::UnicodeSet(_) => None,
+                };
+                (
+                    unicode_set_from_class_atom(
+                        atom,
+                        self.modifiers.ignore_case,
+                        self.flags.is_unicode(),
+                    ),
+                    scalar,
+                )
+            };
+
+            let subtraction_starts =
+                self.peek() == Some(u16::from(b'-')) && self.peek_n(1) == Some(u16::from(b'-'));
+            let range_follows = !nested
+                && self.peek() == Some(u16::from(b'-'))
+                && self.peek_n(1) != Some(u16::from(b']'))
+                && !(subtraction_starts && first);
+            if range_follows {
+                let Some(start) = scalar else {
+                    return Err(CompileError::syntax(atom_position, "invalid class range"));
+                };
+                self.position += 1;
+                let end_atom = self.parse_unicode_set_atom(true, true)?;
+                let ClassAtom::Single(end) = end_atom else {
+                    return Err(CompileError::syntax(atom_position, "invalid class range"));
+                };
+                if start > end {
+                    return Err(CompileError::syntax(atom_position, "invalid class range"));
+                }
+                let ranges = if self.modifiers.ignore_case {
+                    canonicalize_ranges(&[CharacterRange::new(start, end)], true)
+                } else {
+                    vec![CharacterRange::new(start, end)]
+                };
+                unicode_set_union(
+                    &mut set,
+                    UnicodeSet {
+                        ranges,
+                        strings: BTreeSet::new(),
+                    },
+                );
+                // QuickJS treats a range as an already-established union, so
+                // a following set operator must be nested explicitly.
+                first = false;
+            } else {
+                unicode_set_union(&mut set, atom);
+            }
+
+            if first
+                && self.peek() == Some(u16::from(b'&'))
+                && self.peek_n(1) == Some(u16::from(b'&'))
+                && self.peek_n(2) != Some(u16::from(b'&'))
+            {
+                loop {
+                    if self.peek() == Some(u16::from(b']')) {
+                        break;
+                    }
+                    if self.peek() != Some(u16::from(b'&'))
+                        || self.peek_n(1) != Some(u16::from(b'&'))
+                        || self.peek_n(2) == Some(u16::from(b'&'))
+                    {
+                        return Err(CompileError::syntax(
+                            self.position,
+                            "invalid operation in regular expression",
+                        ));
+                    }
+                    self.position += 2;
+                    let operand = self.parse_unicode_set_operand()?;
+                    unicode_set_intersection(&mut set, &operand);
+                }
+            } else if first && subtraction_starts {
+                loop {
+                    if self.peek() == Some(u16::from(b']')) {
+                        break;
+                    }
+                    if self.peek() != Some(u16::from(b'-'))
+                        || self.peek_n(1) != Some(u16::from(b'-'))
+                    {
+                        return Err(CompileError::syntax(
+                            self.position,
+                            "invalid operation in regular expression",
+                        ));
+                    }
+                    self.position += 2;
+                    let operand = self.parse_unicode_set_operand()?;
+                    unicode_set_subtraction(&mut set, &operand);
+                }
+            }
+            first = false;
+        }
+
+        if inverted {
+            if !set.strings.is_empty() {
+                return Err(CompileError::syntax(
+                    position,
+                    // QuickJS stores RegExp diagnostics in a 64-byte buffer;
+                    // this observable message is therefore truncated.
+                    "negated character class with strings in regular expression debu",
+                ));
+            }
+            set.ranges = complement_ranges(&set.ranges, MAX_CODE_POINT);
+        } else {
+            set.ranges = normalize_ranges(set.ranges);
+        }
+        Ok(CharacterClass {
+            ranges: set.ranges,
+            strings: set.strings.into_iter().map(Vec::into_boxed_slice).collect(),
+            inverted: false,
+        })
+    }
+
+    fn parse_unicode_set_operand(&mut self) -> Result<UnicodeSet, CompileError> {
+        if self.peek() == Some(u16::from(b'[')) {
+            let position = self.position;
+            self.position += 1;
+            let class = self.parse_unicode_set_class(position)?;
+            return Ok(UnicodeSet {
+                ranges: class.ranges,
+                strings: class
+                    .strings
+                    .into_iter()
+                    .map(|string| string.into_vec())
+                    .collect(),
+            });
+        }
+        let atom = self.parse_unicode_set_atom(true, true)?;
+        Ok(unicode_set_from_class_atom(
+            atom,
+            self.modifiers.ignore_case,
+            true,
+        ))
+    }
+
+    fn parse_unicode_set_atom(
+        &mut self,
+        in_class: bool,
+        allow_sets: bool,
+    ) -> Result<ClassAtom, CompileError> {
+        let position = self.position;
+        let unit = self
+            .take()
+            .ok_or_else(|| CompileError::syntax(position, "unterminated character class"))?;
+        if unit != u16::from(b'\\') {
+            if is_unicode_set_double_punctuator(unit) && self.peek() == Some(unit) {
+                return Err(CompileError::syntax(
+                    position,
+                    "invalid class set operation in regular expression",
+                ));
+            }
+            if is_unicode_set_reserved_punctuator(unit) {
+                return Err(CompileError::syntax(
+                    position,
+                    "invalid character in class in regular expression",
+                ));
+            }
+            return Ok(ClassAtom::Single(self.finish_code_point(unit)));
+        }
+
+        let escaped_position = self.position.saturating_sub(1);
+        let escaped = self
+            .take()
+            .ok_or_else(|| CompileError::syntax(escaped_position, "trailing backslash"))?;
+        match escaped {
+            0x64 if allow_sets => Ok(ClassAtom::Set(digit_ranges())),
+            0x44 if allow_sets => Ok(ClassAtom::ComplementSet(digit_ranges())),
+            0x73 if allow_sets => Ok(ClassAtom::Set(space_ranges())),
+            0x53 if allow_sets => Ok(ClassAtom::ComplementSet(space_ranges())),
+            0x77 if allow_sets => Ok(ClassAtom::Set(word_ranges())),
+            0x57 if allow_sets => Ok(ClassAtom::ComplementSet(word_ranges())),
+            property @ (0x70 | 0x50) if allow_sets => self
+                .parse_unicode_property_escape(escaped_position, property == u16::from(b'P'))
+                .map(ClassAtom::UnicodeSet),
+            0x71 if allow_sets && in_class => self
+                .parse_unicode_set_string_disjunction(escaped_position)
+                .map(ClassAtom::UnicodeSet),
+            0x62 => Ok(ClassAtom::Single(0x08)),
+            0x66 => Ok(ClassAtom::Single(0x0c)),
+            0x6e => Ok(ClassAtom::Single(0x0a)),
+            0x72 => Ok(ClassAtom::Single(0x0d)),
+            0x74 => Ok(ClassAtom::Single(0x09)),
+            0x76 => Ok(ClassAtom::Single(0x0b)),
+            0x63 => self
+                .parse_control_escape(escaped_position, in_class)
+                .map(ClassAtom::Single),
+            0x78 => self
+                .parse_fixed_hex_escape(escaped_position, 2)
+                .map(ClassAtom::Single),
+            0x75 => self
+                .parse_unicode_escape(escaped_position)
+                .map(ClassAtom::Single),
+            0x30 if !self.peek().is_some_and(is_ascii_digit) => Ok(ClassAtom::Single(0)),
+            0x2d if in_class => Ok(ClassAtom::Single(u32::from(b'-'))),
+            escaped if is_syntax_character(escaped) || escaped == u16::from(b'/') => {
+                Ok(ClassAtom::Single(u32::from(escaped)))
+            }
+            _ => Err(CompileError::syntax(
+                escaped_position,
+                "invalid identity escape",
+            )),
+        }
+    }
+
+    fn parse_unicode_set_string_disjunction(
+        &mut self,
+        position: usize,
+    ) -> Result<UnicodeSet, CompileError> {
+        if self.take() != Some(u16::from(b'{')) {
+            return Err(CompileError::syntax(position, "expecting '{' after \\q"));
+        }
+        let mut set = UnicodeSet::default();
+        loop {
+            let mut sequence = Vec::new();
+            while !matches!(self.peek(), Some(0x7d | 0x7c)) {
+                if self.peek().is_none() {
+                    return Err(CompileError::syntax(position, "expecting '}'"));
+                }
+                let atom = self.parse_unicode_set_atom(false, false)?;
+                let ClassAtom::Single(character) = atom else {
+                    return Err(CompileError::syntax(
+                        self.position,
+                        "invalid identity escape",
+                    ));
+                };
+                sequence.push(character);
+            }
+            if self.modifiers.ignore_case {
+                for character in &mut sequence {
+                    *character = crate::unicode_case::regexp_canonicalize(*character, true);
+                }
+            }
+            add_unicode_set_sequence(&mut set, &sequence);
+            match self.take() {
+                Some(0x7d) => break,
+                Some(0x7c) => {}
+                _ => return Err(CompileError::syntax(position, "expecting '}'")),
+            }
+        }
+        Ok(set)
     }
 
     fn parse_quantifier(&mut self) -> Result<Option<Quantifier>, CompileError> {
@@ -1461,19 +1665,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn note_unicode_sets_character_class_escape(&mut self) {
-        if self.flags.contains(RegExpFlags::UNICODE_SETS) {
-            self.saw_unicode_sets_character_class_escape = true;
-        }
-    }
-
     fn make_character_class(&self, ranges: Vec<CharacterRange>, inverted: bool) -> CharacterClass {
         let ranges = if self.modifiers.ignore_case {
             canonicalize_ranges(&ranges, self.flags.is_unicode())
         } else {
             normalize_ranges(ranges)
         };
-        CharacterClass { ranges, inverted }
+        CharacterClass {
+            ranges,
+            strings: Vec::new(),
+            inverted,
+        }
     }
 
     fn brace_quantifier_follows(&self) -> bool {
@@ -1660,13 +1862,7 @@ impl CodeBuilder {
                 self.emit_backward_character_guard(backward);
             }
             Atom::Class(class) => {
-                self.emit_backward_character_guard(backward);
-                self.emit(Instruction::Range {
-                    ranges: class.ranges.clone().into_boxed_slice(),
-                    inverted: class.inverted,
-                    ignore_case: self.ignore_case,
-                });
-                self.emit_backward_character_guard(backward);
+                self.compile_character_class(class, backward);
             }
             Atom::BackReference { captures } => {
                 if backward {
@@ -1738,6 +1934,96 @@ impl CodeBuilder {
             }
         }
         Ok(())
+    }
+
+    /// Emit a character class with the same alternative ordering as pinned
+    /// QuickJS `re_emit_string_list`: longest strings first, then the scalar
+    /// range, with an empty string (when present) as the final fallback.
+    fn compile_character_class(&mut self, class: &CharacterClass, backward: bool) {
+        // QuickJS wraps the complete class in one pair of `prev` operations,
+        // including classes whose Unicode Sets members are strings. Keeping
+        // that placement preserves its observable multi-code-point
+        // lookbehind behavior rather than silently improving the oracle.
+        self.emit_backward_character_guard(backward);
+        let mut strings = class
+            .strings
+            .iter()
+            .filter(|string| !string.is_empty())
+            .map(Box::as_ref)
+            .collect::<Vec<_>>();
+        strings.sort_unstable_by(|left, right| {
+            right.len().cmp(&left.len()).then_with(|| left.cmp(right))
+        });
+
+        let has_empty_string = class.strings.iter().any(|string| string.is_empty());
+        let has_range = class.inverted || !class.ranges.is_empty() || class.strings.is_empty();
+        let alternative_count =
+            strings.len() + usize::from(has_range) + usize::from(has_empty_string);
+        debug_assert!(alternative_count > 0);
+
+        let mut end_jumps = Vec::with_capacity(alternative_count.saturating_sub(1));
+        let mut alternative_index = 0;
+        for string in strings {
+            let split = self.begin_class_alternative(alternative_index, alternative_count);
+            for character in string {
+                self.emit_class_character(*character);
+            }
+            self.end_class_alternative(split, &mut end_jumps);
+            alternative_index += 1;
+        }
+
+        if has_range {
+            let split = self.begin_class_alternative(alternative_index, alternative_count);
+            self.emit(Instruction::Range {
+                ranges: class.ranges.clone().into_boxed_slice(),
+                inverted: class.inverted,
+                ignore_case: self.ignore_case,
+            });
+            self.end_class_alternative(split, &mut end_jumps);
+            alternative_index += 1;
+        }
+
+        if has_empty_string {
+            let split = self.begin_class_alternative(alternative_index, alternative_count);
+            debug_assert!(split.is_none(), "empty string must be the last alternative");
+        }
+
+        let end = self.instructions.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end);
+        }
+        self.emit_backward_character_guard(backward);
+    }
+
+    fn emit_class_character(&mut self, value: u32) {
+        self.emit(Instruction::Char {
+            value,
+            ignore_case: self.ignore_case,
+        });
+    }
+
+    fn begin_class_alternative(
+        &mut self,
+        alternative_index: usize,
+        alternative_count: usize,
+    ) -> Option<usize> {
+        (alternative_index + 1 < alternative_count).then(|| {
+            self.emit(Instruction::Split {
+                first: usize::MAX,
+                second: usize::MAX,
+            })
+        })
+    }
+
+    fn end_class_alternative(&mut self, split: Option<usize>, end_jumps: &mut Vec<usize>) {
+        let Some(split) = split else {
+            return;
+        };
+        let body = split + 1;
+        let jump = self.emit(Instruction::Jump { target: usize::MAX });
+        let next = self.instructions.len();
+        self.patch_split(split, body, next);
+        end_jumps.push(jump);
     }
 
     fn compile_quantified(
@@ -1974,14 +2260,7 @@ pub(super) fn compile_units(
         expression,
         capture_count,
         group_names,
-        saw_unicode_sets_character_class_escape,
     } = Parser::new(pattern, flags).parse()?;
-    if flags.contains(RegExpFlags::UNICODE_SETS) && !saw_unicode_sets_character_class_escape {
-        return Err(CompileError::unsupported(
-            0,
-            UnsupportedFeature::UnicodeSetOperation,
-        ));
-    }
     if group_names.is_some() {
         flags.insert(RegExpFlags::NAMED_GROUPS);
     }
@@ -2035,6 +2314,10 @@ fn add_class_atom(
         ClassAtom::Set(set) => (set, false, false),
         ClassAtom::ComplementSet(set) => (set, true, false),
         ClassAtom::PreparedSet(set) => (set, false, true),
+        ClassAtom::UnicodeSet(set) => {
+            debug_assert!(set.strings.is_empty());
+            (set.ranges, false, true)
+        }
     };
     atom_ranges = atom_ranges
         .into_iter()
@@ -2052,6 +2335,140 @@ fn add_class_atom(
         atom_ranges = complement_ranges(&atom_ranges, max);
     }
     ranges.extend(atom_ranges);
+}
+
+fn add_unicode_set_sequence(set: &mut UnicodeSet, sequence: &[u32]) {
+    if let [character] = sequence {
+        set.ranges.push(CharacterRange::new(*character, *character));
+    } else {
+        set.strings.insert(sequence.to_vec());
+    }
+}
+
+fn unicode_set_from_class_atom(atom: ClassAtom, ignore_case: bool, unicode: bool) -> UnicodeSet {
+    match atom {
+        ClassAtom::UnicodeSet(mut set) => {
+            set.ranges = normalize_ranges(set.ranges);
+            set
+        }
+        ClassAtom::Single(mut value) => {
+            if ignore_case {
+                value = crate::unicode_case::regexp_canonicalize(value, unicode);
+            }
+            UnicodeSet {
+                ranges: vec![CharacterRange::new(value, value)],
+                strings: BTreeSet::new(),
+            }
+        }
+        ClassAtom::Set(ranges) => UnicodeSet {
+            ranges: if ignore_case {
+                canonicalize_ranges(&ranges, unicode)
+            } else {
+                normalize_ranges(ranges)
+            },
+            strings: BTreeSet::new(),
+        },
+        ClassAtom::ComplementSet(ranges) => {
+            let ranges = if ignore_case {
+                canonicalize_ranges(&ranges, unicode)
+            } else {
+                normalize_ranges(ranges)
+            };
+            UnicodeSet {
+                ranges: complement_ranges(&ranges, MAX_CODE_POINT),
+                strings: BTreeSet::new(),
+            }
+        }
+        ClassAtom::PreparedSet(ranges) => UnicodeSet {
+            ranges: normalize_ranges(ranges),
+            strings: BTreeSet::new(),
+        },
+    }
+}
+
+fn canonicalize_unicode_set(set: &mut UnicodeSet, unicode: bool) {
+    set.ranges = canonicalize_ranges(&set.ranges, unicode);
+    if set.strings.is_empty() {
+        return;
+    }
+    let strings = std::mem::take(&mut set.strings);
+    for mut string in strings {
+        for character in &mut string {
+            *character = crate::unicode_case::regexp_canonicalize(*character, unicode);
+        }
+        add_unicode_set_sequence(set, &string);
+    }
+    set.ranges = normalize_ranges(std::mem::take(&mut set.ranges));
+}
+
+fn unicode_set_union(target: &mut UnicodeSet, mut operand: UnicodeSet) {
+    target.ranges.append(&mut operand.ranges);
+    target.ranges = normalize_ranges(std::mem::take(&mut target.ranges));
+    target.strings.append(&mut operand.strings);
+}
+
+fn unicode_set_intersection(target: &mut UnicodeSet, operand: &UnicodeSet) {
+    target.ranges = intersect_ranges(&target.ranges, &operand.ranges);
+    target
+        .strings
+        .retain(|string| operand.strings.contains(string));
+}
+
+fn unicode_set_subtraction(target: &mut UnicodeSet, operand: &UnicodeSet) {
+    target.ranges = subtract_ranges(&target.ranges, &operand.ranges);
+    target
+        .strings
+        .retain(|string| !operand.strings.contains(string));
+}
+
+fn intersect_ranges(left: &[CharacterRange], right: &[CharacterRange]) -> Vec<CharacterRange> {
+    let left = normalize_ranges(left.to_vec());
+    let right = normalize_ranges(right.to_vec());
+    let mut intersection = Vec::new();
+    let (mut left_index, mut right_index) = (0, 0);
+    while let (Some(left), Some(right)) = (left.get(left_index), right.get(right_index)) {
+        let start = left.start.max(right.start);
+        let end = left.end.min(right.end);
+        if start <= end {
+            intersection.push(CharacterRange::new(start, end));
+        }
+        if left.end < right.end {
+            left_index += 1;
+        } else {
+            right_index += 1;
+        }
+    }
+    intersection
+}
+
+fn subtract_ranges(left: &[CharacterRange], right: &[CharacterRange]) -> Vec<CharacterRange> {
+    let left = normalize_ranges(left.to_vec());
+    let right = normalize_ranges(right.to_vec());
+    let mut difference = Vec::new();
+    let mut right_index = 0;
+    for left in left {
+        let mut start = left.start;
+        while right_index < right.len() && right[right_index].end < start {
+            right_index += 1;
+        }
+        let mut index = right_index;
+        while index < right.len() && right[index].start <= left.end {
+            let removed = right[index];
+            if removed.start > start {
+                difference.push(CharacterRange::new(start, removed.start - 1));
+            }
+            if removed.end >= left.end {
+                start = left.end.saturating_add(1);
+                break;
+            }
+            start = start.max(removed.end.saturating_add(1));
+            index += 1;
+        }
+        if start <= left.end {
+            difference.push(CharacterRange::new(start, left.end));
+        }
+    }
+    difference
 }
 
 fn canonicalize_ranges(ranges: &[CharacterRange], unicode: bool) -> Vec<CharacterRange> {
@@ -2137,6 +2554,37 @@ fn is_syntax_character(unit: u16) -> bool {
     )
 }
 
+fn is_unicode_set_double_punctuator(unit: u16) -> bool {
+    matches!(
+        unit,
+        0x26 | 0x21
+            | 0x23
+            | 0x24
+            | 0x25
+            | 0x2a
+            | 0x2b
+            | 0x2c
+            | 0x2e
+            | 0x3a
+            | 0x3b
+            | 0x3c
+            | 0x3d
+            | 0x3e
+            | 0x3f
+            | 0x40
+            | 0x5e
+            | 0x60
+            | 0x7e
+    )
+}
+
+fn is_unicode_set_reserved_punctuator(unit: u16) -> bool {
+    matches!(
+        unit,
+        0x28 | 0x29 | 0x5b | 0x5d | 0x7b | 0x7d | 0x2f | 0x2d | 0x7c
+    )
+}
+
 fn hex_value(unit: u16) -> Option<u32> {
     match unit {
         0x30..=0x39 => Some(u32::from(unit - 0x30)),
@@ -2175,10 +2623,9 @@ mod tests {
         assert_eq!(compiled.flags().bits(), 0x7f);
         assert_eq!(compiled.flags().canonical_string(), "dgimsuy");
         assert_eq!(parse_flags(&[u16::from(b'v')]).unwrap().bits(), 1 << 8);
-        assert!(matches!(
-            compile_ascii("", "v").unwrap_err().kind(),
-            CompileErrorKind::Unsupported(UnsupportedFeature::UnicodeSetOperation)
-        ));
+        let unicode_sets = compile_ascii("", "v").unwrap();
+        assert_eq!(unicode_sets.flags().bits(), 1 << 8);
+        assert_eq!(unicode_sets.flags().canonical_string(), "v");
         for flags in ["gg", "z", "uv", "vu"] {
             let error = compile_ascii("", flags).unwrap_err();
             assert_eq!(error.kind(), &CompileErrorKind::Syntax, "{flags}");
@@ -2187,7 +2634,7 @@ mod tests {
     }
 
     #[test]
-    fn unicode_sets_basic_character_class_escapes_have_narrow_admission() {
+    fn unicode_sets_flag_supports_ordinary_regexp_syntax_and_class_escapes() {
         for pattern in [
             r"\d",
             r"^\d+$",
@@ -2198,9 +2645,8 @@ mod tests {
             r"^[\D\S\W]{2,4}$",
         ] {
             for flags in ["v", "iv"] {
-                let compiled = compile_ascii(pattern, flags).unwrap_or_else(|error| {
-                    panic!("{pattern:?}/{flags} should be in the narrow v slice: {error}")
-                });
+                let compiled = compile_ascii(pattern, flags)
+                    .unwrap_or_else(|error| panic!("{pattern:?}/{flags} should compile: {error}"));
                 assert!(compiled.flags().contains(RegExpFlags::UNICODE_SETS));
             }
         }
@@ -2213,7 +2659,7 @@ mod tests {
     }
 
     #[test]
-    fn unicode_sets_non_slice_syntax_stays_typed_unsupported() {
+    fn unicode_sets_compile_ordinary_atoms_nested_algebra_and_strings() {
         for pattern in [
             "",
             "^$",
@@ -2231,15 +2677,12 @@ mod tests {
             r"[a]",
             r"[a-z]",
         ] {
-            assert_eq!(
-                compile_ascii(pattern, "v").unwrap_err().kind(),
-                &CompileErrorKind::Unsupported(UnsupportedFeature::UnicodeSetOperation),
-                "{pattern}",
-            );
+            let compiled = compile_ascii(pattern, "v")
+                .unwrap_or_else(|error| panic!("{pattern:?}/v should compile: {error}"));
+            assert!(compiled.flags().contains(RegExpFlags::UNICODE_SETS));
         }
 
-        // The same ordinary atoms remain available in legacy and `u` mode;
-        // the fail-closed boundary is specific to the incomplete `v` slice.
+        // The same ordinary atoms remain available in legacy and `u` mode.
         for pattern in ["a", ".", r"(\d)", r"[a]", r"[a-z]"] {
             assert!(compile_ascii(pattern, "").is_ok(), "{pattern}/legacy");
             assert!(compile_ascii(pattern, "u").is_ok(), "{pattern}/u");
@@ -2247,7 +2690,7 @@ mod tests {
     }
 
     #[test]
-    fn unicode_sets_malformed_narrow_syntax_remains_a_syntax_error() {
+    fn unicode_sets_malformed_syntax_remains_a_syntax_error() {
         for pattern in [
             "\\", r"[\d", "[\\", r"*\d", r"\d{2,1}", r"\d{1", r"\d{a}", r"\d{1,a}", r"\d++",
             r"[\d-]", r"[\d-\w]",
@@ -2720,12 +3163,11 @@ mod tests {
     }
 
     #[test]
-    fn advanced_syntax_is_typed_unsupported_instead_of_miscompiled() {
-        let error = compile_ascii("[a&&b]", "v").unwrap_err();
-        assert_eq!(
-            error.kind(),
-            &CompileErrorKind::Unsupported(UnsupportedFeature::UnicodeSetOperation),
-        );
+    fn unicode_sets_intersection_can_compile_to_an_empty_scalar_range() {
+        let compiled = compile_ascii("[a&&b]", "v").unwrap();
+        assert!(compiled.instructions().iter().any(|instruction| {
+            matches!(instruction, Instruction::Range { ranges, inverted: false, .. } if ranges.is_empty())
+        }));
     }
 
     #[test]

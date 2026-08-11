@@ -1697,6 +1697,43 @@ mod tests {
     }
 
     #[test]
+    fn compiler_programs_execute_unicode_sets_string_algebra() {
+        for (pattern, flags, input, expected) in [
+            (r"^[[a-c]&&[b-d]]+$", "v", "bc", Some(0..2)),
+            (r"^[[a-c]--b]+$", "v", "ac", Some(0..2)),
+            (r"^[\q{ab|a}]b$", "v", "ab", Some(0..2)),
+            (r"^[\q{ab|}]x$", "v", "x", Some(0..1)),
+            (r"^[\q{|a}]*$", "v", "aaa", Some(0..3)),
+            (r"^[\q{|a|ab}&&\q{|b|ab}]$", "v", "ab", Some(0..2)),
+            (r"^[\q{|a|ab}--\q{b|ab}]$", "v", "a", Some(0..1)),
+            (r"^[\q{A}&&\q{a}]$", "iv", "a", Some(0..1)),
+            (r"^[\q{A}--\q{a}]$", "iv", "a", None),
+            (r"^\p{RGI_Emoji_Flag_Sequence}$", "v", "🇨🇳", Some(0..4)),
+        ] {
+            assert_eq!(
+                complete_range(execute(&compile(pattern, flags), &units(input), 0).unwrap()),
+                expected,
+                "{pattern:?}/{flags} on {input:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_sets_string_lookbehind_preserves_pinned_quickjs_prev_placement() {
+        for (pattern, input, expected) in [
+            (r"(?<=[\q{ab}])c", "abc", None),
+            (r"(?<=[\q{ab}])b", "ab", Some(1..2)),
+            (r"(?<=[\q{ba}])a", "baa", Some(1..2)),
+        ] {
+            assert_eq!(
+                complete_range(execute(&compile(pattern, "v"), &units(input), 0).unwrap()),
+                expected,
+                "{pattern:?} on {input:?}",
+            );
+        }
+    }
+
+    #[test]
     fn compiler_programs_execute_backreferences_with_quickjs_empty_semantics() {
         for (pattern, input, complete, captures) in [
             (r"(ab)\1", "abab", 0..4, vec![Some(0..4), Some(0..2)]),

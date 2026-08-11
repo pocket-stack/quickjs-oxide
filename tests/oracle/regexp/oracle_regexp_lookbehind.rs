@@ -454,6 +454,27 @@ fn match_cases() -> Vec<MatchCase> {
             "x😀",
             2,
         ),
+        ascii(
+            "QuickJS does not reverse a multi-code-point Unicode Sets string",
+            r"(?<=[\q{ab}])c",
+            "v",
+            "abc",
+            0,
+        ),
+        ascii(
+            "QuickJS Unicode Sets string can read forward across the assertion position",
+            r"(?<=[\q{ab}])b",
+            "v",
+            "ab",
+            0,
+        ),
+        ascii(
+            "QuickJS Unicode Sets string preserves its class-wide prev placement",
+            r"(?<=[\q{ba}])a",
+            "v",
+            "baa",
+            0,
+        ),
     ]
 }
 

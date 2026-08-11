@@ -10,9 +10,7 @@ mod flags;
 mod group_name;
 mod opcode;
 
-pub use compiler::{
-    CompileError, CompileErrorKind, CompileErrorSource, CompiledRegExp, UnsupportedFeature,
-};
+pub use compiler::{CompileError, CompileErrorKind, CompileErrorSource, CompiledRegExp};
 pub use executor::{ExecError, ProgramError, RegExpMatch, execute, execute_with_interrupt};
 pub use flags::RegExpFlags;
 pub use opcode::{CharacterRange, Instruction};
@@ -30,13 +28,10 @@ pub fn compile(pattern: &JsString, flags: &JsString) -> Result<CompiledRegExp, C
 }
 
 /// Classify a pure-Rust compiler failure at the JavaScript compilation
-/// boundary. Unsupported engine features stay distinct from conforming
-/// `SyntaxError`s so Test262 bookkeeping cannot count an implementation gap as
-/// a language rejection.
+/// boundary.
 #[must_use]
 pub(crate) const fn javascript_compile_error_kind(error: &CompileError) -> ErrorKind {
     match error.kind() {
-        CompileErrorKind::Unsupported(_) => ErrorKind::Unsupported,
         CompileErrorKind::Syntax
         | CompileErrorKind::TooManyCaptures
         | CompileErrorKind::TooManyRegisters => ErrorKind::Syntax,

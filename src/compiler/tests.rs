@@ -10923,9 +10923,8 @@ fn primary_expression_slashes_are_rescanned_as_complete_regexp_tokens() {
 
     compile_unlinked_script("/(?=a)/").expect("forward lookahead literal should compile");
     compile_unlinked_script("/(?<=a)/").expect("backward lookaround literal should compile");
-    let unsupported_v = compile_unlinked_script("1 / /denominator/v;").unwrap_err();
-    assert_eq!(unsupported_v.kind(), ErrorKind::Unsupported);
-    assert!(unsupported_v.message().contains("UnicodeSetOperation"));
+    compile_unlinked_script("1 / /denominator/v;")
+        .expect("Unicode Sets RegExp literal should compile after slash rescanning");
 
     // The same slash tokens remain operators when the expression parser
     // has already produced their left operand.

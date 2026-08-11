@@ -2,15 +2,10 @@ use std::ffi::OsStr;
 use std::fmt::Write as _;
 
 use quickjs_oxide::JsString;
-use quickjs_oxide::regexp::{CompileErrorKind, UnsupportedFeature, compile, execute};
+use quickjs_oxide::regexp::{CompileErrorKind, compile, execute};
 
-// Differential lock for the deliberately narrow first `v`-flag slice.
-//
-// Pinned QuickJS 2026-06-04 initializes `unicode_sets` in `lre_compile`,
-// recognizes d/D/s/S/w/W in `get_class_atom`, and builds their ranges through
-// `cr_init_char_range`. Its separate `re_parse_nested_class` paths implement
-// set operations, nested sets, strings, and properties of strings; those paths
-// remain typed Unsupported in quickjs-oxide until their own parity milestones.
+// Differential lock for pinned QuickJS 2026-06-04 Unicode Sets parsing,
+// string/range algebra, and execution ordering.
 
 #[derive(Debug)]
 struct MatchCase {
@@ -22,19 +17,19 @@ struct MatchCase {
 }
 
 #[test]
-fn regexp_v_character_class_escape_slice_matches_expected_semantics() {
+fn regexp_v_character_classes_match_expected_semantics() {
     for case in match_cases() {
         assert_eq!(
             observe_oxide(&case),
             case.expected,
-            "unexpected v-slice result for {}",
+            "unexpected Unicode Sets result for {}",
             case.label,
         );
     }
 }
 
 #[test]
-fn regexp_v_character_class_escape_slice_matches_pinned_quickjs() {
+fn regexp_v_character_classes_match_pinned_quickjs() {
     let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
         eprintln!("SKIP RegExp v CharacterClassEscape differential: set QJS_ORACLE");
         return;
@@ -58,7 +53,7 @@ fn regexp_v_character_class_escape_slice_matches_pinned_quickjs() {
 }
 
 #[test]
-fn regexp_v_non_slice_and_malformed_syntax_remain_distinct() {
+fn regexp_v_complete_surface_compiles_and_malformed_syntax_stays_syntax_error() {
     for pattern in [
         "",
         "^$",
@@ -76,12 +71,8 @@ fn regexp_v_non_slice_and_malformed_syntax_remain_distinct() {
         r"[a]",
         r"[a-z]",
     ] {
-        let error = compile_ascii(pattern, "v").unwrap_err();
-        assert_eq!(
-            error.kind(),
-            &CompileErrorKind::Unsupported(UnsupportedFeature::UnicodeSetOperation),
-            "{pattern}",
-        );
+        compile_ascii(pattern, "v")
+            .unwrap_or_else(|error| panic!("{pattern:?}/v should compile: {error}"));
     }
 
     for pattern in [
@@ -152,6 +143,76 @@ fn match_cases() -> Vec<MatchCase> {
             "v",
             "x",
             "N",
+        ),
+        ascii(
+            "nested class intersection",
+            r"^[[a-c]&&[b-d]]+$",
+            "v",
+            "bc",
+            "M:0:2",
+        ),
+        ascii(
+            "nested class subtraction",
+            r"^[[a-c]--b]+$",
+            "v",
+            "ac",
+            "M:0:2",
+        ),
+        ascii(
+            "long string falls back to shorter string",
+            r"^[\q{ab|a}]b$",
+            "v",
+            "ab",
+            "M:0:2",
+        ),
+        ascii(
+            "empty string is the final fallback",
+            r"^[\q{ab|}]x$",
+            "v",
+            "x",
+            "M:0:1",
+        ),
+        ascii(
+            "string intersection includes exact members",
+            r"^[\q{|a|ab}&&\q{|b|ab}]$",
+            "v",
+            "ab",
+            "M:0:2",
+        ),
+        ascii(
+            "string subtraction removes exact members",
+            r"^[\q{|a|ab}--\q{b|ab}]$",
+            "v",
+            "a",
+            "M:0:1",
+        ),
+        ascii(
+            "iv canonicalizes strings before intersection",
+            r"^[\q{A}&&\q{a}]$",
+            "iv",
+            "a",
+            "M:0:1",
+        ),
+        ascii(
+            "iv canonicalizes strings before subtraction",
+            r"^[\q{A}--\q{a}]$",
+            "iv",
+            "a",
+            "N",
+        ),
+        ascii(
+            "sequence property matches a flag string",
+            r"^\p{RGI_Emoji_Flag_Sequence}$",
+            "v",
+            "🇨🇳",
+            "M:0:4",
+        ),
+        ascii(
+            "string property participates in intersection",
+            r"^[\p{RGI_Emoji}&&\p{RGI_Emoji_Flag_Sequence}]$",
+            "v",
+            "🇨🇳",
+            "M:0:4",
         ),
         ascii(
             "legacy i does not Unicode-fold Kelvin",
