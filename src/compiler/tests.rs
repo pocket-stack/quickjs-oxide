@@ -933,6 +933,34 @@ fn invalid_assignment_diagnostics_advance_to_rhs_like_quickjs() {
 }
 
 #[test]
+fn invalid_for_in_of_assignment_target_diagnostics_match_quickjs() {
+    for source in ["for(f() in {}) {}", "for(f() of []) {}"] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "invalid for in/of left hand-side",
+            "{source}"
+        );
+        let span = error
+            .span()
+            .expect("invalid for-in/of target error lost its span");
+        assert_eq!((span.start.line, span.start.column), (1, 9), "{source}");
+    }
+
+    let ordinary_assignment = compile_unlinked_script("f() = 1").unwrap_err();
+    assert_eq!(ordinary_assignment.kind(), ErrorKind::Syntax);
+    assert_eq!(
+        ordinary_assignment.message(),
+        "invalid assignment left-hand side"
+    );
+    let span = ordinary_assignment
+        .span()
+        .expect("invalid assignment error lost its span");
+    assert_eq!((span.start.line, span.start.column), (1, 7));
+}
+
+#[test]
 fn class_field_initializers_reset_async_lexing_to_the_normal_hidden_child() {
     let source = r#"
         var aw\u0061it = 40;

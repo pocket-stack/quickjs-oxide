@@ -3056,7 +3056,7 @@ impl<'source> Parser<'source> {
             });
         }
         let Some(target) = self.take_tail_member_reference()? else {
-            return Err(self.syntax_here("invalid assignment left-hand side"));
+            return Err(self.syntax_here("invalid for in/of left hand-side"));
         };
         self.emit_for_of_member_put(target)?;
         Ok(ForAssignmentTargetInfo {

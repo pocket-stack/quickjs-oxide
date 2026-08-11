@@ -110,6 +110,10 @@ const SYNTAX_CASES: &[(&str, &str)] = &[
         "ordinary assignment initializer is rejected",
         "var k;for(k=1 in {a:1}){}",
     ),
+    (
+        "call expression is not a for-in assignment target",
+        "for(f() in {}) {}",
+    ),
 ];
 
 #[test]

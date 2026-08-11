@@ -394,6 +394,10 @@ const SYNTAX_CASES: &[(&str, &str)] = &[
         "async cannot be the bare for-of left expression",
         "for(async of 'a')async",
     ),
+    (
+        "call expression is not a for-of assignment target",
+        "for(f() of []) {}",
+    ),
 ];
 
 const ARRAY_BINDING_SYNTAX_CASES: &[(&str, &str)] = &[
