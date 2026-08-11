@@ -19,6 +19,14 @@ contracted variant passes only when phase, type, message, and location all
 match; Test262 paths and source hashes remain dev-support data and never enter
 the production parser.
 
+`negative-diagnostic-exemptions.tsv` freezes the legacy variants admitted
+before exact diagnostic contracts became mandatory. Every audited negative
+variant must belong to exactly one of the two files: an exact contract or this
+legacy phase/type-only ledger. Overlap and missing rows are fatal. New
+admissions therefore extend the exact contract and cannot silently inherit the
+old phase/type-only behavior; removing an exemption requires replacing it with
+an exact contract.
+
 The baseline also names the exact source commit and a canonical engine-semantics
 fingerprint. The fingerprint hashes sorted repository paths and exact contents
 for `Cargo.toml`, `Cargo.lock`, `src/**`, the active profile/upstream pins, and

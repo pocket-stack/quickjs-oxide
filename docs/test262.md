@@ -35,7 +35,8 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 ```
 
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
-contract, focused manifest, and frozen TSV/JSONL receipts. `--focused` replays
+contract and legacy exemption ledger, focused manifest, and frozen TSV/JSONL
+receipts. `--focused` replays
 the 6,382-variant R3eg-B dependency-closed private-callable vector and requires
 byte-identical output. It covers `class-methods-private` and
 `class-static-methods-private`, including ordinary methods, accessors,
@@ -43,11 +44,13 @@ generators, async methods, and async generators. `--full` runs every 102,037
 variant and checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
-its exact path is present in the audited-negative data, and execution still
-must produce the required phase and error type. Contracted variants additionally
-require the exact pinned-QuickJS message and an `exact` or `absent` location
-policy. Schema-v4 receipts record the contract hash and expected/actual
-diagnostic fields; new negative admissions must extend this data contract.
+its exact path is present in the audited-negative data. Every admitted
+path/variant must then belong to exactly one diagnostic class. The 1,756 exact
+contracts require the pinned-QuickJS phase, type, message, and `exact` or
+`absent` location policy. A frozen ledger identifies the 2,586 legacy variants
+that still check phase and type only. Schema-v5 receipts authenticate both data
+files and record expected/actual diagnostic fields. New negative admissions
+must add exact contracts; they cannot add implicit phase/type-only cases.
 
 Historical per-milestone profiles, copied shell gates, and result vectors are
 not executable policy. They are preserved in the release archive listed in

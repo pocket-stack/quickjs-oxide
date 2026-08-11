@@ -13,6 +13,8 @@ mod config;
 mod execution;
 #[path = "run_test262/metadata.rs"]
 mod metadata;
+#[path = "run_test262/negative_diagnostic_exemptions.rs"]
+mod negative_diagnostic_exemptions;
 #[path = "run_test262/negative_diagnostics.rs"]
 mod negative_diagnostics;
 #[path = "run_test262/report.rs"]
@@ -35,6 +37,7 @@ use capabilities::OxideProfile;
 use config::{parse_config, sha256_file, skip_reason, validate_config, validate_suite};
 use execution::{run_isolated_worker, run_worker};
 use metadata::{Metadata, parse_metadata};
+use negative_diagnostic_exemptions::NegativeDiagnosticExemptions;
 use negative_diagnostics::NegativeDiagnostics;
 use report::{WorkerResult, report_row, write_report};
 use requirements::{
@@ -115,6 +118,8 @@ struct CoordinatorOptions {
     oxide_profile: PathBuf,
     negative_diagnostics: PathBuf,
     negative_diagnostics_sha256: String,
+    negative_diagnostic_exemptions: PathBuf,
+    negative_diagnostic_exemptions_sha256: String,
     engine_semantics_sha256: String,
     manifest: Option<PathBuf>,
     tests: Vec<PathBuf>,
@@ -142,7 +147,7 @@ struct MetadataAuditOptions {
 }
 
 enum Invocation {
-    Coordinator(CoordinatorOptions),
+    Coordinator(Box<CoordinatorOptions>),
     Worker(WorkerOptions),
     MetadataAudit(MetadataAuditOptions),
     Help,
@@ -214,6 +219,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
     let mut oxide_profile = None;
     let mut negative_diagnostics = None;
     let mut negative_diagnostics_sha256 = None;
+    let mut negative_diagnostic_exemptions = None;
+    let mut negative_diagnostic_exemptions_sha256 = None;
     let mut engine_semantics_sha256 = None;
     let mut manifest = None;
     let mut tests = Vec::new();
@@ -265,6 +272,25 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
                     );
                 }
                 negative_diagnostics_sha256 = Some(value);
+            }
+            "--negative-diagnostic-exemptions" => {
+                negative_diagnostic_exemptions = Some(PathBuf::from(take_value(
+                    "--negative-diagnostic-exemptions",
+                )?));
+            }
+            "--negative-diagnostic-exemptions-sha256" => {
+                let value = take_value("--negative-diagnostic-exemptions-sha256")?;
+                if value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(
+                        "--negative-diagnostic-exemptions-sha256 must be a lowercase SHA-256"
+                            .to_owned(),
+                    );
+                }
+                negative_diagnostic_exemptions_sha256 = Some(value);
             }
             "--engine-semantics-sha256" => {
                 let value = take_value("--engine-semantics-sha256")?;
@@ -323,6 +349,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || oxide_profile.is_some()
             || negative_diagnostics.is_some()
             || negative_diagnostics_sha256.is_some()
+            || negative_diagnostic_exemptions.is_some()
+            || negative_diagnostic_exemptions_sha256.is_some()
             || engine_semantics_sha256.is_some()
             || variant.is_some()
             || allow_failures
@@ -348,6 +376,8 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
             || oxide_profile.is_some()
             || negative_diagnostics.is_some()
             || negative_diagnostics_sha256.is_some()
+            || negative_diagnostic_exemptions.is_some()
+            || negative_diagnostic_exemptions_sha256.is_some()
             || engine_semantics_sha256.is_some()
             || allow_failures
             || mode_explicit
@@ -391,13 +421,19 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
         negative_diagnostics.ok_or_else(|| "--negative-diagnostics is required".to_owned())?;
     let negative_diagnostics_sha256 = negative_diagnostics_sha256
         .ok_or_else(|| "--negative-diagnostics-sha256 is required".to_owned())?;
+    let negative_diagnostic_exemptions = negative_diagnostic_exemptions
+        .ok_or_else(|| "--negative-diagnostic-exemptions is required".to_owned())?;
+    let negative_diagnostic_exemptions_sha256 = negative_diagnostic_exemptions_sha256
+        .ok_or_else(|| "--negative-diagnostic-exemptions-sha256 is required".to_owned())?;
     let report = report.ok_or_else(|| "--report is required".to_owned())?;
-    Ok(Invocation::Coordinator(CoordinatorOptions {
+    Ok(Invocation::Coordinator(Box::new(CoordinatorOptions {
         suite,
         config,
         oxide_profile,
         negative_diagnostics,
         negative_diagnostics_sha256,
+        negative_diagnostic_exemptions,
+        negative_diagnostic_exemptions_sha256,
         engine_semantics_sha256,
         manifest,
         tests,
@@ -407,14 +443,14 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
         timeout: Duration::from_millis(timeout_ms),
         workers: workers.unwrap_or_else(default_worker_count),
         allow_failures,
-    }))
+    })))
 }
 
 fn print_help() {
     let default_workers = default_worker_count();
     println!(
         "run-test262 (quickjs-oxide)\n\
-usage: run-test262 --suite DIR --config FILE --oxide-profile FILE --negative-diagnostics FILE --negative-diagnostics-sha256 SHA256 --engine-semantics-sha256 SHA256 (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
+usage: run-test262 --suite DIR --config FILE --oxide-profile FILE --negative-diagnostics FILE --negative-diagnostics-sha256 SHA256 --negative-diagnostic-exemptions FILE --negative-diagnostic-exemptions-sha256 SHA256 --engine-semantics-sha256 SHA256 (--manifest FILE | --test FILE... | --all) --report FILE [options]\n\
 \n\
   --engine-semantics-sha256 SHA256\n\
                        canonical source fingerprint supplied by the gate\n\
@@ -467,10 +503,20 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     validate_config(&options.config)?;
     let config = parse_config(&options.config)?;
     let oxide_profile = OxideProfile::load(&options.oxide_profile)?;
-    validate_oxide_profile(&oxide_profile, &options.suite)?;
     let negative_diagnostics = NegativeDiagnostics::load(
         &options.negative_diagnostics,
         &options.negative_diagnostics_sha256,
+        &options.suite,
+    )?;
+    let negative_diagnostic_exemptions = NegativeDiagnosticExemptions::load(
+        &options.negative_diagnostic_exemptions,
+        &options.negative_diagnostic_exemptions_sha256,
+        &options.suite,
+    )?;
+    validate_oxide_profile(
+        &oxide_profile,
+        &negative_diagnostics,
+        &negative_diagnostic_exemptions,
         &options.suite,
     )?;
     let audited_negative_paths = oxide_profile
@@ -481,6 +527,24 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             return Err(format!(
                 "negative diagnostic contract is not admitted by the Oxide profile: {}",
                 expectation.path
+            ));
+        }
+    }
+    for exemption in negative_diagnostic_exemptions.iter() {
+        if !audited_negative_paths.contains(exemption.path.as_str()) {
+            return Err(format!(
+                "negative diagnostic exemption is not admitted by the Oxide profile: {}",
+                exemption.path
+            ));
+        }
+        if negative_diagnostics
+            .get(Path::new(&exemption.path), exemption.variant)
+            .is_some()
+        {
+            return Err(format!(
+                "negative path/variant has both an exact diagnostic contract and a legacy exemption: {} {}",
+                exemption.path,
+                exemption.variant.name()
             ));
         }
     }
@@ -675,7 +739,12 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
     Ok(options.allow_failures || failed == 0)
 }
 
-fn validate_oxide_profile(profile: &OxideProfile, suite: &Path) -> Result<(), String> {
+fn validate_oxide_profile(
+    profile: &OxideProfile,
+    diagnostics: &NegativeDiagnostics,
+    exemptions: &NegativeDiagnosticExemptions,
+    suite: &Path,
+) -> Result<(), String> {
     for relative in profile.audited_negative_paths() {
         let relative = Path::new(relative);
         validate_relative_test_path(relative)?;
@@ -693,6 +762,22 @@ fn validate_oxide_profile(profile: &OxideProfile, suite: &Path) -> Result<(), St
                 "oxide profile path is not a negative test: {}",
                 relative.display()
             ));
+        }
+        for variant in metadata.variants(TestMode::Both) {
+            let exact = diagnostics.get(relative, variant).is_some();
+            let legacy = exemptions.contains(relative, variant);
+            if exact == legacy {
+                let classification = if exact {
+                    "both an exact contract and a legacy exemption"
+                } else {
+                    "neither an exact contract nor a legacy exemption"
+                };
+                return Err(format!(
+                    "audited negative variant has {classification}: {} {}",
+                    relative.display(),
+                    variant.name()
+                ));
+            }
         }
     }
     for relative in profile.agent_host_paths() {
@@ -981,6 +1066,10 @@ mod cli_tests {
             "dev-support/test262/negative-diagnostics.tsv",
             "--negative-diagnostics-sha256",
             "1111111111111111111111111111111111111111111111111111111111111111",
+            "--negative-diagnostic-exemptions",
+            "dev-support/test262/negative-diagnostic-exemptions.tsv",
+            "--negative-diagnostic-exemptions-sha256",
+            "2222222222222222222222222222222222222222222222222222222222222222",
             "--engine-semantics-sha256",
             "0000000000000000000000000000000000000000000000000000000000000000",
             "--manifest",
@@ -998,6 +1087,10 @@ mod cli_tests {
         assert_eq!(
             options.negative_diagnostics,
             Path::new("dev-support/test262/negative-diagnostics.tsv")
+        );
+        assert_eq!(
+            options.negative_diagnostic_exemptions,
+            Path::new("dev-support/test262/negative-diagnostic-exemptions.tsv")
         );
         assert_eq!(
             options.engine_semantics_sha256,

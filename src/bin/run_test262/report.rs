@@ -204,7 +204,7 @@ pub(super) fn write_report(
     }
     let mut output = String::new();
     output.push_str(&format!(
-        "# quickjs-oxide Test262 outcome vector v4 engine_semantics_sha256={}\n",
+        "# quickjs-oxide Test262 outcome vector v5 engine_semantics_sha256={}\n",
         options.engine_semantics_sha256
     ));
     output.push_str(&format!("# quickjs={QUICKJS_VERSION}\n"));
@@ -220,6 +220,10 @@ pub(super) fn write_report(
     output.push_str(&format!(
         "# negative_diagnostics_sha256={}\n",
         options.negative_diagnostics_sha256
+    ));
+    output.push_str(&format!(
+        "# negative_diagnostic_exemptions_sha256={}\n",
+        options.negative_diagnostic_exemptions_sha256
     ));
     output.push_str("# profile=test262-canonical-classified-v2\n");
     output.push_str(&format!("# mode={}\n", options.mode.name()));
@@ -251,7 +255,7 @@ pub(super) fn write_report(
 
     let mut json = String::new();
     json.push_str(&format!(
-        "{{\"kind\":\"metadata\",\"schema\":4,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"oxide_profile_sha256\":{},\"negative_diagnostics_sha256\":{},\"engine_semantics_sha256\":{},\"profile\":\"test262-canonical-classified-v2\",\"mode\":{}}}\n",
+        "{{\"kind\":\"metadata\",\"schema\":5,\"quickjs\":{},\"test262\":{},\"test262_patch_sha256\":{},\"test262_config_sha256\":{},\"test262_metadata_sha256\":{},\"oxide_profile_sha256\":{},\"negative_diagnostics_sha256\":{},\"negative_diagnostic_exemptions_sha256\":{},\"engine_semantics_sha256\":{},\"profile\":\"test262-canonical-classified-v2\",\"mode\":{}}}\n",
         json_string(QUICKJS_VERSION),
         json_string(TEST262_COMMIT),
         json_string(TEST262_PATCH_SHA256),
@@ -259,6 +263,7 @@ pub(super) fn write_report(
         json_string(TEST262_METADATA_SHA256),
         json_string(oxide_profile_sha256),
         json_string(&options.negative_diagnostics_sha256),
+        json_string(&options.negative_diagnostic_exemptions_sha256),
         json_string(&options.engine_semantics_sha256),
         json_string(options.mode.name()),
     ));
