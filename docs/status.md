@@ -8,11 +8,11 @@ Parity.
 ## Current baseline
 
 <!-- current-test262-metrics:start -->
-The authoritative R3ek Test262 vector has:
+The authoritative R3el Test262 vector has:
 
-- 78,838 full-corpus passes out of 102,037 variants (77.264%)
-- 78,888 eligible variants out of 102,037 (77.313%)
-- 78,838 passes out of 78,888 runnable variants (99.937%, secondary quality
+- 79,064 full-corpus passes out of 102,037 variants (77.486%)
+- 79,114 eligible variants out of 102,037 (77.535%)
+- 79,064 passes out of 79,114 runnable variants (99.937%, secondary quality
   metric)
 - 50 classified failures and no timeouts among eligible variants
 <!-- current-test262-metrics:end -->
@@ -64,6 +64,8 @@ private-callable cohorts gate the exact QuickJS error message and line/column
 policy as well as phase and type. Logical-assignment, optional-chain-assignment,
 generator-yield collateral cases, and both direct and parenthesized
 assignment-target cohorts discovered during admission are exact-contracted too.
+R3el adds the QuickJS-matched single-statement function, lexical, and class
+declaration diagnostics, plus strict-code `with` statement diagnostics.
 
 The active tree now retains only 23 referenced `tests/test262-*` artifacts; 313
 superseded manifests and ledgers are authenticated in the R3eh history release.
