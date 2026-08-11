@@ -12,9 +12,9 @@ top-level await, and QuickJS host-populated `import.meta` properties remain
 parity work.
 
 <!-- current-test262-metrics:start -->
-The authoritative R3el Test262 baseline records **79,064 full-corpus passes
-out of 102,037 variants (77.486%)**, with **79,114 eligible variants
-(77.535%)**. The 79,064 / 79,114 runnable pass rate (99.937%) is a secondary
+The authoritative R3em Test262 baseline records **79,438 full-corpus passes
+out of 102,037 variants (77.852%)**, with **79,488 eligible variants
+(77.901%)**. The 79,438 / 79,488 runnable pass rate (99.937%) is a secondary
 quality measure, not the headline compatibility metric.
 <!-- current-test262-metrics:end -->
 
