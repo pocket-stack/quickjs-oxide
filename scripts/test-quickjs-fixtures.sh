@@ -107,17 +107,19 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-fixture-gates.XXXXXX")
 trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 rows=$tmp_dir/rows.tsv
 
-expected_header=$'case_id\tfixture\texpected\tfixture_sha256\texpected_sha256\tmode\ttranscript\tcompletion\tlabel'
+expected_header=$'case_id\tfixture\texpected\tfixture_sha256\texpected_sha256\tmode\ttranscript\tcompletion\tprepared_sha256\tlabel'
 header=$(sed -n '1p' "$registry")
 [[ "$header" == "$expected_header" ]] || die "unsupported fixture registry schema"
+[[ "$(tail -c 1 "$registry" | wc -l | tr -d '[:space:]')" == 1 ]] \
+    || die "fixture registry must end with a newline"
 
 tail -n +2 "$registry" | while IFS= read -r line; do
     [[ -n "$line" ]] || die "fixture registry contains a blank row"
     [[ "$line" != *$'\r'* && "$line" != *$'\t' ]] \
         || die "fixture registry contains non-canonical whitespace"
     field_count=$(awk -F '\t' '{ print NF }' <<<"$line")
-    [[ "$field_count" == 9 ]] || die "fixture registry row must have 9 columns"
-    IFS=$'\t' read -r id fixture expected fixture_sha expected_sha mode transcript completion label <<<"$line"
+    [[ "$field_count" == 10 ]] || die "fixture registry row must have 10 columns"
+    IFS=$'\t' read -r id fixture expected fixture_sha expected_sha mode transcript completion prepared_sha label <<<"$line"
     [[ "$id" =~ ^r3[a-z0-9]+$ ]] || die "invalid fixture case id: $id"
     [[ "$fixture" =~ ^tests/fixtures/[a-z0-9_]+\.js$ ]] \
         || die "invalid fixture path for $id: $fixture"
@@ -130,6 +132,7 @@ tail -n +2 "$registry" | while IFS= read -r line; do
         || die "expected transcript does not match fixture: $id"
     [[ "$fixture_sha" =~ ^[0-9a-f]{64}$ ]] || die "invalid fixture hash for $id"
     [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || die "invalid expected hash for $id"
+    [[ "$prepared_sha" =~ ^[0-9a-f]{64}$ ]] || die "invalid prepared hash for $id"
     [[ "$label" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || die "invalid label for $id"
     case $mode in
         value)
@@ -145,6 +148,8 @@ tail -n +2 "$registry" | while IFS= read -r line; do
         direct)
             [[ "$transcript" == - && "$completion" == - ]] \
                 || die "invalid direct-mode fields for $id"
+            [[ "$prepared_sha" == "$fixture_sha" ]] \
+                || die "direct fixture prepared hash must equal its source hash: $id"
             ;;
         *) die "invalid fixture mode for $id: $mode" ;;
     esac
@@ -155,9 +160,9 @@ tail -n +2 "$registry" | while IFS= read -r line; do
         [[ "$last_line" == "$completion;" ]] \
             || die "promise fixture does not end with $completion;: $id"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$id" "$fixture" "$expected" "$fixture_sha" "$expected_sha" \
-        "$mode" "$transcript" "$completion" "$label"
+        "$mode" "$transcript" "$completion" "$prepared_sha" "$label"
 done >"$rows"
 
 [[ -s "$rows" ]] || die "fixture registry has no cases"
@@ -169,17 +174,60 @@ sort -c -t $'\t' -k1,1 "$rows" \
     || die "fixture registry cases must be sorted by id"
 case_count=$(wc -l <"$rows" | tr -d '[:space:]')
 
-if $validate_only; then
-    echo "QuickJS fixture registry passed: $case_count authenticated cases."
-    exit 0
-fi
-
 if [[ "$selection" == case ]] && ! awk -F '\t' -v id="$case_id" '$1 == id { found=1 } END { exit !found }' "$rows"; then
     die "unknown fixture case: $case_id"
 fi
 selected_count=$case_count
 if [[ "$selection" == case ]]; then
     selected_count=1
+fi
+
+prepare_case() {
+    local row=$1
+    local fixture_sha expected_sha
+    IFS=$'\t' read -r fixture_case_id fixture_relative expected_relative \
+        fixture_sha expected_sha fixture_mode fixture_transcript \
+        fixture_completion fixture_prepared_sha fixture_label <<<"$row"
+    fixture_path=$root/$fixture_relative
+    expected_path=$root/$expected_relative
+    engine_fixture=$fixture_path
+
+    case $fixture_mode in
+        value)
+            engine_fixture=$tmp_dir/$fixture_case_id.js
+            {
+                cat "$fixture_path"
+                printf '\nprint(%s.join("\\n"));\n' "$fixture_transcript"
+            } >"$engine_fixture"
+            quickjs_args=(--script "$engine_fixture")
+            oxide_args=(--print-result "$fixture_path")
+            ;;
+        promise)
+            engine_fixture=$tmp_dir/$fixture_case_id.js
+            {
+                sed '$d' "$fixture_path"
+                printf '\n%s.then(\n' "$fixture_completion"
+                printf '    function () { print(%s.join("\\n")); },\n' "$fixture_transcript"
+                printf '    function (error) { throw error; }\n'
+                printf ');\n'
+            } >"$engine_fixture"
+            quickjs_args=(--std --script "$engine_fixture")
+            oxide_args=("$engine_fixture")
+            ;;
+        direct)
+            quickjs_args=(--std --script "$fixture_path")
+            oxide_args=("$fixture_path")
+            ;;
+    esac
+    verify_hash "$engine_fixture" "$fixture_prepared_sha"
+}
+
+if $validate_only; then
+    while IFS= read -r row; do
+        prepare_case "$row"
+    done <"$rows"
+    echo "QuickJS fixture registry passed: $case_count authenticated cases and drivers."
+    exit 0
 fi
 
 oracle=$("$script_dir/build-quickjs-oracle.sh")
@@ -220,63 +268,28 @@ compare_transcript() {
 
 run_case() {
     local row=$1
-    local id fixture expected fixture_sha expected_sha mode transcript completion label
-    local fixture_path expected_path engine_fixture
     local quickjs_out quickjs_err oxide_out oxide_err
-    local -a quickjs_args oxide_args
-    IFS=$'\t' read -r id fixture expected fixture_sha expected_sha mode transcript completion label <<<"$row"
-    fixture_path=$root/$fixture
-    expected_path=$root/$expected
-    engine_fixture=$fixture_path
-
-    case $mode in
-        value)
-            engine_fixture=$tmp_dir/$id.js
-            {
-                cat "$fixture_path"
-                printf '\nprint(%s.join("\\n"));\n' "$transcript"
-            } >"$engine_fixture"
-            quickjs_args=(--script "$engine_fixture")
-            oxide_args=(--print-result "$fixture_path")
-            ;;
-        promise)
-            engine_fixture=$tmp_dir/$id.js
-            {
-                sed '$d' "$fixture_path"
-                printf '\n%s.then(\n' "$completion"
-                printf '    function () { print(%s.join("\\n")); },\n' "$transcript"
-                printf '    function (error) { throw error; }\n'
-                printf ');\n'
-            } >"$engine_fixture"
-            quickjs_args=(--std --script "$engine_fixture")
-            oxide_args=("$engine_fixture")
-            ;;
-        direct)
-            quickjs_args=(--std --script "$fixture_path")
-            oxide_args=("$fixture_path")
-            ;;
-    esac
-
-    quickjs_out=$tmp_dir/$id.quickjs.out
-    quickjs_err=$tmp_dir/$id.quickjs.err
-    run_engine "pinned QuickJS 2026-06-04 ($id)" "$oracle" \
+    prepare_case "$row"
+    quickjs_out=$tmp_dir/$fixture_case_id.quickjs.out
+    quickjs_err=$tmp_dir/$fixture_case_id.quickjs.err
+    run_engine "pinned QuickJS 2026-06-04 ($fixture_case_id)" "$oracle" \
         "$quickjs_out" "$quickjs_err" "${quickjs_args[@]}"
-    compare_transcript "pinned QuickJS 2026-06-04 ($id)" "$expected_path" "$quickjs_out"
+    compare_transcript "pinned QuickJS 2026-06-04 ($fixture_case_id)" "$expected_path" "$quickjs_out"
 
     if [[ -n "$oxide" ]]; then
-        oxide_out=$tmp_dir/$id.oxide.out
-        oxide_err=$tmp_dir/$id.oxide.err
-        run_engine "quickjs-oxide ($id)" "$oxide" \
+        oxide_out=$tmp_dir/$fixture_case_id.oxide.out
+        oxide_err=$tmp_dir/$fixture_case_id.oxide.err
+        run_engine "quickjs-oxide ($fixture_case_id)" "$oxide" \
             "$oxide_out" "$oxide_err" "${oxide_args[@]}"
-        compare_transcript "quickjs-oxide ($id)" "$expected_path" "$oxide_out"
+        compare_transcript "quickjs-oxide ($fixture_case_id)" "$expected_path" "$oxide_out"
         if ! cmp -s -- "$quickjs_out" "$oxide_out"; then
-            echo "error: quickjs-oxide differs from pinned QuickJS 2026-06-04 ($id)" >&2
+            echo "error: quickjs-oxide differs from pinned QuickJS 2026-06-04 ($fixture_case_id)" >&2
             diff -u -- "$quickjs_out" "$oxide_out" >&2 || true
             exit 1
         fi
-        echo "$id $label differential passed"
+        echo "$fixture_case_id $fixture_label differential passed"
     else
-        echo "$id $label oracle passed"
+        echo "$fixture_case_id $fixture_label oracle passed"
     fi
 }
 
