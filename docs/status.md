@@ -8,7 +8,7 @@ Parity.
 ## Current baseline
 
 <!-- current-test262-metrics:start -->
-The authoritative R3em Test262 vector has:
+The authoritative R3en Test262 vector has:
 
 - 79,438 full-corpus passes out of 102,037 variants (77.852%)
 - 79,488 eligible variants out of 102,037 (77.901%)
@@ -42,8 +42,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
-loads a data profile instead of compiling historical milestone identity tables,
-and its `$262` realm/agent host is isolated behind a non-default feature.
+loads its profile and exact admissions from hash-authenticated data instead of
+compiling milestone identity or admission tables, and its `$262` realm/agent
+host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
@@ -53,9 +54,11 @@ recorded by the current Test262 vector. A Feature Parity claim additionally
 requires the acceptance contract in [`parity.md`](parity.md), including QuickJS
 differential evidence and non-Test262 behavior.
 
-The initial architecture-hygiene pass is complete. Cargo integration-test
-targets fell from 186 to 5 (one shared oracle harness), and exact-clone runtime,
-CLI, and QuickJS transport helpers now share support code. Path-sensitive
+The R3en architecture-hygiene pass is complete. Cargo integration-test targets
+fell from 186 to 5 (one shared oracle harness). Repeated runtime-completion,
+value, property, CLI, and QuickJS transport helper families now share support
+code; a token-level gate rejects the retired and shared-provider fingerprints
+without conflating domain-specific prelude or spelling helpers. Path-sensitive
 non-oracle tests remain separate, while `$262` oracle modules are feature-gated
 inside the shared harness. Negative
 diagnostics use a source-authenticated data contract. The ModuleImportBinding,
