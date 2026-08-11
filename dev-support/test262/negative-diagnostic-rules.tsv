@@ -9,6 +9,7 @@ assignment-target.object-block-follow-up	js_parse_postfix_expr	an object block a
 assignment-target.strict-restricted-identifier	get_lvalue	strict eval and arguments references are invalid assignment targets
 assignment-target.update-operand	get_lvalue	increment and decrement operands must be assignable references
 assignment-target.yield-keyword-context	js_parse_assign_expr2	yield is reserved outside generator expression contexts in strict code
+assignment-target.yield-parenthesized-boundary	js_parse_expr_paren	sloppy parenthesized yield identifier syntax must close before assignment-target validation
 assignment-target.yield-statement-boundary	js_parse_expect_semi	sloppy Script yield identifier parsing reaches a statement boundary before assignment-target validation
 class-field.contains-arguments	js_parse_class	arguments is forbidden in class field initializers
 class-field.contains-super-call	js_parse_class	super calls are forbidden in class field initializers

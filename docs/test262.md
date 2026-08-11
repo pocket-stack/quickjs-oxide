@@ -47,14 +47,14 @@ variant and checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
 its exact path is present in the audited-negative data. Every admitted
-path/variant must then belong to exactly one diagnostic class. The 1,756 exact
-contracts require the pinned-QuickJS phase, type, message, and `exact` or
+path/variant must then belong to exactly one diagnostic class. The checked-in
+exact contracts require the pinned-QuickJS phase, type, message, and `exact` or
 `absent` location policy. A frozen ledger identifies the 2,586 legacy variants
 that still check phase and type only. Schema-v5 receipts authenticate both data
 files and record expected/actual diagnostic fields. New negative admissions
 must add exact contracts; they cannot add implicit phase/type-only cases.
 The semantic rule registry is separately authenticated, and scheduled QuickJS
-differential CI replays all 1,756 exact variants against QuickJS 2026-06-04 so
+differential CI replays every exact variant against QuickJS 2026-06-04 so
 the stored message and location cannot drift into an Oxide-only oracle.
 
 Historical per-milestone profiles, copied shell gates, and result vectors are
