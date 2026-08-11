@@ -1,5 +1,3 @@
-#![cfg(feature = "test262-host")]
-
 use quickjs_oxide::{
     Context, DescriptorField, OrdinaryPropertyDescriptor, Runtime, RuntimeError, Value,
 };

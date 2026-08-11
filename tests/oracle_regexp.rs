@@ -1,13 +1,9 @@
 // Keep the RegExp oracle implementations in separate modules so their private
 // helpers remain isolated while Cargo builds one integration target.
 
-#[path = "support/runtime_oracle.rs"]
-mod runtime_oracle;
-
 #[path = "support/quickjs_indexed_oracle.rs"]
 mod quickjs_indexed_oracle;
-#[path = "support/quickjs_oracle.rs"]
-mod quickjs_oracle;
+use crate::quickjs_oracle;
 
 #[cfg(test)]
 mod quickjs_oracle_contract {

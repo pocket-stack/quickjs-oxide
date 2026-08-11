@@ -6,6 +6,7 @@ rust-version = "1.88"
 description = "A memory-safe Rust rewrite aiming for QuickJS feature parity"
 license = "MIT"
 repository = "https://github.com/pocket-stack/quickjs-oxide"
+autotests = false
 
 [workspace]
 members = ["web/wasm"]
@@ -35,19 +36,24 @@ path = "src/bin/run_test262.rs"
 required-features = ["test262-host"]
 
 [[test]]
-name = "oracle_create_realm"
-path = "tests/oracle_create_realm.rs"
-required-features = ["test262-host"]
+name = "checked_string_construction"
+path = "tests/checked_string_construction.rs"
 
 [[test]]
-name = "oracle_host_gc"
-path = "tests/oracle_host_gc.rs"
-required-features = ["test262-host"]
+name = "cli"
+path = "tests/cli.rs"
 
 [[test]]
-name = "oracle_is_html_dda"
-path = "tests/oracle_is_html_dda.rs"
-required-features = ["test262-host"]
+name = "oracle"
+path = "tests/oracle.rs"
+
+[[test]]
+name = "rust_only"
+path = "tests/rust_only.rs"
+
+[[test]]
+name = "unsupported_diagnostics"
+path = "tests/unsupported_diagnostics.rs"
 
 [lints.rust]
 unsafe_code = "forbid"

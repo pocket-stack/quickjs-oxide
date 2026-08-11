@@ -47,17 +47,41 @@ if len(runner) != 1:
 if runner[0].get("required-features") != ["test262-host"]:
     fail("run-test262 must require exactly the test262-host feature")
 
-host_tests = {
+integration_targets = [
+    target
+    for target in engine["targets"]
+    if target.get("kind") == ["test"]
+]
+integration_tests = {target["name"] for target in integration_targets}
+expected_integration_tests = {
+    "checked_string_construction",
+    "cli",
+    "oracle",
+    "rust_only",
+    "unsupported_diagnostics",
+}
+if (
+    len(integration_targets) != len(expected_integration_tests)
+    or integration_tests != expected_integration_tests
+):
+    fail(
+        "quickjs-oxide integration targets must be exactly "
+        f"{sorted(expected_integration_tests)}; found {sorted(integration_tests)}"
+    )
+
+oracle = [target for target in engine["targets"] if target["name"] == "oracle"]
+if len(oracle) != 1:
+    fail("cargo metadata must contain exactly one oracle target")
+if oracle[0].get("required-features"):
+    fail("the shared oracle target must not require a feature")
+
+retired_host_targets = {
     "oracle_create_realm",
     "oracle_host_gc",
     "oracle_is_html_dda",
 }
-for target_name in host_tests:
-    targets = [target for target in engine["targets"] if target["name"] == target_name]
-    if len(targets) != 1:
-        fail(f"cargo metadata must contain exactly one {target_name} target")
-    if targets[0].get("required-features") != ["test262-host"]:
-        fail(f"{target_name} must require exactly the test262-host feature")
+if integration_tests & retired_host_targets:
+    fail("Test262 host oracles must be feature-gated modules in the shared oracle target")
 
 web = packages.get("quickjs-oxide-web")
 if web is None:
@@ -92,6 +116,14 @@ def require_gated(path: str, declarations: tuple[str, ...]) -> None:
             fail(f"{path} must gate {declaration.strip()} with test262-host")
 
 
+require_gated(
+    "tests/oracle.rs",
+    (
+        "mod test262_create_realm;",
+        "mod test262_host_gc;",
+        "mod test262_is_html_dda;",
+    ),
+)
 require_gated(
     "src/runtime.rs",
     (

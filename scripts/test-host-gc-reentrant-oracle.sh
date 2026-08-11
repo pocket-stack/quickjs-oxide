@@ -93,10 +93,21 @@ if ! cmp -s -- "$expected" "$tmp_dir/quickjs.out"; then
 fi
 
 if [[ "$run_oxide" == true ]]; then
+    test_filter=test262_host_gc::test262_gc_reentry_matches_pinned_quickjs_lifecycle_transcript
+    listed_tests=$(cargo test --locked --manifest-path "$root/Cargo.toml" \
+        --features test262-host \
+        --test oracle \
+        "$test_filter" \
+        -- --exact --list)
+    listed_count=$(printf '%s\n' "$listed_tests" | awk '/: test$/ { count++ } END { print count + 0 }')
+    if [[ "$listed_count" != 1 ]]; then
+        echo "error: host GC exact filter must select 1 test, found $listed_count" >&2
+        exit 1
+    fi
     cargo test --locked --manifest-path "$root/Cargo.toml" \
         --features test262-host \
-        --test oracle_host_gc \
-        test262_gc_reentry_matches_pinned_quickjs_lifecycle_transcript \
+        --test oracle \
+        "$test_filter" \
         -- --exact
     echo 'host GC differential passed: quickjs-oxide matches QuickJS 2026-06-04'
 else

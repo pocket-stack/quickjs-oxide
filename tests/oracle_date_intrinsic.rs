@@ -1,9 +1,6 @@
 use crate::runtime_oracle::eval_callable;
 use crate::runtime_oracle::eval_object;
 use crate::runtime_oracle::value_type;
-#[path = "support/runtime_oracle.rs"]
-mod runtime_oracle;
-
 use std::ffi::OsStr;
 use std::process::Command;
 

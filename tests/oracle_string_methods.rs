@@ -1,11 +1,7 @@
 // Keep the String oracle implementations in separate modules so their private
 // helpers remain isolated while Cargo builds one integration target.
 
-#[path = "support/runtime_oracle.rs"]
-mod runtime_oracle;
-
-#[path = "support/quickjs_oracle.rs"]
-mod quickjs_oracle;
+use crate::quickjs_oracle;
 
 #[path = "oracle/string/oracle_string_byte_codec.rs"]
 mod oracle_string_byte_codec;

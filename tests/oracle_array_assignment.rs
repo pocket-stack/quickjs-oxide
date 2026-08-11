@@ -1,8 +1,4 @@
-#[path = "support/runtime_oracle.rs"]
-mod runtime_oracle;
-
-#[path = "support/quickjs_argv_completion_oracle.rs"]
-mod quickjs_argv_completion_oracle;
+use crate::quickjs_argv_completion_oracle;
 
 use crate::runtime_oracle::error_string_property;
 use crate::runtime_oracle::value_type;
@@ -12,9 +8,7 @@ use std::process::{Command, Output};
 use quickjs_argv_completion_oracle::observe_completion_argv_strip_one_lf as observe_oracle;
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
-mod support;
-
-use support::compile_syntax_error;
+use crate::support::compile_syntax_error;
 
 // Pins QuickJS 2026-06-04 ArrayAssignmentPattern lowering. Array binding
 // declarations are covered separately: this target keeps AssignmentExpression

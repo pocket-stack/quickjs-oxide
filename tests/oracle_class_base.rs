@@ -3,9 +3,7 @@ use std::process::Command;
 
 use quickjs_oxide::{Runtime, Value};
 
-mod support;
-
-use support::compile_syntax_error;
+use crate::support::compile_syntax_error;
 
 // Pins the base-class portion of QuickJS 2026-06-04 `js_parse_class` and
 // `OP_define_class`. Heritage is covered by the derived-class oracle and gate;

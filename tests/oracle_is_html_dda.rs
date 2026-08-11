@@ -1,5 +1,3 @@
-#![cfg(feature = "test262-host")]
-
 use quickjs_oxide::{Context, Runtime, RuntimeError, Value};
 
 const FIXTURE: &str = include_str!("fixtures/is_html_dda.js");

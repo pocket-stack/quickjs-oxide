@@ -63,16 +63,16 @@ trap - EXIT HUP INT TERM
 cargo fmt --all -- --check
 QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets
 QJS_ORACLE="$oracle" cargo test --locked -p quickjs-oxide \
-    --features test262-host --lib --bins \
-    --test unsupported_diagnostics \
-    --test oracle_create_realm --test oracle_host_gc --test oracle_is_html_dda
+    --features test262-host --lib --bins --test unsupported_diagnostics
+QJS_ORACLE="$oracle" cargo test --locked -p quickjs-oxide \
+    --features test262-host --test oracle test262_
+./scripts/check-oracle-registry.sh --compiled
 ./scripts/test-quickjs-fixtures.sh --all --oxide ./target/debug/qjs
 ./scripts/test-test262.sh --check
 ./scripts/test-test262.sh --focused
 ./scripts/test-test262.sh --full
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked -p quickjs-oxide --features test262-host \
-    --lib --bins --test unsupported_diagnostics \
-    --test oracle_create_realm --test oracle_host_gc --test oracle_is_html_dda \
+    --lib --bins --test unsupported_diagnostics --test oracle \
     -- -D warnings
 ./scripts/check-rust-only.sh

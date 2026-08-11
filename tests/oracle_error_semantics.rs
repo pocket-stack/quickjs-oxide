@@ -1,11 +1,7 @@
 // Keep the Error oracle implementations in isolated modules while Cargo
 // builds one integration target.
 
-#[path = "support/runtime_oracle.rs"]
-mod runtime_oracle;
-
-#[path = "support/quickjs_argv_completion_oracle.rs"]
-mod quickjs_argv_completion_oracle;
+use crate::quickjs_argv_completion_oracle;
 
 #[path = "oracle/errors/oracle_aggregate_error.rs"]
 mod oracle_aggregate_error;

@@ -1,13 +1,9 @@
 use crate::runtime_oracle::eval_object;
 use crate::runtime_oracle::value_type;
-#[path = "support/runtime_oracle.rs"]
-mod runtime_oracle;
-
 use std::ffi::OsStr;
 use std::process::Command;
 
-#[path = "support/quickjs_array_completion_oracle.rs"]
-mod quickjs_array_completion_oracle;
+use crate::quickjs_array_completion_oracle;
 
 use quickjs_array_completion_oracle::observe_array_completion;
 use quickjs_oxide::{

@@ -1,8 +1,7 @@
 // Keep the Array-method oracle implementations in separate modules so their
 // private helpers remain isolated while Cargo builds one integration target.
 
-#[path = "support/quickjs_oracle.rs"]
-mod quickjs_oracle;
+use crate::quickjs_oracle;
 
 mod support {
     use std::ffi::OsStr;
