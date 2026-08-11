@@ -240,9 +240,9 @@ pub(crate) fn compile_script(source: &str) -> Result<BytecodeFunction, Error> {
 
 /// Compile a script into a runtime-independent draft ready for publication.
 ///
-/// The ordinary public compiler result remains available for the detached VM,
-/// while runtime publication uses this boundary to keep primitive constants
-/// structural and to carry execution metadata into the heap node.
+/// Runtime publication uses this production boundary to keep primitive
+/// constants structural and to carry execution metadata into the heap node.
+/// The older detached compiler result is test-only.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn compile_unlinked_script(source: &str) -> Result<UnlinkedFunction, Error> {
     compile_unlinked_script_with_filename(source, DEFAULT_EVAL_FILENAME, DebugInfoMode::Full)
@@ -6867,11 +6867,8 @@ impl<'source> Parser<'source> {
                 let flags = JsString::try_from_utf8(literal.flags)?;
                 let program = crate::regexp::compile(&pattern, &flags).map_err(|error| {
                     let kind = crate::regexp::javascript_compile_error_kind(&error);
-                    let message = if kind == ErrorKind::Unsupported {
-                        error.to_string()
-                    } else {
-                        crate::regexp::javascript_compile_error_message(&error).to_owned()
-                    };
+                    let message =
+                        crate::regexp::javascript_compile_error_message(&error).to_owned();
                     Error::new(kind, message).with_span(source_span(token.span))
                 })?;
                 let constant = self.add_constant(IrConstant::RegExp {

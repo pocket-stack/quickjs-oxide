@@ -187,11 +187,7 @@ impl Runtime {
             Ok(program) => Ok(Rc::new(program)),
             Err(error) => {
                 let kind = crate::regexp::javascript_compile_error_kind(&error);
-                let message = if kind == ErrorKind::Unsupported {
-                    error.to_string()
-                } else {
-                    crate::regexp::javascript_compile_error_message(&error).to_owned()
-                };
+                let message = crate::regexp::javascript_compile_error_message(&error).to_owned();
                 Err(RuntimeError::Engine(Error::new(kind, message)))
             }
         }
