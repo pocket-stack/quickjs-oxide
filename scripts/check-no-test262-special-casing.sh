@@ -15,29 +15,43 @@ die() {
 
 command -v rg >/dev/null 2>&1 || die "ripgrep is required"
 
-scan_roots=(src web/wasm/src)
+scan_roots=(src web/wasm/src Cargo.toml web/wasm/Cargo.toml)
+while IFS= read -r build_script; do
+    scan_roots+=("$build_script")
+done < <(find . -path './target' -prune -o -name build.rs -print | LC_ALL=C sort)
 scan_globs=(
     --glob '*.rs'
-    --glob '!**/tests.rs'
+    --glob '*.toml'
+    --glob '!**/*tests.rs'
     --glob '!src/bin/run_test262.rs'
     --glob '!src/bin/run_test262/**'
 )
 
 path_pattern='\b(?:test/)?(?:built-ins|language|intl402|annexB|staging|harness)/[A-Za-z0-9_./@+-]+\.js\b|[A-Za-z0-9_.@+-]+_FIXTURE\.js\b'
 source_hash_pattern='\b(?:source|source_text|script|program|code)(?:_[a-z0-9_]*(?:hash|digest|sha_?(?:1|256|512))[a-z0-9_]*|\b[^;\n]{0,100}\.[a-z0-9_]*(?:hash|digest|sha_?(?:1|256|512))[a-z0-9_]*)\b|\b[a-z0-9_]*(?:hash|digest|sha_?(?:1|256|512))[a-z0-9_]*\s*\([^;\n]{0,100}\b(?:source|source_text|script|program|code)\b'
-source_literal_pattern='(?i:\b(?:source|source_text|script|program|code)\b)[^;\n]{0,80}(?:==|!=)\s*(?:r\#*)?"[^"\n]{16,}"\#*|(?:r\#*)?"[^"\n]{16,}"\#*\s*(?:==|!=)[^;\n]{0,80}(?i:\b(?:source|source_text|script|program|code)\b)'
+source_literal_pattern='(?i:\b(?:source|source_text|script|program|code)\b)[^;\n]{0,80}(?:==|!=)\s*(?:r\#*)?"[^"\n]+"\#*|(?:r\#*)?"[^"\n]+"\#*\s*(?:==|!=)[^;\n]{0,80}(?i:\b(?:source|source_text|script|program|code)\b)'
 source_probe_pattern='(?i:\b(?:source|source_text|script|program|code)\b)[^;\n]{0,120}\.(?:contains|starts_with|ends_with)\(\s*(?:r\#*)?"[^"\n]{16,}"'
-filename_probe_pattern='(?i:\b(?:filename|file_name|path)\b)[^;\n]{0,120}\.(?:contains|starts_with|ends_with)\(\s*(?:r\#*)?"[^"\n]+\.js'
+source_length_pattern='(?i:\b(?:source|source_text|script|program|code)\b)[^;\n]{0,120}\.len\(\)\s*(?:==|!=|<=|>=|<|>)\s*[1-9][0-9_]+|[1-9][0-9_]+\s*(?:==|!=|<=|>=|<|>)\s*(?i:\b(?:source|source_text|script|program|code)\b)[^;\n]{0,120}\.len\(\)'
+source_alias_pattern='(?i:\blet\s+(?:mut\s+)?([a-z_][a-z0-9_]*)\s*=\s*(?:&\s*)?(?:source|source_text|script|program|code)\s*;)[\s\S]{0,400}?\b\1(?:\.[a-z0-9_]+\([^)]*\))*\.(?:contains|starts_with|ends_with)\(\s*(?:r\#*)?"[^"\n]{16,}"'
+source_alias_identity_pattern='(?i:\blet\s+(?:mut\s+)?([a-z_][a-z0-9_]*)\s*=\s*(?:&\s*)?(?:source|source_text|script|program|code)\s*;)[\s\S]{0,400}?\b\1[^;\n]{0,80}(?:(?:==|!=)\s*(?:r\#*)?"[^"\n]+"\#*|\.len\(\)\s*(?:==|!=|<=|>=|<|>)\s*[1-9][0-9_]+)'
+filename_probe_pattern='(?i:\b(?:filename|file_name|path)\b)[^;\n]{0,120}(?:\.(?:contains|starts_with|ends_with)\(\s*(?:r\#*)?"[^"\n]+\.js|(?:==|!=)\s*(?:r\#*)?"[^"\n]+\.js"\#*)|(?:r\#*)?"[^"\n]+\.js"\#*\s*(?:==|!=)[^;\n]{0,120}(?i:\b(?:filename|file_name|path)\b)|(?i:\bmatch\s+(?:&\s*)?(?:filename|file_name|path)\b)[^\{\n]{0,80}\{[\s\S]{0,240}?(?:r\#*)?"[^"\n]+\.js"\#*\s*=>'
+filename_alias_pattern='(?i:\blet\s+(?:mut\s+)?([a-z_][a-z0-9_]*)\s*=\s*(?:&\s*)?(?:filename|file_name|path)\s*;)[\s\S]{0,400}?\b\1[^;\n]{0,100}(?:(?:==|!=)\s*(?:r\#*)?"[^"\n]+\.js"\#*|\.(?:contains|starts_with|ends_with)\(\s*(?:r\#*)?"[^"\n]+\.js)'
+embedded_fixture_pattern='include_(?:str|bytes)!\s*\([^;\n]{0,180}(?:r\#*)?"[^"\n]*(?:test262|fixture|(?:^|/)test/)[^"\n]*"'
+source_literal_allow_pattern="^src/lexer\\.rs:[0-9]+:[[:space:]]*let limit = if source == \"'abc'\" \\{ 2 \\} else \\{ 1 \\};$"
 
 scan_regex() {
-    local label=$1 pattern=$2 output status
+    local label=$1 pattern=$2 allow_pattern=${3:-} output status
     set +e
-    output=$(rg --line-number --no-heading --color never --pcre2 \
+    output=$(rg --line-number --no-heading --color never --multiline --pcre2 \
         "${scan_globs[@]}" -- "$pattern" "${scan_roots[@]}" 2>&1)
     status=$?
     set -e
     case $status in
         0)
+            if [[ -n $allow_pattern ]]; then
+                output=$(printf '%s\n' "$output" | rg --invert-match --pcre2 -- "$allow_pattern" || true)
+            fi
+            [[ -z $output ]] && return
             printf '%s\n' "$output" >&2
             die "production sources contain $label"
             ;;
@@ -51,9 +65,14 @@ scan_regex() {
 
 scan_regex "a Test262 path or fixture name" "$path_pattern"
 scan_regex "source-derived hash dispatch" "$source_hash_pattern"
-scan_regex "an exact authored-source comparison" "$source_literal_pattern"
+scan_regex "an exact authored-source comparison" "$source_literal_pattern" "$source_literal_allow_pattern"
 scan_regex "an authored-source substring probe" "$source_probe_pattern"
+scan_regex "an authored-source length identity" "$source_length_pattern"
+scan_regex "an aliased authored-source substring probe" "$source_alias_pattern"
+scan_regex "an aliased authored-source identity check" "$source_alias_identity_pattern"
 scan_regex "a JavaScript filename-specific branch" "$filename_probe_pattern"
+scan_regex "an aliased JavaScript filename-specific branch" "$filename_alias_pattern"
+scan_regex "an embedded Test262 or fixture source" "$embedded_fixture_pattern"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-anticheat.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
@@ -93,7 +112,7 @@ esac
 # Keep the patterns honest. Legitimate host vocabulary must stay allowed,
 # while each prohibited coupling class must have a positive canary.
 printf 'const HOST_NAME: &str = "$262";\n' > "$tmp/allowed.rs"
-! rg --quiet --pcre2 -- "$path_pattern|$source_hash_pattern|$source_literal_pattern|$source_probe_pattern|$filename_probe_pattern" "$tmp/allowed.rs" \
+! rg --quiet --multiline --pcre2 -- "$path_pattern|$source_hash_pattern|$source_literal_pattern|$source_probe_pattern|$source_length_pattern|$source_alias_pattern|$source_alias_identity_pattern|$filename_probe_pattern|$filename_alias_pattern|$embedded_fixture_pattern" "$tmp/allowed.rs" \
     || die 'anti-cheat patterns reject the legitimate $262 host name'
 
 printf '// language/statements/fixture-special-case.js\n' > "$tmp/path.rs"
@@ -119,5 +138,37 @@ rg --quiet --pcre2 -- "$source_literal_pattern" "$tmp/source-reverse.rs" \
 printf 'if source.content_hash() == 0xdeadbeef {}\n' > "$tmp/source-hash.rs"
 rg --quiet --pcre2 -- "$source_hash_pattern" "$tmp/source-hash.rs" \
     || die "source-hash canary escaped the anti-cheat pattern"
+
+printf 'if source == "x" {}\n' > "$tmp/source-short.rs"
+rg --quiet --pcre2 -- "$source_literal_pattern" "$tmp/source-short.rs" \
+    || die "short source-equality canary escaped the anti-cheat pattern"
+
+printf 'if source.len() == 417 {}\n' > "$tmp/source-length.rs"
+rg --quiet --pcre2 -- "$source_length_pattern" "$tmp/source-length.rs" \
+    || die "source-length canary escaped the anti-cheat pattern"
+
+printf 'let probe = source; if probe.contains("this exact fixture body") {}\n' > "$tmp/source-alias.rs"
+rg --quiet --multiline --pcre2 -- "$source_alias_pattern" "$tmp/source-alias.rs" \
+    || die "source-alias canary escaped the anti-cheat pattern"
+
+printf 'let probe = source; if probe == "x" {}\n' > "$tmp/source-alias-identity.rs"
+rg --quiet --multiline --pcre2 -- "$source_alias_identity_pattern" "$tmp/source-alias-identity.rs" \
+    || die "source-alias identity canary escaped the anti-cheat pattern"
+
+printf 'if filename == "fixture.js" {}\n' > "$tmp/filename.rs"
+rg --quiet --multiline --pcre2 -- "$filename_probe_pattern" "$tmp/filename.rs" \
+    || die "filename-equality canary escaped the anti-cheat pattern"
+
+printf 'match filename { "fixture.js" => true, _ => false }\n' > "$tmp/filename-match.rs"
+rg --quiet --multiline --pcre2 -- "$filename_probe_pattern" "$tmp/filename-match.rs" \
+    || die "filename-match canary escaped the anti-cheat pattern"
+
+printf 'let fixture = filename; if fixture.ends_with("fixture.js") {}\n' > "$tmp/filename-alias.rs"
+rg --quiet --multiline --pcre2 -- "$filename_alias_pattern" "$tmp/filename-alias.rs" \
+    || die "filename-alias canary escaped the anti-cheat pattern"
+
+printf 'const CASE: &str = include_str!("tests/test262/fixture.js");\n' > "$tmp/include.rs"
+rg --quiet --multiline --pcre2 -- "$embedded_fixture_pattern" "$tmp/include.rs" \
+    || die "embedded-fixture canary escaped the anti-cheat pattern"
 
 echo "Production engine Test262 anti-cheat gate passed."
