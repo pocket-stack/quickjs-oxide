@@ -1,3 +1,7 @@
+use crate::runtime_oracle::run_cli;
+#[path = "support/runtime_oracle.rs"]
+mod runtime_oracle;
+
 use std::process::Command;
 
 fn qjs() -> Command {
@@ -172,5 +176,37 @@ fn strip_flags_match_quickjs_debug_stack_behavior_and_last_option_wins() {
         assert!(output.status.success());
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn primitive_exception_dump_matches_quickjs_oracle() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP CLI dump differential: set QJS_ORACLE to upstream qjs");
+        return;
+    };
+
+    for (description, source) in [
+        ("quoted string", "throw \"x\""),
+        ("escaped string", "throw \"line\\n\\t\\\\\\\"\\0\\x7f\""),
+        ("Unicode string", "throw \"é🙂中\""),
+        ("short BigInt", "throw 1n"),
+        ("heap BigInt", "throw 123456789012345678901234567890n"),
+        ("negative zero", "throw -0"),
+        ("invalid prefix update operand", "++1"),
+        (
+            "postfix under unary power early error has no source frame",
+            "-value++ ** 2",
+        ),
+        (
+            "strict private postfix update return marker",
+            "(function named(){ 'use strict'; return named++; })()",
+        ),
+    ] {
+        let rust = run_cli(env!("CARGO_BIN_EXE_qjs").as_ref(), &[], source, description);
+        let quickjs = run_cli(&oracle, &[], source, description);
+        assert_eq!(rust.status.code(), quickjs.status.code(), "{description}");
+        assert_eq!(rust.stdout, quickjs.stdout, "{description}");
+        assert_eq!(rust.stderr, quickjs.stderr, "{description}");
     }
 }

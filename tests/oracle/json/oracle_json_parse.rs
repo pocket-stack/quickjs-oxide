@@ -1,3 +1,4 @@
+use crate::runtime_oracle::eval_object;
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -843,16 +844,6 @@ fn property_callable(
         .as_callable(&function)
         .unwrap()
         .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
-fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
-    let Value::Object(object) = context
-        .eval(source)
-        .unwrap_or_else(|error| panic!("Rust rejected {description} ({source:?}): {error}"))
-    else {
-        panic!("Rust {description} did not evaluate to an object");
-    };
-    object
 }
 
 fn object_property(

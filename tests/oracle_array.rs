@@ -1,8 +1,14 @@
+#[path = "support/runtime_oracle.rs"]
+mod runtime_oracle;
+
 #[path = "support/quickjs_argv_completion_oracle.rs"]
 mod quickjs_argv_completion_oracle;
 
+use crate::runtime_oracle::eval_object;
+use crate::runtime_oracle::run_cli;
+use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
-use std::process::{Command, Output};
+use std::process::Command;
 
 use quickjs_argv_completion_oracle::observe_completion_argv_trim_end as observe_oracle;
 use quickjs_oxide::value::number_to_string;
@@ -417,16 +423,6 @@ fn observe_rust_eval(
     }
 }
 
-fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
-    let Value::Object(object) = context
-        .eval(source)
-        .unwrap_or_else(|error| panic!("Rust rejected {description} ({source:?}): {error}"))
-    else {
-        panic!("Rust {description} did not evaluate to an object");
-    };
-    object
-}
-
 fn array_snapshot(runtime: &Runtime, context: &mut Context, array: &ObjectRef) -> String {
     runtime
         .own_property_keys(array)
@@ -723,14 +719,6 @@ fn compare_cli(oracle: &OsStr, options: &[&str], source: &str, description: &str
     assert_eq!(rust.stderr, quickjs.stderr, "{description}");
 }
 
-fn run_cli(program: &OsStr, options: &[&str], source: &str, description: &str) -> Output {
-    Command::new(program)
-        .args(options)
-        .args(["-e", source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run CLI for {description}: {error}"))
-}
-
 fn error_string_property(
     runtime: &Runtime,
     context: &mut Context,
@@ -746,25 +734,6 @@ fn error_string_property(
         panic!("Error.{name} was not a string for {description}");
     };
     value.to_utf8_lossy()
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime.as_callable(object).unwrap().is_some() {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
 }
 
 fn primitive_value_text(value: Value) -> String {

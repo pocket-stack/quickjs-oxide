@@ -54,9 +54,10 @@ requires the acceptance contract in [`parity.md`](parity.md), including QuickJS
 differential evidence and non-Test262 behavior.
 
 The initial architecture-hygiene pass is complete. Cargo integration-test
-targets fell from 186 to 60 (56 oracle targets), and repeated QuickJS transport
-helpers now share support code. Path-sensitive and feature-sensitive targets
-remain separate where aggregation would change their contract. Negative
+targets fell from 186 to 53 (49 oracle targets), and exact-clone runtime, CLI,
+and QuickJS transport helpers now share support code. Path-sensitive and
+feature-sensitive targets remain separate where aggregation would change their
+contract. Negative
 diagnostics use a source-authenticated data contract. The ModuleImportBinding,
 public-class-field, public-static-initialization, private-data-field, and
 private-callable cohorts gate the exact QuickJS error message and line/column

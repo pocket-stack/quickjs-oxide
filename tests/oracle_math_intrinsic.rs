@@ -1,3 +1,8 @@
+use crate::runtime_oracle::eval_object;
+use crate::runtime_oracle::value_type;
+#[path = "support/runtime_oracle.rs"]
+mod runtime_oracle;
+
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -914,16 +919,6 @@ fn own_key_names(runtime: &Runtime, object: &ObjectRef) -> Vec<String> {
         .collect()
 }
 
-fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
-    let Value::Object(object) = context
-        .eval(source)
-        .unwrap_or_else(|error| panic!("Rust rejected {description} ({source:?}): {error}"))
-    else {
-        panic!("Rust {description} did not evaluate to an object");
-    };
-    object
-}
-
 fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {
     let Value::Object(error) = context
         .take_exception()
@@ -950,25 +945,6 @@ fn error_string_property(
         panic!("Error.{name} was not a string for {description}");
     };
     value.to_utf8_lossy()
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime.as_callable(object).unwrap().is_some() {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
 }
 
 fn primitive_value_text(value: Value) -> String {

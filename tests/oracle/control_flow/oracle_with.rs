@@ -1,3 +1,6 @@
+//! Differential coverage for `with` statement semantics.
+
+use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -655,25 +658,6 @@ try {
         .expect("QuickJS global-reference output was not UTF-8")
         .trim_end()
         .to_owned()
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime.as_callable(object).unwrap().is_some() {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
 }
 
 fn primitive_value_text(value: Value) -> String {

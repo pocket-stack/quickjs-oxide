@@ -1,6 +1,9 @@
 // Keep the Object oracle implementations in separate modules so their private
 // helpers remain isolated while Cargo builds one integration target.
 
+#[path = "support/runtime_oracle.rs"]
+mod runtime_oracle;
+
 #[path = "support/quickjs_array_completion_oracle.rs"]
 mod quickjs_array_completion_oracle;
 #[path = "support/quickjs_object_pattern_oracle.rs"]

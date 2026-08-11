@@ -1,6 +1,11 @@
+#[path = "support/runtime_oracle.rs"]
+mod runtime_oracle;
+
 #[path = "support/quickjs_argv_completion_oracle.rs"]
 mod quickjs_argv_completion_oracle;
 
+use crate::runtime_oracle::error_string_property;
+use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 
@@ -778,44 +783,6 @@ fn run_cli(program: &OsStr, source: &str, description: &str) -> Output {
         .args(["-e", source])
         .output()
         .unwrap_or_else(|error| panic!("could not run CLI for {description}: {error}"))
-}
-
-fn error_string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    error: &quickjs_oxide::ObjectRef,
-    name: &str,
-    description: &str,
-) -> String {
-    let key = runtime
-        .intern_property_key(name)
-        .expect("Error property key");
-    let Value::String(value) = context
-        .get_property(error, &key)
-        .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-    else {
-        panic!("Error.{name} was not a string for {description}");
-    };
-    value.to_utf8_lossy()
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime.as_callable(object).unwrap().is_some() {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
 }
 
 fn primitive_value_text(value: Value) -> String {

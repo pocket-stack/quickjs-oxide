@@ -1,4 +1,5 @@
 use super::quickjs_string_result_oracle::observe_string_result;
+use crate::runtime_oracle::eval_object;
 use quickjs_oxide::{CallableRef, Context, ObjectRef, Runtime, RuntimeError, Value};
 
 struct Case {
@@ -892,16 +893,6 @@ fn property_callable(
         .as_callable(&function)
         .unwrap()
         .unwrap_or_else(|| panic!("{name} was not callable"))
-}
-
-fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
-    let Value::Object(object) = context
-        .eval(source)
-        .unwrap_or_else(|error| panic!("Rust rejected {description} ({source:?}): {error}"))
-    else {
-        panic!("Rust {description} did not evaluate to an object");
-    };
-    object
 }
 
 fn object_property(

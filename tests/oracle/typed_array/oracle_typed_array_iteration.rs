@@ -1,4 +1,6 @@
 use super::quickjs_typed_array_oracle::observe_string_value;
+use crate::runtime_oracle::eval_callable;
+use crate::runtime_oracle::eval_object;
 use quickjs_oxide::{
     CallableRef, Context, DescriptorField, ObjectRef, OrdinaryPropertyDescriptor, Runtime,
     RuntimeError, Value,
@@ -357,19 +359,6 @@ fn oxide_observation(case: &Case) -> String {
     }
 }
 
-fn eval_callable(
-    runtime: &Runtime,
-    context: &mut Context,
-    source: &str,
-    description: &str,
-) -> CallableRef {
-    let object = eval_object(context, source, description);
-    runtime
-        .as_callable(&object)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{description} was not callable"))
-}
-
 fn property_callable(
     runtime: &Runtime,
     context: &mut Context,
@@ -403,16 +392,6 @@ fn object_property(
         panic!("{name} was not an object");
     };
     value
-}
-
-fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
-    let Value::Object(object) = context
-        .eval(source)
-        .unwrap_or_else(|error| panic!("Rust rejected {description} ({source:?}): {error}"))
-    else {
-        panic!("Rust {description} did not evaluate to an object");
-    };
-    object
 }
 
 fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef {

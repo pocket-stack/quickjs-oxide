@@ -1,5 +1,8 @@
+//! Differential coverage for classic `for` lexical environments.
+
+use crate::runtime_oracle::run_cli;
 use std::ffi::OsStr;
-use std::process::{Command, Output};
+use std::process::Command;
 
 use quickjs_oxide::{Runtime, Value};
 
@@ -383,12 +386,4 @@ fn oracle_two_eval_value_observation(oracle: &OsStr, setup: &str, observation: &
         .expect("QuickJS cross-eval output was not UTF-8")
         .trim_end()
         .to_owned()
-}
-
-fn run_cli(program: &OsStr, options: &[&str], source: &str, description: &str) -> Output {
-    Command::new(program)
-        .args(options)
-        .args(["-e", source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run CLI for {description}: {error}"))
 }

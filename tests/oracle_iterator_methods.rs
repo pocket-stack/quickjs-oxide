@@ -1,6 +1,9 @@
 // Keep the Iterator method oracle implementations in isolated modules while
 // Cargo builds one integration target.
 
+#[path = "support/runtime_oracle.rs"]
+mod runtime_oracle;
+
 #[path = "support/quickjs_string_result_oracle.rs"]
 mod quickjs_string_result_oracle;
 

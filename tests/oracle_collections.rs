@@ -3,6 +3,9 @@
 
 // This target uses the completion protocol; other aggregate targets also use
 // the std-lines protocol from the same shared support module.
+#[path = "support/runtime_oracle.rs"]
+mod runtime_oracle;
+
 #[allow(dead_code)]
 #[path = "support/quickjs_oracle.rs"]
 mod quickjs_oracle;

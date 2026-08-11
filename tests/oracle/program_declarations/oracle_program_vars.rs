@@ -1,5 +1,6 @@
+use crate::runtime_oracle::error_string_property;
+use crate::runtime_oracle::run_cli;
 use std::ffi::OsStr;
-use std::process::{Command, Output};
 
 use super::quickjs_argv_completion_oracle::observe_completion_argv_sequence_strip_one_lf as observe_oracle_sequence;
 use super::quickjs_program_property_oracle::observe_program_property_lines;
@@ -681,31 +682,4 @@ fn compare_cli(oracle: &OsStr, options: &[&str], source: &str, description: &str
     assert_eq!(rust.status.code(), quickjs.status.code(), "{description}");
     assert_eq!(rust.stdout, quickjs.stdout, "{description}");
     assert_eq!(rust.stderr, quickjs.stderr, "{description}");
-}
-
-fn error_string_property(
-    runtime: &Runtime,
-    context: &mut Context,
-    error: &quickjs_oxide::ObjectRef,
-    name: &str,
-    description: &str,
-) -> String {
-    let key = runtime
-        .intern_property_key(name)
-        .expect("Error property key");
-    let Value::String(value) = context
-        .get_property(error, &key)
-        .unwrap_or_else(|failure| panic!("read Error.{name} for {description}: {failure}"))
-    else {
-        panic!("Error.{name} was not a string for {description}");
-    };
-    value.to_utf8_lossy()
-}
-
-fn run_cli(program: &OsStr, options: &[&str], source: &str, description: &str) -> Output {
-    Command::new(program)
-        .args(options)
-        .args(["-e", source])
-        .output()
-        .unwrap_or_else(|error| panic!("could not run CLI for {description}: {error}"))
 }

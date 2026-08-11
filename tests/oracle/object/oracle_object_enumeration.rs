@@ -1,3 +1,4 @@
+use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 
 use quickjs_oxide::{
@@ -641,25 +642,6 @@ fn data_bits(writable: bool, enumerable: bool, configurable: bool) -> String {
         Number(enumerable),
         Number(configurable)
     )
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime.as_callable(object).unwrap().is_some() {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
 }
 
 fn primitive_value_text(value: Value) -> String {

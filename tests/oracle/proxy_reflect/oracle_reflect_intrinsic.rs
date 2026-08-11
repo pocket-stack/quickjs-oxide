@@ -1,3 +1,5 @@
+use crate::runtime_oracle::eval_object;
+use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -695,16 +697,6 @@ fn string_property(
     value.to_utf8_lossy()
 }
 
-fn eval_object(context: &mut Context, source: &str, description: &str) -> ObjectRef {
-    let Value::Object(object) = context
-        .eval(source)
-        .unwrap_or_else(|error| panic!("Rust rejected {description} ({source:?}): {error}"))
-    else {
-        panic!("Rust {description} did not evaluate to an object");
-    };
-    object
-}
-
 fn expect_object(value: Value, description: &str) -> ObjectRef {
     let Value::Object(object) = value else {
         panic!("{description} was not an object");
@@ -721,25 +713,6 @@ fn take_exception_object(context: &mut Context, description: &str) -> ObjectRef 
         panic!("{description} was not an object");
     };
     error
-}
-
-fn value_type(runtime: &Runtime, value: &Value) -> &'static str {
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
-        Value::Bool(_) => "boolean",
-        Value::Int(_) | Value::Float(_) => "number",
-        Value::BigInt(_) => "bigint",
-        Value::String(_) => "string",
-        Value::Object(object) => {
-            if runtime.as_callable(object).unwrap().is_some() {
-                "function"
-            } else {
-                "object"
-            }
-        }
-        Value::Symbol(_) => "symbol",
-    }
 }
 
 fn primitive_value_text(value: Value) -> String {
