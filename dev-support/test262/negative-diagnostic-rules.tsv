@@ -57,4 +57,9 @@ logical-assignment.non-simple-target	get_lvalue	logical assignment requires a si
 module.invalid-import-binding	js_parse_import	import bindings cannot use restricted identifiers
 object-literal.private-name	js_parse_object_literal	private names are invalid object literal properties
 optional-chaining.invalid-assignment-target	get_lvalue	optional chains are not assignment targets
+regexp.flags.unicode-mode-conflict	lre_compile	the u and v Unicode modes are mutually exclusive
+regexp.unicode-set.negated-string-class	re_parse_nested_class	negated Unicode Sets classes cannot retain string members
+regexp.unicode-set.reserved-punctuator	get_class_atom	Unicode Sets syntax rejects unescaped reserved punctuators
+regexp.unicode-set.string-property-complement	parse_unicode_property	properties of strings cannot be complemented with uppercase P
+regexp.unicode-set.string-property-requires-v	parse_unicode_property	properties of strings require Unicode Sets mode
 strict-mode.with-statement	js_parse_statement_or_decl	with statements are forbidden in strict code

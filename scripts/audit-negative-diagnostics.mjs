@@ -24,6 +24,13 @@ const DEFAULT_CONTRACTS = "dev-support/test262/negative-diagnostics.tsv";
 const DEFAULT_RULES = "dev-support/test262/negative-diagnostic-rules.tsv";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const QUICKJS_NON_JS_DIAGNOSTIC_ANCHORS = new Set([
+  "get_class_atom",
+  "get_lvalue",
+  "lre_compile",
+  "parse_unicode_property",
+  "re_parse_nested_class",
+]);
 
 function usage() {
   console.error(
@@ -177,7 +184,10 @@ async function loadRules(file) {
     if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(rule)) {
       throw new Error(`diagnostic rule line ${index + 2} has an invalid rule`);
     }
-    if (!/^js_[a-z0-9_]+$/.test(anchor) && anchor !== "get_lvalue") {
+    if (
+      !/^js_[a-z0-9_]+$/.test(anchor) &&
+      !QUICKJS_NON_JS_DIAGNOSTIC_ANCHORS.has(anchor)
+    ) {
       throw new Error(`diagnostic rule ${rule} has an invalid QuickJS anchor`);
     }
     if (!description || bytewiseCompare(previous, rule) >= 0 || rules.has(rule)) {
