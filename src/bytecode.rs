@@ -632,6 +632,12 @@ pub enum Instruction {
     /// Terminal TypeError used by `yield*` when the delegate has no `throw`
     /// method. A present `return` method has already been called for close.
     ThrowIteratorMissingThrow,
+    /// QuickJS `OP_import`: consume the evaluated module specifier and import
+    /// options in source order and replace them with the host-created Promise
+    /// (`specifier, options -> promise`). The compiler keeps this opcode behind
+    /// its dynamic-import frontier until the runtime host implements the full
+    /// Promise/job/module-cache protocol.
+    Import,
     Call(u16),
     /// QuickJS `OP_eval`: a syntactic direct-eval call site. The runtime first
     /// compares the resolved callee with the executing realm's original
@@ -796,6 +802,7 @@ impl Instruction {
                 (required, required)
             }
             Self::Delete => (2, 1),
+            Self::Import => (2, 1),
             Self::Call(argument_count) | Self::Eval { argument_count, .. } => {
                 (*argument_count as usize + 1, 1)
             }
@@ -1893,6 +1900,48 @@ mod tests {
         assert_eq!(
             underflow.verify().unwrap_err().message(),
             "bytecode stack underflow"
+        );
+    }
+
+    #[test]
+    fn verifier_models_dynamic_import_as_two_inputs_to_one_promise() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(20),
+                Instruction::PushI32(22),
+                Instruction::Import,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(function.verify().unwrap().max_stack, 2);
+
+        let underflow = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(20),
+                Instruction::Import,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(
+            underflow.verify().unwrap_err().message(),
+            "bytecode stack underflow"
+        );
+
+        let undersized = BytecodeFunction {
+            max_stack: 1,
+            ..function
+        };
+        assert_eq!(
+            undersized.verify().unwrap_err().message(),
+            "declared maximum stack is smaller than required"
         );
     }
 

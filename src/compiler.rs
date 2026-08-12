@@ -6636,11 +6636,11 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// Parse the Script/Eval import-expression grammar without implementing
-    /// module loading. QuickJS validates the complete ImportCall and its
-    /// surrounding expression before execution, so a valid call is lowered to
-    /// a harmless placeholder and its Unsupported diagnostic is deferred until
-    /// the whole source has passed syntax validation.
+    /// Parse and lower the Script/Eval import-expression grammar while its
+    /// runtime implementation remains behind the dynamic-import frontier.
+    /// QuickJS validates the complete ImportCall and its surrounding
+    /// expression before execution, so the Unsupported diagnostic stays
+    /// deferred until the whole source has passed syntax validation.
     fn parse_import_expression(
         &mut self,
         import_span: Span,
@@ -6683,20 +6683,22 @@ impl<'source> Parser<'source> {
         // ordinary expression parsing therefore supplies QuickJS's exact
         // unexpected-token diagnostics for `import()` and `import(...x)`.
         self.parse_assignment_allow_in()?;
-        self.emit_instruction(Instruction::Drop)?;
         if self.is_punctuator(Punctuator::Comma) {
             self.advance()?;
             if !self.is_punctuator(Punctuator::RightParen) {
                 self.parse_assignment_allow_in()?;
-                self.emit_instruction(Instruction::Drop)?;
                 if self.is_punctuator(Punctuator::Comma) {
                     self.advance()?;
                 }
+            } else {
+                self.emit_instruction(Instruction::Undefined)?;
             }
+        } else {
+            self.emit_instruction(Instruction::Undefined)?;
         }
         self.expect_punctuator(Punctuator::RightParen)?;
 
-        self.emit_instruction(Instruction::Undefined)?;
+        self.emit_instruction_at(Instruction::Import, source_offset(import_span)?)?;
         self.anonymous_function_definition = None;
         if self.pending_unsupported.is_none() {
             self.pending_unsupported = Some(Error::unsupported(

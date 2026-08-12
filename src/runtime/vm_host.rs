@@ -3763,6 +3763,12 @@ impl VmHost for RuntimeVmHost {
         self.delete_property_with_key(base, &key, strict)
     }
 
+    fn dynamic_import(&mut self, _specifier: Value, _options: Value) -> Result<Completion, Error> {
+        Err(Error::internal(
+            "dynamic import reached the runtime host before frontier activation",
+        ))
+    }
+
     fn call(
         &mut self,
         function: Value,
@@ -4572,6 +4578,21 @@ mod tests {
             is_parameter_initializer: false,
             kind: ClosureVariableKind::Normal,
         }
+    }
+
+    #[test]
+    fn dynamic_import_runtime_hook_stays_unreachable_behind_the_frontier() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let mut host = RuntimeVmHost::empty_for_test(runtime, context.realm);
+        let error = host
+            .dynamic_import(Value::Int(20), Value::Undefined)
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Internal);
+        assert_eq!(
+            error.message(),
+            "dynamic import reached the runtime host before frontier activation"
+        );
     }
 
     #[test]

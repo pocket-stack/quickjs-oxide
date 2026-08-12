@@ -2180,8 +2180,8 @@ use super::{
     THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles, compile_script,
     compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
     compile_unlinked_module_with_name_and_attribute_checker, compile_unlinked_script,
-    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, resolve_identifiers,
-    validate_scope_graph,
+    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, lower_unlinked_tree,
+    resolve_identifiers, validate_scope_graph,
 };
 
 #[test]
@@ -10987,6 +10987,55 @@ fn reserved_property_names_and_import_frontiers_remain_distinct() {
         "({enum:42})?.enum",
     ] {
         assert_eq!(evaluate_in_context(source), Value::Int(42), "{source:?}");
+    }
+}
+
+#[test]
+fn dynamic_import_frontier_retains_quickjs_specifier_and_options_stack_shape() {
+    for (source, expected_options) in [
+        ("import(20)", None),
+        ("import(20,)", None),
+        ("import(20, 22)", Some(22)),
+        ("import(20, 22,)", Some(22)),
+    ] {
+        let mut tree =
+            Parser::parse(source, JsString::from_static("<dynamic-import-frontier>")).unwrap();
+        let frontier = tree
+            .pending_unsupported
+            .as_ref()
+            .expect("valid ImportCall did not retain its frontier gate");
+        assert_eq!(frontier.kind(), ErrorKind::Unsupported, "{source:?}");
+        assert_eq!(
+            frontier.message(),
+            "import syntax is not implemented yet",
+            "{source:?}"
+        );
+
+        resolve_identifiers(&mut tree).unwrap();
+        let function = lower_unlinked_tree(tree, DebugInfoMode::StripDebug).unwrap();
+        assert!(
+            function.code().windows(3).any(|window| match window {
+                [
+                    Instruction::PushI32(20),
+                    Instruction::Undefined,
+                    Instruction::Import,
+                ] => {
+                    expected_options.is_none()
+                }
+                [
+                    Instruction::PushI32(20),
+                    Instruction::PushI32(actual_options),
+                    Instruction::Import,
+                ] => expected_options == Some(*actual_options),
+                _ => false,
+            }),
+            "{source:?} lost its Import stack inputs: {:?}",
+            function.code()
+        );
+
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source:?}: {error}");
+        assert_eq!(error.message(), "import syntax is not implemented yet");
     }
 }
 

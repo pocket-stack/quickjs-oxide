@@ -655,6 +655,10 @@ pub(crate) trait VmHost {
         key: Value,
         strict: bool,
     ) -> Result<Completion, Error>;
+    /// QuickJS `OP_import`. Both expressions have already been evaluated and
+    /// remain in source order; the runtime host will eventually own Promise
+    /// creation, option processing, and FIFO module-job scheduling.
+    fn dynamic_import(&mut self, specifier: Value, options: Value) -> Result<Completion, Error>;
     fn call(
         &mut self,
         function: Value,
@@ -851,6 +855,10 @@ struct DetachedHost<'a> {
     get_property_results: VecDeque<Completion>,
     #[cfg(test)]
     get_property_inputs: Vec<(Value, Value)>,
+    #[cfg(test)]
+    dynamic_import_results: VecDeque<Result<Completion, Error>>,
+    #[cfg(test)]
+    dynamic_import_inputs: Vec<(Value, Value)>,
 }
 
 #[cfg(test)]
@@ -947,6 +955,10 @@ impl<'a> DetachedHost<'a> {
             get_property_results: VecDeque::new(),
             #[cfg(test)]
             get_property_inputs: Vec::new(),
+            #[cfg(test)]
+            dynamic_import_results: VecDeque::new(),
+            #[cfg(test)]
+            dynamic_import_inputs: Vec::new(),
         }
     }
 
@@ -1751,6 +1763,16 @@ impl VmHost for DetachedHost<'_> {
     ) -> Result<Completion, Error> {
         Err(Error::internal(
             "detached VM cannot delete runtime-owned properties",
+        ))
+    }
+
+    fn dynamic_import(&mut self, specifier: Value, options: Value) -> Result<Completion, Error> {
+        self.dynamic_import_inputs.push((specifier, options));
+        if let Some(result) = self.dynamic_import_results.pop_front() {
+            return result;
+        }
+        Err(Error::internal(
+            "detached VM cannot execute runtime-owned dynamic import",
         ))
     }
 
@@ -2992,6 +3014,15 @@ impl VmActivation {
         host: &mut impl VmHost,
     ) -> Result<Option<Completion>, Error> {
         let completion = match instruction {
+            Instruction::Import => {
+                // QuickJS passes `sp[-2]` and `sp[-1]` to
+                // `js_dynamic_import` in authored evaluation order. Pop the
+                // top options value first, then restore that raw order at the
+                // host boundary.
+                let options = self.pop()?;
+                let specifier = self.pop()?;
+                host.dynamic_import(specifier, options)?
+            }
             Instruction::Call(argument_count) => {
                 let arguments = self.take_call_arguments(*argument_count, 1)?;
                 let function = self.pop()?;
@@ -3385,7 +3416,8 @@ impl VmActivation {
 
             if matches!(
                 instruction,
-                Instruction::Call(_)
+                Instruction::Import
+                    | Instruction::Call(_)
                     | Instruction::Eval { .. }
                     | Instruction::CallMethod(_)
                     | Instruction::Construct(_)
@@ -4362,7 +4394,8 @@ impl VmActivation {
                 }
                 self.stack.push(iterator);
             }
-            Instruction::Call(_)
+            Instruction::Import
+            | Instruction::Call(_)
             | Instruction::Eval { .. }
             | Instruction::CallMethod(_)
             | Instruction::Construct(_)
@@ -5060,7 +5093,7 @@ mod tests {
         ArgumentsKind, BytecodeFunction, DefineMethodKind, DynamicEnvironmentSource,
         EvalVariableSource, Instruction, IteratorCallKind, WithObjectSource,
     };
-    use crate::error::ErrorKind;
+    use crate::error::{Error, ErrorKind};
     use crate::value::{JsString, Value};
 
     use super::{
@@ -5621,6 +5654,66 @@ mod tests {
             max_stack: 2,
         };
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(2));
+    }
+
+    #[test]
+    fn dynamic_import_passes_raw_specifier_and_options_in_source_order() {
+        let function = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(20),
+                Instruction::PushI32(22),
+                Instruction::Import,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        function.verify().unwrap();
+
+        let mut host = DetachedHost::new(&function);
+        host.dynamic_import_results
+            .push_back(Ok(Completion::Return(Value::Int(42))));
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&function.code, &mut host)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(
+            host.dynamic_import_inputs,
+            [(Value::Int(20), Value::Int(22))]
+        );
+
+        let mut thrown = DetachedHost::new(&function);
+        thrown
+            .dynamic_import_results
+            .push_back(Ok(Completion::Throw(Value::Int(77))));
+        assert_eq!(
+            CallFrame::new(2)
+                .execute(&function.code, &mut thrown)
+                .unwrap(),
+            Completion::Throw(Value::Int(77))
+        );
+        assert_eq!(
+            thrown.dynamic_import_inputs,
+            [(Value::Int(20), Value::Int(22))]
+        );
+
+        let mut failed = DetachedHost::new(&function);
+        failed
+            .dynamic_import_results
+            .push_back(Err(Error::internal("dynamic import host failure")));
+        let error = CallFrame::new(2)
+            .execute(&function.code, &mut failed)
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Internal);
+        assert_eq!(error.message(), "dynamic import host failure");
+        assert_eq!(
+            failed.dynamic_import_inputs,
+            [(Value::Int(20), Value::Int(22))]
+        );
     }
 
     #[test]
