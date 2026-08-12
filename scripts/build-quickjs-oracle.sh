@@ -67,6 +67,7 @@ work_dir=$cache/.quickjs-${version}.work.$lock_token
 archive_tmp=$cache/.quickjs-${version}.archive.$lock_token.tmp
 publish_tmp=$source_dir/.qjs.$lock_token.tmp
 runner_publish_tmp=$source_dir/.run-test262.$lock_token.tmp
+library_publish_tmp=$source_dir/.libquickjs.a.$lock_token.tmp
 stage_source=
 
 release_lock() {
@@ -81,7 +82,8 @@ release_lock() {
 }
 
 cleanup() {
-    rm -f -- "$archive_tmp" "$publish_tmp" "$runner_publish_tmp" 2>/dev/null || true
+    rm -f -- "$archive_tmp" "$publish_tmp" "$runner_publish_tmp" \
+        "$library_publish_tmp" 2>/dev/null || true
     rm -rf -- "$work_dir" 2>/dev/null || true
     release_lock
 }
@@ -254,11 +256,12 @@ if [[ $source_exists -eq 1 ]]; then
     validate_publish_destination "$oracle" qjs
     if [[ $test262_oracles -eq 1 ]]; then
         validate_publish_destination "$source_dir/run-test262" run-test262
+        validate_publish_destination "$source_dir/libquickjs.a" libquickjs.a
     fi
 fi
 
 if [[ $test262_oracles -eq 1 ]]; then
-    "${MAKE:-make}" -C "$stage_source" qjs run-test262 >&2
+    "${MAKE:-make}" -C "$stage_source" qjs run-test262 libquickjs.a >&2
 else
     "${MAKE:-make}" -C "$stage_source" qjs >&2
 fi
@@ -270,9 +273,14 @@ fi
 
 if [[ $test262_oracles -eq 1 ]]; then
     staged_runner=$stage_source/run-test262
+    staged_library=$stage_source/libquickjs.a
     staged_obj=$stage_source/.obj
     if [[ ! -f "$staged_runner" || -L "$staged_runner" || ! -x "$staged_runner" ]]; then
         echo "error: QuickJS build did not produce an executable regular run-test262" >&2
+        exit 1
+    fi
+    if [[ ! -f "$staged_library" || -L "$staged_library" ]]; then
+        echo "error: QuickJS build did not produce a regular libquickjs.a" >&2
         exit 1
     fi
     if [[ ! -d "$staged_obj" || -L "$staged_obj" ]]; then
@@ -311,6 +319,11 @@ else
             echo "error: failed to stage the QuickJS run-test262 executable" >&2
             exit 1
         fi
+        cp -p -- "$staged_library" "$library_publish_tmp"
+        if [[ ! -f "$library_publish_tmp" || -L "$library_publish_tmp" ]]; then
+            echo "error: failed to stage the QuickJS libquickjs.a" >&2
+            exit 1
+        fi
     fi
     mv -f -- "$publish_tmp" "$oracle"
     if [[ ! -f "$oracle" || -L "$oracle" || ! -x "$oracle" ]]; then
@@ -322,6 +335,12 @@ else
         if [[ ! -f "$source_dir/run-test262" || -L "$source_dir/run-test262" || \
               ! -x "$source_dir/run-test262" ]]; then
             echo "error: published QuickJS run-test262 is not an executable regular file" >&2
+            exit 1
+        fi
+        mv -f -- "$library_publish_tmp" "$source_dir/libquickjs.a"
+        if [[ ! -f "$source_dir/libquickjs.a" || \
+              -L "$source_dir/libquickjs.a" ]]; then
+            echo "error: published QuickJS libquickjs.a is not a regular file" >&2
             exit 1
         fi
     fi

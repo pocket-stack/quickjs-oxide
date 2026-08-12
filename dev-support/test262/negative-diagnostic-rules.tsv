@@ -56,6 +56,7 @@ generator.yield-weak-binding	js_parse_unary	yield parsing preserves QuickJS weak
 logical-assignment.non-simple-target	get_lvalue	logical assignment requires a simple assignment target
 module.import-attributes.duplicate-key	js_parse_with_clause	static import attributes reject decoded duplicate keys
 module.invalid-import-binding	js_parse_import	import bindings cannot use restricted identifiers
+module.json-parse	json_parse_value	JSON module resolution reports strict JSON grammar errors from the authenticated fixture
 module.missing-export	js_resolve_export_throw_error	module resolution reports a requested binding absent from the dependency graph
 object-literal.private-name	js_parse_object_literal	private names are invalid object literal properties
 optional-chaining.invalid-assignment-target	get_lvalue	optional chains are not assignment targets

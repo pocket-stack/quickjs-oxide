@@ -70,9 +70,12 @@ jobs:
           node --check scripts/test-negative-diagnostic-generator.mjs
           node --check scripts/generate-test262-module-import-attributes-a.mjs
           node --check scripts/test-generate-test262-module-import-attributes-a.mjs
+          node --check scripts/generate-test262-module-json-a.mjs
+          node --check scripts/test-generate-test262-module-json-a.mjs
           ./scripts/check-oracle-registry.sh
           ./scripts/test-quickjs-fixtures.sh --validate
           ./scripts/test-module-import-attributes-oracle.sh --validate
+          ./scripts/test-module-json-oracle.sh --validate
           ./scripts/check-test262-host-boundary.sh
           ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
           node scripts/current-test262-metrics.mjs --check-docs
@@ -142,6 +145,8 @@ jobs:
         run: |
           oracle_source=$(./scripts/build-quickjs-oracle.sh --test262-oracles)
           oracle="$oracle_source/qjs"
+          QJS_ORACLE_ARCHIVE_FIXTURE="$QJS_ORACLE_CACHE/quickjs-2026-06-04.tar.xz" \
+            ./scripts/test-build-quickjs-oracle-cache.sh
           suite=$(./scripts/prepare-test262.sh)
           node scripts/audit-negative-diagnostics.mjs \
             --contracts dev-support/test262/negative-diagnostics.tsv \
@@ -156,11 +161,21 @@ jobs:
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf" \
             --check-current
+          node scripts/test-generate-test262-module-json-a.mjs \
+            --suite "$suite" \
+            --quickjs-runner "$oracle_source/run-test262" \
+            --quickjs-config "$oracle_source/test262.conf"
+          node scripts/generate-test262-module-json-a.mjs \
+            --suite "$suite" \
+            --quickjs-runner "$oracle_source/run-test262" \
+            --quickjs-config "$oracle_source/test262.conf" \
+            --check-current
           cargo build --locked --bin qjs
           node scripts/test-negative-diagnostic-generator.mjs \
             --suite "$suite" --qjs "$oracle" --oxide ./target/debug/qjs
           ./scripts/test-quickjs-fixtures.sh --all --oxide ./target/debug/qjs
           ./scripts/test-module-import-attributes-oracle.sh --check
+          ./scripts/test-module-json-oracle.sh --check
           QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets \
             --features test262-host
 

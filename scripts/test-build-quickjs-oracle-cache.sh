@@ -91,7 +91,8 @@ assert_no_internal_debris() {
     [[ -z "$debris" ]] || fail "cache contains internal debris: $debris"
     if [[ -d "$cache/$source_name" ]]; then
         debris=$(find "$cache/$source_name" -maxdepth 1 \
-            \( -name '.qjs.*.tmp' -o -name '.run-test262.*.tmp' \) -print)
+            \( -name '.qjs.*.tmp' -o -name '.run-test262.*.tmp' \
+               -o -name '.libquickjs.a.*.tmp' \) -print)
         [[ -z "$debris" ]] || fail "source contains publish debris: $debris"
     fi
 }
@@ -120,6 +121,9 @@ for target in "$@"; do
             chmod +x "$source_dir/run-test262"
             mkdir -p "$source_dir/.obj"
             printf 'trusted object\n' >"$source_dir/.obj/trusted.o"
+            ;;
+        libquickjs.a)
+            printf 'built-libquickjs-from-clean-stage\n' >"$source_dir/libquickjs.a"
             ;;
         *) exit 64 ;;
     esac
@@ -352,6 +356,18 @@ ln -s . "$runner_symlink_cache/$source_name/run-test262"
 assert_failure "unsafe cached QuickJS run-test262 destination" env MAKE="$fake_make" \
     QJS_ORACLE_CACHE="$runner_symlink_cache" "$build_script" --test262-oracles
 assert_no_internal_debris "$runner_symlink_cache"
+library_directory_cache=$(prime_cache library-directory)
+mkdir -- "$library_directory_cache/$source_name/libquickjs.a"
+assert_failure "unsafe cached QuickJS libquickjs.a destination" env MAKE="$fake_make" \
+    QJS_ORACLE_CACHE="$library_directory_cache" "$build_script" --test262-oracles
+[[ -z $(find "$library_directory_cache/$source_name/libquickjs.a" -mindepth 1 -print) ]] || \
+    fail "libquickjs.a directory destination received a nested temp file"
+assert_no_internal_debris "$library_directory_cache"
+library_symlink_cache=$(prime_cache library-symlink)
+ln -s VERSION "$library_symlink_cache/$source_name/libquickjs.a"
+assert_failure "unsafe cached QuickJS libquickjs.a destination" env MAKE="$fake_make" \
+    QJS_ORACLE_CACHE="$library_symlink_cache" "$build_script" --test262-oracles
+assert_no_internal_debris "$library_symlink_cache"
 
 echo "[13/14] fresh normal build publishes source and qjs without network" >&2
 fresh_cache=$(new_cache fresh-normal)
@@ -369,7 +385,7 @@ assert_success_path "$fresh_cache/$source_name/qjs" env \
     fail "fresh normal call did not perform exactly one clean build"
 assert_no_internal_debris "$fresh_cache"
 
-echo "[14/14] combined mode fresh-builds both binaries without consuming extras" >&2
+echo "[14/14] combined mode fresh-builds binaries and C oracle library without consuming extras" >&2
 cold_combined_cache=$(new_cache cold-combined)
 cold_combined_source=$cold_combined_cache/$source_name
 assert_success_path "$cold_combined_source" env MAKE="$fake_make" \
@@ -378,6 +394,11 @@ assert_success_path "$cold_combined_source" env MAKE="$fake_make" \
    ! -L "$cold_combined_source/qjs" ]] || fail "cold combined mode did not publish qjs"
 [[ -f "$cold_combined_source/run-test262" && -x "$cold_combined_source/run-test262" && \
    ! -L "$cold_combined_source/run-test262" ]] || fail "cold combined mode did not publish run-test262"
+[[ -f "$cold_combined_source/libquickjs.a" && \
+   ! -L "$cold_combined_source/libquickjs.a" ]] || \
+    fail "cold combined mode did not publish libquickjs.a"
+grep -F 'built-libquickjs-from-clean-stage' "$cold_combined_source/libquickjs.a" >/dev/null || \
+    fail "cold combined mode did not clean-build libquickjs.a"
 [[ -f "$cold_combined_source/.obj/trusted.o" ]] || fail "cold combined source lacks fresh build objects"
 assert_no_internal_debris "$cold_combined_cache"
 combined_cache=$(prime_cache combined-generation)
@@ -388,6 +409,7 @@ printf 'wildcard poison\n' >"$combined_source/unicode/UnicodeData.txt"
 printf 'dependency poison\n' >"$combined_source/.obj/poison.d"
 printf 'old qjs\n' >"$combined_source/qjs"
 printf 'old runner\n' >"$combined_source/run-test262"
+printf 'old library\n' >"$combined_source/libquickjs.a"
 chmod +x "$combined_source/qjs" "$combined_source/run-test262"
 combined_log=$test_root/combined-make.log
 assert_success_path "$combined_source" env MAKE="$fake_make" \
@@ -399,6 +421,8 @@ grep -F '# built-from-clean-archive-stage' "$combined_source/qjs" >/dev/null || 
     fail "combined mode reused qjs"
 grep -F '# built-run-test262-from-clean-stage' "$combined_source/run-test262" >/dev/null || \
     fail "combined mode reused run-test262"
+grep -F 'built-libquickjs-from-clean-stage' "$combined_source/libquickjs.a" >/dev/null || \
+    fail "combined mode reused libquickjs.a"
 [[ -e "$combined_source/.obj/poison.d" ]] || fail "combined mode unexpectedly replaced persistent .obj"
 [[ -e "$combined_source/unicode/UnicodeData.txt" ]] || \
     fail "combined mode unexpectedly removed persistent wildcard extras"

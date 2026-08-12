@@ -1,0 +1,20 @@
+main load[0] name=suite/data/primitive.json type=json
+main create name=suite/data/primitive.json module=c exports=default
+main load[1] name=suite/data/object.json type=json
+main create name=suite/data/object.json module=c exports=default
+main load[2] name=suite/data/array.json type=json
+main create name=suite/data/array.json module=c exports=default
+main before-evaluate loads=3 object-loads=1 init-callbacks=0
+main init[0] name=suite/data/primitive.json before=undefined after-private-identical=true
+main init[1] name=suite/data/object.json before=undefined after-private-identical=true
+main init[2] name=suite/data/array.json before=undefined after-private-identical=true
+main after-evaluate state=fulfilled loads=3 object-loads=1 init-callbacks=3
+main value={"primitive":42,"primitiveType":"number","primitiveNamespaceKeys":["default"],"primitiveDefaultIdentity":true,"object":{"kind":"object","count":2,"extra":7},"objectExtensibleBefore":true,"objectNamespaceKeys":["default"],"objectNamespaceExtensible":false,"objectNamespaceNullPrototype":true,"objectDefaultIdentity":true,"objectAliasIdentity":true,"array":[1,2,3],"arrayIsArray":true,"arrayExtensible":true,"arrayNamespaceKeys":["default"],"arrayDefaultIdentity":true}
+named load[0] name=named/data/object.json type=json
+named create name=named/data/object.json module=c exports=default
+named before-evaluate loads=1 init-callbacks=0
+named resolution error=SyntaxError message=Could not find export 'named' in module 'named/data/object.json' file=undefined line=undefined column=undefined
+named after-error loads=1 init-callbacks=0
+invalid load[0] name=invalid/data/invalid.json type=json
+invalid resolution error=SyntaxError message=unexpected token: ']' file=invalid/data/invalid.json line=3 column=13
+invalid after-error loads=1 init-callbacks=0

@@ -27,6 +27,7 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const QUICKJS_NON_JS_DIAGNOSTIC_ANCHORS = new Set([
   "get_class_atom",
   "get_lvalue",
+  "json_parse_value",
   "lre_compile",
   "parse_unicode_property",
   "re_parse_nested_class",

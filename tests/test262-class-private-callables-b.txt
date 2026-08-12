@@ -1635,6 +1635,17 @@ test/language/expressions/object/method-definition/private-name-early-error-meth
 test/language/expressions/object/method-definition/private-name-early-error-method.js
 test/language/expressions/object/method-definition/private-name-early-error-set-method-inside-class.js
 test/language/expressions/object/method-definition/private-name-early-error-set-method.js
+test/language/import/import-attributes/json-extensibility-array.js
+test/language/import/import-attributes/json-extensibility-object.js
+test/language/import/import-attributes/json-invalid.js
+test/language/import/import-attributes/json-named-bindings.js
+test/language/import/import-attributes/json-value-array.js
+test/language/import/import-attributes/json-value-boolean.js
+test/language/import/import-attributes/json-value-null.js
+test/language/import/import-attributes/json-value-number.js
+test/language/import/import-attributes/json-value-object.js
+test/language/import/import-attributes/json-value-string.js
+test/language/import/import-attributes/json-via-namespace.js
 test/language/module-code/import-attributes/allow-nlt-before-with.js
 test/language/module-code/import-attributes/early-dup-attribute-key-export.js
 test/language/module-code/import-attributes/early-dup-attribute-key-import-nobinding.js

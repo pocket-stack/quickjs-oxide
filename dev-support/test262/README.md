@@ -18,7 +18,7 @@ contracts. Its strict 16-column TSV schema records source hashes, complete
 metadata shapes, graph edges and closure sizes, lookup priority, and host
 cohort policy. Both coordinator and isolated worker parse and authenticate the
 same file; malformed, unsorted, duplicate, open-graph, or checksum-drifted data
-fails closed. The five cohort generators emit `--admissions` rows and compare
+fails closed. The six cohort generators emit `--admissions` rows and compare
 their owned group against this file in normal check mode.
 
 `negative-diagnostics.tsv` is a strict, source-authenticated overlay for
