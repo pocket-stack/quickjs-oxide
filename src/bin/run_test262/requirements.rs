@@ -266,8 +266,7 @@ fn authenticate_module_graph_file_digest(
         ));
     }
     if file.is_json_text()
-        && (metadata != &Metadata::default()
-            || &file.metadata != &ModuleMetadataContract::default())
+        && (metadata != &Metadata::default() || file.metadata != ModuleMetadataContract::default())
     {
         return Err(format!(
             "JSON fixture graph metadata must be empty for {}",
