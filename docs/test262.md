@@ -10,18 +10,18 @@ QuickJS 2026-06-04 patch and configuration recorded in
 <!-- current-test262-metrics:start -->
 Metrics are reported in this order:
 
-1. **Full pass:** 79,438 / 102,037 (77.852%). Every frozen Test262 variant is in
+1. **Full pass:** 79,451 / 102,037 (77.865%). Every frozen Test262 variant is in
    the denominator.
-2. **Eligible coverage:** 79,488 / 102,037 (77.901%). This measures how much of
+2. **Eligible coverage:** 79,501 / 102,037 (77.914%). This measures how much of
    the full vector the current profile admits to execution.
-3. **Runnable pass quality:** 79,438 / 79,488 (99.937%). This is useful for
+3. **Runnable pass quality:** 79,451 / 79,501 (99.937%). This is useful for
    diagnosing admitted behavior, but it must not replace either coverage
    metric above.
 
 The frozen outcome summary is:
 
 ```text
-fail-parse=7 fail-runtime=43 pass=79438 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1094 unsupported-module=418 unsupported-negative-provenance=2562
+fail-parse=7 fail-runtime=43 pass=79451 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1094 unsupported-module=405 unsupported-negative-provenance=2562
 ```
 <!-- current-test262-metrics:end -->
 
@@ -39,11 +39,10 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
 contract and legacy exemption ledger, focused manifest, and frozen TSV/JSONL
 receipts. `--focused` replays
-the 6,382-variant R3eg-B dependency-closed private-callable vector and requires
-byte-identical output. It covers `class-methods-private` and
-`class-static-methods-private`, including ordinary methods, accessors,
-generators, async methods, and async generators. `--full` runs every 102,037
-variant and checks the complete summary and report hashes.
+the current 6,395-variant focused vector and requires byte-identical output. It
+retains the dependency-closed private-callable coverage and adds the
+source-authenticated static import-attributes graph. `--full` runs every
+102,037 variant and checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
 its exact path is present in the audited-negative data. Every admitted
