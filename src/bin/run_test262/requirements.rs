@@ -137,7 +137,7 @@ fn is_exact_fixture_graph_module_test(
     })?;
     authenticate_module_graph_file(path, source, metadata, root)?;
     authenticate_exact_module_graph_closure(admission, |relative| {
-        read_regular_module_source(suite, relative)
+        read_regular_module_graph_text(suite, relative)
     })?;
     Ok(true)
 }
@@ -183,11 +183,29 @@ fn authenticate_exact_module_graph_closure(
             )
         })?;
         let source = read_source(path)?;
-        let metadata = parse_metadata(&source)
-            .map_err(|error| format!("parse authenticated module metadata for {path}: {error}"))?;
+        let metadata = module_graph_file_metadata(&source, file)?;
         authenticate_module_graph_file(Path::new(path), &source, &metadata, file)?;
     }
     Ok(())
+}
+
+fn module_graph_file_metadata(
+    source: &str,
+    file: &ModuleGraphFileAdmission,
+) -> Result<Metadata, String> {
+    if file.is_json_text() {
+        // JSON fixtures are authenticated and loaded byte-for-byte as UTF-8
+        // text. Test262 frontmatter is a JavaScript-source convention, so JSON
+        // never passes through that parser even if its string data contains a
+        // frontmatter-looking sequence.
+        return Ok(Metadata::default());
+    }
+    parse_metadata(source).map_err(|error| {
+        format!(
+            "parse authenticated module metadata for {}: {error}",
+            file.path
+        )
+    })
 }
 
 fn reachable_module_graph_paths(
@@ -247,6 +265,15 @@ fn authenticate_module_graph_file_digest(
             file.path, file.source_sha256
         ));
     }
+    if file.is_json_text()
+        && (metadata != &Metadata::default()
+            || &file.metadata != &ModuleMetadataContract::default())
+    {
+        return Err(format!(
+            "JSON fixture graph metadata must be empty for {}",
+            file.path
+        ));
+    }
     if !module_metadata_matches(metadata, &file.metadata) {
         return Err(format!(
             "fixture graph module metadata shape drifted for {}",
@@ -256,7 +283,7 @@ fn authenticate_module_graph_file_digest(
     Ok(())
 }
 
-fn read_regular_module_source(suite: &Path, relative: &str) -> Result<String, String> {
+fn read_regular_module_graph_text(suite: &Path, relative: &str) -> Result<String, String> {
     let path = suite.join(relative);
     let file_type = fs::symlink_metadata(&path)
         .map_err(|error| format!("stat authenticated module {}: {error}", path.display()))?
@@ -319,6 +346,14 @@ pub(super) fn load_exact_module_fixture(
             root_path.display()
         )
     })?;
+    load_exact_module_fixture_from_admission(admission, suite, normalized_name)
+}
+
+fn load_exact_module_fixture_from_admission(
+    admission: ExactModuleGraphAdmission<'_>,
+    suite: &Path,
+    normalized_name: &str,
+) -> Result<String, String> {
     let reachable = reachable_module_graph_paths(admission)?;
     if !reachable.contains(normalized_name) {
         return Err(format!(
@@ -328,13 +363,8 @@ pub(super) fn load_exact_module_fixture(
     let file = module_graph_file(admission, normalized_name)
         .filter(|file| file.path != admission.root_path)
         .ok_or_else(|| format!("module loader rejected unaudited fixture: {normalized_name}"))?;
-    let source = read_regular_module_source(suite, &file.path)?;
-    let metadata = parse_metadata(&source).map_err(|error| {
-        format!(
-            "parse authenticated module metadata for {}: {error}",
-            file.path
-        )
-    })?;
+    let source = read_regular_module_graph_text(suite, &file.path)?;
+    let metadata = module_graph_file_metadata(&source, file)?;
     authenticate_module_graph_file(Path::new(&file.path), &source, &metadata, file)?;
     Ok(source)
 }
@@ -1077,6 +1107,7 @@ mod tests {
     use std::ops::Deref;
     use std::path::{Path, PathBuf};
     use std::sync::LazyLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         ExactModuleGraphAdmission, ExactModuleTest, HostCapabilities, agent_host_metadata_matches,
@@ -1088,7 +1119,8 @@ mod tests {
         generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
         is_exact_agent_host_test as is_exact_agent_host_test_impl,
         is_exact_dependency_free_module_test as is_exact_dependency_free_module_test_impl,
-        missing_host_capability_hints, module_metadata_matches,
+        load_exact_module_fixture_from_admission, missing_host_capability_hints,
+        module_metadata_matches,
         normalize_exact_module_request as normalize_exact_module_request_impl,
         reachable_module_graph_paths, source_sha256, source_tokens,
         supplemental_feature_hints as supplemental_feature_hints_impl,
@@ -3027,6 +3059,98 @@ mod tests {
         .unwrap_err();
         assert!(drift.contains("source drifted"));
         assert!(drift.contains("fixture_FIXTURE.js"));
+    }
+
+    #[test]
+    fn json_fixture_graph_authenticates_and_loads_unparsed_raw_text() {
+        const ROOT_SOURCE: &str = "/*---\nflags: [module]\n---*/\nimport data from \"./data_FIXTURE.json\" with { type: \"json\" };\n";
+        const JSON_SOURCE: &str = "{\"note\":\"/*--- raw JSON, not Test262 metadata\"}\n";
+
+        let root_sha256 = source_sha256(ROOT_SOURCE).unwrap();
+        let json_sha256 = source_sha256(JSON_SOURCE).unwrap();
+        let files = vec![
+            ModuleGraphFileAdmission {
+                path: "test/root.js".to_owned(),
+                source_sha256: root_sha256,
+                metadata: ModuleMetadataContract {
+                    flags: vec!["module".to_owned()],
+                    ..ModuleMetadataContract::default()
+                },
+                requests: vec![ModuleRequestAdmission {
+                    specifier: "./data_FIXTURE.json".to_owned(),
+                    normalized_path: "test/data_FIXTURE.json".to_owned(),
+                }],
+            },
+            ModuleGraphFileAdmission {
+                path: "test/data_FIXTURE.json".to_owned(),
+                source_sha256: json_sha256,
+                metadata: ModuleMetadataContract::default(),
+                requests: Vec::new(),
+            },
+        ];
+        let admission = ExactModuleGraphAdmission {
+            root_path: "test/root.js",
+            files: &files,
+            closure_file_count: 2,
+        };
+
+        assert_eq!(
+            authenticate_exact_module_graph_closure(admission, |path| match path {
+                "test/root.js" => Ok(ROOT_SOURCE.to_owned()),
+                "test/data_FIXTURE.json" => Ok(JSON_SOURCE.to_owned()),
+                _ => Err(format!("unexpected path: {path}")),
+            }),
+            Ok(())
+        );
+
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-json-graph-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(suite.join("test/data_FIXTURE.json"), JSON_SOURCE).unwrap();
+
+        let loaded =
+            load_exact_module_fixture_from_admission(admission, &suite, "test/data_FIXTURE.json")
+                .unwrap();
+        assert_eq!(loaded, JSON_SOURCE);
+
+        fs::write(
+            suite.join("test/data_FIXTURE.json"),
+            "{\"note\":\"drifted\"}\n",
+        )
+        .unwrap();
+        let error =
+            load_exact_module_fixture_from_admission(admission, &suite, "test/data_FIXTURE.json")
+                .unwrap_err();
+        assert!(error.contains("source drifted"), "{error}");
+        fs::remove_dir_all(suite).unwrap();
+    }
+
+    #[test]
+    fn json_fixture_graph_rejects_nonempty_metadata_contracts_defensively() {
+        let file = ModuleGraphFileAdmission {
+            path: "test/data_FIXTURE.json".to_owned(),
+            source_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned(),
+            metadata: ModuleMetadataContract {
+                flags: vec!["module".to_owned()],
+                ..ModuleMetadataContract::default()
+            },
+            requests: Vec::new(),
+        };
+        let error = authenticate_module_graph_file_digest(
+            Path::new(&file.path),
+            &file.source_sha256,
+            &module_metadata(&file.metadata),
+            &file,
+        )
+        .unwrap_err();
+        assert!(error.contains("metadata must be empty"), "{error}");
     }
 
     #[test]

@@ -107,3 +107,90 @@ fn deleting_lazy_global_json_releases_its_realm_edge() {
         before - 1,
     );
 }
+
+#[test]
+fn json_module_parser_returns_the_strict_json_value() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let source = JsString::from_static("{\"answer\":42}");
+    let filename = JsString::from_static("answer.json");
+    let NativeConversion::Value(Value::Object(value)) = runtime
+        .parse_json_module_text(context.realm, &source, &filename)
+        .unwrap()
+    else {
+        panic!("strict JSON module text did not return its object value");
+    };
+    let answer = runtime.intern_property_key("answer").unwrap();
+    assert_eq!(
+        context.get_property(&value, &answer).unwrap(),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn json_module_parser_reports_pinned_quickjs_token_locations() {
+    let cases = [
+        ("{\n  notJson: 0\n}\n", "expecting property name", 2, 3),
+        (r#""a\q""#, "Bad escaped character", 1, 4),
+        ("\"a\nb\"", "Bad control character in string literal", 1, 3),
+        ("01", "Unexpected number", 1, 1),
+        ("1.", "Unterminated fractional number", 1, 3),
+        ("1e+", "Exponent part is missing a number", 1, 4),
+        ("true false", "unexpected data at the end", 1, 6),
+        ("{} \"unterminated", "Unexpected end of JSON input", 1, 4),
+        ("\"😀\" x", "unexpected data at the end", 1, 5),
+    ];
+
+    for (source, expected_message, expected_line, expected_column) in cases {
+        assert_json_module_syntax_location(
+            source,
+            expected_message,
+            expected_line,
+            expected_column,
+        );
+    }
+}
+
+fn assert_json_module_syntax_location(
+    source: &str,
+    expected_message: &str,
+    expected_line: i32,
+    expected_column: i32,
+) {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let source = JsString::try_from_utf8(source).unwrap();
+    let filename = JsString::from_static("fixtures/value.json");
+    let NativeConversion::Throw(Value::Object(error)) = runtime
+        .parse_json_module_text(context.realm, &source, &filename)
+        .unwrap()
+    else {
+        panic!("invalid JSON module text did not throw a SyntaxError");
+    };
+
+    for (name, expected) in [
+        (
+            "message",
+            Value::String(JsString::try_from_utf8(expected_message).unwrap()),
+        ),
+        ("fileName", Value::String(filename.clone())),
+        ("lineNumber", Value::Int(expected_line)),
+        ("columnNumber", Value::Int(expected_column)),
+        (
+            "stack",
+            Value::String(
+                JsString::try_from_utf8(&format!(
+                    "    at fixtures/value.json:{expected_line}:{expected_column}\n"
+                ))
+                .unwrap(),
+            ),
+        ),
+    ] {
+        let key = runtime.intern_property_key(name).unwrap();
+        assert_eq!(
+            context.get_property(&error, &key).unwrap(),
+            expected,
+            "{name} differed for {source:?}",
+        );
+    }
+}

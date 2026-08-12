@@ -70,8 +70,14 @@ impl JsonParseRecord {
     }
 }
 
+struct JsonSyntaxFailure {
+    message: String,
+    /// UTF-16 source-unit offset used as QuickJS's `token.ptr` equivalent.
+    offset: usize,
+}
+
 enum JsonParseFailure {
-    Syntax(String),
+    Syntax(JsonSyntaxFailure),
     Runtime(RuntimeError),
 }
 
@@ -108,9 +114,52 @@ impl Runtime {
         };
         match parser.parse_document() {
             Ok(value) => Ok(NativeConversion::Value(value)),
-            Err(JsonParseFailure::Syntax(message)) => Ok(NativeConversion::Throw(
-                self.new_native_error(realm, NativeErrorKind::Syntax, &message)?,
+            Err(JsonParseFailure::Syntax(failure)) => Ok(NativeConversion::Throw(
+                self.new_native_error(realm, NativeErrorKind::Syntax, &failure.message)?,
             )),
+            Err(JsonParseFailure::Runtime(error)) => Err(error),
+        }
+    }
+
+    /// Parse one strict JSON module payload while retaining the pinned
+    /// QuickJS filename and token-start diagnostic location.
+    pub(in crate::runtime) fn parse_json_module_text(
+        &self,
+        realm: ContextId,
+        source: &JsString,
+        filename: &JsString,
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
+        self.0.state.borrow().heap.context(realm)?;
+        let units = source.utf16_units().collect::<Vec<_>>();
+        let mut parser = JsonParser {
+            runtime: self,
+            realm,
+            units,
+            cursor: 0,
+            retain_record: false,
+        };
+        match parser.parse_document() {
+            Ok((value, None)) => Ok(NativeConversion::Value(value)),
+            Ok((_, Some(_))) => Err(RuntimeError::Invariant(
+                "JSON module parsing unexpectedly retained a parse record",
+            )),
+            Err(JsonParseFailure::Syntax(failure)) => {
+                let position = json_source_location(&parser.units, failure.offset)?;
+                let exception = self.new_native_error_without_backtrace_from_error(
+                    realm,
+                    NativeErrorKind::Syntax,
+                    &Error::new(ErrorKind::Syntax, failure.message),
+                )?;
+                self.ensure_error_backtrace(
+                    &exception,
+                    false,
+                    Some(ExplicitBacktraceLocation {
+                        filename: filename.clone(),
+                        position,
+                    }),
+                )?;
+                Ok(NativeConversion::Throw(exception))
+            }
             Err(JsonParseFailure::Runtime(error)) => Err(error),
         }
     }
@@ -124,8 +173,9 @@ impl JsonParser<'_> {
         if self.cursor != self.units.len() {
             // QuickJS lexes the next token before reporting trailing data, so
             // malformed trailing strings/numbers retain their lexical error.
+            let trailing_start = self.cursor;
             self.validate_trailing_token()?;
-            return self.syntax("unexpected data at the end");
+            return self.syntax_at(trailing_start, "unexpected data at the end");
         }
         Ok(result)
     }
@@ -262,22 +312,25 @@ impl JsonParser<'_> {
 
     fn parse_string(&mut self) -> JsonParseResult<JsString> {
         debug_assert_eq!(self.peek(), Some(u16::from(b'"')));
+        let token_start = self.cursor;
         self.cursor += 1;
         let mut output = Vec::new();
         loop {
             let Some(unit) = self.peek() else {
-                return self.syntax("Unexpected end of JSON input");
+                return self.syntax_at(token_start, "Unexpected end of JSON input");
             };
+            let unit_offset = self.cursor;
             self.cursor += 1;
             match unit {
                 unit if unit == u16::from(b'"') => break,
                 unit if unit < 0x20 => {
-                    return self.syntax("Bad control character in string literal");
+                    return self.syntax_at(unit_offset, "Bad control character in string literal");
                 }
                 unit if unit == u16::from(b'\\') => {
                     let Some(escaped) = self.peek() else {
-                        return self.syntax("Unexpected end of JSON input");
+                        return self.syntax_at(token_start, "Unexpected end of JSON input");
                     };
+                    let escaped_offset = self.cursor;
                     self.cursor += 1;
                     match escaped {
                         unit if unit == u16::from(b'"')
@@ -302,7 +355,7 @@ impl JsonParser<'_> {
                             }
                             output.push(value);
                         }
-                        _ => return self.syntax("Bad escaped character"),
+                        _ => return self.syntax_at(escaped_offset, "Bad escaped character"),
                     }
                 }
                 _ => output.push(unit),
@@ -316,13 +369,14 @@ impl JsonParser<'_> {
         if self.consume_ascii(b'-') && self.peek().is_none() {
             return self.syntax("Unexpected token '");
         }
+        let digits_start = self.cursor;
         let Some(first) = self.peek() else {
             return self.syntax("Unexpected end of JSON input");
         };
         if first == u16::from(b'0') {
             self.cursor += 1;
             if self.peek().is_some_and(is_ascii_digit) {
-                return self.syntax("Unexpected number");
+                return self.syntax_at(digits_start, "Unexpected number");
             }
         } else if (u16::from(b'1')..=u16::from(b'9')).contains(&first) {
             self.cursor += 1;
@@ -386,7 +440,7 @@ impl JsonParser<'_> {
                 .iter()
                 .map(|unit| char::from_u32(u32::from(*unit)).unwrap_or('\u{fffd}'))
                 .collect::<String>();
-            return self.syntax(&format!("unexpected token: '{token}'"));
+            return self.syntax_at(start, &format!("unexpected token: '{token}'"));
         };
         let record = self.primitive_record(value.clone(), start, end);
         Ok((value, record))
@@ -466,8 +520,52 @@ impl JsonParser<'_> {
     }
 
     fn syntax<T>(&self, message: &str) -> JsonParseResult<T> {
-        Err(JsonParseFailure::Syntax(message.to_owned()))
+        self.syntax_at(self.cursor, message)
     }
+
+    fn syntax_at<T>(&self, offset: usize, message: &str) -> JsonParseResult<T> {
+        debug_assert!(offset <= self.units.len());
+        Err(JsonParseFailure::Syntax(JsonSyntaxFailure {
+            message: message.to_owned(),
+            offset,
+        }))
+    }
+}
+
+fn json_source_location(units: &[u16], offset: usize) -> Result<LineColumn, RuntimeError> {
+    if offset > units.len() {
+        return Err(RuntimeError::Invariant(
+            "JSON diagnostic offset is outside its source",
+        ));
+    }
+
+    let mut line = 0_u32;
+    let mut column = 0_u32;
+    let mut cursor = 0;
+    while cursor < offset {
+        let unit = units[cursor];
+        if unit == u16::from(b'\n') {
+            line = line
+                .checked_add(1)
+                .ok_or(RuntimeError::Invariant("JSON diagnostic line overflowed"))?;
+            column = 0;
+            cursor += 1;
+            continue;
+        }
+
+        column = column
+            .checked_add(1)
+            .ok_or(RuntimeError::Invariant("JSON diagnostic column overflowed"))?;
+        cursor += if (0xd800..=0xdbff).contains(&unit)
+            && cursor + 1 < offset
+            && (0xdc00..=0xdfff).contains(&units[cursor + 1])
+        {
+            2
+        } else {
+            1
+        };
+    }
+    Ok(LineColumn::new(line, column))
 }
 
 fn is_ascii_digit(unit: u16) -> bool {

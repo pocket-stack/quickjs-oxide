@@ -8,8 +8,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quickjs_oxide::{
-    CompileOptions, CompleteOrdinaryPropertyDescriptor, Context, ErrorKind, JsString, ModuleLoader,
-    ModuleLoaderError, ObjectRef, Runtime, RuntimeError, Test262AgentSession, Value,
+    CompileOptions, CompleteOrdinaryPropertyDescriptor, Context, ErrorKind, JsString,
+    ModuleImportAttributes, ModuleLoadResult, ModuleLoader, ModuleLoaderError, ObjectRef, Runtime,
+    RuntimeError, Test262AgentSession, Value,
 };
 
 use super::admissions::AdmissionCatalog;
@@ -126,6 +127,32 @@ impl ModuleLoader for ExactTest262ModuleLoader {
         load_exact_module_fixture(&self.admissions, &self.suite, &self.root, &normalized_name)
             .map_err(ModuleLoaderError::new)
     }
+
+    fn load_with_attributes(
+        &self,
+        normalized_name: &JsString,
+        attributes: &ModuleImportAttributes,
+    ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+        let source = self.load(normalized_name)?;
+        if exact_module_requests_json(attributes) {
+            Ok(ModuleLoadResult::JsonText(source))
+        } else {
+            Ok(ModuleLoadResult::SourceText(source))
+        }
+    }
+}
+
+fn exact_module_requests_json(attributes: &ModuleImportAttributes) -> bool {
+    attributes.effective().is_some_and(|attributes| {
+        attributes.iter().any(|attribute| {
+            exact_module_string_equals(&attribute.key, "type")
+                && exact_module_string_equals(&attribute.value, "json")
+        })
+    })
+}
+
+fn exact_module_string_equals(value: &JsString, expected: &str) -> bool {
+    value.utf16_units().eq(expected.encode_utf16())
 }
 
 fn exact_module_utf8_name(name: &JsString) -> Result<String, ModuleLoaderError> {
@@ -1034,16 +1061,22 @@ fn primitive_text(value: Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::PathBuf;
+    use std::rc::Rc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use quickjs_oxide::{CompileOptions, Context, ErrorKind, Runtime, RuntimeError, Value};
+    use quickjs_oxide::{
+        CompileOptions, Context, ErrorKind, JsString, ModuleImportAttribute,
+        ModuleImportAttributes, ModuleLoadResult, ModuleLoader, Runtime, RuntimeError, Value,
+    };
 
     use super::{
-        ExceptionDiagnostic, classify_async_print_log, classify_completion,
-        configure_runtime_can_block, run_worker, take_error,
+        ExactTest262ModuleLoader, ExceptionDiagnostic, classify_async_print_log,
+        classify_completion, configure_runtime_can_block, run_worker, take_error,
     };
+    use crate::admissions::AdmissionCatalog;
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
 
@@ -1052,6 +1085,106 @@ mod tests {
 
     fn admissions_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dev-support/test262/admissions.tsv")
+    }
+
+    fn admission_row(fields: [&str; 16]) -> String {
+        fields
+            .map(|field| if field.is_empty() { "-" } else { field })
+            .join("\t")
+    }
+
+    fn json_loader_catalog(json_sha256: &str) -> AdmissionCatalog {
+        const HEADER: &str = "kind\tgroup\tpath\tsource_sha256\tincludes\tflags\tfeatures\tnegative_phase\tnegative_type\tclosure_file_count\tpriority\trequest_index\tspecifier\tnormalized_path\tpolicy\tcohort";
+        const SHA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+        let mut rows = [
+            admission_row([
+                "graph-file",
+                "json-loader",
+                "test/data_FIXTURE.json",
+                json_sha256,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-file",
+                "json-loader",
+                "test/root.js",
+                SHA,
+                "",
+                "module",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-request",
+                "json-loader",
+                "test/root.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "0",
+                "./data_FIXTURE.json",
+                "test/data_FIXTURE.json",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-root",
+                "json-loader",
+                "test/root.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "2",
+                "0",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        AdmissionCatalog::parse(&format!("{HEADER}\n{}\n", rows.join("\n"))).unwrap()
+    }
+
+    fn import_attributes(entries: &[(&'static str, &'static str)]) -> ModuleImportAttributes {
+        ModuleImportAttributes::Present(
+            entries
+                .iter()
+                .map(|(key, value)| ModuleImportAttribute {
+                    key: JsString::try_from_utf8(key).unwrap(),
+                    value: JsString::try_from_utf8(value).unwrap(),
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
     }
 
     fn execute_thrown(
@@ -1072,6 +1205,52 @@ mod tests {
             .compile_with_options(source, &CompileOptions::new("diagnostic-observer.js"))
             .unwrap();
         context.execute(&function).unwrap()
+    }
+
+    #[test]
+    fn exact_test262_loader_selects_json_text_only_for_type_json() {
+        const JSON_SOURCE: &str = "{\"note\":\"/*--- raw JSON, not Test262 metadata\"}\n";
+        const JSON_SHA256: &str =
+            "8b784bbd9f9603a60109942d4c921d11179a674463fa073416a3d2f38235802f";
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-json-loader-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(suite.join("test/data_FIXTURE.json"), JSON_SOURCE).unwrap();
+
+        let resolution_started = Rc::new(Cell::new(false));
+        let loader = ExactTest262ModuleLoader {
+            admissions: Rc::new(json_loader_catalog(JSON_SHA256)),
+            suite: suite.clone(),
+            root: PathBuf::from("test/root.js"),
+            resolution_started: Rc::clone(&resolution_started),
+        };
+        let name = JsString::try_from_utf8("test/data_FIXTURE.json").unwrap();
+        let absent = ModuleImportAttributes::Absent;
+        let empty = import_attributes(&[]);
+        let javascript = import_attributes(&[("type", "javascript")]);
+        let wrong_key = import_attributes(&[("Type", "json")]);
+        let json = import_attributes(&[("integrity", "pinned"), ("type", "json")]);
+
+        assert!(loader.check_attributes(json.effective().unwrap()).is_ok());
+        for attributes in [&absent, &empty, &javascript, &wrong_key] {
+            assert_eq!(
+                loader.load_with_attributes(&name, attributes).unwrap(),
+                ModuleLoadResult::SourceText(JSON_SOURCE.to_owned())
+            );
+        }
+        assert_eq!(
+            loader.load_with_attributes(&name, &json).unwrap(),
+            ModuleLoadResult::JsonText(JSON_SOURCE.to_owned())
+        );
+        assert!(resolution_started.get());
+
+        fs::remove_dir_all(suite).unwrap();
     }
 
     #[test]

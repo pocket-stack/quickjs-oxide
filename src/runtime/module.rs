@@ -12,7 +12,7 @@ use crate::compiler::{
     compile_unlinked_module_with_name_and_attribute_checker,
 };
 use crate::module::{
-    ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportCollision, ModuleImportName,
+    ModuleExportTarget, ModuleImport, ModuleImportCollision, ModuleImportName,
     ModuleLinkInitializer, ModuleRequest, ModuleRequestIndex, ModuleStarExport, UnlinkedModule,
 };
 pub use crate::module::{ModuleImportAttribute, ModuleImportAttributes};
@@ -64,9 +64,13 @@ impl From<String> for ModuleLoaderError {
 #[non_exhaustive]
 pub enum ModuleLoadResult {
     SourceText(String),
+    /// Strict JSON source used to create a synthetic module with one
+    /// `default` export. The host, not the engine, decides which requests are
+    /// JSON; this variant deliberately carries no filename-extension policy.
+    JsonText(String),
 }
 
-/// Runtime-wide host boundary for source-text module normalization and load.
+/// Runtime-wide host boundary for module normalization and loading.
 ///
 /// The loaded-module cache itself is Context-owned, matching QuickJS. The
 /// loader is called synchronously during module compilation/resolution and
@@ -378,7 +382,7 @@ pub struct ModuleBytecodeRef {
 
 struct ModuleRecord {
     name: JsString,
-    function: FunctionBytecodeRef,
+    body: ModuleRecordBody,
     // Retain the complete published record so the later graph linker can
     // extend this identity without changing the public compile boundary.
     _declaration_order: Box<[u16]>,
@@ -386,7 +390,7 @@ struct ModuleRecord {
     _import_collisions: Box<[ModuleImportCollision]>,
     requested_modules: Box<[ModuleRequest]>,
     imports: Box<[ModuleImport]>,
-    exports: Box<[ModuleExport]>,
+    exports: Box<[PublishedModuleExport]>,
     star_exports: Box<[ModuleStarExport]>,
     resolution: RefCell<ModuleResolutionState>,
     instance: RefCell<Option<ModuleInstance>>,
@@ -402,6 +406,36 @@ struct ModuleRecord {
     // retains its compilation realm through its bytecode and must not leave a
     // stale ContextId when the Context handle which compiled it is released.
     _realm_root: ModuleRealmRoot,
+}
+
+enum ModuleRecordBody {
+    SourceText {
+        function: FunctionBytecodeRef,
+    },
+    /// QuickJS represents JSON modules as C/synthetic module records. The
+    /// parsed value is retained as module-private state and copied into the
+    /// exported live cell only when module evaluation first runs.
+    Json {
+        default_value: Value,
+    },
+}
+
+#[derive(Clone)]
+struct PublishedModuleExport {
+    export_name: JsString,
+    target: PublishedModuleExportTarget,
+}
+
+#[derive(Clone)]
+enum PublishedModuleExportTarget {
+    /// Authenticated closure slot on a source-text module root function.
+    SourceTextLocal { closure_index: u16 },
+    /// Live cell owned directly by a synthetic module instance.
+    SyntheticLocal { cell_index: u16 },
+    Indirect {
+        request: ModuleRequestIndex,
+        import_name: ModuleImportName,
+    },
 }
 
 enum ModuleResolutionState {
@@ -646,19 +680,22 @@ impl ModuleBytecodeRef {
     /// Return whether this module was published by `runtime`.
     #[must_use]
     pub fn belongs_to(&self, runtime: &Runtime) -> bool {
-        self.record.function.belongs_to(runtime)
+        self.record._realm_root.runtime.is_same_runtime(runtime)
     }
 
     /// Return whether two handles name modules in the same runtime domain.
     #[must_use]
     pub fn is_same_runtime(&self, other: &Self) -> bool {
-        self.record.function.is_same_runtime(&other.record.function)
+        self.record
+            ._realm_root
+            .runtime
+            .is_same_runtime(&other.record._realm_root.runtime)
     }
 
     /// Stable identity of the runtime domain which published this module.
     #[must_use]
     pub fn domain_id(&self) -> u64 {
-        self.record.function.domain_id()
+        self.record._realm_root.runtime.domain_id()
     }
 }
 
@@ -673,8 +710,8 @@ impl fmt::Debug for ModuleBytecodeRef {
 }
 
 impl Runtime {
-    /// Install the runtime-wide source-text module loader used by subsequent
-    /// Context module resolution. Existing Context caches remain intact.
+    /// Install the runtime-wide module loader used by subsequent Context
+    /// module resolution. Existing Context caches remain intact.
     pub fn set_module_loader<L>(&self, loader: L) -> ModuleLoaderRegistration
     where
         L: ModuleLoader + 'static,
@@ -746,6 +783,28 @@ impl Runtime {
             }
         };
         self.publish_unlinked_module(realm, graph, module)
+            .map(ModuleCompilation::Published)
+    }
+
+    /// Parse host-selected strict JSON and publish a genuine synthetic module
+    /// record. This intentionally does not invoke the JavaScript compiler:
+    /// JSON object construction, `__proto__`, duplicate keys, diagnostics,
+    /// and realm identity must remain those of QuickJS's JSON parser.
+    fn compile_json_module_record_in_realm(
+        &self,
+        realm: ContextId,
+        graph: &Rc<ModuleGraph>,
+        source: &str,
+        name: &JsString,
+    ) -> Result<ModuleCompilation, RuntimeError> {
+        let source = JsString::try_from_utf8(source)?;
+        let value = match self.parse_json_module_text(realm, &source, name)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(exception) => {
+                return Ok(ModuleCompilation::Throw(exception));
+            }
+        };
+        self.publish_json_module(realm, graph, name.clone(), value)
             .map(ModuleCompilation::Published)
     }
 
@@ -869,14 +928,24 @@ impl Runtime {
                                 &format!("': {error}"),
                             )
                         })?;
-                    let ModuleLoadResult::SourceText(source) = loaded;
-                    match self.compile_module_record_in_realm(
-                        realm,
-                        &current.graph,
-                        &source,
-                        &normalized_name,
-                        Some(loader.as_ref()),
-                    )? {
+                    let compilation = match loaded {
+                        ModuleLoadResult::SourceText(source) => self
+                            .compile_module_record_in_realm(
+                                realm,
+                                &current.graph,
+                                &source,
+                                &normalized_name,
+                                Some(loader.as_ref()),
+                            )?,
+                        ModuleLoadResult::JsonText(source) => self
+                            .compile_json_module_record_in_realm(
+                                realm,
+                                &current.graph,
+                                &source,
+                                &normalized_name,
+                            )?,
+                    };
+                    match compilation {
                         ModuleCompilation::Published(dependency) => dependency,
                         ModuleCompilation::Throw(exception) => {
                             self.set_pending_exception(exception)?;
@@ -970,16 +1039,69 @@ impl Runtime {
         let realm_root = ModuleRealmRoot::retain(self, realm)?;
         let parts = module.into_parts();
         let function = self.publish_verified_unlinked_function(realm, parts.function)?;
+        let exports = parts
+            .exports
+            .into_vec()
+            .into_iter()
+            .map(|export| PublishedModuleExport {
+                export_name: export.export_name,
+                target: match export.target {
+                    ModuleExportTarget::Local { closure_index } => {
+                        PublishedModuleExportTarget::SourceTextLocal { closure_index }
+                    }
+                    ModuleExportTarget::Indirect {
+                        request,
+                        import_name,
+                    } => PublishedModuleExportTarget::Indirect {
+                        request,
+                        import_name,
+                    },
+                },
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Ok(graph.publish(ModuleRecord {
             name: parts.name,
-            function,
+            body: ModuleRecordBody::SourceText { function },
             _declaration_order: parts.declaration_order,
             _link_initializers: parts.link_initializers,
             _import_collisions: parts.import_collisions,
             requested_modules: parts.requested_modules,
             imports: parts.imports,
-            exports: parts.exports,
+            exports,
             star_exports: parts.star_exports,
+            resolution: RefCell::new(ModuleResolutionState::Unresolved),
+            instance: RefCell::new(None),
+            namespace: RefCell::new(ModuleNamespaceState::Empty),
+            link_status: Cell::new(ModuleLinkStatus::Unlinked),
+            evaluation: RefCell::new(ModuleEvaluationState::Unevaluated),
+            link_realm_root: RefCell::new(None),
+            _realm_root: realm_root,
+        }))
+    }
+
+    fn publish_json_module(
+        &self,
+        realm: ContextId,
+        graph: &Rc<ModuleGraph>,
+        name: JsString,
+        default_value: Value,
+    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+        self.validate_value_domain(&default_value, "JSON module value")?;
+        let realm_root = ModuleRealmRoot::retain(self, realm)?;
+        Ok(graph.publish(ModuleRecord {
+            name,
+            body: ModuleRecordBody::Json { default_value },
+            _declaration_order: Box::new([]),
+            _link_initializers: Box::new([]),
+            _import_collisions: Box::new([]),
+            requested_modules: Box::new([]),
+            imports: Box::new([]),
+            exports: Box::new([PublishedModuleExport {
+                export_name: JsString::from_static("default"),
+                target: PublishedModuleExportTarget::SyntheticLocal { cell_index: 0 },
+            }]),
+            star_exports: Box::new([]),
             resolution: RefCell::new(ModuleResolutionState::Unresolved),
             instance: RefCell::new(None),
             namespace: RefCell::new(ModuleNamespaceState::Empty),
@@ -1064,20 +1186,25 @@ impl Runtime {
         if module.record.instance.borrow().is_some() {
             return Ok(());
         }
-        if !module.record.function.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("module bytecode"));
-        }
-        let descriptors = {
-            let state = self.0.state.borrow();
-            state
-                .heap
-                .function_bytecode(module.record.function.bytecode_id())?
-                .closure_variables
-                .clone()
+        let descriptors = match &module.record.body {
+            ModuleRecordBody::SourceText { function } => {
+                if !function.belongs_to(self) {
+                    return Err(RuntimeError::WrongRuntime("module bytecode"));
+                }
+                let state = self.0.state.borrow();
+                Some(
+                    state
+                        .heap
+                        .function_bytecode(function.bytecode_id())?
+                        .closure_variables
+                        .clone(),
+                )
+            }
+            ModuleRecordBody::Json { .. } => None,
         };
 
-        let mut slots = Vec::with_capacity(descriptors.len());
-        for descriptor in descriptors.iter().copied() {
+        let mut slots = Vec::with_capacity(descriptors.as_ref().map_or(1, |items| items.len()));
+        for descriptor in descriptors.iter().flat_map(|items| items.iter().copied()) {
             let ClosureVariableName::Atom(name) = descriptor.name else {
                 return Err(RuntimeError::Invariant(
                     "published module closure descriptor has no atom",
@@ -1171,6 +1298,18 @@ impl Runtime {
                 }
             };
             slots.push(slot);
+        }
+        if descriptors.is_none() {
+            // QuickJS `js_create_module_function` allocates one non-lexical
+            // detached VarRef per local C/synthetic export. Its initial value
+            // is `undefined`; the module initializer writes the JSON value at
+            // evaluation time.
+            slots.push(Some(self.new_var_ref(
+                Value::Undefined,
+                false,
+                false,
+                ClosureVariableKind::Normal,
+            )?));
         }
 
         if module.record.link_realm_root.borrow().is_some() {
@@ -1309,15 +1448,27 @@ impl Runtime {
                             .map(|(index, export)| (index, export.target.clone()))
                         {
                             match target {
-                                ModuleExportTarget::Local { closure_index } => Action::Complete(
-                                    ModuleExportResolveResult::Found(ModuleResolvedBinding {
-                                        module: frame.module.clone(),
-                                        target: ModuleResolvedBindingTarget::Local {
-                                            closure_index,
+                                PublishedModuleExportTarget::SourceTextLocal { closure_index } => {
+                                    Action::Complete(ModuleExportResolveResult::Found(
+                                        ModuleResolvedBinding {
+                                            module: frame.module.clone(),
+                                            target: ModuleResolvedBindingTarget::Local {
+                                                closure_index,
+                                            },
                                         },
-                                    }),
-                                ),
-                                ModuleExportTarget::Indirect {
+                                    ))
+                                }
+                                PublishedModuleExportTarget::SyntheticLocal { cell_index } => {
+                                    Action::Complete(ModuleExportResolveResult::Found(
+                                        ModuleResolvedBinding {
+                                            module: frame.module.clone(),
+                                            target: ModuleResolvedBindingTarget::Local {
+                                                closure_index: cell_index,
+                                            },
+                                        },
+                                    ))
+                                }
+                                PublishedModuleExportTarget::Indirect {
                                     request,
                                     import_name: ModuleImportName::Namespace,
                                 } => {
@@ -1331,7 +1482,7 @@ impl Runtime {
                                         },
                                     ))
                                 }
-                                ModuleExportTarget::Indirect {
+                                PublishedModuleExportTarget::Indirect {
                                     request,
                                     import_name: ModuleImportName::Name(import_name),
                                 } => {
@@ -1573,7 +1724,7 @@ impl Runtime {
                             "resolved namespace export entry is outside the module table",
                         ),
                     )?;
-                    let ModuleExportTarget::Indirect {
+                    let PublishedModuleExportTarget::Indirect {
                         request,
                         import_name: ModuleImportName::Namespace,
                     } = &export.target
@@ -1601,11 +1752,33 @@ impl Runtime {
                             error_name,
                         );
                     }
+                    let function = match &binding.module.record.body {
+                        ModuleRecordBody::SourceText { function } => function,
+                        ModuleRecordBody::Json { .. } => {
+                            if closure_index != 0 {
+                                return Err(RuntimeError::Invariant(
+                                    "synthetic module export cell is out of bounds",
+                                ));
+                            }
+                            return binding
+                                .module
+                                .record
+                                .instance
+                                .borrow()
+                                .as_ref()
+                                .and_then(|instance| instance.slots.first())
+                                .and_then(Option::as_ref)
+                                .cloned()
+                                .ok_or(RuntimeError::Invariant(
+                                    "synthetic module export has no instantiated live cell",
+                                ));
+                        }
+                    };
                     let descriptor = {
                         let state = self.0.state.borrow();
                         state
                             .heap
-                            .function_bytecode(binding.module.record.function.bytecode_id())?
+                            .function_bytecode(function.bytecode_id())?
                             .closure_variables
                             .get(usize::from(closure_index))
                             .copied()
@@ -1776,7 +1949,7 @@ impl Runtime {
         realm: ContextId,
     ) -> Result<(), RuntimeError> {
         for export in module.record.exports.iter() {
-            let ModuleExportTarget::Indirect {
+            let PublishedModuleExportTarget::Indirect {
                 request,
                 import_name: ModuleImportName::Name(import_name),
             } = &export.target
@@ -1872,7 +2045,10 @@ impl Runtime {
         &self,
         module: &ModuleBytecodeRef,
         realm: ContextId,
-    ) -> Result<CallableRef, RuntimeError> {
+    ) -> Result<Option<CallableRef>, RuntimeError> {
+        let ModuleRecordBody::SourceText { function } = &module.record.body else {
+            return Ok(None);
+        };
         if let Some(callable) = module
             .record
             .instance
@@ -1880,7 +2056,7 @@ impl Runtime {
             .as_ref()
             .and_then(|instance| instance.callable.clone())
         {
-            return Ok(callable);
+            return Ok(Some(callable));
         }
         let slots = module
             .record
@@ -1896,8 +2072,7 @@ impl Runtime {
                 ))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let callable =
-            self.new_bytecode_closure_with_slots(realm, &module.record.function, &slots)?;
+        let callable = self.new_bytecode_closure_with_slots(realm, function, &slots)?;
         module
             .record
             .instance
@@ -1905,7 +2080,7 @@ impl Runtime {
             .as_mut()
             .ok_or(RuntimeError::Invariant("module instance disappeared"))?
             .callable = Some(callable.clone());
-        Ok(callable)
+        Ok(Some(callable))
     }
 
     fn enter_module_link_dfs(
@@ -2029,17 +2204,21 @@ impl Runtime {
                 ))?;
             self.validate_module_indirect_exports(&frame.module, &frame.dependencies, realm)?;
             self.link_module_imports(&frame.module, &frame.dependencies, realm)?;
-            let callable = self.create_module_callable(&frame.module, realm)?;
-            let completion = match self.call_internal(realm, &callable, Value::Bool(true), &[]) {
-                Ok(completion) => completion,
-                Err(error) => {
-                    frame
-                        .module
-                        .record
-                        .link_status
-                        .set(ModuleLinkStatus::Poisoned);
-                    return Err(error);
+            let completion = match self.create_module_callable(&frame.module, realm)? {
+                Some(callable) => {
+                    match self.call_internal(realm, &callable, Value::Bool(true), &[]) {
+                        Ok(completion) => completion,
+                        Err(error) => {
+                            frame
+                                .module
+                                .record
+                                .link_status
+                                .set(ModuleLinkStatus::Poisoned);
+                            return Err(error);
+                        }
+                    }
                 }
+                None => Completion::Return(Value::Undefined),
             };
             match completion {
                 Completion::Return(Value::Undefined) => {
@@ -2281,27 +2460,47 @@ impl Runtime {
             let frame = frames.pop().ok_or(RuntimeError::Invariant(
                 "module evaluation call stack unexpectedly became empty",
             ))?;
-            let (callable, realm) = {
-                let instance = frame.module.record.instance.borrow();
-                let callable = instance
-                    .as_ref()
-                    .and_then(|instance| instance.callable.clone())
-                    .ok_or(RuntimeError::Invariant(
-                        "linked module has no callable instance",
-                    ))?;
-                let realm = frame
-                    .module
-                    .record
-                    .link_realm_root
-                    .borrow()
-                    .as_ref()
-                    .map(|root| root.realm)
-                    .ok_or(RuntimeError::Invariant(
-                        "linked module has no retained realm",
-                    ))?;
-                (callable, realm)
+            let realm = frame
+                .module
+                .record
+                .link_realm_root
+                .borrow()
+                .as_ref()
+                .map(|root| root.realm)
+                .ok_or(RuntimeError::Invariant(
+                    "linked module has no retained realm",
+                ))?;
+            let completion = match &frame.module.record.body {
+                ModuleRecordBody::SourceText { .. } => {
+                    let callable = frame
+                        .module
+                        .record
+                        .instance
+                        .borrow()
+                        .as_ref()
+                        .and_then(|instance| instance.callable.clone())
+                        .ok_or(RuntimeError::Invariant(
+                            "linked source-text module has no callable instance",
+                        ))?;
+                    self.call_internal(realm, &callable, Value::Undefined, &[])?
+                }
+                ModuleRecordBody::Json { default_value } => {
+                    let slot = frame
+                        .module
+                        .record
+                        .instance
+                        .borrow()
+                        .as_ref()
+                        .and_then(|instance| instance.slots.first())
+                        .and_then(Option::as_ref)
+                        .cloned()
+                        .ok_or(RuntimeError::Invariant(
+                            "linked JSON module has no default live cell",
+                        ))?;
+                    self.write_var_ref(&slot, default_value.clone())?;
+                    Completion::Return(Value::Undefined)
+                }
             };
-            let completion = self.call_internal(realm, &callable, Value::Undefined, &[])?;
             match completion {
                 Completion::Return(Value::Undefined) => {
                     let entry = dfs.entries.get(&frame.module.id).copied().ok_or(
@@ -2521,6 +2720,7 @@ mod tests {
     type SharedUtf16LoaderLoads = Rc<RefCell<Vec<Vec<u16>>>>;
     type SharedAttributeChecks = Rc<RefCell<Vec<Vec<(String, String)>>>>;
     type SharedAttributeLoads = Rc<RefCell<Vec<RecordedAttributeLoad>>>;
+    type SharedModuleLoadResults = Rc<RefCell<HashMap<String, ModuleLoadResult>>>;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedAttributeLoad {
@@ -2644,6 +2844,69 @@ mod tests {
                 .get(&normalized_name)
                 .cloned()
                 .map(ModuleLoadResult::SourceText)
+                .ok_or_else(|| ModuleLoaderError::new("fixture module is missing"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct JsonModuleLoader {
+        modules: SharedModuleLoadResults,
+        loads: SharedAttributeLoads,
+    }
+
+    impl JsonModuleLoader {
+        fn new(
+            modules: impl IntoIterator<Item = (&'static str, ModuleLoadResult)>,
+        ) -> (Self, SharedModuleLoadResults, SharedAttributeLoads) {
+            let modules = Rc::new(RefCell::new(
+                modules
+                    .into_iter()
+                    .map(|(name, result)| (name.to_owned(), result))
+                    .collect(),
+            ));
+            let loads = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    modules: modules.clone(),
+                    loads: loads.clone(),
+                },
+                modules,
+                loads,
+            )
+        }
+    }
+
+    impl ModuleLoader for JsonModuleLoader {
+        fn check_attributes(
+            &self,
+            attributes: &[ModuleImportAttribute],
+        ) -> Result<(), ModuleLoaderError> {
+            if attributes.iter().all(|attribute| {
+                attribute.key == JsString::from_static("type")
+                    && attribute.value == JsString::from_static("json")
+            }) {
+                Ok(())
+            } else {
+                Err(ModuleLoaderError::new(
+                    "fixture JSON loader accepts only type: json",
+                ))
+            }
+        }
+
+        fn load_with_attributes(
+            &self,
+            normalized_name: &JsString,
+            attributes: &ModuleImportAttributes,
+        ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+            let normalized_name = valid_fixture_module_name(normalized_name)?;
+            self.loads.borrow_mut().push(RecordedAttributeLoad {
+                name: normalized_name.clone(),
+                attributes: attributes.effective().map(recorded_attribute_pairs),
+            });
+            self.modules
+                .borrow()
+                .get(&normalized_name)
+                .cloned()
                 .ok_or_else(|| ModuleLoaderError::new("fixture module is missing"))
         }
     }
@@ -3213,6 +3476,197 @@ mod tests {
         assert!(controls.loads.borrow().iter().all(
             |load| load.attributes == Some(vec![("type".to_owned(), "javascript".to_owned())])
         ));
+    }
+
+    #[test]
+    fn json_module_default_export_is_cached_by_normalized_name_and_keeps_json_semantics() {
+        let runtime = Runtime::new();
+        let (loader, _, loads) = JsonModuleLoader::new([
+            (
+                "pkg/value.json",
+                ModuleLoadResult::JsonText(
+                    r#"{"answer":40,"nested":[2],"__proto__":{"polluted":true}}"#.to_owned(),
+                ),
+            ),
+            (
+                "pkg/indirect.js",
+                ModuleLoadResult::SourceText(
+                    "export { default } from './value.json' with { type: 'json' };".to_owned(),
+                ),
+            ),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import first from "./value.json" with { type: "json" };
+                import { default as second } from "./value.json" with { type: "json" };
+                import indirect from "./indirect.js";
+                import * as namespace from "./value.json" with { type: "json" };
+                const proto = Object.getOwnPropertyDescriptor(first, "__proto__");
+                globalThis.__jsonModuleParity =
+                    first === second && second === indirect && namespace.default === first &&
+                    Reflect.ownKeys(namespace).length === 2 &&
+                    Object.keys(namespace).join(",") === "default" &&
+                    namespace[Symbol.toStringTag] === "Module" &&
+                    first.answer + first.nested[0] === 42 &&
+                    Object.getPrototypeOf(first) === Object.prototype &&
+                    Object.isExtensible(first) &&
+                    proto.value.polluted === true && proto.enumerable &&
+                    proto.writable && proto.configurable;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__jsonModuleParity === true");
+        assert_eq!(
+            loads
+                .borrow()
+                .iter()
+                .map(|load| load.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pkg/value.json", "pkg/indirect.js"]
+        );
+        assert_eq!(
+            loads.borrow()[0].attributes,
+            Some(vec![("type".to_owned(), "json".to_owned())])
+        );
+    }
+
+    #[test]
+    fn json_module_live_cell_is_undefined_after_link_and_initialized_during_evaluation() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = JsonModuleLoader::new([(
+            "pkg/value.json",
+            ModuleLoadResult::JsonText(r#"{"answer":42}"#.to_owned()),
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import value from "./value.json" with { type: "json" };
+                globalThis.__jsonEvaluationValue = value.answer;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+        let dependency = runtime.module_dependencies(&module).unwrap().remove(0);
+
+        context.link_module(&module).unwrap();
+        let namespace = runtime
+            .get_module_namespace(&dependency, context.realm)
+            .unwrap();
+        let default = runtime.intern_property_key("default").unwrap();
+        assert_eq!(
+            context.get_property(&namespace, &default).unwrap(),
+            Value::Undefined
+        );
+
+        context.execute_module(&module).unwrap();
+        let Value::Object(first) = context.get_property(&namespace, &default).unwrap() else {
+            panic!("evaluated JSON module default was not the parsed object");
+        };
+        let answer = runtime.intern_property_key("answer").unwrap();
+        assert_eq!(
+            context.get_property(&first, &answer).unwrap(),
+            Value::Int(42)
+        );
+        assert_script_true(&mut context, "__jsonEvaluationValue === 42");
+
+        context.execute_module(&module).unwrap();
+        assert_eq!(
+            context.get_property(&namespace, &default).unwrap(),
+            Value::Object(first)
+        );
+    }
+
+    #[test]
+    fn json_module_named_import_fails_during_retryable_link() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = JsonModuleLoader::new([(
+            "pkg/value.json",
+            ModuleLoadResult::JsonText(r#"{"name":"not an export"}"#.to_owned()),
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import { name } from "./value.json" with { type: "json" };
+                globalThis.__jsonNamedImportBody = name;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        for _ in 0..2 {
+            assert_eq!(context.link_module(&module), Err(RuntimeError::Exception));
+            assert_eq!(
+                take_error_message(&runtime, &mut context),
+                JsString::from_static("Could not find export 'name' in module 'pkg/value.json'")
+            );
+        }
+        assert_script_true(&mut context, "typeof __jsonNamedImportBody === 'undefined'");
+    }
+
+    #[test]
+    fn invalid_json_module_reports_fixture_location_and_rolls_back_for_retry() {
+        let runtime = Runtime::new();
+        let (loader, modules, loads) = JsonModuleLoader::new([(
+            "pkg/value.json",
+            ModuleLoadResult::JsonText("{\n  notJson: 0\n}\n".to_owned()),
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let source = r#"
+            import value from "./value.json" with { type: "json" };
+            globalThis.__jsonRetry = value.answer;
+        "#;
+
+        assert!(matches!(
+            context.compile_module_with_filename(source, "pkg/entry.js"),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("invalid JSON module did not throw a SyntaxError");
+        };
+        for (name, expected) in [
+            (
+                "message",
+                Value::String(JsString::from_static("expecting property name")),
+            ),
+            (
+                "fileName",
+                Value::String(JsString::from_static("pkg/value.json")),
+            ),
+            ("lineNumber", Value::Int(2)),
+            ("columnNumber", Value::Int(3)),
+        ] {
+            let key = runtime.intern_property_key(name).unwrap();
+            assert_eq!(context.get_property(&error, &key).unwrap(), expected);
+        }
+
+        modules.borrow_mut().insert(
+            "pkg/value.json".to_owned(),
+            ModuleLoadResult::JsonText(r#"{"answer":42}"#.to_owned()),
+        );
+        let module = context
+            .compile_module_with_filename(source, "pkg/entry.js")
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__jsonRetry === 42");
+        assert_eq!(
+            loads
+                .borrow()
+                .iter()
+                .map(|load| load.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pkg/value.json", "pkg/value.json"]
+        );
     }
 
     #[test]
@@ -5030,6 +5484,51 @@ mod tests {
         runtime.run_gc().unwrap();
         assert_eq!(runtime.heap_counts().context_nodes, 2);
 
+        drop(module);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 0);
+    }
+
+    #[test]
+    fn json_module_handle_roots_its_parse_realm_across_context_gc() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = JsonModuleLoader::new([(
+            "pkg/value.json",
+            ModuleLoadResult::JsonText(r#"{"answer":1}"#.to_owned()),
+        )]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let module = {
+            let mut compilation_context = runtime.new_context();
+            compilation_context
+                .eval("Object.prototype.__jsonParseRealm = 41")
+                .unwrap();
+            compilation_context
+                .compile_module_with_filename(
+                    r#"
+                    import value from "./value.json" with { type: "json" };
+                    globalThis.__jsonParseRealm =
+                        Object.getPrototypeOf(value).__jsonParseRealm + value.answer;
+                    globalThis.__jsonParsePrototype = Object.getPrototypeOf(value);
+                    "#,
+                    "pkg/entry.js",
+                )
+                .unwrap()
+        };
+
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 1);
+
+        {
+            let mut execution_context = runtime.new_context();
+            execution_context.execute_module(&module).unwrap();
+            assert_script_true(
+                &mut execution_context,
+                "__jsonParseRealm === 42 && __jsonParsePrototype !== Object.prototype",
+            );
+        }
+
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 2);
         drop(module);
         runtime.run_gc().unwrap();
         assert_eq!(runtime.heap_counts().context_nodes, 0);

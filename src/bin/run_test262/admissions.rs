@@ -41,6 +41,14 @@ pub(super) struct ModuleGraphFileAdmission {
     pub(super) requests: Vec<ModuleRequestAdmission>,
 }
 
+impl ModuleGraphFileAdmission {
+    /// JSON graph fixtures are authenticated as raw text rather than parsed as
+    /// JavaScript sources with Test262 frontmatter.
+    pub(super) fn is_json_text(&self) -> bool {
+        self.path.ends_with(".json")
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ModuleGraphRootAdmission {
     pub(super) group: String,
@@ -226,6 +234,14 @@ impl AdmissionCatalog {
                         metadata: parse_metadata_contract(&fields, line_number)?,
                         requests: Vec::new(),
                     };
+                    if admission.is_json_text()
+                        && admission.metadata != ModuleMetadataContract::default()
+                    {
+                        return Err(format!(
+                            "admissions line {line_number} requires an empty metadata contract for JSON graph fixture {}",
+                            admission.path
+                        ));
+                    }
                     let files = catalog.graph_files.entry(fields[1].to_owned()).or_default();
                     if files.iter().any(|file| file.path == admission.path) {
                         return Err(format!(
@@ -352,6 +368,12 @@ impl AdmissionCatalog {
                         request.group, request.path
                     )
                 })?;
+            if file.is_json_text() {
+                return Err(format!(
+                    "JSON graph fixture cannot declare module requests: {}/{}",
+                    request.group, request.path
+                ));
+            }
             if request.index != file.requests.len() {
                 return Err(format!(
                     "graph request indexes are not contiguous for {}/{}: expected {}, found {}",
@@ -736,15 +758,16 @@ fn validate_group(value: &str, line_number: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_test_path(value: &str, allow_fixture: bool, line_number: usize) -> Result<(), String> {
+fn validate_test_path(value: &str, graph_file: bool, line_number: usize) -> Result<(), String> {
+    let valid_extension = value.ends_with(".js") || graph_file && value.ends_with(".json");
     if !value.starts_with("test/")
-        || !value.ends_with(".js")
+        || !valid_extension
         || value.contains('\\')
         || value.contains("//")
         || value
             .split('/')
             .any(|component| matches!(component, "" | "." | ".."))
-        || (!allow_fixture && value.ends_with("_FIXTURE.js"))
+        || (!graph_file && value.ends_with("_FIXTURE.js"))
     {
         return Err(format!(
             "admissions line {line_number} has invalid Test262 path {value:?}"
@@ -928,6 +951,85 @@ mod tests {
         format!("{HEADER}\n{}\n", rows.join("\n"))
     }
 
+    fn json_graph_catalog() -> String {
+        let mut rows = [
+            row([
+                "graph-file",
+                "json-graph",
+                "test/data_FIXTURE.json",
+                SHA,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            row([
+                "graph-file",
+                "json-graph",
+                "test/root.js",
+                SHA,
+                "",
+                "module",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            row([
+                "graph-request",
+                "json-graph",
+                "test/root.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "0",
+                "./data_FIXTURE.json",
+                "test/data_FIXTURE.json",
+                "",
+                "",
+            ]),
+            row([
+                "graph-root",
+                "json-graph",
+                "test/root.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "2",
+                "0",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        format!("{HEADER}\n{}\n", rows.join("\n"))
+    }
+
     #[test]
     fn parses_a_canonical_catalog() {
         let catalog = AdmissionCatalog::parse(&minimal_catalog()).unwrap();
@@ -945,6 +1047,82 @@ mod tests {
                 .unwrap()
                 .policy,
             SupplementalPolicy::ExactFeatures
+        );
+    }
+
+    #[test]
+    fn json_is_admitted_only_as_an_empty_metadata_graph_fixture() {
+        let catalog = AdmissionCatalog::parse(&json_graph_catalog()).unwrap();
+        let files = catalog.graph_files("json-graph");
+        let json = files
+            .iter()
+            .find(|file| file.path == "test/data_FIXTURE.json")
+            .unwrap();
+        assert!(json.is_json_text());
+        assert_eq!(json.metadata, Default::default());
+        assert!(json.requests.is_empty());
+        assert!(catalog.graph_root(Path::new("test/root.js")).is_some());
+
+        let json_root = json_graph_catalog().replace(
+            "graph-root\tjson-graph\ttest/root.js",
+            "graph-root\tjson-graph\ttest/data_FIXTURE.json",
+        );
+        let error = AdmissionCatalog::parse(&json_root).unwrap_err();
+        assert!(error.contains("invalid Test262 path"), "{error}");
+
+        let fixture_root = json_graph_catalog().replace(
+            "graph-root\tjson-graph\ttest/root.js",
+            "graph-root\tjson-graph\ttest/root_FIXTURE.js",
+        );
+        let error = AdmissionCatalog::parse(&fixture_root).unwrap_err();
+        assert!(error.contains("invalid Test262 path"), "{error}");
+
+        for invalid_path in ["test/data_FIXTURE.txt", "test/../data_FIXTURE.json"] {
+            let invalid = json_graph_catalog().replace("test/data_FIXTURE.json", invalid_path);
+            let error = AdmissionCatalog::parse(&invalid).unwrap_err();
+            assert!(error.contains("invalid Test262 path"), "{error}");
+        }
+
+        let metadata = json_graph_catalog().replace(
+            &format!("graph-file\tjson-graph\ttest/data_FIXTURE.json\t{SHA}\t-\t-\t-"),
+            &format!("graph-file\tjson-graph\ttest/data_FIXTURE.json\t{SHA}\t-\tmodule\t-"),
+        );
+        let error = AdmissionCatalog::parse(&metadata).unwrap_err();
+        assert!(error.contains("empty metadata contract"), "{error}");
+    }
+
+    #[test]
+    fn json_graph_fixture_cannot_be_a_requesting_module() {
+        let request = row([
+            "graph-request",
+            "json-graph",
+            "test/data_FIXTURE.json",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "0",
+            "./root.js",
+            "test/root.js",
+            "",
+            "",
+        ]);
+        let mut lines = json_graph_catalog()
+            .lines()
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        lines.push(request);
+        lines.sort();
+        let catalog = format!("{HEADER}\n{}\n", lines.join("\n"));
+        let error = AdmissionCatalog::parse(&catalog).unwrap_err();
+        assert!(
+            error.contains("JSON graph fixture cannot declare module requests"),
+            "{error}"
         );
     }
 
