@@ -12,9 +12,9 @@ host-populated `import.meta` properties, and the remaining conformance gaps are
 still parity work.
 
 <!-- current-test262-metrics:start -->
-The authoritative R3eq Test262 baseline records **79,470 full-corpus passes
-out of 102,037 variants (77.884%)**, with **79,520 eligible variants
-(77.933%)**. The 79,470 / 79,520 runnable pass rate (99.937%) is a secondary
+The authoritative R3er Test262 baseline records **79,475 full-corpus passes
+out of 102,037 variants (77.888%)**, with **79,525 eligible variants
+(77.937%)**. The 79,475 / 79,525 runnable pass rate (99.937%) is a secondary
 quality measure, not the headline compatibility metric.
 <!-- current-test262-metrics:end -->
 

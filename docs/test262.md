@@ -10,18 +10,18 @@ QuickJS 2026-06-04 patch and configuration recorded in
 <!-- current-test262-metrics:start -->
 Metrics are reported in this order:
 
-1. **Full pass:** 79,470 / 102,037 (77.884%). Every frozen Test262 variant is in
+1. **Full pass:** 79,475 / 102,037 (77.888%). Every frozen Test262 variant is in
    the denominator.
-2. **Eligible coverage:** 79,520 / 102,037 (77.933%). This measures how much of
+2. **Eligible coverage:** 79,525 / 102,037 (77.937%). This measures how much of
    the full vector the current profile admits to execution.
-3. **Runnable pass quality:** 79,470 / 79,520 (99.937%). This is useful for
+3. **Runnable pass quality:** 79,475 / 79,525 (99.937%). This is useful for
    diagnosing admitted behavior, but it must not replace either coverage
    metric above.
 
 The frozen outcome summary is:
 
 ```text
-fail-parse=7 fail-runtime=43 pass=79470 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1086 unsupported-module=394 unsupported-negative-provenance=2562
+fail-parse=7 fail-runtime=43 pass=79475 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1084 unsupported-module=391 unsupported-negative-provenance=2562
 ```
 <!-- current-test262-metrics:end -->
 

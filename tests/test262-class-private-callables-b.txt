@@ -1663,6 +1663,10 @@ test/language/module-code/import-attributes/import-attribute-newlines.js
 test/language/module-code/import-attributes/import-attribute-trlng-comma.js
 test/language/module-code/import-attributes/import-attribute-value-string-double.js
 test/language/module-code/import-attributes/import-attribute-value-string-single.js
+test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js
+test/language/module-code/top-level-await/await-expr-resolution.js
+test/language/module-code/top-level-await/module-import-resolution.js
+test/language/module-code/top-level-await/new-await-script-code.js
 test/language/statements/class/dstr/async-private-gen-meth-ary-init-iter-close.js
 test/language/statements/class/dstr/async-private-gen-meth-ary-init-iter-no-close.js
 test/language/statements/class/dstr/async-private-gen-meth-ary-name-iter-val.js
