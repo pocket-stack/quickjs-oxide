@@ -18,7 +18,7 @@ contracts. Its strict 16-column TSV schema records source hashes, complete
 metadata shapes, graph edges and closure sizes, lookup priority, and host
 cohort policy. Both coordinator and isolated worker parse and authenticate the
 same file; malformed, unsorted, duplicate, open-graph, or checksum-drifted data
-fails closed. The four cohort generators emit `--admissions` rows and compare
+fails closed. The five cohort generators emit `--admissions` rows and compare
 their owned group against this file in normal check mode.
 
 `negative-diagnostics.tsv` is a strict, source-authenticated overlay for
@@ -35,7 +35,12 @@ the production parser.
 authenticated audit tool rejects unknown or unused rules. Scheduled
 differential CI replays every exact contract through pinned QuickJS using the
 same Script/Module goal and strict-prefix policy and compares error type,
-message, line, and column.
+message, line, and column. Parse contracts use an isolated command-line source;
+Module resolution contracts execute the authenticated root path inside the
+pinned suite through `run-test262 -N --module`, so QuickJS loads the real
+dependency graph. That oracle proves type, message, and location; the Oxide
+runner separately observes compilation, linking, and execution to enforce the
+declared phase. An absent location is represented by two empty TSV fields.
 
 `negative-diagnostic-exemptions.tsv` freezes the legacy variants admitted
 before exact diagnostic contracts became mandatory. Every audited negative

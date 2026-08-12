@@ -68,6 +68,8 @@ jobs:
           ./scripts/check-no-test262-special-casing.sh
           node scripts/check-test262-artifact-inventory.mjs
           node --check scripts/test-negative-diagnostic-generator.mjs
+          node --check scripts/generate-test262-module-import-attributes-a.mjs
+          node --check scripts/test-generate-test262-module-import-attributes-a.mjs
           ./scripts/check-oracle-registry.sh
           ./scripts/test-quickjs-fixtures.sh --validate
           ./scripts/test-module-import-attributes-oracle.sh --validate
@@ -138,12 +140,22 @@ jobs:
 
       - name: Run the pinned QuickJS differential corpus
         run: |
-          oracle=$(./scripts/build-quickjs-oracle.sh)
+          oracle_source=$(./scripts/build-quickjs-oracle.sh --test262-oracles)
+          oracle="$oracle_source/qjs"
           suite=$(./scripts/prepare-test262.sh)
           node scripts/audit-negative-diagnostics.mjs \
             --contracts dev-support/test262/negative-diagnostics.tsv \
             --rules dev-support/test262/negative-diagnostic-rules.tsv \
             --suite "$suite" --qjs "$oracle"
+          node scripts/test-generate-test262-module-import-attributes-a.mjs \
+            --suite "$suite" \
+            --quickjs-runner "$oracle_source/run-test262" \
+            --quickjs-config "$oracle_source/test262.conf"
+          node scripts/generate-test262-module-import-attributes-a.mjs \
+            --suite "$suite" \
+            --quickjs-runner "$oracle_source/run-test262" \
+            --quickjs-config "$oracle_source/test262.conf" \
+            --check-current
           cargo build --locked --bin qjs
           node scripts/test-negative-diagnostic-generator.mjs \
             --suite "$suite" --qjs "$oracle" --oxide ./target/debug/qjs

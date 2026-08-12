@@ -131,6 +131,67 @@ async function main() {
     ].join("\n")}\n`;
     assert.equal(await readFile(output, "utf8"), expected);
 
+    const resolutionRow = canonicalLines.slice(1).find((line) => {
+      const fields = line.split("\t");
+      return fields[3] === "resolution";
+    });
+    assert(resolutionRow, "missing a resolution diagnostic contract");
+    const resolutionFields = resolutionRow.split("\t");
+    const resolutionRuleName = resolutionFields[5];
+    const resolutionRule = (await readFile(rules, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .find((line) => line.startsWith(`${resolutionRuleName}\t`));
+    assert(resolutionRule, `missing ${resolutionRuleName} diagnostic rule`);
+    const resolutionContracts = path.join(temporary, "resolution-contracts.tsv");
+    const resolutionRules = path.join(temporary, "resolution-rules.tsv");
+    await writeFile(
+      resolutionContracts,
+      `${canonicalLines[0]}\n${resolutionRow}\n`,
+    );
+    await writeFile(
+      resolutionRules,
+      `rule\tquickjs_anchor\tdescription\n${resolutionRule}\n`,
+    );
+    const resolutionReplay = await run([
+      "--contracts",
+      resolutionContracts,
+      "--rules",
+      resolutionRules,
+      "--suite",
+      engines.suite,
+      "--qjs",
+      engines.qjs,
+      "--workers",
+      "1",
+    ]);
+    assert.equal(resolutionReplay.signal, null);
+    assert.equal(resolutionReplay.status, 0, resolutionReplay.stderr);
+    assert.match(resolutionReplay.stdout, /1 exact contracts \/ 1 rules/u);
+
+    const tamperedFields = resolutionRow.split("\t");
+    tamperedFields[6] += " (tampered)";
+    const tamperedContracts = path.join(temporary, "resolution-tampered.tsv");
+    await writeFile(
+      tamperedContracts,
+      `${canonicalLines[0]}\n${tamperedFields.join("\t")}\n`,
+    );
+    await expectFailure(
+      [
+        "--contracts",
+        tamperedContracts,
+        "--rules",
+        resolutionRules,
+        "--suite",
+        engines.suite,
+        "--qjs",
+        engines.qjs,
+        "--workers",
+        "1",
+      ],
+      new RegExp(`${resolutionRuleName.replaceAll(".", "\\.")} mismatch`, "u"),
+    );
+
     const bomCandidates = path.join(temporary, "bom-candidates.tsv");
     await writeFile(
       bomCandidates,

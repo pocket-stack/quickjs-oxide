@@ -1048,7 +1048,7 @@ mod tests {
     use crate::{Variant, WorkerOptions};
 
     const ADMISSIONS_SHA256: &str =
-        "d31a7d3464e3badfafbe4900cbb8bc7fbd9c2abcbbe8fdfbd9a24d21073fc2ba";
+        "083a22e3cf4a6b817d09238eb787bd6aed8a8cb4cb91d13796a3e1644513a866";
 
     fn admissions_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dev-support/test262/admissions.tsv")

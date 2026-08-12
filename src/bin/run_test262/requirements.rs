@@ -2261,7 +2261,7 @@ mod tests {
         for excluded in [
             "test/language/expressions/dynamic-import/always-create-new-promise.js",
             "test/language/module-code/top-level-await/await-expr-resolution.js",
-            "test/language/module-code/import-attributes/import-attribute-empty.js",
+            "test/language/import/import-attributes/json-value-object.js",
             "test/language/module-code/source-phase-import/import-source.js",
         ] {
             assert!(

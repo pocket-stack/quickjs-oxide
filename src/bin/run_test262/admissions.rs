@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn checked_in_catalog_is_hash_authenticated() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("dev-support/test262/admissions.tsv");
-        let expected = "d31a7d3464e3badfafbe4900cbb8bc7fbd9c2abcbbe8fdfbd9a24d21073fc2ba";
+        let expected = "083a22e3cf4a6b817d09238eb787bd6aed8a8cb4cb91d13796a3e1644513a866";
         AdmissionCatalog::load(&path, expected).unwrap();
         let error = AdmissionCatalog::load(
             &path,
@@ -1023,21 +1023,10 @@ mod tests {
         ));
         let catalog = AdmissionCatalog::parse(source).unwrap();
         assert_eq!(catalog.modules().count(), 166);
-        assert_eq!(catalog.graph_roots().count(), 96);
+        assert_eq!(catalog.graph_roots().count(), 109);
         assert_eq!(
-            [
-                "module-default-a",
-                "import-meta-a",
-                "fixture-eval-gtbndng-indirect-update",
-                "fixture-eval-rqstd-abrupt",
-                "fixture-instn-resolve-empty-import",
-                "fixture-instn-same-global",
-                "module-namespace-a",
-            ]
-            .into_iter()
-            .map(|group| catalog.graph_files(group).len())
-            .sum::<usize>(),
-            133
+            catalog.graph_files.values().map(Vec::len).sum::<usize>(),
+            150
         );
         assert_eq!(catalog.agent_hosts().count(), 59);
         assert_eq!(catalog.supplemental_admissions().count(), 2);
@@ -1047,7 +1036,7 @@ mod tests {
                 .map(|root| root.path.as_str())
                 .collect::<BTreeSet<_>>()
                 .len(),
-            95
+            108
         );
         assert_eq!(
             catalog
@@ -1057,30 +1046,23 @@ mod tests {
                 .chain(catalog.agent_hosts().map(|agent| agent.path.as_str()))
                 .collect::<BTreeSet<_>>()
                 .len(),
-            320
+            333
         );
         assert_eq!(
             catalog
                 .modules()
                 .map(|module| module.path.as_str())
                 .chain(
-                    [
-                        "module-default-a",
-                        "import-meta-a",
-                        "fixture-eval-gtbndng-indirect-update",
-                        "fixture-eval-rqstd-abrupt",
-                        "fixture-instn-resolve-empty-import",
-                        "fixture-instn-same-global",
-                        "module-namespace-a",
-                    ]
-                    .into_iter()
-                    .flat_map(|group| catalog.graph_files(group))
-                    .map(|file| file.path.as_str()),
+                    catalog
+                        .graph_files
+                        .values()
+                        .flatten()
+                        .map(|file| file.path.as_str()),
                 )
                 .chain(catalog.agent_hosts().map(|agent| agent.path.as_str()))
                 .collect::<BTreeSet<_>>()
                 .len(),
-            356
+            373
         );
     }
 }

@@ -231,7 +231,7 @@ async function loadContracts(file, rules, { requireAllRules = true } = {}) {
     if (!/^(sloppy|strict)$/.test(variant) || !/^[0-9a-f]{64}$/.test(sourceSha256)) {
       throw new Error(`negative diagnostic ${key} has invalid identity data`);
     }
-    if (phase !== "parse" || errorType !== "SyntaxError") {
+    if (!/^(?:parse|resolution)$/.test(phase) || errorType !== "SyntaxError") {
       throw new Error(`QuickJS audit does not yet support ${phase}/${errorType}: ${key}`);
     }
     if (!rules.has(rule)) throw new Error(`negative diagnostic ${key} uses unknown rule ${rule}`);
@@ -367,10 +367,6 @@ function selectedVariants(flags) {
   return ["sloppy", "strict"];
 }
 
-function isModuleSource(source) {
-  return test262Metadata(source).flags.has("module");
-}
-
 function assertParseNegativeMetadata(metadata, candidate) {
   if (
     metadata.negative?.phase !== "parse" ||
@@ -382,6 +378,25 @@ function assertParseNegativeMetadata(metadata, candidate) {
     throw new Error(
       `${candidate.relative} ${candidate.variant} is not selected by Test262 metadata`,
     );
+  }
+}
+
+function assertContractMetadata(metadata, contract) {
+  if (
+    metadata.negative?.phase !== contract.phase ||
+    metadata.negative.errorType !== contract.errorType
+  ) {
+    throw new Error(
+      `${contract.relative} ${contract.variant} diagnostic metadata does not match the contract`,
+    );
+  }
+  if (!selectedVariants(metadata.flags).includes(contract.variant)) {
+    throw new Error(
+      `${contract.relative} ${contract.variant} is not selected by Test262 metadata`,
+    );
+  }
+  if (contract.phase === "resolution" && !metadata.flags.has("module")) {
+    throw new Error(`${contract.relative} resolution contract is not a Module test`);
   }
 }
 
@@ -405,9 +420,12 @@ function authoredSource(source, variant, module) {
   return variant === "strict" && !module ? `"use strict";\n${source}` : source;
 }
 
-function runEngine(executable, arguments_, timeoutMs, label) {
+function runEngine(executable, arguments_, timeoutMs, label, { cwd } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, arguments_, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(executable, arguments_, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     const stdout = [];
     const stderr = [];
     let stdoutBytes = 0;
@@ -465,6 +483,27 @@ function parseEngineDiagnostic(result, label) {
   };
 }
 
+function parseQuickJsTest262Diagnostic(result, label) {
+  if (result.status === 0 || result.signal) {
+    throw new Error(`${label} did not return a normal failing status: ${JSON.stringify(result)}`);
+  }
+  const transcript = `${result.stdout}${result.stderr}`.replaceAll("\r\n", "\n");
+  const lines = transcript.split("\n");
+  const errorLine = lines.find((line) => /^[A-Za-z_$][A-Za-z0-9_$]*Error: /.test(line));
+  if (!errorLine) throw new Error(`${label} emitted no native error: ${transcript}`);
+  const separator = errorLine.indexOf(": ");
+  const locationLine = lines.find((line) =>
+    /^\s*at .+:[1-9][0-9]*:[1-9][0-9]*\s*$/.test(line),
+  );
+  const location = locationLine?.match(/:([1-9][0-9]*):([1-9][0-9]*)\s*$/);
+  return {
+    column: location ? Number(location[2]) : undefined,
+    errorType: errorLine.slice(0, separator),
+    line: location ? Number(location[1]) : undefined,
+    message: errorLine.slice(separator + 2),
+  };
+}
+
 async function readSuiteSource(options, relative) {
   const sourcePath = path.join(options.realSuite, relative);
   const sourceInfo = await lstat(sourcePath);
@@ -491,15 +530,28 @@ async function replayContract(options, contract) {
   } catch (error) {
     throw new Error(`${contract.relative} is not valid UTF-8`, { cause: error });
   }
-  const module = isModuleSource(source);
+  const metadata = test262Metadata(source);
+  assertContractMetadata(metadata, contract);
+  const module = metadata.flags.has("module");
+  const resolution = contract.phase === "resolution";
   const authored = authoredSource(source, contract.variant, module);
-  const result = await runEngine(
-    options.qjs,
-    [module ? "--module" : "--script", "-e", authored],
-    DEFAULT_TIMEOUT_MS,
-    "QuickJS",
-  );
-  const actual = parseEngineDiagnostic(result, "QuickJS");
+  const result = resolution
+    ? await runEngine(
+        options.quickJsRunner,
+        ["-N", "--module", contract.relative],
+        DEFAULT_TIMEOUT_MS,
+        "QuickJS Test262 module resolution",
+        { cwd: options.quickJsRoot },
+      )
+    : await runEngine(
+        options.qjs,
+        [module ? "--module" : "--script", "-e", authored],
+        DEFAULT_TIMEOUT_MS,
+        "QuickJS",
+      );
+  const actual = resolution
+    ? parseQuickJsTest262Diagnostic(result, "QuickJS Test262 module resolution")
+    : parseEngineDiagnostic(result, "QuickJS");
   const expectedLocation = contract.locationPolicy === "exact";
   if (
     actual.errorType !== contract.errorType ||
@@ -510,7 +562,7 @@ async function replayContract(options, contract) {
     throw new Error(
       `${contract.relative} ${contract.variant} ${contract.rule} mismatch:\n` +
         `expected ${JSON.stringify({ type: contract.errorType, message: contract.message, line: contract.line, column: contract.column })}\n` +
-        `actual   ${JSON.stringify(actual)}\n${result.stderr}`,
+        `actual   ${JSON.stringify(actual)}\n${result.stdout}${result.stderr}`,
     );
   }
 }
@@ -733,6 +785,15 @@ async function replayAll(options, contracts) {
   const qjs = await executableIdentity(options.qjs, "QuickJS");
   if (!suite.isDirectory()) throw new Error("suite is not a directory");
   options.qjs = qjs.resolved;
+  if (contracts.some((contract) => contract.phase === "resolution")) {
+    const quickJsRoot = path.dirname(qjs.resolved);
+    const runner = await executableIdentity(
+      path.join(quickJsRoot, "run-test262"),
+      "QuickJS run-test262",
+    );
+    options.quickJsRoot = options.realSuite;
+    options.quickJsRunner = runner.resolved;
+  }
   let next = 0;
   const failures = [];
   const worker = async () => {

@@ -54,7 +54,9 @@ function-parameter.rest-not-final	js_parse_function_decl2	rest parameters must b
 generator.yield-identifier-reference	js_parse_unary	yield cannot be used as an identifier reference in generators
 generator.yield-weak-binding	js_parse_unary	yield parsing preserves QuickJS weak-binding diagnostics
 logical-assignment.non-simple-target	get_lvalue	logical assignment requires a simple assignment target
+module.import-attributes.duplicate-key	js_parse_with_clause	static import attributes reject decoded duplicate keys
 module.invalid-import-binding	js_parse_import	import bindings cannot use restricted identifiers
+module.missing-export	js_resolve_export_throw_error	module resolution reports a requested binding absent from the dependency graph
 object-literal.private-name	js_parse_object_literal	private names are invalid object literal properties
 optional-chaining.invalid-assignment-target	get_lvalue	optional chains are not assignment targets
 regexp.flags.unicode-mode-conflict	lre_compile	the u and v Unicode modes are mutually exclusive
