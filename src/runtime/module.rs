@@ -5348,6 +5348,40 @@ mod tests {
     }
 
     #[test]
+    fn module_evaluation_caches_error_object_identity_across_contexts() {
+        let runtime = Runtime::new();
+        let module = {
+            let mut compilation_context = runtime.new_context();
+            compilation_context
+                .compile_module("throw new Error('cached module error')")
+                .unwrap()
+        };
+
+        let first_error_id = {
+            let mut first_context = runtime.new_context();
+            assert_eq!(
+                first_context.execute_module(&module),
+                Err(RuntimeError::Exception)
+            );
+            let Some(Value::Object(error)) = first_context.take_exception().unwrap() else {
+                panic!("module evaluation did not throw an Error object");
+            };
+            error.object_id()
+        };
+        runtime.run_gc().unwrap();
+
+        let mut second_context = runtime.new_context();
+        assert_eq!(
+            second_context.execute_module(&module),
+            Err(RuntimeError::Exception)
+        );
+        let Some(Value::Object(second_error)) = second_context.take_exception().unwrap() else {
+            panic!("cached module evaluation did not rethrow an Error object");
+        };
+        assert_eq!(second_error.object_id(), first_error_id);
+    }
+
+    #[test]
     fn direct_eval_uses_module_live_cells_without_leaking_eval_var() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -5461,7 +5495,7 @@ mod tests {
     }
 
     #[test]
-    fn module_handle_roots_compilation_and_first_link_realms() {
+    fn cloned_module_handle_roots_compilation_and_first_link_realms() {
         let runtime = Runtime::new();
         let module = {
             let mut context = runtime.new_context();
@@ -5470,12 +5504,16 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(runtime.heap_counts().context_nodes, 1);
+        let surviving_handle = module.clone();
+        drop(module);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 1);
 
         {
             let mut link_context = runtime.new_context();
             assert_eq!(runtime.heap_counts().context_nodes, 2);
             assert_eq!(
-                link_context.execute_module(&module).unwrap(),
+                link_context.execute_module(&surviving_handle).unwrap(),
                 Value::Undefined
             );
             assert_script_true(&mut link_context, "__rootedModuleRealm === 42");
@@ -5484,7 +5522,7 @@ mod tests {
         runtime.run_gc().unwrap();
         assert_eq!(runtime.heap_counts().context_nodes, 2);
 
-        drop(module);
+        drop(surviving_handle);
         runtime.run_gc().unwrap();
         assert_eq!(runtime.heap_counts().context_nodes, 0);
     }
