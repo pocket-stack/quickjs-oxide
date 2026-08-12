@@ -11,10 +11,7 @@ use crate::compiler::{
     CompileOptions, ModuleImportAttributeChecker,
     compile_unlinked_module_with_name_and_attribute_checker,
 };
-use crate::module::{
-    ModuleExportTarget, ModuleImport, ModuleImportCollision, ModuleImportName,
-    ModuleLinkInitializer, ModuleRequest, ModuleRequestIndex, ModuleStarExport, UnlinkedModule,
-};
+use crate::module::{ModuleExportTarget, ModuleImportName, ModuleRequestIndex, UnlinkedModule};
 pub use crate::module::{ModuleImportAttribute, ModuleImportAttributes};
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -229,268 +226,45 @@ fn default_module_normalize_name(
     }
 }
 
-pub(super) struct ModuleGraph {
-    records: RefCell<Vec<Option<Rc<ModuleRecord>>>>,
-    first_by_name: RefCell<HashMap<JsString, usize>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ModuleId(usize);
-
-impl ModuleGraph {
-    pub(super) fn new() -> Self {
-        Self {
-            records: RefCell::new(Vec::new()),
-            first_by_name: RefCell::new(HashMap::new()),
-        }
-    }
-
-    fn publish(self: &Rc<Self>, record: ModuleRecord) -> ModuleBytecodeRef {
-        let record = Rc::new(record);
-        let index = {
-            let mut records = self.records.borrow_mut();
-            let index = records.len();
-            records.push(Some(record.clone()));
-            index
-        };
-        self.first_by_name
-            .borrow_mut()
-            .entry(record.name.clone())
-            .or_insert(index);
-        ModuleBytecodeRef {
-            graph: self.clone(),
-            id: ModuleId(index),
-            record,
-        }
-    }
-
-    fn first_named(self: &Rc<Self>, name: &JsString) -> Option<ModuleBytecodeRef> {
-        let index = self.first_by_name.borrow().get(name).copied()?;
-        let record = self.records.borrow().get(index)?.as_ref()?.clone();
-        Some(ModuleBytecodeRef {
-            graph: self.clone(),
-            id: ModuleId(index),
-            record,
-        })
-    }
-
-    fn unpublish(&self, id: ModuleId) -> Result<(), RuntimeError> {
-        let removed = {
-            let mut records = self.records.borrow_mut();
-            records
-                .get_mut(id.0)
-                .ok_or(RuntimeError::Invariant("module graph id is out of bounds"))?
-                .take()
-                .ok_or(RuntimeError::Invariant(
-                    "module graph record was already unpublished",
-                ))?
-        };
-        let name = removed.name.clone();
-        if self.first_by_name.borrow().get(&name).copied() == Some(id.0) {
-            let replacement =
-                self.records
-                    .borrow()
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, record)| {
-                        record
-                            .as_ref()
-                            .is_some_and(|record| record.name == name)
-                            .then_some(index)
-                    });
-            let mut first_by_name = self.first_by_name.borrow_mut();
-            if let Some(index) = replacement {
-                first_by_name.insert(name, index);
-            } else {
-                first_by_name.remove(&name);
-            }
-        }
-        // ModuleRecord drops release realm roots and may re-enter unrelated
-        // Runtime state. Keep that destruction outside both graph borrows.
-        drop(removed);
-        Ok(())
-    }
-
-    fn unpublish_failed_resolution(
-        &self,
-        seeds: impl IntoIterator<Item = ModuleId>,
-    ) -> Result<(), RuntimeError> {
-        let mut doomed = seeds.into_iter().collect::<HashSet<_>>();
-        if doomed.is_empty() {
-            return Err(RuntimeError::Invariant(
-                "failed module resolution had no records to roll back",
-            ));
-        }
-        loop {
-            let mut changed = false;
-            {
-                let records = self.records.borrow();
-                for (index, record) in records.iter().enumerate() {
-                    let id = ModuleId(index);
-                    if doomed.contains(&id) {
-                        continue;
-                    }
-                    let Some(record) = record else {
-                        continue;
-                    };
-                    let depends_on_doomed = match &*record.resolution.borrow() {
-                        ModuleResolutionState::Resolved(dependencies) => dependencies
-                            .iter()
-                            .any(|dependency| doomed.contains(dependency)),
-                        ModuleResolutionState::Unresolved | ModuleResolutionState::Resolving => {
-                            false
-                        }
-                    };
-                    if depends_on_doomed {
-                        doomed.insert(id);
-                        changed = true;
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let mut doomed = doomed.into_iter().collect::<Vec<_>>();
-        doomed.sort_unstable_by_key(|id| std::cmp::Reverse(id.0));
-        for id in doomed {
-            self.unpublish(id)?;
-        }
-        Ok(())
-    }
-
-    fn record(&self, id: ModuleId) -> Result<Rc<ModuleRecord>, RuntimeError> {
-        self.records
-            .borrow()
-            .get(id.0)
-            .and_then(Option::as_ref)
-            .cloned()
-            .ok_or(RuntimeError::Invariant("module graph id is out of bounds"))
-    }
-}
-
 /// Opaque owning handle for one runtime-published ECMAScript module record.
 ///
 /// Clones preserve module identity and therefore share link/evaluation state.
-/// The contained bytecode remains rooted for as long as any handle survives.
-#[derive(Clone)]
+/// The defining Context cache remains rooted for as long as any handle
+/// survives; that cache owns every raw edge of the module graph.
 pub struct ModuleBytecodeRef {
-    graph: Rc<ModuleGraph>,
-    id: ModuleId,
-    record: Rc<ModuleRecord>,
-}
-
-struct ModuleRecord {
-    name: JsString,
-    body: ModuleRecordBody,
-    // Retain the complete published record so the later graph linker can
-    // extend this identity without changing the public compile boundary.
-    _declaration_order: Box<[u16]>,
-    _link_initializers: Box<[ModuleLinkInitializer]>,
-    _import_collisions: Box<[ModuleImportCollision]>,
-    requested_modules: Box<[ModuleRequest]>,
-    imports: Box<[ModuleImport]>,
-    exports: Box<[PublishedModuleExport]>,
-    star_exports: Box<[ModuleStarExport]>,
-    resolution: RefCell<ModuleResolutionState>,
-    instance: RefCell<Option<ModuleInstance>>,
-    namespace: RefCell<ModuleNamespaceState>,
-    link_status: Cell<ModuleLinkStatus>,
-    evaluation: RefCell<ModuleEvaluationState>,
-    // QuickJS creates and caches the module function in the Context which
-    // first executes the compiled module. Keep that link realm alive even
-    // after its public Context handle is released and after evaluation has
-    // discarded the cached callable from `state`.
-    link_realm_root: RefCell<Option<ModuleRealmRoot>>,
-    // Drop last, after cached callables and bytecode roots. A published module
-    // retains its compilation realm through its bytecode and must not leave a
-    // stale ContextId when the Context handle which compiled it is released.
-    _realm_root: ModuleRealmRoot,
-}
-
-enum ModuleRecordBody {
-    SourceText {
-        function: FunctionBytecodeRef,
-    },
-    /// QuickJS represents JSON modules as C/synthetic module records. The
-    /// parsed value is retained as module-private state and copied into the
-    /// exported live cell only when module evaluation first runs.
-    Json {
-        default_value: Value,
-    },
-}
-
-#[derive(Clone)]
-struct PublishedModuleExport {
-    export_name: JsString,
-    target: PublishedModuleExportTarget,
-}
-
-#[derive(Clone)]
-enum PublishedModuleExportTarget {
-    /// Authenticated closure slot on a source-text module root function.
-    SourceTextLocal { closure_index: u16 },
-    /// Live cell owned directly by a synthetic module instance.
-    SyntheticLocal { cell_index: u16 },
-    Indirect {
-        request: ModuleRequestIndex,
-        import_name: ModuleImportName,
-    },
-}
-
-enum ModuleResolutionState {
-    Unresolved,
-    Resolving,
-    Resolved(Box<[ModuleId]>),
-}
-
-struct ModuleRealmRoot {
     runtime: Runtime,
-    realm: ContextId,
+    raw: RawModuleRef,
+    name: JsString,
 }
 
-impl ModuleRealmRoot {
-    fn retain(runtime: &Runtime, realm: ContextId) -> Result<Self, RuntimeError> {
-        runtime.retain_context_handle(realm)?;
-        Ok(Self {
-            runtime: runtime.clone(),
-            realm,
-        })
+impl Clone for ModuleBytecodeRef {
+    fn clone(&self) -> Self {
+        self.runtime
+            .retain_context_handle(self.raw.cache)
+            .expect("a live module handle must retain its defining cache");
+        Self {
+            runtime: self.runtime.clone(),
+            raw: self.raw,
+            name: self.name.clone(),
+        }
     }
 }
 
-impl Drop for ModuleRealmRoot {
+impl Drop for ModuleBytecodeRef {
     fn drop(&mut self) {
-        self.runtime.release_context_handle(self.realm);
+        self.runtime.release_context_handle(self.raw.cache);
     }
 }
 
-struct ModuleInstance {
-    slots: Vec<Option<VarRefRoot>>,
-    callable: Option<CallableRef>,
-}
-
-enum ModuleNamespaceState {
-    Empty,
-    Building(ObjectRef),
-    Ready(ObjectRef),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModuleLinkStatus {
-    Unlinked,
-    Linking,
-    Linked,
-    Poisoned,
-}
-
-enum ModuleEvaluationState {
-    Unevaluated,
-    Evaluating,
-    Evaluated,
-    Errored(Value),
-    Poisoned,
-}
+type ModuleRecord = RawModuleRecord;
+type ModuleRecordBody = RawModuleRecordBody;
+type PublishedModuleExport = RawPublishedModuleExport;
+type PublishedModuleExportTarget = RawPublishedModuleExportTarget;
+type ModuleResolutionState = RawModuleResolutionState;
+type ModuleInstance = RawModuleInstance;
+type ModuleNamespaceState = RawModuleNamespaceState;
+type ModuleLinkStatus = RawModuleLinkStatus;
+type ModuleEvaluationState = RawModuleEvaluationState;
 
 #[derive(Clone, Copy)]
 struct ModuleDfsEntry {
@@ -512,7 +286,7 @@ struct ModuleEvaluationDfs {
 }
 
 struct ModuleResolveFrame {
-    module: ModuleBytecodeRef,
+    module: RawModuleRef,
     next_request: usize,
     dependencies: Vec<ModuleId>,
     loader: Option<Rc<dyn ModuleLoader>>,
@@ -533,14 +307,13 @@ enum ModuleResolvedBindingTarget {
 
 #[derive(Clone)]
 struct ModuleResolvedBinding {
-    module: ModuleBytecodeRef,
+    module: RawModuleRef,
     target: ModuleResolvedBindingTarget,
 }
 
 impl ModuleResolvedBinding {
     fn has_same_identity(&self, other: &Self) -> bool {
-        if !Rc::ptr_eq(&self.module.graph, &other.module.graph) || self.module.id != other.module.id
-        {
+        if self.module != other.module {
             return false;
         }
         match (&self.target, &other.target) {
@@ -596,21 +369,21 @@ enum ModuleExportResolveFrameState {
 }
 
 struct ModuleExportResolveFrame {
-    module: ModuleBytecodeRef,
+    module: RawModuleRef,
     export_name: JsString,
     state: ModuleExportResolveFrameState,
 }
 
 struct ModuleExportNamesFrame {
-    module: ModuleBytecodeRef,
+    module: RawModuleRef,
     from_star: bool,
     entered: bool,
     next_star: usize,
 }
 
 struct ModuleDfsFrame {
-    module: ModuleBytecodeRef,
-    dependencies: Vec<ModuleBytecodeRef>,
+    module: RawModuleRef,
+    dependencies: Vec<RawModuleRef>,
     next_dependency: usize,
 }
 
@@ -666,7 +439,7 @@ impl ModuleEvaluationDfs {
 }
 
 enum ModuleCompilation {
-    Published(ModuleBytecodeRef),
+    Published(RawModuleRef),
     Throw(Value),
 }
 
@@ -674,28 +447,25 @@ impl ModuleBytecodeRef {
     /// Return the source/debug name attached to this module record.
     #[must_use]
     pub fn name(&self) -> &JsString {
-        &self.record.name
+        &self.name
     }
 
     /// Return whether this module was published by `runtime`.
     #[must_use]
     pub fn belongs_to(&self, runtime: &Runtime) -> bool {
-        self.record._realm_root.runtime.is_same_runtime(runtime)
+        self.runtime.is_same_runtime(runtime)
     }
 
     /// Return whether two handles name modules in the same runtime domain.
     #[must_use]
     pub fn is_same_runtime(&self, other: &Self) -> bool {
-        self.record
-            ._realm_root
-            .runtime
-            .is_same_runtime(&other.record._realm_root.runtime)
+        self.runtime.is_same_runtime(&other.runtime)
     }
 
     /// Stable identity of the runtime domain which published this module.
     #[must_use]
     pub fn domain_id(&self) -> u64 {
-        self.record._realm_root.runtime.domain_id()
+        self.runtime.domain_id()
     }
 }
 
@@ -726,13 +496,194 @@ impl Runtime {
         self.0.module_loader.borrow_mut().take();
     }
 
+    fn module_record(&self, module: RawModuleRef) -> Result<ModuleRecord, RuntimeError> {
+        Ok(self.0.state.borrow().heap.loaded_module(module)?)
+    }
+
+    fn root_module(&self, raw: RawModuleRef) -> Result<ModuleBytecodeRef, RuntimeError> {
+        let name = self.module_record(raw)?.name;
+        self.retain_context_handle(raw.cache)?;
+        Ok(ModuleBytecodeRef {
+            runtime: self.clone(),
+            raw,
+            name,
+        })
+    }
+
+    fn module_value_atoms(record: &ModuleRecord) -> Vec<Atom> {
+        let mut atoms = Vec::with_capacity(2);
+        if let ModuleRecordBody::Json {
+            default_value: RawValue::Symbol(atom) | RawValue::Private(atom),
+        } = &record.body
+        {
+            atoms.push(*atom);
+        }
+        if let ModuleEvaluationState::Errored(RawValue::Symbol(atom) | RawValue::Private(atom)) =
+            &record.evaluation
+        {
+            atoms.push(*atom);
+        }
+        atoms
+    }
+
+    fn module_value_atom_delta(
+        current: &ModuleRecord,
+        replacement: &ModuleRecord,
+    ) -> (Vec<Atom>, Vec<Atom>) {
+        let mut old = Self::module_value_atoms(current);
+        let new = Self::module_value_atoms(replacement);
+        let mut added = Vec::with_capacity(new.len());
+        for atom in new {
+            if let Some(index) = old.iter().position(|candidate| *candidate == atom) {
+                old.swap_remove(index);
+            } else {
+                added.push(atom);
+            }
+        }
+        (added, old)
+    }
+
+    fn retain_module_atoms(
+        state: &mut RuntimeState,
+        atoms: Vec<Atom>,
+    ) -> Result<Vec<Atom>, RuntimeError> {
+        for (retained, &atom) in atoms.iter().enumerate() {
+            if let Err(error) = state.atoms.retain(atom) {
+                state.release_atoms(atoms[..retained].iter().copied())?;
+                return Err(error.into());
+            }
+        }
+        Ok(atoms)
+    }
+
+    fn publish_module_record(
+        &self,
+        cache: ContextId,
+        record: ModuleRecord,
+    ) -> Result<RawModuleRef, RuntimeError> {
+        let mut state = self.0.state.borrow_mut();
+        let atoms = Self::module_value_atoms(&record);
+        let retained_atoms = Self::retain_module_atoms(&mut state, atoms)?;
+        match state.heap.publish_loaded_module(cache, record) {
+            Ok(module) => Ok(module),
+            Err(error) => {
+                state
+                    .release_atoms(retained_atoms)
+                    .expect("loaded-module atom rollback failed after rejected publication");
+                Err(error.into())
+            }
+        }
+    }
+
+    fn replace_module_record(
+        &self,
+        module: RawModuleRef,
+        replacement: ModuleRecord,
+    ) -> Result<(), RuntimeError> {
+        let mut state = self.0.state.borrow_mut();
+        let current = state.heap.loaded_module(module)?;
+        let (added_atoms, removed_atoms) = Self::module_value_atom_delta(&current, &replacement);
+        state.preflight_atom_releases(&removed_atoms)?;
+        let retained_atoms = Self::retain_module_atoms(&mut state, added_atoms)?;
+        match state.heap.replace_loaded_module(module, replacement) {
+            Ok(cleanup) => {
+                debug_assert!(cleanup.atoms.starts_with(&removed_atoms));
+                state.apply_committed_cleanup(cleanup);
+                Ok(())
+            }
+            Err(error) => {
+                state
+                    .release_atoms(retained_atoms)
+                    .expect("loaded-module atom rollback failed after rejected replacement");
+                Err(error.into())
+            }
+        }
+    }
+
+    fn mutate_module_record<T>(
+        &self,
+        module: RawModuleRef,
+        mutate: impl FnOnce(&mut ModuleRecord) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
+        let mut replacement = self.module_record(module)?;
+        let result = mutate(&mut replacement)?;
+        self.replace_module_record(module, replacement)?;
+        Ok(result)
+    }
+
+    fn transition_module_record(
+        &self,
+        module: RawModuleRef,
+        transition: RawModuleTransition,
+    ) -> Result<(), RuntimeError> {
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .transition_loaded_module(module, transition)?;
+        Ok(())
+    }
+
+    fn unpublish_failed_resolution(
+        &self,
+        cache: ContextId,
+        seeds: impl IntoIterator<Item = ModuleId>,
+    ) -> Result<(), RuntimeError> {
+        let mut doomed = seeds.into_iter().collect::<HashSet<_>>();
+        if doomed.is_empty() {
+            return Err(RuntimeError::Invariant(
+                "failed module resolution had no records to roll back",
+            ));
+        }
+        loop {
+            let records = self.0.state.borrow().heap.loaded_modules(cache)?;
+            let mut changed = false;
+            for (id, record) in records {
+                if doomed.contains(&id) {
+                    continue;
+                }
+                let depends_on_doomed = match &record.resolution {
+                    ModuleResolutionState::Resolved(dependencies) => dependencies
+                        .iter()
+                        .any(|dependency| doomed.contains(dependency)),
+                    ModuleResolutionState::Unresolved | ModuleResolutionState::Resolving => false,
+                };
+                if depends_on_doomed {
+                    doomed.insert(id);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut doomed = doomed.into_iter().collect::<Vec<_>>();
+        doomed.sort_unstable_by_key(|id| std::cmp::Reverse(id.0));
+        let mut state = self.0.state.borrow_mut();
+        let removed_atoms = doomed
+            .iter()
+            .map(|id| {
+                state
+                    .heap
+                    .loaded_module(RawModuleRef { cache, module: *id })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .flat_map(Self::module_value_atoms)
+            .collect::<Vec<_>>();
+        state.preflight_atom_releases(&removed_atoms)?;
+        let cleanup = state.heap.unpublish_loaded_modules(cache, &doomed)?;
+        debug_assert!(cleanup.atoms.starts_with(&removed_atoms));
+        state.apply_committed_cleanup(cleanup);
+        Ok(())
+    }
+
     /// Compile and publish a static module without touching the runtime's
     /// pending-exception slot. The public Context boundary installs a thrown
     /// syntax exception exactly as the Script compilation path does.
     fn compile_module_record_in_realm(
         &self,
         realm: ContextId,
-        graph: &Rc<ModuleGraph>,
         source: &str,
         name: &JsString,
         loader: Option<&dyn ModuleLoader>,
@@ -782,7 +733,7 @@ impl Runtime {
                 return Ok(ModuleCompilation::Throw(exception));
             }
         };
-        self.publish_unlinked_module(realm, graph, module)
+        self.publish_unlinked_module(realm, module)
             .map(ModuleCompilation::Published)
     }
 
@@ -793,7 +744,6 @@ impl Runtime {
     fn compile_json_module_record_in_realm(
         &self,
         realm: ContextId,
-        graph: &Rc<ModuleGraph>,
         source: &str,
         name: &JsString,
     ) -> Result<ModuleCompilation, RuntimeError> {
@@ -804,14 +754,13 @@ impl Runtime {
                 return Ok(ModuleCompilation::Throw(exception));
             }
         };
-        self.publish_json_module(realm, graph, name.clone(), value)
+        self.publish_json_module(realm, name.clone(), value)
             .map(ModuleCompilation::Published)
     }
 
     fn compile_module_in_realm(
         &self,
         realm: ContextId,
-        graph: &Rc<ModuleGraph>,
         source: &str,
         filename: &str,
     ) -> Result<ModuleCompilation, RuntimeError> {
@@ -832,43 +781,58 @@ impl Runtime {
                 .and_then(Weak::upgrade)
         };
         let compilation =
-            self.compile_module_record_in_realm(realm, graph, source, &name, loader.as_deref())?;
+            self.compile_module_record_in_realm(realm, source, &name, loader.as_deref())?;
         let ModuleCompilation::Published(module) = compilation else {
             return Ok(compilation);
         };
-        self.resolve_module_graph(realm, &module, loader)?;
+        self.resolve_module_graph(realm, module, loader)?;
         Ok(ModuleCompilation::Published(module))
     }
 
     fn resolve_module_graph(
         &self,
         realm: ContextId,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         loader: Option<Rc<dyn ModuleLoader>>,
     ) -> Result<(), RuntimeError> {
-        if !module.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("module bytecode"));
+        if module.cache != realm {
+            return Err(RuntimeError::Invariant(
+                "module resolution realm disagrees with its Context cache",
+            ));
         }
-        match &*module.record.resolution.borrow() {
+        let record = self.module_record(module)?;
+        match &record.resolution {
             ModuleResolutionState::Resolved(_) | ModuleResolutionState::Resolving => return Ok(()),
             ModuleResolutionState::Unresolved => {}
         }
-        *module.record.resolution.borrow_mut() = ModuleResolutionState::Resolving;
+        self.transition_module_record(module, RawModuleTransition::BeginResolution)?;
         let mut stack = vec![ModuleResolveFrame {
-            module: module.clone(),
+            module,
             next_request: 0,
-            dependencies: Vec::with_capacity(module.record.requested_modules.len()),
+            dependencies: Vec::with_capacity(record.requested_modules.len()),
             loader,
         }];
 
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             while let Some(frame) = stack.last() {
-                if frame.next_request == frame.module.record.requested_modules.len() {
-                    let frame = stack.pop().ok_or(RuntimeError::Invariant(
+                let frame_record = self.module_record(frame.module)?;
+                if frame.next_request == frame_record.requested_modules.len() {
+                    let completed = frame.module;
+                    let dependencies = Rc::<[ModuleId]>::from(frame.dependencies.clone());
+                    // Whole-record heap mutation is fallible. Keep the frame
+                    // visible to rollback until the resolved state commits.
+                    self.transition_module_record(
+                        completed,
+                        RawModuleTransition::FinishResolution(dependencies),
+                    )?;
+                    let popped = stack.pop().ok_or(RuntimeError::Invariant(
                         "module resolution stack unexpectedly became empty",
                     ))?;
-                    *frame.module.record.resolution.borrow_mut() =
-                        ModuleResolutionState::Resolved(frame.dependencies.into_boxed_slice());
+                    if popped.module != completed {
+                        return Err(RuntimeError::Invariant(
+                            "module resolution stack changed during record publication",
+                        ));
+                    }
                     continue;
                 }
 
@@ -876,9 +840,9 @@ impl Runtime {
                     let frame = stack.last_mut().ok_or(RuntimeError::Invariant(
                         "module resolution stack unexpectedly became empty",
                     ))?;
-                    let request = frame
-                        .module
-                        .record
+                    let current = frame.module;
+                    let request = self
+                        .module_record(current)?
                         .requested_modules
                         .get(frame.next_request)
                         .cloned()
@@ -886,9 +850,10 @@ impl Runtime {
                             "module request index is outside its record",
                         ))?;
                     frame.next_request += 1;
-                    (frame.module.clone(), request, frame.loader.clone())
+                    (current, request, frame.loader.clone())
                 };
-                let base_name = module_c_string_view(&current.record.name)?;
+                let current_record = self.module_record(current)?;
+                let base_name = module_c_string_view(&current_record.name)?;
                 let specifier = module_c_string_view(&request.specifier)?;
                 let normalized_name = if let Some(loader) = &loader {
                     loader.normalize(&base_name, &specifier).map_err(|error| {
@@ -902,7 +867,13 @@ impl Runtime {
                     default_module_normalize_name(&base_name, &specifier)?
                 };
                 let normalized_name = module_c_string_view(&normalized_name)?;
-                let dependency = if let Some(cached) = current.graph.first_named(&normalized_name) {
+                let cached = self
+                    .0
+                    .state
+                    .borrow()
+                    .heap
+                    .first_loaded_module(current.cache, &normalized_name)?;
+                let dependency = if let Some(cached) = cached {
                     cached
                 } else {
                     let Some(loader) = &loader else {
@@ -932,7 +903,6 @@ impl Runtime {
                         ModuleLoadResult::SourceText(source) => self
                             .compile_module_record_in_realm(
                                 realm,
-                                &current.graph,
                                 &source,
                                 &normalized_name,
                                 Some(loader.as_ref()),
@@ -940,7 +910,6 @@ impl Runtime {
                         ModuleLoadResult::JsonText(source) => self
                             .compile_json_module_record_in_realm(
                                 realm,
-                                &current.graph,
                                 &source,
                                 &normalized_name,
                             )?,
@@ -959,18 +928,22 @@ impl Runtime {
                         "module resolution stack unexpectedly became empty",
                     ))?
                     .dependencies
-                    .push(dependency.id);
+                    .push(dependency.module);
 
-                let needs_resolution = {
-                    let resolution = dependency.record.resolution.borrow();
-                    matches!(&*resolution, ModuleResolutionState::Unresolved)
-                };
+                let dependency_record = self.module_record(dependency)?;
+                let needs_resolution = matches!(
+                    dependency_record.resolution,
+                    ModuleResolutionState::Unresolved
+                );
                 if needs_resolution {
-                    *dependency.record.resolution.borrow_mut() = ModuleResolutionState::Resolving;
+                    self.transition_module_record(
+                        dependency,
+                        RawModuleTransition::BeginResolution,
+                    )?;
                     stack.push(ModuleResolveFrame {
-                        module: dependency.clone(),
+                        module: dependency,
                         next_request: 0,
-                        dependencies: Vec::with_capacity(dependency.record.requested_modules.len()),
+                        dependencies: Vec::with_capacity(dependency_record.requested_modules.len()),
                         loader,
                     });
                 }
@@ -982,17 +955,14 @@ impl Runtime {
             Ok(result) => result,
             Err(payload) => {
                 if !stack.is_empty() {
-                    self.rollback_module_resolution_stack(module, &stack)
-                        .unwrap_or_else(|error| {
-                            panic!("module resolution panic rollback failed: {error}")
-                        });
+                    self.rollback_module_resolution_stack(module, &stack);
                 }
                 resume_unwind(payload);
             }
         };
 
         if result.is_err() {
-            self.rollback_module_resolution_stack(module, &stack)?;
+            self.rollback_module_resolution_stack(module, &stack);
         }
         match result {
             Err(RuntimeError::Engine(error))
@@ -1009,34 +979,33 @@ impl Runtime {
         }
     }
 
-    fn rollback_module_resolution_stack(
-        &self,
-        module: &ModuleBytecodeRef,
-        stack: &[ModuleResolveFrame],
-    ) -> Result<(), RuntimeError> {
+    fn rollback_module_resolution_stack(&self, module: RawModuleRef, stack: &[ModuleResolveFrame]) {
         for frame in stack {
-            let is_resolving = {
-                let resolution = frame.module.record.resolution.borrow();
-                matches!(&*resolution, ModuleResolutionState::Resolving)
-            };
+            let is_resolving = matches!(
+                self.module_record(frame.module)
+                    .unwrap_or_else(|error| panic!("module resolution rollback failed: {error}"))
+                    .resolution,
+                ModuleResolutionState::Resolving
+            );
             if is_resolving {
-                *frame.module.record.resolution.borrow_mut() = ModuleResolutionState::Unresolved;
+                self.transition_module_record(frame.module, RawModuleTransition::ResetResolution)
+                    .unwrap_or_else(|error| panic!("module resolution rollback failed: {error}"));
             }
         }
-        module
-            .graph
-            .unpublish_failed_resolution(stack.iter().map(|frame| frame.module.id))
+        self.unpublish_failed_resolution(
+            module.cache,
+            stack.iter().map(|frame| frame.module.module),
+        )
+        .unwrap_or_else(|error| panic!("module resolution rollback failed: {error}"));
     }
 
     pub(super) fn publish_unlinked_module(
         &self,
         realm: ContextId,
-        graph: &Rc<ModuleGraph>,
         module: UnlinkedModule,
-    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+    ) -> Result<RawModuleRef, RuntimeError> {
         bytecode_publish::verify_unlinked_module_tree(&module)?;
 
-        let realm_root = ModuleRealmRoot::retain(self, realm)?;
         let parts = module.into_parts();
         let function = self.publish_verified_unlinked_function(realm, parts.function)?;
         let exports = parts
@@ -1058,65 +1027,74 @@ impl Runtime {
                     },
                 },
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Ok(graph.publish(ModuleRecord {
+            .collect::<Vec<_>>();
+        let record = ModuleRecord {
             name: parts.name,
-            body: ModuleRecordBody::SourceText { function },
-            _declaration_order: parts.declaration_order,
-            _link_initializers: parts.link_initializers,
-            _import_collisions: parts.import_collisions,
-            requested_modules: parts.requested_modules,
-            imports: parts.imports,
-            exports,
-            star_exports: parts.star_exports,
-            resolution: RefCell::new(ModuleResolutionState::Unresolved),
-            instance: RefCell::new(None),
-            namespace: RefCell::new(ModuleNamespaceState::Empty),
-            link_status: Cell::new(ModuleLinkStatus::Unlinked),
-            evaluation: RefCell::new(ModuleEvaluationState::Unevaluated),
-            link_realm_root: RefCell::new(None),
-            _realm_root: realm_root,
-        }))
+            body: ModuleRecordBody::SourceText {
+                function: function.bytecode_id(),
+            },
+            declaration_order: Rc::from(parts.declaration_order),
+            link_initializers: Rc::from(parts.link_initializers),
+            import_collisions: Rc::from(parts.import_collisions),
+            requested_modules: Rc::from(parts.requested_modules),
+            imports: Rc::from(parts.imports),
+            exports: Rc::from(exports),
+            star_exports: Rc::from(parts.star_exports),
+            resolution: ModuleResolutionState::Unresolved,
+            instance: None,
+            namespace: ModuleNamespaceState::Empty,
+            link_status: ModuleLinkStatus::Unlinked,
+            evaluation: ModuleEvaluationState::Unevaluated,
+            link_realm: None,
+            compile_realm: realm,
+        };
+        let published = self.publish_module_record(realm, record)?;
+        drop(function);
+        Ok(published)
     }
 
     fn publish_json_module(
         &self,
         realm: ContextId,
-        graph: &Rc<ModuleGraph>,
         name: JsString,
         default_value: Value,
-    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+    ) -> Result<RawModuleRef, RuntimeError> {
         self.validate_value_domain(&default_value, "JSON module value")?;
-        let realm_root = ModuleRealmRoot::retain(self, realm)?;
-        Ok(graph.publish(ModuleRecord {
+        let raw_default_value = self.raw_property_value(&default_value)?;
+        let record = ModuleRecord {
             name,
-            body: ModuleRecordBody::Json { default_value },
-            _declaration_order: Box::new([]),
-            _link_initializers: Box::new([]),
-            _import_collisions: Box::new([]),
-            requested_modules: Box::new([]),
-            imports: Box::new([]),
-            exports: Box::new([PublishedModuleExport {
+            body: ModuleRecordBody::Json {
+                default_value: raw_default_value,
+            },
+            declaration_order: Rc::from([]),
+            link_initializers: Rc::from([]),
+            import_collisions: Rc::from([]),
+            requested_modules: Rc::from([]),
+            imports: Rc::from([]),
+            exports: Rc::from([PublishedModuleExport {
                 export_name: JsString::from_static("default"),
                 target: PublishedModuleExportTarget::SyntheticLocal { cell_index: 0 },
             }]),
-            star_exports: Box::new([]),
-            resolution: RefCell::new(ModuleResolutionState::Unresolved),
-            instance: RefCell::new(None),
-            namespace: RefCell::new(ModuleNamespaceState::Empty),
-            link_status: Cell::new(ModuleLinkStatus::Unlinked),
-            evaluation: RefCell::new(ModuleEvaluationState::Unevaluated),
-            link_realm_root: RefCell::new(None),
-            _realm_root: realm_root,
-        }))
+            star_exports: Rc::from([]),
+            resolution: ModuleResolutionState::Unresolved,
+            instance: None,
+            namespace: ModuleNamespaceState::Empty,
+            link_status: ModuleLinkStatus::Unlinked,
+            evaluation: ModuleEvaluationState::Unevaluated,
+            link_realm: None,
+            compile_realm: realm,
+        };
+        let published = self.publish_module_record(realm, record)?;
+        drop(default_value);
+        Ok(published)
     }
 
-    fn module_dependencies(
+    fn raw_module_dependencies(
         &self,
-        module: &ModuleBytecodeRef,
-    ) -> Result<Vec<ModuleBytecodeRef>, RuntimeError> {
-        let ids = match &*module.record.resolution.borrow() {
+        module: RawModuleRef,
+    ) -> Result<Vec<RawModuleRef>, RuntimeError> {
+        let record = self.module_record(module)?;
+        let ids = match &record.resolution {
             ModuleResolutionState::Resolved(ids) => ids.to_vec(),
             ModuleResolutionState::Unresolved | ModuleResolutionState::Resolving => {
                 return Err(RuntimeError::Invariant(
@@ -1124,23 +1102,33 @@ impl Runtime {
                 ));
             }
         };
-        ids.into_iter()
-            .map(|id| {
-                Ok(ModuleBytecodeRef {
-                    graph: module.graph.clone(),
-                    id,
-                    record: module.graph.record(id)?,
-                })
+        Ok(ids
+            .into_iter()
+            .map(|id| RawModuleRef {
+                cache: module.cache,
+                module: id,
             })
+            .collect())
+    }
+
+    #[cfg(test)]
+    fn module_dependencies(
+        &self,
+        module: &ModuleBytecodeRef,
+    ) -> Result<Vec<ModuleBytecodeRef>, RuntimeError> {
+        self.raw_module_dependencies(module.raw)?
+            .into_iter()
+            .map(|module| self.root_module(module))
             .collect()
     }
 
     fn module_dependency(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         request: ModuleRequestIndex,
-    ) -> Result<ModuleBytecodeRef, RuntimeError> {
-        let id = match &*module.record.resolution.borrow() {
+    ) -> Result<RawModuleRef, RuntimeError> {
+        let record = self.module_record(module)?;
+        let id = match &record.resolution {
             ModuleResolutionState::Resolved(ids) => {
                 ids.get(request.0 as usize)
                     .copied()
@@ -1154,25 +1142,24 @@ impl Runtime {
                 ));
             }
         };
-        Ok(ModuleBytecodeRef {
-            graph: module.graph.clone(),
-            id,
-            record: module.graph.record(id)?,
+        Ok(RawModuleRef {
+            cache: module.cache,
+            module: id,
         })
     }
 
     fn prepare_module_instance(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         link_realm: ContextId,
     ) -> Result<(), RuntimeError> {
-        let mut pending = vec![module.clone()];
+        let mut pending = vec![module];
         while let Some(current) = pending.pop() {
-            if current.record.instance.borrow().is_some() {
+            if self.module_record(current)?.instance.is_some() {
                 continue;
             }
-            self.prepare_single_module_instance(&current, link_realm)?;
-            let dependencies = self.module_dependencies(&current)?;
+            self.prepare_single_module_instance(current, link_realm)?;
+            let dependencies = self.raw_module_dependencies(current)?;
             pending.extend(dependencies.into_iter().rev());
         }
         Ok(())
@@ -1180,22 +1167,20 @@ impl Runtime {
 
     fn prepare_single_module_instance(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         link_realm: ContextId,
     ) -> Result<(), RuntimeError> {
-        if module.record.instance.borrow().is_some() {
+        let record = self.module_record(module)?;
+        if record.instance.is_some() {
             return Ok(());
         }
-        let descriptors = match &module.record.body {
+        let descriptors = match &record.body {
             ModuleRecordBody::SourceText { function } => {
-                if !function.belongs_to(self) {
-                    return Err(RuntimeError::WrongRuntime("module bytecode"));
-                }
                 let state = self.0.state.borrow();
                 Some(
                     state
                         .heap
-                        .function_bytecode(function.bytecode_id())?
+                        .function_bytecode(*function)?
                         .closure_variables
                         .clone(),
                 )
@@ -1312,17 +1297,34 @@ impl Runtime {
             )?));
         }
 
-        if module.record.link_realm_root.borrow().is_some() {
+        let latest = self.module_record(module)?;
+        if latest.link_realm.is_some() {
             return Err(RuntimeError::Invariant(
                 "uninstantiated module retained a link realm",
             ));
         }
-        *module.record.link_realm_root.borrow_mut() =
-            Some(ModuleRealmRoot::retain(self, link_realm)?);
-        *module.record.instance.borrow_mut() = Some(ModuleInstance {
-            slots,
-            callable: None,
-        });
+        if latest.instance.is_some() {
+            return Err(RuntimeError::Invariant(
+                "module instance was published during preparation",
+            ));
+        }
+        let raw_slots = slots
+            .iter()
+            .map(|slot| slot.as_ref().map(VarRefRoot::id))
+            .collect();
+        self.mutate_module_record(module, |record| {
+            record.link_realm = Some(if link_realm == module.cache {
+                RawModuleLinkRealm::Cache
+            } else {
+                RawModuleLinkRealm::Other(link_realm)
+            });
+            record.instance = Some(ModuleInstance {
+                slots: raw_slots,
+                callable: None,
+            });
+            Ok(())
+        })?;
+        drop(slots);
         Ok(())
     }
 
@@ -1341,23 +1343,22 @@ impl Runtime {
         &self,
         realm: ContextId,
         kind: ModuleExportResolveResultKind,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         export_name: &JsString,
     ) -> Result<T, RuntimeError> {
+        let module_name = self.module_record(module)?.name;
         let message = match kind {
-            ModuleExportResolveResultKind::NotFound => module_export_error_message(
-                "Could not find export '",
-                export_name,
-                &module.record.name,
-            ),
+            ModuleExportResolveResultKind::NotFound => {
+                module_export_error_message("Could not find export '", export_name, &module_name)
+            }
             ModuleExportResolveResultKind::Circular => module_export_error_message(
                 "circular reference when looking for export '",
                 export_name,
-                &module.record.name,
+                &module_name,
             ),
             ModuleExportResolveResultKind::Ambiguous => {
                 let mut message =
-                    module_export_error_message("export '", export_name, &module.record.name);
+                    module_export_error_message("export '", export_name, &module_name);
                 message.push_utf8(" is ambiguous");
                 message
             }
@@ -1375,18 +1376,18 @@ impl Runtime {
     #[allow(clippy::mutable_key_type)] // JsString hashes immutable contents; only its rope cache mutates.
     fn resolve_module_export(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         export_name: &JsString,
     ) -> Result<ModuleExportResolveResult, RuntimeError> {
         enum Action {
             Continue,
             Complete(ModuleExportResolveResult),
-            Push(ModuleBytecodeRef, JsString),
+            Push(RawModuleRef, JsString),
         }
 
         let mut resolve_set: HashSet<(ModuleId, JsString)> = HashSet::new();
         let mut stack = vec![ModuleExportResolveFrame {
-            module: module.clone(),
+            module,
             export_name: export_name.clone(),
             state: ModuleExportResolveFrameState::Enter,
         }];
@@ -1436,11 +1437,10 @@ impl Runtime {
                 ))?;
                 match &mut frame.state {
                     ModuleExportResolveFrameState::Enter => {
-                        if !resolve_set.insert((frame.module.id, frame.export_name.clone())) {
+                        let record = self.module_record(frame.module)?;
+                        if !resolve_set.insert((frame.module.module, frame.export_name.clone())) {
                             Action::Complete(ModuleExportResolveResult::Circular)
-                        } else if let Some((export_index, target)) = frame
-                            .module
-                            .record
+                        } else if let Some((export_index, target)) = record
                             .exports
                             .iter()
                             .enumerate()
@@ -1451,7 +1451,7 @@ impl Runtime {
                                 PublishedModuleExportTarget::SourceTextLocal { closure_index } => {
                                     Action::Complete(ModuleExportResolveResult::Found(
                                         ModuleResolvedBinding {
-                                            module: frame.module.clone(),
+                                            module: frame.module,
                                             target: ModuleResolvedBindingTarget::Local {
                                                 closure_index,
                                             },
@@ -1461,7 +1461,7 @@ impl Runtime {
                                 PublishedModuleExportTarget::SyntheticLocal { cell_index } => {
                                     Action::Complete(ModuleExportResolveResult::Found(
                                         ModuleResolvedBinding {
-                                            module: frame.module.clone(),
+                                            module: frame.module,
                                             target: ModuleResolvedBindingTarget::Local {
                                                 closure_index: cell_index,
                                             },
@@ -1475,7 +1475,7 @@ impl Runtime {
                                     let _ = request;
                                     Action::Complete(ModuleExportResolveResult::Found(
                                         ModuleResolvedBinding {
-                                            module: frame.module.clone(),
+                                            module: frame.module,
                                             target: ModuleResolvedBindingTarget::Namespace {
                                                 export_index,
                                             },
@@ -1487,7 +1487,7 @@ impl Runtime {
                                     import_name: ModuleImportName::Name(import_name),
                                 } => {
                                     let dependency =
-                                        self.module_dependency(&frame.module, request)?;
+                                        self.module_dependency(frame.module, request)?;
                                     frame.state = ModuleExportResolveFrameState::AwaitIndirect;
                                     Action::Push(dependency, import_name)
                                 }
@@ -1508,9 +1508,10 @@ impl Runtime {
                         ));
                     }
                     ModuleExportResolveFrameState::Stars { next_star, found } => {
-                        if let Some(star) = frame.module.record.star_exports.get(*next_star) {
+                        let record = self.module_record(frame.module)?;
+                        if let Some(star) = record.star_exports.get(*next_star) {
                             *next_star += 1;
-                            let dependency = self.module_dependency(&frame.module, star.request)?;
+                            let dependency = self.module_dependency(frame.module, star.request)?;
                             Action::Push(dependency, frame.export_name.clone())
                         } else {
                             Action::Complete(found.take().map_or(
@@ -1541,14 +1542,14 @@ impl Runtime {
     /// global visited-set traversal as QuickJS `get_exported_names`.
     fn get_module_exported_names(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
     ) -> Result<Vec<JsString>, RuntimeError> {
         let default_name = JsString::from_static("default");
         let mut visited = HashSet::new();
         let mut seen_names = HashSet::new();
         let mut names = Vec::new();
         let mut stack = vec![ModuleExportNamesFrame {
-            module: module.clone(),
+            module,
             from_star: false,
             entered: false,
             next_star: 0,
@@ -1557,11 +1558,12 @@ impl Runtime {
         while let Some(frame) = stack.last_mut() {
             if !frame.entered {
                 frame.entered = true;
-                if !visited.insert(frame.module.id) {
+                if !visited.insert(frame.module.module) {
                     stack.pop();
                     continue;
                 }
-                for export in frame.module.record.exports.iter() {
+                let record = self.module_record(frame.module)?;
+                for export in record.exports.iter() {
                     if frame.from_star && export.export_name == default_name {
                         continue;
                     }
@@ -1572,12 +1574,13 @@ impl Runtime {
                 continue;
             }
 
-            let Some(star) = frame.module.record.star_exports.get(frame.next_star) else {
+            let record = self.module_record(frame.module)?;
+            let Some(star) = record.star_exports.get(frame.next_star) else {
                 stack.pop();
                 continue;
             };
             frame.next_star += 1;
-            let dependency = self.module_dependency(&frame.module, star.request)?;
+            let dependency = self.module_dependency(frame.module, star.request)?;
             stack.push(ModuleExportNamesFrame {
                 module: dependency,
                 from_star: true,
@@ -1588,18 +1591,30 @@ impl Runtime {
         Ok(names)
     }
 
-    fn rollback_module_namespace_transaction(&self, graph: &Rc<ModuleGraph>, created: &[ModuleId]) {
-        for id in created.iter().rev().copied() {
-            let Ok(record) = graph.record(id) else {
-                continue;
-            };
-            *record.namespace.borrow_mut() = ModuleNamespaceState::Empty;
-        }
+    fn rollback_module_namespace_transaction(&self, created: &[RawModuleRef]) {
+        let mut state = self.0.state.borrow_mut();
+        let cleanup = state
+            .heap
+            .rollback_loaded_module_namespaces(created)
+            .unwrap_or_else(|error| panic!("module namespace rollback failed: {error}"));
+        state.apply_committed_cleanup(cleanup);
     }
 
+    #[cfg(test)]
     pub(in crate::runtime) fn get_module_namespace(
         &self,
         module: &ModuleBytecodeRef,
+        realm: ContextId,
+    ) -> Result<ObjectRef, RuntimeError> {
+        if !module.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("module bytecode"));
+        }
+        self.get_module_namespace_raw(module.raw, realm)
+    }
+
+    fn get_module_namespace_raw(
+        &self,
+        module: RawModuleRef,
         realm: ContextId,
     ) -> Result<ObjectRef, RuntimeError> {
         let mut created = Vec::new();
@@ -1609,11 +1624,11 @@ impl Runtime {
         match result {
             Ok(Ok(namespace)) => Ok(namespace),
             Ok(Err(error)) => {
-                self.rollback_module_namespace_transaction(&module.graph, &created);
+                self.rollback_module_namespace_transaction(&created);
                 Err(error)
             }
             Err(payload) => {
-                self.rollback_module_namespace_transaction(&module.graph, &created);
+                self.rollback_module_namespace_transaction(&created);
                 resume_unwind(payload)
             }
         }
@@ -1621,23 +1636,31 @@ impl Runtime {
 
     fn build_module_namespace(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         realm: ContextId,
-        created: &mut Vec<ModuleId>,
+        created: &mut Vec<RawModuleRef>,
     ) -> Result<ObjectRef, RuntimeError> {
-        {
-            let namespace = module.record.namespace.borrow();
-            match &*namespace {
-                ModuleNamespaceState::Building(object) | ModuleNamespaceState::Ready(object) => {
-                    return Ok(object.clone());
+        match self.module_record(module)?.namespace {
+            ModuleNamespaceState::Building(object) => {
+                if !created.contains(&module) {
+                    return Err(RuntimeError::Invariant(
+                        "module namespace cache retained a stale Building record",
+                    ));
                 }
-                ModuleNamespaceState::Empty => {}
+                return Ok(ObjectRef::from_borrowed_handle(self.clone(), object)?);
             }
+            ModuleNamespaceState::Ready(object) => {
+                return Ok(ObjectRef::from_borrowed_handle(self.clone(), object)?);
+            }
+            ModuleNamespaceState::Empty => {}
         }
 
         let namespace = self.new_module_namespace_object()?;
-        *module.record.namespace.borrow_mut() = ModuleNamespaceState::Building(namespace.clone());
-        created.push(module.id);
+        self.mutate_module_record(module, |record| {
+            record.namespace = ModuleNamespaceState::Building(namespace.object_id());
+            Ok(())
+        })?;
+        created.push(module);
 
         let mut names = self.get_module_exported_names(module)?;
         names.sort_by(|left, right| left.utf16_units().cmp(right.utf16_units()));
@@ -1671,7 +1694,10 @@ impl Runtime {
             PropertyFlags::data(false, false, false),
             PropertySlot::Data(RawValue::String(JsString::from_static("Module"))),
         )?;
-        *module.record.namespace.borrow_mut() = ModuleNamespaceState::Ready(namespace.clone());
+        self.transition_module_record(
+            module,
+            RawModuleTransition::FinishNamespace(namespace.object_id()),
+        )?;
         Ok(namespace)
     }
 
@@ -1679,7 +1705,7 @@ impl Runtime {
         &self,
         binding: ModuleResolvedBinding,
         realm: ContextId,
-        error_module: &ModuleBytecodeRef,
+        error_module: RawModuleRef,
         error_name: &JsString,
     ) -> Result<VarRefRoot, RuntimeError> {
         let mut created = Vec::new();
@@ -1695,11 +1721,11 @@ impl Runtime {
         match result {
             Ok(Ok(slot)) => Ok(slot),
             Ok(Err(error)) => {
-                self.rollback_module_namespace_transaction(&error_module.graph, &created);
+                self.rollback_module_namespace_transaction(&created);
                 Err(error)
             }
             Err(payload) => {
-                self.rollback_module_namespace_transaction(&error_module.graph, &created);
+                self.rollback_module_namespace_transaction(&created);
                 resume_unwind(payload)
             }
         }
@@ -1709,9 +1735,9 @@ impl Runtime {
         &self,
         binding: ModuleResolvedBinding,
         realm: ContextId,
-        error_module: &ModuleBytecodeRef,
+        error_module: RawModuleRef,
         error_name: &JsString,
-        namespace_transaction: &mut Vec<ModuleId>,
+        namespace_transaction: &mut Vec<RawModuleRef>,
     ) -> Result<VarRefRoot, RuntimeError> {
         let mut binding = binding;
         let mut local_aliases = HashSet::new();
@@ -1719,11 +1745,14 @@ impl Runtime {
         loop {
             match binding.target {
                 ModuleResolvedBindingTarget::Namespace { export_index } => {
-                    let export = binding.module.record.exports.get(export_index).ok_or(
-                        RuntimeError::Invariant(
-                            "resolved namespace export entry is outside the module table",
-                        ),
-                    )?;
+                    let record = self.module_record(binding.module)?;
+                    let export =
+                        record
+                            .exports
+                            .get(export_index)
+                            .ok_or(RuntimeError::Invariant(
+                                "resolved namespace export entry is outside the module table",
+                            ))?;
                     let PublishedModuleExportTarget::Indirect {
                         request,
                         import_name: ModuleImportName::Namespace,
@@ -1733,9 +1762,9 @@ impl Runtime {
                             "resolved namespace identity no longer names a namespace export",
                         ));
                     };
-                    let target = self.module_dependency(&binding.module, *request)?;
+                    let target = self.module_dependency(binding.module, *request)?;
                     let namespace =
-                        self.build_module_namespace(&target, realm, namespace_transaction)?;
+                        self.build_module_namespace(target, realm, namespace_transaction)?;
                     return self.new_var_ref(
                         Value::Object(namespace),
                         true,
@@ -1744,7 +1773,7 @@ impl Runtime {
                     );
                 }
                 ModuleResolvedBindingTarget::Local { closure_index } => {
-                    if !local_aliases.insert((binding.module.id, closure_index)) {
+                    if !local_aliases.insert((binding.module.module, closure_index)) {
                         return self.throw_module_export_resolution_error(
                             realm,
                             ModuleExportResolveResultKind::Circular,
@@ -1752,33 +1781,31 @@ impl Runtime {
                             error_name,
                         );
                     }
-                    let function = match &binding.module.record.body {
-                        ModuleRecordBody::SourceText { function } => function,
+                    let record = self.module_record(binding.module)?;
+                    let function = match &record.body {
+                        ModuleRecordBody::SourceText { function } => *function,
                         ModuleRecordBody::Json { .. } => {
                             if closure_index != 0 {
                                 return Err(RuntimeError::Invariant(
                                     "synthetic module export cell is out of bounds",
                                 ));
                             }
-                            return binding
-                                .module
-                                .record
+                            let slot = record
                                 .instance
-                                .borrow()
                                 .as_ref()
                                 .and_then(|instance| instance.slots.first())
-                                .and_then(Option::as_ref)
-                                .cloned()
+                                .and_then(|slot| *slot)
                                 .ok_or(RuntimeError::Invariant(
                                     "synthetic module export has no instantiated live cell",
-                                ));
+                                ))?;
+                            return Ok(VarRefRoot::from_borrowed_handle(self.clone(), slot)?);
                         }
                     };
                     let descriptor = {
                         let state = self.0.state.borrow();
                         state
                             .heap
-                            .function_bytecode(function.bytecode_id())?
+                            .function_bytecode(function)?
                             .closure_variables
                             .get(usize::from(closure_index))
                             .copied()
@@ -1793,18 +1820,15 @@ impl Runtime {
                                     "resolved module declaration export has invalid metadata",
                                 ));
                             }
-                            return binding
-                                .module
-                                .record
+                            let slot = record
                                 .instance
-                                .borrow()
                                 .as_ref()
                                 .and_then(|instance| instance.slots.get(usize::from(closure_index)))
-                                .and_then(Option::as_ref)
-                                .cloned()
+                                .and_then(|slot| *slot)
                                 .ok_or(RuntimeError::Invariant(
                                     "resolved export has no instantiated live cell",
-                                ));
+                                ))?;
+                            return Ok(VarRefRoot::from_borrowed_handle(self.clone(), slot)?);
                         }
                         ClosureSource::ModuleImport => {
                             if descriptor.kind != ClosureVariableKind::ModuleImportView {
@@ -1812,9 +1836,7 @@ impl Runtime {
                                     "resolved module import export has invalid metadata",
                                 ));
                             }
-                            let import = binding
-                                .module
-                                .record
+                            let import = record
                                 .imports
                                 .iter()
                                 .find(|import| import.closure_index == closure_index)
@@ -1823,11 +1845,11 @@ impl Runtime {
                                     "exported module import has no import table entry",
                                 ))?;
                             let dependency =
-                                self.module_dependency(&binding.module, import.request)?;
+                                self.module_dependency(binding.module, import.request)?;
                             match import.import_name {
                                 ModuleImportName::Namespace => {
                                     let namespace = self.build_module_namespace(
-                                        &dependency,
+                                        dependency,
                                         realm,
                                         namespace_transaction,
                                     )?;
@@ -1840,7 +1862,7 @@ impl Runtime {
                                 }
                                 ModuleImportName::Name(import_name) => {
                                     binding = match self
-                                        .resolve_module_export(&dependency, &import_name)?
+                                        .resolve_module_export(dependency, &import_name)?
                                     {
                                         ModuleExportResolveResult::Found(binding) => binding,
                                         result => {
@@ -1862,26 +1884,20 @@ impl Runtime {
                         }
                         ClosureSource::ModuleImportCollision => match descriptor.kind {
                             ClosureVariableKind::Normal => {
-                                return binding
-                                    .module
-                                    .record
+                                let slot = record
                                     .instance
-                                    .borrow()
                                     .as_ref()
                                     .and_then(|instance| {
                                         instance.slots.get(usize::from(closure_index))
                                     })
-                                    .and_then(Option::as_ref)
-                                    .cloned()
+                                    .and_then(|slot| *slot)
                                     .ok_or(RuntimeError::Invariant(
                                         "namespace import collision has no instantiated live cell",
-                                    ));
+                                    ))?;
+                                return Ok(VarRefRoot::from_borrowed_handle(self.clone(), slot)?);
                             }
                             ClosureVariableKind::ModuleImportView => {
-                                let import = binding
-                                    .module
-                                    .record
-                                    .imports
+                                let import = record.imports
                                     .iter()
                                     .find(|import| import.closure_index == closure_index)
                                     .cloned()
@@ -1894,9 +1910,9 @@ impl Runtime {
                                     ));
                                 };
                                 let dependency =
-                                    self.module_dependency(&binding.module, import.request)?;
+                                    self.module_dependency(binding.module, import.request)?;
                                 binding = match self
-                                    .resolve_module_export(&dependency, &import_name)?
+                                    .resolve_module_export(dependency, &import_name)?
                                 {
                                     ModuleExportResolveResult::Found(binding) => binding,
                                     result => {
@@ -1944,11 +1960,12 @@ impl Runtime {
 
     fn validate_module_indirect_exports(
         &self,
-        module: &ModuleBytecodeRef,
-        dependencies: &[ModuleBytecodeRef],
+        module: RawModuleRef,
+        dependencies: &[RawModuleRef],
         realm: ContextId,
     ) -> Result<(), RuntimeError> {
-        for export in module.record.exports.iter() {
+        let record = self.module_record(module)?;
+        for export in record.exports.iter() {
             let PublishedModuleExportTarget::Indirect {
                 request,
                 import_name: ModuleImportName::Name(import_name),
@@ -1962,7 +1979,7 @@ impl Runtime {
                     .ok_or(RuntimeError::Invariant(
                         "indirect export request is outside the resolved graph",
                     ))?;
-            let result = self.resolve_module_export(dependency, import_name)?;
+            let result = self.resolve_module_export(*dependency, import_name)?;
             if let Some(kind) = result.error_kind() {
                 return self.throw_module_export_resolution_error(
                     realm,
@@ -1977,11 +1994,12 @@ impl Runtime {
 
     fn link_module_imports(
         &self,
-        module: &ModuleBytecodeRef,
-        dependencies: &[ModuleBytecodeRef],
+        module: RawModuleRef,
+        dependencies: &[RawModuleRef],
         realm: ContextId,
     ) -> Result<(), RuntimeError> {
-        for import in module.record.imports.iter() {
+        let record = self.module_record(module)?;
+        for import in record.imports.iter() {
             let dependency =
                 dependencies
                     .get(import.request.0 as usize)
@@ -1990,23 +2008,22 @@ impl Runtime {
                     ))?;
             let slot = match &import.import_name {
                 ModuleImportName::Namespace => {
-                    let namespace = self.get_module_namespace(dependency, realm)?;
-                    let slot = module
-                        .record
+                    let namespace = self.get_module_namespace_raw(*dependency, realm)?;
+                    let slot = self
+                        .module_record(module)?
                         .instance
-                        .borrow()
                         .as_ref()
                         .and_then(|instance| instance.slots.get(usize::from(import.closure_index)))
-                        .and_then(Option::as_ref)
-                        .cloned()
+                        .and_then(|slot| *slot)
                         .ok_or(RuntimeError::Invariant(
                             "namespace import has no preallocated declaration cell",
                         ))?;
+                    let slot = VarRefRoot::from_borrowed_handle(self.clone(), slot)?;
                     self.write_var_ref(&slot, Value::Object(namespace))?;
                     continue;
                 }
                 ModuleImportName::Name(import_name) => {
-                    let resolution = self.resolve_module_export(dependency, import_name)?;
+                    let resolution = self.resolve_module_export(*dependency, import_name)?;
                     let binding = match resolution {
                         ModuleExportResolveResult::Found(binding) => binding,
                         result => {
@@ -2016,7 +2033,7 @@ impl Runtime {
                             return self.throw_module_export_resolution_error(
                                 realm,
                                 kind,
-                                dependency,
+                                *dependency,
                                 import_name,
                             );
                         }
@@ -2024,76 +2041,84 @@ impl Runtime {
                     self.materialize_module_resolved_binding(
                         binding,
                         realm,
-                        dependency,
+                        *dependency,
                         import_name,
                     )?
                 }
             };
-            let mut instance = module.record.instance.borrow_mut();
-            let target = instance
-                .as_mut()
-                .and_then(|instance| instance.slots.get_mut(usize::from(import.closure_index)))
-                .ok_or(RuntimeError::Invariant(
-                    "module import closure is outside the instance",
-                ))?;
-            *target = Some(slot);
+            self.mutate_module_record(module, |record| {
+                let target = record
+                    .instance
+                    .as_mut()
+                    .and_then(|instance| instance.slots.get_mut(usize::from(import.closure_index)))
+                    .ok_or(RuntimeError::Invariant(
+                        "module import closure is outside the instance",
+                    ))?;
+                *target = Some(slot.id());
+                Ok(())
+            })?;
+            drop(slot);
         }
         Ok(())
     }
 
     fn create_module_callable(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         realm: ContextId,
     ) -> Result<Option<CallableRef>, RuntimeError> {
-        let ModuleRecordBody::SourceText { function } = &module.record.body else {
+        let record = self.module_record(module)?;
+        let ModuleRecordBody::SourceText { function } = record.body else {
             return Ok(None);
         };
-        if let Some(callable) = module
-            .record
+        if let Some(callable) = record
             .instance
-            .borrow()
             .as_ref()
-            .and_then(|instance| instance.callable.clone())
+            .and_then(|instance| instance.callable)
         {
-            return Ok(Some(callable));
+            let callable = ObjectRef::from_borrowed_handle(self.clone(), callable)?;
+            return Ok(Some(CallableRef::from_validated_object(callable)));
         }
-        let slots = module
-            .record
+        let slot_ids = record
             .instance
-            .borrow()
             .as_ref()
             .ok_or(RuntimeError::Invariant("module has no instance"))?
             .slots
             .iter()
             .map(|slot| {
-                slot.clone().ok_or(RuntimeError::Invariant(
+                slot.ok_or(RuntimeError::Invariant(
                     "module callable retained an unresolved import slot",
                 ))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let callable = self.new_bytecode_closure_with_slots(realm, function, &slots)?;
-        module
-            .record
-            .instance
-            .borrow_mut()
-            .as_mut()
-            .ok_or(RuntimeError::Invariant("module instance disappeared"))?
-            .callable = Some(callable.clone());
+        let slots = slot_ids
+            .into_iter()
+            .map(|slot| VarRefRoot::from_borrowed_handle(self.clone(), slot))
+            .collect::<Result<Vec<_>, _>>()?;
+        let function = FunctionBytecodeRef::from_borrowed_handle(self.clone(), function)?;
+        let callable = self.new_bytecode_closure_with_slots(realm, &function, &slots)?;
+        self.mutate_module_record(module, |record| {
+            record
+                .instance
+                .as_mut()
+                .ok_or(RuntimeError::Invariant("module instance disappeared"))?
+                .callable = Some(callable.as_object().object_id());
+            Ok(())
+        })?;
         Ok(Some(callable))
     }
 
     fn enter_module_link_dfs(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         dfs: &mut ModuleLinkDfs,
     ) -> Result<ModuleDfsFrame, RuntimeError> {
-        if module.record.link_status.get() != ModuleLinkStatus::Unlinked {
+        if self.module_record(module)?.link_status != ModuleLinkStatus::Unlinked {
             return Err(RuntimeError::Invariant(
                 "link DFS entered a module which was not unlinked",
             ));
         }
-        module.record.link_status.set(ModuleLinkStatus::Linking);
+        self.transition_module_record(module, RawModuleTransition::BeginLink)?;
         let index = dfs.next_index;
         dfs.next_index = dfs
             .next_index
@@ -2102,7 +2127,7 @@ impl Runtime {
         if dfs
             .entries
             .insert(
-                module.id,
+                module.module,
                 ModuleDfsEntry {
                     index,
                     ancestor: index,
@@ -2114,10 +2139,10 @@ impl Runtime {
                 "module entered the link DFS more than once",
             ));
         }
-        dfs.stack.push(module.id);
-        let dependencies = self.module_dependencies(module)?;
+        dfs.stack.push(module.module);
+        let dependencies = self.raw_module_dependencies(module)?;
         Ok(ModuleDfsFrame {
-            module: module.clone(),
+            module,
             dependencies,
             next_dependency: 0,
         })
@@ -2125,10 +2150,10 @@ impl Runtime {
 
     fn link_module_dfs(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         dfs: &mut ModuleLinkDfs,
     ) -> Result<(), RuntimeError> {
-        match module.record.link_status.get() {
+        match self.module_record(module)?.link_status {
             ModuleLinkStatus::Linked => return Ok(()),
             ModuleLinkStatus::Linking => {
                 return Err(RuntimeError::Invariant(
@@ -2156,17 +2181,17 @@ impl Runtime {
                 dependency
             };
             if let Some(dependency) = dependency {
-                match dependency.record.link_status.get() {
+                match self.module_record(dependency)?.link_status {
                     ModuleLinkStatus::Linked => {}
                     ModuleLinkStatus::Linking => {
                         let dependency_ancestor = dfs
                             .entries
-                            .get(&dependency.id)
+                            .get(&dependency.module)
                             .map(|entry| entry.ancestor)
                             .ok_or(RuntimeError::Invariant(
                                 "linking dependency has no DFS entry",
                             ))?;
-                        let current_id = frames.last().map(|frame| frame.module.id).ok_or(
+                        let current_id = frames.last().map(|frame| frame.module.module).ok_or(
                             RuntimeError::Invariant(
                                 "module link call stack unexpectedly became empty",
                             ),
@@ -2178,7 +2203,7 @@ impl Runtime {
                         entry.ancestor = entry.ancestor.min(dependency_ancestor);
                     }
                     ModuleLinkStatus::Unlinked => {
-                        frames.push(self.enter_module_link_dfs(&dependency, dfs)?);
+                        frames.push(self.enter_module_link_dfs(dependency, dfs)?);
                     }
                     ModuleLinkStatus::Poisoned => {
                         return Err(RuntimeError::Invariant(
@@ -2192,28 +2217,27 @@ impl Runtime {
             let frame = frames.pop().ok_or(RuntimeError::Invariant(
                 "module link call stack unexpectedly became empty",
             ))?;
-            let realm = frame
-                .module
-                .record
-                .link_realm_root
-                .borrow()
-                .as_ref()
-                .map(|root| root.realm)
+            let realm = self
+                .module_record(frame.module)?
+                .link_realm
+                .map(|realm| match realm {
+                    RawModuleLinkRealm::Cache => frame.module.cache,
+                    RawModuleLinkRealm::Other(realm) => realm,
+                })
                 .ok_or(RuntimeError::Invariant(
                     "instantiated module has no retained link realm",
                 ))?;
-            self.validate_module_indirect_exports(&frame.module, &frame.dependencies, realm)?;
-            self.link_module_imports(&frame.module, &frame.dependencies, realm)?;
-            let completion = match self.create_module_callable(&frame.module, realm)? {
+            self.validate_module_indirect_exports(frame.module, &frame.dependencies, realm)?;
+            self.link_module_imports(frame.module, &frame.dependencies, realm)?;
+            let completion = match self.create_module_callable(frame.module, realm)? {
                 Some(callable) => {
                     match self.call_internal(realm, &callable, Value::Bool(true), &[]) {
                         Ok(completion) => completion,
                         Err(error) => {
-                            frame
-                                .module
-                                .record
-                                .link_status
-                                .set(ModuleLinkStatus::Poisoned);
+                            self.transition_module_record(
+                                frame.module,
+                                RawModuleTransition::PoisonLink,
+                            )?;
                             return Err(error);
                         }
                     }
@@ -2224,33 +2248,41 @@ impl Runtime {
                 Completion::Return(Value::Undefined) => {
                     let entry = dfs
                         .entries
-                        .get(&frame.module.id)
+                        .get(&frame.module.module)
                         .copied()
                         .ok_or(RuntimeError::Invariant("linked module lost its DFS entry"))?;
                     if entry.index == entry.ancestor {
                         loop {
-                            let member = dfs.stack.pop().ok_or(RuntimeError::Invariant(
+                            let member = *dfs.stack.last().ok_or(RuntimeError::Invariant(
                                 "module link SCC stack underflow",
                             ))?;
-                            let record = frame.module.graph.record(member)?;
-                            if record.link_status.get() != ModuleLinkStatus::Linking {
+                            let member = RawModuleRef {
+                                cache: frame.module.cache,
+                                module: member,
+                            };
+                            if self.module_record(member)?.link_status != ModuleLinkStatus::Linking
+                            {
                                 return Err(RuntimeError::Invariant(
                                     "module link SCC contained a non-linking member",
                                 ));
                             }
-                            record.link_status.set(ModuleLinkStatus::Linked);
-                            if member == frame.module.id {
+                            self.transition_module_record(member, RawModuleTransition::FinishLink)?;
+                            let popped = dfs.stack.pop().ok_or(RuntimeError::Invariant(
+                                "module link SCC stack underflow after publication",
+                            ))?;
+                            if popped != member.module {
+                                return Err(RuntimeError::Invariant(
+                                    "module link SCC stack changed during record publication",
+                                ));
+                            }
+                            if member.module == frame.module.module {
                                 break;
                             }
                         }
                     }
                 }
                 Completion::Return(_) => {
-                    frame
-                        .module
-                        .record
-                        .link_status
-                        .set(ModuleLinkStatus::Poisoned);
+                    self.transition_module_record(frame.module, RawModuleTransition::PoisonLink)?;
                     return Err(RuntimeError::Invariant(
                         "module link entry returned a non-undefined value",
                     ));
@@ -2261,10 +2293,10 @@ impl Runtime {
                 }
             }
 
-            if frame.module.record.link_status.get() == ModuleLinkStatus::Linking {
+            if self.module_record(frame.module)?.link_status == ModuleLinkStatus::Linking {
                 let dependency_ancestor = dfs
                     .entries
-                    .get(&frame.module.id)
+                    .get(&frame.module.module)
                     .map(|entry| entry.ancestor)
                     .ok_or(RuntimeError::Invariant(
                         "linking dependency has no DFS entry",
@@ -2272,7 +2304,7 @@ impl Runtime {
                 if let Some(parent) = frames.last() {
                     let entry = dfs
                         .entries
-                        .get_mut(&parent.module.id)
+                        .get_mut(&parent.module.module)
                         .ok_or(RuntimeError::Invariant("linking module lost its DFS entry"))?;
                     entry.ancestor = entry.ancestor.min(dependency_ancestor);
                 }
@@ -2288,7 +2320,7 @@ impl Runtime {
 
     fn link_module_graph(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         initiating_realm: ContextId,
     ) -> Result<(), RuntimeError> {
         self.prepare_module_instance(module, initiating_realm)?;
@@ -2296,9 +2328,12 @@ impl Runtime {
         let result = self.link_module_dfs(module, &mut dfs);
         if result.is_err() {
             for id in dfs.stack {
-                let record = module.graph.record(id)?;
-                if record.link_status.get() == ModuleLinkStatus::Linking {
-                    record.link_status.set(ModuleLinkStatus::Unlinked);
+                let member = RawModuleRef {
+                    cache: module.cache,
+                    module: id,
+                };
+                if self.module_record(member)?.link_status == ModuleLinkStatus::Linking {
+                    self.transition_module_record(member, RawModuleTransition::ResetLink)?;
                 }
             }
         }
@@ -2307,18 +2342,18 @@ impl Runtime {
 
     fn enter_module_evaluation_dfs(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         dfs: &mut ModuleEvaluationDfs,
     ) -> Result<ModuleDfsFrame, RuntimeError> {
         if !matches!(
-            &*module.record.evaluation.borrow(),
+            self.module_record(module)?.evaluation,
             ModuleEvaluationState::Unevaluated
         ) {
             return Err(RuntimeError::Invariant(
                 "evaluation DFS entered a module which was not unevaluated",
             ));
         }
-        *module.record.evaluation.borrow_mut() = ModuleEvaluationState::Evaluating;
+        self.transition_module_record(module, RawModuleTransition::BeginEvaluation)?;
         let index = dfs.next_index;
         dfs.next_index = dfs
             .next_index
@@ -2329,7 +2364,7 @@ impl Runtime {
         if dfs
             .entries
             .insert(
-                module.id,
+                module.module,
                 ModuleDfsEntry {
                     index,
                     ancestor: index,
@@ -2341,27 +2376,27 @@ impl Runtime {
                 "module entered the evaluation DFS more than once",
             ));
         }
-        dfs.stack.push(module.id);
+        dfs.stack.push(module.module);
         Ok(ModuleDfsFrame {
-            module: module.clone(),
-            dependencies: self.module_dependencies(module)?,
+            module,
+            dependencies: self.raw_module_dependencies(module)?,
             next_dependency: 0,
         })
     }
 
     fn evaluate_module_dfs(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         dfs: &mut ModuleEvaluationDfs,
     ) -> Result<(), RuntimeError> {
         let initial_state = {
-            let evaluation = module.record.evaluation.borrow();
-            match &*evaluation {
+            let record = self.module_record(module)?;
+            match &record.evaluation {
                 ModuleEvaluationState::Unevaluated => ModuleEvaluationVisit::Unevaluated,
                 ModuleEvaluationState::Evaluating => ModuleEvaluationVisit::Evaluating,
                 ModuleEvaluationState::Evaluated => ModuleEvaluationVisit::Evaluated,
                 ModuleEvaluationState::Errored(exception) => {
-                    ModuleEvaluationVisit::Errored(exception.clone())
+                    ModuleEvaluationVisit::Errored(self.root_raw_value(exception)?)
                 }
                 ModuleEvaluationState::Poisoned => ModuleEvaluationVisit::Poisoned,
             }
@@ -2403,13 +2438,13 @@ impl Runtime {
             };
             if let Some(dependency) = dependency {
                 let dependency_state = {
-                    let evaluation = dependency.record.evaluation.borrow();
-                    match &*evaluation {
+                    let record = self.module_record(dependency)?;
+                    match &record.evaluation {
                         ModuleEvaluationState::Unevaluated => ModuleEvaluationVisit::Unevaluated,
                         ModuleEvaluationState::Evaluating => ModuleEvaluationVisit::Evaluating,
                         ModuleEvaluationState::Evaluated => ModuleEvaluationVisit::Evaluated,
                         ModuleEvaluationState::Errored(exception) => {
-                            ModuleEvaluationVisit::Errored(exception.clone())
+                            ModuleEvaluationVisit::Errored(self.root_raw_value(exception)?)
                         }
                         ModuleEvaluationState::Poisoned => ModuleEvaluationVisit::Poisoned,
                     }
@@ -2419,12 +2454,12 @@ impl Runtime {
                     ModuleEvaluationVisit::Evaluating => {
                         let dependency_ancestor = dfs
                             .entries
-                            .get(&dependency.id)
+                            .get(&dependency.module)
                             .map(|entry| entry.ancestor)
                             .ok_or(RuntimeError::Invariant(
                                 "evaluating dependency has no DFS entry",
                             ))?;
-                        let current_id = frames.last().map(|frame| frame.module.id).ok_or(
+                        let current_id = frames.last().map(|frame| frame.module.module).ok_or(
                             RuntimeError::Invariant(
                                 "module evaluation call stack unexpectedly became empty",
                             ),
@@ -2438,7 +2473,7 @@ impl Runtime {
                         entry.ancestor = entry.ancestor.min(dependency_ancestor);
                     }
                     ModuleEvaluationVisit::Unevaluated => {
-                        frames.push(self.enter_module_evaluation_dfs(&dependency, dfs)?);
+                        frames.push(self.enter_module_evaluation_dfs(dependency, dfs)?);
                     }
                     ModuleEvaluationVisit::Errored(exception) => {
                         if dfs.exception.replace(exception).is_some() {
@@ -2460,76 +2495,91 @@ impl Runtime {
             let frame = frames.pop().ok_or(RuntimeError::Invariant(
                 "module evaluation call stack unexpectedly became empty",
             ))?;
-            let realm = frame
-                .module
-                .record
-                .link_realm_root
-                .borrow()
-                .as_ref()
-                .map(|root| root.realm)
+            let record = self.module_record(frame.module)?;
+            let realm = record
+                .link_realm
+                .map(|realm| match realm {
+                    RawModuleLinkRealm::Cache => frame.module.cache,
+                    RawModuleLinkRealm::Other(realm) => realm,
+                })
                 .ok_or(RuntimeError::Invariant(
                     "linked module has no retained realm",
                 ))?;
-            let completion = match &frame.module.record.body {
+            let completion = match &record.body {
                 ModuleRecordBody::SourceText { .. } => {
-                    let callable = frame
-                        .module
-                        .record
+                    let callable = record
                         .instance
-                        .borrow()
                         .as_ref()
-                        .and_then(|instance| instance.callable.clone())
+                        .and_then(|instance| instance.callable)
                         .ok_or(RuntimeError::Invariant(
                             "linked source-text module has no callable instance",
                         ))?;
+                    let callable = CallableRef::from_validated_object(
+                        ObjectRef::from_borrowed_handle(self.clone(), callable)?,
+                    );
                     self.call_internal(realm, &callable, Value::Undefined, &[])?
                 }
                 ModuleRecordBody::Json { default_value } => {
-                    let slot = frame
-                        .module
-                        .record
+                    let slot = record
                         .instance
-                        .borrow()
                         .as_ref()
                         .and_then(|instance| instance.slots.first())
-                        .and_then(Option::as_ref)
-                        .cloned()
+                        .and_then(|slot| *slot)
                         .ok_or(RuntimeError::Invariant(
                             "linked JSON module has no default live cell",
                         ))?;
-                    self.write_var_ref(&slot, default_value.clone())?;
+                    let slot = VarRefRoot::from_borrowed_handle(self.clone(), slot)?;
+                    let default_value = self.root_raw_value(default_value)?;
+                    self.write_var_ref(&slot, default_value)?;
                     Completion::Return(Value::Undefined)
                 }
             };
             match completion {
                 Completion::Return(Value::Undefined) => {
-                    let entry = dfs.entries.get(&frame.module.id).copied().ok_or(
+                    let entry = dfs.entries.get(&frame.module.module).copied().ok_or(
                         RuntimeError::Invariant("evaluated module lost its DFS entry"),
                     )?;
                     if entry.index == entry.ancestor {
                         loop {
-                            let member = dfs.stack.pop().ok_or(RuntimeError::Invariant(
+                            let member = *dfs.stack.last().ok_or(RuntimeError::Invariant(
                                 "module evaluation SCC stack underflow",
                             ))?;
-                            let record = frame.module.graph.record(member)?;
-                            let is_evaluating = {
-                                let evaluation = record.evaluation.borrow();
-                                matches!(&*evaluation, ModuleEvaluationState::Evaluating)
+                            let member = RawModuleRef {
+                                cache: frame.module.cache,
+                                module: member,
                             };
+                            let is_evaluating = matches!(
+                                self.module_record(member)?.evaluation,
+                                ModuleEvaluationState::Evaluating
+                            );
                             if !is_evaluating {
                                 return Err(RuntimeError::Invariant(
                                     "module evaluation SCC contained a non-evaluating member",
                                 ));
                             }
-                            *record.evaluation.borrow_mut() = ModuleEvaluationState::Evaluated;
-                            if member == frame.module.id {
+                            self.transition_module_record(
+                                member,
+                                RawModuleTransition::FinishEvaluation,
+                            )?;
+                            let popped = dfs.stack.pop().ok_or(RuntimeError::Invariant(
+                                "module evaluation SCC stack underflow after publication",
+                            ))?;
+                            if popped != member.module {
+                                return Err(RuntimeError::Invariant(
+                                    "module evaluation SCC stack changed during record publication",
+                                ));
+                            }
+                            if member.module == frame.module.module {
                                 break;
                             }
                         }
                     }
                 }
                 Completion::Return(_) => {
-                    *frame.module.record.evaluation.borrow_mut() = ModuleEvaluationState::Poisoned;
+                    self.transition_module_record(
+                        frame.module,
+                        RawModuleTransition::PoisonEvaluation,
+                    )?;
                     return Err(RuntimeError::Invariant(
                         "module evaluation returned a non-undefined value",
                     ));
@@ -2544,25 +2594,22 @@ impl Runtime {
                 }
             }
 
-            let still_evaluating = {
-                let evaluation = frame.module.record.evaluation.borrow();
-                matches!(&*evaluation, ModuleEvaluationState::Evaluating)
-            };
+            let still_evaluating = matches!(
+                self.module_record(frame.module)?.evaluation,
+                ModuleEvaluationState::Evaluating
+            );
             if still_evaluating {
                 let dependency_ancestor = dfs
                     .entries
-                    .get(&frame.module.id)
+                    .get(&frame.module.module)
                     .map(|entry| entry.ancestor)
                     .ok_or(RuntimeError::Invariant(
                         "evaluating dependency has no DFS entry",
                     ))?;
                 if let Some(parent) = frames.last() {
-                    let entry =
-                        dfs.entries
-                            .get_mut(&parent.module.id)
-                            .ok_or(RuntimeError::Invariant(
-                                "evaluating module lost its DFS entry",
-                            ))?;
+                    let entry = dfs.entries.get_mut(&parent.module.module).ok_or(
+                        RuntimeError::Invariant("evaluating module lost its DFS entry"),
+                    )?;
                     entry.ancestor = entry.ancestor.min(dependency_ancestor);
                 }
             }
@@ -2570,7 +2617,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn evaluate_module_graph(&self, module: &ModuleBytecodeRef) -> Result<Value, RuntimeError> {
+    fn evaluate_module_graph(&self, module: RawModuleRef) -> Result<Value, RuntimeError> {
         let mut dfs = ModuleEvaluationDfs::new();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             self.evaluate_module_dfs(module, &mut dfs)
@@ -2598,17 +2645,13 @@ impl Runtime {
                 let exception = dfs.exception.take().ok_or(RuntimeError::Invariant(
                     "module evaluation exception had no cached value",
                 ))?;
-                for id in dfs.stack {
-                    let record = module.graph.record(id)?;
-                    if matches!(
-                        &*record.evaluation.borrow(),
-                        ModuleEvaluationState::Evaluating
-                    ) {
-                        *record.evaluation.borrow_mut() =
-                            ModuleEvaluationState::Errored(exception.clone());
-                    }
+                if let Err(error) =
+                    self.cache_module_evaluation_exception(module.cache, &dfs.stack, &exception)
+                {
+                    self.poison_active_module_evaluations(module, &dfs.stack)?;
+                    return Err(error);
                 }
-                self.set_pending_exception(exception)?;
+                drop(exception);
                 Err(RuntimeError::Exception)
             }
             Err(error) => {
@@ -2618,19 +2661,75 @@ impl Runtime {
         }
     }
 
+    fn cache_module_evaluation_exception(
+        &self,
+        cache: ContextId,
+        active: &[ModuleId],
+        exception: &Value,
+    ) -> Result<(), RuntimeError> {
+        self.validate_value_domain(exception, "module evaluation exception")?;
+        let raw = self.raw_property_value(exception)?;
+        let mut evaluating = Vec::with_capacity(active.len());
+        for &id in active {
+            if matches!(
+                self.module_record(RawModuleRef { cache, module: id })?
+                    .evaluation,
+                ModuleEvaluationState::Evaluating
+            ) {
+                evaluating.push(id);
+            }
+        }
+        let mut state = self.0.state.borrow_mut();
+        state.retain_raw_root(&raw)?;
+        let retained_atoms = match &raw {
+            RawValue::Symbol(atom) => {
+                let count = evaluating.len();
+                let atoms = vec![*atom; count];
+                match Self::retain_module_atoms(&mut state, atoms) {
+                    Ok(atoms) => atoms,
+                    Err(error) => {
+                        state.release_owned_raw_root_committed(raw);
+                        return Err(error);
+                    }
+                }
+            }
+            _ => Vec::new(),
+        };
+        if let Err(error) = state
+            .heap
+            .publish_loaded_module_errors(cache, &evaluating, raw.clone())
+        {
+            state
+                .release_atoms(retained_atoms)
+                .expect("module evaluation error atom rollback failed");
+            state.release_owned_raw_root_committed(raw);
+            return Err(error.into());
+        }
+        // One extra owned occurrence was prepared with the cache batch, so
+        // pending-exception publication is now an infallible raw move.
+        let previous = state.pending_exception.replace(raw);
+        if let Some(previous) = previous {
+            state.release_owned_raw_root_committed(previous);
+        }
+        Ok(())
+    }
+
     fn poison_active_module_evaluations(
         &self,
-        module: &ModuleBytecodeRef,
+        module: RawModuleRef,
         active: &[ModuleId],
     ) -> Result<(), RuntimeError> {
         for id in active {
-            let record = module.graph.record(*id)?;
-            let is_evaluating = {
-                let evaluation = record.evaluation.borrow();
-                matches!(&*evaluation, ModuleEvaluationState::Evaluating)
+            let member = RawModuleRef {
+                cache: module.cache,
+                module: *id,
             };
+            let is_evaluating = matches!(
+                self.module_record(member)?.evaluation,
+                ModuleEvaluationState::Evaluating
+            );
             if is_evaluating {
-                *record.evaluation.borrow_mut() = ModuleEvaluationState::Poisoned;
+                self.transition_module_record(member, RawModuleTransition::PoisonEvaluation)?;
             }
         }
         Ok(())
@@ -2645,8 +2744,8 @@ impl Runtime {
             return Err(RuntimeError::WrongRuntime("module bytecode"));
         }
         self.0.state.borrow().heap.context(initiating_realm)?;
-        self.link_module_graph(module, initiating_realm)?;
-        self.evaluate_module_graph(module)
+        self.link_module_graph(module.raw, initiating_realm)?;
+        self.evaluate_module_graph(module.raw)
     }
 }
 
@@ -2677,13 +2776,11 @@ impl Context {
         source: &str,
         options: &CompileOptions,
     ) -> Result<ModuleBytecodeRef, RuntimeError> {
-        match self.runtime.compile_module_in_realm(
-            self.realm,
-            &self.module_graph,
-            source,
-            &options.filename,
-        )? {
-            ModuleCompilation::Published(module) => Ok(module),
+        match self
+            .runtime
+            .compile_module_in_realm(self.realm, source, &options.filename)?
+        {
+            ModuleCompilation::Published(module) => self.runtime.root_module(module),
             ModuleCompilation::Throw(exception) => {
                 self.runtime.set_pending_exception(exception)?;
                 Err(RuntimeError::Exception)
@@ -2706,7 +2803,7 @@ impl Context {
             return Err(RuntimeError::WrongRuntime("module bytecode"));
         }
         self.runtime.0.state.borrow().heap.context(self.realm)?;
-        self.runtime.link_module_graph(module, self.realm)
+        self.runtime.link_module_graph(module.raw, self.realm)
     }
 }
 
@@ -3987,6 +4084,45 @@ mod tests {
     }
 
     #[test]
+    fn failed_resolution_leaves_a_permanent_module_cache_tombstone() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+
+        assert!(matches!(
+            context.compile_module_with_filename("import './missing.js';", "pkg/failed.js"),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap();
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .loaded_module_slot_count(context.realm)
+                .unwrap(),
+            1
+        );
+
+        let replacement = context
+            .compile_module_with_filename("export const ok = true;", "pkg/failed.js")
+            .unwrap();
+        assert_eq!(replacement.raw.module.0, 1);
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .loaded_module_slot_count(context.realm)
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
     fn failed_resolution_rolls_back_every_active_loaded_module() {
         let runtime = Runtime::new();
         let (loader, sources, loads) = MutableMapModuleLoader::new([
@@ -4613,7 +4749,10 @@ mod tests {
                 Some(Value::Object(_))
             ));
             for member in [&module, &a, &b] {
-                assert_eq!(member.record.link_status.get(), ModuleLinkStatus::Unlinked);
+                assert_eq!(
+                    runtime.module_record(member.raw).unwrap().link_status,
+                    ModuleLinkStatus::Unlinked
+                );
             }
         }
         assert_script_true(&mut context, "typeof __cycleLinkBody === 'undefined'");
@@ -4994,7 +5133,7 @@ mod tests {
             )
             .unwrap();
         runtime
-            .prepare_module_instance(&module, context.realm)
+            .prepare_module_instance(module.raw, context.realm)
             .unwrap();
 
         for _ in 0..2 {
@@ -5003,7 +5142,7 @@ mod tests {
                 Err(RuntimeError::Exception)
             );
             assert!(matches!(
-                &*module.record.namespace.borrow(),
+                runtime.module_record(module.raw).unwrap().namespace,
                 ModuleNamespaceState::Empty
             ));
             assert!(matches!(
@@ -5142,8 +5281,8 @@ mod tests {
             assert_eq!(context.take_exception().unwrap(), Some(Value::Int(42)));
             for member in [&module, &a, &b] {
                 assert!(matches!(
-                    &*member.record.evaluation.borrow(),
-                    ModuleEvaluationState::Errored(Value::Int(42))
+                    runtime.module_record(member.raw).unwrap().evaluation,
+                    ModuleEvaluationState::Errored(RawValue::Int(42))
                 ));
             }
         }
@@ -5382,6 +5521,51 @@ mod tests {
     }
 
     #[test]
+    fn module_evaluation_cache_owns_symbol_atoms_until_the_cache_dies() {
+        let runtime = Runtime::new();
+        let baseline_atoms = runtime.test_atom_count();
+        let module = {
+            let mut compilation_context = runtime.new_context();
+            compilation_context
+                .compile_module("throw Symbol('cached module symbol')")
+                .unwrap()
+        };
+
+        let first_symbol = {
+            let mut first_context = runtime.new_context();
+            assert_eq!(
+                first_context.execute_module(&module),
+                Err(RuntimeError::Exception)
+            );
+            let Some(Value::Symbol(symbol)) = first_context.take_exception().unwrap() else {
+                panic!("module evaluation did not throw a Symbol");
+            };
+            symbol
+        };
+        runtime.run_gc().unwrap();
+
+        let second_symbol = {
+            let mut second_context = runtime.new_context();
+            assert_eq!(
+                second_context.execute_module(&module),
+                Err(RuntimeError::Exception)
+            );
+            let Some(Value::Symbol(symbol)) = second_context.take_exception().unwrap() else {
+                panic!("cached module evaluation did not rethrow a Symbol");
+            };
+            symbol
+        };
+        assert_eq!(second_symbol, first_symbol);
+
+        drop(second_symbol);
+        drop(first_symbol);
+        drop(module);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 0);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+
+    #[test]
     fn direct_eval_uses_module_live_cells_without_leaking_eval_var() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -5525,6 +5709,78 @@ mod tests {
         drop(surviving_handle);
         runtime.run_gc().unwrap();
         assert_eq!(runtime.heap_counts().context_nodes, 0);
+    }
+
+    #[test]
+    fn cross_linked_module_caches_do_not_leak_a_context_cycle() {
+        let runtime = Runtime::new();
+        let mut first_context = runtime.new_context();
+        let mut second_context = runtime.new_context();
+        let first_module = first_context
+            .compile_module("globalThis.__firstCrossCacheModule = 1")
+            .unwrap();
+        let second_module = second_context
+            .compile_module("globalThis.__secondCrossCacheModule = 2")
+            .unwrap();
+
+        second_context.execute_module(&first_module).unwrap();
+        first_context.execute_module(&second_module).unwrap();
+
+        assert_eq!(
+            runtime.module_record(first_module.raw).unwrap().link_realm,
+            Some(RawModuleLinkRealm::Other(second_context.realm))
+        );
+        assert_eq!(
+            runtime.module_record(second_module.raw).unwrap().link_realm,
+            Some(RawModuleLinkRealm::Other(first_context.realm))
+        );
+        assert_eq!(runtime.heap_counts().context_nodes, 2);
+
+        drop(first_module);
+        drop(second_module);
+        drop(first_context);
+        drop(second_context);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 0);
+    }
+
+    #[test]
+    fn loaded_module_validator_rejects_internal_sentinels_and_cache_self_edges_atomically() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let module = context.compile_module("export const answer = 42").unwrap();
+        let raw = module.raw;
+
+        assert!(matches!(
+            runtime.mutate_module_record(raw, |record| {
+                record.evaluation = ModuleEvaluationState::Errored(RawValue::Exception);
+                Ok(())
+            }),
+            Err(RuntimeError::Heap(HeapError::Invariant(
+                "loaded-module record contains an internal value sentinel"
+            )))
+        ));
+        assert!(matches!(
+            runtime.module_record(raw).unwrap().evaluation,
+            ModuleEvaluationState::Unevaluated
+        ));
+
+        assert!(matches!(
+            runtime.mutate_module_record(raw, |record| {
+                record.instance = Some(ModuleInstance {
+                    slots: Vec::new(),
+                    callable: None,
+                });
+                record.link_realm = Some(RawModuleLinkRealm::Other(raw.cache));
+                Ok(())
+            }),
+            Err(RuntimeError::Heap(HeapError::Invariant(
+                "loaded-module cache realm escaped through an Other link edge"
+            )))
+        ));
+        let record = runtime.module_record(raw).unwrap();
+        assert!(record.instance.is_none());
+        assert!(record.link_realm.is_none());
     }
 
     #[test]

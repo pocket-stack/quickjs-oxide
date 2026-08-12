@@ -76,15 +76,19 @@ use crate::heap::{
     ForInIteratorData, ForInProperty, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
     FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GeneratorRealmData,
     GeneratorResumeKind, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup,
-    HeapCounts, HeapError, JsonNativeKind, MathBinaryKind, MathMinMaxKind, MathUnaryKind,
+    HeapCounts, HeapError, JsonNativeKind, MathBinaryKind, MathMinMaxKind, MathUnaryKind, ModuleId,
     NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
     ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
     ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
     ParameterEnvironmentLayout, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    PublishedPrivateBindings, RawValue, ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind,
-    StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind, StringPadKind,
-    StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind, StringWellFormedKind,
-    SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition, WeakSymbolGcEvent,
+    PublishedPrivateBindings, RawModuleEvaluationState, RawModuleInstance, RawModuleLinkRealm,
+    RawModuleLinkStatus, RawModuleNamespaceState, RawModuleRecord, RawModuleRecordBody,
+    RawModuleRef, RawModuleResolutionState, RawModuleTransition, RawPublishedModuleExport,
+    RawPublishedModuleExportTarget, RawValue, ReflectKind, RegExpNativeKind, ShapeId,
+    StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind,
+    StringPadKind, StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind,
+    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    WeakSymbolGcEvent,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -953,7 +957,6 @@ impl Runtime {
             runtime: self.clone(),
             id,
             realm,
-            module_graph: Rc::new(module::ModuleGraph::new()),
         };
         self.0
             .state
@@ -9200,6 +9203,63 @@ fn raw_string_property_one_level(
 }
 
 impl RuntimeState {
+    fn preflight_atom_releases(&self, atoms: &[Atom]) -> Result<(), RuntimeError> {
+        let mut counts = HashMap::<Atom, u32>::new();
+        counts.try_reserve(atoms.len()).map_err(|_| {
+            RuntimeError::Invariant("module atom release preflight allocation failed")
+        })?;
+        for &atom in atoms {
+            let count = counts.entry(atom).or_default();
+            *count = count.checked_add(1).ok_or(RuntimeError::Invariant(
+                "module atom release count overflow",
+            ))?;
+        }
+        for (atom, removed) in counts {
+            let info = self.atoms.resolve(atom)?;
+            if let Some(ref_count) = info.ref_count
+                && ref_count < removed
+            {
+                return Err(RuntimeError::Invariant(
+                    "module atom release exceeds its owned occurrences",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_committed_cleanup(&mut self, cleanup: HeapCleanup) {
+        self.unlink_finalized_shapes(cleanup.finalized_shape_ids);
+        self.release_atoms(cleanup.atoms)
+            .expect("committed heap cleanup atom release failed");
+    }
+
+    fn release_owned_raw_root_committed(&mut self, value: RawValue) {
+        match value {
+            RawValue::Object(object) => {
+                let cleanup = self
+                    .heap
+                    .release_object(object)
+                    .expect("committed pending-exception object release failed");
+                self.apply_committed_cleanup(cleanup);
+            }
+            RawValue::Symbol(atom) => {
+                self.atoms
+                    .release(atom)
+                    .expect("committed pending-exception Symbol release failed");
+            }
+            RawValue::Undefined
+            | RawValue::Null
+            | RawValue::Bool(_)
+            | RawValue::Int(_)
+            | RawValue::Float(_)
+            | RawValue::BigInt(_)
+            | RawValue::String(_) => {}
+            RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception => {
+                unreachable!("internal value occupied committed pending-exception storage")
+            }
+        }
+    }
+
     fn retain_raw_root(&mut self, value: &RawValue) -> Result<(), RuntimeError> {
         match value {
             RawValue::Object(object) => self.heap.retain_object(*object)?,
@@ -9639,7 +9699,6 @@ pub struct Context {
     runtime: Runtime,
     id: u64,
     realm: ContextId,
-    module_graph: Rc<module::ModuleGraph>,
 }
 
 impl Clone for Context {
@@ -9651,7 +9710,6 @@ impl Clone for Context {
             runtime: self.runtime.clone(),
             id: self.id,
             realm: self.realm,
-            module_graph: self.module_graph.clone(),
         }
     }
 }

@@ -9,9 +9,10 @@
 //! - zero-reference destruction is driven by an iterative queue;
 //! - cycle collection computes external references as
 //!   `strong_count - internal_incoming_count`, marks their closure, and then
-//!   actively dismantles unreachable object and function-bytecode anchors;
-//! - shapes, variable-reference cells, and contexts participate in the graph,
-//!   but cascade from active anchor destruction rather than acting as cycle
+//!   actively dismantles unreachable object, function-bytecode, and context
+//!   anchors;
+//! - shapes and variable-reference cells participate in the graph, but
+//!   cascade from active anchor destruction rather than acting as cycle
 //!   anchors.
 //!
 //! Atom ownership remains at the runtime boundary.  A shape is expected to
@@ -23,6 +24,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
+use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::atom::Atom;
@@ -30,6 +32,10 @@ use crate::bigint::JsBigInt;
 use crate::bytecode::{Instruction, MAX_LOCAL_SLOTS, PrivateNameSource};
 use crate::debug::Pc2LineTable;
 use crate::error::NativeErrorKind;
+use crate::module::{
+    ModuleImport, ModuleImportCollision, ModuleImportName, ModuleLinkInitializer, ModuleRequest,
+    ModuleRequestIndex, ModuleStarExport,
+};
 use crate::regexp::CompiledRegExp;
 use crate::shape::{PropertyFlags, PropertyStorageKind, Shape, ShapeError};
 use crate::shared_memory::{SharedBufferHandle, SharedMemoryError};
@@ -308,6 +314,157 @@ pub enum RawValue {
     Object(ObjectId),
     Uninitialized,
     Exception,
+}
+
+/// Append-only identity of one module record in a Context-owned loaded-module
+/// cache. A removed record leaves a tombstone and its identity is never
+/// reused, matching the construction-order identity of QuickJS's
+/// `JSContext.loaded_modules` list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ModuleId(pub(crate) usize);
+
+/// Runtime-internal module identity. `cache` is the defining Context whose
+/// loaded-module cache owns `module`; all dependency indices in that record
+/// refer to the same cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RawModuleRef {
+    pub(crate) cache: ContextId,
+    pub(crate) module: ModuleId,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RawPublishedModuleExport {
+    pub(crate) export_name: JsString,
+    pub(crate) target: RawPublishedModuleExportTarget,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RawPublishedModuleExportTarget {
+    SourceTextLocal {
+        closure_index: u16,
+    },
+    SyntheticLocal {
+        cell_index: u16,
+    },
+    Indirect {
+        request: ModuleRequestIndex,
+        import_name: ModuleImportName,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RawModuleRecordBody {
+    SourceText { function: FunctionBytecodeId },
+    Json { default_value: RawValue },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RawModuleResolutionState {
+    Unresolved,
+    Resolving,
+    Resolved(Rc<[ModuleId]>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RawModuleInstance {
+    pub(crate) slots: Vec<Option<VarRefId>>,
+    pub(crate) callable: Option<ObjectId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RawModuleNamespaceState {
+    Empty,
+    Building(ObjectId),
+    Ready(ObjectId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RawModuleLinkStatus {
+    Unlinked,
+    Linking,
+    Linked,
+    Poisoned,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RawModuleEvaluationState {
+    Unevaluated,
+    Evaluating,
+    Evaluated,
+    Errored(RawValue),
+    Poisoned,
+}
+
+/// First-execution realm retained by a linked module record. The defining
+/// cache realm is represented without a heap edge because the Context already
+/// owns the loaded-module record; only a distinct realm is an outgoing edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RawModuleLinkRealm {
+    Cache,
+    Other(ContextId),
+}
+
+/// Sealed, allocation-free metadata transitions for one loaded module. Every
+/// variant changes exactly one non-owning field after authenticating its
+/// precise predecessor state; ownership-bearing record changes must use the
+/// transactional publication APIs instead.
+pub(crate) enum RawModuleTransition {
+    BeginResolution,
+    FinishResolution(Rc<[ModuleId]>),
+    ResetResolution,
+    BeginLink,
+    FinishLink,
+    ResetLink,
+    PoisonLink,
+    BeginEvaluation,
+    FinishEvaluation,
+    PoisonEvaluation,
+    FinishNamespace(ObjectId),
+}
+
+/// Raw Context-owned counterpart of QuickJS's `JSModuleDef`.
+///
+/// Cloning this structure creates only a borrowed snapshot: arena identities
+/// and Symbol atoms are retained exclusively by the containing ContextData.
+/// A snapshot must therefore not outlive the cache root or be used after a
+/// mutation releases one of its raw fields unless that field was promoted to
+/// an owning runtime root first.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RawModuleRecord {
+    pub(crate) name: JsString,
+    pub(crate) body: RawModuleRecordBody,
+    pub(crate) declaration_order: Rc<[u16]>,
+    pub(crate) link_initializers: Rc<[ModuleLinkInitializer]>,
+    pub(crate) import_collisions: Rc<[ModuleImportCollision]>,
+    pub(crate) requested_modules: Rc<[ModuleRequest]>,
+    pub(crate) imports: Rc<[ModuleImport]>,
+    pub(crate) exports: Rc<[RawPublishedModuleExport]>,
+    pub(crate) star_exports: Rc<[ModuleStarExport]>,
+    pub(crate) resolution: RawModuleResolutionState,
+    pub(crate) instance: Option<RawModuleInstance>,
+    pub(crate) namespace: RawModuleNamespaceState,
+    pub(crate) link_status: RawModuleLinkStatus,
+    pub(crate) evaluation: RawModuleEvaluationState,
+    pub(crate) link_realm: Option<RawModuleLinkRealm>,
+    pub(crate) compile_realm: ContextId,
+}
+
+/// Construction-ordered loaded modules for one Context. Slots are never
+/// compacted or reused: rollback changes a slot to `None`, while the name map
+/// continues to point at the oldest remaining live record.
+#[derive(Debug, PartialEq)]
+pub(crate) struct LoadedModuleCache {
+    records: Vec<Option<RawModuleRecord>>,
+    first_by_name: HashMap<JsString, ModuleId>,
+}
+
+impl LoadedModuleCache {
+    fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            first_by_name: HashMap::new(),
+        }
+    }
 }
 
 /// Parallel property payload for one shape entry.
@@ -645,6 +802,9 @@ pub struct ContextData {
     pub global_objects: Vec<ObjectId>,
     pub intrinsics: Vec<RawValue>,
     pub initial_shapes: Vec<ShapeId>,
+    /// Context-local `JSModuleDef` ownership, matching QuickJS's
+    /// `JSContext.loaded_modules` rather than a Rust-side parallel graph.
+    pub(crate) loaded_modules: LoadedModuleCache,
 }
 
 impl ContextData {
@@ -656,7 +816,7 @@ impl ContextData {
     /// `%Object.prototype%`.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
-    pub const fn new(
+    pub fn new(
         object_prototype: ObjectId,
         function_prototype: ObjectId,
         array_prototype: ObjectId,
@@ -703,6 +863,7 @@ impl ContextData {
             global_objects: Vec::new(),
             intrinsics: Vec::new(),
             initial_shapes: Vec::new(),
+            loaded_modules: LoadedModuleCache::new(),
         }
     }
 
@@ -11872,6 +12033,826 @@ impl Heap {
         }
     }
 
+    /// Return the oldest live loaded module with `name` in this Context.
+    pub(crate) fn first_loaded_module(
+        &self,
+        cache: ContextId,
+        name: &JsString,
+    ) -> Result<Option<RawModuleRef>, HeapError> {
+        let context = self.context(cache)?;
+        let Some(module) = context.loaded_modules.first_by_name.get(name).copied() else {
+            return Ok(None);
+        };
+        if context
+            .loaded_modules
+            .records
+            .get(module.0)
+            .and_then(Option::as_ref)
+            .is_none()
+        {
+            return Err(HeapError::Invariant(
+                "loaded-module name index references a tombstone",
+            ));
+        }
+        Ok(Some(RawModuleRef { cache, module }))
+    }
+
+    /// Clone a borrowed snapshot of one Context-owned module record.
+    /// Raw identities in the result are not independently retained.
+    pub(crate) fn loaded_module(&self, module: RawModuleRef) -> Result<RawModuleRecord, HeapError> {
+        self.context(module.cache)?
+            .loaded_modules
+            .records
+            .get(module.module.0)
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or(HeapError::Invariant(
+                "loaded-module identity is out of bounds or tombstoned",
+            ))
+    }
+
+    /// Borrowed snapshots of every live record in construction order.
+    pub(crate) fn loaded_modules(
+        &self,
+        cache: ContextId,
+    ) -> Result<Vec<(ModuleId, RawModuleRecord)>, HeapError> {
+        Ok(self
+            .context(cache)?
+            .loaded_modules
+            .records
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| {
+                record
+                    .as_ref()
+                    .cloned()
+                    .map(|record| (ModuleId(index), record))
+            })
+            .collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn loaded_module_slot_count(&self, cache: ContextId) -> Result<usize, HeapError> {
+        Ok(self.context(cache)?.loaded_modules.records.len())
+    }
+
+    /// Apply one sealed metadata-only transition without allocating or
+    /// perturbing any heap/atom ownership.
+    pub(crate) fn transition_loaded_module(
+        &mut self,
+        module: RawModuleRef,
+        transition: RawModuleTransition,
+    ) -> Result<(), HeapError> {
+        if let RawModuleTransition::FinishResolution(dependencies) = &transition {
+            let context = self.context(module.cache)?;
+            for dependency in dependencies.iter().copied() {
+                if context
+                    .loaded_modules
+                    .records
+                    .get(dependency.0)
+                    .and_then(Option::as_ref)
+                    .is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "resolved loaded-module transition references a missing cache record",
+                    ));
+                }
+            }
+        }
+        if let RawModuleTransition::FinishNamespace(namespace) = &transition {
+            if self.object(*namespace)?.kind != ObjectKind::ModuleNamespace {
+                return Err(HeapError::Invariant(
+                    "loaded-module namespace transition has the wrong object class",
+                ));
+            }
+        }
+
+        if matches!(
+            &transition,
+            RawModuleTransition::BeginLink | RawModuleTransition::FinishLink
+        ) {
+            let record = self.loaded_module(module)?;
+            self.validate_loaded_module_record(module.cache, &record)?;
+            let instance = record.instance.as_ref().ok_or(HeapError::Invariant(
+                "loaded-module link transition has no instance",
+            ))?;
+            if matches!(&transition, RawModuleTransition::FinishLink) {
+                if instance.slots.iter().any(Option::is_none) {
+                    return Err(HeapError::Invariant(
+                        "loaded-module link transition has unresolved closure slots",
+                    ));
+                }
+                if matches!(record.body, RawModuleRecordBody::SourceText { .. })
+                    && instance.callable.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "loaded-module link transition has no source callable",
+                    ));
+                }
+            }
+        }
+
+        let record = self.loaded_module_record_mut(module)?;
+        match transition {
+            RawModuleTransition::BeginResolution => match record.resolution {
+                RawModuleResolutionState::Unresolved => {
+                    record.resolution = RawModuleResolutionState::Resolving;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module resolution did not begin from Unresolved",
+                    ));
+                }
+            },
+            RawModuleTransition::FinishResolution(dependencies) => match record.resolution {
+                RawModuleResolutionState::Resolving => {
+                    record.resolution = RawModuleResolutionState::Resolved(dependencies);
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module resolution did not finish from Resolving",
+                    ));
+                }
+            },
+            RawModuleTransition::ResetResolution => match record.resolution {
+                RawModuleResolutionState::Resolving => {
+                    record.resolution = RawModuleResolutionState::Unresolved;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module resolution reset did not target Resolving",
+                    ));
+                }
+            },
+            RawModuleTransition::BeginLink => match record.link_status {
+                RawModuleLinkStatus::Unlinked
+                    if matches!(record.resolution, RawModuleResolutionState::Resolved(_))
+                        && record.instance.is_some()
+                        && record.link_realm.is_some() =>
+                {
+                    record.link_status = RawModuleLinkStatus::Linking;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module link did not begin from resolved instantiated Unlinked state",
+                    ));
+                }
+            },
+            RawModuleTransition::FinishLink => match record.link_status {
+                RawModuleLinkStatus::Linking if record.instance.is_some() => {
+                    record.link_status = RawModuleLinkStatus::Linked;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module link did not finish from instantiated Linking state",
+                    ));
+                }
+            },
+            RawModuleTransition::ResetLink => match record.link_status {
+                RawModuleLinkStatus::Linking => record.link_status = RawModuleLinkStatus::Unlinked,
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module link reset did not target Linking",
+                    ));
+                }
+            },
+            RawModuleTransition::PoisonLink => match record.link_status {
+                RawModuleLinkStatus::Linking => record.link_status = RawModuleLinkStatus::Poisoned,
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module link poison did not target Linking",
+                    ));
+                }
+            },
+            RawModuleTransition::BeginEvaluation => match record.evaluation {
+                RawModuleEvaluationState::Unevaluated
+                    if matches!(record.link_status, RawModuleLinkStatus::Linked) =>
+                {
+                    record.evaluation = RawModuleEvaluationState::Evaluating;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module evaluation did not begin from linked Unevaluated state",
+                    ));
+                }
+            },
+            RawModuleTransition::FinishEvaluation => match record.evaluation {
+                RawModuleEvaluationState::Evaluating
+                    if matches!(record.link_status, RawModuleLinkStatus::Linked) =>
+                {
+                    record.evaluation = RawModuleEvaluationState::Evaluated;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module evaluation did not finish from linked Evaluating state",
+                    ));
+                }
+            },
+            RawModuleTransition::PoisonEvaluation => match record.evaluation {
+                RawModuleEvaluationState::Evaluating => {
+                    record.evaluation = RawModuleEvaluationState::Poisoned;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module evaluation poison did not target Evaluating",
+                    ));
+                }
+            },
+            RawModuleTransition::FinishNamespace(namespace) => match record.namespace {
+                RawModuleNamespaceState::Building(current) if current == namespace => {
+                    record.namespace = RawModuleNamespaceState::Ready(namespace);
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module namespace did not finish from matching Building state",
+                    ));
+                }
+            },
+        }
+        Ok(())
+    }
+
+    fn loaded_module_record_mut(
+        &mut self,
+        module: RawModuleRef,
+    ) -> Result<&mut RawModuleRecord, HeapError> {
+        let NodeData::Context(context) =
+            &mut self.live_node_mut(RawId::Context(module.cache))?.data
+        else {
+            return Err(HeapError::Invariant(
+                "loaded-module mutation reached another node payload",
+            ));
+        };
+        context
+            .loaded_modules
+            .records
+            .get_mut(module.module.0)
+            .and_then(Option::as_mut)
+            .ok_or(HeapError::Invariant(
+                "loaded-module mutation reached a missing cache record",
+            ))
+    }
+
+    fn validate_loaded_module_record(
+        &self,
+        cache: ContextId,
+        record: &RawModuleRecord,
+    ) -> Result<(), HeapError> {
+        self.context(cache)?;
+        if record.compile_realm != cache {
+            return Err(HeapError::Invariant(
+                "loaded-module compilation realm disagrees with its Context cache",
+            ));
+        }
+        if record.instance.is_some() != record.link_realm.is_some() {
+            return Err(HeapError::Invariant(
+                "loaded-module instance and link realm ownership disagree",
+            ));
+        }
+        if let Some(link_realm) = record.link_realm {
+            match link_realm {
+                RawModuleLinkRealm::Cache => {}
+                RawModuleLinkRealm::Other(realm) => {
+                    if realm == cache {
+                        return Err(HeapError::Invariant(
+                            "loaded-module cache realm escaped through an Other link edge",
+                        ));
+                    }
+                    self.context(realm)?;
+                }
+            }
+        }
+        let source_function = match &record.body {
+            RawModuleRecordBody::SourceText { function } => {
+                if self.function_bytecode(*function)?.realm != cache {
+                    return Err(HeapError::Invariant(
+                        "loaded-module source bytecode belongs to another realm",
+                    ));
+                }
+                Some(*function)
+            }
+            RawModuleRecordBody::Json { default_value } => {
+                validate_module_storable_value(default_value)?;
+                None
+            }
+        };
+        if let RawModuleEvaluationState::Errored(exception) = &record.evaluation {
+            validate_module_storable_value(exception)?;
+        }
+        if let Some(instance) = &record.instance {
+            for slot in instance.slots.iter().flatten().copied() {
+                self.var_ref(slot)?;
+            }
+            match source_function {
+                Some(function) => {
+                    if instance.slots.len()
+                        != self.function_bytecode(function)?.closure_variables.len()
+                    {
+                        return Err(HeapError::Invariant(
+                            "loaded-module source instance has the wrong closure slot count",
+                        ));
+                    }
+                    if let Some(callable) = instance.callable {
+                        let ObjectPayload::BytecodeFunction {
+                            bytecode,
+                            closure_slots,
+                            ..
+                        } = &self.object(callable)?.payload
+                        else {
+                            return Err(HeapError::Invariant(
+                                "loaded-module source callable is not a bytecode function",
+                            ));
+                        };
+                        if *bytecode != function
+                            || instance.slots.iter().copied().collect::<Option<Vec<_>>>()
+                                != Some(closure_slots.clone())
+                        {
+                            return Err(HeapError::Invariant(
+                                "loaded-module callable does not match its source instance",
+                            ));
+                        }
+                    }
+                }
+                None => {
+                    if instance.slots.len() != 1 || instance.callable.is_some() {
+                        return Err(HeapError::Invariant(
+                            "loaded-module JSON instance has an invalid environment",
+                        ));
+                    }
+                }
+            }
+        }
+        match record.namespace {
+            RawModuleNamespaceState::Empty => {}
+            RawModuleNamespaceState::Building(namespace)
+            | RawModuleNamespaceState::Ready(namespace) => {
+                if self.object(namespace)?.kind != ObjectKind::ModuleNamespace {
+                    return Err(HeapError::Invariant(
+                        "loaded-module namespace has the wrong object class",
+                    ));
+                }
+                if record.instance.is_none() {
+                    return Err(HeapError::Invariant(
+                        "loaded-module namespace exists without an instance",
+                    ));
+                }
+            }
+        }
+        if (record.instance.is_some()
+            || !matches!(record.namespace, RawModuleNamespaceState::Empty)
+            || !matches!(record.link_status, RawModuleLinkStatus::Unlinked))
+            && !matches!(record.resolution, RawModuleResolutionState::Resolved(_))
+        {
+            return Err(HeapError::Invariant(
+                "loaded-module active state is not resolved",
+            ));
+        }
+        if matches!(record.link_status, RawModuleLinkStatus::Linked) {
+            let Some(instance) = &record.instance else {
+                return Err(HeapError::Invariant(
+                    "linked loaded-module has no instantiated environment",
+                ));
+            };
+            if instance.slots.iter().any(Option::is_none)
+                || source_function.is_some() && instance.callable.is_none()
+            {
+                return Err(HeapError::Invariant(
+                    "linked loaded-module has an incomplete instance",
+                ));
+            }
+        }
+        if !matches!(record.evaluation, RawModuleEvaluationState::Unevaluated)
+            && !matches!(record.link_status, RawModuleLinkStatus::Linked)
+        {
+            return Err(HeapError::Invariant(
+                "active loaded-module evaluation is not linked",
+            ));
+        }
+        if let RawModuleResolutionState::Resolved(dependencies) = &record.resolution {
+            let context = self.context(cache)?;
+            for dependency in dependencies.iter().copied() {
+                if context
+                    .loaded_modules
+                    .records
+                    .get(dependency.0)
+                    .and_then(Option::as_ref)
+                    .is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "loaded-module dependency references a missing cache record",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Publish a module at the tail of this Context's construction-ordered
+    /// cache. All arena edges are retained before the record becomes visible.
+    pub(crate) fn publish_loaded_module(
+        &mut self,
+        cache: ContextId,
+        record: RawModuleRecord,
+    ) -> Result<RawModuleRef, HeapError> {
+        self.validate_loaded_module_record(cache, &record)?;
+        let cache_index = self.live_index(RawId::Context(cache))?;
+        {
+            let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(cache))?.data
+            else {
+                return Err(HeapError::Invariant(
+                    "loaded-module publication reached another node payload",
+                ));
+            };
+            context
+                .loaded_modules
+                .records
+                .try_reserve(1)
+                .map_err(|_| HeapError::Allocation {
+                    operation: "growing a loaded-module cache",
+                })?;
+            if !context
+                .loaded_modules
+                .first_by_name
+                .contains_key(&record.name)
+            {
+                context
+                    .loaded_modules
+                    .first_by_name
+                    .try_reserve(1)
+                    .map_err(|_| HeapError::Allocation {
+                        operation: "growing a loaded-module name index",
+                    })?;
+            }
+        }
+        let edges = raw_module_record_edges(&record);
+        let name = record.name.clone();
+        self.retain_edges_transactionally(&edges)?;
+
+        let SlotState::Live(node) = &mut self.slots[cache_index].state else {
+            unreachable!("authenticated loaded-module cache disappeared before publication")
+        };
+        let NodeData::Context(context) = &mut node.data else {
+            unreachable!("authenticated loaded-module cache changed node kind before publication")
+        };
+        let module = ModuleId(context.loaded_modules.records.len());
+        context.loaded_modules.records.push(Some(record));
+        context
+            .loaded_modules
+            .first_by_name
+            .entry(name)
+            .or_insert(module);
+        Ok(RawModuleRef { cache, module })
+    }
+
+    /// Atomically replace one module record. Replacement edges are retained
+    /// before publication; detached edges are released only after the swap.
+    pub(crate) fn replace_loaded_module(
+        &mut self,
+        module: RawModuleRef,
+        replacement: RawModuleRecord,
+    ) -> Result<HeapCleanup, HeapError> {
+        let current = self.loaded_module(module)?;
+        self.validate_loaded_module_record(module.cache, &replacement)?;
+        if replacement.name != current.name {
+            return Err(HeapError::Invariant(
+                "loaded-module replacement changed its cache name",
+            ));
+        }
+        if replacement.compile_realm != module.cache
+            || replacement.compile_realm != current.compile_realm
+        {
+            return Err(HeapError::Invariant(
+                "loaded-module replacement changed its compilation cache",
+            ));
+        }
+        let cache_index = self.live_index(RawId::Context(module.cache))?;
+
+        let old_edges = raw_module_record_edges(&current);
+        let new_edges = raw_module_record_edges(&replacement);
+        let added_edges = multiset_difference(
+            &new_edges,
+            &old_edges,
+            "computing added loaded-module edges",
+        )?;
+        let removed_edges = multiset_difference(
+            &old_edges,
+            &new_edges,
+            "computing removed loaded-module edges",
+        )?;
+        let old_atoms = raw_module_record_atoms(&current).collect::<Vec<_>>();
+        let new_atoms = raw_module_record_atoms(&replacement).collect::<Vec<_>>();
+        let removed_atoms = multiset_difference(
+            &old_atoms,
+            &new_atoms,
+            "computing removed loaded-module atoms",
+        )?;
+        self.preflight_module_edge_releases(&removed_edges)?;
+        let mut cleanup = HeapCleanup {
+            atoms: removed_atoms,
+            ..HeapCleanup::default()
+        };
+        self.retain_edges_transactionally(&added_edges)?;
+
+        let SlotState::Live(node) = &mut self.slots[cache_index].state else {
+            unreachable!("authenticated loaded-module cache disappeared before replacement")
+        };
+        let NodeData::Context(context) = &mut node.data else {
+            unreachable!("authenticated loaded-module cache changed node kind before replacement")
+        };
+        let slot = context
+            .loaded_modules
+            .records
+            .get_mut(module.module.0)
+            .and_then(Option::as_mut)
+            .expect("authenticated loaded-module record disappeared before replacement");
+        let previous = std::mem::replace(slot, replacement);
+        drop(previous);
+
+        cleanup.merge(self.release_preflighted_module_edges(&removed_edges));
+        Ok(cleanup)
+    }
+
+    /// Atomically tombstone a validated set of records in one Context cache.
+    /// The caller supplies the already-computed rollback set; its membership
+    /// and ordering policy remain outside this ownership primitive.
+    pub(crate) fn unpublish_loaded_modules(
+        &mut self,
+        cache: ContextId,
+        modules: &[ModuleId],
+    ) -> Result<HeapCleanup, HeapError> {
+        let mut unique = HashSet::new();
+        unique
+            .try_reserve(modules.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "validating loaded-module removal batch",
+            })?;
+        let mut records = Vec::new();
+        records
+            .try_reserve(modules.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "preparing loaded-module removal batch",
+            })?;
+        for &module in modules {
+            if !unique.insert(module) {
+                return Err(HeapError::Invariant(
+                    "loaded-module removal batch contains a duplicate identity",
+                ));
+            }
+            records.push((module, self.loaded_module(RawModuleRef { cache, module })?));
+        }
+        let context = self.context(cache)?;
+        for record in context.loaded_modules.records.iter().flatten() {
+            if !context
+                .loaded_modules
+                .first_by_name
+                .contains_key(&record.name)
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module oldest-name index is incomplete",
+                ));
+            }
+        }
+        for (name, first) in &context.loaded_modules.first_by_name {
+            let record = context
+                .loaded_modules
+                .records
+                .get(first.0)
+                .and_then(Option::as_ref)
+                .ok_or(HeapError::Invariant(
+                    "loaded-module oldest-name index references a tombstone",
+                ))?;
+            if &record.name != name {
+                return Err(HeapError::Invariant(
+                    "loaded-module oldest-name index references another name",
+                ));
+            }
+            if context.loaded_modules.records[..first.0]
+                .iter()
+                .flatten()
+                .any(|earlier| &earlier.name == name)
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module name index does not reference the oldest live record",
+                ));
+            }
+        }
+
+        for (index, record) in context.loaded_modules.records.iter().enumerate() {
+            if unique.contains(&ModuleId(index)) {
+                continue;
+            }
+            if let Some(record) = record
+                && let RawModuleResolutionState::Resolved(dependencies) = &record.resolution
+                && dependencies
+                    .iter()
+                    .any(|dependency| unique.contains(dependency))
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module removal leaves a live dependency on a tombstone",
+                ));
+            }
+        }
+
+        // `JsString` mutates only transparent rope caches; its UTF-16
+        // equality/hash identity is stable while used as a module-name key.
+        #[allow(clippy::mutable_key_type)]
+        let mut rebuilt_first_by_name = HashMap::new();
+        rebuilt_first_by_name
+            .try_reserve(context.loaded_modules.first_by_name.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "rebuilding loaded-module oldest-name index",
+            })?;
+        for (index, record) in context.loaded_modules.records.iter().enumerate() {
+            if unique.contains(&ModuleId(index)) {
+                continue;
+            }
+            if let Some(record) = record {
+                rebuilt_first_by_name
+                    .entry(record.name.clone())
+                    .or_insert(ModuleId(index));
+            }
+        }
+
+        let mut removed_edges = Vec::new();
+        let mut removed_atoms = Vec::new();
+        for (_, record) in &records {
+            removed_edges.extend(raw_module_record_edges(record));
+            removed_atoms.extend(raw_module_record_atoms(record));
+        }
+        self.preflight_module_edge_releases(&removed_edges)?;
+        let cache_index = self.live_index(RawId::Context(cache))?;
+        let mut cleanup = HeapCleanup {
+            atoms: removed_atoms,
+            ..HeapCleanup::default()
+        };
+
+        let SlotState::Live(node) = &mut self.slots[cache_index].state else {
+            unreachable!("authenticated loaded-module cache disappeared before batch removal")
+        };
+        let NodeData::Context(context) = &mut node.data else {
+            unreachable!("authenticated loaded-module cache changed kind before batch removal")
+        };
+        for &(module, _) in &records {
+            context.loaded_modules.records[module.0]
+                .take()
+                .expect("authenticated loaded-module disappeared before batch removal");
+        }
+        context.loaded_modules.first_by_name = rebuilt_first_by_name;
+
+        cleanup.merge(self.release_preflighted_module_edges(&removed_edges));
+        Ok(cleanup)
+    }
+
+    /// Atomically clear namespace objects created by one namespace-building
+    /// transaction. Both Building and Ready are accepted because a recursive
+    /// member may finish before a later member makes the transaction fail.
+    pub(crate) fn rollback_loaded_module_namespaces(
+        &mut self,
+        modules: &[RawModuleRef],
+    ) -> Result<HeapCleanup, HeapError> {
+        if modules.is_empty() {
+            return Ok(HeapCleanup::default());
+        }
+        let cache = modules[0].cache;
+        let mut unique = HashSet::new();
+        unique
+            .try_reserve(modules.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "validating module namespace rollback batch",
+            })?;
+        let mut namespaces = Vec::new();
+        namespaces
+            .try_reserve(modules.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "preparing module namespace rollback batch",
+            })?;
+        for &module in modules {
+            if module.cache != cache || !unique.insert(module.module) {
+                return Err(HeapError::Invariant(
+                    "module namespace rollback batch has mixed or duplicate identities",
+                ));
+            }
+            let namespace = match self.loaded_module(module)?.namespace {
+                RawModuleNamespaceState::Building(namespace)
+                | RawModuleNamespaceState::Ready(namespace) => namespace,
+                RawModuleNamespaceState::Empty => {
+                    return Err(HeapError::Invariant(
+                        "module namespace rollback reached an empty record",
+                    ));
+                }
+            };
+            namespaces.push((module, namespace));
+        }
+        let removed_edges = namespaces
+            .iter()
+            .map(|(_, namespace)| RawId::Object(*namespace))
+            .collect::<Vec<_>>();
+        self.preflight_module_edge_releases(&removed_edges)?;
+        for &(module, namespace) in &namespaces {
+            let record = self
+                .loaded_module_record_mut(module)
+                .expect("authenticated namespace rollback record disappeared before commit");
+            debug_assert!(matches!(
+                record.namespace,
+                RawModuleNamespaceState::Building(current)
+                    | RawModuleNamespaceState::Ready(current) if current == namespace
+            ));
+            record.namespace = RawModuleNamespaceState::Empty;
+        }
+        Ok(self.release_preflighted_module_edges(&removed_edges))
+    }
+
+    /// Atomically publish the same cached abrupt completion across one active
+    /// evaluation SCC. Object edges are retained transactionally before any
+    /// record changes; Symbol atom ownership is prepared by Runtime because it
+    /// belongs to the separate atom table.
+    pub(crate) fn publish_loaded_module_errors(
+        &mut self,
+        cache: ContextId,
+        modules: &[ModuleId],
+        exception: RawValue,
+    ) -> Result<(), HeapError> {
+        validate_module_storable_value(&exception)?;
+        let mut unique = HashSet::new();
+        unique
+            .try_reserve(modules.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "validating module evaluation error batch",
+            })?;
+        for &module in modules {
+            if !unique.insert(module) {
+                return Err(HeapError::Invariant(
+                    "module evaluation error batch contains a duplicate identity",
+                ));
+            }
+            let record = self.loaded_module(RawModuleRef { cache, module })?;
+            if !matches!(record.evaluation, RawModuleEvaluationState::Evaluating)
+                || !matches!(record.link_status, RawModuleLinkStatus::Linked)
+            {
+                return Err(HeapError::Invariant(
+                    "module evaluation error batch reached a non-evaluating linked record",
+                ));
+            }
+        }
+        let edge = raw_value_edges(&exception);
+        let mut added_edges = Vec::new();
+        added_edges
+            .try_reserve(edge.len().saturating_mul(modules.len()))
+            .map_err(|_| HeapError::Allocation {
+                operation: "preparing module evaluation error edges",
+            })?;
+        for _ in modules {
+            added_edges.extend(edge.iter().copied());
+        }
+        self.retain_edges_transactionally(&added_edges)?;
+        for &module in modules {
+            self.loaded_module_record_mut(RawModuleRef { cache, module })
+                .expect("authenticated evaluation error record disappeared before commit")
+                .evaluation = RawModuleEvaluationState::Errored(exception.clone());
+        }
+        Ok(())
+    }
+
+    fn preflight_module_edge_releases(&mut self, edges: &[RawId]) -> Result<(), HeapError> {
+        let mut counts = HashMap::<RawId, u32>::new();
+        counts
+            .try_reserve(edges.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "preflighting loaded-module edge releases",
+            })?;
+        for &edge in edges {
+            let count = counts.entry(edge).or_default();
+            *count = count.checked_add(1).ok_or(HeapError::Overflow {
+                operation: "counting removed loaded-module edges",
+            })?;
+        }
+        let mut newly_zero = 0usize;
+        for (&edge, &removed) in &counts {
+            let strong = self.live_node(edge)?.strong;
+            let remaining = strong.checked_sub(removed).ok_or(HeapError::Underflow {
+                kind: edge.kind(),
+                index: edge.index(),
+                generation: edge.generation(),
+            })?;
+            newly_zero = newly_zero.saturating_add(usize::from(remaining == 0));
+        }
+        self.zero_queue
+            .try_reserve(newly_zero)
+            .map_err(|_| HeapError::Allocation {
+                operation: "reserving loaded-module release queue space",
+            })?;
+        Ok(())
+    }
+
+    fn release_preflighted_module_edges(&mut self, edges: &[RawId]) -> HeapCleanup {
+        for &edge in edges {
+            self.release_raw_no_drain(edge)
+                .expect("preflighted loaded-module edge release failed after publication");
+        }
+        self.drain_zero_queue()
+            .expect("preflighted loaded-module edge drain failed after publication")
+    }
+
     /// Seed the realm-local xorshift64* stream used by `Math.random`.
     /// QuickJS replaces an all-zero time seed with one because zero is the
     /// generator's absorbing state.
@@ -15204,13 +16185,18 @@ impl Heap {
                         generation: slot.generation,
                     }));
                 }
-                NodeData::Shape(_) | NodeData::VarRef(_) | NodeData::Context(_) => {}
+                NodeData::Context(_) => anchors.push(RawId::Context(ContextId {
+                    index,
+                    generation: slot.generation,
+                })),
+                NodeData::Shape(_) | NodeData::VarRef(_) => {}
             }
         }
 
-        // Objects and function bytecodes are the active anchors used by
-        // QuickJS. Mark each as a zombie before dropping its outgoing edges so
-        // other candidate nodes can still release the old generation.
+        // Objects, function bytecodes, and Context-owned loaded-module caches
+        // are active anchors. Mark each as a zombie before dropping its
+        // outgoing edges so other candidate nodes can still release the old
+        // generation.
         for id in anchors {
             if self.is_live(id) {
                 self.finalize_cycle_anchor(id, &mut cleanup)?;
@@ -16735,7 +17721,8 @@ impl Heap {
             })?;
         }
         for (edge, additional) in counts {
-            self.retain_raw(edge, additional)?;
+            self.retain_raw(edge, additional)
+                .expect("preflighted heap edge retain failed before publication");
         }
         Ok(())
     }
@@ -16924,7 +17911,10 @@ impl Heap {
         id: RawId,
         cleanup: &mut HeapCleanup,
     ) -> Result<(), HeapError> {
-        if !matches!(id, RawId::Object(_) | RawId::FunctionBytecode(_)) {
+        if !matches!(
+            id,
+            RawId::Object(_) | RawId::FunctionBytecode(_) | RawId::Context(_)
+        ) {
             return Err(HeapError::Invariant(
                 "non-anchor node entered active cycle finalization",
             ));
@@ -17595,6 +18585,53 @@ fn raw_value_edges(value: &RawValue) -> Vec<RawId> {
     }
 }
 
+fn validate_module_storable_value(value: &RawValue) -> Result<(), HeapError> {
+    if matches!(
+        value,
+        RawValue::Private(_) | RawValue::Uninitialized | RawValue::Exception
+    ) {
+        return Err(HeapError::Invariant(
+            "loaded-module record contains an internal value sentinel",
+        ));
+    }
+    Ok(())
+}
+
+/// Return the occurrence-count difference `left - right` while retaining
+/// `left`'s deterministic order. All allocation happens before a caller may
+/// publish a record mutation.
+fn multiset_difference<T>(
+    left: &[T],
+    right: &[T],
+    operation: &'static str,
+) -> Result<Vec<T>, HeapError>
+where
+    T: Copy + Eq + Hash,
+{
+    let mut remaining = HashMap::<T, usize>::new();
+    remaining
+        .try_reserve(right.len())
+        .map_err(|_| HeapError::Allocation { operation })?;
+    for &item in right {
+        let count = remaining.entry(item).or_default();
+        *count = count
+            .checked_add(1)
+            .ok_or(HeapError::Overflow { operation })?;
+    }
+
+    let mut difference = Vec::new();
+    difference
+        .try_reserve(left.len())
+        .map_err(|_| HeapError::Allocation { operation })?;
+    for &item in left {
+        match remaining.get_mut(&item) {
+            Some(count) if *count != 0 => *count -= 1,
+            Some(_) | None => difference.push(item),
+        }
+    }
+    Ok(difference)
+}
+
 fn context_edges(context: &ContextData) -> Vec<RawId> {
     let mut edges = Vec::with_capacity(
         13usize
@@ -17720,6 +18757,37 @@ fn context_edges(context: &ContextData) -> Vec<RawId> {
         edges.extend(raw_value_edges(value));
     }
     edges.extend(context.initial_shapes.iter().copied().map(RawId::Shape));
+    for record in context.loaded_modules.records.iter().flatten() {
+        edges.extend(raw_module_record_edges(record));
+    }
+    edges
+}
+
+fn raw_module_record_edges(record: &RawModuleRecord) -> Vec<RawId> {
+    let mut edges = Vec::new();
+    if let Some(RawModuleLinkRealm::Other(realm)) = record.link_realm {
+        edges.push(RawId::Context(realm));
+    }
+    match &record.body {
+        RawModuleRecordBody::SourceText { function } => {
+            edges.push(RawId::FunctionBytecode(*function));
+        }
+        RawModuleRecordBody::Json { default_value } => {
+            edges.extend(raw_value_edges(default_value));
+        }
+    }
+    if let Some(instance) = &record.instance {
+        edges.extend(instance.slots.iter().flatten().copied().map(RawId::VarRef));
+        edges.extend(instance.callable.map(RawId::Object));
+    }
+    match record.namespace {
+        RawModuleNamespaceState::Empty => {}
+        RawModuleNamespaceState::Building(namespace)
+        | RawModuleNamespaceState::Ready(namespace) => edges.push(RawId::Object(namespace)),
+    }
+    if let RawModuleEvaluationState::Errored(exception) = &record.evaluation {
+        edges.extend(raw_value_edges(exception));
+    }
     edges
 }
 
@@ -18544,7 +19612,29 @@ fn validate_var_ref_value(
 }
 
 fn context_atoms(context: &ContextData) -> impl Iterator<Item = Atom> + '_ {
-    context.intrinsics.iter().filter_map(raw_value_atom)
+    context.intrinsics.iter().filter_map(raw_value_atom).chain(
+        context
+            .loaded_modules
+            .records
+            .iter()
+            .flatten()
+            .flat_map(raw_module_record_atoms),
+    )
+}
+
+fn raw_module_record_atoms(record: &RawModuleRecord) -> impl Iterator<Item = Atom> + '_ {
+    let body = match &record.body {
+        RawModuleRecordBody::Json { default_value } => raw_value_atom(default_value),
+        RawModuleRecordBody::SourceText { .. } => None,
+    };
+    let evaluation = match &record.evaluation {
+        RawModuleEvaluationState::Errored(exception) => raw_value_atom(exception),
+        RawModuleEvaluationState::Unevaluated
+        | RawModuleEvaluationState::Evaluating
+        | RawModuleEvaluationState::Evaluated
+        | RawModuleEvaluationState::Poisoned => None,
+    };
+    body.into_iter().chain(evaluation)
 }
 
 fn function_bytecode_atoms(bytecode: &FunctionBytecodeData) -> impl Iterator<Item = Atom> + '_ {
@@ -18596,6 +19686,19 @@ mod tests {
     use crate::shape::{PropertyFlags, ShapeEntry};
 
     const DATA_FLAGS: PropertyFlags = PropertyFlags::data(true, true, true);
+
+    #[test]
+    fn multiset_difference_preserves_left_order_and_occurrence_counts() {
+        assert_eq!(
+            multiset_difference(
+                &[1u8, 2, 1, 3, 2, 1],
+                &[2u8, 1, 4, 2],
+                "testing multiset difference",
+            )
+            .unwrap(),
+            vec![1, 3, 1]
+        );
+    }
 
     fn empty_shape(heap: &mut Heap) -> ShapeId {
         heap.allocate_shape(Shape::new(None, []).unwrap()).unwrap()
