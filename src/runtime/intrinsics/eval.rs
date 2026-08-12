@@ -478,6 +478,9 @@ impl Runtime {
         bindings: &[EvalRootBinding<JsString>],
         environment_roots: &[VarRefRoot],
     ) -> Result<CallableRef, RuntimeError> {
+        // A restricted host must reject newly compiled eval bytecode before
+        // declaration preflight or binding creation can mutate the realm.
+        self.ensure_dynamic_import_bytecode_tree_authorized(function)?;
         let PublishedFunctionSnapshot {
             closure_variables,
             metadata,

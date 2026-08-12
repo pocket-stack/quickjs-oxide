@@ -417,7 +417,7 @@ pub(crate) enum RawModuleTransition {
     ResetLink,
     PoisonLink,
     BeginEvaluation,
-    FinishEvaluation,
+    FinishEvaluation(ModuleId),
     PoisonEvaluation,
     FinishNamespace(ObjectId),
 }
@@ -445,6 +445,15 @@ pub(crate) struct RawModuleRecord {
     pub(crate) namespace: RawModuleNamespaceState,
     pub(crate) link_status: RawModuleLinkStatus,
     pub(crate) evaluation: RawModuleEvaluationState,
+    /// Synchronous evaluation SCC root, assigned when the SCC completes (or
+    /// to the requested root for active records on abrupt completion).
+    pub(crate) evaluation_cycle_root: Option<ModuleId>,
+    /// Cached Promise created for the first module evaluation attempt.
+    ///
+    /// This mirrors QuickJS's `JSModuleDef::promise`: the Context-owned
+    /// record retains it independently of callers, and every later dynamic
+    /// import observes the same evaluation identity and settlement history.
+    pub(crate) evaluation_promise: Option<ObjectId>,
     pub(crate) link_realm: Option<RawModuleLinkRealm>,
     pub(crate) compile_realm: ContextId,
 }
@@ -12126,6 +12135,20 @@ impl Heap {
                 ));
             }
         }
+        if let RawModuleTransition::FinishEvaluation(cycle_root) = &transition {
+            if self
+                .context(module.cache)?
+                .loaded_modules
+                .records
+                .get(cycle_root.0)
+                .and_then(Option::as_ref)
+                .is_none()
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module evaluation transition has a missing cycle root",
+                ));
+            }
+        }
 
         if matches!(
             &transition,
@@ -12236,11 +12259,12 @@ impl Heap {
                     ));
                 }
             },
-            RawModuleTransition::FinishEvaluation => match record.evaluation {
+            RawModuleTransition::FinishEvaluation(cycle_root) => match record.evaluation {
                 RawModuleEvaluationState::Evaluating
                     if matches!(record.link_status, RawModuleLinkStatus::Linked) =>
                 {
                     record.evaluation = RawModuleEvaluationState::Evaluated;
+                    record.evaluation_cycle_root = Some(cycle_root);
                 }
                 _ => {
                     return Err(HeapError::Invariant(
@@ -12339,6 +12363,36 @@ impl Heap {
         if let RawModuleEvaluationState::Errored(exception) = &record.evaluation {
             validate_module_storable_value(exception)?;
         }
+        if matches!(
+            &record.evaluation,
+            RawModuleEvaluationState::Evaluated | RawModuleEvaluationState::Errored(_)
+        ) != record.evaluation_cycle_root.is_some()
+        {
+            return Err(HeapError::Invariant(
+                "completed loaded-module evaluation has no exact cycle root",
+            ));
+        }
+        if let Some(cycle_root) = record.evaluation_cycle_root {
+            if self
+                .context(cache)?
+                .loaded_modules
+                .records
+                .get(cycle_root.0)
+                .and_then(Option::as_ref)
+                .is_none()
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module evaluation cycle root is missing",
+                ));
+            }
+        }
+        if let Some(promise) = record.evaluation_promise {
+            if !matches!(self.object(promise)?.payload, ObjectPayload::Promise(_)) {
+                return Err(HeapError::Invariant(
+                    "loaded-module evaluation cache is not a Promise",
+                ));
+            }
+        }
         if let Some(instance) = &record.instance {
             for slot in instance.slots.iter().flatten().copied() {
                 self.var_ref(slot)?;
@@ -12426,6 +12480,13 @@ impl Heap {
         {
             return Err(HeapError::Invariant(
                 "active loaded-module evaluation is not linked",
+            ));
+        }
+        if record.evaluation_promise.is_some()
+            && !matches!(record.link_status, RawModuleLinkStatus::Linked)
+        {
+            return Err(HeapError::Invariant(
+                "loaded-module evaluation Promise exists before linking",
             ));
         }
         if let RawModuleResolutionState::Resolved(dependencies) = &record.resolution {
@@ -12770,6 +12831,7 @@ impl Heap {
         &mut self,
         cache: ContextId,
         modules: &[ModuleId],
+        cycle_root: ModuleId,
         exception: RawValue,
     ) -> Result<(), HeapError> {
         validate_module_storable_value(&exception)?;
@@ -12794,6 +12856,11 @@ impl Heap {
                 ));
             }
         }
+        if !unique.contains(&cycle_root) {
+            return Err(HeapError::Invariant(
+                "module evaluation error cycle root was not active",
+            ));
+        }
         let edge = raw_value_edges(&exception);
         let mut added_edges = Vec::new();
         added_edges
@@ -12806,9 +12873,11 @@ impl Heap {
         }
         self.retain_edges_transactionally(&added_edges)?;
         for &module in modules {
-            self.loaded_module_record_mut(RawModuleRef { cache, module })
-                .expect("authenticated evaluation error record disappeared before commit")
-                .evaluation = RawModuleEvaluationState::Errored(exception.clone());
+            let record = self
+                .loaded_module_record_mut(RawModuleRef { cache, module })
+                .expect("authenticated evaluation error record disappeared before commit");
+            record.evaluation = RawModuleEvaluationState::Errored(exception.clone());
+            record.evaluation_cycle_root = Some(cycle_root);
         }
         Ok(())
     }
@@ -18788,6 +18857,7 @@ fn raw_module_record_edges(record: &RawModuleRecord) -> Vec<RawId> {
     if let RawModuleEvaluationState::Errored(exception) = &record.evaluation {
         edges.extend(raw_value_edges(exception));
     }
+    edges.extend(record.evaluation_promise.map(RawId::Object));
     edges
 }
 

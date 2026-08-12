@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 
 use super::admissions::{
     AdmissionCatalog, AgentHostAdmission, ModuleAdmission, ModuleGraphFileAdmission,
-    ModuleMetadataContract, SupplementalAdmission, SupplementalPolicy,
+    ModuleGraphRootGoal, ModuleMetadataContract, SupplementalAdmission, SupplementalPolicy,
 };
 use super::metadata::{Metadata, parse_metadata};
 
@@ -54,6 +54,7 @@ struct ExactModuleGraphAdmission<'a> {
     root_path: &'a str,
     files: &'a [ModuleGraphFileAdmission],
     closure_file_count: usize,
+    goal: ModuleGraphRootGoal,
 }
 
 /// Admit only one of the pinned, dependency-free module roots above.
@@ -142,6 +143,45 @@ fn is_exact_fixture_graph_module_test(
     Ok(true)
 }
 
+/// Authenticate a Script-goal root whose complete dynamic-import graph is
+/// pinned in the same file/request ledger as static module graphs. The goal is
+/// selected by an explicit `dynamic-import-root` row; a static `graph-root`
+/// can never admit a Script, even when its path and closure happen to match.
+pub(super) fn is_exact_dynamic_import_script_test(
+    admissions: &AdmissionCatalog,
+    suite: &Path,
+    path: &Path,
+    source: &str,
+    metadata: &Metadata,
+) -> Result<bool, String> {
+    let Some(admission) = exact_dynamic_import_graph_admission(admissions, path) else {
+        return Ok(false);
+    };
+    if metadata.is_module() {
+        return Err(format!(
+            "dynamic import root is no longer a Script: {}",
+            path.display()
+        ));
+    }
+    if metadata.features.len() != 1 || metadata.features[0] != "dynamic-import" {
+        return Err(format!(
+            "dynamic import root must declare exactly the dynamic-import feature: {}",
+            path.display()
+        ));
+    }
+    let root = module_graph_file(admission, admission.root_path).ok_or_else(|| {
+        format!(
+            "dynamic import graph admission has no root file: {}",
+            admission.root_path
+        )
+    })?;
+    authenticate_module_graph_file(path, source, metadata, root)?;
+    authenticate_exact_module_graph_closure(admission, |relative| {
+        read_regular_module_graph_text(suite, relative)
+    })?;
+    Ok(true)
+}
+
 fn exact_module_graph_admission<'a>(
     admissions: &'a AdmissionCatalog,
     root_path: &Path,
@@ -152,6 +192,21 @@ fn exact_module_graph_admission<'a>(
             root_path: &root.path,
             files: admissions.graph_files(&root.group),
             closure_file_count: root.closure_file_count,
+            goal: root.goal,
+        })
+}
+
+fn exact_dynamic_import_graph_admission<'a>(
+    admissions: &'a AdmissionCatalog,
+    root_path: &Path,
+) -> Option<ExactModuleGraphAdmission<'a>> {
+    admissions
+        .dynamic_import_root(root_path)
+        .map(|root| ExactModuleGraphAdmission {
+            root_path: &root.path,
+            files: admissions.graph_files(&root.group),
+            closure_file_count: root.closure_file_count,
+            goal: root.goal,
         })
 }
 
@@ -306,7 +361,38 @@ pub(super) fn normalize_exact_module_request(
     base_name: &str,
     specifier: &str,
 ) -> Result<String, String> {
-    let admission = exact_module_graph_admission(admissions, root_path).ok_or_else(|| {
+    normalize_exact_graph_request(
+        admissions,
+        ModuleGraphRootGoal::StaticModule,
+        root_path,
+        base_name,
+        specifier,
+    )
+}
+
+pub(super) fn normalize_exact_dynamic_import_request(
+    admissions: &AdmissionCatalog,
+    root_path: &Path,
+    base_name: &str,
+    specifier: &str,
+) -> Result<String, String> {
+    normalize_exact_graph_request(
+        admissions,
+        ModuleGraphRootGoal::DynamicImportScript,
+        root_path,
+        base_name,
+        specifier,
+    )
+}
+
+fn normalize_exact_graph_request(
+    admissions: &AdmissionCatalog,
+    goal: ModuleGraphRootGoal,
+    root_path: &Path,
+    base_name: &str,
+    specifier: &str,
+) -> Result<String, String> {
+    let admission = exact_graph_admission(admissions, root_path, goal).ok_or_else(|| {
         format!(
             "module loader rejected unaudited root: {}",
             root_path.display()
@@ -339,13 +425,59 @@ pub(super) fn load_exact_module_fixture(
     root_path: &Path,
     normalized_name: &str,
 ) -> Result<String, String> {
-    let admission = exact_module_graph_admission(admissions, root_path).ok_or_else(|| {
+    load_exact_graph_fixture(
+        admissions,
+        ModuleGraphRootGoal::StaticModule,
+        suite,
+        root_path,
+        normalized_name,
+    )
+}
+
+pub(super) fn load_exact_dynamic_import_fixture(
+    admissions: &AdmissionCatalog,
+    suite: &Path,
+    root_path: &Path,
+    normalized_name: &str,
+) -> Result<String, String> {
+    load_exact_graph_fixture(
+        admissions,
+        ModuleGraphRootGoal::DynamicImportScript,
+        suite,
+        root_path,
+        normalized_name,
+    )
+}
+
+fn load_exact_graph_fixture(
+    admissions: &AdmissionCatalog,
+    goal: ModuleGraphRootGoal,
+    suite: &Path,
+    root_path: &Path,
+    normalized_name: &str,
+) -> Result<String, String> {
+    let admission = exact_graph_admission(admissions, root_path, goal).ok_or_else(|| {
         format!(
             "module loader rejected unaudited root: {}",
             root_path.display()
         )
     })?;
     load_exact_module_fixture_from_admission(admission, suite, normalized_name)
+}
+
+fn exact_graph_admission<'a>(
+    admissions: &'a AdmissionCatalog,
+    root_path: &Path,
+    goal: ModuleGraphRootGoal,
+) -> Option<ExactModuleGraphAdmission<'a>> {
+    let admission = match goal {
+        ModuleGraphRootGoal::StaticModule => exact_module_graph_admission(admissions, root_path),
+        ModuleGraphRootGoal::DynamicImportScript => {
+            exact_dynamic_import_graph_admission(admissions, root_path)
+        }
+    };
+    debug_assert!(admission.is_none_or(|admission| admission.goal == goal));
+    admission
 }
 
 fn load_exact_module_fixture_from_admission(
@@ -1118,16 +1250,17 @@ mod tests {
         generator_destructuring_source_needs_async_guard, insert_atomics_cross_realm_feature_hints,
         is_exact_agent_host_test as is_exact_agent_host_test_impl,
         is_exact_dependency_free_module_test as is_exact_dependency_free_module_test_impl,
-        load_exact_module_fixture_from_admission, missing_host_capability_hints,
-        module_metadata_matches,
+        is_exact_dynamic_import_script_test, load_exact_module_fixture_from_admission,
+        missing_host_capability_hints, module_metadata_matches,
+        normalize_exact_dynamic_import_request,
         normalize_exact_module_request as normalize_exact_module_request_impl,
         reachable_module_graph_paths, source_sha256, source_tokens,
         supplemental_feature_hints as supplemental_feature_hints_impl,
     };
     use crate::admissions::{
         AdmissionCatalog, AgentHostAdmission, ModuleAdmission, ModuleGraphFileAdmission,
-        ModuleGraphRootAdmission, ModuleMetadataContract, ModuleRequestAdmission,
-        SupplementalAdmission, SupplementalPolicy,
+        ModuleGraphRootAdmission, ModuleGraphRootGoal, ModuleMetadataContract,
+        ModuleRequestAdmission, SupplementalAdmission, SupplementalPolicy,
     };
     use crate::metadata::{Metadata, NegativeExpectation, parse_metadata};
 
@@ -1348,6 +1481,94 @@ mod tests {
             includes: includes.iter().map(|value| (*value).to_owned()).collect(),
             ..Metadata::default()
         }
+    }
+
+    fn admission_row(fields: [&str; 16]) -> String {
+        fields
+            .map(|field| if field.is_empty() { "-" } else { field })
+            .join("\t")
+    }
+
+    fn dynamic_import_catalog(root_source: &str, fixture_source: &str) -> AdmissionCatalog {
+        const HEADER: &str = "kind\tgroup\tpath\tsource_sha256\tincludes\tflags\tfeatures\tnegative_phase\tnegative_type\tclosure_file_count\tpriority\trequest_index\tspecifier\tnormalized_path\tpolicy\tcohort";
+        let root_sha256 = crate::admissions::sha256(root_source.as_bytes());
+        let fixture_sha256 = crate::admissions::sha256(fixture_source.as_bytes());
+        let mut rows = [
+            admission_row([
+                "dynamic-import-root",
+                "dynamic-import-test",
+                "test/dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "2",
+                "0",
+                "",
+                "",
+                "",
+                "initial-import-tree",
+                "",
+            ]),
+            admission_row([
+                "graph-file",
+                "dynamic-import-test",
+                "test/dynamic.js",
+                &root_sha256,
+                "",
+                "async",
+                "dynamic-import",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-file",
+                "dynamic-import-test",
+                "test/fixture_FIXTURE.js",
+                &fixture_sha256,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-request",
+                "dynamic-import-test",
+                "test/dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "0",
+                "./fixture_FIXTURE.js",
+                "test/fixture_FIXTURE.js",
+                "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        AdmissionCatalog::parse(&format!("{HEADER}\n{}\n", rows.join("\n"))).unwrap()
     }
 
     fn generator_metadata() -> Metadata {
@@ -2041,6 +2262,7 @@ mod tests {
                 root_path: &root.path,
                 files: &DEFAULT_MODULE_FILE_ADMISSIONS,
                 closure_file_count: root.closure_file_count,
+                goal: ModuleGraphRootGoal::StaticModule,
             };
             let reachable = reachable_module_graph_paths(admission)
                 .unwrap_or_else(|error| panic!("{}: {error}", root.path));
@@ -2696,6 +2918,7 @@ mod tests {
                 root_path: &distinct.path,
                 files: &IMPORT_META_MODULE_FILE_ADMISSIONS,
                 closure_file_count: 1,
+                goal: ModuleGraphRootGoal::StaticModule,
             },
             |_| panic!("closure size drift must fail before reading source files"),
         )
@@ -2764,6 +2987,7 @@ mod tests {
                 root_path: &root.path,
                 files: &NAMESPACE_MODULE_FILE_ADMISSIONS,
                 closure_file_count: root.closure_file_count,
+                goal: ModuleGraphRootGoal::StaticModule,
             };
             let reachable = reachable_module_graph_paths(admission)
                 .unwrap_or_else(|error| panic!("{}: {error}", root.path));
@@ -2951,6 +3175,7 @@ mod tests {
                 root_path: "test/root.js",
                 files: &missing_request_files,
                 closure_file_count: 2,
+                goal: ModuleGraphRootGoal::StaticModule,
             },
             |_| panic!("closure drift must fail before reading sources"),
         )
@@ -2971,10 +3196,96 @@ mod tests {
             root_path: "test/root.js",
             files: &escaped_request_files,
             closure_file_count: 1,
+            goal: ModuleGraphRootGoal::StaticModule,
         })
         .unwrap_err();
         assert!(escaped_request.contains("request escaped"));
         assert!(escaped_request.contains("./escaped.js"));
+    }
+
+    #[test]
+    fn dynamic_import_script_goal_authenticates_the_exact_recursive_graph() {
+        const ROOT_SOURCE: &str = "/*---\nflags: [async]\nfeatures: [dynamic-import]\n---*/\nimport(\"./fixture_FIXTURE.js\").then($DONE, $DONE);\n";
+        const FIXTURE_SOURCE: &str = "export const value = 42;\n";
+        let catalog = dynamic_import_catalog(ROOT_SOURCE, FIXTURE_SOURCE);
+        let root = Path::new("test/dynamic.js");
+        let metadata = parse_metadata(ROOT_SOURCE).unwrap();
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-dynamic-import-auth-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(suite.join(root), ROOT_SOURCE).unwrap();
+        fs::write(suite.join("test/fixture_FIXTURE.js"), FIXTURE_SOURCE).unwrap();
+
+        assert_eq!(
+            is_exact_dynamic_import_script_test(&catalog, &suite, root, ROOT_SOURCE, &metadata,),
+            Ok(true)
+        );
+        assert_eq!(
+            exact_module_test_impl(&catalog, &suite, root, ROOT_SOURCE, &metadata),
+            Ok(None),
+            "a dynamic Script root must never enter static module execution"
+        );
+        assert_eq!(
+            normalize_exact_dynamic_import_request(
+                &catalog,
+                root,
+                "test/dynamic.js",
+                "./fixture_FIXTURE.js",
+            ),
+            Ok("test/fixture_FIXTURE.js".to_owned())
+        );
+        assert!(
+            normalize_exact_module_request_impl(
+                &catalog,
+                root,
+                "test/dynamic.js",
+                "./fixture_FIXTURE.js",
+            )
+            .unwrap_err()
+            .contains("unaudited root")
+        );
+
+        let drift = is_exact_dynamic_import_script_test(
+            &catalog,
+            &suite,
+            root,
+            &format!("{ROOT_SOURCE}// drift\n"),
+            &metadata,
+        )
+        .unwrap_err();
+        assert!(drift.contains("source drifted"), "{drift}");
+
+        let mut broadened = metadata.clone();
+        broadened.features.push("import-attributes".to_owned());
+        let error =
+            is_exact_dynamic_import_script_test(&catalog, &suite, root, ROOT_SOURCE, &broadened)
+                .unwrap_err();
+        assert!(
+            error.contains("exactly the dynamic-import feature"),
+            "{error}"
+        );
+
+        fs::write(
+            suite.join("test/fixture_FIXTURE.js"),
+            "export const value = 43;\n",
+        )
+        .unwrap();
+        let closure_drift =
+            is_exact_dynamic_import_script_test(&catalog, &suite, root, ROOT_SOURCE, &metadata)
+                .unwrap_err();
+        assert!(closure_drift.contains("source drifted"), "{closure_drift}");
+        assert!(
+            closure_drift.contains("fixture_FIXTURE.js"),
+            "{closure_drift}"
+        );
+
+        fs::remove_dir_all(suite).unwrap();
     }
 
     #[test]
@@ -3053,6 +3364,7 @@ mod tests {
             root_path: "test/root.js",
             files: &files,
             closure_file_count: 2,
+            goal: ModuleGraphRootGoal::StaticModule,
         };
 
         let exact = authenticate_exact_module_graph_closure(admission, |path| match path {
@@ -3103,6 +3415,7 @@ mod tests {
             root_path: "test/root.js",
             files: &files,
             closure_file_count: 2,
+            goal: ModuleGraphRootGoal::StaticModule,
         };
 
         assert_eq!(

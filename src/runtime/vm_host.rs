@@ -3763,10 +3763,186 @@ impl VmHost for RuntimeVmHost {
         self.delete_property_with_key(base, &key, strict)
     }
 
-    fn dynamic_import(&mut self, _specifier: Value, _options: Value) -> Result<Completion, Error> {
-        Err(Error::internal(
-            "dynamic import reached the runtime host before frontier activation",
-        ))
+    fn dynamic_import(&mut self, specifier: Value, options: Value) -> Result<Completion, Error> {
+        // Final host-policy boundary: reject before filename observation,
+        // Promise allocation, conversion side effects, or loader callbacks.
+        self.runtime
+            .ensure_dynamic_import_bytecode_authorized(self.current_bytecode.as_ref())
+            .map_err(runtime_error_to_vm_error)?;
+        // QuickJS snapshots the active Script/Module name before allocating
+        // the caller-facing capability. A missing name is intentionally not
+        // rejected until the later load job.
+        let base_name = self
+            .runtime
+            .active_script_or_module_name()
+            .map_err(runtime_error_to_vm_error)?;
+        let capability = self
+            .runtime
+            .new_default_promise_capability(self.current_realm)
+            .map_err(runtime_error_to_vm_error)?;
+        let reject_and_return = |reason: Value| -> Result<Completion, Error> {
+            match self
+                .runtime
+                .call_internal(
+                    self.current_realm,
+                    &capability.reject,
+                    Value::Undefined,
+                    &[reason],
+                )
+                .map_err(runtime_error_to_vm_error)?
+            {
+                Completion::Return(_) => Ok(Completion::Return(Value::Object(
+                    capability.promise.clone(),
+                ))),
+                Completion::Throw(_) => Err(Error::internal(
+                    "intrinsic dynamic import reject function threw",
+                )),
+            }
+        };
+
+        let specifier = match self
+            .runtime
+            .native_to_js_string(self.current_realm, &specifier)
+            .map_err(runtime_error_to_vm_error)?
+        {
+            NativeConversion::Value(specifier) => specifier,
+            NativeConversion::Throw(reason) => return reject_and_return(reason),
+        };
+
+        let attributes = if matches!(options, Value::Undefined) {
+            ModuleImportAttributes::Absent
+        } else {
+            let Value::Object(options) = options else {
+                let reason = self
+                    .runtime
+                    .new_native_error(
+                        self.current_realm,
+                        NativeErrorKind::Type,
+                        "options must be an object",
+                    )
+                    .map_err(runtime_error_to_vm_error)?;
+                return reject_and_return(reason);
+            };
+            let with_key = self
+                .runtime
+                .intern_property_key("with")
+                .map_err(|error| runtime_error_to_vm_error(error.into()))?;
+            let with = match self
+                .runtime
+                .get_property_in_realm(self.current_realm, &options, &with_key)
+                .map_err(runtime_error_to_vm_error)?
+            {
+                Completion::Return(value) => value,
+                Completion::Throw(reason) => return reject_and_return(reason),
+            };
+            if matches!(with, Value::Undefined) {
+                ModuleImportAttributes::Absent
+            } else {
+                let Value::Object(with) = with else {
+                    let reason = self
+                        .runtime
+                        .new_native_error(
+                            self.current_realm,
+                            NativeErrorKind::Type,
+                            "options.with must be an object",
+                        )
+                        .map_err(runtime_error_to_vm_error)?;
+                    return reject_and_return(reason);
+                };
+
+                // `JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY` is a three-phase
+                // observable snapshot: ownKeys, every string-key descriptor,
+                // then every value Get. Symbols are filtered before any
+                // descriptor trap.
+                let own_keys = match self
+                    .runtime
+                    .internal_own_property_keys(self.current_realm, &with)
+                    .map_err(runtime_error_to_vm_error)?
+                {
+                    NativeConversion::Value(keys) => keys,
+                    NativeConversion::Throw(reason) => return reject_and_return(reason),
+                };
+                let mut string_keys = Vec::new();
+                for key in own_keys {
+                    let kind = self
+                        .runtime
+                        .0
+                        .state
+                        .borrow()
+                        .atoms
+                        .property_key_kind(key.atom())
+                        .map_err(|error| runtime_error_to_vm_error(error.into()))?;
+                    if kind == PropertyKeyKind::String {
+                        string_keys.push(key);
+                    }
+                }
+                let mut enumerable_keys = Vec::new();
+                for key in string_keys {
+                    let enumerable = match self
+                        .runtime
+                        .internal_snapshot_own_property_is_enumerable(
+                            self.current_realm,
+                            &with,
+                            &key,
+                        )
+                        .map_err(runtime_error_to_vm_error)?
+                    {
+                        NativeConversion::Value(enumerable) => enumerable,
+                        NativeConversion::Throw(reason) => return reject_and_return(reason),
+                    };
+                    if enumerable {
+                        enumerable_keys.push(key);
+                    }
+                }
+                let mut entries = Vec::new();
+                for key in enumerable_keys {
+                    let name = self
+                        .runtime
+                        .property_key_to_js_string(&key)
+                        .map_err(runtime_error_to_vm_error)?;
+                    let value = match self
+                        .runtime
+                        .get_property_in_realm(self.current_realm, &with, &key)
+                        .map_err(runtime_error_to_vm_error)?
+                    {
+                        Completion::Return(value) => value,
+                        Completion::Throw(reason) => return reject_and_return(reason),
+                    };
+                    let Value::String(value) = value else {
+                        let reason = self
+                            .runtime
+                            .new_native_error(
+                                self.current_realm,
+                                NativeErrorKind::Type,
+                                "module attribute values must be strings",
+                            )
+                            .map_err(runtime_error_to_vm_error)?;
+                        return reject_and_return(reason);
+                    };
+                    entries.push(ModuleImportAttribute { key: name, value });
+                }
+                match self
+                    .runtime
+                    .check_dynamic_import_attributes(self.current_realm, &entries)
+                    .map_err(runtime_error_to_vm_error)?
+                {
+                    NativeConversion::Value(()) => {}
+                    NativeConversion::Throw(reason) => return reject_and_return(reason),
+                }
+                ModuleImportAttributes::Present(entries.into_boxed_slice())
+            }
+        };
+
+        self.runtime
+            .enqueue_dynamic_import_load_job(
+                self.current_realm,
+                &capability,
+                base_name,
+                specifier,
+                attributes,
+            )
+            .map_err(runtime_error_to_vm_error)?;
+        Ok(Completion::Return(Value::Object(capability.promise)))
     }
 
     fn call(
@@ -4530,6 +4706,7 @@ impl VmHost for RuntimeVmHost {
 mod tests {
     use super::*;
     use crate::bytecode::EvalVariableSource;
+    use crate::heap::PromiseState;
     use crate::object::CompleteOrdinaryPropertyDescriptor;
 
     fn eval_object(context: &mut Context, source: &str) -> ObjectRef {
@@ -4581,17 +4758,38 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_import_runtime_hook_stays_unreachable_behind_the_frontier() {
+    fn dynamic_import_without_an_active_filename_rejects_in_the_load_job() {
         let runtime = Runtime::new();
         let context = runtime.new_context();
-        let mut host = RuntimeVmHost::empty_for_test(runtime, context.realm);
-        let error = host
+        let mut host = RuntimeVmHost::empty_for_test(runtime.clone(), context.realm);
+        let Completion::Return(Value::Object(promise)) = host
             .dynamic_import(Value::Int(20), Value::Undefined)
-            .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Internal);
+            .unwrap()
+        else {
+            panic!("dynamic import did not return its Promise");
+        };
         assert_eq!(
-            error.message(),
-            "dynamic import reached the runtime host before frontier activation"
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .promise_snapshot(promise.object_id())
+                .unwrap()
+                .state,
+            PromiseState::Pending
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .promise_snapshot(promise.object_id())
+                .unwrap()
+                .state,
+            PromiseState::Rejected
         );
     }
 

@@ -48,6 +48,8 @@ pub use self::module::{
 pub use self::test262_agent::{Test262AgentError, Test262AgentSession};
 
 use std::cell::{Cell, RefCell};
+#[cfg(feature = "test262-host")]
+use std::collections::HashSet;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
@@ -116,6 +118,12 @@ struct RuntimeInner {
     can_block: Cell<bool>,
     promise_rejection_tracker: RefCell<Option<HostPromiseRejectionTracker>>,
     module_loader: RefCell<Option<Weak<dyn ModuleLoader>>>,
+    /// Optional host policy for bytecode which may contain or execute the
+    /// dynamic-import opcode. Ordinary builds have no such policy; the
+    /// non-default conformance host closes it until one isolated program has
+    /// passed its external source and bytecode admission checks.
+    #[cfg(feature = "test262-host")]
+    dynamic_import_bytecode_allowed: Cell<bool>,
     /// Reject nested source-text module resolution from a loader callback.
     /// The public loader contract forbids Runtime re-entry; making the graph
     /// transaction explicit keeps a violating host from corrupting caches.
@@ -775,6 +783,8 @@ impl Runtime {
             can_block: Cell::new(false),
             promise_rejection_tracker: RefCell::new(None),
             module_loader: RefCell::new(None),
+            #[cfg(feature = "test262-host")]
+            dynamic_import_bytecode_allowed: Cell::new(true),
             module_resolution_active: Cell::new(false),
             host_stack_top: Cell::new(None),
             proxy_method_depth: Cell::new(0),
@@ -2887,6 +2897,7 @@ impl Runtime {
         if !function.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("function bytecode"));
         }
+        self.ensure_dynamic_import_bytecode_tree_authorized(function)?;
         let descriptors = {
             let state = self.0.state.borrow();
             let bytecode = state.heap.function_bytecode(function.bytecode_id())?;
@@ -3026,6 +3037,111 @@ impl Runtime {
             slots.push(root);
         }
         self.new_bytecode_closure_with_slots(caller_realm, function, &slots)
+    }
+
+    /// Inspect one immutable function tree for the dynamic-import opcode.
+    ///
+    /// This non-default host-support surface traverses published child
+    /// function constants, avoiding source-text guesses about executable
+    /// syntax while leaving ordinary embedders' API surface unchanged.
+    #[cfg(feature = "test262-host")]
+    pub fn bytecode_tree_contains_dynamic_import(
+        &self,
+        function: &FunctionBytecodeRef,
+    ) -> Result<bool, RuntimeError> {
+        self.dynamic_import_bytecode_tree_contains(function)
+    }
+
+    #[cfg(feature = "test262-host")]
+    fn dynamic_import_bytecode_tree_contains(
+        &self,
+        function: &FunctionBytecodeRef,
+    ) -> Result<bool, RuntimeError> {
+        if !function.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("function bytecode"));
+        }
+        let state = self.0.state.borrow();
+        let mut pending = vec![function.bytecode_id()];
+        let mut visited = HashSet::new();
+        while let Some(bytecode) = pending.pop() {
+            if !visited.insert(bytecode) {
+                continue;
+            }
+            let bytecode = state.heap.function_bytecode(bytecode)?;
+            if bytecode
+                .code
+                .iter()
+                .any(|instruction| matches!(instruction, crate::bytecode::Instruction::Import))
+            {
+                return Ok(true);
+            }
+            pending.extend(
+                bytecode
+                    .constants
+                    .iter()
+                    .filter_map(|constant| match constant {
+                        BytecodeConstant::Function(child) => Some(*child),
+                        BytecodeConstant::Value(_) | BytecodeConstant::RegExp { .. } => None,
+                    }),
+            );
+        }
+        Ok(false)
+    }
+
+    /// Set the dynamic-import capability for this isolated runtime.
+    ///
+    /// This non-default host-support surface lets a conformance runner keep
+    /// harness and unauthenticated programs fail-closed, then enable the
+    /// capability only after its external admission checks succeed. A fresh
+    /// runtime starts enabled so ordinary feature-enabled embedders retain the
+    /// same JavaScript semantics as default builds.
+    #[cfg(feature = "test262-host")]
+    pub fn set_dynamic_import_bytecode_allowed(&self, allowed: bool) {
+        self.0.dynamic_import_bytecode_allowed.set(allowed);
+    }
+
+    #[cfg(feature = "test262-host")]
+    fn ensure_dynamic_import_bytecode_tree_authorized(
+        &self,
+        function: &FunctionBytecodeRef,
+    ) -> Result<(), RuntimeError> {
+        if self.0.dynamic_import_bytecode_allowed.get() {
+            return Ok(());
+        }
+        if self.dynamic_import_bytecode_tree_contains(function)? {
+            return Err(Error::internal(
+                "host dynamic-import bytecode policy rejected a disabled executable",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "test262-host"))]
+    fn ensure_dynamic_import_bytecode_tree_authorized(
+        &self,
+        _function: &FunctionBytecodeRef,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "test262-host")]
+    fn ensure_dynamic_import_bytecode_authorized(
+        &self,
+        _function: Option<&FunctionBytecodeRef>,
+    ) -> Result<(), RuntimeError> {
+        if self.0.dynamic_import_bytecode_allowed.get() {
+            return Ok(());
+        }
+        Err(Error::internal("host dynamic-import bytecode policy rejected execution").into())
+    }
+
+    #[cfg(not(feature = "test262-host"))]
+    fn ensure_dynamic_import_bytecode_authorized(
+        &self,
+        _function: Option<&FunctionBytecodeRef>,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
     }
 
     fn check_global_lexical_declaration(
@@ -3569,6 +3685,7 @@ impl Runtime {
         if closure_slots.iter().any(|slot| !slot.belongs_to(self)) {
             return Err(RuntimeError::WrongRuntime("closure variable"));
         }
+        self.ensure_dynamic_import_bytecode_tree_authorized(function)?;
 
         let mut state = self.0.state.borrow_mut();
         let (metadata, func_name) = {
@@ -4279,6 +4396,20 @@ impl Runtime {
         function: UnlinkedFunction,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
         let flat_functions = bytecode_publish::flatten_unlinked_tree(function)?;
+        #[cfg(feature = "test262-host")]
+        if !self.0.dynamic_import_bytecode_allowed.get()
+            && flat_functions.iter().any(|function| {
+                function
+                    .code
+                    .iter()
+                    .any(|instruction| matches!(instruction, crate::bytecode::Instruction::Import))
+            })
+        {
+            return Err(Error::internal(
+                "host dynamic-import bytecode policy rejected publication",
+            )
+            .into());
+        }
         let _operation = self.operation();
         let mut roots: Vec<Option<FunctionBytecodeRef>> = Vec::with_capacity(flat_functions.len());
 

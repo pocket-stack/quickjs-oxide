@@ -45,7 +45,7 @@ use negative_diagnostics::NegativeDiagnostics;
 use report::{WorkerResult, report_row, write_report};
 use requirements::{
     exact_module_test, generator_destructuring_source_needs_async_guard, is_exact_agent_host_test,
-    missing_host_capability_hints, supplemental_feature_hints,
+    is_exact_dynamic_import_script_test, missing_host_capability_hints, supplemental_feature_hints,
 };
 use scheduler::run_bounded;
 
@@ -624,6 +624,13 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
             .map_err(|error| format!("parse metadata for {}: {error}", relative.display()))?;
         let exact_module =
             exact_module_test(&admissions, &options.suite, &relative, &source, &metadata)?;
+        let exact_dynamic_import = is_exact_dynamic_import_script_test(
+            &admissions,
+            &options.suite,
+            &relative,
+            &source,
+            &metadata,
+        )?;
         let allow_agent_host = if oxide_profile.allows_agent_host(&relative) {
             if !is_exact_agent_host_test(&admissions, &relative, &source, &metadata)? {
                 return Err(format!(
@@ -651,6 +658,9 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         worker_host_capabilities.retain_missing(&mut missing_host);
         let mut required_features = metadata.features.clone();
         required_features.extend(supplemental_feature_hints(&admissions, &relative, &source)?);
+        if exact_dynamic_import {
+            required_features.retain(|feature| feature != "dynamic-import");
+        }
         let capability =
             oxide_profile.classify(&relative, &required_features, metadata.negative.is_some());
         let selection_result = if let Some((outcome, detail)) = &skip {

@@ -6636,11 +6636,7 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    /// Parse and lower the Script/Eval import-expression grammar while its
-    /// runtime implementation remains behind the dynamic-import frontier.
-    /// QuickJS validates the complete ImportCall and its surrounding
-    /// expression before execution, so the Unsupported diagnostic stays
-    /// deferred until the whole source has passed syntax validation.
+    /// Parse and lower the Script/Eval import-expression grammar.
     fn parse_import_expression(
         &mut self,
         import_span: Span,
@@ -6700,12 +6696,6 @@ impl<'source> Parser<'source> {
 
         self.emit_instruction_at(Instruction::Import, source_offset(import_span)?)?;
         self.anonymous_function_definition = None;
-        if self.pending_unsupported.is_none() {
-            self.pending_unsupported = Some(Error::unsupported(
-                "import syntax is not implemented yet",
-                source_span(import_span),
-            ));
-        }
         Ok(())
     }
 

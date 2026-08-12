@@ -10902,7 +10902,7 @@ fn statement_keywords_in_primary_expression_use_quickjs_syntax_diagnostics() {
 }
 
 #[test]
-fn reserved_property_names_and_import_frontiers_remain_distinct() {
+fn reserved_property_names_and_import_calls_remain_distinct() {
     for source in [
         "import('module')",
         "import /* trivia */ ('module')",
@@ -10917,9 +10917,8 @@ fn reserved_property_names_and_import_frontiers_remain_distinct() {
         "import('module')`tag`",
         "new (import('module'))",
     ] {
-        let error = compile_unlinked_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source:?}: {error}");
-        assert_eq!(error.message(), "import syntax is not implemented yet");
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("valid ImportCall {source:?} failed: {error}"));
     }
 
     for (source, message) in [
@@ -10991,7 +10990,7 @@ fn reserved_property_names_and_import_frontiers_remain_distinct() {
 }
 
 #[test]
-fn dynamic_import_frontier_retains_quickjs_specifier_and_options_stack_shape() {
+fn dynamic_import_retains_quickjs_specifier_and_options_stack_shape() {
     for (source, expected_options) in [
         ("import(20)", None),
         ("import(20,)", None),
@@ -11000,15 +10999,9 @@ fn dynamic_import_frontier_retains_quickjs_specifier_and_options_stack_shape() {
     ] {
         let mut tree =
             Parser::parse(source, JsString::from_static("<dynamic-import-frontier>")).unwrap();
-        let frontier = tree
-            .pending_unsupported
-            .as_ref()
-            .expect("valid ImportCall did not retain its frontier gate");
-        assert_eq!(frontier.kind(), ErrorKind::Unsupported, "{source:?}");
-        assert_eq!(
-            frontier.message(),
-            "import syntax is not implemented yet",
-            "{source:?}"
+        assert!(
+            tree.pending_unsupported.is_none(),
+            "valid ImportCall retained a stale feature frontier: {source:?}"
         );
 
         resolve_identifiers(&mut tree).unwrap();
@@ -11033,9 +11026,8 @@ fn dynamic_import_frontier_retains_quickjs_specifier_and_options_stack_shape() {
             function.code()
         );
 
-        let error = compile_unlinked_script(source).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source:?}: {error}");
-        assert_eq!(error.message(), "import syntax is not implemented yet");
+        compile_unlinked_script(source)
+            .unwrap_or_else(|error| panic!("valid ImportCall {source:?} failed: {error}"));
     }
 }
 

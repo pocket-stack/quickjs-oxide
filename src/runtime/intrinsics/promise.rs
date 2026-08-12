@@ -9,6 +9,7 @@ use crate::heap::{
     PromiseReaction, PromiseReactionKind, PromiseRealmData, PromiseResolvingKind, PromiseState,
 };
 
+use super::super::jobs::DynamicImportFinishOutcome;
 use super::super::*;
 
 mod all;
@@ -1202,6 +1203,91 @@ impl Runtime {
         capability: &RootedPromiseCapability,
     ) -> Result<(), RuntimeError> {
         self.perform_promise_then_internal(realm, promise, fulfill, reject, Some(capability.raw()))
+    }
+
+    /// Attach QuickJS's private dynamic-import continuation to the cached
+    /// module-evaluation Promise. The current module slice has no TLA, so the
+    /// evaluation Promise is settled synchronously before this boundary.
+    pub(in crate::runtime) fn attach_dynamic_import_finish(
+        &self,
+        realm: ContextId,
+        promise: &ObjectRef,
+        module: RawModuleRef,
+        resolve: ObjectId,
+        reject: ObjectId,
+    ) -> Result<NativeConversion<()>, RuntimeError> {
+        if module.cache != realm {
+            return Err(RuntimeError::Invariant(
+                "dynamic import module belongs to another Context cache",
+            ));
+        }
+        // `JS_LoadModuleInternal` deliberately calls the full private
+        // `js_promise_then`, not merely `PerformPromiseThen`. Preserve the
+        // observable constructor/@@species lookup and its ignored result
+        // capability before attaching the continuation.
+        let constructor = match self.promise_species_constructor(realm, promise)? {
+            NativeConversion::Value(constructor) => constructor,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let reaction_capability = match self.new_promise_capability(realm, constructor.as_ref())? {
+            NativeConversion::Value(capability) => capability,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+
+        let snapshot = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .promise_snapshot(promise.object_id())?;
+        let outcome = match snapshot.state {
+            PromiseState::Fulfilled => DynamicImportFinishOutcome::Fulfilled { module },
+            PromiseState::Rejected => DynamicImportFinishOutcome::Rejected {
+                reason: snapshot.result.clone(),
+            },
+            PromiseState::Pending => {
+                return Err(RuntimeError::Invariant(
+                    "synchronous module evaluation retained a pending Promise",
+                ));
+            }
+        };
+
+        // Prepare all job ownership before making the Promise handled. A
+        // fallible root retain must not suppress the host's later notification.
+        let job = self.prepare_dynamic_import_finish_job(
+            realm,
+            resolve,
+            reject,
+            reaction_capability.resolve.as_object().object_id(),
+            reaction_capability.reject.as_object().object_id(),
+            outcome,
+        )?;
+        let handled_reason = if snapshot.state == PromiseState::Rejected && !snapshot.is_handled {
+            match self.root_raw_value(&snapshot.result) {
+                Ok(reason) => Some(reason),
+                Err(error) => {
+                    self.discard_prepared_jobs([job])?;
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(reason) = handled_reason {
+            self.notify_host_promise_rejection_tracker(realm, promise.clone(), reason, true);
+        }
+        if let Err(error) = self
+            .0
+            .state
+            .borrow_mut()
+            .heap
+            .promise_mark_handled(promise.object_id())
+        {
+            self.discard_prepared_jobs([job])?;
+            return Err(error.into());
+        }
+        self.publish_prepared_jobs([job]);
+        Ok(NativeConversion::Value(()))
     }
 
     fn perform_promise_then_internal(

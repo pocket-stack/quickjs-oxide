@@ -4,13 +4,17 @@
 //! drives. This slice keeps that ownership boundary across Context-local
 //! caching, host resolution, live import cells, and iterative SCC
 //! linking/evaluation. Static namespace objects and transitive exports are
-//! included; top-level await and dynamic import remain later frontiers.
+//! included. Script-goal dynamic import shares the same loader, linker,
+//! evaluator, and namespace machinery; top-level await remains a later
+//! frontier.
 
+use super::jobs::DynamicImportFinishOutcome;
 use super::*;
 use crate::compiler::{
     CompileOptions, ModuleImportAttributeChecker,
     compile_unlinked_module_with_name_and_attribute_checker,
 };
+use crate::heap::PromiseState;
 use crate::module::{ModuleExportTarget, ModuleImportName, ModuleRequestIndex, UnlinkedModule};
 pub use crate::module::{ModuleImportAttribute, ModuleImportAttributes};
 use std::collections::HashSet;
@@ -89,10 +93,11 @@ pub trait ModuleLoader: fmt::Debug {
             .map_err(|error| ModuleLoaderError::new(error.to_string()))
     }
 
-    /// Validate one request's non-empty effective attributes during parsing,
-    /// before normalization, cache lookup, or any following source text.
-    /// Absent attributes and an authored empty `with {}` clause both skip this
-    /// callback, matching QuickJS's lazily allocated attributes object.
+    /// Validate one request's attributes before normalization, cache lookup,
+    /// or any following source text. Static syntax calls this only for a
+    /// non-empty effective `with {}` object; dynamic import calls it whenever
+    /// `options.with` is present, including an empty object, matching the two
+    /// distinct QuickJS construction paths.
     fn check_attributes(
         &self,
         _attributes: &[ModuleImportAttribute],
@@ -111,9 +116,10 @@ pub trait ModuleLoader: fmt::Debug {
         ))
     }
 
-    /// Load one cache-missing normalized module with the effective attributes
-    /// from the request which selected it. An authored empty `with {}` clause
-    /// is exposed as [`ModuleImportAttributes::Absent`], matching QuickJS.
+    /// Load one cache-missing normalized module with the attributes from the
+    /// request which selected it. Static authored `with {}` is collapsed
+    /// through [`ModuleImportAttributes::effective`]; dynamic `options.with`
+    /// retains [`ModuleImportAttributes::Present`] even when empty.
     fn load_with_attributes(
         &self,
         normalized_name: &JsString,
@@ -130,8 +136,10 @@ pub trait ModuleLoader: fmt::Debug {
 /// cycles. Keep this value alive for as long as module resolution should use
 /// the loader. Dropping it disables the loader once no other registration
 /// owns it. Dropping this token or calling [`Runtime::clear_module_loader`]
-/// disables future graph transactions; a resolution already in flight keeps
-/// its initial loader snapshot until it either commits or rolls back.
+/// disables the next module-host callback, including a later callback in a
+/// resolution already in flight. Each normalize, load, and attribute-check
+/// invocation samples the then-current registration independently, matching
+/// QuickJS's runtime callback and opaque lookup boundaries.
 #[must_use = "the module loader is active only while its registration is retained"]
 pub struct ModuleLoaderRegistration {
     _loader: Rc<dyn ModuleLoader>,
@@ -289,7 +297,6 @@ struct ModuleResolveFrame {
     module: RawModuleRef,
     next_request: usize,
     dependencies: Vec<ModuleId>,
-    loader: Option<Rc<dyn ModuleLoader>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -400,12 +407,22 @@ struct ModuleResolutionGuard<'a> {
 }
 
 struct ModuleLoaderAttributeChecker<'a> {
-    loader: &'a dyn ModuleLoader,
+    runtime: &'a Runtime,
 }
 
 impl ModuleImportAttributeChecker for ModuleLoaderAttributeChecker<'_> {
     fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), Error> {
-        self.loader
+        let loader = self
+            .runtime
+            .0
+            .module_loader
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade);
+        let Some(loader) = loader else {
+            return Ok(());
+        };
+        loader
             .check_attributes(attributes)
             .map_err(|error| Error::new(ErrorKind::Type, error.to_string()))
     }
@@ -494,6 +511,42 @@ impl Runtime {
     /// Remove the runtime-wide module loader without clearing Context caches.
     pub fn clear_module_loader(&self) {
         self.0.module_loader.borrow_mut().take();
+    }
+
+    /// Dynamic-import's schedule-time attribute checker. The current loader
+    /// is sampled here, independently from the later load job. Only the host
+    /// callback is guarded: all preceding JavaScript property operations stay
+    /// ordinarily re-entrant.
+    pub(super) fn check_dynamic_import_attributes(
+        &self,
+        realm: ContextId,
+        attributes: &[ModuleImportAttribute],
+    ) -> Result<NativeConversion<()>, RuntimeError> {
+        let loader = self
+            .0
+            .module_loader
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade);
+        let Some(loader) = loader else {
+            return Ok(NativeConversion::Value(()));
+        };
+        if self.0.module_resolution_active.replace(true) {
+            return Err(RuntimeError::Invariant(
+                "module loader re-entered dynamic import attribute checking",
+            ));
+        }
+        let _guard = ModuleResolutionGuard {
+            active: &self.0.module_resolution_active,
+        };
+        match loader.check_attributes(attributes) {
+            Ok(()) => Ok(NativeConversion::Value(())),
+            Err(error) => Ok(NativeConversion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                &error.to_string(),
+            )?)),
+        }
     }
 
     fn module_record(&self, module: RawModuleRef) -> Result<ModuleRecord, RuntimeError> {
@@ -686,19 +739,18 @@ impl Runtime {
         realm: ContextId,
         source: &str,
         name: &JsString,
-        loader: Option<&dyn ModuleLoader>,
     ) -> Result<ModuleCompilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let debug_info = self.debug_info_mode();
-        let mut checker = loader.map(|loader| ModuleLoaderAttributeChecker { loader });
-        let checker = checker
-            .as_mut()
-            .map(|checker| checker as &mut dyn ModuleImportAttributeChecker);
+        // QuickJS samples the runtime's attribute checker separately for
+        // every authored `with` clause, so callbacks may replace or clear it
+        // before the parser reaches the next clause.
+        let mut checker = ModuleLoaderAttributeChecker { runtime: self };
         let module = match compile_unlinked_module_with_name_and_attribute_checker(
             source,
             name.clone(),
             debug_info,
-            checker,
+            Some(&mut checker),
         ) {
             Ok(module) => module,
             Err(error) => {
@@ -773,19 +825,11 @@ impl Runtime {
         let _resolution_guard = ModuleResolutionGuard {
             active: &self.0.module_resolution_active,
         };
-        let loader = {
-            self.0
-                .module_loader
-                .borrow()
-                .as_ref()
-                .and_then(Weak::upgrade)
-        };
-        let compilation =
-            self.compile_module_record_in_realm(realm, source, &name, loader.as_deref())?;
+        let compilation = self.compile_module_record_in_realm(realm, source, &name)?;
         let ModuleCompilation::Published(module) = compilation else {
             return Ok(compilation);
         };
-        self.resolve_module_graph(realm, module, loader)?;
+        self.resolve_module_graph(realm, module)?;
         Ok(ModuleCompilation::Published(module))
     }
 
@@ -793,7 +837,6 @@ impl Runtime {
         &self,
         realm: ContextId,
         module: RawModuleRef,
-        loader: Option<Rc<dyn ModuleLoader>>,
     ) -> Result<(), RuntimeError> {
         if module.cache != realm {
             return Err(RuntimeError::Invariant(
@@ -810,7 +853,6 @@ impl Runtime {
             module,
             next_request: 0,
             dependencies: Vec::with_capacity(record.requested_modules.len()),
-            loader,
         }];
 
         let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -836,7 +878,7 @@ impl Runtime {
                     continue;
                 }
 
-                let (current, request, loader) = {
+                let (current, request) = {
                     let frame = stack.last_mut().ok_or(RuntimeError::Invariant(
                         "module resolution stack unexpectedly became empty",
                     ))?;
@@ -850,21 +892,31 @@ impl Runtime {
                             "module request index is outside its record",
                         ))?;
                     frame.next_request += 1;
-                    (current, request, frame.loader.clone())
+                    (current, request)
                 };
                 let current_record = self.module_record(current)?;
                 let base_name = module_c_string_view(&current_record.name)?;
                 let specifier = module_c_string_view(&request.specifier)?;
-                let normalized_name = if let Some(loader) = &loader {
-                    loader.normalize(&base_name, &specifier).map_err(|error| {
-                        module_reference_error(
-                            "could not normalize module '",
-                            &specifier,
-                            &format!("': {error}"),
-                        )
-                    })?
-                } else {
-                    default_module_normalize_name(&base_name, &specifier)?
+                // QuickJS re-reads the normalize hook for every request and
+                // does not retain it across the subsequent load callback.
+                let normalized_name = {
+                    let loader = self
+                        .0
+                        .module_loader
+                        .borrow()
+                        .as_ref()
+                        .and_then(Weak::upgrade);
+                    if let Some(loader) = loader {
+                        loader.normalize(&base_name, &specifier).map_err(|error| {
+                            module_reference_error(
+                                "could not normalize module '",
+                                &specifier,
+                                &format!("': {error}"),
+                            )
+                        })?
+                    } else {
+                        default_module_normalize_name(&base_name, &specifier)?
+                    }
                 };
                 let normalized_name = module_c_string_view(&normalized_name)?;
                 let cached = self
@@ -876,37 +928,44 @@ impl Runtime {
                 let dependency = if let Some(cached) = cached {
                     cached
                 } else {
-                    let Some(loader) = &loader else {
-                        return Err(module_reference_error(
-                            "could not load module '",
-                            &normalized_name,
-                            "'",
-                        ));
-                    };
-                    let loaded = loader
-                        .load_with_attributes(
-                            &normalized_name,
-                            if request.attributes.effective().is_some() {
-                                &request.attributes
-                            } else {
-                                &ModuleImportAttributes::Absent
-                            },
-                        )
-                        .map_err(|error| {
-                            module_reference_error(
+                    // Normalize may mutate the installed callbacks. Sample
+                    // again for this load only, then release the host before
+                    // compiling and walking the dependency's own requests.
+                    let loaded = {
+                        let loader = self
+                            .0
+                            .module_loader
+                            .borrow()
+                            .as_ref()
+                            .and_then(Weak::upgrade);
+                        let Some(loader) = loader else {
+                            return Err(module_reference_error(
                                 "could not load module '",
                                 &normalized_name,
-                                &format!("': {error}"),
-                            )
-                        })?;
-                    let compilation = match loaded {
-                        ModuleLoadResult::SourceText(source) => self
-                            .compile_module_record_in_realm(
-                                realm,
-                                &source,
+                                "'",
+                            ));
+                        };
+                        loader
+                            .load_with_attributes(
                                 &normalized_name,
-                                Some(loader.as_ref()),
-                            )?,
+                                if request.attributes.effective().is_some() {
+                                    &request.attributes
+                                } else {
+                                    &ModuleImportAttributes::Absent
+                                },
+                            )
+                            .map_err(|error| {
+                                module_reference_error(
+                                    "could not load module '",
+                                    &normalized_name,
+                                    &format!("': {error}"),
+                                )
+                            })?
+                    };
+                    let compilation = match loaded {
+                        ModuleLoadResult::SourceText(source) => {
+                            self.compile_module_record_in_realm(realm, &source, &normalized_name)?
+                        }
                         ModuleLoadResult::JsonText(source) => self
                             .compile_json_module_record_in_realm(
                                 realm,
@@ -944,7 +1003,6 @@ impl Runtime {
                         module: dependency,
                         next_request: 0,
                         dependencies: Vec::with_capacity(dependency_record.requested_modules.len()),
-                        loader,
                     });
                 }
             }
@@ -970,6 +1028,114 @@ impl Runtime {
             {
                 let kind = NativeErrorKind::from_javascript_error(error.kind()).ok_or(
                     RuntimeError::Invariant("module loader error lost native kind"),
+                )?;
+                let exception = self.new_native_error_from_error(realm, kind, &error)?;
+                self.set_pending_exception(exception)?;
+                Err(RuntimeError::Exception)
+            }
+            result => result,
+        }
+    }
+
+    /// Resolve one dynamic-import root using the loader installed when the
+    /// FIFO load job actually runs. Context cache lookup precedes loading, so
+    /// a cache hit deliberately ignores the request's later attributes.
+    pub(super) fn resolve_dynamic_import_module(
+        &self,
+        realm: ContextId,
+        base_name: &JsString,
+        specifier: &JsString,
+        attributes: &ModuleImportAttributes,
+    ) -> Result<RawModuleRef, RuntimeError> {
+        let base_name = module_c_string_view(base_name)?;
+        let specifier = module_c_string_view(specifier)?;
+        if self.0.module_resolution_active.replace(true) {
+            return Err(RuntimeError::Invariant(
+                "module loader re-entered dynamic import resolution",
+            ));
+        }
+        let _guard = ModuleResolutionGuard {
+            active: &self.0.module_resolution_active,
+        };
+        let result = (|| {
+            let normalized_name = {
+                let loader = self
+                    .0
+                    .module_loader
+                    .borrow()
+                    .as_ref()
+                    .and_then(Weak::upgrade);
+                if let Some(loader) = loader {
+                    loader.normalize(&base_name, &specifier).map_err(|error| {
+                        module_reference_error(
+                            "could not normalize module '",
+                            &specifier,
+                            &format!("': {error}"),
+                        )
+                    })?
+                } else {
+                    default_module_normalize_name(&base_name, &specifier)?
+                }
+            };
+            let normalized_name = module_c_string_view(&normalized_name)?;
+            let cached = self
+                .0
+                .state
+                .borrow()
+                .heap
+                .first_loaded_module(realm, &normalized_name)?;
+            let module = if let Some(cached) = cached {
+                cached
+            } else {
+                let loaded = {
+                    let loader = self
+                        .0
+                        .module_loader
+                        .borrow()
+                        .as_ref()
+                        .and_then(Weak::upgrade);
+                    let Some(loader) = loader else {
+                        return Err(module_reference_error(
+                            "could not load module '",
+                            &normalized_name,
+                            "'",
+                        ));
+                    };
+                    loader
+                        .load_with_attributes(&normalized_name, attributes)
+                        .map_err(|error| {
+                            module_reference_error(
+                                "could not load module '",
+                                &normalized_name,
+                                &format!("': {error}"),
+                            )
+                        })?
+                };
+                let compilation = match loaded {
+                    ModuleLoadResult::SourceText(source) => {
+                        self.compile_module_record_in_realm(realm, &source, &normalized_name)?
+                    }
+                    ModuleLoadResult::JsonText(source) => {
+                        self.compile_json_module_record_in_realm(realm, &source, &normalized_name)?
+                    }
+                };
+                match compilation {
+                    ModuleCompilation::Published(module) => module,
+                    ModuleCompilation::Throw(exception) => {
+                        self.set_pending_exception(exception)?;
+                        return Err(RuntimeError::Exception);
+                    }
+                }
+            };
+            self.resolve_module_graph(realm, module)?;
+            Ok(module)
+        })();
+        match result {
+            Err(RuntimeError::Engine(error))
+                if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>
+            {
+                let kind = NativeErrorKind::from_javascript_error(error.kind()).ok_or(
+                    RuntimeError::Invariant("dynamic module loader error lost native kind"),
                 )?;
                 let exception = self.new_native_error_from_error(realm, kind, &error)?;
                 self.set_pending_exception(exception)?;
@@ -1045,6 +1211,8 @@ impl Runtime {
             namespace: ModuleNamespaceState::Empty,
             link_status: ModuleLinkStatus::Unlinked,
             evaluation: ModuleEvaluationState::Unevaluated,
+            evaluation_cycle_root: None,
+            evaluation_promise: None,
             link_realm: None,
             compile_realm: realm,
         };
@@ -1081,6 +1249,8 @@ impl Runtime {
             namespace: ModuleNamespaceState::Empty,
             link_status: ModuleLinkStatus::Unlinked,
             evaluation: ModuleEvaluationState::Unevaluated,
+            evaluation_cycle_root: None,
+            evaluation_promise: None,
             link_realm: None,
             compile_realm: realm,
         };
@@ -1612,7 +1782,7 @@ impl Runtime {
         self.get_module_namespace_raw(module.raw, realm)
     }
 
-    fn get_module_namespace_raw(
+    pub(super) fn get_module_namespace_raw(
         &self,
         module: RawModuleRef,
         realm: ContextId,
@@ -2318,7 +2488,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn link_module_graph(
+    pub(super) fn link_module_graph(
         &self,
         module: RawModuleRef,
         initiating_realm: ContextId,
@@ -2382,6 +2552,52 @@ impl Runtime {
             dependencies: self.raw_module_dependencies(module)?,
             next_dependency: 0,
         })
+    }
+
+    /// Execute one authored source-text module through the intrinsic Promise
+    /// used by QuickJS's synchronous-module wrapper. Although this slice has
+    /// no top-level await, an abrupt body still rejects that distinct Promise
+    /// (and therefore reaches the host rejection tracker) before its result is
+    /// propagated into the cached module-evaluation Promise. Reading the
+    /// settled result here deliberately does not mark the body Promise handled.
+    fn execute_source_text_module_body(
+        &self,
+        realm: ContextId,
+        callable: &CallableRef,
+    ) -> Result<Completion, RuntimeError> {
+        let capability = self.new_default_promise_capability(realm)?;
+        let completion = self.call_internal(realm, callable, Value::Undefined, &[])?;
+        let (target, result) = match completion {
+            Completion::Return(value) => (&capability.resolve, value),
+            Completion::Throw(reason) => (&capability.reject, reason),
+        };
+        match self.call_internal(
+            realm,
+            target,
+            Value::Undefined,
+            std::slice::from_ref(&result),
+        )? {
+            Completion::Return(_) => {}
+            Completion::Throw(_) => {
+                return Err(RuntimeError::Invariant(
+                    "intrinsic module-body Promise resolving function threw",
+                ));
+            }
+        }
+        let snapshot = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .promise_snapshot(capability.promise.object_id())?;
+        let result = self.root_raw_value(&snapshot.result)?;
+        match snapshot.state {
+            PromiseState::Fulfilled => Ok(Completion::Return(result)),
+            PromiseState::Rejected => Ok(Completion::Throw(result)),
+            PromiseState::Pending => Err(RuntimeError::Invariant(
+                "synchronous module body retained a pending Promise",
+            )),
+        }
     }
 
     fn evaluate_module_dfs(
@@ -2517,7 +2733,7 @@ impl Runtime {
                     let callable = CallableRef::from_validated_object(
                         ObjectRef::from_borrowed_handle(self.clone(), callable)?,
                     );
-                    self.call_internal(realm, &callable, Value::Undefined, &[])?
+                    self.execute_source_text_module_body(realm, &callable)?
                 }
                 ModuleRecordBody::Json { default_value } => {
                     let slot = record
@@ -2559,7 +2775,7 @@ impl Runtime {
                             }
                             self.transition_module_record(
                                 member,
-                                RawModuleTransition::FinishEvaluation,
+                                RawModuleTransition::FinishEvaluation(frame.module.module),
                             )?;
                             let popped = dfs.stack.pop().ok_or(RuntimeError::Invariant(
                                 "module evaluation SCC stack underflow after publication",
@@ -2645,9 +2861,12 @@ impl Runtime {
                 let exception = dfs.exception.take().ok_or(RuntimeError::Invariant(
                     "module evaluation exception had no cached value",
                 ))?;
-                if let Err(error) =
-                    self.cache_module_evaluation_exception(module.cache, &dfs.stack, &exception)
-                {
+                if let Err(error) = self.cache_module_evaluation_exception(
+                    module.cache,
+                    module.module,
+                    &dfs.stack,
+                    &exception,
+                ) {
                     self.poison_active_module_evaluations(module, &dfs.stack)?;
                     return Err(error);
                 }
@@ -2661,9 +2880,286 @@ impl Runtime {
         }
     }
 
+    /// Return the Context-owned Promise for one module evaluation attempt.
+    ///
+    /// Pinned QuickJS publishes `m->promise` before executing authored module
+    /// code.  Static execution and dynamic import both enter through this
+    /// helper so a cache hit observes the same Promise identity, settlement,
+    /// and rejection-tracker history regardless of which API evaluated the
+    /// record first.  This slice is synchronous; top-level-await will extend
+    /// the cached record with the additional async-evaluation machinery.
+    pub(super) fn evaluate_module_promise(
+        &self,
+        requested_module: RawModuleRef,
+        initiating_realm: ContextId,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let requested_record = self.module_record(requested_module)?;
+        let module = match requested_record.evaluation {
+            ModuleEvaluationState::Evaluated | ModuleEvaluationState::Errored(_) => {
+                RawModuleRef {
+                    cache: requested_module.cache,
+                    module: requested_record.evaluation_cycle_root.ok_or(
+                        RuntimeError::Invariant("completed module evaluation has no cycle root"),
+                    )?,
+                }
+            }
+            ModuleEvaluationState::Unevaluated => requested_module,
+            ModuleEvaluationState::Evaluating => {
+                return Err(RuntimeError::Invariant(
+                    "module evaluation Promise was requested during evaluation",
+                ));
+            }
+            ModuleEvaluationState::Poisoned => {
+                return Err(RuntimeError::Invariant(
+                    "module evaluation previously failed inside the engine",
+                ));
+            }
+        };
+        let record = self.module_record(module)?;
+        if let Some(promise) = record.evaluation_promise {
+            return match record.evaluation {
+                ModuleEvaluationState::Evaluated | ModuleEvaluationState::Errored(_) => {
+                    ObjectRef::from_borrowed_handle(self.clone(), promise).map_err(Into::into)
+                }
+                ModuleEvaluationState::Unevaluated => Err(RuntimeError::Invariant(
+                    "module retained an unsettled Promise before evaluation",
+                )),
+                ModuleEvaluationState::Evaluating => Err(RuntimeError::Invariant(
+                    "module cycle-root Promise was requested during evaluation",
+                )),
+                ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
+                    "module cycle-root evaluation previously failed inside the engine",
+                )),
+            };
+        }
+        if matches!(record.evaluation, ModuleEvaluationState::Evaluating) {
+            return Err(RuntimeError::Invariant(
+                "module cycle-root Promise was requested during evaluation",
+            ));
+        }
+        if matches!(record.evaluation, ModuleEvaluationState::Poisoned) {
+            return Err(RuntimeError::Invariant(
+                "module cycle-root evaluation previously failed inside the engine",
+            ));
+        }
+        if record.link_status != ModuleLinkStatus::Linked {
+            return Err(RuntimeError::Invariant(
+                "module evaluation Promise was requested before linking",
+            ));
+        }
+
+        let capability = self.new_default_promise_capability(initiating_realm)?;
+        let promise = capability.promise.clone();
+        self.mutate_module_record(module, |record| {
+            if record.evaluation_promise.is_some() {
+                return Err(RuntimeError::Invariant(
+                    "module evaluation Promise was installed reentrantly",
+                ));
+            }
+            record.evaluation_promise = Some(promise.object_id());
+            Ok(())
+        })?;
+
+        let settlement = match record.evaluation {
+            ModuleEvaluationState::Unevaluated => match self.evaluate_module_graph(module) {
+                Ok(Value::Undefined) => Ok((true, Value::Undefined)),
+                Ok(_) => Err(RuntimeError::Invariant(
+                    "module evaluation returned a non-undefined value",
+                )),
+                Err(RuntimeError::Exception) => {
+                    let reason = self
+                        .take_pending_exception()?
+                        .ok_or(RuntimeError::Invariant(
+                            "module evaluation failed without a pending exception",
+                        ))?;
+                    Ok((false, reason))
+                }
+                Err(error) => Err(error),
+            },
+            ModuleEvaluationState::Evaluated => Ok((true, Value::Undefined)),
+            ModuleEvaluationState::Errored(reason) => Ok((false, self.root_raw_value(&reason)?)),
+            ModuleEvaluationState::Evaluating => Err(RuntimeError::Invariant(
+                "module evaluation Promise was requested during evaluation",
+            )),
+            ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
+                "module evaluation previously failed inside the engine",
+            )),
+        }?;
+        let target = if settlement.0 {
+            &capability.resolve
+        } else {
+            &capability.reject
+        };
+        match self.call_internal(
+            initiating_realm,
+            target,
+            Value::Undefined,
+            std::slice::from_ref(&settlement.1),
+        )? {
+            Completion::Return(_) => Ok(promise),
+            Completion::Throw(_) => Err(RuntimeError::Invariant(
+                "intrinsic module Promise resolving function threw",
+            )),
+        }
+    }
+
+    fn dynamic_import_settler(&self, object: ObjectId) -> Result<CallableRef, RuntimeError> {
+        let object = ObjectRef::from_borrowed_handle(self.clone(), object)?;
+        self.as_callable(&object)?.ok_or(RuntimeError::Invariant(
+            "dynamic import resolving function lost its callable brand",
+        ))
+    }
+
+    fn call_dynamic_import_settler(
+        &self,
+        realm: ContextId,
+        target: ObjectId,
+        value: Value,
+    ) -> Result<Completion, RuntimeError> {
+        let target = self.dynamic_import_settler(target)?;
+        match self.call_internal(realm, &target, Value::Undefined, &[value])? {
+            Completion::Return(_) => Ok(Completion::Return(Value::Undefined)),
+            Completion::Throw(_) => Err(RuntimeError::Invariant(
+                "intrinsic dynamic import resolving function threw",
+            )),
+        }
+    }
+
+    fn dynamic_import_error_reason(
+        &self,
+        realm: ContextId,
+        error: RuntimeError,
+    ) -> Result<Value, RuntimeError> {
+        match error {
+            RuntimeError::Exception => {
+                self.take_pending_exception()?
+                    .ok_or(RuntimeError::Invariant(
+                        "dynamic import failure had no pending exception",
+                    ))
+            }
+            RuntimeError::Engine(error) => {
+                let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+                    return Err(RuntimeError::Engine(error));
+                };
+                self.new_native_error_from_error(realm, kind, &error)
+            }
+            error => Err(error),
+        }
+    }
+
+    fn reject_dynamic_import_error(
+        &self,
+        realm: ContextId,
+        reject: ObjectId,
+        error: RuntimeError,
+    ) -> Result<Completion, RuntimeError> {
+        let reason = self.dynamic_import_error_reason(realm, error)?;
+        self.call_dynamic_import_settler(realm, reject, reason)
+    }
+
+    pub(super) fn execute_dynamic_import_load_job(
+        &self,
+        realm: ContextId,
+        resolve: ObjectId,
+        reject: ObjectId,
+        base_name: Option<&JsString>,
+        specifier: &JsString,
+        attributes: &ModuleImportAttributes,
+    ) -> Result<Completion, RuntimeError> {
+        let Some(base_name) = base_name else {
+            let reason = self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "no function filename for import()",
+            )?;
+            return self.call_dynamic_import_settler(realm, reject, reason);
+        };
+        let module =
+            match self.resolve_dynamic_import_module(realm, base_name, specifier, attributes) {
+                Ok(module) => module,
+                Err(error) => return self.reject_dynamic_import_error(realm, reject, error),
+            };
+        if let Err(error) = self.link_module_graph(module, realm) {
+            return self.reject_dynamic_import_error(realm, reject, error);
+        }
+        let evaluation_promise = match self.evaluate_module_promise(module, realm) {
+            Ok(promise) => promise,
+            Err(error) => return self.reject_dynamic_import_error(realm, reject, error),
+        };
+        match self.attach_dynamic_import_finish(
+            realm,
+            &evaluation_promise,
+            module,
+            resolve,
+            reject,
+        )? {
+            NativeConversion::Value(()) => Ok(Completion::Return(Value::Undefined)),
+            NativeConversion::Throw(value) => {
+                // `JS_LoadModuleInternal` frees the abrupt `js_promise_then`
+                // result and the surrounding load job still returns
+                // undefined. The runtime's current exception remains set,
+                // while the caller-facing import Promise deliberately stays
+                // pending in this edge case.
+                self.set_pending_exception(value)?;
+                Ok(Completion::Return(Value::Undefined))
+            }
+        }
+    }
+
+    pub(super) fn execute_dynamic_import_finish_job(
+        &self,
+        realm: ContextId,
+        resolve: ObjectId,
+        reject: ObjectId,
+        reaction_resolve: ObjectId,
+        reaction_reject: ObjectId,
+        outcome: &DynamicImportFinishOutcome,
+    ) -> Result<Completion, RuntimeError> {
+        let handler_completion = match outcome {
+            DynamicImportFinishOutcome::Rejected { reason } => {
+                let reason = self.root_raw_value(reason)?;
+                self.call_dynamic_import_settler(realm, reject, reason)
+            }
+            DynamicImportFinishOutcome::Fulfilled { module } => {
+                match self.get_module_namespace_raw(*module, realm) {
+                    Ok(namespace) => {
+                        // Use the ordinary intrinsic resolving function so a
+                        // hostile namespace `then` export is observed and
+                        // assimilated.
+                        self.call_dynamic_import_settler(realm, resolve, Value::Object(namespace))
+                    }
+                    Err(error) => self.reject_dynamic_import_error(realm, reject, error),
+                }
+            }
+        };
+        let handler_completion = match handler_completion {
+            Ok(completion) => completion,
+            Err(RuntimeError::Exception) => Completion::Throw(
+                self.take_pending_exception()?
+                    .ok_or(RuntimeError::Invariant(
+                        "dynamic import finish failed without a pending exception",
+                    ))?,
+            ),
+            Err(RuntimeError::Engine(error)) => {
+                let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
+                    return Err(RuntimeError::Engine(error));
+                };
+                Completion::Throw(self.new_native_error_from_error(realm, kind, &error)?)
+            }
+            Err(error) => return Err(error),
+        };
+        let (target, value) = match handler_completion {
+            Completion::Return(value) => (reaction_resolve, value),
+            Completion::Throw(value) => (reaction_reject, value),
+        };
+        let target = self.dynamic_import_settler(target)?;
+        self.call_internal(realm, &target, Value::Undefined, &[value])
+    }
+
     fn cache_module_evaluation_exception(
         &self,
         cache: ContextId,
+        cycle_root: ModuleId,
         active: &[ModuleId],
         exception: &Value,
     ) -> Result<(), RuntimeError> {
@@ -2695,9 +3191,10 @@ impl Runtime {
             }
             _ => Vec::new(),
         };
-        if let Err(error) = state
-            .heap
-            .publish_loaded_module_errors(cache, &evaluating, raw.clone())
+        if let Err(error) =
+            state
+                .heap
+                .publish_loaded_module_errors(cache, &evaluating, cycle_root, raw.clone())
         {
             state
                 .release_atoms(retained_atoms)
@@ -2745,7 +3242,22 @@ impl Runtime {
         }
         self.0.state.borrow().heap.context(initiating_realm)?;
         self.link_module_graph(module.raw, initiating_realm)?;
-        self.evaluate_module_graph(module.raw)
+        let promise = self.evaluate_module_promise(module.raw, initiating_realm)?;
+        drop(promise);
+        match self.module_record(module.raw)?.evaluation {
+            ModuleEvaluationState::Evaluated => Ok(Value::Undefined),
+            ModuleEvaluationState::Errored(reason) => {
+                let reason = self.root_raw_value(&reason)?;
+                self.set_pending_exception(reason)?;
+                Err(RuntimeError::Exception)
+            }
+            ModuleEvaluationState::Unevaluated | ModuleEvaluationState::Evaluating => Err(
+                RuntimeError::Invariant("synchronous module evaluation left an unsettled state"),
+            ),
+            ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
+                "module evaluation previously failed inside the engine",
+            )),
+        }
     }
 }
 
@@ -2810,6 +3322,7 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::heap::{PromiseData, PromiseState};
 
     type SharedLoaderSources = Rc<RefCell<HashMap<String, String>>>;
     type SharedLoaderLoads = Rc<RefCell<Vec<String>>>;
@@ -3166,6 +3679,84 @@ mod tests {
         }
     }
 
+    struct NormalizeReplacingModuleLoader {
+        runtime: Runtime,
+        replacement: RefCell<Option<MapModuleLoader>>,
+        replacement_registration: RefCell<Option<ModuleLoaderRegistration>>,
+        normalizations: SharedLoaderNormalizations,
+        loads: SharedLoaderLoads,
+    }
+
+    impl fmt::Debug for NormalizeReplacingModuleLoader {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("NormalizeReplacingModuleLoader")
+        }
+    }
+
+    impl ModuleLoader for NormalizeReplacingModuleLoader {
+        fn normalize(
+            &self,
+            base_name: &JsString,
+            specifier: &JsString,
+        ) -> Result<JsString, ModuleLoaderError> {
+            self.normalizations
+                .borrow_mut()
+                .push((base_name.to_utf8_lossy(), specifier.to_utf8_lossy()));
+            if let Some(replacement) = self.replacement.borrow_mut().take() {
+                self.replacement_registration
+                    .borrow_mut()
+                    .replace(self.runtime.set_module_loader(replacement));
+            }
+            default_module_normalize_name(base_name, specifier)
+                .map_err(|error| ModuleLoaderError::new(error.to_string()))
+        }
+
+        fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+            self.loads
+                .borrow_mut()
+                .push(valid_fixture_module_name(normalized_name)?);
+            Err(ModuleLoaderError::new(
+                "stale normalize loader unexpectedly handled load",
+            ))
+        }
+    }
+
+    struct AttributeReplacingModuleLoader {
+        runtime: Runtime,
+        replacement: RefCell<Option<AttributeModuleLoader>>,
+        replacement_registration: RefCell<Option<ModuleLoaderRegistration>>,
+        checks: Rc<RefCell<Vec<Vec<(String, String)>>>>,
+    }
+
+    impl fmt::Debug for AttributeReplacingModuleLoader {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("AttributeReplacingModuleLoader")
+        }
+    }
+
+    impl ModuleLoader for AttributeReplacingModuleLoader {
+        fn check_attributes(
+            &self,
+            attributes: &[ModuleImportAttribute],
+        ) -> Result<(), ModuleLoaderError> {
+            self.checks
+                .borrow_mut()
+                .push(recorded_attribute_pairs(attributes));
+            if let Some(replacement) = self.replacement.borrow_mut().take() {
+                self.replacement_registration
+                    .borrow_mut()
+                    .replace(self.runtime.set_module_loader(replacement));
+            }
+            Ok(())
+        }
+
+        fn load(&self, _normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+            Err(ModuleLoaderError::new(
+                "stale attribute checker unexpectedly handled load",
+            ))
+        }
+    }
+
     #[derive(Debug)]
     struct PanickingModuleLoader;
 
@@ -3299,6 +3890,23 @@ mod tests {
         assert_eq!(context.eval(source).unwrap(), Value::Bool(true));
     }
 
+    fn eval_dynamic_import(context: &mut Context, source: &str, filename: &str) -> ObjectRef {
+        let Value::Object(promise) = context.eval_with_filename(source, filename).unwrap() else {
+            panic!("dynamic import did not return an object");
+        };
+        promise
+    }
+
+    fn promise_snapshot(runtime: &Runtime, promise: &ObjectRef) -> PromiseData {
+        runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .promise_snapshot(promise.object_id())
+            .unwrap()
+    }
+
     fn take_error_message(runtime: &Runtime, context: &mut Context) -> JsString {
         let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
             panic!("module failure did not produce an Error object");
@@ -3308,6 +3916,673 @@ mod tests {
             .raw_string_property_for_diagnostics(&error, &message_key)
             .unwrap()
             .expect("module Error object has no string message")
+    }
+
+    #[test]
+    fn dynamic_import_load_and_finish_are_distinct_fifo_jobs_with_gc_roots() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, loads, _) = MapModuleLoader::new([(
+            "pkg/dependency.js",
+            "export const answer = 42; globalThis.__dynamicImportBodyRan = true;",
+        )]);
+        let _registration = runtime.set_module_loader(loader);
+
+        let promise =
+            eval_dynamic_import(&mut context, "import('./dependency.js')", "pkg/entry.js");
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        runtime.run_gc().unwrap();
+
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(loads.borrow().as_slice(), ["pkg/dependency.js"]);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert!(
+            runtime.is_job_pending(),
+            "load did not enqueue the finish reaction"
+        );
+        assert_script_true(&mut context, "globalThis.__dynamicImportBodyRan === true");
+        runtime.run_gc().unwrap();
+
+        assert!(runtime.execute_pending_job().unwrap());
+        let snapshot = promise_snapshot(&runtime, &promise);
+        assert_eq!(snapshot.state, PromiseState::Fulfilled);
+        let Value::Object(namespace) = runtime.root_raw_value(&snapshot.result).unwrap() else {
+            panic!("dynamic import did not fulfill with a namespace object");
+        };
+        let answer = runtime.intern_property_key("answer").unwrap();
+        assert_eq!(
+            runtime
+                .get_property_in_realm(context.realm, &namespace, &answer)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn dynamic_import_assimilates_a_namespace_then_export() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, _, _) = MapModuleLoader::new([(
+            "thenable.js",
+            "export function then(resolve) { resolve(42); }",
+        )]);
+        let _registration = runtime.set_module_loader(loader);
+        let promise = eval_dynamic_import(&mut context, "import('thenable.js')", "entry.js");
+
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert!(
+            runtime.is_job_pending(),
+            "namespace then was not assimilated"
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        let snapshot = promise_snapshot(&runtime, &promise);
+        assert_eq!(snapshot.state, PromiseState::Fulfilled);
+        assert_eq!(
+            runtime.root_raw_value(&snapshot.result).unwrap(),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn dynamic_import_internal_then_observes_species_and_ignored_capability() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, _, _) = MapModuleLoader::new([("species.js", "export const ok = true;")]);
+        let _registration = runtime.set_module_loader(loader);
+        context
+            .eval(
+                r#"
+globalThis.__dynamicSpeciesLog = "";
+Object.defineProperty(Promise, Symbol.species, {
+    configurable: true,
+    get: function () {
+        __dynamicSpeciesLog += "species,";
+        return function (executor) {
+            __dynamicSpeciesLog += "constructor,";
+            executor(
+                function () { __dynamicSpeciesLog += "resolve,"; },
+                function () { __dynamicSpeciesLog += "reject,"; }
+            );
+            return { ignored: true };
+        };
+    }
+});
+"#,
+            )
+            .unwrap();
+        let promise = eval_dynamic_import(&mut context, "import('species.js')", "entry.js");
+        assert_script_true(&mut context, "__dynamicSpeciesLog === ''");
+
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_script_true(
+            &mut context,
+            "__dynamicSpeciesLog === 'species,constructor,'",
+        );
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_script_true(
+            &mut context,
+            "__dynamicSpeciesLog === 'species,constructor,resolve,'",
+        );
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Fulfilled
+        );
+    }
+
+    #[test]
+    fn dynamic_import_discards_internal_then_species_abrupt_completion() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, _, _) =
+            MapModuleLoader::new([("species-throw.js", "export const ok = true;")]);
+        let _registration = runtime.set_module_loader(loader);
+        context
+            .eval(
+                r#"
+globalThis.__dynamicSpeciesThrowLog = "";
+Object.defineProperty(Promise, Symbol.species, {
+    configurable: true,
+    get: function () {
+        __dynamicSpeciesThrowLog += "species,";
+        throw 73;
+    }
+});
+"#,
+            )
+            .unwrap();
+        let promise = eval_dynamic_import(&mut context, "import('species-throw.js')", "entry.js");
+
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_script_true(&mut context, "__dynamicSpeciesThrowLog === 'species,'");
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert!(!runtime.is_job_pending());
+        assert!(context.has_exception());
+        assert_eq!(context.take_exception().unwrap(), Some(Value::Int(73)));
+    }
+
+    #[test]
+    fn dynamic_import_attributes_snapshot_descriptors_before_any_value_get() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, controls) =
+            AttributeModuleLoader::new([("attributes.js", "export const ok = true;")]);
+        let _registration = runtime.set_module_loader(loader);
+        let promise = eval_dynamic_import(
+            &mut context,
+            r#"
+globalThis.__dynamicAttributeLog = [];
+var attributeSymbol = Symbol("ignored");
+var attributeTarget = {};
+Object.defineProperty(attributeTarget, "a", {
+    value: "A", enumerable: true, configurable: true
+});
+Object.defineProperty(attributeTarget, "b", {
+    value: "B", enumerable: true, configurable: true
+});
+Object.defineProperty(attributeTarget, attributeSymbol, {
+    value: "ignored", enumerable: true, configurable: true
+});
+var attributeProxy = new Proxy(attributeTarget, {
+    ownKeys: function (target) {
+        __dynamicAttributeLog.push("ownKeys");
+        return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor: function (target, key) {
+        __dynamicAttributeLog.push("descriptor:" + key);
+        return Object.getOwnPropertyDescriptor(target, key);
+    },
+    get: function (target, key) {
+        __dynamicAttributeLog.push("get:" + key);
+        if (key === "a") {
+            Object.defineProperty(target, "b", {
+                value: "B", enumerable: false, configurable: true
+            });
+        }
+        return target[key];
+    }
+});
+import("attributes.js", { with: attributeProxy })
+"#,
+            "entry.js",
+        );
+        assert_script_true(
+            &mut context,
+            "__dynamicAttributeLog.join(',') === 'ownKeys,descriptor:a,descriptor:b,get:a,get:b'",
+        );
+        assert_eq!(
+            controls.checks.borrow().as_slice(),
+            [vec![
+                ("a".to_owned(), "A".to_owned()),
+                ("b".to_owned(), "B".to_owned()),
+            ]]
+        );
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            controls.loads.borrow().as_slice(),
+            [RecordedAttributeLoad {
+                name: "attributes.js".to_owned(),
+                attributes: Some(vec![
+                    ("a".to_owned(), "A".to_owned()),
+                    ("b".to_owned(), "B".to_owned()),
+                ]),
+            }]
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Fulfilled
+        );
+    }
+
+    #[test]
+    fn dynamic_import_empty_attributes_still_reach_checker_and_loader() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, controls) =
+            AttributeModuleLoader::new([("empty-attributes.js", "export const ok = true;")]);
+        let _registration = runtime.set_module_loader(loader);
+        let promise = eval_dynamic_import(
+            &mut context,
+            "import('empty-attributes.js', { with: {} })",
+            "entry.js",
+        );
+
+        assert_eq!(controls.checks.borrow().as_slice(), [Vec::new()]);
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            controls.loads.borrow().as_slice(),
+            [RecordedAttributeLoad {
+                name: "empty-attributes.js".to_owned(),
+                attributes: Some(Vec::new()),
+            }]
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Fulfilled
+        );
+    }
+
+    #[test]
+    fn dynamic_import_rejects_non_string_attribute_values_before_enqueue() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, controls) =
+            AttributeModuleLoader::new([("bad-attributes.js", "export const ok = true;")]);
+        let _registration = runtime.set_module_loader(loader);
+        let promise = eval_dynamic_import(
+            &mut context,
+            "import('bad-attributes.js', { with: { type: 42 } })",
+            "entry.js",
+        );
+
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Rejected
+        );
+        assert!(controls.checks.borrow().is_empty());
+        assert!(controls.loads.borrow().is_empty());
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn dynamic_import_load_job_samples_the_current_loader() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (first_loader, first_loads, _) =
+            MapModuleLoader::new([("sampled.js", "export const source = 1;")]);
+        let _first_registration = runtime.set_module_loader(first_loader);
+        let promise = eval_dynamic_import(&mut context, "import('sampled.js')", "entry.js");
+
+        let (second_loader, second_loads, _) =
+            MapModuleLoader::new([("sampled.js", "export const source = 2;")]);
+        let _second_registration = runtime.set_module_loader(second_loader);
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(first_loads.borrow().is_empty());
+        assert_eq!(second_loads.borrow().as_slice(), ["sampled.js"]);
+        assert!(runtime.execute_pending_job().unwrap());
+
+        let snapshot = promise_snapshot(&runtime, &promise);
+        let Value::Object(namespace) = runtime.root_raw_value(&snapshot.result).unwrap() else {
+            panic!("sampled dynamic import did not return a namespace");
+        };
+        let source = runtime.intern_property_key("source").unwrap();
+        assert_eq!(
+            runtime
+                .get_property_in_realm(context.realm, &namespace, &source)
+                .unwrap(),
+            Completion::Return(Value::Int(2))
+        );
+    }
+
+    #[test]
+    fn dynamic_import_load_samples_replacement_installed_by_normalize() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (replacement, replacement_loads, _) =
+            MapModuleLoader::new([("pkg/value.js", "export const value = 42;")]);
+        let initial_normalizations = Rc::new(RefCell::new(Vec::new()));
+        let initial_loads = Rc::new(RefCell::new(Vec::new()));
+        let loader = NormalizeReplacingModuleLoader {
+            runtime: runtime.clone(),
+            replacement: RefCell::new(Some(replacement)),
+            replacement_registration: RefCell::new(None),
+            normalizations: initial_normalizations.clone(),
+            loads: initial_loads.clone(),
+        };
+        let _loader_registration = runtime.set_module_loader(loader);
+        let promise = eval_dynamic_import(&mut context, "import('./value.js')", "pkg/entry.js");
+
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(initial_normalizations.borrow().len(), 1);
+        assert!(initial_loads.borrow().is_empty());
+        assert_eq!(replacement_loads.borrow().as_slice(), &["pkg/value.js"]);
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Fulfilled
+        );
+    }
+
+    #[test]
+    fn dynamic_import_resolution_failure_retries_the_acyclic_source_graph() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, loads, _) = MapModuleLoader::new([("pkg/a.js", "import './missing.js';")]);
+        let _loader_registration = runtime.set_module_loader(loader);
+
+        for _ in 0..2 {
+            let promise = eval_dynamic_import(&mut context, "import('./a.js')", "pkg/entry.js");
+            assert!(runtime.execute_pending_job().unwrap());
+            assert_eq!(
+                promise_snapshot(&runtime, &promise).state,
+                PromiseState::Rejected
+            );
+            assert!(!runtime.is_job_pending());
+        }
+
+        assert_eq!(
+            loads.borrow().as_slice(),
+            &["pkg/a.js", "pkg/missing.js", "pkg/a.js", "pkg/missing.js"]
+        );
+    }
+
+    #[test]
+    fn dynamic_import_reuses_cycle_root_rejection_promise_and_tracker_history() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, loads, _) = MapModuleLoader::new([
+            ("cycle-a.js", "import 'cycle-b.js'; export const a = 1;"),
+            ("cycle-b.js", "import 'cycle-a.js'; throw 42;"),
+        ]);
+        let _registration = runtime.set_module_loader(loader);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured = events.clone();
+        runtime.set_host_promise_rejection_tracker(move |event| {
+            captured.borrow_mut().push((
+                event.is_handled(),
+                event.promise().object_id(),
+                event.reason().clone(),
+            ));
+        });
+
+        let first = eval_dynamic_import(
+            &mut context,
+            "globalThis.__cycleFirst = import('cycle-a.js'); __cycleFirst.catch(function () {}); __cycleFirst",
+            "entry.js",
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        {
+            let events = events.borrow();
+            assert_eq!(events.len(), 3);
+            assert!(!events[0].0);
+            assert!(!events[1].0);
+            assert!(events[2].0);
+            assert_ne!(events[0].1, events[1].1);
+            assert_eq!(events[1].1, events[2].1);
+            assert_eq!(events[0].2, Value::Int(42));
+            assert_eq!(events[1].2, Value::Int(42));
+            assert_eq!(events[2].2, Value::Int(42));
+        }
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &first).state,
+            PromiseState::Rejected
+        );
+        assert!(
+            runtime.execute_pending_job().unwrap(),
+            "first catch reaction was missing"
+        );
+        assert!(!runtime.is_job_pending());
+
+        let (cycle_a, cycle_b, root_promise) = {
+            let state = runtime.0.state.borrow();
+            let cycle_a = state
+                .heap
+                .first_loaded_module(context.realm, &JsString::from_static("cycle-a.js"))
+                .unwrap()
+                .unwrap();
+            let cycle_b = state
+                .heap
+                .first_loaded_module(context.realm, &JsString::from_static("cycle-b.js"))
+                .unwrap()
+                .unwrap();
+            let a = state.heap.loaded_module(cycle_a).unwrap();
+            let b = state.heap.loaded_module(cycle_b).unwrap();
+            assert_eq!(a.evaluation_cycle_root, Some(cycle_a.module));
+            assert_eq!(b.evaluation_cycle_root, Some(cycle_a.module));
+            assert!(b.evaluation_promise.is_none());
+            (cycle_a, cycle_b, a.evaluation_promise.unwrap())
+        };
+        assert_ne!(cycle_a, cycle_b);
+
+        let second = eval_dynamic_import(
+            &mut context,
+            "globalThis.__cycleSecond = import('cycle-b.js'); __cycleSecond.catch(function () {}); __cycleSecond",
+            "entry.js",
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &second).state,
+            PromiseState::Rejected
+        );
+        assert!(!runtime.is_job_pending());
+        assert_eq!(
+            events.borrow().len(),
+            3,
+            "cached handled rejection retracked"
+        );
+        assert_eq!(loads.borrow().len(), 2, "cycle cache reloaded source text");
+        assert_eq!(
+            runtime.module_record(cycle_a).unwrap().evaluation_promise,
+            Some(root_promise)
+        );
+        assert!(
+            runtime
+                .module_record(cycle_b)
+                .unwrap()
+                .evaluation_promise
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dynamic_import_successful_cycle_reuses_one_evaluation_promise() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let (loader, loads, _) = MapModuleLoader::new([
+            (
+                "ok-cycle-a.js",
+                "import 'ok-cycle-b.js'; export const a = 1;",
+            ),
+            (
+                "ok-cycle-b.js",
+                "import 'ok-cycle-a.js'; export const b = 2;",
+            ),
+        ]);
+        let _registration = runtime.set_module_loader(loader);
+
+        let first = eval_dynamic_import(&mut context, "import('ok-cycle-a.js')", "entry.js");
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &first).state,
+            PromiseState::Fulfilled
+        );
+        let (a, b, root_promise) = {
+            let state = runtime.0.state.borrow();
+            let a = state
+                .heap
+                .first_loaded_module(context.realm, &JsString::from_static("ok-cycle-a.js"))
+                .unwrap()
+                .unwrap();
+            let b = state
+                .heap
+                .first_loaded_module(context.realm, &JsString::from_static("ok-cycle-b.js"))
+                .unwrap()
+                .unwrap();
+            let a_record = state.heap.loaded_module(a).unwrap();
+            let b_record = state.heap.loaded_module(b).unwrap();
+            assert_eq!(a_record.evaluation_cycle_root, Some(a.module));
+            assert_eq!(b_record.evaluation_cycle_root, Some(a.module));
+            assert!(b_record.evaluation_promise.is_none());
+            (a, b, a_record.evaluation_promise.unwrap())
+        };
+
+        let second = eval_dynamic_import(&mut context, "import('ok-cycle-b.js')", "entry.js");
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &second).state,
+            PromiseState::Fulfilled
+        );
+        assert_eq!(loads.borrow().len(), 2);
+        assert_eq!(
+            runtime.module_record(a).unwrap().evaluation_promise,
+            Some(root_promise)
+        );
+        assert!(
+            runtime
+                .module_record(b)
+                .unwrap()
+                .evaluation_promise
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn static_and_dynamic_entrypoints_share_the_cached_evaluation_promise() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let static_module = context
+            .compile_module_with_filename("export const value = 42;", "pkg/static.js")
+            .unwrap();
+        assert_eq!(
+            context.execute_module(&static_module).unwrap(),
+            Value::Undefined
+        );
+        let static_promise = runtime
+            .module_record(static_module.raw)
+            .unwrap()
+            .evaluation_promise
+            .unwrap();
+
+        let imported = eval_dynamic_import(&mut context, "import('./static.js')", "pkg/entry.js");
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &imported).state,
+            PromiseState::Fulfilled
+        );
+        assert_eq!(
+            runtime
+                .module_record(static_module.raw)
+                .unwrap()
+                .evaluation_promise,
+            Some(static_promise)
+        );
+
+        let (loader, _, _) =
+            MapModuleLoader::new([("pkg/dynamic-first.js", "export const value = 7;")]);
+        let _registration = runtime.set_module_loader(loader);
+        let dynamic_first =
+            eval_dynamic_import(&mut context, "import('./dynamic-first.js')", "pkg/entry.js");
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &dynamic_first).state,
+            PromiseState::Fulfilled
+        );
+        let raw = runtime
+            .0
+            .state
+            .borrow()
+            .heap
+            .first_loaded_module(
+                context.realm,
+                &JsString::from_static("pkg/dynamic-first.js"),
+            )
+            .unwrap()
+            .unwrap();
+        let dynamic_promise = runtime
+            .module_record(raw)
+            .unwrap()
+            .evaluation_promise
+            .unwrap();
+        let handle = runtime.root_module(raw).unwrap();
+        assert_eq!(context.execute_module(&handle).unwrap(), Value::Undefined);
+        assert_eq!(
+            runtime.module_record(raw).unwrap().evaluation_promise,
+            Some(dynamic_promise)
+        );
+    }
+
+    #[test]
+    fn static_throw_then_cached_dynamic_import_preserves_both_promise_histories() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let reason = context
+            .eval("globalThis.__sharedModuleReason = {}; __sharedModuleReason")
+            .unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured = events.clone();
+        runtime.set_host_promise_rejection_tracker(move |event| {
+            captured.borrow_mut().push((
+                event.is_handled(),
+                event.promise().object_id(),
+                event.reason().clone(),
+            ));
+        });
+
+        let module = context
+            .compile_module_with_filename(
+                "throw globalThis.__sharedModuleReason;",
+                "pkg/shared-throw.js",
+            )
+            .unwrap();
+        assert!(matches!(
+            context.execute_module(&module),
+            Err(RuntimeError::Exception)
+        ));
+        {
+            let events = events.borrow();
+            assert_eq!(events.len(), 2);
+            assert!(!events[0].0, "module-body Promise was already handled");
+            assert!(!events[1].0, "evaluation Promise was already handled");
+            assert_ne!(events[0].1, events[1].1);
+            assert_eq!(events[0].2, reason);
+            assert_eq!(events[1].2, reason);
+        }
+        assert_eq!(context.take_exception().unwrap(), Some(reason.clone()));
+        assert_eq!(events.borrow().len(), 2);
+
+        let imported = eval_dynamic_import(
+            &mut context,
+            "globalThis.__cachedThrowImport = import('./shared-throw.js'); __cachedThrowImport.catch(function () {}); __cachedThrowImport",
+            "pkg/entry.js",
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        {
+            let events = events.borrow();
+            assert_eq!(events.len(), 3);
+            assert!(events[2].0);
+            assert_eq!(events[2].1, events[1].1);
+            assert_ne!(events[2].1, events[0].1);
+            assert_eq!(events[2].2, reason);
+        }
+        assert!(runtime.execute_pending_job().unwrap());
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(
+            promise_snapshot(&runtime, &imported).state,
+            PromiseState::Rejected
+        );
+        assert!(!runtime.is_job_pending());
+        assert_eq!(events.borrow().len(), 3);
     }
 
     #[test]
@@ -3767,37 +5042,75 @@ mod tests {
     }
 
     #[test]
-    fn attribute_check_uses_loader_snapshot_for_the_complete_graph() {
+    fn attribute_check_samples_the_current_loader_for_each_clause() {
         let runtime = Runtime::new();
-        let (mut loader, controls) =
-            AttributeModuleLoader::new([("pkg/dependency.js", "export const value = 42;")]);
+        let (mut loader, controls) = AttributeModuleLoader::new([
+            ("pkg/first.js", "export const first = 20;"),
+            ("pkg/second.js", "export const second = 22;"),
+        ]);
         loader.clear_runtime_on_first_check = Some(runtime.clone());
         let _loader_registration = runtime.set_module_loader(loader);
         let mut context = runtime.new_context();
-        let module = context
-            .compile_module_with_filename(
+        assert!(matches!(
+            context.compile_module_with_filename(
                 r#"
-                import { value } from "./dependency.js" with { type: "javascript" };
-                globalThis.__attributeLoaderSnapshot = value;
+                import { first } from "./first.js" with { type: "javascript" };
+                import { second } from "./second.js" with { type: "javascript" };
+                globalThis.__attributeLoaderSnapshot = first + second;
                 "#,
                 "pkg/entry.js",
-            )
-            .unwrap();
-
-        context.execute_module(&module).unwrap();
-        assert_script_true(&mut context, "__attributeLoaderSnapshot === 42");
-        assert_eq!(controls.checks.borrow().len(), 1);
-        assert_eq!(controls.loads.borrow().len(), 1);
-
-        assert!(matches!(
-            context.compile_module_with_filename("import './fresh.js';", "pkg/next.js"),
+            ),
             Err(RuntimeError::Exception)
         ));
         assert!(matches!(
             context.take_exception().unwrap(),
             Some(Value::Object(_))
         ));
-        assert_eq!(controls.loads.borrow().len(), 1);
+        // The first checker callback cleared the installed loader. QuickJS
+        // re-reads the hook for the second clause, so A is not called twice;
+        // resolution then fails before either dependency can load.
+        assert_eq!(controls.checks.borrow().len(), 1);
+        assert!(controls.loads.borrow().is_empty());
+    }
+
+    #[test]
+    fn attribute_check_replacement_is_visible_to_the_next_clause_and_resolution() {
+        let runtime = Runtime::new();
+        let (replacement, replacement_controls) = AttributeModuleLoader::new([
+            ("pkg/first.js", "export const first = 20;"),
+            ("pkg/second.js", "export const second = 22;"),
+        ]);
+        let initial_checks = Rc::new(RefCell::new(Vec::new()));
+        let loader = AttributeReplacingModuleLoader {
+            runtime: runtime.clone(),
+            replacement: RefCell::new(Some(replacement)),
+            replacement_registration: RefCell::new(None),
+            checks: initial_checks.clone(),
+        };
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import { first } from "./first.js" with { phase: "initial" };
+                import { second } from "./second.js" with { phase: "replacement" };
+                globalThis.__attributeLoaderReplacement = first + second;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__attributeLoaderReplacement === 42");
+        assert_eq!(
+            initial_checks.borrow().as_slice(),
+            &[vec![("phase".to_owned(), "initial".to_owned())]]
+        );
+        assert_eq!(
+            replacement_controls.checks.borrow().as_slice(),
+            &[vec![("phase".to_owned(), "replacement".to_owned())]]
+        );
+        assert_eq!(replacement_controls.loads.borrow().len(), 2);
     }
 
     #[test]
@@ -3889,7 +5202,7 @@ mod tests {
     }
 
     #[test]
-    fn active_graph_keeps_its_initial_loader_snapshot_after_host_clear() {
+    fn nested_request_samples_loader_after_parent_load_clears_it() {
         let runtime = Runtime::new();
         let loads = Rc::new(RefCell::new(Vec::new()));
         let loader = ClearingModuleLoader {
@@ -3908,26 +5221,48 @@ mod tests {
         };
         let _loader_registration = runtime.set_module_loader(loader);
         let mut context = runtime.new_context();
-        let module = context
-            .compile_module_with_filename(
+        assert!(matches!(
+            context.compile_module_with_filename(
                 "import { answer } from './a.js'; globalThis.__loaderSnapshot = answer;",
                 "pkg/entry.js",
-            )
-            .unwrap();
-
-        context.execute_module(&module).unwrap();
-        assert_script_true(&mut context, "__loaderSnapshot === 42");
-        assert_eq!(&*loads.borrow(), &["pkg/a.js", "pkg/b.js"]);
-
-        assert!(matches!(
-            context.compile_module_with_filename("import './fresh.js';", "pkg/next.js"),
+            ),
             Err(RuntimeError::Exception)
         ));
         assert!(matches!(
             context.take_exception().unwrap(),
             Some(Value::Object(_))
         ));
-        assert_eq!(&*loads.borrow(), &["pkg/a.js", "pkg/b.js"]);
+        assert_eq!(&*loads.borrow(), &["pkg/a.js"]);
+    }
+
+    #[test]
+    fn load_samples_replacement_installed_by_normalize() {
+        let runtime = Runtime::new();
+        let (replacement, replacement_loads, _) =
+            MapModuleLoader::new([("pkg/value.js", "export const value = 42;")]);
+        let initial_normalizations = Rc::new(RefCell::new(Vec::new()));
+        let initial_loads = Rc::new(RefCell::new(Vec::new()));
+        let loader = NormalizeReplacingModuleLoader {
+            runtime: runtime.clone(),
+            replacement: RefCell::new(Some(replacement)),
+            replacement_registration: RefCell::new(None),
+            normalizations: initial_normalizations.clone(),
+            loads: initial_loads.clone(),
+        };
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { value } from './value.js'; globalThis.__normalizeReplacement = value;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__normalizeReplacement === 42");
+        assert_eq!(initial_normalizations.borrow().len(), 1);
+        assert!(initial_loads.borrow().is_empty());
+        assert_eq!(replacement_loads.borrow().as_slice(), &["pkg/value.js"]);
     }
 
     #[test]

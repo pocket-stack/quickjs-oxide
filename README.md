@@ -8,9 +8,11 @@ include binary data and Atomics, collections and weak references, Promise jobs,
 Unicode behavior, public/private class fields and private callable elements,
 and synchronous static-module graphs with default exports, live namespace
 objects, static import attributes, JSON synthetic modules, and core
-`import.meta` semantics. Dynamic import, top-level await, JSON5/byte-oriented
-host loading, and QuickJS host-populated `import.meta` properties remain parity
-work.
+`import.meta` semantics. Script-goal dynamic `import()` includes FIFO-job host
+loading, import attributes, namespace reuse, and cycle-root evaluation
+Promises. Top-level await, JavaScript-valued module-host errors,
+JSON5/byte-oriented loading, and host-populated `import.meta` properties remain
+parity work.
 
 <!-- current-test262-metrics:start -->
 The authoritative R3ep Test262 baseline records **79,462 full-corpus passes

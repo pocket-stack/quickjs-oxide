@@ -55,6 +55,20 @@ pub(super) struct ModuleGraphRootAdmission {
     pub(super) path: String,
     pub(super) closure_file_count: usize,
     pub(super) priority: usize,
+    pub(super) goal: ModuleGraphRootGoal,
+    pub(super) dynamic_import_expectation: Option<DynamicImportBytecodeExpectation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum ModuleGraphRootGoal {
+    StaticModule,
+    DynamicImportScript,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DynamicImportBytecodeExpectation {
+    InitialImportTree,
+    RuntimeCompiledImport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,6 +155,7 @@ impl AdmissionCatalog {
         let mut catalog = Self::default();
         let mut pending_requests = Vec::new();
         let mut root_keys = BTreeSet::new();
+        let mut root_goals = BTreeMap::new();
         let mut previous_line: Option<&str> = None;
         for (index, line) in lines.enumerate() {
             let line_number = index + 2;
@@ -200,12 +215,36 @@ impl AdmissionCatalog {
                         ));
                     }
                 }
-                "graph-root" => {
-                    require_empty(
-                        &fields,
-                        &[3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15],
-                        line_number,
-                    )?;
+                "graph-root" | "dynamic-import-root" => {
+                    let (goal, dynamic_import_expectation) = if fields[0] == "graph-root" {
+                        require_empty(
+                            &fields,
+                            &[3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15],
+                            line_number,
+                        )?;
+                        (ModuleGraphRootGoal::StaticModule, None)
+                    } else {
+                        require_empty(&fields, &[3, 4, 5, 6, 7, 8, 11, 12, 13, 15], line_number)?;
+                        let expectation = match fields[14] {
+                            "initial-import-tree" => {
+                                DynamicImportBytecodeExpectation::InitialImportTree
+                            }
+                            "runtime-compiled-import" => {
+                                DynamicImportBytecodeExpectation::RuntimeCompiledImport
+                            }
+                            "" => {
+                                return Err(format!(
+                                    "admissions line {line_number} is missing dynamic import policy"
+                                ));
+                            }
+                            unknown => {
+                                return Err(format!(
+                                    "admissions line {line_number} has unknown dynamic import policy {unknown:?}"
+                                ));
+                            }
+                        };
+                        (ModuleGraphRootGoal::DynamicImportScript, Some(expectation))
+                    };
                     validate_test_path(fields[2], false, line_number)?;
                     let closure_file_count =
                         parse_usize(fields[9], "closure_file_count", false, line_number)?;
@@ -217,11 +256,22 @@ impl AdmissionCatalog {
                             fields[1], fields[2]
                         ));
                     }
+                    if root_goals
+                        .insert(fields[2].to_owned(), goal)
+                        .is_some_and(|previous| previous != goal)
+                    {
+                        return Err(format!(
+                            "admissions line {line_number} mixes static module and dynamic Script roots for {}",
+                            fields[2]
+                        ));
+                    }
                     catalog.graph_roots.push(ModuleGraphRootAdmission {
                         group: fields[1].to_owned(),
                         path: fields[2].to_owned(),
                         closure_file_count,
                         priority,
+                        goal,
+                        dynamic_import_expectation,
                     });
                 }
                 "graph-file" => {
@@ -415,6 +465,38 @@ impl AdmissionCatalog {
                     root.group, root.path
                 ));
             }
+            let root_file = files
+                .iter()
+                .find(|file| file.path == root.path)
+                .expect("graph root presence was checked");
+            match root.goal {
+                ModuleGraphRootGoal::StaticModule
+                    if !root_file.metadata.flags.iter().any(|flag| flag == "module") =>
+                {
+                    return Err(format!(
+                        "static module graph root must declare the module flag: {}/{}",
+                        root.group, root.path
+                    ));
+                }
+                ModuleGraphRootGoal::DynamicImportScript
+                    if root_file.metadata.flags.iter().any(|flag| flag == "module") =>
+                {
+                    return Err(format!(
+                        "dynamic import graph root must use the Script goal: {}/{}",
+                        root.group, root.path
+                    ));
+                }
+                ModuleGraphRootGoal::DynamicImportScript
+                    if root_file.metadata.features.len() != 1
+                        || root_file.metadata.features[0] != "dynamic-import" =>
+                {
+                    return Err(format!(
+                        "dynamic import graph root must declare exactly the dynamic-import feature: {}/{}",
+                        root.group, root.path
+                    ));
+                }
+                _ => {}
+            }
             let visited = reachable_paths(files, &root.path)?;
             if visited.len() != root.closure_file_count {
                 return Err(format!(
@@ -468,10 +550,22 @@ impl AdmissionCatalog {
     }
 
     pub(super) fn graph_root(&self, path: &Path) -> Option<&ModuleGraphRootAdmission> {
+        self.graph_root_for_goal(path, ModuleGraphRootGoal::StaticModule)
+    }
+
+    pub(super) fn dynamic_import_root(&self, path: &Path) -> Option<&ModuleGraphRootAdmission> {
+        self.graph_root_for_goal(path, ModuleGraphRootGoal::DynamicImportScript)
+    }
+
+    fn graph_root_for_goal(
+        &self,
+        path: &Path,
+        goal: ModuleGraphRootGoal,
+    ) -> Option<&ModuleGraphRootAdmission> {
         let path = path.to_str()?;
         self.graph_roots
             .iter()
-            .filter(|root| root.path == path)
+            .filter(|root| root.path == path && root.goal == goal)
             .min_by_key(|root| root.priority)
     }
 
@@ -481,13 +575,29 @@ impl AdmissionCatalog {
     }
 
     #[cfg(test)]
+    pub(super) fn static_module_graph_roots(
+        &self,
+    ) -> impl Iterator<Item = &ModuleGraphRootAdmission> {
+        self.graph_roots
+            .iter()
+            .filter(|root| root.goal == ModuleGraphRootGoal::StaticModule)
+    }
+
+    #[cfg(test)]
+    pub(super) fn dynamic_import_roots(&self) -> impl Iterator<Item = &ModuleGraphRootAdmission> {
+        self.graph_roots
+            .iter()
+            .filter(|root| root.goal == ModuleGraphRootGoal::DynamicImportScript)
+    }
+
+    #[cfg(test)]
     pub(super) fn graph_roots_in_group<'a>(
         &'a self,
         group: &'a str,
     ) -> impl Iterator<Item = &'a ModuleGraphRootAdmission> {
-        self.graph_roots
-            .iter()
-            .filter(move |admission| admission.group == group)
+        self.graph_roots.iter().filter(move |admission| {
+            admission.group == group && admission.goal == ModuleGraphRootGoal::StaticModule
+        })
     }
 
     pub(super) fn graph_files(&self, group: &str) -> &[ModuleGraphFileAdmission] {
@@ -862,7 +972,9 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{AdmissionCatalog, HEADER, SupplementalPolicy, sha256};
+    use super::{
+        AdmissionCatalog, DynamicImportBytecodeExpectation, HEADER, SupplementalPolicy, sha256,
+    };
 
     const SHA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -1030,6 +1142,91 @@ mod tests {
         format!("{HEADER}\n{}\n", rows.join("\n"))
     }
 
+    fn dynamic_import_graph_catalog() -> String {
+        let mut rows = [
+            row([
+                "dynamic-import-root",
+                "dynamic-import",
+                "test/dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "2",
+                "0",
+                "",
+                "",
+                "",
+                "initial-import-tree",
+                "",
+            ]),
+            row([
+                "graph-file",
+                "dynamic-import",
+                "test/dynamic.js",
+                SHA,
+                "",
+                "async",
+                "dynamic-import",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            row([
+                "graph-file",
+                "dynamic-import",
+                "test/fixture_FIXTURE.js",
+                SHA,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            row([
+                "graph-request",
+                "dynamic-import",
+                "test/dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "0",
+                "./fixture_FIXTURE.js",
+                "test/fixture_FIXTURE.js",
+                "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        format!("{HEADER}\n{}\n", rows.join("\n"))
+    }
+
+    fn resort_catalog(source: &str) -> String {
+        let mut rows = source.lines().skip(1).collect::<Vec<_>>();
+        rows.sort();
+        format!("{HEADER}\n{}\n", rows.join("\n"))
+    }
+
     #[test]
     fn parses_a_canonical_catalog() {
         let catalog = AdmissionCatalog::parse(&minimal_catalog()).unwrap();
@@ -1089,6 +1286,151 @@ mod tests {
         );
         let error = AdmissionCatalog::parse(&metadata).unwrap_err();
         assert!(error.contains("empty metadata contract"), "{error}");
+    }
+
+    #[test]
+    fn dynamic_import_root_is_an_independent_script_goal() {
+        let catalog = AdmissionCatalog::parse(&dynamic_import_graph_catalog()).unwrap();
+        let path = Path::new("test/dynamic.js");
+        let root = catalog.dynamic_import_root(path).unwrap();
+        assert_eq!(root.closure_file_count, 2);
+        assert_eq!(
+            root.dynamic_import_expectation,
+            Some(DynamicImportBytecodeExpectation::InitialImportTree)
+        );
+        assert!(catalog.graph_root(path).is_none());
+
+        let static_kind = resort_catalog(
+            &dynamic_import_graph_catalog()
+                .replace(
+                    "dynamic-import-root\tdynamic-import\ttest/dynamic.js",
+                    "graph-root\tdynamic-import\ttest/dynamic.js",
+                )
+                .replace("initial-import-tree", "-"),
+        );
+        let error = AdmissionCatalog::parse(&static_kind).unwrap_err();
+        assert!(error.contains("must declare the module flag"), "{error}");
+
+        let module_flag = dynamic_import_graph_catalog().replace(
+            &format!("test/dynamic.js\t{SHA}\t-\tasync\tdynamic-import"),
+            &format!("test/dynamic.js\t{SHA}\t-\tasync,module\tdynamic-import"),
+        );
+        let error = AdmissionCatalog::parse(&module_flag).unwrap_err();
+        assert!(error.contains("must use the Script goal"), "{error}");
+
+        let missing_feature = dynamic_import_graph_catalog().replace(
+            &format!("test/dynamic.js\t{SHA}\t-\tasync\tdynamic-import"),
+            &format!("test/dynamic.js\t{SHA}\t-\tasync\t-"),
+        );
+        let error = AdmissionCatalog::parse(&missing_feature).unwrap_err();
+        assert!(
+            error.contains("must declare exactly the dynamic-import feature"),
+            "{error}"
+        );
+
+        let extra_feature = dynamic_import_graph_catalog().replace(
+            &format!("test/dynamic.js\t{SHA}\t-\tasync\tdynamic-import"),
+            &format!("test/dynamic.js\t{SHA}\t-\tasync\tdynamic-import,import-attributes"),
+        );
+        let error = AdmissionCatalog::parse(&extra_feature).unwrap_err();
+        assert!(
+            error.contains("must declare exactly the dynamic-import feature"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn dynamic_import_policy_is_an_explicit_closed_enum() {
+        let initial = dynamic_import_graph_catalog();
+        let root = AdmissionCatalog::parse(&initial)
+            .unwrap()
+            .dynamic_import_root(Path::new("test/dynamic.js"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            root.dynamic_import_expectation,
+            Some(DynamicImportBytecodeExpectation::InitialImportTree)
+        );
+
+        let runtime = initial.replace("initial-import-tree", "runtime-compiled-import");
+        let root = AdmissionCatalog::parse(&runtime)
+            .unwrap()
+            .dynamic_import_root(Path::new("test/dynamic.js"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            root.dynamic_import_expectation,
+            Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport)
+        );
+
+        let missing = initial.replace("initial-import-tree", "-");
+        let error = AdmissionCatalog::parse(&missing).unwrap_err();
+        assert!(error.contains("missing dynamic import policy"), "{error}");
+
+        let unknown = initial.replace("initial-import-tree", "any-import-tree");
+        let error = AdmissionCatalog::parse(&unknown).unwrap_err();
+        assert!(error.contains("unknown dynamic import policy"), "{error}");
+
+        let static_policy = minimal_catalog().replace(
+            "graph-root\tgraph\ttest/root.js\t-\t-\t-\t-\t-\t-\t1\t0\t-\t-\t-\t-\t-",
+            "graph-root\tgraph\ttest/root.js\t-\t-\t-\t-\t-\t-\t1\t0\t-\t-\t-\tinitial-import-tree\t-",
+        );
+        let error = AdmissionCatalog::parse(&static_policy).unwrap_err();
+        assert!(error.contains("unexpected data in field policy"), "{error}");
+    }
+
+    #[test]
+    fn one_path_cannot_mix_static_module_and_dynamic_script_root_goals() {
+        let dynamic = dynamic_import_graph_catalog();
+        let static_root = row([
+            "graph-root",
+            "other",
+            "test/dynamic.js",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "1",
+            "1",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let static_file = row([
+            "graph-file",
+            "other",
+            "test/dynamic.js",
+            SHA,
+            "",
+            "module",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let mut rows = dynamic
+            .lines()
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        rows.extend([static_root, static_file]);
+        rows.sort();
+        let error =
+            AdmissionCatalog::parse(&format!("{HEADER}\n{}\n", rows.join("\n"))).unwrap_err();
+        assert!(
+            error.contains("mixes static module and dynamic Script roots"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1202,6 +1544,7 @@ mod tests {
         let catalog = AdmissionCatalog::parse(source).unwrap();
         let mut module_rows = 0;
         let mut graph_root_rows = 0;
+        let mut dynamic_import_root_rows = 0;
         let mut graph_file_rows = 0;
         let mut graph_request_rows = 0;
         let mut agent_rows = 0;
@@ -1210,6 +1553,7 @@ mod tests {
             match line.split_once('\t').unwrap().0 {
                 "module" => module_rows += 1,
                 "graph-root" => graph_root_rows += 1,
+                "dynamic-import-root" => dynamic_import_root_rows += 1,
                 "graph-file" => graph_file_rows += 1,
                 "graph-request" => graph_request_rows += 1,
                 "agent" => agent_rows += 1,
@@ -1218,7 +1562,15 @@ mod tests {
             }
         }
         assert_eq!(catalog.modules().count(), module_rows);
-        assert_eq!(catalog.graph_roots().count(), graph_root_rows);
+        assert_eq!(catalog.static_module_graph_roots().count(), graph_root_rows);
+        assert_eq!(
+            catalog.dynamic_import_roots().count(),
+            dynamic_import_root_rows
+        );
+        assert_eq!(
+            catalog.graph_roots().count(),
+            graph_root_rows + dynamic_import_root_rows
+        );
         assert_eq!(
             catalog.graph_files.values().map(Vec::len).sum::<usize>(),
             graph_file_rows

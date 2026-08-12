@@ -3,7 +3,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use quickjs_oxide::value::number_to_string;
-use quickjs_oxide::{CompileOptions, ErrorKind, Runtime, RuntimeError, Value};
+use quickjs_oxide::{CompileOptions, Runtime, RuntimeError, Value};
 
 const ORACLE_NORMALIZER: &str = r#"
 var __qjo_type = typeof __qjo_value;
@@ -669,7 +669,7 @@ const FUTURE_RESERVED_VALUE_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-const FUTURE_RESERVED_UNSUPPORTED_IMPORT_CASES: &[(&str, &str)] = &[
+const FUTURE_RESERVED_IMPORT_CALL_CASES: &[(&str, &str)] = &[
     ("one-argument dynamic import", "import('fixture')"),
     ("dynamic import across a line break", "import\n('fixture')"),
     ("dynamic import with a trailing comma", "import('fixture',)"),
@@ -1089,15 +1089,14 @@ fn future_reserved_words_match_quickjs_oracle() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     let import_options = CompileOptions::new("future-reserved-import.js");
-    for &(description, source) in FUTURE_RESERVED_UNSUPPORTED_IMPORT_CASES {
-        let RuntimeError::Engine(error) = context
+    for &(description, source) in FUTURE_RESERVED_IMPORT_CALL_CASES {
+        context
             .compile_with_options(source, &import_options)
-            .unwrap_err()
-        else {
-            panic!("Rust did not report Unsupported for {description:?} ({source:?})");
-        };
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{description:?}");
-        assert_eq!(error.message(), "import syntax is not implemented yet");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Rust rejected valid import grammar for {description:?} ({source:?}): {error}"
+                )
+            });
         assert!(context.take_exception().unwrap().is_none());
 
         // Parse the same expression in a dead branch so the pinned oracle

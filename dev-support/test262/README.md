@@ -11,17 +11,23 @@ by a shell.
 The focused manifest is a sorted set of source paths. Its receipt remains a
 full `(path, variant)` vector, so one path may produce multiple metadata-driven
 variants. The current R3ep vector includes the source-authenticated static JSON
-module graph; dynamic import and text modules remain excluded by generator
-canaries.
+module graph. A staged dynamic-import Script-goal cohort is authenticated
+separately and enters the frozen result vector only after a full-run promotion;
+text modules remain excluded by generator canaries.
 
 `admissions.tsv` is the hash-pinned source of exact Module-goal graphs,
-dependency-free module roots, `$262.agent` host paths, and supplemental feature
-contracts. Its strict 16-column TSV schema records source hashes, complete
-metadata shapes, graph edges and closure sizes, lookup priority, and host
-cohort policy. Both coordinator and isolated worker parse and authenticate the
-same file; malformed, unsorted, duplicate, open-graph, or checksum-drifted data
-fails closed. The six cohort generators emit `--admissions` rows and compare
-their owned group against this file in normal check mode.
+dynamic-import Script-goal graphs, dependency-free module roots, `$262.agent`
+host paths, and supplemental feature contracts. Its strict 16-column TSV
+schema records source hashes, complete metadata shapes, graph edges and closure
+sizes, lookup priority, execution goal, and host cohort policy. Every
+`dynamic-import-root` also declares its initial bytecode expectation: an
+`initial-import-tree` must already contain the authenticated import opcode,
+while `runtime-compiled-import` authorizes a later runtime compilation and
+requires the initial tree not to contain it. A missing or unknown policy fails
+closed. Both coordinator and isolated worker parse and authenticate the same
+file; malformed, unsorted, duplicate, open-graph, mixed-goal, or
+checksum-drifted data fails closed. The cohort generators emit `--admissions`
+rows and compare their owned group against this file in normal check mode.
 
 `negative-diagnostics.tsv` is a strict, source-authenticated overlay for
 negative variants whose QuickJS failure reason and location are part of the

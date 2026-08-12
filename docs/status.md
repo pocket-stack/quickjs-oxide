@@ -39,6 +39,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 - synchronous static-module graphs, live namespaces, default exports, static
   import attributes with loader validation, JSON synthetic modules, and core
   `import.meta` semantics
+- Script-goal dynamic `import()` with FIFO load/finish jobs, live host-loader
+  callback sampling, import attributes, cached cycle-root evaluation Promises,
+  namespace reuse, and Promise assimilation
 - native command-line execution and a Rust/WASM browser playground
 
 The public API and Test262 runner now report the same engine diagnostics.
@@ -49,10 +52,14 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include dynamic import and its import attributes,
-top-level await, JSON5/byte-oriented host loading, remaining module-host
-behavior, and the unsupported/failed leaves recorded by the current Test262
-vector. A Feature Parity claim additionally requires the acceptance contract in
+Major open frontiers include top-level await, JSON5/byte-oriented host loading,
+arbitrary JavaScript exception values and re-entry at module-host callbacks,
+and the unsupported/failed leaves recorded by the current Test262 vector.
+Failed acyclic source graphs retry like QuickJS. For a failed cycle, Rust
+safely unpublishes every record that still points into the failed transaction;
+it does not reproduce pinned QuickJS's dangling dependency pointer. Reclaiming
+the resulting vacant module-cache slots remains architecture work. A Feature
+Parity claim additionally requires the acceptance contract in
 [`parity.md`](parity.md), including QuickJS differential evidence and
 non-Test262 behavior.
 

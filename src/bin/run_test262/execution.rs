@@ -13,12 +13,14 @@ use quickjs_oxide::{
     RuntimeError, Test262AgentSession, Value,
 };
 
-use super::admissions::AdmissionCatalog;
+use super::admissions::{AdmissionCatalog, DynamicImportBytecodeExpectation, ModuleGraphRootGoal};
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
 use super::requirements::{
     ExactModuleTest, HostCapabilities, exact_module_test, is_exact_agent_host_test,
-    load_exact_module_fixture, normalize_exact_module_request,
+    is_exact_dynamic_import_script_test, load_exact_dynamic_import_fixture,
+    load_exact_module_fixture, normalize_exact_dynamic_import_request,
+    normalize_exact_module_request,
 };
 use super::{Variant, WorkerOptions, validate_relative_test_path};
 
@@ -93,6 +95,7 @@ struct ExactTest262ModuleLoader {
     admissions: Rc<AdmissionCatalog>,
     suite: PathBuf,
     root: PathBuf,
+    goal: ModuleGraphRootGoal,
     resolution_started: Rc<Cell<bool>>,
 }
 
@@ -114,9 +117,18 @@ impl ModuleLoader for ExactTest262ModuleLoader {
         self.resolution_started.set(true);
         let base_name = exact_module_utf8_name(base_name)?;
         let specifier = exact_module_utf8_name(specifier)?;
-        let normalized =
-            normalize_exact_module_request(&self.admissions, &self.root, &base_name, &specifier)
-                .map_err(ModuleLoaderError::new)?;
+        let normalized = match self.goal {
+            ModuleGraphRootGoal::StaticModule => {
+                normalize_exact_module_request(&self.admissions, &self.root, &base_name, &specifier)
+            }
+            ModuleGraphRootGoal::DynamicImportScript => normalize_exact_dynamic_import_request(
+                &self.admissions,
+                &self.root,
+                &base_name,
+                &specifier,
+            ),
+        }
+        .map_err(ModuleLoaderError::new)?;
         JsString::try_from_utf8(&normalized)
             .map_err(|error| ModuleLoaderError::new(error.to_string()))
     }
@@ -124,8 +136,21 @@ impl ModuleLoader for ExactTest262ModuleLoader {
     fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
         self.resolution_started.set(true);
         let normalized_name = exact_module_utf8_name(normalized_name)?;
-        load_exact_module_fixture(&self.admissions, &self.suite, &self.root, &normalized_name)
-            .map_err(ModuleLoaderError::new)
+        match self.goal {
+            ModuleGraphRootGoal::StaticModule => load_exact_module_fixture(
+                &self.admissions,
+                &self.suite,
+                &self.root,
+                &normalized_name,
+            ),
+            ModuleGraphRootGoal::DynamicImportScript => load_exact_dynamic_import_fixture(
+                &self.admissions,
+                &self.suite,
+                &self.root,
+                &normalized_name,
+            ),
+        }
+        .map_err(ModuleLoaderError::new)
     }
 
     fn load_with_attributes(
@@ -343,6 +368,28 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         &source,
         &metadata,
     )?;
+    let exact_dynamic_import = is_exact_dynamic_import_script_test(
+        &admissions,
+        &options.suite,
+        &options.test,
+        &source,
+        &metadata,
+    )?;
+    let dynamic_import_expectation = if exact_dynamic_import {
+        Some(
+            admissions
+                .dynamic_import_root(&options.test)
+                .and_then(|root| root.dynamic_import_expectation)
+                .ok_or_else(|| {
+                    format!(
+                        "authenticated dynamic import root has no bytecode expectation: {}",
+                        options.test.display()
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
     if options.allow_agent_host
         && !is_exact_agent_host_test(&admissions, &options.test, &source, &metadata)?
     {
@@ -359,16 +406,24 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let async_test = metadata.is_async();
 
     let runtime = Runtime::new();
+    runtime.set_dynamic_import_bytecode_allowed(false);
     let module_resolution_started = Rc::new(Cell::new(false));
-    let _module_loader_registration =
-        (exact_module == Some(ExactModuleTest::FixtureGraph)).then(|| {
-            runtime.set_module_loader(ExactTest262ModuleLoader {
-                admissions: admissions.clone(),
-                suite: options.suite.clone(),
-                root: options.test.clone(),
-                resolution_started: module_resolution_started.clone(),
-            })
-        });
+    let graph_loader_goal = if exact_module == Some(ExactModuleTest::FixtureGraph) {
+        Some(ModuleGraphRootGoal::StaticModule)
+    } else if exact_dynamic_import {
+        Some(ModuleGraphRootGoal::DynamicImportScript)
+    } else {
+        None
+    };
+    let _module_loader_registration = graph_loader_goal.map(|goal| {
+        runtime.set_module_loader(ExactTest262ModuleLoader {
+            admissions: admissions.clone(),
+            suite: options.suite.clone(),
+            root: options.test.clone(),
+            goal,
+            resolution_started: module_resolution_started.clone(),
+        })
+    });
     configure_runtime_can_block(&runtime, &metadata);
     let mut context = runtime.new_context();
     let mut agent_run = AgentRunGuard::new(options.allow_agent_host);
@@ -474,9 +529,19 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     } else {
         source
     };
-    let filename = path.to_string_lossy();
+    let filename = if exact_dynamic_import {
+        options.test.to_string_lossy()
+    } else {
+        path.to_string_lossy()
+    };
     let compile_options = CompileOptions::new(filename.as_ref());
-    let function = match context.compile_with_options(&authored, &compile_options) {
+    // Initial Script publication is host-side and executes no JavaScript.
+    // Open the capability only for this compile so the immutable tree can be
+    // inspected below, then close it again before any authored code runs.
+    runtime.set_dynamic_import_bytecode_allowed(true);
+    let compilation = context.compile_with_options(&authored, &compile_options);
+    runtime.set_dynamic_import_bytecode_allowed(false);
+    let function = match compilation {
         Ok(function) => function,
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
             return Ok(WorkerResult::failure(
@@ -492,6 +557,12 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         }
         Err(error) => return Ok(engine_fault("engine-fault", "parse", error, None)),
     };
+    authenticate_dynamic_import_bytecode(
+        &runtime,
+        &function,
+        dynamic_import_expectation,
+        &options.test,
+    )?;
     if metadata
         .negative
         .as_ref()
@@ -519,6 +590,42 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     };
     agent_run.finish()?;
     result
+}
+
+fn authenticate_dynamic_import_bytecode(
+    runtime: &Runtime,
+    function: &quickjs_oxide::FunctionBytecodeRef,
+    expectation: Option<DynamicImportBytecodeExpectation>,
+    path: &Path,
+) -> Result<(), String> {
+    let contains_dynamic_import = runtime
+        .bytecode_tree_contains_dynamic_import(function)
+        .map_err(|error| {
+            format!(
+                "inspect Test262 Script bytecode for {}: {error}",
+                path.display()
+            )
+        })?;
+    match (contains_dynamic_import, expectation) {
+        (true, None) => Err(format!(
+            "Test262 dynamic-import worker rejected unaudited path: {}",
+            path.display()
+        )),
+        (false, Some(DynamicImportBytecodeExpectation::InitialImportTree)) => Err(format!(
+            "authenticated Test262 dynamic-import root compiled without dynamic-import bytecode: {}",
+            path.display()
+        )),
+        (true, Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport)) => Err(format!(
+            "runtime-compiled Test262 dynamic-import root unexpectedly contained initial dynamic-import bytecode: {}",
+            path.display()
+        )),
+        (true, Some(DynamicImportBytecodeExpectation::InitialImportTree))
+        | (false, Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport)) => {
+            runtime.set_dynamic_import_bytecode_allowed(true);
+            Ok(())
+        }
+        (false, None) => Ok(()),
+    }
 }
 
 fn run_exact_module(
@@ -1068,15 +1175,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use quickjs_oxide::{
-        CompileOptions, Context, ErrorKind, JsString, ModuleImportAttribute,
-        ModuleImportAttributes, ModuleLoadResult, ModuleLoader, Runtime, RuntimeError, Value,
+        CompileOptions, Context, JsString, ModuleImportAttribute, ModuleImportAttributes,
+        ModuleLoadResult, ModuleLoader, Runtime, RuntimeError, Value,
     };
 
     use super::{
-        ExactTest262ModuleLoader, ExceptionDiagnostic, classify_async_print_log,
-        classify_completion, configure_runtime_can_block, run_worker, take_error,
+        ExactTest262ModuleLoader, ExceptionDiagnostic, authenticate_dynamic_import_bytecode,
+        classify_async_print_log, classify_completion, configure_runtime_can_block, run_worker,
+        take_error,
     };
-    use crate::admissions::{AdmissionCatalog, sha256};
+    use crate::admissions::{AdmissionCatalog, DynamicImportBytecodeExpectation, sha256};
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
 
@@ -1175,6 +1283,88 @@ mod tests {
         AdmissionCatalog::parse(&format!("{HEADER}\n{}\n", rows.join("\n"))).unwrap()
     }
 
+    fn dynamic_import_admissions(root_source: &str, fixture_source: &str) -> String {
+        const HEADER: &str = "kind\tgroup\tpath\tsource_sha256\tincludes\tflags\tfeatures\tnegative_phase\tnegative_type\tclosure_file_count\tpriority\trequest_index\tspecifier\tnormalized_path\tpolicy\tcohort";
+        let root_sha256 = sha256(root_source.as_bytes());
+        let fixture_sha256 = sha256(fixture_source.as_bytes());
+        let mut rows = [
+            admission_row([
+                "dynamic-import-root",
+                "dynamic-import-worker",
+                "test/dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "2",
+                "0",
+                "",
+                "",
+                "",
+                "initial-import-tree",
+                "",
+            ]),
+            admission_row([
+                "graph-file",
+                "dynamic-import-worker",
+                "test/dynamic.js",
+                &root_sha256,
+                "",
+                "async,raw",
+                "dynamic-import",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-file",
+                "dynamic-import-worker",
+                "test/fixture_FIXTURE.js",
+                &fixture_sha256,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-request",
+                "dynamic-import-worker",
+                "test/dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "0",
+                "./fixture_FIXTURE.js",
+                "test/fixture_FIXTURE.js",
+                "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        format!("{HEADER}\n{}\n", rows.join("\n"))
+    }
+
     fn import_attributes(entries: &[(&'static str, &'static str)]) -> ModuleImportAttributes {
         ModuleImportAttributes::Present(
             entries
@@ -1229,6 +1419,7 @@ mod tests {
             admissions: Rc::new(json_loader_catalog(JSON_SHA256)),
             suite: suite.clone(),
             root: PathBuf::from("test/root.js"),
+            goal: crate::admissions::ModuleGraphRootGoal::StaticModule,
             resolution_started: Rc::clone(&resolution_started),
         };
         let name = JsString::try_from_utf8("test/data_FIXTURE.json").unwrap();
@@ -1411,6 +1602,235 @@ mod tests {
             fifo_wake_order_error.contains("agent FIFO wake-order cohort source drifted"),
             "{fifo_wake_order_error}"
         );
+    }
+
+    #[test]
+    fn worker_rejects_every_unauthenticated_dynamic_import_test() {
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-dynamic-import-worker-deny-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let relative = PathBuf::from("test/unadmitted-dynamic-import.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(
+            suite.join(&relative),
+            "/*---\nflags: [raw]\nfeatures: [source-phase-imports]\n---*/\nimport('./fixture_FIXTURE.js');\n",
+        )
+        .unwrap();
+
+        let error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: admissions_sha256(),
+            variant: Variant::Sloppy,
+            allow_async_host: true,
+            allow_agent_host: false,
+        })
+        .unwrap_err();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert!(
+            error.contains("dynamic-import worker rejected unaudited path"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn worker_rejects_runtime_compiled_dynamic_import_bypasses() {
+        for (case, source) in [
+            ("eval-live", "eval(\"import('./fixture_FIXTURE.js')\");\n"),
+            (
+                "eval-dead",
+                "eval(\"if (false) import('./fixture_FIXTURE.js')\");\n",
+            ),
+            (
+                "function-constructor",
+                "Function(\"return import('./fixture_FIXTURE.js')\");\n",
+            ),
+            (
+                "eval-script",
+                "$262.evalScript(\"if (false) import('./fixture_FIXTURE.js')\");\n",
+            ),
+        ] {
+            let suite = std::env::temp_dir().join(format!(
+                "quickjs-oxide-dynamic-import-worker-{case}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let relative = PathBuf::from(format!("test/{case}.js"));
+            fs::create_dir_all(suite.join("test")).unwrap();
+            fs::write(
+                suite.join(&relative),
+                format!("/*---\nflags: [raw]\n---*/\ntry {{ {source} }} catch (_) {{}}\n"),
+            )
+            .unwrap();
+
+            let result = run_worker(&WorkerOptions {
+                suite: suite.clone(),
+                test: relative,
+                admissions: admissions_path(),
+                admissions_sha256: admissions_sha256(),
+                variant: Variant::Sloppy,
+                allow_async_host: false,
+                allow_agent_host: false,
+            })
+            .unwrap();
+            fs::remove_dir_all(suite).unwrap();
+
+            assert_ne!(result.outcome, "pass", "{case} escaped the policy");
+            assert!(
+                result.detail.contains("dynamic-import bytecode policy"),
+                "{case}: {}",
+                result.detail
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_compiled_dynamic_import_expectation_is_bidirectional() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let initial = context.compile("0;").unwrap();
+        let path = PathBuf::from("test/runtime-compiled-import.js");
+
+        runtime.set_dynamic_import_bytecode_allowed(false);
+        authenticate_dynamic_import_bytecode(
+            &runtime,
+            &initial,
+            Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport),
+            &path,
+        )
+        .unwrap();
+
+        let runtime_compilation = context
+            .compile("Function(\"return import('./fixture_FIXTURE.js')\");")
+            .unwrap();
+        context.execute(&runtime_compilation).unwrap();
+
+        let unexpected_initial = context.compile("import('./fixture_FIXTURE.js');").unwrap();
+        let error = authenticate_dynamic_import_bytecode(
+            &runtime,
+            &unexpected_initial,
+            Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport),
+            &path,
+        )
+        .unwrap_err();
+        assert!(error.contains("unexpectedly contained initial"), "{error}");
+    }
+
+    #[test]
+    fn worker_dynamic_import_bytecode_guard_does_not_confuse_import_named_members() {
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-dynamic-import-worker-member-name-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let relative = PathBuf::from("test/import-member-names.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(
+            suite.join(&relative),
+            "/*---\nflags: [raw]\n---*/\nvar object = { get import() { return 1; }, set import(value) {}, import() {} };\nclass C { import() {} static import() {} get import() { return 1; } set import(value) {} }\n",
+        )
+        .unwrap();
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: admissions_sha256(),
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: false,
+        });
+        fs::remove_dir_all(suite).unwrap();
+        let result = result.unwrap();
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
+    }
+
+    #[test]
+    fn dynamic_import_parse_negative_is_classified_before_bytecode_admission() {
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-dynamic-import-worker-parse-negative-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let relative = PathBuf::from("test/invalid-import-call.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(
+            suite.join(&relative),
+            "/*---\nflags: [raw]\nfeatures: [dynamic-import]\nnegative:\n  phase: parse\n  type: SyntaxError\n---*/\nimport(,);\n",
+        )
+        .unwrap();
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            admissions: admissions_path(),
+            admissions_sha256: admissions_sha256(),
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: false,
+        });
+        fs::remove_dir_all(suite).unwrap();
+        let result = result.unwrap();
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
+        assert_eq!(result.actual_phase, "parse");
+        assert_eq!(result.actual_type, "SyntaxError");
+    }
+
+    #[test]
+    fn authenticated_dynamic_import_root_runs_as_a_relative_named_async_script() {
+        const ROOT_SOURCE: &str = "/*---\nflags: [async, raw]\nfeatures: [dynamic-import]\n---*/\nfunction load() { return import(\"./fixture_FIXTURE.js\"); }\nvar dynamicLoad = Function(\"return import({ toString: function () { throw 42; } })\");\ndynamicLoad().then(function() {\n  throw new Error(\"dynamic import unexpectedly fulfilled\");\n}, function(reason) {\n  if (reason !== 42) throw new Error(\"wrong dynamic rejection\");\n  return load();\n}).then(function(ns) {\n  if (ns.value !== 42) throw new Error(\"wrong authored namespace\");\n  $DONE();\n}, $DONE);\n";
+        const FIXTURE_SOURCE: &str = "export const value = 42;\n";
+        const DONE_HANDLE: &str = "function $DONE(error) { print(error ? 'Test262:AsyncTestFailure:' + error : 'Test262:AsyncTestComplete'); }\n";
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-dynamic-import-worker-allow-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let relative = PathBuf::from("test/dynamic.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::create_dir_all(suite.join("harness")).unwrap();
+        fs::write(suite.join(&relative), ROOT_SOURCE).unwrap();
+        fs::write(suite.join("test/fixture_FIXTURE.js"), FIXTURE_SOURCE).unwrap();
+        fs::write(suite.join("harness/doneprintHandle.js"), DONE_HANDLE).unwrap();
+        let admissions = dynamic_import_admissions(ROOT_SOURCE, FIXTURE_SOURCE);
+        let admissions_path = suite.join("admissions.tsv");
+        fs::write(&admissions_path, &admissions).unwrap();
+
+        let result = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            admissions: admissions_path,
+            admissions_sha256: sha256(admissions.as_bytes()),
+            variant: Variant::Sloppy,
+            allow_async_host: true,
+            allow_agent_host: false,
+        });
+        fs::remove_dir_all(suite).unwrap();
+        let result = result.unwrap();
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
+        assert_eq!(result.actual_phase, "normal");
     }
 
     #[test]
@@ -2108,34 +2528,22 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
     }
 
     #[test]
-    fn unsupported_parser_provenance_is_uniform_at_the_context_boundary() {
-        const UNSUPPORTED_SOURCE: &str = "import('fixture');";
+    fn valid_import_call_compilation_is_uniform_at_the_context_boundary() {
+        const SOURCE: &str = "import('fixture');";
 
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
-        let RuntimeError::Engine(default_error) = context.compile(UNSUPPORTED_SOURCE).unwrap_err()
-        else {
-            panic!("default compile did not retain its engine error");
-        };
-        assert_eq!(default_error.kind(), ErrorKind::Unsupported);
-        assert_eq!(
-            default_error.message(),
-            "import syntax is not implemented yet"
-        );
+        context
+            .compile(SOURCE)
+            .expect("default compile rejected a valid ImportCall");
         assert!(context.take_exception().unwrap().is_none());
 
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
-        let options = CompileOptions::new("unsupported.js");
-        let RuntimeError::Engine(error) = context
-            .compile_with_options(UNSUPPORTED_SOURCE, &options)
-            .unwrap_err()
-        else {
-            panic!("diagnostic compile did not retain its engine error");
-        };
-        assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert_eq!(error.message(), "import syntax is not implemented yet");
-        assert_eq!(error.span(), default_error.span());
+        let options = CompileOptions::new("dynamic-import.js");
+        context
+            .compile_with_options(SOURCE, &options)
+            .expect("named compile rejected a valid ImportCall");
         assert!(context.take_exception().unwrap().is_none());
     }
 }

@@ -417,6 +417,11 @@ fn run_agent_worker(
     // The engine runtime, context, bytecode, and every root are born and die
     // here, on the worker thread.
     let runtime = Runtime::new();
+    // Agent source is a second compilation domain whose text is not part of
+    // the main worker's authenticated bytecode tree. Current admissions keep
+    // agent-host and dynamic-import roots disjoint, so fail closed here until
+    // an independently authenticated agent dynamic-import cohort exists.
+    runtime.set_dynamic_import_bytecode_allowed(false);
     let runtime_id = runtime.domain_id();
     runtime.set_can_block(true);
     let mut context = runtime.new_context();
@@ -1372,5 +1377,31 @@ $262.agent.start(`
             .unwrap();
         let error = session.join_workers().unwrap_err().to_string();
         assert!(error.contains("agent 0: execute agent source"), "{error}");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn agent_source_rejects_dynamic_import_in_every_compile_path() {
+        for source in [
+            "import('./fixture.js')",
+            "eval(\"import('./fixture.js')\")",
+            "Function(\"return import('./fixture.js')\")",
+        ] {
+            let runtime = Runtime::new();
+            let mut context = runtime.new_context();
+            let session = Test262AgentSession::new();
+            context.install_test262_host_with_agent(&session).unwrap();
+            context
+                .eval(&format!(
+                    "$262.agent.start({:?})",
+                    format!("try {{ {source} }} catch (_) {{}}")
+                ))
+                .unwrap();
+            let error = session.join_workers().unwrap_err().to_string();
+            assert!(
+                error.contains("dynamic-import bytecode policy"),
+                "{source}: {error}"
+            );
+        }
     }
 }
