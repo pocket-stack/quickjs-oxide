@@ -1,4 +1,4 @@
-# quickjs-oxide Test262 outcome vector v5 engine_semantics_sha256=9d8b04f8de6b0f81c584ad86b15d3bd899b64a5825e7b49c95d3b116b59a571d
+# quickjs-oxide Test262 outcome vector v5 engine_semantics_sha256=33de89097a33d23152ca911d0cee742d613c3b77b5e5a00a101bf167f5e5a8a6
 # quickjs=2026-06-04
 # test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 # test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
@@ -3226,6 +3226,14 @@ test/language/expressions/class/private-static-setter-multiple-evaluations-of-cl
 test/language/expressions/class/private-static-setter-multiple-evaluations-of-class-function-ctor.js	sloppy		class,class-static-methods-private	normal		pass	normal									
 test/language/expressions/class/private-static-setter-multiple-evaluations-of-class-function-ctor.js	strict		class,class-static-methods-private	normal		pass	normal									
 test/language/expressions/class/private-static-setter-multiple-evaluations-of-class-realm.js	sloppy	noStrict	class,class-static-methods-private,cross-realm	normal		pass	normal									
+test/language/expressions/dynamic-import/always-create-new-promise.js	sloppy		dynamic-import	normal		pass	normal									
+test/language/expressions/dynamic-import/always-create-new-promise.js	strict		dynamic-import	normal		pass	normal									
+test/language/expressions/dynamic-import/assign-expr-get-value-abrupt-throws.js	sloppy		dynamic-import	normal		pass	normal									
+test/language/expressions/dynamic-import/assign-expr-get-value-abrupt-throws.js	strict		dynamic-import	normal		pass	normal									
+test/language/expressions/dynamic-import/reuse-namespace-object.js	sloppy	async	dynamic-import	normal		pass	normal									
+test/language/expressions/dynamic-import/reuse-namespace-object.js	strict	async	dynamic-import	normal		pass	normal									
+test/language/expressions/dynamic-import/usage/top-level-import-then-returns-thenable.js	sloppy	async,generated	dynamic-import	normal		pass	normal									
+test/language/expressions/dynamic-import/usage/top-level-import-then-returns-thenable.js	strict	async,generated	dynamic-import	normal		pass	normal									
 test/language/expressions/in/private-field-presence-accessor-shadowed.js	sloppy		class-static-methods-private,class-fields-private-in	normal		pass	normal									
 test/language/expressions/in/private-field-presence-accessor-shadowed.js	strict		class-static-methods-private,class-fields-private-in	normal		pass	normal									
 test/language/expressions/in/private-field-presence-accessor.js	sloppy		class-static-methods-private,class-fields-private-in	normal		pass	normal									
@@ -6416,4 +6424,4 @@ test/language/statements/class/private-static-getter-non-static-setter-early-err
 test/language/statements/class/private-static-getter-non-static-setter-early-error.js	strict		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	18	9	exact	18	9
 test/language/statements/class/private-static-setter-non-static-getter-early-error.js	sloppy		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	17	9	exact	17	9
 test/language/statements/class/private-static-setter-non-static-getter-early-error.js	strict		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	18	9	exact	18	9
-# summary pass=6406
+# summary pass=6414

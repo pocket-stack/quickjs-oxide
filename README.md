@@ -15,9 +15,9 @@ JSON5/byte-oriented loading, and host-populated `import.meta` properties remain
 parity work.
 
 <!-- current-test262-metrics:start -->
-The authoritative R3ep Test262 baseline records **79,462 full-corpus passes
-out of 102,037 variants (77.876%)**, with **79,512 eligible variants
-(77.925%)**. The 79,462 / 79,512 runnable pass rate (99.937%) is a secondary
+The authoritative R3eq Test262 baseline records **79,470 full-corpus passes
+out of 102,037 variants (77.884%)**, with **79,520 eligible variants
+(77.933%)**. The 79,470 / 79,520 runnable pass rate (99.937%) is a secondary
 quality measure, not the headline compatibility metric.
 <!-- current-test262-metrics:end -->
 

@@ -8,11 +8,11 @@ Parity.
 ## Current baseline
 
 <!-- current-test262-metrics:start -->
-The authoritative R3ep Test262 vector has:
+The authoritative R3eq Test262 vector has:
 
-- 79,462 full-corpus passes out of 102,037 variants (77.876%)
-- 79,512 eligible variants out of 102,037 (77.925%)
-- 79,462 passes out of 79,512 runnable variants (99.937%, secondary quality
+- 79,470 full-corpus passes out of 102,037 variants (77.884%)
+- 79,520 eligible variants out of 102,037 (77.933%)
+- 79,470 passes out of 79,520 runnable variants (99.937%, secondary quality
   metric)
 - 50 classified failures and no timeouts among eligible variants
 <!-- current-test262-metrics:end -->

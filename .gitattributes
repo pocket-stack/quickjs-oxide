@@ -1,4 +1,5 @@
 # The fixed-width Test262 TSV keeps trailing tabs for empty final columns.
+tests/test262-class-private-callables-b-global-candidate.tsv whitespace=-blank-at-eol
 tests/test262-smoke-baseline.tsv whitespace=-blank-at-eol
 tests/test262-computed-property-names-global-transitions.tsv whitespace=-blank-at-eol
 tests/test262-default-parameters-global-transitions.tsv whitespace=-blank-at-eol

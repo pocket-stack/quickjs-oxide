@@ -1619,6 +1619,10 @@ test/language/expressions/class/private-static-setter-multiple-evaluations-of-cl
 test/language/expressions/class/private-static-setter-multiple-evaluations-of-class-factory.js
 test/language/expressions/class/private-static-setter-multiple-evaluations-of-class-function-ctor.js
 test/language/expressions/class/private-static-setter-multiple-evaluations-of-class-realm.js
+test/language/expressions/dynamic-import/always-create-new-promise.js
+test/language/expressions/dynamic-import/assign-expr-get-value-abrupt-throws.js
+test/language/expressions/dynamic-import/reuse-namespace-object.js
+test/language/expressions/dynamic-import/usage/top-level-import-then-returns-thenable.js
 test/language/expressions/in/private-field-presence-accessor-shadowed.js
 test/language/expressions/in/private-field-presence-accessor.js
 test/language/expressions/in/private-field-presence-method-shadowed.js
