@@ -72,8 +72,8 @@ use crate::heap::{
     AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClassInitializerKind, ClosureSource,
     ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData,
     ContextId, DateGetFieldKind, DateNativeKind, DateSetFieldKind, DateStringMethod,
-    DynamicFunctionKind, ErrorConstructorKind, EvalEnvironment, ForInCandidate, ForInIteratorData,
-    ForInProperty, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
+    DynamicFunctionKind, ErrorConstructorKind, EvalEnvironment, EvalKind, ForInCandidate,
+    ForInIteratorData, ForInProperty, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
     FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GeneratorRealmData,
     GeneratorResumeKind, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup,
     HeapCounts, HeapError, JsonNativeKind, MathBinaryKind, MathMinMaxKind, MathUnaryKind,
@@ -4878,6 +4878,36 @@ impl Runtime {
         };
         *frame_pc = Some(pc);
         Ok(())
+    }
+
+    /// Return the debug name of the active Script or Module, mirroring
+    /// QuickJS `JS_GetScriptOrModuleName(ctx, 0)`.
+    ///
+    /// Synthetic direct and indirect eval roots inherit the first enclosing
+    /// non-eval bytecode name. A visible native frame is a hard host boundary;
+    /// internal hidden native frames are absent from the observable stack and
+    /// are skipped. Backtrace barriers deliberately do not participate in
+    /// this lookup.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn active_script_or_module_name(&self) -> Result<Option<JsString>, RuntimeError> {
+        let state = self.0.state.borrow();
+        for frame in state.active_frames.iter().rev() {
+            if frame.flags.backtrace_hidden {
+                continue;
+            }
+            let ActiveFrameKind::Bytecode { bytecode, .. } = frame.kind else {
+                return Ok(None);
+            };
+            let bytecode = state.heap.function_bytecode(bytecode)?;
+            if bytecode.metadata.eval_kind != EvalKind::None {
+                continue;
+            }
+            let Some(debug) = &bytecode.debug else {
+                return Ok(None);
+            };
+            return Ok(Some(state.atoms.to_js_string(debug.filename)?));
+        }
+        Ok(None)
     }
 
     /// QuickJS `JS_EVAL_FLAG_BACKTRACE_BARRIER` temporarily marks the frame

@@ -1,5 +1,8 @@
 use crate::JsBigInt;
 use crate::bytecode::{BytecodeFunction, Instruction};
+use crate::compiler::{
+    EvalCompileContext, compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
+};
 use crate::debug::{DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable};
 use crate::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
 use crate::function::{
@@ -8,9 +11,9 @@ use crate::function::{
 use crate::heap::{
     ArrayJoinKind, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
     ConstructorKind, DynamicFunctionKind, EvalBinding, EvalBindingSource, EvalEnvironment,
-    EvalScope, EvalScopeKind, EvalVariableEnvironment, FunctionDebugPosition, FunctionMetadata,
-    HeapError, NativeCProto, NativeFunctionId, ObjectPayload, PrimitiveKind, PrimitiveObjectData,
-    PropertySlot, RawValue,
+    EvalKind, EvalScope, EvalScopeKind, EvalVariableEnvironment, FunctionDebugPosition,
+    FunctionMetadata, HeapError, NativeCProto, NativeFunctionId, ObjectPayload, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, RawValue,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
@@ -22,8 +25,9 @@ use crate::vm::{Completion, DirectEvalInvocation, IteratorCloseOutcome, Vm, VmHo
 
 use super::vm_host::RuntimeVmHost;
 use super::{
-    ActiveFrameKind, CallableExecution, DeferredRefOp, DynamicSourceBuilder, EvalOptions,
-    PropertyGetAction, PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint, VarRefRoot,
+    ActiveFrameFlags, ActiveFrameKind, CallableExecution, DeferredRefOp, DynamicSourceBuilder,
+    EvalOptions, PropertyGetAction, PropertySetAction, Runtime, RuntimeError, ToPrimitiveHint,
+    VarRefRoot,
 };
 
 #[test]
@@ -1641,6 +1645,73 @@ fn bytecode_callable(
         .unwrap();
     runtime
         .new_bytecode_closure(context.realm, &function)
+        .unwrap()
+}
+
+fn push_named_script_active_frame(
+    runtime: &Runtime,
+    context: &mut super::Context,
+    filename: &str,
+) -> super::ActiveFrameGuard {
+    let bytecode = context
+        .compile_with_filename("'use strict'; void 0;", filename)
+        .unwrap();
+    let callable = runtime
+        .new_bytecode_closure(context.realm, &bytecode)
+        .unwrap();
+    runtime
+        .push_bytecode_active_frame(callable.as_object().clone(), bytecode, context.realm, true)
+        .unwrap()
+}
+
+fn push_named_eval_active_frame(
+    runtime: &Runtime,
+    context: &super::Context,
+    filename: &str,
+    kind: EvalKind,
+) -> super::ActiveFrameGuard {
+    let compile_context = match kind {
+        EvalKind::Direct => EvalCompileContext::direct(false, Vec::new()),
+        EvalKind::Indirect => EvalCompileContext::indirect(),
+        EvalKind::None => panic!("test eval frame requires an eval kind"),
+    };
+    let function = compile_unlinked_eval_with_filename(
+        "",
+        filename,
+        runtime.debug_info_mode(),
+        compile_context,
+    )
+    .unwrap();
+    super::bytecode_publish::verify_unlinked_eval_tree(&function, kind, false, &[], false, false)
+        .unwrap();
+    let bytecode = runtime
+        .publish_verified_unlinked_function(context.realm, function)
+        .unwrap();
+    let callable = runtime
+        .new_bytecode_closure_with_slots(context.realm, &bytecode, &[])
+        .unwrap();
+    runtime
+        .push_bytecode_active_frame(callable.as_object().clone(), bytecode, context.realm, false)
+        .unwrap()
+}
+
+fn push_named_module_active_frame(
+    runtime: &Runtime,
+    context: &super::Context,
+    filename: &str,
+) -> super::ActiveFrameGuard {
+    let module =
+        compile_unlinked_module_with_filename("", filename, runtime.debug_info_mode()).unwrap();
+    super::bytecode_publish::verify_unlinked_module_tree(&module).unwrap();
+    let function = module.into_parts().function;
+    let bytecode = runtime
+        .publish_verified_unlinked_function(context.realm, function)
+        .unwrap();
+    let callable = runtime
+        .new_bytecode_closure_with_slots(context.realm, &bytecode, &[])
+        .unwrap();
+    runtime
+        .push_bytecode_active_frame(callable.as_object().clone(), bytecode, context.realm, true)
         .unwrap()
 }
 
@@ -8837,6 +8908,144 @@ fn eval_backtrace_barrier_marks_only_the_preexisting_caller_frame() {
     );
     caller_frame.finish().unwrap();
     assert!(runtime.0.state.borrow().active_frames.is_empty());
+}
+
+#[test]
+fn active_script_or_module_name_walks_scripts_modules_and_eval_roots() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    assert_eq!(runtime.active_script_or_module_name().unwrap(), None);
+
+    let outer = push_named_script_active_frame(&runtime, &mut context, "outer.js");
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("outer.js"))
+    );
+
+    let nested = push_named_script_active_frame(&runtime, &mut context, "nested.js");
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("nested.js"))
+    );
+    nested.finish().unwrap();
+
+    let module = push_named_module_active_frame(&runtime, &context, "entry.mjs");
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("entry.mjs"))
+    );
+    module.finish().unwrap();
+
+    let direct =
+        push_named_eval_active_frame(&runtime, &context, "direct-eval.js", EvalKind::Direct);
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("outer.js"))
+    );
+    let indirect =
+        push_named_eval_active_frame(&runtime, &context, "indirect-eval.js", EvalKind::Indirect);
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("outer.js"))
+    );
+    indirect.finish().unwrap();
+    direct.finish().unwrap();
+    outer.finish().unwrap();
+
+    assert_eq!(runtime.active_script_or_module_name().unwrap(), None);
+}
+
+#[test]
+fn active_script_or_module_name_skips_hidden_native_frames_but_stops_at_visible_native() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let outer = push_named_script_active_frame(&runtime, &mut context, "caller.js");
+    let barrier = runtime.install_backtrace_barrier(true).unwrap();
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("caller.js")),
+        "backtrace barriers do not delimit ScriptOrModule lookup"
+    );
+
+    let function_prototype = context.function_prototype().unwrap();
+    let native = runtime
+        .new_bound_native_function(
+            &function_prototype,
+            context.realm,
+            NativeFunctionId::ActiveFrameProbe,
+            0,
+        )
+        .unwrap();
+    let hidden = runtime
+        .push_active_frame(
+            native.as_object().clone(),
+            None,
+            context.realm,
+            ActiveFrameFlags {
+                backtrace_hidden: true,
+                ..ActiveFrameFlags::default()
+            },
+            ActiveFrameKind::Native {
+                target: NativeFunctionId::ActiveFrameProbe,
+                actual_arg_count: 0,
+                readable_arg_count: 0,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("caller.js"))
+    );
+    hidden.finish().unwrap();
+
+    let visible = runtime
+        .push_native_active_frame(
+            native.as_object().clone(),
+            context.realm,
+            NativeFunctionId::ActiveFrameProbe,
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(runtime.active_script_or_module_name().unwrap(), None);
+    visible.finish().unwrap();
+
+    barrier.finish().unwrap();
+    outer.finish().unwrap();
+    assert!(runtime.0.state.borrow().active_frames.is_empty());
+}
+
+#[test]
+fn active_script_or_module_name_observes_strip_source_and_strip_debug() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    runtime.set_debug_info_mode(DebugInfoMode::StripSource);
+    let source_stripped =
+        push_named_script_active_frame(&runtime, &mut context, "source-stripped.js");
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("source-stripped.js"))
+    );
+    source_stripped.finish().unwrap();
+
+    runtime.set_debug_info_mode(DebugInfoMode::Full);
+    let outer = push_named_script_active_frame(&runtime, &mut context, "debug-caller.js");
+    runtime.set_debug_info_mode(DebugInfoMode::StripDebug);
+    let debug_stripped =
+        push_named_script_active_frame(&runtime, &mut context, "debug-stripped.js");
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        None,
+        "a non-eval bytecode frame without debug data is terminal"
+    );
+    debug_stripped.finish().unwrap();
+    assert_eq!(
+        runtime.active_script_or_module_name().unwrap(),
+        Some(JsString::from_static("debug-caller.js"))
+    );
+    outer.finish().unwrap();
 }
 
 #[test]
