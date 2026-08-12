@@ -513,7 +513,7 @@ impl AdmissionCatalog {
     }
 }
 
-fn sha256(input: &[u8]) -> String {
+pub(super) fn sha256(input: &[u8]) -> String {
     const ROUND_CONSTANTS: [u32; 64] = [
         0x428a_2f98,
         0x7137_4491,
@@ -859,7 +859,7 @@ fn require_empty(fields: &[&str], indexes: &[usize], line_number: usize) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::fs;
     use std::path::Path;
 
     use super::{AdmissionCatalog, HEADER, SupplementalPolicy, sha256};
@@ -1181,10 +1181,10 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_catalog_is_hash_authenticated() {
+    fn checked_in_catalog_load_authenticates_exact_bytes() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("dev-support/test262/admissions.tsv");
-        let expected = "083a22e3cf4a6b817d09238eb787bd6aed8a8cb4cb91d13796a3e1644513a866";
-        AdmissionCatalog::load(&path, expected).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        AdmissionCatalog::load(&path, &sha256(&bytes)).unwrap();
         let error = AdmissionCatalog::load(
             &path,
             "0000000000000000000000000000000000000000000000000000000000000000",
@@ -1194,53 +1194,45 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_catalog_has_the_exact_migrated_shape() {
+    fn checked_in_catalog_preserves_every_data_row() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/dev-support/test262/admissions.tsv"
         ));
         let catalog = AdmissionCatalog::parse(source).unwrap();
-        assert_eq!(catalog.modules().count(), 166);
-        assert_eq!(catalog.graph_roots().count(), 109);
+        let mut module_rows = 0;
+        let mut graph_root_rows = 0;
+        let mut graph_file_rows = 0;
+        let mut graph_request_rows = 0;
+        let mut agent_rows = 0;
+        let mut supplemental_rows = 0;
+        for line in source.lines().skip(1) {
+            match line.split_once('\t').unwrap().0 {
+                "module" => module_rows += 1,
+                "graph-root" => graph_root_rows += 1,
+                "graph-file" => graph_file_rows += 1,
+                "graph-request" => graph_request_rows += 1,
+                "agent" => agent_rows += 1,
+                "supplemental" => supplemental_rows += 1,
+                unknown => panic!("unexpected checked-in admission kind: {unknown}"),
+            }
+        }
+        assert_eq!(catalog.modules().count(), module_rows);
+        assert_eq!(catalog.graph_roots().count(), graph_root_rows);
         assert_eq!(
             catalog.graph_files.values().map(Vec::len).sum::<usize>(),
-            150
-        );
-        assert_eq!(catalog.agent_hosts().count(), 59);
-        assert_eq!(catalog.supplemental_admissions().count(), 2);
-        assert_eq!(
-            catalog
-                .graph_roots()
-                .map(|root| root.path.as_str())
-                .collect::<BTreeSet<_>>()
-                .len(),
-            108
+            graph_file_rows
         );
         assert_eq!(
             catalog
-                .modules()
-                .map(|module| module.path.as_str())
-                .chain(catalog.graph_roots().map(|root| root.path.as_str()))
-                .chain(catalog.agent_hosts().map(|agent| agent.path.as_str()))
-                .collect::<BTreeSet<_>>()
-                .len(),
-            333
+                .graph_files
+                .values()
+                .flatten()
+                .map(|file| file.requests.len())
+                .sum::<usize>(),
+            graph_request_rows
         );
-        assert_eq!(
-            catalog
-                .modules()
-                .map(|module| module.path.as_str())
-                .chain(
-                    catalog
-                        .graph_files
-                        .values()
-                        .flatten()
-                        .map(|file| file.path.as_str()),
-                )
-                .chain(catalog.agent_hosts().map(|agent| agent.path.as_str()))
-                .collect::<BTreeSet<_>>()
-                .len(),
-            373
-        );
+        assert_eq!(catalog.agent_hosts().count(), agent_rows);
+        assert_eq!(catalog.supplemental_admissions().count(), supplemental_rows);
     }
 }

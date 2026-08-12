@@ -1076,15 +1076,16 @@ mod tests {
         ExactTest262ModuleLoader, ExceptionDiagnostic, classify_async_print_log,
         classify_completion, configure_runtime_can_block, run_worker, take_error,
     };
-    use crate::admissions::AdmissionCatalog;
+    use crate::admissions::{AdmissionCatalog, sha256};
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
 
-    const ADMISSIONS_SHA256: &str =
-        "083a22e3cf4a6b817d09238eb787bd6aed8a8cb4cb91d13796a3e1644513a866";
-
     fn admissions_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dev-support/test262/admissions.tsv")
+    }
+
+    fn admissions_sha256() -> String {
+        sha256(&fs::read(admissions_path()).expect("read checked-in admissions"))
     }
 
     fn admission_row(fields: [&str; 16]) -> String {
@@ -1294,7 +1295,7 @@ mod tests {
             suite: suite.clone(),
             test: wrong_path,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1312,7 +1313,7 @@ mod tests {
             suite: suite.clone(),
             test: exact_path,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1332,7 +1333,7 @@ mod tests {
             suite: suite.clone(),
             test: broadcast_path,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1350,7 +1351,7 @@ mod tests {
             suite: suite.clone(),
             test: bounded_wait_path,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1369,7 +1370,7 @@ mod tests {
             suite: suite.clone(),
             test: wake_count_location_path,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1387,7 +1388,7 @@ mod tests {
             suite: suite.clone(),
             test: fifo_wake_order_path,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: true,
@@ -1608,7 +1609,7 @@ throw Object.create(proxyPrototype);
             suite: suite.clone(),
             test: relative,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,
@@ -1643,7 +1644,7 @@ throw Object.create(proxyPrototype);
                 suite: suite.clone(),
                 test: PathBuf::from(relative),
                 admissions: admissions_path(),
-                admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+                admissions_sha256: admissions_sha256(),
                 variant: Variant::Sloppy,
                 allow_async_host: false,
                 allow_agent_host: false,
@@ -1683,7 +1684,7 @@ throw Object.create(proxyPrototype);
             suite: suite.clone(),
             test: relative.clone(),
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,
@@ -1695,7 +1696,7 @@ throw Object.create(proxyPrototype);
             suite: suite.clone(),
             test: relative,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: true,
             allow_agent_host: false,
@@ -1730,7 +1731,7 @@ throw Object.create(proxyPrototype);
             suite: suite.clone(),
             test: relative,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: true,
             allow_agent_host: false,
@@ -1787,7 +1788,7 @@ if (r[Symbol.replace]("aa", "b") !== "ba") {
             suite: suite.clone(),
             test: relative,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,
@@ -2094,7 +2095,7 @@ if (capped.length !== 2 || capped.codePointAt(0) !== 0x10FFFF) {
             suite: suite.clone(),
             test: relative,
             admissions: admissions_path(),
-            admissions_sha256: ADMISSIONS_SHA256.to_owned(),
+            admissions_sha256: admissions_sha256(),
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,

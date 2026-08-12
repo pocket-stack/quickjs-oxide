@@ -2251,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn default_module_admission_rejects_drift_and_preserves_adjacent_exclusions() {
+    fn default_module_admission_rejects_drift_and_preserves_cohort_boundaries() {
         let file = DEFAULT_MODULE_FILE_ADMISSIONS
             .iter()
             .find(|file| file.path == "test/language/module-code/export-star-as-dflt.js")
@@ -2292,7 +2292,7 @@ mod tests {
         for excluded in [
             "test/language/expressions/dynamic-import/always-create-new-promise.js",
             "test/language/module-code/top-level-await/await-expr-resolution.js",
-            "test/language/import/import-attributes/json-value-object.js",
+            "test/language/import/import-attributes/json-idempotency.js",
             "test/language/module-code/source-phase-import/import-source.js",
         ] {
             assert!(
@@ -2300,6 +2300,18 @@ mod tests {
                 "excluded module surface was admitted: {excluded}"
             );
         }
+
+        let json_path = Path::new("test/language/import/import-attributes/json-value-object.js");
+        assert!(exact_module_graph_admission(json_path).is_some());
+        assert_eq!(
+            ADMISSIONS.graph_root(json_path).unwrap().group,
+            "module-json-a"
+        );
+        assert!(
+            DEFAULT_MODULE_ROOT_ADMISSIONS
+                .iter()
+                .all(|root| root.path != json_path.to_str().unwrap())
+        );
     }
 
     #[test]
