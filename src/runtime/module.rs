@@ -5,10 +5,8 @@
 //! caching, host resolution, live import cells, and iterative SCC
 //! linking/evaluation. Static namespace objects and transitive exports are
 //! included. Script-goal dynamic import shares the same loader, linker,
-//! evaluator, and namespace machinery; top-level await remains a later
-//! frontier.
+//! evaluator, namespace machinery, and top-level-await scheduling.
 
-use super::jobs::DynamicImportFinishOutcome;
 use super::*;
 use crate::compiler::{
     CompileOptions, ModuleImportAttributeChecker,
@@ -397,6 +395,7 @@ struct ModuleDfsFrame {
 enum ModuleEvaluationVisit {
     Unevaluated,
     Evaluating,
+    EvaluatingAsync,
     Evaluated,
     Errored(Value),
     Poisoned,
@@ -1199,6 +1198,7 @@ impl Runtime {
             body: ModuleRecordBody::SourceText {
                 function: function.bytecode_id(),
             },
+            has_top_level_await: parts.has_top_level_await,
             declaration_order: Rc::from(parts.declaration_order),
             link_initializers: Rc::from(parts.link_initializers),
             import_collisions: Rc::from(parts.import_collisions),
@@ -1213,6 +1213,11 @@ impl Runtime {
             evaluation: ModuleEvaluationState::Unevaluated,
             evaluation_cycle_root: None,
             evaluation_promise: None,
+            evaluation_resolve: None,
+            evaluation_reject: None,
+            pending_async_dependencies: 0,
+            async_parent_modules: Vec::new(),
+            async_evaluation_order: None,
             link_realm: None,
             compile_realm: realm,
         };
@@ -1234,6 +1239,7 @@ impl Runtime {
             body: ModuleRecordBody::Json {
                 default_value: raw_default_value,
             },
+            has_top_level_await: false,
             declaration_order: Rc::from([]),
             link_initializers: Rc::from([]),
             import_collisions: Rc::from([]),
@@ -1251,6 +1257,11 @@ impl Runtime {
             evaluation: ModuleEvaluationState::Unevaluated,
             evaluation_cycle_root: None,
             evaluation_promise: None,
+            evaluation_resolve: None,
+            evaluation_reject: None,
+            pending_async_dependencies: 0,
+            async_parent_modules: Vec::new(),
+            async_evaluation_order: None,
             link_realm: None,
             compile_realm: realm,
         };
@@ -2554,42 +2565,33 @@ impl Runtime {
         })
     }
 
-    /// Execute one authored source-text module through the intrinsic Promise
-    /// used by QuickJS's synchronous-module wrapper. Although this slice has
-    /// no top-level await, an abrupt body still rejects that distinct Promise
-    /// (and therefore reaches the host rejection tracker) before its result is
-    /// propagated into the cached module-evaluation Promise. Reading the
-    /// settled result here deliberately does not mark the body Promise handled.
+    /// Execute a source-text module whose graph has no pending async work.
+    /// Every module root is async bytecode in QuickJS, so even this synchronous
+    /// path explicitly enters the async driver and inspects its returned
+    /// Promise. A pending result here is an invariant: modules with authored
+    /// TLA are started by `execute_async_module_body` instead.
     fn execute_source_text_module_body(
         &self,
         realm: ContextId,
         callable: &CallableRef,
     ) -> Result<Completion, RuntimeError> {
-        let capability = self.new_default_promise_capability(realm)?;
         let completion = self.call_internal(realm, callable, Value::Undefined, &[])?;
-        let (target, result) = match completion {
-            Completion::Return(value) => (&capability.resolve, value),
-            Completion::Throw(reason) => (&capability.reject, reason),
+        let Completion::Return(Value::Object(promise)) = completion else {
+            return match completion {
+                Completion::Throw(_) => Err(RuntimeError::Invariant(
+                    "async module callable threw instead of returning a Promise",
+                )),
+                Completion::Return(_) => Err(RuntimeError::Invariant(
+                    "async module callable returned a non-Promise",
+                )),
+            };
         };
-        match self.call_internal(
-            realm,
-            target,
-            Value::Undefined,
-            std::slice::from_ref(&result),
-        )? {
-            Completion::Return(_) => {}
-            Completion::Throw(_) => {
-                return Err(RuntimeError::Invariant(
-                    "intrinsic module-body Promise resolving function threw",
-                ));
-            }
-        }
         let snapshot = self
             .0
             .state
             .borrow()
             .heap
-            .promise_snapshot(capability.promise.object_id())?;
+            .promise_snapshot(promise.object_id())?;
         let result = self.root_raw_value(&snapshot.result)?;
         match snapshot.state {
             PromiseState::Fulfilled => Ok(Completion::Return(result)),
@@ -2600,8 +2602,363 @@ impl Runtime {
         }
     }
 
+    fn next_module_async_evaluation_order(&self) -> Result<u64, RuntimeError> {
+        let mut state = self.0.state.borrow_mut();
+        let order = state.next_module_async_evaluation_order;
+        state.next_module_async_evaluation_order = order.checked_add(1).ok_or(
+            RuntimeError::Invariant("module async evaluation order overflow"),
+        )?;
+        Ok(order)
+    }
+
+    fn module_callable(&self, module: RawModuleRef) -> Result<CallableRef, RuntimeError> {
+        let callable = self
+            .module_record(module)?
+            .instance
+            .as_ref()
+            .and_then(|instance| instance.callable)
+            .ok_or(RuntimeError::Invariant(
+                "linked source-text module has no callable instance",
+            ))?;
+        Ok(CallableRef::from_validated_object(
+            ObjectRef::from_borrowed_handle(self.clone(), callable)?,
+        ))
+    }
+
+    /// Start one authored TLA module through the existing AsyncFunction
+    /// driver and attach QuickJS-style module completion reactions. The full
+    /// private Promise-then path intentionally performs species lookup and
+    /// allocates its discarded result capability.
+    fn execute_async_module_body(
+        &self,
+        evaluation_realm: ContextId,
+        module: RawModuleRef,
+    ) -> Result<(), RuntimeError> {
+        let callable = self.module_callable(module)?;
+        let completion = self.call_internal(evaluation_realm, &callable, Value::Undefined, &[])?;
+        let Completion::Return(Value::Object(promise)) = completion else {
+            return Err(RuntimeError::Invariant(
+                "async module callable did not return a Promise",
+            ));
+        };
+        let make_handler = |kind| {
+            self.new_internal_promise_function(
+                evaluation_realm,
+                NativeFunctionId::ModuleEvaluation(kind),
+                1,
+                0,
+                InternalCallableData::ModuleEvaluation { module, kind },
+            )
+        };
+        let fulfill = make_handler(ModuleEvaluationKind::Fulfill)?;
+        let reject = make_handler(ModuleEvaluationKind::Reject)?;
+        match self.attach_module_evaluation_handlers(
+            evaluation_realm,
+            &promise,
+            &fulfill,
+            &reject,
+        )? {
+            NativeConversion::Value(()) => Ok(()),
+            NativeConversion::Throw(reason) => {
+                // QuickJS discards this abrupt result and leaves the module
+                // pending. Preserve its current exception slot for the host.
+                self.set_pending_exception(reason)
+            }
+        }
+    }
+
+    fn execute_module_body_synchronously(
+        &self,
+        evaluation_realm: ContextId,
+        module: RawModuleRef,
+    ) -> Result<Completion, RuntimeError> {
+        let record = self.module_record(module)?;
+        match &record.body {
+            ModuleRecordBody::SourceText { .. } => {
+                let callable = self.module_callable(module)?;
+                self.execute_source_text_module_body(evaluation_realm, &callable)
+            }
+            ModuleRecordBody::Json { default_value } => {
+                let slot = record
+                    .instance
+                    .as_ref()
+                    .and_then(|instance| instance.slots.first())
+                    .and_then(|slot| *slot)
+                    .ok_or(RuntimeError::Invariant(
+                        "linked JSON module has no default live cell",
+                    ))?;
+                let slot = VarRefRoot::from_borrowed_handle(self.clone(), slot)?;
+                let default_value = self.root_raw_value(default_value)?;
+                self.write_var_ref(&slot, default_value)?;
+                Ok(Completion::Return(Value::Undefined))
+            }
+        }
+    }
+
+    fn module_evaluation_settler(
+        &self,
+        module: RawModuleRef,
+        kind: ModuleEvaluationKind,
+    ) -> Result<Option<CallableRef>, RuntimeError> {
+        let record = self.module_record(module)?;
+        let target = match kind {
+            ModuleEvaluationKind::Fulfill => record.evaluation_resolve,
+            ModuleEvaluationKind::Reject => record.evaluation_reject,
+        };
+        target
+            .map(|target| {
+                let target = ObjectRef::from_borrowed_handle(self.clone(), target)?;
+                self.as_callable(&target)?.ok_or(RuntimeError::Invariant(
+                    "module evaluation resolving function lost its callable brand",
+                ))
+            })
+            .transpose()
+    }
+
+    fn settle_module_evaluation_capability(
+        &self,
+        realm: ContextId,
+        module: RawModuleRef,
+        kind: ModuleEvaluationKind,
+        value: Value,
+    ) -> Result<(), RuntimeError> {
+        let Some(target) = self.module_evaluation_settler(module, kind)? else {
+            return Ok(());
+        };
+        let _ = self.call_internal(realm, &target, Value::Undefined, &[value])?;
+        Ok(())
+    }
+
+    fn reject_async_module_ancestors(
+        &self,
+        realm: ContextId,
+        module: RawModuleRef,
+        reason: Value,
+    ) -> Result<(), RuntimeError> {
+        self.validate_value_domain(&reason, "async module rejection")?;
+        let raw_reason = self.raw_property_value(&reason)?;
+        let mut pending = vec![module.module];
+        while let Some(module_id) = pending.pop() {
+            let current = RawModuleRef {
+                cache: module.cache,
+                module: module_id,
+            };
+            let record = self.module_record(current)?;
+            match record.evaluation {
+                ModuleEvaluationState::Errored(_) => continue,
+                ModuleEvaluationState::EvaluatingAsync => {}
+                _ => {
+                    return Err(RuntimeError::Invariant(
+                        "async module rejection reached an inactive ancestor",
+                    ));
+                }
+            }
+            let parents = record.async_parent_modules;
+            let mut state = self.0.state.borrow_mut();
+            let retained_atoms = match raw_reason {
+                RawValue::Symbol(atom) => Self::retain_module_atoms(&mut state, vec![atom])?,
+                _ => Vec::new(),
+            };
+            if let Err(error) = state
+                .heap
+                .publish_loaded_module_async_error(current, raw_reason.clone())
+            {
+                state.release_atoms(retained_atoms)?;
+                return Err(error.into());
+            }
+            drop(state);
+
+            // QuickJS makes this module observably Errored, rejects its own
+            // evaluation capability, and only then recursively visits parents.
+            // Keep that per-node order so a reentrant host rejection tracker
+            // cannot observe ancestors changing ahead of the reference engine.
+            self.settle_module_evaluation_capability(
+                realm,
+                current,
+                ModuleEvaluationKind::Reject,
+                reason.clone(),
+            )?;
+            pending.extend(parents.iter().rev().copied());
+        }
+        Ok(())
+    }
+
+    fn gather_available_module_ancestors(
+        &self,
+        module: RawModuleRef,
+    ) -> Result<Vec<RawModuleRef>, RuntimeError> {
+        let mut ready = Vec::new();
+        let mut ready_set = HashSet::new();
+        let mut pending = vec![module];
+        while let Some(completed) = pending.pop() {
+            let parents = self.module_record(completed)?.async_parent_modules;
+            for parent_id in parents {
+                if ready_set.contains(&parent_id) {
+                    continue;
+                }
+                let parent = RawModuleRef {
+                    cache: module.cache,
+                    module: parent_id,
+                };
+                let parent_record = self.module_record(parent)?;
+                let cycle_root =
+                    parent_record
+                        .evaluation_cycle_root
+                        .ok_or(RuntimeError::Invariant(
+                            "async module parent has no cycle root",
+                        ))?;
+                if matches!(
+                    self.module_record(RawModuleRef {
+                        cache: module.cache,
+                        module: cycle_root,
+                    })?
+                    .evaluation,
+                    ModuleEvaluationState::Errored(_)
+                ) {
+                    continue;
+                }
+                let remaining = self
+                    .0
+                    .state
+                    .borrow_mut()
+                    .heap
+                    .complete_loaded_module_async_dependency(parent)?;
+                if remaining == 0 {
+                    ready_set.insert(parent_id);
+                    ready.push(parent);
+                    if !parent_record.has_top_level_await {
+                        pending.push(parent);
+                    }
+                }
+            }
+        }
+        ready.sort_by_key(|module| {
+            self.module_record(*module)
+                .ok()
+                .and_then(|record| record.async_evaluation_order)
+                .unwrap_or(u64::MAX)
+        });
+        if ready.iter().any(|module| {
+            self.module_record(*module)
+                .ok()
+                .and_then(|record| record.async_evaluation_order)
+                .is_none()
+        }) {
+            return Err(RuntimeError::Invariant(
+                "available async module ancestor has no ordering stamp",
+            ));
+        }
+        Ok(ready)
+    }
+
+    fn fulfill_async_module(
+        &self,
+        realm: ContextId,
+        module: RawModuleRef,
+    ) -> Result<(), RuntimeError> {
+        match self.module_record(module)?.evaluation {
+            ModuleEvaluationState::Errored(_) => return Ok(()),
+            ModuleEvaluationState::EvaluatingAsync => {}
+            _ => {
+                return Err(RuntimeError::Invariant(
+                    "async module fulfillment reached an inactive module",
+                ));
+            }
+        }
+        self.transition_module_record(module, RawModuleTransition::FinishAsyncEvaluation)?;
+        self.settle_module_evaluation_capability(
+            realm,
+            module,
+            ModuleEvaluationKind::Fulfill,
+            Value::Undefined,
+        )?;
+
+        for ancestor in self.gather_available_module_ancestors(module)? {
+            let record = self.module_record(ancestor)?;
+            if matches!(record.evaluation, ModuleEvaluationState::Errored(_)) {
+                continue;
+            }
+            if record.has_top_level_await {
+                self.execute_async_module_body(realm, ancestor)?;
+                continue;
+            }
+            match self.execute_module_body_synchronously(realm, ancestor)? {
+                Completion::Return(Value::Undefined) => {
+                    self.transition_module_record(
+                        ancestor,
+                        RawModuleTransition::FinishAsyncEvaluation,
+                    )?;
+                    self.settle_module_evaluation_capability(
+                        realm,
+                        ancestor,
+                        ModuleEvaluationKind::Fulfill,
+                        Value::Undefined,
+                    )?;
+                }
+                Completion::Throw(reason) => {
+                    self.reject_async_module_ancestors(realm, ancestor, reason)?;
+                }
+                Completion::Return(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "module evaluation returned a non-undefined value",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn call_module_evaluation_callback(
+        &self,
+        realm: ContextId,
+        target_kind: ModuleEvaluationKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "module evaluation callback received a constructor invocation",
+            ));
+        };
+        let argument = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "module evaluation callback argv was not padded",
+            ))?;
+        let active = self.active_function()?;
+        let internal = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .native_internal_callable(active.object_id())?
+            .ok_or(RuntimeError::Invariant(
+                "module evaluation callback has no internal state",
+            ))?;
+        let InternalCallableData::ModuleEvaluation { module, kind } = internal else {
+            return Err(RuntimeError::Invariant(
+                "module evaluation callback has the wrong internal state",
+            ));
+        };
+        if kind != target_kind {
+            return Err(RuntimeError::Invariant(
+                "module evaluation callback target disagrees with its capture",
+            ));
+        }
+        match target_kind {
+            ModuleEvaluationKind::Fulfill => self.fulfill_async_module(realm, module)?,
+            ModuleEvaluationKind::Reject => {
+                self.reject_async_module_ancestors(realm, module, argument)?;
+            }
+        }
+        Ok(Completion::Return(Value::Undefined))
+    }
+
     fn evaluate_module_dfs(
         &self,
+        evaluation_realm: ContextId,
         module: RawModuleRef,
         dfs: &mut ModuleEvaluationDfs,
     ) -> Result<(), RuntimeError> {
@@ -2610,6 +2967,7 @@ impl Runtime {
             match &record.evaluation {
                 ModuleEvaluationState::Unevaluated => ModuleEvaluationVisit::Unevaluated,
                 ModuleEvaluationState::Evaluating => ModuleEvaluationVisit::Evaluating,
+                ModuleEvaluationState::EvaluatingAsync => ModuleEvaluationVisit::EvaluatingAsync,
                 ModuleEvaluationState::Evaluated => ModuleEvaluationVisit::Evaluated,
                 ModuleEvaluationState::Errored(exception) => {
                     ModuleEvaluationVisit::Errored(self.root_raw_value(exception)?)
@@ -2618,7 +2976,9 @@ impl Runtime {
             }
         };
         match initial_state {
-            ModuleEvaluationVisit::Evaluated => return Ok(()),
+            ModuleEvaluationVisit::EvaluatingAsync | ModuleEvaluationVisit::Evaluated => {
+                return Ok(());
+            }
             ModuleEvaluationVisit::Evaluating => {
                 return Err(RuntimeError::Invariant(
                     "module evaluation was re-entered by the host",
@@ -2658,6 +3018,9 @@ impl Runtime {
                     match &record.evaluation {
                         ModuleEvaluationState::Unevaluated => ModuleEvaluationVisit::Unevaluated,
                         ModuleEvaluationState::Evaluating => ModuleEvaluationVisit::Evaluating,
+                        ModuleEvaluationState::EvaluatingAsync => {
+                            ModuleEvaluationVisit::EvaluatingAsync
+                        }
                         ModuleEvaluationState::Evaluated => ModuleEvaluationVisit::Evaluated,
                         ModuleEvaluationState::Errored(exception) => {
                             ModuleEvaluationVisit::Errored(self.root_raw_value(exception)?)
@@ -2665,8 +3028,31 @@ impl Runtime {
                         ModuleEvaluationState::Poisoned => ModuleEvaluationVisit::Poisoned,
                     }
                 };
-                match dependency_state {
-                    ModuleEvaluationVisit::Evaluated => {}
+                let async_dependency = match dependency_state {
+                    ModuleEvaluationVisit::Evaluated => {
+                        let cycle_root = self
+                            .module_record(dependency)?
+                            .evaluation_cycle_root
+                            .ok_or(RuntimeError::Invariant(
+                                "completed dependency has no cycle root",
+                            ))?;
+                        Some(RawModuleRef {
+                            cache: dependency.cache,
+                            module: cycle_root,
+                        })
+                    }
+                    ModuleEvaluationVisit::EvaluatingAsync => {
+                        let cycle_root = self
+                            .module_record(dependency)?
+                            .evaluation_cycle_root
+                            .ok_or(RuntimeError::Invariant(
+                                "async dependency has no cycle root",
+                            ))?;
+                        Some(RawModuleRef {
+                            cache: dependency.cache,
+                            module: cycle_root,
+                        })
+                    }
                     ModuleEvaluationVisit::Evaluating => {
                         let dependency_ancestor = dfs
                             .entries
@@ -2687,9 +3073,23 @@ impl Runtime {
                                     "evaluating module lost its DFS entry",
                                 ))?;
                         entry.ancestor = entry.ancestor.min(dependency_ancestor);
+                        Some(dependency)
                     }
                     ModuleEvaluationVisit::Unevaluated => {
+                        // Revisit this exact dependency after its child frame
+                        // returns. InnerModuleEvaluation must then canonicalize
+                        // its cycle root and register any async blocker; merely
+                        // advancing past the edge loses that post-child phase.
+                        let parent = frames.last_mut().ok_or(RuntimeError::Invariant(
+                            "module evaluation call stack unexpectedly became empty",
+                        ))?;
+                        parent.next_dependency = parent.next_dependency.checked_sub(1).ok_or(
+                            RuntimeError::Invariant(
+                                "module dependency cursor underflow before child evaluation",
+                            ),
+                        )?;
                         frames.push(self.enter_module_evaluation_dfs(dependency, dfs)?);
+                        continue;
                     }
                     ModuleEvaluationVisit::Errored(exception) => {
                         if dfs.exception.replace(exception).is_some() {
@@ -2704,6 +3104,38 @@ impl Runtime {
                             "module evaluation previously failed inside the engine",
                         ));
                     }
+                };
+                if let Some(async_dependency) = async_dependency {
+                    let dependency_record = self.module_record(async_dependency)?;
+                    if matches!(
+                        dependency_record.evaluation,
+                        ModuleEvaluationState::Errored(_)
+                    ) {
+                        let ModuleEvaluationState::Errored(exception) =
+                            dependency_record.evaluation
+                        else {
+                            unreachable!();
+                        };
+                        let exception = self.root_raw_value(&exception)?;
+                        if dfs.exception.replace(exception).is_some() {
+                            return Err(RuntimeError::Invariant(
+                                "module evaluation recorded more than one exception",
+                            ));
+                        }
+                        return Err(RuntimeError::Exception);
+                    }
+                    if dependency_record.async_evaluation_order.is_some() {
+                        let parent = frames.last().map(|frame| frame.module).ok_or(
+                            RuntimeError::Invariant(
+                                "module evaluation call stack unexpectedly became empty",
+                            ),
+                        )?;
+                        self.0
+                            .state
+                            .borrow_mut()
+                            .heap
+                            .add_loaded_module_async_dependency(async_dependency, parent)?;
+                    }
                 }
                 continue;
             }
@@ -2712,43 +3144,23 @@ impl Runtime {
                 "module evaluation call stack unexpectedly became empty",
             ))?;
             let record = self.module_record(frame.module)?;
-            let realm = record
-                .link_realm
-                .map(|realm| match realm {
-                    RawModuleLinkRealm::Cache => frame.module.cache,
-                    RawModuleLinkRealm::Other(realm) => realm,
-                })
-                .ok_or(RuntimeError::Invariant(
-                    "linked module has no retained realm",
-                ))?;
-            let completion = match &record.body {
-                ModuleRecordBody::SourceText { .. } => {
-                    let callable = record
-                        .instance
-                        .as_ref()
-                        .and_then(|instance| instance.callable)
-                        .ok_or(RuntimeError::Invariant(
-                            "linked source-text module has no callable instance",
-                        ))?;
-                    let callable = CallableRef::from_validated_object(
-                        ObjectRef::from_borrowed_handle(self.clone(), callable)?,
-                    );
-                    self.execute_source_text_module_body(realm, &callable)?
-                }
-                ModuleRecordBody::Json { default_value } => {
-                    let slot = record
-                        .instance
-                        .as_ref()
-                        .and_then(|instance| instance.slots.first())
-                        .and_then(|slot| *slot)
-                        .ok_or(RuntimeError::Invariant(
-                            "linked JSON module has no default live cell",
-                        ))?;
-                    let slot = VarRefRoot::from_borrowed_handle(self.clone(), slot)?;
-                    let default_value = self.root_raw_value(default_value)?;
-                    self.write_var_ref(&slot, default_value)?;
-                    Completion::Return(Value::Undefined)
-                }
+            let completion = if record.pending_async_dependencies != 0 {
+                let order = self.next_module_async_evaluation_order()?;
+                self.transition_module_record(
+                    frame.module,
+                    RawModuleTransition::BeginAsyncEvaluation { order },
+                )?;
+                Completion::Return(Value::Undefined)
+            } else if record.has_top_level_await {
+                let order = self.next_module_async_evaluation_order()?;
+                self.transition_module_record(
+                    frame.module,
+                    RawModuleTransition::BeginAsyncEvaluation { order },
+                )?;
+                self.execute_async_module_body(evaluation_realm, frame.module)?;
+                Completion::Return(Value::Undefined)
+            } else {
+                self.execute_module_body_synchronously(evaluation_realm, frame.module)?
             };
             match completion {
                 Completion::Return(Value::Undefined) => {
@@ -2775,7 +3187,9 @@ impl Runtime {
                             }
                             self.transition_module_record(
                                 member,
-                                RawModuleTransition::FinishEvaluation(frame.module.module),
+                                RawModuleTransition::FinishEvaluation {
+                                    cycle_root: frame.module.module,
+                                },
                             )?;
                             let popped = dfs.stack.pop().ok_or(RuntimeError::Invariant(
                                 "module evaluation SCC stack underflow after publication",
@@ -2833,10 +3247,14 @@ impl Runtime {
         Ok(())
     }
 
-    fn evaluate_module_graph(&self, module: RawModuleRef) -> Result<Value, RuntimeError> {
+    fn evaluate_module_graph(
+        &self,
+        evaluation_realm: ContextId,
+        module: RawModuleRef,
+    ) -> Result<Value, RuntimeError> {
         let mut dfs = ModuleEvaluationDfs::new();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            self.evaluate_module_dfs(module, &mut dfs)
+            self.evaluate_module_dfs(evaluation_realm, module, &mut dfs)
         }));
         let result = match outcome {
             Ok(result) => result,
@@ -2886,39 +3304,42 @@ impl Runtime {
     /// code.  Static execution and dynamic import both enter through this
     /// helper so a cache hit observes the same Promise identity, settlement,
     /// and rejection-tracker history regardless of which API evaluated the
-    /// record first.  This slice is synchronous; top-level-await will extend
-    /// the cached record with the additional async-evaluation machinery.
+    /// record first. Async SCCs retain the capability in their cycle root and
+    /// settle it later from the module completion reaction jobs.
     pub(super) fn evaluate_module_promise(
         &self,
         requested_module: RawModuleRef,
         initiating_realm: ContextId,
     ) -> Result<ObjectRef, RuntimeError> {
         let requested_record = self.module_record(requested_module)?;
-        let module = match requested_record.evaluation {
-            ModuleEvaluationState::Evaluated | ModuleEvaluationState::Errored(_) => {
-                RawModuleRef {
+        let module =
+            match requested_record.evaluation {
+                ModuleEvaluationState::EvaluatingAsync
+                | ModuleEvaluationState::Evaluated
+                | ModuleEvaluationState::Errored(_) => RawModuleRef {
                     cache: requested_module.cache,
                     module: requested_record.evaluation_cycle_root.ok_or(
                         RuntimeError::Invariant("completed module evaluation has no cycle root"),
                     )?,
+                },
+                ModuleEvaluationState::Unevaluated => requested_module,
+                ModuleEvaluationState::Evaluating => {
+                    return Err(RuntimeError::Invariant(
+                        "module evaluation Promise was requested during evaluation",
+                    ));
                 }
-            }
-            ModuleEvaluationState::Unevaluated => requested_module,
-            ModuleEvaluationState::Evaluating => {
-                return Err(RuntimeError::Invariant(
-                    "module evaluation Promise was requested during evaluation",
-                ));
-            }
-            ModuleEvaluationState::Poisoned => {
-                return Err(RuntimeError::Invariant(
-                    "module evaluation previously failed inside the engine",
-                ));
-            }
-        };
+                ModuleEvaluationState::Poisoned => {
+                    return Err(RuntimeError::Invariant(
+                        "module evaluation previously failed inside the engine",
+                    ));
+                }
+            };
         let record = self.module_record(module)?;
         if let Some(promise) = record.evaluation_promise {
             return match record.evaluation {
-                ModuleEvaluationState::Evaluated | ModuleEvaluationState::Errored(_) => {
+                ModuleEvaluationState::EvaluatingAsync
+                | ModuleEvaluationState::Evaluated
+                | ModuleEvaluationState::Errored(_) => {
                     ObjectRef::from_borrowed_handle(self.clone(), promise).map_err(Into::into)
                 }
                 ModuleEvaluationState::Unevaluated => Err(RuntimeError::Invariant(
@@ -2950,34 +3371,52 @@ impl Runtime {
 
         let capability = self.new_default_promise_capability(initiating_realm)?;
         let promise = capability.promise.clone();
-        self.mutate_module_record(module, |record| {
-            if record.evaluation_promise.is_some() {
-                return Err(RuntimeError::Invariant(
-                    "module evaluation Promise was installed reentrantly",
-                ));
-            }
-            record.evaluation_promise = Some(promise.object_id());
-            Ok(())
-        })?;
+        self.0
+            .state
+            .borrow_mut()
+            .heap
+            .publish_loaded_module_evaluation_capability(
+                module,
+                promise.object_id(),
+                capability.resolve.as_object().object_id(),
+                capability.reject.as_object().object_id(),
+            )?;
 
         let settlement = match record.evaluation {
-            ModuleEvaluationState::Unevaluated => match self.evaluate_module_graph(module) {
-                Ok(Value::Undefined) => Ok((true, Value::Undefined)),
-                Ok(_) => Err(RuntimeError::Invariant(
-                    "module evaluation returned a non-undefined value",
-                )),
-                Err(RuntimeError::Exception) => {
-                    let reason = self
-                        .take_pending_exception()?
-                        .ok_or(RuntimeError::Invariant(
-                            "module evaluation failed without a pending exception",
-                        ))?;
-                    Ok((false, reason))
+            ModuleEvaluationState::Unevaluated => {
+                match self.evaluate_module_graph(initiating_realm, module) {
+                    Ok(Value::Undefined) => match self.module_record(module)?.evaluation {
+                        ModuleEvaluationState::EvaluatingAsync => return Ok(promise),
+                        ModuleEvaluationState::Evaluated => Ok((true, Value::Undefined)),
+                        ModuleEvaluationState::Errored(reason) => {
+                            Ok((false, self.root_raw_value(&reason)?))
+                        }
+                        ModuleEvaluationState::Unevaluated | ModuleEvaluationState::Evaluating => {
+                            Err(RuntimeError::Invariant(
+                                "successful module evaluation retained an active root state",
+                            ))
+                        }
+                        ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
+                            "module evaluation poisoned after a successful graph traversal",
+                        )),
+                    },
+                    Ok(_) => Err(RuntimeError::Invariant(
+                        "module evaluation returned a non-undefined value",
+                    )),
+                    Err(RuntimeError::Exception) => {
+                        let reason =
+                            self.take_pending_exception()?
+                                .ok_or(RuntimeError::Invariant(
+                                    "module evaluation failed without a pending exception",
+                                ))?;
+                        Ok((false, reason))
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            },
+            }
             ModuleEvaluationState::Evaluated => Ok((true, Value::Undefined)),
             ModuleEvaluationState::Errored(reason) => Ok((false, self.root_raw_value(&reason)?)),
+            ModuleEvaluationState::EvaluatingAsync => return Ok(promise),
             ModuleEvaluationState::Evaluating => Err(RuntimeError::Invariant(
                 "module evaluation Promise was requested during evaluation",
             )),
@@ -3057,6 +3496,66 @@ impl Runtime {
         self.call_dynamic_import_settler(realm, reject, reason)
     }
 
+    pub(super) fn call_dynamic_import_handler(
+        &self,
+        realm: ContextId,
+        target_kind: DynamicImportHandlerKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { .. } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "dynamic import handler received a constructor invocation",
+            ));
+        };
+        let argument = arguments
+            .readable
+            .first()
+            .cloned()
+            .ok_or(RuntimeError::Invariant(
+                "dynamic import handler argv was not padded",
+            ))?;
+        let active = self.active_function()?;
+        let internal = self
+            .0
+            .state
+            .borrow()
+            .heap
+            .native_internal_callable(active.object_id())?
+            .ok_or(RuntimeError::Invariant(
+                "dynamic import handler has no internal state",
+            ))?;
+        let InternalCallableData::DynamicImportHandler {
+            module,
+            resolve,
+            reject,
+            kind,
+        } = internal
+        else {
+            return Err(RuntimeError::Invariant(
+                "dynamic import handler has the wrong internal state",
+            ));
+        };
+        if kind != target_kind || module.cache != realm {
+            return Err(RuntimeError::Invariant(
+                "dynamic import handler target disagrees with its capture",
+            ));
+        }
+
+        match target_kind {
+            DynamicImportHandlerKind::Reject => {
+                self.call_dynamic_import_settler(realm, reject, argument)
+            }
+            DynamicImportHandlerKind::Fulfill => match self.get_module_namespace_raw(module, realm)
+            {
+                Ok(namespace) => {
+                    self.call_dynamic_import_settler(realm, resolve, Value::Object(namespace))
+                }
+                Err(error) => self.reject_dynamic_import_error(realm, reject, error),
+            },
+        }
+    }
+
     pub(super) fn execute_dynamic_import_load_job(
         &self,
         realm: ContextId,
@@ -3104,56 +3603,6 @@ impl Runtime {
                 Ok(Completion::Return(Value::Undefined))
             }
         }
-    }
-
-    pub(super) fn execute_dynamic_import_finish_job(
-        &self,
-        realm: ContextId,
-        resolve: ObjectId,
-        reject: ObjectId,
-        reaction_resolve: ObjectId,
-        reaction_reject: ObjectId,
-        outcome: &DynamicImportFinishOutcome,
-    ) -> Result<Completion, RuntimeError> {
-        let handler_completion = match outcome {
-            DynamicImportFinishOutcome::Rejected { reason } => {
-                let reason = self.root_raw_value(reason)?;
-                self.call_dynamic_import_settler(realm, reject, reason)
-            }
-            DynamicImportFinishOutcome::Fulfilled { module } => {
-                match self.get_module_namespace_raw(*module, realm) {
-                    Ok(namespace) => {
-                        // Use the ordinary intrinsic resolving function so a
-                        // hostile namespace `then` export is observed and
-                        // assimilated.
-                        self.call_dynamic_import_settler(realm, resolve, Value::Object(namespace))
-                    }
-                    Err(error) => self.reject_dynamic_import_error(realm, reject, error),
-                }
-            }
-        };
-        let handler_completion = match handler_completion {
-            Ok(completion) => completion,
-            Err(RuntimeError::Exception) => Completion::Throw(
-                self.take_pending_exception()?
-                    .ok_or(RuntimeError::Invariant(
-                        "dynamic import finish failed without a pending exception",
-                    ))?,
-            ),
-            Err(RuntimeError::Engine(error)) => {
-                let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
-                    return Err(RuntimeError::Engine(error));
-                };
-                Completion::Throw(self.new_native_error_from_error(realm, kind, &error)?)
-            }
-            Err(error) => return Err(error),
-        };
-        let (target, value) = match handler_completion {
-            Completion::Return(value) => (reaction_resolve, value),
-            Completion::Throw(value) => (reaction_reject, value),
-        };
-        let target = self.dynamic_import_settler(target)?;
-        self.call_internal(realm, &target, Value::Undefined, &[value])
     }
 
     fn cache_module_evaluation_exception(
@@ -3243,21 +3692,7 @@ impl Runtime {
         self.0.state.borrow().heap.context(initiating_realm)?;
         self.link_module_graph(module.raw, initiating_realm)?;
         let promise = self.evaluate_module_promise(module.raw, initiating_realm)?;
-        drop(promise);
-        match self.module_record(module.raw)?.evaluation {
-            ModuleEvaluationState::Evaluated => Ok(Value::Undefined),
-            ModuleEvaluationState::Errored(reason) => {
-                let reason = self.root_raw_value(&reason)?;
-                self.set_pending_exception(reason)?;
-                Err(RuntimeError::Exception)
-            }
-            ModuleEvaluationState::Unevaluated | ModuleEvaluationState::Evaluating => Err(
-                RuntimeError::Invariant("synchronous module evaluation left an unsettled state"),
-            ),
-            ModuleEvaluationState::Poisoned => Err(RuntimeError::Invariant(
-                "module evaluation previously failed inside the engine",
-            )),
-        }
+        Ok(Value::Object(promise))
     }
 }
 
@@ -3300,8 +3735,8 @@ impl Context {
         }
     }
 
-    /// Link and evaluate one runtime-published static module. This first
-    /// synchronous graph slice supports side-effect and direct named imports.
+    /// Link and evaluate one runtime-published static module, returning the
+    /// cycle root's cached evaluation Promise on every normal engine path.
     pub fn execute_module(&mut self, module: &ModuleBytecodeRef) -> Result<Value, RuntimeError> {
         self.runtime.execute_module(self.realm, module)
     }
@@ -3907,6 +4342,33 @@ mod tests {
             .unwrap()
     }
 
+    fn module_evaluation_promise(context: &mut Context, module: &ModuleBytecodeRef) -> ObjectRef {
+        let Value::Object(promise) = context.execute_module(module).unwrap() else {
+            panic!("module evaluation did not return a Promise");
+        };
+        promise
+    }
+
+    fn module_evaluation_snapshot(
+        context: &mut Context,
+        module: &ModuleBytecodeRef,
+    ) -> PromiseData {
+        let runtime = context.runtime().clone();
+        let promise = module_evaluation_promise(context, module);
+        promise_snapshot(&runtime, &promise)
+    }
+
+    fn drain_jobs(runtime: &Runtime) -> usize {
+        let mut count = 0;
+        loop {
+            if !runtime.execute_pending_job().unwrap() {
+                return count;
+            }
+            count += 1;
+            assert!(count <= 128, "Promise jobs did not quiesce");
+        }
+    }
+
     fn take_error_message(runtime: &Runtime, context: &mut Context) -> JsString {
         let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
             panic!("module failure did not produce an Error object");
@@ -3961,6 +4423,103 @@ mod tests {
                 .get_property_in_realm(context.realm, &namespace, &answer)
                 .unwrap(),
             Completion::Return(Value::Int(42))
+        );
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn dynamic_import_waits_for_a_pending_tla_evaluation_and_reuses_it() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context
+            .eval(
+                r#"
+                globalThis.__dynamicTlaLog = [];
+                globalThis.__dynamicTlaGate = new Promise(function (resolve) {
+                    globalThis.__releaseDynamicTlaGate = resolve;
+                });
+                "#,
+            )
+            .unwrap();
+        let (loader, loads, _) = MapModuleLoader::new([(
+            "pkg/wait.js",
+            r#"
+            globalThis.__dynamicTlaLog.push("start");
+            await globalThis.__dynamicTlaGate;
+            globalThis.__dynamicTlaLog.push("end");
+            export const answer = 42;
+            "#,
+        )]);
+        let _registration = runtime.set_module_loader(loader);
+
+        let first = eval_dynamic_import(
+            &mut context,
+            "globalThis.__firstWaitingImport = import('./wait.js'); __firstWaitingImport",
+            "pkg/entry.js",
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(loads.borrow().as_slice(), ["pkg/wait.js"]);
+        assert_eq!(
+            promise_snapshot(&runtime, &first).state,
+            PromiseState::Pending
+        );
+        assert_script_true(
+            &mut context,
+            "globalThis.__dynamicTlaLog.join(',') === 'start'",
+        );
+        assert!(
+            !runtime.is_job_pending(),
+            "an unresolved TLA gate left a runnable job"
+        );
+
+        let second = eval_dynamic_import(
+            &mut context,
+            "globalThis.__secondWaitingImport = import('./wait.js'); __secondWaitingImport",
+            "pkg/entry.js",
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        assert_eq!(loads.borrow().as_slice(), ["pkg/wait.js"]);
+        assert_eq!(
+            promise_snapshot(&runtime, &first).state,
+            PromiseState::Pending
+        );
+        assert_eq!(
+            promise_snapshot(&runtime, &second).state,
+            PromiseState::Pending
+        );
+        assert!(
+            !runtime.is_job_pending(),
+            "a cached pending evaluation left a runnable job"
+        );
+
+        runtime.run_gc().unwrap();
+        context
+            .eval("globalThis.__releaseDynamicTlaGate()")
+            .unwrap();
+        assert!(drain_jobs(&runtime) > 0);
+
+        let first = promise_snapshot(&runtime, &first);
+        let second = promise_snapshot(&runtime, &second);
+        assert_eq!(first.state, PromiseState::Fulfilled);
+        assert_eq!(second.state, PromiseState::Fulfilled);
+        let Value::Object(first_namespace) = runtime.root_raw_value(&first.result).unwrap() else {
+            panic!("first dynamic import did not fulfill with a namespace object");
+        };
+        let Value::Object(second_namespace) = runtime.root_raw_value(&second.result).unwrap()
+        else {
+            panic!("second dynamic import did not fulfill with a namespace object");
+        };
+        assert_eq!(first_namespace.object_id(), second_namespace.object_id());
+        let answer = runtime.intern_property_key("answer").unwrap();
+        assert_eq!(
+            runtime
+                .get_property_in_realm(context.realm, &first_namespace, &answer)
+                .unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_script_true(
+            &mut context,
+            "globalThis.__dynamicTlaLog.join(',') === 'start,end'",
         );
         assert!(!runtime.is_job_pending());
     }
@@ -4462,15 +5021,13 @@ import("attributes.js", { with: attributeProxy })
         let static_module = context
             .compile_module_with_filename("export const value = 42;", "pkg/static.js")
             .unwrap();
-        assert_eq!(
-            context.execute_module(&static_module).unwrap(),
-            Value::Undefined
-        );
+        let static_result = module_evaluation_promise(&mut context, &static_module);
         let static_promise = runtime
             .module_record(static_module.raw)
             .unwrap()
             .evaluation_promise
             .unwrap();
+        assert_eq!(static_result.object_id(), static_promise);
 
         let imported = eval_dynamic_import(&mut context, "import('./static.js')", "pkg/entry.js");
         assert!(runtime.execute_pending_job().unwrap());
@@ -4515,7 +5072,10 @@ import("attributes.js", { with: attributeProxy })
             .evaluation_promise
             .unwrap();
         let handle = runtime.root_module(raw).unwrap();
-        assert_eq!(context.execute_module(&handle).unwrap(), Value::Undefined);
+        assert_eq!(
+            module_evaluation_promise(&mut context, &handle).object_id(),
+            dynamic_promise
+        );
         assert_eq!(
             runtime.module_record(raw).unwrap().evaluation_promise,
             Some(dynamic_promise)
@@ -4545,10 +5105,13 @@ import("attributes.js", { with: attributeProxy })
                 "pkg/shared-throw.js",
             )
             .unwrap();
-        assert!(matches!(
-            context.execute_module(&module),
-            Err(RuntimeError::Exception)
-        ));
+        let evaluation = module_evaluation_promise(&mut context, &module);
+        let evaluation_snapshot = promise_snapshot(&runtime, &evaluation);
+        assert_eq!(evaluation_snapshot.state, PromiseState::Rejected);
+        assert_eq!(
+            runtime.root_raw_value(&evaluation_snapshot.result).unwrap(),
+            reason
+        );
         {
             let events = events.borrow();
             assert_eq!(events.len(), 2);
@@ -4558,7 +5121,7 @@ import("attributes.js", { with: attributeProxy })
             assert_eq!(events[0].2, reason);
             assert_eq!(events[1].2, reason);
         }
-        assert_eq!(context.take_exception().unwrap(), Some(reason.clone()));
+        assert_eq!(context.take_exception().unwrap(), None);
         assert_eq!(events.borrow().len(), 2);
 
         let imported = eval_dynamic_import(
@@ -5366,24 +5929,29 @@ import("attributes.js", { with: attributeProxy })
     }
 
     #[test]
-    fn unsupported_loader_dependency_remains_an_engine_diagnostic() {
+    fn loader_dependency_with_top_level_await_evaluates_asynchronously() {
         let runtime = Runtime::new();
-        let (loader, loads, _) = MapModuleLoader::new([("pkg/dependency.js", "await 1;")]);
+        let (loader, loads, _) = MapModuleLoader::new([(
+            "pkg/dependency.js",
+            "await 1; globalThis.__loadedTlaDependency = 42;",
+        )]);
         let _loader_registration = runtime.set_module_loader(loader);
         let mut context = runtime.new_context();
 
-        let RuntimeError::Engine(error) = context
+        let module = context
             .compile_module_with_filename("import './dependency.js';", "pkg/entry.js")
-            .unwrap_err()
-        else {
-            panic!("loader dependency did not retain its engine diagnostic");
-        };
-        assert_eq!(error.kind(), ErrorKind::Unsupported);
+            .unwrap();
+        let promise = module_evaluation_promise(&mut context, &module);
         assert_eq!(
-            error.message(),
-            "top-level await is not implemented in this synchronous module slice"
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
         );
-        assert!(context.take_exception().unwrap().is_none());
+        assert!(drain_jobs(&runtime) > 0);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Fulfilled
+        );
+        assert_script_true(&mut context, "__loadedTlaDependency === 42");
         assert_eq!(&*loads.borrow(), &["pkg/dependency.js"]);
     }
 
@@ -5615,7 +6183,7 @@ import("attributes.js", { with: attributeProxy })
 
         assert_eq!(&*loads.borrow(), &["pkg/a.js", "pkg/b.js"]);
         assert_eq!(normalizations.borrow().len(), 4);
-        assert_eq!(context.execute_module(&entry).unwrap(), Value::Undefined);
+        let first = module_evaluation_promise(&mut context, &entry);
         assert_script_true(
             &mut context,
             r#"
@@ -5623,7 +6191,8 @@ import("attributes.js", { with: attributeProxy })
             __before === 1 && __after === 42 && __afterViaCycle === 42
             "#,
         );
-        assert_eq!(context.execute_module(&entry).unwrap(), Value::Undefined);
+        let second = module_evaluation_promise(&mut context, &entry);
+        assert_eq!(first.object_id(), second.object_id());
         assert_script_true(&mut context, "__bRuns === 1");
     }
 
@@ -5970,14 +6539,9 @@ import("attributes.js", { with: attributeProxy })
                 "pkg/var-initializer-collision.js",
             )
             .unwrap();
-        assert_eq!(
-            context.execute_module(&var_initializer),
-            Err(RuntimeError::Exception)
-        );
-        assert!(matches!(
-            context.take_exception().unwrap(),
-            Some(Value::Object(_))
-        ));
+        let snapshot = module_evaluation_snapshot(&mut context, &var_initializer);
+        assert_eq!(snapshot.state, PromiseState::Rejected);
+        assert!(matches!(snapshot.result, RawValue::Object(_)));
     }
 
     #[test]
@@ -6119,16 +6683,12 @@ import("attributes.js", { with: attributeProxy })
         // Every import alias can be linked even though A's local export is an
         // imported binding whose own SCC member has not linked yet.
         context.link_module(&module).unwrap();
-        for _ in 0..2 {
-            assert_eq!(
-                context.execute_module(&module),
-                Err(RuntimeError::Exception)
-            );
-            assert!(matches!(
-                context.take_exception().unwrap(),
-                Some(Value::Object(_))
-            ));
-        }
+        let first = module_evaluation_promise(&mut context, &module);
+        let first_snapshot = promise_snapshot(&runtime, &first);
+        assert_eq!(first_snapshot.state, PromiseState::Rejected);
+        assert!(matches!(first_snapshot.result, RawValue::Object(_)));
+        let second = module_evaluation_promise(&mut context, &module);
+        assert_eq!(first.object_id(), second.object_id());
         // Evaluation still observes the specified TDZ: C reads B.x before B's
         // body initializes it. The exception is cached instead of becoming a
         // missing-cell invariant or native crash.
@@ -6564,13 +7124,12 @@ import("attributes.js", { with: attributeProxy })
             )
             .unwrap();
 
-        for _ in 0..2 {
-            assert_eq!(
-                context.execute_module(&module),
-                Err(RuntimeError::Exception)
-            );
-            assert_eq!(context.take_exception().unwrap(), Some(Value::Int(42)));
-        }
+        let first = module_evaluation_promise(&mut context, &module);
+        let first_snapshot = promise_snapshot(&runtime, &first);
+        assert_eq!(first_snapshot.state, PromiseState::Rejected);
+        assert_eq!(first_snapshot.result, RawValue::Int(42));
+        let second = module_evaluation_promise(&mut context, &module);
+        assert_eq!(first.object_id(), second.object_id());
         assert_script_true(
             &mut context,
             "__abruptRuns === 1 && typeof __ancestorRan === 'undefined'",
@@ -6608,12 +7167,13 @@ import("attributes.js", { with: attributeProxy })
         let a = runtime.module_dependencies(&module).unwrap().remove(0);
         let b = runtime.module_dependencies(&a).unwrap().remove(0);
 
+        let first = module_evaluation_promise(&mut context, &module);
+        let first_snapshot = promise_snapshot(&runtime, &first);
+        assert_eq!(first_snapshot.state, PromiseState::Rejected);
+        assert_eq!(first_snapshot.result, RawValue::Int(42));
+        let second = module_evaluation_promise(&mut context, &module);
+        assert_eq!(first.object_id(), second.object_id());
         for _ in 0..2 {
-            assert_eq!(
-                context.execute_module(&module),
-                Err(RuntimeError::Exception)
-            );
-            assert_eq!(context.take_exception().unwrap(), Some(Value::Int(42)));
             for member in [&module, &a, &b] {
                 assert!(matches!(
                     runtime.module_record(member.raw).unwrap().evaluation,
@@ -6764,6 +7324,547 @@ import("attributes.js", { with: attributeProxy })
     }
 
     #[test]
+    fn dependency_free_top_level_await_fulfills_the_evaluation_promise() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context.eval("globalThis.__tlaLog = []").unwrap();
+        let module = context
+            .compile_module(
+                r#"
+                globalThis.__tlaLog.push("start");
+                const value = await 41;
+                globalThis.__tlaLog.push("end:" + (value + 1));
+                "#,
+            )
+            .unwrap();
+
+        let promise = module_evaluation_promise(&mut context, &module);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert_script_true(&mut context, "globalThis.__tlaLog.join(',') === 'start'");
+
+        assert!(drain_jobs(&runtime) > 0);
+        let snapshot = promise_snapshot(&runtime, &promise);
+        assert_eq!(snapshot.state, PromiseState::Fulfilled);
+        assert_eq!(
+            runtime.root_raw_value(&snapshot.result).unwrap(),
+            Value::Undefined
+        );
+        assert_script_true(
+            &mut context,
+            "globalThis.__tlaLog.join(',') === 'start,end:42'",
+        );
+        assert!(matches!(
+            runtime.module_record(module.raw).unwrap().evaluation,
+            ModuleEvaluationState::Evaluated
+        ));
+
+        let cached = module_evaluation_promise(&mut context, &module);
+        assert_eq!(cached.object_id(), promise.object_id());
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn async_dependency_does_not_block_a_sibling_but_delays_its_parent() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context.eval("globalThis.__tlaOrder = []").unwrap();
+        let (loader, _, _) = MapModuleLoader::new([
+            (
+                "pkg/async.js",
+                r#"
+                globalThis.__asyncDependencyDone = false;
+                globalThis.__tlaOrder.push("async:start");
+                await 0;
+                globalThis.__asyncDependencyDone = true;
+                globalThis.__tlaOrder.push("async:end");
+                export const answer = 42;
+                "#,
+            ),
+            (
+                "pkg/sibling.js",
+                r#"
+                globalThis.__tlaOrder.push("sibling");
+                export const sawAsyncEnd = globalThis.__asyncDependencyDone;
+                "#,
+            ),
+        ]);
+        let _registration = runtime.set_module_loader(loader);
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import { answer } from "./async.js";
+                import { sawAsyncEnd } from "./sibling.js";
+                globalThis.__tlaOrder.push("parent:" + answer + ":" + sawAsyncEnd);
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        let promise = module_evaluation_promise(&mut context, &module);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert_script_true(
+            &mut context,
+            "globalThis.__tlaOrder.join(',') === 'async:start,sibling'",
+        );
+
+        assert!(drain_jobs(&runtime) > 0);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Fulfilled
+        );
+        assert_script_true(
+            &mut context,
+            "globalThis.__tlaOrder.join(',') === 'async:start,sibling,async:end,parent:42:false'",
+        );
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn async_dependency_rejection_preserves_identity_and_skips_the_parent_body() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let reason = context
+            .eval("globalThis.__tlaReason = {}; globalThis.__tlaReason")
+            .unwrap();
+        let (loader, _, _) =
+            MapModuleLoader::new([("pkg/reject.js", "await 0; throw globalThis.__tlaReason;")]);
+        let _registration = runtime.set_module_loader(loader);
+        let module = context
+            .compile_module_with_filename(
+                "import './reject.js'; globalThis.__tlaParentRan = true;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+        let dependency = runtime.module_dependencies(&module).unwrap().remove(0);
+
+        let promise = module_evaluation_promise(&mut context, &module);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert!(drain_jobs(&runtime) > 0);
+
+        let snapshot = promise_snapshot(&runtime, &promise);
+        assert_eq!(snapshot.state, PromiseState::Rejected);
+        assert_eq!(runtime.root_raw_value(&snapshot.result).unwrap(), reason);
+        assert_script_true(
+            &mut context,
+            "typeof globalThis.__tlaParentRan === 'undefined'",
+        );
+        for member in [&module, &dependency] {
+            assert!(matches!(
+                runtime.module_record(member.raw).unwrap().evaluation,
+                ModuleEvaluationState::Errored(_)
+            ));
+        }
+
+        let cached = module_evaluation_promise(&mut context, &module);
+        assert_eq!(cached.object_id(), promise.object_id());
+        let cached = promise_snapshot(&runtime, &cached);
+        assert_eq!(cached.state, PromiseState::Rejected);
+        assert_eq!(runtime.root_raw_value(&cached.result).unwrap(), reason);
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn shared_async_dependency_rejects_evaluation_promises_in_forward_parent_order() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let reason = context
+            .eval(
+                r#"
+                globalThis.__sharedBranchReason = {};
+                globalThis.__sharedBranchGate = new Promise(function (_, reject) {
+                    globalThis.__rejectSharedBranchGate = reject;
+                });
+                globalThis.__sharedBranchReason;
+                "#,
+            )
+            .unwrap();
+        let (loader, _, _) = MapModuleLoader::new([(
+            "pkg/shared-branch.js",
+            "await globalThis.__sharedBranchGate; export const value = 42;",
+        )]);
+        let _registration = runtime.set_module_loader(loader);
+        let first = context
+            .compile_module_with_filename(
+                "import './shared-branch.js'; globalThis.__firstBranchRan = true;",
+                "pkg/first-branch.js",
+            )
+            .unwrap();
+        let second = context
+            .compile_module_with_filename(
+                "import './shared-branch.js'; globalThis.__secondBranchRan = true;",
+                "pkg/second-branch.js",
+            )
+            .unwrap();
+        let first_promise = module_evaluation_promise(&mut context, &first);
+        let second_promise = module_evaluation_promise(&mut context, &second);
+        assert_eq!(
+            promise_snapshot(&runtime, &first_promise).state,
+            PromiseState::Pending
+        );
+        assert_eq!(
+            promise_snapshot(&runtime, &second_promise).state,
+            PromiseState::Pending
+        );
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured = events.clone();
+        let first_promise_id = first_promise.object_id();
+        let second_raw = second.raw;
+        let second_was_pending = Rc::new(Cell::new(false));
+        let captured_second_was_pending = second_was_pending.clone();
+        let observing_runtime = runtime.clone();
+        runtime.set_host_promise_rejection_tracker(move |event| {
+            if !event.is_handled() && event.promise().object_id() == first_promise_id {
+                captured_second_was_pending.set(matches!(
+                    observing_runtime
+                        .module_record(second_raw)
+                        .expect("reentrant rejection tracker lost the second parent")
+                        .evaluation,
+                    ModuleEvaluationState::EvaluatingAsync
+                ));
+            }
+            captured.borrow_mut().push((
+                event.is_handled(),
+                event.promise().object_id(),
+                event.reason().clone(),
+            ));
+        });
+
+        context
+            .eval("globalThis.__rejectSharedBranchGate(globalThis.__sharedBranchReason)")
+            .unwrap();
+        assert!(drain_jobs(&runtime) > 0);
+
+        assert_eq!(
+            promise_snapshot(&runtime, &first_promise).state,
+            PromiseState::Rejected
+        );
+        assert_eq!(
+            promise_snapshot(&runtime, &second_promise).state,
+            PromiseState::Rejected
+        );
+        assert_script_true(
+            &mut context,
+            "typeof globalThis.__firstBranchRan === 'undefined' && typeof globalThis.__secondBranchRan === 'undefined'",
+        );
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[
+                (false, first_promise.object_id(), reason.clone()),
+                (false, second_promise.object_id(), reason),
+            ]
+        );
+        assert!(
+            second_was_pending.get(),
+            "first rejection tracker callback observed the later parent already errored"
+        );
+        runtime.clear_host_promise_rejection_tracker();
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn shared_tla_completion_executes_cross_linked_parents_in_callback_realm() {
+        let runtime = Runtime::new();
+        let mut first_context = runtime.new_context();
+        first_context
+            .eval(
+                r#"
+                globalThis.__crossRealmGate = new Promise(function (resolve) {
+                    globalThis.__releaseCrossRealmGate = resolve;
+                });
+                "#,
+            )
+            .unwrap();
+        let dependency = first_context
+            .compile_module_with_filename(
+                "await globalThis.__crossRealmGate; export const value = 42;",
+                "pkg/cross-realm-dependency.js",
+            )
+            .unwrap();
+        let dependency_promise = module_evaluation_promise(&mut first_context, &dependency);
+        assert_eq!(
+            promise_snapshot(&runtime, &dependency_promise).state,
+            PromiseState::Pending
+        );
+
+        let parent = first_context
+            .compile_module_with_filename(
+                "import './cross-realm-dependency.js'; throw 42;",
+                "pkg/cross-realm-parent.js",
+            )
+            .unwrap();
+        let async_parent = first_context
+            .compile_module_with_filename(
+                "import './cross-realm-dependency.js'; await 0;",
+                "pkg/cross-realm-async-parent.js",
+            )
+            .unwrap();
+        let first_realm = first_context.realm;
+        let mut second_context = runtime.new_context();
+        let parent_promise = module_evaluation_promise(&mut second_context, &parent);
+        let async_parent_promise = module_evaluation_promise(&mut second_context, &async_parent);
+        assert_eq!(
+            promise_snapshot(&runtime, &parent_promise).state,
+            PromiseState::Pending
+        );
+        assert_eq!(
+            promise_snapshot(&runtime, &async_parent_promise).state,
+            PromiseState::Pending
+        );
+        first_context
+            .eval(
+                r#"
+                globalThis.__crossRealmSpecies = [];
+                Object.defineProperty(Promise, Symbol.species, {
+                    configurable: true,
+                    get() {
+                        globalThis.__crossRealmSpecies.push("A");
+                        return Promise;
+                    },
+                });
+                "#,
+            )
+            .unwrap();
+        second_context
+            .eval(
+                r#"
+                globalThis.__crossRealmSpecies = [];
+                Object.defineProperty(Promise, Symbol.species, {
+                    configurable: true,
+                    get() {
+                        globalThis.__crossRealmSpecies.push("B");
+                        return Promise;
+                    },
+                });
+                "#,
+            )
+            .unwrap();
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured = events.clone();
+        runtime.set_host_promise_rejection_tracker(move |event| {
+            if !event.is_handled() {
+                captured
+                    .borrow_mut()
+                    .push((event.context(), event.reason().clone()));
+            }
+        });
+        first_context
+            .eval("globalThis.__releaseCrossRealmGate()")
+            .unwrap();
+        assert!(drain_jobs(&runtime) > 0);
+
+        assert_eq!(
+            promise_snapshot(&runtime, &dependency_promise).state,
+            PromiseState::Fulfilled
+        );
+        let parent_snapshot = promise_snapshot(&runtime, &parent_promise);
+        assert_eq!(parent_snapshot.state, PromiseState::Rejected);
+        assert_eq!(parent_snapshot.result, RawValue::Int(42));
+        assert_eq!(
+            promise_snapshot(&runtime, &async_parent_promise).state,
+            PromiseState::Fulfilled
+        );
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[(first_realm, Value::Int(42)), (first_realm, Value::Int(42)),]
+        );
+        assert_script_true(
+            &mut first_context,
+            "globalThis.__crossRealmSpecies.join(',') === 'A'",
+        );
+        assert_script_true(
+            &mut second_context,
+            "globalThis.__crossRealmSpecies.length === 0",
+        );
+        runtime.clear_host_promise_rejection_tracker();
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn late_tla_fulfillment_does_not_overwrite_a_cached_sibling_rejection() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let reason = context
+            .eval(
+                r#"
+                globalThis.__lateTlaLog = [];
+                globalThis.__lateTlaReason = {};
+                globalThis.__lateTlaGate = new Promise(function (resolve) {
+                    globalThis.__releaseLateTlaGate = resolve;
+                });
+                globalThis.__lateTlaReason;
+                "#,
+            )
+            .unwrap();
+        let (loader, _, _) = MapModuleLoader::new([
+            (
+                "pkg/late-wait.js",
+                r#"
+                globalThis.__lateTlaLog.push("wait:start");
+                await globalThis.__lateTlaGate;
+                globalThis.__lateTlaLog.push("wait:end");
+                "#,
+            ),
+            (
+                "pkg/late-throw.js",
+                r#"
+                globalThis.__lateTlaLog.push("throw");
+                throw globalThis.__lateTlaReason;
+                "#,
+            ),
+        ]);
+        let _registration = runtime.set_module_loader(loader);
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import "./late-wait.js";
+                import "./late-throw.js";
+                globalThis.__lateTlaParentRan = true;
+                "#,
+                "pkg/late-entry.js",
+            )
+            .unwrap();
+        let dependencies = runtime.module_dependencies(&module).unwrap();
+        let waiting = dependencies[0].clone();
+        let throwing = dependencies[1].clone();
+
+        let promise = module_evaluation_promise(&mut context, &module);
+        let initial = promise_snapshot(&runtime, &promise);
+        assert_eq!(initial.state, PromiseState::Rejected);
+        assert_eq!(runtime.root_raw_value(&initial.result).unwrap(), reason);
+        assert_script_true(
+            &mut context,
+            "globalThis.__lateTlaLog.join(',') === 'wait:start,throw' && typeof globalThis.__lateTlaParentRan === 'undefined'",
+        );
+        assert!(matches!(
+            runtime.module_record(waiting.raw).unwrap().evaluation,
+            ModuleEvaluationState::EvaluatingAsync
+        ));
+        for member in [&module, &throwing] {
+            let ModuleEvaluationState::Errored(raw_reason) =
+                runtime.module_record(member.raw).unwrap().evaluation
+            else {
+                panic!("synchronous module failure was not cached on its active ancestor");
+            };
+            assert_eq!(runtime.root_raw_value(&raw_reason).unwrap(), reason);
+        }
+
+        context.eval("globalThis.__releaseLateTlaGate()").unwrap();
+        assert!(drain_jobs(&runtime) > 0);
+
+        assert_script_true(
+            &mut context,
+            "globalThis.__lateTlaLog.join(',') === 'wait:start,throw,wait:end' && typeof globalThis.__lateTlaParentRan === 'undefined'",
+        );
+        assert!(matches!(
+            runtime.module_record(waiting.raw).unwrap().evaluation,
+            ModuleEvaluationState::Evaluated
+        ));
+        for member in [&module, &throwing] {
+            let ModuleEvaluationState::Errored(raw_reason) =
+                runtime.module_record(member.raw).unwrap().evaluation
+            else {
+                panic!("late TLA fulfillment changed the cached rejection state");
+            };
+            assert_eq!(runtime.root_raw_value(&raw_reason).unwrap(), reason);
+        }
+        let cached = module_evaluation_promise(&mut context, &module);
+        assert_eq!(cached.object_id(), promise.object_id());
+        let cached = promise_snapshot(&runtime, &cached);
+        assert_eq!(cached.state, PromiseState::Rejected);
+        assert_eq!(runtime.root_raw_value(&cached.result).unwrap(), reason);
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn top_level_await_inside_a_cycle_unblocks_the_cycle_before_its_outer_parent() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context.eval("globalThis.__tlaCycleOrder = []").unwrap();
+        let (loader, _, _) = MapModuleLoader::new([
+            (
+                "pkg/a.js",
+                "import './b.js'; globalThis.__tlaCycleOrder.push('a');",
+            ),
+            (
+                "pkg/b.js",
+                r#"
+                import "./a.js";
+                globalThis.__tlaCycleOrder.push("b:start");
+                await 0;
+                globalThis.__tlaCycleOrder.push("b:end");
+                "#,
+            ),
+        ]);
+        let _registration = runtime.set_module_loader(loader);
+        let module = context
+            .compile_module_with_filename(
+                "import './a.js'; globalThis.__tlaCycleOrder.push('entry');",
+                "pkg/entry.js",
+            )
+            .unwrap();
+        let a = runtime.module_dependencies(&module).unwrap().remove(0);
+        let b = runtime.module_dependencies(&a).unwrap().remove(0);
+
+        let promise = module_evaluation_promise(&mut context, &module);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert_script_true(
+            &mut context,
+            "globalThis.__tlaCycleOrder.join(',') === 'b:start'",
+        );
+        for member in [&module, &a, &b] {
+            assert!(matches!(
+                runtime.module_record(member.raw).unwrap().evaluation,
+                ModuleEvaluationState::EvaluatingAsync
+            ));
+        }
+        assert_eq!(
+            runtime
+                .module_record(module.raw)
+                .unwrap()
+                .evaluation_cycle_root,
+            Some(module.raw.module)
+        );
+        assert_eq!(
+            runtime.module_record(a.raw).unwrap().evaluation_cycle_root,
+            Some(a.raw.module)
+        );
+        assert_eq!(
+            runtime.module_record(b.raw).unwrap().evaluation_cycle_root,
+            Some(a.raw.module)
+        );
+
+        assert!(drain_jobs(&runtime) > 0);
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Fulfilled
+        );
+        assert_script_true(
+            &mut context,
+            "globalThis.__tlaCycleOrder.join(',') === 'b:start,b:end,a,entry'",
+        );
+        for member in [&module, &a, &b] {
+            assert!(matches!(
+                runtime.module_record(member.raw).unwrap().evaluation,
+                ModuleEvaluationState::Evaluated
+            ));
+        }
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
     fn dependency_free_module_links_then_evaluates_with_module_semantics() {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
@@ -6781,7 +7882,9 @@ import("attributes.js", { with: attributeProxy })
             )
             .unwrap();
 
-        assert_eq!(context.execute_module(&module).unwrap(), Value::Undefined);
+        let snapshot = module_evaluation_snapshot(&mut context, &module);
+        assert_eq!(snapshot.state, PromiseState::Fulfilled);
+        assert_eq!(snapshot.result, RawValue::Undefined);
         assert_script_true(
             &mut context,
             r#"
@@ -6809,16 +7912,12 @@ import("attributes.js", { with: attributeProxy })
         assert_script_true(&mut context, "__moduleRuns === 1");
 
         let abrupt = context.compile_module("throw 42").unwrap();
-        assert_eq!(
-            context.execute_module(&abrupt),
-            Err(RuntimeError::Exception)
-        );
-        assert_eq!(context.take_exception().unwrap(), Some(Value::Int(42)));
-        assert_eq!(
-            context.execute_module(&abrupt),
-            Err(RuntimeError::Exception)
-        );
-        assert_eq!(context.take_exception().unwrap(), Some(Value::Int(42)));
+        let first = module_evaluation_promise(&mut context, &abrupt);
+        let first_snapshot = promise_snapshot(&runtime, &first);
+        assert_eq!(first_snapshot.state, PromiseState::Rejected);
+        assert_eq!(first_snapshot.result, RawValue::Int(42));
+        let second = module_evaluation_promise(&mut context, &abrupt);
+        assert_eq!(first.object_id(), second.object_id());
     }
 
     #[test]
@@ -6833,26 +7932,22 @@ import("attributes.js", { with: attributeProxy })
 
         let first_error_id = {
             let mut first_context = runtime.new_context();
-            assert_eq!(
-                first_context.execute_module(&module),
-                Err(RuntimeError::Exception)
-            );
-            let Some(Value::Object(error)) = first_context.take_exception().unwrap() else {
-                panic!("module evaluation did not throw an Error object");
+            let snapshot = module_evaluation_snapshot(&mut first_context, &module);
+            assert_eq!(snapshot.state, PromiseState::Rejected);
+            let RawValue::Object(error) = snapshot.result else {
+                panic!("module evaluation did not reject with an Error object");
             };
-            error.object_id()
+            error
         };
         runtime.run_gc().unwrap();
 
         let mut second_context = runtime.new_context();
-        assert_eq!(
-            second_context.execute_module(&module),
-            Err(RuntimeError::Exception)
-        );
-        let Some(Value::Object(second_error)) = second_context.take_exception().unwrap() else {
-            panic!("cached module evaluation did not rethrow an Error object");
+        let snapshot = module_evaluation_snapshot(&mut second_context, &module);
+        assert_eq!(snapshot.state, PromiseState::Rejected);
+        let RawValue::Object(second_error) = snapshot.result else {
+            panic!("cached module evaluation did not retain an Error object");
         };
-        assert_eq!(second_error.object_id(), first_error_id);
+        assert_eq!(second_error, first_error_id);
     }
 
     #[test]
@@ -6868,12 +7963,10 @@ import("attributes.js", { with: attributeProxy })
 
         let first_symbol = {
             let mut first_context = runtime.new_context();
-            assert_eq!(
-                first_context.execute_module(&module),
-                Err(RuntimeError::Exception)
-            );
-            let Some(Value::Symbol(symbol)) = first_context.take_exception().unwrap() else {
-                panic!("module evaluation did not throw a Symbol");
+            let snapshot = module_evaluation_snapshot(&mut first_context, &module);
+            assert_eq!(snapshot.state, PromiseState::Rejected);
+            let RawValue::Symbol(symbol) = snapshot.result else {
+                panic!("module evaluation did not reject with a Symbol");
             };
             symbol
         };
@@ -6881,19 +7974,15 @@ import("attributes.js", { with: attributeProxy })
 
         let second_symbol = {
             let mut second_context = runtime.new_context();
-            assert_eq!(
-                second_context.execute_module(&module),
-                Err(RuntimeError::Exception)
-            );
-            let Some(Value::Symbol(symbol)) = second_context.take_exception().unwrap() else {
-                panic!("cached module evaluation did not rethrow a Symbol");
+            let snapshot = module_evaluation_snapshot(&mut second_context, &module);
+            assert_eq!(snapshot.state, PromiseState::Rejected);
+            let RawValue::Symbol(symbol) = snapshot.result else {
+                panic!("cached module evaluation did not retain a Symbol");
             };
             symbol
         };
         assert_eq!(second_symbol, first_symbol);
 
-        drop(second_symbol);
-        drop(first_symbol);
         drop(module);
         runtime.run_gc().unwrap();
         assert_eq!(runtime.heap_counts().context_nodes, 0);
@@ -6982,10 +8071,7 @@ import("attributes.js", { with: attributeProxy })
         let mut later_context = runtime.new_context();
         later_context.eval("globalThis.__realmMarker = 3").unwrap();
 
-        assert_eq!(
-            first_execute_context.execute_module(&module).unwrap(),
-            Value::Undefined
-        );
+        let first = module_evaluation_promise(&mut first_execute_context, &module);
         assert_script_true(
             &mut first_execute_context,
             "__moduleLinkMarker === 2 && __moduleLinkRuns === 1",
@@ -6999,10 +8085,8 @@ import("attributes.js", { with: attributeProxy })
             "typeof __moduleLinkMarker === 'undefined' && typeof __moduleLinkRuns === 'undefined'",
         );
 
-        assert_eq!(
-            later_context.execute_module(&module).unwrap(),
-            Value::Undefined
-        );
+        let second = module_evaluation_promise(&mut later_context, &module);
+        assert_eq!(first.object_id(), second.object_id());
         assert_script_true(
             &mut first_execute_context,
             "__moduleLinkMarker === 2 && __moduleLinkRuns === 1",
@@ -7031,10 +8115,9 @@ import("attributes.js", { with: attributeProxy })
         {
             let mut link_context = runtime.new_context();
             assert_eq!(runtime.heap_counts().context_nodes, 2);
-            assert_eq!(
-                link_context.execute_module(&surviving_handle).unwrap(),
-                Value::Undefined
-            );
+            let snapshot = module_evaluation_snapshot(&mut link_context, &surviving_handle);
+            assert_eq!(snapshot.state, PromiseState::Fulfilled);
+            assert_eq!(snapshot.result, RawValue::Undefined);
             assert_script_true(&mut link_context, "__rootedModuleRealm === 42");
         }
 
@@ -7171,13 +8254,12 @@ import("attributes.js", { with: attributeProxy })
             .compile_module_with_filename("throw new Error(\"x\")", "module-stack.mjs")
             .unwrap();
 
-        assert_eq!(
-            context.execute_module(&module),
-            Err(RuntimeError::Exception)
-        );
-        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
-            panic!("module throw did not produce an Error object");
+        let snapshot = module_evaluation_snapshot(&mut context, &module);
+        assert_eq!(snapshot.state, PromiseState::Rejected);
+        let RawValue::Object(error) = snapshot.result else {
+            panic!("module evaluation did not reject with an Error object");
         };
+        let error = ObjectRef::from_borrowed_handle(runtime.clone(), error).unwrap();
         let stack_key = runtime.intern_property_key("stack").unwrap();
         assert_eq!(
             runtime

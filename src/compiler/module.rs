@@ -979,6 +979,7 @@ pub(super) fn resolve_module_exports(tree: &mut FunctionTree) -> Result<(), Erro
 pub(super) fn finish_module(
     name: JsString,
     function: UnlinkedFunction,
+    has_top_level_await: bool,
     module: IrModule,
 ) -> Result<UnlinkedModule, Error> {
     let IrModule {
@@ -1069,6 +1070,7 @@ pub(super) fn finish_module(
     Ok(UnlinkedModule::new(
         name,
         function,
+        has_top_level_await,
         UnlinkedModuleTables {
             declaration_order: published_declaration_order,
             link_initializers,

@@ -36,9 +36,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   accessors across ordinary, generator, async, and async-generator forms,
   static blocks, and private brand checks with `#name in object`, including
   QuickJS-matched early errors
-- synchronous static-module graphs, live namespaces, default exports, static
-  import attributes with loader validation, JSON synthetic modules, and core
-  `import.meta` semantics
+- static-module graphs, live namespaces, default exports, top-level await with
+  async dependency/SCC scheduling, static import attributes with loader
+  validation, JSON synthetic modules, and core `import.meta` semantics
 - Script-goal dynamic `import()` with FIFO load/finish jobs, live host-loader
   callback sampling, import attributes, cached cycle-root evaluation Promises,
   namespace reuse, and Promise assimilation
@@ -52,9 +52,9 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include top-level await, JSON5/byte-oriented host loading,
-arbitrary JavaScript exception values and re-entry at module-host callbacks,
-and the unsupported/failed leaves recorded by the current Test262 vector.
+Major open frontiers include JSON5/byte-oriented host loading, arbitrary
+JavaScript exception values and re-entry at module-host callbacks, and the
+unsupported/failed leaves recorded by the current Test262 vector.
 Failed acyclic source graphs retry like QuickJS. For a failed cycle, Rust
 safely unpublishes every record that still points into the failed transaction;
 it does not reproduce pinned QuickJS's dangling dependency pointer. Reclaiming

@@ -9,7 +9,8 @@ use super::*;
 use std::collections::HashSet;
 
 use crate::bytecode::{
-    DynamicEnvironmentSource, EvalVariableSource, MAX_LOCAL_SLOTS, WithObjectSource, verify_parts,
+    DynamicEnvironmentSource, EvalVariableSource, Instruction, MAX_LOCAL_SLOTS, WithObjectSource,
+    verify_parts,
 };
 use crate::heap::{
     EvalBinding, EvalCallerProfile, EvalCallerVariableTarget, EvalEnvironmentPhaseContext,
@@ -2177,7 +2178,12 @@ fn verify_unlinked_tree_with_root(
                 RootPublication::Module(module) => {
                     if !function.metadata().is_module
                         || !function.metadata().strict
-                        || function.metadata().function_kind != FunctionKind::Normal
+                        || function.metadata().function_kind != FunctionKind::Async
+                        || module.has_top_level_await()
+                            != function
+                                .code()
+                                .iter()
+                                .any(|instruction| matches!(instruction, Instruction::Await))
                         || function.metadata().super_call_allowed
                         || function.metadata().super_allowed
                         || function.metadata().arguments_forbidden
@@ -4749,6 +4755,7 @@ mod tests {
         UnlinkedModule::new(
             parts.name,
             parts.function,
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers,
@@ -4769,6 +4776,7 @@ mod tests {
         UnlinkedModule::new(
             parts.name,
             parts.function,
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -4793,6 +4801,7 @@ mod tests {
         UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -4815,6 +4824,28 @@ mod tests {
         UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
+            parts.has_top_level_await,
+            UnlinkedModuleTables {
+                declaration_order: parts.declaration_order.into_vec(),
+                link_initializers: parts.link_initializers.into_vec(),
+                import_collisions: parts.import_collisions.into_vec(),
+                requested_modules: parts.requested_modules.into_vec(),
+                imports: parts.imports.into_vec(),
+                exports: parts.exports.into_vec(),
+                star_exports: parts.star_exports.into_vec(),
+            },
+        )
+    }
+
+    fn module_with_top_level_await_flag(
+        module: UnlinkedModule,
+        has_top_level_await: bool,
+    ) -> UnlinkedModule {
+        let parts = module.into_parts();
+        UnlinkedModule::new(
+            parts.name,
+            parts.function,
+            has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -4854,6 +4885,26 @@ mod tests {
             function = function.with_debug(debug);
         }
         function
+    }
+
+    #[test]
+    fn module_root_rejects_forged_top_level_await_flag_in_both_directions() {
+        for (source, forged_has_top_level_await) in [("0;", true), ("await 0;", false)] {
+            let module = compile_unlinked_module_with_filename(
+                source,
+                "forged-top-level-await-flag.mjs",
+                DebugInfoMode::StripDebug,
+            )
+            .unwrap();
+            let forged = module_with_top_level_await_flag(module, forged_has_top_level_await);
+            let error = verify_unlinked_module_tree(&forged).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("module root metadata disagrees with its publication entry point"),
+                "{source:?}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -5019,6 +5070,7 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -5479,6 +5531,7 @@ mod tests {
             let forged = UnlinkedModule::new(
                 parts.name,
                 function_from_parts(function_parts),
+                parts.has_top_level_await,
                 UnlinkedModuleTables {
                     declaration_order: parts.declaration_order.into_vec(),
                     link_initializers: parts.link_initializers.into_vec(),
@@ -5550,6 +5603,7 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -5618,6 +5672,7 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             parts.function,
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -5654,6 +5709,7 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -5699,6 +5755,7 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),
@@ -5758,6 +5815,7 @@ mod tests {
         let forged = UnlinkedModule::new(
             parts.name,
             function_from_parts(function_parts),
+            parts.has_top_level_await,
             UnlinkedModuleTables {
                 declaration_order: parts.declaration_order.into_vec(),
                 link_initializers: parts.link_initializers.into_vec(),

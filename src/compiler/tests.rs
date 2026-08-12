@@ -2195,6 +2195,11 @@ fn module_root_is_strict_has_no_script_completion_and_owns_declaration_slots() {
     let function = module.function();
     assert!(function.metadata().strict);
     assert!(function.metadata().is_module);
+    assert_eq!(
+        function.metadata().function_kind,
+        BytecodeFunctionKind::Async
+    );
+    assert!(!module.has_top_level_await());
     assert_eq!(function.func_name(), None);
     assert!(function.local_definitions().is_empty());
     assert_eq!(function.closure_variables().len(), 1);
@@ -3483,17 +3488,46 @@ fn module_parse_negative_diagnostics_precede_unsupported_frontiers_like_quickjs(
 }
 
 #[test]
-fn top_level_await_remains_an_explicit_synchronous_module_frontier() {
+fn top_level_await_uses_async_module_lowering_and_is_sealed_separately() {
     for source in ["await 1;", "for await (const value of []) {}"] {
-        let error = compile_unlinked_module_with_filename(
+        let module = compile_unlinked_module_with_filename(
             source,
             "top-level-await.mjs",
             DebugInfoMode::StripDebug,
         )
-        .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
-        assert!(error.message().contains("top-level await"), "{source}");
+        .unwrap_or_else(|error| {
+            panic!("top-level async module source rejected {source:?}: {error}")
+        });
+        assert!(module.has_top_level_await(), "{source}");
+        assert_eq!(
+            module.function().metadata().function_kind,
+            BytecodeFunctionKind::Async,
+            "{source}"
+        );
+        assert!(
+            module
+                .function()
+                .code()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Await)),
+            "{source}"
+        );
     }
+
+    let nested_only = compile_unlinked_module_with_filename(
+        "async function nested() { await 1; } export { nested };",
+        "nested-await.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+    assert!(!nested_only.has_top_level_await());
+    assert_eq!(
+        nested_only.function().metadata().function_kind,
+        BytecodeFunctionKind::Async
+    );
+
+    compile_unlinked_script("var await = 1; await += 41;")
+        .expect("script-goal await identifier semantics drifted");
 }
 
 #[test]

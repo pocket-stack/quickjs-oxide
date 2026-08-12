@@ -9,7 +9,6 @@ use crate::heap::{
     PromiseReaction, PromiseReactionKind, PromiseRealmData, PromiseResolvingKind, PromiseState,
 };
 
-use super::super::jobs::DynamicImportFinishOutcome;
 use super::super::*;
 
 mod all;
@@ -31,6 +30,95 @@ pub struct PromiseRejectionEvent {
 }
 
 pub(in crate::runtime) type HostPromiseRejectionTracker = Rc<dyn Fn(PromiseRejectionEvent)>;
+
+/// Public snapshot of a genuine Promise's settled state and result.
+///
+/// This is the Rust counterpart of QuickJS `JS_PromiseState` plus
+/// `JS_PromiseResult`. A pending Promise always reports `undefined`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromiseSnapshot {
+    state: PromiseState,
+    result: Value,
+}
+
+impl PromiseSnapshot {
+    #[must_use]
+    pub const fn state(&self) -> PromiseState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn result(&self) -> &Value {
+        &self.result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn promise_snapshot_rejects_a_promise_from_another_runtime() {
+        let owner = Runtime::new();
+        let mut context = owner.new_context();
+        let Value::Object(promise) = context.eval("Promise.resolve(42)").unwrap() else {
+            panic!("Promise.resolve did not return an object");
+        };
+        let observer = Runtime::new();
+
+        assert_eq!(
+            observer.promise_snapshot(&promise),
+            Err(RuntimeError::WrongRuntime("Promise"))
+        );
+    }
+
+    #[test]
+    fn promise_snapshot_returns_none_for_a_non_promise_object() {
+        let runtime = Runtime::new();
+        let object = runtime.new_object(None).unwrap();
+
+        assert_eq!(runtime.promise_snapshot(&object).unwrap(), None);
+    }
+
+    #[test]
+    fn promise_snapshot_roots_an_object_result_across_gc() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let Value::Object(promise) = context
+            .eval(
+                r#"
+                    Promise.resolve(function () {
+                        const value = { marker: 42 };
+                        value.self = value;
+                        return value;
+                    }())
+                "#,
+            )
+            .unwrap()
+        else {
+            panic!("Promise.resolve did not return an object");
+        };
+        let snapshot = runtime.promise_snapshot(&promise).unwrap().unwrap();
+        assert_eq!(snapshot.state(), PromiseState::Fulfilled);
+        let Value::Object(result) = snapshot.result() else {
+            panic!("fulfilled Promise snapshot did not retain its object result");
+        };
+        let result_id = result.object_id();
+        drop(promise);
+
+        runtime.run_gc().unwrap();
+        assert!(runtime.0.state.borrow().heap.object(result_id).is_ok());
+        let marker = runtime.intern_property_key("marker").unwrap();
+        assert_eq!(
+            context.get_property(result, &marker).unwrap(),
+            Value::Int(42)
+        );
+
+        drop(snapshot);
+        runtime.run_gc().unwrap();
+        assert!(runtime.0.state.borrow().heap.object(result_id).is_err());
+    }
+}
 
 impl PromiseRejectionEvent {
     #[must_use]
@@ -70,6 +158,31 @@ impl RootedPromiseCapability {
 }
 
 impl Runtime {
+    /// Inspect one genuine Promise without invoking user-overridable
+    /// properties or handlers.
+    pub fn promise_snapshot(
+        &self,
+        promise: &ObjectRef,
+    ) -> Result<Option<PromiseSnapshot>, RuntimeError> {
+        if !promise.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("Promise"));
+        }
+        let snapshot = {
+            let state = self.0.state.borrow();
+            if !matches!(
+                state.heap.object(promise.object_id())?.payload,
+                ObjectPayload::Promise(_)
+            ) {
+                return Ok(None);
+            }
+            state.heap.promise_snapshot(promise.object_id())?
+        };
+        Ok(Some(PromiseSnapshot {
+            state: snapshot.state,
+            result: self.root_raw_value(&snapshot.result)?,
+        }))
+    }
+
     /// Install the runtime-wide host Promise rejection tracker.
     ///
     /// This mirrors `JS_SetHostPromiseRejectionTracker`. Replacing an existing
@@ -1205,9 +1318,39 @@ impl Runtime {
         self.perform_promise_then_internal(realm, promise, fulfill, reject, Some(capability.raw()))
     }
 
+    /// QuickJS's module evaluator calls its private `js_promise_then`, so the
+    /// otherwise discarded result Promise still observes constructor and
+    /// `@@species`. This helper performs that full front half before using the
+    /// authenticated internal module callbacks as the reactions.
+    pub(in crate::runtime) fn attach_module_evaluation_handlers(
+        &self,
+        realm: ContextId,
+        promise: &ObjectRef,
+        fulfill: &CallableRef,
+        reject: &CallableRef,
+    ) -> Result<NativeConversion<()>, RuntimeError> {
+        let constructor = match self.promise_species_constructor(realm, promise)? {
+            NativeConversion::Value(constructor) => constructor,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let capability = match self.new_promise_capability(realm, constructor.as_ref())? {
+            NativeConversion::Value(capability) => capability,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        self.perform_promise_then_with_capability(
+            realm,
+            promise,
+            Some(fulfill),
+            Some(reject),
+            &capability,
+        )?;
+        Ok(NativeConversion::Value(()))
+    }
+
     /// Attach QuickJS's private dynamic-import continuation to the cached
-    /// module-evaluation Promise. The current module slice has no TLA, so the
-    /// evaluation Promise is settled synchronously before this boundary.
+    /// module-evaluation Promise. The full Promise-then path is required here:
+    /// TLA may leave the evaluation pending, while constructor/@@species on an
+    /// already-settled Promise remains observable.
     pub(in crate::runtime) fn attach_dynamic_import_finish(
         &self,
         realm: ContextId,
@@ -1234,59 +1377,29 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
 
-        let snapshot = self
-            .0
-            .state
-            .borrow()
-            .heap
-            .promise_snapshot(promise.object_id())?;
-        let outcome = match snapshot.state {
-            PromiseState::Fulfilled => DynamicImportFinishOutcome::Fulfilled { module },
-            PromiseState::Rejected => DynamicImportFinishOutcome::Rejected {
-                reason: snapshot.result.clone(),
-            },
-            PromiseState::Pending => {
-                return Err(RuntimeError::Invariant(
-                    "synchronous module evaluation retained a pending Promise",
-                ));
-            }
+        let make_handler = |kind| {
+            self.new_internal_promise_function(
+                realm,
+                NativeFunctionId::DynamicImportHandler(kind),
+                1,
+                0,
+                InternalCallableData::DynamicImportHandler {
+                    module,
+                    resolve,
+                    reject,
+                    kind,
+                },
+            )
         };
-
-        // Prepare all job ownership before making the Promise handled. A
-        // fallible root retain must not suppress the host's later notification.
-        let job = self.prepare_dynamic_import_finish_job(
+        let fulfill = make_handler(DynamicImportHandlerKind::Fulfill)?;
+        let reject_handler = make_handler(DynamicImportHandlerKind::Reject)?;
+        self.perform_promise_then_with_capability(
             realm,
-            resolve,
-            reject,
-            reaction_capability.resolve.as_object().object_id(),
-            reaction_capability.reject.as_object().object_id(),
-            outcome,
+            promise,
+            Some(&fulfill),
+            Some(&reject_handler),
+            &reaction_capability,
         )?;
-        let handled_reason = if snapshot.state == PromiseState::Rejected && !snapshot.is_handled {
-            match self.root_raw_value(&snapshot.result) {
-                Ok(reason) => Some(reason),
-                Err(error) => {
-                    self.discard_prepared_jobs([job])?;
-                    return Err(error);
-                }
-            }
-        } else {
-            None
-        };
-        if let Some(reason) = handled_reason {
-            self.notify_host_promise_rejection_tracker(realm, promise.clone(), reason, true);
-        }
-        if let Err(error) = self
-            .0
-            .state
-            .borrow_mut()
-            .heap
-            .promise_mark_handled(promise.object_id())
-        {
-            self.discard_prepared_jobs([job])?;
-            return Err(error.into());
-        }
-        self.publish_prepared_jobs([job]);
         Ok(NativeConversion::Value(()))
     }
 

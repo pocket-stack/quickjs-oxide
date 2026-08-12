@@ -5,14 +5,11 @@ the official **QuickJS 2026-06-04** release and its ES2025 behavior.
 
 The engine is runnable, but it is not at Feature Parity yet. Implemented slices
 include binary data and Atomics, collections and weak references, Promise jobs,
-Unicode behavior, public/private class fields and private callable elements,
-and synchronous static-module graphs with default exports, live namespace
-objects, static import attributes, JSON synthetic modules, and core
-`import.meta` semantics. Script-goal dynamic `import()` includes FIFO-job host
-loading, import attributes, namespace reuse, and cycle-root evaluation
-Promises. Top-level await, JavaScript-valued module-host errors,
-JSON5/byte-oriented loading, and host-populated `import.meta` properties remain
-parity work.
+Unicode behavior, class elements, and static-module graphs with live bindings,
+top-level await, import attributes, JSON modules, `import.meta`, and dynamic
+`import()`. JavaScript-valued module-host errors, JSON5/byte-oriented loading,
+host-populated `import.meta` properties, and the remaining conformance gaps are
+still parity work.
 
 <!-- current-test262-metrics:start -->
 The authoritative R3eq Test262 baseline records **79,470 full-corpus passes

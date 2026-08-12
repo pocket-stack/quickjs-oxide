@@ -500,9 +500,9 @@ usage: run-test262 --suite DIR --config FILE --admissions FILE --admissions-sha2
   --validate-metadata FILE\n\
                        serialize the complete pinned metadata inventory\n\
 \n\
-Every variant runs in a fresh subprocess. Module tests remain unsupported except\n\
-for a source-authenticated dependency-free root cohort; async tests remain\n\
-fail-closed unless a pinned scoped profile opts into the job-draining Test262 host."
+Every variant runs in a fresh subprocess. Module graphs and dynamic import remain\n\
+fail-closed outside source-authenticated admissions; async tests remain fail-closed\n\
+unless the data profile opts into the job-draining Test262 host."
     );
 }
 

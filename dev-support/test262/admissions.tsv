@@ -238,6 +238,12 @@ graph-file	module-namespace-a	test/language/module-code/namespace/internals/prev
 graph-file	module-namespace-a	test/language/module-code/namespace/internals/set-prototype-of-null.js	9c63575fc8841e01c02ef30ef47e7c8f713ad8cc4a879cf197f64b7023751e99	-	module	-	-	-	-	-	-	-	-	-	-
 graph-file	module-namespace-a	test/language/module-code/namespace/internals/set-prototype-of.js	3de9551554eea456e0075fe9dc03daeb5f8641c64d735f448d2c9396eff8e9b8	-	module	-	-	-	-	-	-	-	-	-	-
 graph-file	module-namespace-a	test/language/module-code/namespace/internals/set.js	4cfe9d8bfa3dfe2ad3c663013855b43b40173b95f32bec06171813b79d56e87e	-	module	Reflect,Symbol,Symbol.toStringTag	-	-	-	-	-	-	-	-	-
+graph-file	tla-core-a	test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js	d68087ed6cc6b70767803a6711706666dd8cb83007d63351e428cfa817697e9a	-	async,module	top-level-await	-	-	-	-	-	-	-	-	-
+graph-file	tla-core-a	test/language/module-code/top-level-await/async-module-sync_FIXTURE.js	4712c3bf30078873947b4cf7c258a3b678cc4f9f6bfe1a432ef09d69ba4c2a32	-	-	-	-	-	-	-	-	-	-	-	-
+graph-file	tla-core-a	test/language/module-code/top-level-await/async-module-tla_FIXTURE.js	8c60e1afd07b1ee862c4c983fdc1bac6e8a3647e45fc987aeafedc7fa01af76e	-	-	-	-	-	-	-	-	-	-	-	-
+graph-file	tla-core-a	test/language/module-code/top-level-await/await-expr-resolution.js	8d174bfc4457c1f0c28503dcf71a7839fe0253fdd9d5136da4b75b1c2ddf61b7	-	async,module	top-level-await	-	-	-	-	-	-	-	-	-
+graph-file	tla-core-a	test/language/module-code/top-level-await/module-import-resolution.js	5b09874f3479970d85876293e69e425adede72cca6a0eed1f559f02911917570	-	async,module	top-level-await	-	-	-	-	-	-	-	-	-
+graph-file	tla-core-a	test/language/module-code/top-level-await/module-import-resolution_FIXTURE.js	6caafde4555e5d2b80417b2986b81d8af6780534a645d875cdb56ee51efc9f1b	-	-	-	-	-	-	-	-	-	-	-	-
 graph-request	dynamic-import-a	test/language/expressions/dynamic-import/always-create-new-promise.js	-	-	-	-	-	-	-	-	0	./dynamic-import-module_FIXTURE.js	test/language/expressions/dynamic-import/dynamic-import-module_FIXTURE.js	-	-
 graph-request	dynamic-import-a	test/language/expressions/dynamic-import/reuse-namespace-object.js	-	-	-	-	-	-	-	-	0	./dynamic-import-module_FIXTURE.js	test/language/expressions/dynamic-import/dynamic-import-module_FIXTURE.js	-	-
 graph-request	dynamic-import-a	test/language/expressions/dynamic-import/usage/top-level-import-then-returns-thenable.js	-	-	-	-	-	-	-	-	0	./dynamic-import-module_FIXTURE.js	test/language/expressions/dynamic-import/usage/dynamic-import-module_FIXTURE.js	-	-
@@ -388,6 +394,9 @@ graph-request	module-namespace-a	test/language/module-code/namespace/internals/p
 graph-request	module-namespace-a	test/language/module-code/namespace/internals/set-prototype-of-null.js	-	-	-	-	-	-	-	-	0	./set-prototype-of-null.js	test/language/module-code/namespace/internals/set-prototype-of-null.js	-	-
 graph-request	module-namespace-a	test/language/module-code/namespace/internals/set-prototype-of.js	-	-	-	-	-	-	-	-	0	./set-prototype-of.js	test/language/module-code/namespace/internals/set-prototype-of.js	-	-
 graph-request	module-namespace-a	test/language/module-code/namespace/internals/set.js	-	-	-	-	-	-	-	-	0	./set.js	test/language/module-code/namespace/internals/set.js	-	-
+graph-request	tla-core-a	test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js	-	-	-	-	-	-	-	-	0	./async-module-tla_FIXTURE.js	test/language/module-code/top-level-await/async-module-tla_FIXTURE.js	-	-
+graph-request	tla-core-a	test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js	-	-	-	-	-	-	-	-	1	./async-module-sync_FIXTURE.js	test/language/module-code/top-level-await/async-module-sync_FIXTURE.js	-	-
+graph-request	tla-core-a	test/language/module-code/top-level-await/module-import-resolution.js	-	-	-	-	-	-	-	-	0	./module-import-resolution_FIXTURE.js	test/language/module-code/top-level-await/module-import-resolution_FIXTURE.js	-	-
 graph-root	fixture-eval-gtbndng-indirect-update	test/language/module-code/eval-gtbndng-indirect-update.js	-	-	-	-	-	-	2	2	-	-	-	-	-
 graph-root	fixture-eval-rqstd-abrupt	test/language/module-code/eval-rqstd-abrupt.js	-	-	-	-	-	-	3	2	-	-	-	-	-
 graph-root	fixture-instn-resolve-empty-import	test/language/module-code/instn-resolve-empty-import.js	-	-	-	-	-	-	2	2	-	-	-	-	-
@@ -508,6 +517,9 @@ graph-root	module-namespace-a	test/language/module-code/namespace/internals/prev
 graph-root	module-namespace-a	test/language/module-code/namespace/internals/set-prototype-of-null.js	-	-	-	-	-	-	1	3	-	-	-	-	-
 graph-root	module-namespace-a	test/language/module-code/namespace/internals/set-prototype-of.js	-	-	-	-	-	-	1	3	-	-	-	-	-
 graph-root	module-namespace-a	test/language/module-code/namespace/internals/set.js	-	-	-	-	-	-	1	3	-	-	-	-	-
+graph-root	tla-core-a	test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js	-	-	-	-	-	-	3	4	-	-	-	-	-
+graph-root	tla-core-a	test/language/module-code/top-level-await/await-expr-resolution.js	-	-	-	-	-	-	1	4	-	-	-	-	-
+graph-root	tla-core-a	test/language/module-code/top-level-await/module-import-resolution.js	-	-	-	-	-	-	2	4	-	-	-	-	-
 module	dependency-free	test/language/comments/hashbang/module.js	5fe73a40369e7cbd61f4061b027c9b508d6f1752fc83b29a4f1e4af7e8471926	-	module,raw	hashbang	-	-	-	-	-	-	-	-	-
 module	dependency-free	test/language/eval-code/direct/export.js	648a257196bc895409842b12191cc0a8d9e10d28e66886afb89059412761caca	-	module	-	-	-	-	-	-	-	-	-	-
 module	dependency-free	test/language/eval-code/direct/import.js	28c29caa8c8649579790526b511323df04837efad886d2f9d0ea75140dc5fa89	-	module	-	-	-	-	-	-	-	-	-	-

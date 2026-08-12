@@ -568,6 +568,12 @@ impl Runtime {
             NativeFunctionId::PromiseAnyRejectElement => {
                 self.call_promise_any_reject_element(realm, invocation, arguments)
             }
+            NativeFunctionId::ModuleEvaluation(kind) => {
+                self.call_module_evaluation_callback(realm, kind, invocation, arguments)
+            }
+            NativeFunctionId::DynamicImportHandler(kind) => {
+                self.call_dynamic_import_handler(realm, kind, invocation, arguments)
+            }
             NativeFunctionId::ThrowTypeError => {
                 self.call_throw_type_error(realm, invocation, arguments)
             }

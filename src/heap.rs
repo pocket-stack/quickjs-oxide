@@ -390,6 +390,7 @@ pub(crate) enum RawModuleLinkStatus {
 pub(crate) enum RawModuleEvaluationState {
     Unevaluated,
     Evaluating,
+    EvaluatingAsync,
     Evaluated,
     Errored(RawValue),
     Poisoned,
@@ -417,7 +418,19 @@ pub(crate) enum RawModuleTransition {
     ResetLink,
     PoisonLink,
     BeginEvaluation,
-    FinishEvaluation(ModuleId),
+    /// Publish one completed evaluation SCC. An already-assigned async order
+    /// selects `EvaluatingAsync`; its absence selects `Evaluated`.
+    FinishEvaluation {
+        cycle_root: ModuleId,
+    },
+    /// Mark an active module as transitively async before its SCC is
+    /// published. The order is the runtime-global QuickJS evaluation stamp.
+    BeginAsyncEvaluation {
+        order: u64,
+    },
+    /// Complete a successfully executed async module after every dependency
+    /// has become available.
+    FinishAsyncEvaluation,
     PoisonEvaluation,
     FinishNamespace(ObjectId),
 }
@@ -445,6 +458,10 @@ pub(crate) struct RawModuleRecord {
     pub(crate) namespace: RawModuleNamespaceState,
     pub(crate) link_status: RawModuleLinkStatus,
     pub(crate) evaluation: RawModuleEvaluationState,
+    /// Exact counterpart of QuickJS `JSModuleDef::has_tla`. Every source-text
+    /// module executes through async bytecode, so function kind alone cannot
+    /// distinguish authored top-level await.
+    pub(crate) has_top_level_await: bool,
     /// Synchronous evaluation SCC root, assigned when the SCC completes (or
     /// to the requested root for active records on abrupt completion).
     pub(crate) evaluation_cycle_root: Option<ModuleId>,
@@ -454,6 +471,19 @@ pub(crate) struct RawModuleRecord {
     /// record retains it independently of callers, and every later dynamic
     /// import observes the same evaluation identity and settlement history.
     pub(crate) evaluation_promise: Option<ObjectId>,
+    /// The resolving pair belonging to `evaluation_promise`. The three fields
+    /// are published atomically and retained for the lifetime of the cycle
+    /// root, matching QuickJS `JSModuleDef::resolving_funcs`.
+    pub(crate) evaluation_resolve: Option<ObjectId>,
+    pub(crate) evaluation_reject: Option<ObjectId>,
+    /// Number of async dependency roots which have not yet become available.
+    pub(crate) pending_async_dependencies: u32,
+    /// Reverse dependency edges. Duplicates are semantically significant:
+    /// each occurrence balances one pending dependency count on its parent.
+    pub(crate) async_parent_modules: Vec<ModuleId>,
+    /// Runtime-global ordering stamp while `async_evaluation` is true in
+    /// QuickJS. Successful or abrupt completion clears the stamp.
+    pub(crate) async_evaluation_order: Option<u64>,
     pub(crate) link_realm: Option<RawModuleLinkRealm>,
     pub(crate) compile_realm: ContextId,
 }
@@ -5315,7 +5345,7 @@ pub struct TypedArrayData {
 /// `Runtime -> heap -> Runtime` ownership cycle.  Every raw object identity in
 /// this enum is still an ordinary traced and reference-counted heap edge.
 #[derive(Clone, Debug, PartialEq)]
-pub enum InternalCallableData {
+pub(crate) enum InternalCallableData {
     /// `Proxy.revocable`'s one-shot revocation closure. The edge is released
     /// after the first call, matching QuickJS's `func_data[0] = JS_NULL`.
     ProxyRevoke {
@@ -5372,9 +5402,30 @@ pub enum InternalCallableData {
     AsyncFromSyncIteratorClose {
         sync_iterator: ObjectId,
     },
+    /// Fulfill/reject callback attached to an authored top-level-await body
+    /// Promise. The Context edge keeps the loaded-module cache alive; the
+    /// append-only ModuleId remains non-owning within that cache.
+    ModuleEvaluation {
+        module: RawModuleRef,
+        kind: ModuleEvaluationKind,
+    },
+    /// Handler attached to a pending module-evaluation Promise by dynamic
+    /// import. It retains both caller-facing settling functions and the
+    /// Context-owned module cache until the evaluation settles.
+    DynamicImportHandler {
+        module: RawModuleRef,
+        resolve: ObjectId,
+        reject: ObjectId,
+        kind: DynamicImportHandlerKind,
+    },
 }
 
 /// Class-specific edges stored alongside an object's ordinary properties.
+// `ObjectPayload` remains a public diagnostic envelope, but native-function
+// captures are deliberately crate-authenticated and cannot be forged by an
+// embedder. Public callers may still inspect that a payload is native with
+// `internal: _` without naming the hidden capture type.
+#[allow(private_interfaces)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectPayload {
     Ordinary,
@@ -6613,6 +6664,20 @@ pub enum PromiseResolvingKind {
     Reject,
 }
 
+/// Selector shared by QuickJS's async-module execution callbacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ModuleEvaluationKind {
+    Fulfill,
+    Reject,
+}
+
+/// Selector shared by the two pending dynamic-import Promise handlers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum DynamicImportHandlerKind {
+    Fulfill,
+    Reject,
+}
+
 /// Selector for QuickJS's Test262-only `$262.agent` host functions.
 #[cfg(feature = "test262-host")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -6629,6 +6694,9 @@ pub enum Test262AgentKind {
 
 /// Runtime-provided callable identities. The enum is stored in heap payloads
 /// so native dispatch stays typed and does not rely on function pointers.
+// The async-module callback selectors are private implementation details even
+// though the surrounding diagnostic identity enum is public.
+#[allow(private_interfaces)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NativeFunctionId {
     FunctionPrototype,
@@ -6727,6 +6795,8 @@ pub enum NativeFunctionId {
     PromiseAllResolveElement,
     PromiseAllSettledElement(PromiseReactionKind),
     PromiseAnyRejectElement,
+    ModuleEvaluation(ModuleEvaluationKind),
+    DynamicImportHandler(DynamicImportHandlerKind),
     AsyncFromSyncIteratorResume(GeneratorResumeKind),
     AsyncFromSyncIteratorUnwrap,
     AsyncFromSyncIteratorClose,
@@ -7124,6 +7194,8 @@ impl NativeFunctionId {
                 | Self::PromiseAllResolveElement
                 | Self::PromiseAllSettledElement(_)
                 | Self::PromiseAnyRejectElement
+                | Self::ModuleEvaluation(_)
+                | Self::DynamicImportHandler(_)
                 | Self::AsyncFromSyncIteratorUnwrap
                 | Self::AsyncFromSyncIteratorClose
                 | Self::ProxyRevoke
@@ -7282,6 +7354,8 @@ impl NativeFunctionId {
             | Self::PromiseAllResolveElement
             | Self::PromiseAllSettledElement(_)
             | Self::PromiseAnyRejectElement
+            | Self::ModuleEvaluation(_)
+            | Self::DynamicImportHandler(_)
             | Self::AsyncFromSyncIteratorUnwrap
             | Self::AsyncFromSyncIteratorClose
             | Self::Reflect(
@@ -10297,7 +10371,7 @@ impl Heap {
         }
         if bytecode.metadata.is_module
             && (!bytecode.metadata.strict
-                || bytecode.metadata.function_kind != FunctionKind::Normal
+                || bytecode.metadata.function_kind != FunctionKind::Async
                 || bytecode.metadata.eval_kind != EvalKind::None
                 || bytecode.metadata.argument_count != 0
                 || bytecode.metadata.defined_argument_count != 0
@@ -12135,7 +12209,7 @@ impl Heap {
                 ));
             }
         }
-        if let RawModuleTransition::FinishEvaluation(cycle_root) = &transition {
+        if let RawModuleTransition::FinishEvaluation { cycle_root } = &transition {
             if self
                 .context(module.cache)?
                 .loaded_modules
@@ -12155,7 +12229,7 @@ impl Heap {
             RawModuleTransition::BeginLink | RawModuleTransition::FinishLink
         ) {
             let record = self.loaded_module(module)?;
-            self.validate_loaded_module_record(module.cache, &record)?;
+            self.validate_loaded_module_record(module.cache, Some(module.module), &record)?;
             let instance = record.instance.as_ref().ok_or(HeapError::Invariant(
                 "loaded-module link transition has no instance",
             ))?;
@@ -12249,7 +12323,11 @@ impl Heap {
             },
             RawModuleTransition::BeginEvaluation => match record.evaluation {
                 RawModuleEvaluationState::Unevaluated
-                    if matches!(record.link_status, RawModuleLinkStatus::Linked) =>
+                    if matches!(record.link_status, RawModuleLinkStatus::Linked)
+                        && record.evaluation_cycle_root.is_none()
+                        && record.async_evaluation_order.is_none()
+                        && record.pending_async_dependencies == 0
+                        && record.async_parent_modules.is_empty() =>
                 {
                     record.evaluation = RawModuleEvaluationState::Evaluating;
                 }
@@ -12259,11 +12337,20 @@ impl Heap {
                     ));
                 }
             },
-            RawModuleTransition::FinishEvaluation(cycle_root) => match record.evaluation {
+            RawModuleTransition::FinishEvaluation { cycle_root } => match record.evaluation {
                 RawModuleEvaluationState::Evaluating
                     if matches!(record.link_status, RawModuleLinkStatus::Linked) =>
                 {
-                    record.evaluation = RawModuleEvaluationState::Evaluated;
+                    if record.async_evaluation_order.is_some() {
+                        record.evaluation = RawModuleEvaluationState::EvaluatingAsync;
+                    } else {
+                        if record.has_top_level_await || record.pending_async_dependencies != 0 {
+                            return Err(HeapError::Invariant(
+                                "synchronous module SCC finish retained async work",
+                            ));
+                        }
+                        record.evaluation = RawModuleEvaluationState::Evaluated;
+                    }
                     record.evaluation_cycle_root = Some(cycle_root);
                 }
                 _ => {
@@ -12272,9 +12359,48 @@ impl Heap {
                     ));
                 }
             },
+            RawModuleTransition::BeginAsyncEvaluation { order } => match record.evaluation {
+                RawModuleEvaluationState::Evaluating
+                    if matches!(record.link_status, RawModuleLinkStatus::Linked)
+                        && record.evaluation_cycle_root.is_none()
+                        && record.async_evaluation_order.is_none()
+                        && (record.has_top_level_await
+                            || record.pending_async_dependencies != 0) =>
+                {
+                    record.async_evaluation_order = Some(order);
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module async evaluation did not begin from active async work",
+                    ));
+                }
+            },
+            RawModuleTransition::FinishAsyncEvaluation => match record.evaluation {
+                RawModuleEvaluationState::EvaluatingAsync
+                    if matches!(record.link_status, RawModuleLinkStatus::Linked)
+                        && record.evaluation_cycle_root.is_some()
+                        && record.async_evaluation_order.is_some()
+                        && record.pending_async_dependencies == 0 =>
+                {
+                    record.evaluation = RawModuleEvaluationState::Evaluated;
+                    record.async_evaluation_order = None;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module async evaluation finished from an invalid state",
+                    ));
+                }
+            },
             RawModuleTransition::PoisonEvaluation => match record.evaluation {
-                RawModuleEvaluationState::Evaluating => {
+                RawModuleEvaluationState::Evaluating
+                | RawModuleEvaluationState::EvaluatingAsync => {
                     record.evaluation = RawModuleEvaluationState::Poisoned;
+                    if record.evaluation_promise.is_some() && record.evaluation_cycle_root.is_none()
+                    {
+                        record.evaluation_cycle_root = Some(module.module);
+                    }
+                    record.async_evaluation_order = None;
+                    record.pending_async_dependencies = 0;
                 }
                 _ => {
                     return Err(HeapError::Invariant(
@@ -12320,6 +12446,7 @@ impl Heap {
     fn validate_loaded_module_record(
         &self,
         cache: ContextId,
+        module: Option<ModuleId>,
         record: &RawModuleRecord,
     ) -> Result<(), HeapError> {
         self.context(cache)?;
@@ -12356,6 +12483,11 @@ impl Heap {
                 Some(*function)
             }
             RawModuleRecordBody::Json { default_value } => {
+                if record.has_top_level_await {
+                    return Err(HeapError::Invariant(
+                        "JSON module claims authored top-level await",
+                    ));
+                }
                 validate_module_storable_value(default_value)?;
                 None
             }
@@ -12363,14 +12495,51 @@ impl Heap {
         if let RawModuleEvaluationState::Errored(exception) = &record.evaluation {
             validate_module_storable_value(exception)?;
         }
-        if matches!(
-            &record.evaluation,
-            RawModuleEvaluationState::Evaluated | RawModuleEvaluationState::Errored(_)
-        ) != record.evaluation_cycle_root.is_some()
-        {
-            return Err(HeapError::Invariant(
-                "completed loaded-module evaluation has no exact cycle root",
-            ));
+        match &record.evaluation {
+            RawModuleEvaluationState::Unevaluated => {
+                if record.evaluation_cycle_root.is_some()
+                    || record.async_evaluation_order.is_some()
+                    || record.pending_async_dependencies != 0
+                    || !record.async_parent_modules.is_empty()
+                {
+                    return Err(HeapError::Invariant(
+                        "unevaluated loaded module retains async evaluation state",
+                    ));
+                }
+            }
+            RawModuleEvaluationState::Evaluating => {
+                if record.evaluation_cycle_root.is_some() {
+                    return Err(HeapError::Invariant(
+                        "active module received a cycle root before SCC publication",
+                    ));
+                }
+            }
+            RawModuleEvaluationState::EvaluatingAsync => {
+                if record.evaluation_cycle_root.is_none() || record.async_evaluation_order.is_none()
+                {
+                    return Err(HeapError::Invariant(
+                        "async-evaluating module has incomplete SCC metadata",
+                    ));
+                }
+            }
+            RawModuleEvaluationState::Evaluated | RawModuleEvaluationState::Errored(_) => {
+                if record.evaluation_cycle_root.is_none()
+                    || record.async_evaluation_order.is_some()
+                    || record.pending_async_dependencies != 0
+                {
+                    return Err(HeapError::Invariant(
+                        "completed loaded-module evaluation retains active async metadata",
+                    ));
+                }
+            }
+            RawModuleEvaluationState::Poisoned => {
+                if record.async_evaluation_order.is_some() || record.pending_async_dependencies != 0
+                {
+                    return Err(HeapError::Invariant(
+                        "poisoned loaded module retains active async metadata",
+                    ));
+                }
+            }
         }
         if let Some(cycle_root) = record.evaluation_cycle_root {
             if self
@@ -12386,10 +12555,45 @@ impl Heap {
                 ));
             }
         }
-        if let Some(promise) = record.evaluation_promise {
-            if !matches!(self.object(promise)?.payload, ObjectPayload::Promise(_)) {
+        match (
+            record.evaluation_promise,
+            record.evaluation_resolve,
+            record.evaluation_reject,
+        ) {
+            (None, None, None) => {}
+            (Some(promise), Some(resolve), Some(reject)) => {
+                self.validate_module_evaluation_capability(promise, resolve, reject)?;
+                let Some(module) = module else {
+                    return Err(HeapError::Invariant(
+                        "new loaded module already retains an evaluation capability",
+                    ));
+                };
+                if record
+                    .evaluation_cycle_root
+                    .is_some_and(|cycle_root| cycle_root != module)
+                {
+                    return Err(HeapError::Invariant(
+                        "non-cycle-root module retains an evaluation capability",
+                    ));
+                }
+            }
+            _ => {
                 return Err(HeapError::Invariant(
-                    "loaded-module evaluation cache is not a Promise",
+                    "loaded-module evaluation capability is partially published",
+                ));
+            }
+        }
+        let context = self.context(cache)?;
+        for parent in record.async_parent_modules.iter().copied() {
+            if context
+                .loaded_modules
+                .records
+                .get(parent.0)
+                .and_then(Option::as_ref)
+                .is_none()
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module async parent references a missing cache record",
                 ));
             }
         }
@@ -12515,7 +12719,7 @@ impl Heap {
         cache: ContextId,
         record: RawModuleRecord,
     ) -> Result<RawModuleRef, HeapError> {
-        self.validate_loaded_module_record(cache, &record)?;
+        self.validate_loaded_module_record(cache, None, &record)?;
         let cache_index = self.live_index(RawId::Context(cache))?;
         {
             let NodeData::Context(context) = &mut self.live_node_mut(RawId::Context(cache))?.data
@@ -12573,7 +12777,7 @@ impl Heap {
         replacement: RawModuleRecord,
     ) -> Result<HeapCleanup, HeapError> {
         let current = self.loaded_module(module)?;
-        self.validate_loaded_module_record(module.cache, &replacement)?;
+        self.validate_loaded_module_record(module.cache, Some(module.module), &replacement)?;
         if replacement.name != current.name {
             return Err(HeapError::Invariant(
                 "loaded-module replacement changed its cache name",
@@ -12712,6 +12916,25 @@ impl Heap {
                     "loaded-module removal leaves a live dependency on a tombstone",
                 ));
             }
+            if let Some(record) = record
+                && record
+                    .async_parent_modules
+                    .iter()
+                    .any(|parent| unique.contains(parent))
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module removal leaves a live async-parent edge on a tombstone",
+                ));
+            }
+            if let Some(record) = record
+                && record
+                    .evaluation_cycle_root
+                    .is_some_and(|cycle_root| unique.contains(&cycle_root))
+            {
+                return Err(HeapError::Invariant(
+                    "loaded-module removal leaves a live evaluation-root edge on a tombstone",
+                ));
+            }
         }
 
         // `JsString` mutates only transparent rope caches; its UTF-16
@@ -12823,6 +13046,177 @@ impl Heap {
         Ok(self.release_preflighted_module_edges(&removed_edges))
     }
 
+    /// Atomically install the cached evaluation Promise and its intrinsic
+    /// resolving pair on a cycle root. All three object edges become owned by
+    /// the Context record together, so an evaluator never needs to publish a
+    /// partially rooted capability through a general record mutation.
+    pub(crate) fn publish_loaded_module_evaluation_capability(
+        &mut self,
+        module: RawModuleRef,
+        promise: ObjectId,
+        resolve: ObjectId,
+        reject: ObjectId,
+    ) -> Result<(), HeapError> {
+        self.validate_module_evaluation_capability(promise, resolve, reject)?;
+        let record = self.loaded_module(module)?;
+        if record.evaluation_promise.is_some()
+            || record.evaluation_resolve.is_some()
+            || record.evaluation_reject.is_some()
+            || record.link_status != RawModuleLinkStatus::Linked
+            || matches!(
+                record.evaluation,
+                RawModuleEvaluationState::Evaluating | RawModuleEvaluationState::Poisoned
+            )
+            || record
+                .evaluation_cycle_root
+                .is_some_and(|cycle_root| cycle_root != module.module)
+        {
+            return Err(HeapError::Invariant(
+                "loaded-module evaluation capability has an invalid publication target",
+            ));
+        }
+        let edges = [
+            RawId::Object(promise),
+            RawId::Object(resolve),
+            RawId::Object(reject),
+        ];
+        self.retain_edges_transactionally(&edges)?;
+        let record = self
+            .loaded_module_record_mut(module)
+            .expect("authenticated evaluation capability target disappeared before commit");
+        record.evaluation_promise = Some(promise);
+        record.evaluation_resolve = Some(resolve);
+        record.evaluation_reject = Some(reject);
+        Ok(())
+    }
+
+    /// Append one reverse async-dependency edge and increment its parent's
+    /// pending count as one allocation-safe metadata transaction. Duplicate
+    /// module identities are deliberately retained and counted separately.
+    pub(crate) fn add_loaded_module_async_dependency(
+        &mut self,
+        dependency: RawModuleRef,
+        parent: RawModuleRef,
+    ) -> Result<u32, HeapError> {
+        if dependency.cache != parent.cache || dependency.module == parent.module {
+            return Err(HeapError::Invariant(
+                "async module dependency has mixed caches or a self parent",
+            ));
+        }
+        let dependency_record = self.loaded_module(dependency)?;
+        let parent_record = self.loaded_module(parent)?;
+        if dependency_record.async_evaluation_order.is_none()
+            || !matches!(
+                dependency_record.evaluation,
+                RawModuleEvaluationState::Evaluating | RawModuleEvaluationState::EvaluatingAsync
+            )
+            || !matches!(
+                parent_record.evaluation,
+                RawModuleEvaluationState::Evaluating
+            )
+            || parent_record.evaluation_cycle_root.is_some()
+        {
+            return Err(HeapError::Invariant(
+                "async module dependency edge has invalid evaluation states",
+            ));
+        }
+        let pending = parent_record
+            .pending_async_dependencies
+            .checked_add(1)
+            .ok_or(HeapError::Overflow {
+                operation: "counting pending async module dependencies",
+            })?;
+        self.loaded_module_record_mut(dependency)?
+            .async_parent_modules
+            .try_reserve(1)
+            .map_err(|_| HeapError::Allocation {
+                operation: "growing async module parent edges",
+            })?;
+        self.loaded_module_record_mut(parent)?
+            .pending_async_dependencies = pending;
+        self.loaded_module_record_mut(dependency)?
+            .async_parent_modules
+            .push(parent.module);
+        Ok(pending)
+    }
+
+    /// Consume one reverse dependency edge's pending-count contribution.
+    /// The caller uses the returned zero to decide when the parent is ready.
+    pub(crate) fn complete_loaded_module_async_dependency(
+        &mut self,
+        parent: RawModuleRef,
+    ) -> Result<u32, HeapError> {
+        let record = self.loaded_module_record_mut(parent)?;
+        if !matches!(record.evaluation, RawModuleEvaluationState::EvaluatingAsync)
+            || record.evaluation_cycle_root.is_none()
+            || record.async_evaluation_order.is_none()
+        {
+            return Err(HeapError::Invariant(
+                "async module dependency completed for an inactive parent",
+            ));
+        }
+        record.pending_async_dependencies = record
+            .pending_async_dependencies
+            .checked_sub(1)
+            .ok_or(HeapError::Invariant(
+                "async module dependency count underflow",
+            ))?;
+        Ok(record.pending_async_dependencies)
+    }
+
+    fn validate_module_evaluation_capability(
+        &self,
+        promise: ObjectId,
+        resolve: ObjectId,
+        reject: ObjectId,
+    ) -> Result<(), HeapError> {
+        if !matches!(self.object(promise)?.payload, ObjectPayload::Promise(_)) {
+            return Err(HeapError::Invariant(
+                "module evaluation capability has a non-Promise target",
+            ));
+        }
+        let ObjectPayload::NativeFunction {
+            data: resolve_data,
+            internal:
+                Some(InternalCallableData::PromiseResolving {
+                    promise: resolve_promise,
+                    already_resolved: resolve_cell,
+                    kind: PromiseResolvingKind::Resolve,
+                }),
+        } = &self.object(resolve)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "module evaluation capability has an invalid resolve function",
+            ));
+        };
+        let ObjectPayload::NativeFunction {
+            data: reject_data,
+            internal:
+                Some(InternalCallableData::PromiseResolving {
+                    promise: reject_promise,
+                    already_resolved: reject_cell,
+                    kind: PromiseResolvingKind::Reject,
+                }),
+        } = &self.object(reject)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "module evaluation capability has an invalid reject function",
+            ));
+        };
+        if resolve_data.target != NativeFunctionId::PromiseResolving(PromiseResolvingKind::Resolve)
+            || reject_data.target
+                != NativeFunctionId::PromiseResolving(PromiseResolvingKind::Reject)
+            || *resolve_promise != promise
+            || *reject_promise != promise
+            || !Rc::ptr_eq(resolve_cell, reject_cell)
+        {
+            return Err(HeapError::Invariant(
+                "module evaluation capability resolving pair targets another Promise",
+            ));
+        }
+        Ok(())
+    }
+
     /// Atomically publish the same cached abrupt completion across one active
     /// evaluation SCC. Object edges are retained transactionally before any
     /// record changes; Symbol atom ownership is prepared by Runtime because it
@@ -12878,7 +13272,42 @@ impl Heap {
                 .expect("authenticated evaluation error record disappeared before commit");
             record.evaluation = RawModuleEvaluationState::Errored(exception.clone());
             record.evaluation_cycle_root = Some(cycle_root);
+            record.async_evaluation_order = None;
+            record.pending_async_dependencies = 0;
         }
+        Ok(())
+    }
+
+    /// Cache one rejection reason on an already-published async module. The
+    /// record preserves its SCC cycle root and reverse parent list so Runtime
+    /// can reproduce QuickJS's observable per-node reject-then-recurse order.
+    ///
+    /// As with `publish_loaded_module_errors`, Symbol atom ownership is
+    /// prepared by Runtime; this operation retains all arena edges.
+    pub(crate) fn publish_loaded_module_async_error(
+        &mut self,
+        module: RawModuleRef,
+        exception: RawValue,
+    ) -> Result<(), HeapError> {
+        validate_module_storable_value(&exception)?;
+        let record = self.loaded_module(module)?;
+        if !matches!(record.evaluation, RawModuleEvaluationState::EvaluatingAsync)
+            || record.evaluation_cycle_root.is_none()
+            || record.async_evaluation_order.is_none()
+            || record.link_status != RawModuleLinkStatus::Linked
+        {
+            return Err(HeapError::Invariant(
+                "async module rejection reached a non-evaluating record",
+            ));
+        }
+        let value_edges = raw_value_edges(&exception);
+        self.retain_edges_transactionally(&value_edges)?;
+        let record = self
+            .loaded_module_record_mut(module)
+            .expect("authenticated async module rejection target disappeared before commit");
+        record.evaluation = RawModuleEvaluationState::Errored(exception);
+        record.async_evaluation_order = None;
+        record.pending_async_dependencies = 0;
         Ok(())
     }
 
@@ -17156,6 +17585,37 @@ impl Heap {
                     }
                 }
                 (
+                    NativeFunctionId::DynamicImportHandler(target_kind),
+                    Some(InternalCallableData::DynamicImportHandler {
+                        module,
+                        resolve,
+                        reject,
+                        kind,
+                    }),
+                ) if target_kind == *kind => {
+                    let realm = data.realm.ok_or(HeapError::Invariant(
+                        "dynamic-import handler has no defining realm",
+                    ))?;
+                    self.context(realm)?;
+                    let cache = self.context(module.cache)?;
+                    let resolve_is_callable = object_data_is_callable(self.object(*resolve)?);
+                    let reject_is_callable = object_data_is_callable(self.object(*reject)?);
+                    if object.is_constructor
+                        || !resolve_is_callable
+                        || !reject_is_callable
+                        || cache
+                            .loaded_modules
+                            .records
+                            .get(module.module.0)
+                            .and_then(Option::as_ref)
+                            .is_none()
+                    {
+                        return Err(HeapError::Invariant(
+                            "dynamic-import handler has invalid hidden state",
+                        ));
+                    }
+                }
+                (
                     NativeFunctionId::AsyncGeneratorResume(target_kind),
                     Some(InternalCallableData::AsyncGeneratorResume { generator, kind }),
                 ) if target_kind == *kind => {
@@ -17298,6 +17758,28 @@ impl Heap {
                     }
                 }
                 (
+                    NativeFunctionId::ModuleEvaluation(target_kind),
+                    Some(InternalCallableData::ModuleEvaluation { module, kind }),
+                ) if target_kind == *kind => {
+                    let realm = data.realm.ok_or(HeapError::Invariant(
+                        "module-evaluation callback has no defining realm",
+                    ))?;
+                    self.context(realm)?;
+                    let cache = self.context(module.cache)?;
+                    if object.is_constructor
+                        || cache
+                            .loaded_modules
+                            .records
+                            .get(module.module.0)
+                            .and_then(Option::as_ref)
+                            .is_none()
+                    {
+                        return Err(HeapError::Invariant(
+                            "module-evaluation callback has invalid hidden state",
+                        ));
+                    }
+                }
+                (
                     NativeFunctionId::AsyncFromSyncIteratorUnwrap,
                     Some(InternalCallableData::AsyncFromSyncIteratorUnwrap { .. }),
                 ) => {
@@ -17328,6 +17810,8 @@ impl Heap {
                 | (NativeFunctionId::PromiseAllResolveElement, _)
                 | (NativeFunctionId::PromiseAllSettledElement(_), _)
                 | (NativeFunctionId::PromiseAnyRejectElement, _)
+                | (NativeFunctionId::ModuleEvaluation(_), _)
+                | (NativeFunctionId::DynamicImportHandler(_), _)
                 | (NativeFunctionId::AsyncFromSyncIteratorUnwrap, _)
                 | (NativeFunctionId::AsyncFromSyncIteratorClose, _)
                 | (_, Some(_)) => {
@@ -18555,6 +19039,19 @@ fn internal_callable_edges(internal: &InternalCallableData) -> Vec<RawId> {
         InternalCallableData::PromiseAnyRejectElement { errors, reject, .. } => {
             vec![RawId::Object(*errors), RawId::Object(*reject)]
         }
+        InternalCallableData::ModuleEvaluation { module, .. } => {
+            vec![RawId::Context(module.cache)]
+        }
+        InternalCallableData::DynamicImportHandler {
+            module,
+            resolve,
+            reject,
+            ..
+        } => vec![
+            RawId::Context(module.cache),
+            RawId::Object(*resolve),
+            RawId::Object(*reject),
+        ],
         InternalCallableData::AsyncFromSyncIteratorUnwrap { .. } => Vec::new(),
         InternalCallableData::AsyncFromSyncIteratorClose { sync_iterator } => {
             vec![RawId::Object(*sync_iterator)]
@@ -18858,6 +19355,8 @@ fn raw_module_record_edges(record: &RawModuleRecord) -> Vec<RawId> {
         edges.extend(raw_value_edges(exception));
     }
     edges.extend(record.evaluation_promise.map(RawId::Object));
+    edges.extend(record.evaluation_resolve.map(RawId::Object));
+    edges.extend(record.evaluation_reject.map(RawId::Object));
     edges
 }
 
@@ -18910,6 +19409,8 @@ fn internal_callable_atoms(internal: &InternalCallableData) -> Vec<Atom> {
         | InternalCallableData::PromiseAllResolveElement { .. }
         | InternalCallableData::PromiseAllSettledElement { .. }
         | InternalCallableData::PromiseAnyRejectElement { .. }
+        | InternalCallableData::ModuleEvaluation { .. }
+        | InternalCallableData::DynamicImportHandler { .. }
         | InternalCallableData::AsyncFromSyncIteratorUnwrap { .. }
         | InternalCallableData::AsyncFromSyncIteratorClose { .. } => Vec::new(),
     }
@@ -19701,6 +20202,7 @@ fn raw_module_record_atoms(record: &RawModuleRecord) -> impl Iterator<Item = Ato
         RawModuleEvaluationState::Errored(exception) => raw_value_atom(exception),
         RawModuleEvaluationState::Unevaluated
         | RawModuleEvaluationState::Evaluating
+        | RawModuleEvaluationState::EvaluatingAsync
         | RawModuleEvaluationState::Evaluated
         | RawModuleEvaluationState::Poisoned => None,
     };

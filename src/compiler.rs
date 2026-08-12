@@ -308,8 +308,14 @@ pub(crate) fn compile_unlinked_module_with_name_and_attribute_checker(
         .module
         .take()
         .ok_or_else(|| Error::internal("module compiler produced no module record"))?;
+    let has_top_level_await = tree.functions.first().is_some_and(|function| {
+        function
+            .ops
+            .iter()
+            .any(|operation| matches!(operation.op, IrOp::Bytecode(Instruction::Await)))
+    });
     let function = lower_unlinked_tree(tree, debug_info)?;
-    module::finish_module(name, function, module)
+    module::finish_module(name, function, has_top_level_await, module)
 }
 
 /// Compile one primitive-String eval as an independent synthetic root.
@@ -2080,6 +2086,13 @@ impl<'source> Parser<'source> {
             )?],
         };
         if is_module {
+            // QuickJS compiles every module root as an async function. The
+            // separate module record bit records whether authored evaluation
+            // can actually suspend; keeping the callable kind async here lets
+            // top-level AwaitExpression and `for await` reuse the ordinary
+            // async-function lowering and continuation machinery.
+            parser.functions[0].execution_kind = BytecodeFunctionKind::Async;
+            parser.functions[0].in_function_body = true;
             parser.functions[0].eval_caller_profile = caller_profile.clone();
         }
         if matches!(root_kind, FunctionKind::Eval(_)) {
@@ -2557,12 +2570,6 @@ impl<'source> Parser<'source> {
         // ordinary `for (` expectation reports the syntax error instead.
         let is_for_await = matches!(self.current().kind, TokenKind::Keyword(Keyword::Await));
         if is_for_await {
-            if matches!(self.current_ir().kind, FunctionKind::Module) {
-                return Err(Error::unsupported(
-                    "top-level await is not implemented in this synchronous module slice",
-                    source_span(self.current().span),
-                ));
-            }
             if !matches!(
                 self.current_ir().execution_kind,
                 BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
@@ -5487,31 +5494,6 @@ impl<'source> Parser<'source> {
             return self.parse_power_suffix(power_mode);
         }
         if matches!(self.current().kind, TokenKind::Keyword(Keyword::Await)) {
-            if matches!(self.current_ir().kind, FunctionKind::Module) {
-                // QuickJS parses a module-goal `await` as the start of an
-                // AwaitExpression before it diagnoses the following token.
-                // Preserve that source-order syntax error for `await:`, while
-                // keeping a genuine top-level AwaitExpression on the explicit
-                // synchronous-module Unsupported frontier.
-                let mut lexer = self.lexer.clone();
-                lexer.seek(self.current().span.end);
-                let next = lexer.next_token().map_err(lex_error)?;
-                let invalid_follow = match next.kind {
-                    TokenKind::Punctuator(Punctuator::Colon) => Some(":"),
-                    TokenKind::Punctuator(Punctuator::Arrow) => Some("=>"),
-                    _ => None,
-                };
-                if let Some(invalid_follow) = invalid_follow {
-                    return Err(Error::syntax(
-                        format!("unexpected token in expression: '{invalid_follow}'"),
-                        source_span(next.span),
-                    ));
-                }
-                return Err(Error::unsupported(
-                    "top-level await is not implemented in this synchronous module slice",
-                    source_span(self.current().span),
-                ));
-            }
             if !matches!(
                 self.current_ir().execution_kind,
                 BytecodeFunctionKind::Async | BytecodeFunctionKind::AsyncGenerator
@@ -9301,7 +9283,10 @@ fn validate_scope_graph(tree: &FunctionTree) -> Result<(), Error> {
             BytecodeFunctionKind::Async
                 if matches!(
                     function.kind,
-                    FunctionKind::Ordinary | FunctionKind::Method | FunctionKind::Arrow
+                    FunctionKind::Module
+                        | FunctionKind::Ordinary
+                        | FunctionKind::Method
+                        | FunctionKind::Arrow
                 ) && !function.class_constructor
                     && function.class_initializer_kind.is_none()
                     && function.in_function_body

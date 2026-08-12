@@ -166,6 +166,7 @@ pub(crate) struct ModuleStarExport {
 pub(crate) struct UnlinkedModule {
     name: JsString,
     function: UnlinkedFunction,
+    has_top_level_await: bool,
     declaration_order: Box<[u16]>,
     link_initializers: Box<[ModuleLinkInitializer]>,
     import_collisions: Box<[ModuleImportCollision]>,
@@ -190,6 +191,7 @@ pub(crate) struct UnlinkedModuleTables {
 pub(crate) struct UnlinkedModuleParts {
     pub(crate) name: JsString,
     pub(crate) function: UnlinkedFunction,
+    pub(crate) has_top_level_await: bool,
     pub(crate) declaration_order: Box<[u16]>,
     pub(crate) link_initializers: Box<[ModuleLinkInitializer]>,
     pub(crate) import_collisions: Box<[ModuleImportCollision]>,
@@ -204,6 +206,7 @@ impl UnlinkedModule {
     pub(crate) fn new(
         name: JsString,
         function: UnlinkedFunction,
+        has_top_level_await: bool,
         tables: UnlinkedModuleTables,
     ) -> Self {
         let UnlinkedModuleTables {
@@ -218,6 +221,7 @@ impl UnlinkedModule {
         Self {
             name,
             function,
+            has_top_level_await,
             declaration_order: declaration_order.into_boxed_slice(),
             link_initializers: link_initializers.into_boxed_slice(),
             import_collisions: import_collisions.into_boxed_slice(),
@@ -231,6 +235,11 @@ impl UnlinkedModule {
     #[must_use]
     pub(crate) const fn function(&self) -> &UnlinkedFunction {
         &self.function
+    }
+
+    #[must_use]
+    pub(crate) const fn has_top_level_await(&self) -> bool {
+        self.has_top_level_await
     }
 
     #[must_use]
@@ -273,6 +282,7 @@ impl UnlinkedModule {
         UnlinkedModuleParts {
             name: self.name,
             function: self.function,
+            has_top_level_await: self.has_top_level_await,
             declaration_order: self.declaration_order,
             link_initializers: self.link_initializers,
             import_collisions: self.import_collisions,

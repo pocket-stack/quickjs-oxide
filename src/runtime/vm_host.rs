@@ -2069,6 +2069,7 @@ impl Runtime {
             locals: frame_locals,
             reusable_captured_locals: vec![false; frame_local_count],
         };
+        let is_module_link_entry = metadata.is_module && this_value == Value::Bool(true);
         let input = CallInput {
             code: &code,
             metadata,
@@ -2079,6 +2080,17 @@ impl Runtime {
             new_target,
             callee_global,
         };
+        // A module callable is deliberately an ordinary hidden function
+        // object even though its root bytecode is Async. QuickJS invokes the
+        // canonical `this = true` prefix synchronously during linking and
+        // enters the async-function driver only for evaluation (`this` is
+        // undefined there). The link prefix returns before any authored body
+        // instruction, so the non-suspending VM driver is the exact boundary.
+        if is_module_link_entry {
+            let result = Vm::new().execute_published(input, &mut host);
+            active_frame.finish()?;
+            return result.map_err(RuntimeError::Engine);
+        }
         match metadata.function_kind {
             FunctionKind::Generator => {
                 return self.start_generator_bytecode_callable(

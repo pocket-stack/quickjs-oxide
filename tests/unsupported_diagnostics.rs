@@ -1,9 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use quickjs_oxide::{
-    ErrorKind, JsString, ModuleLoader, ModuleLoaderError, Runtime, RuntimeError, Value,
-};
+use quickjs_oxide::{JsString, ModuleLoader, ModuleLoaderError, PromiseState, Runtime, Value};
 
 mod support;
 
@@ -28,20 +26,6 @@ impl ModuleLoader for RecordingModuleLoader {
             )))
         }
     }
-}
-
-fn assert_unsupported<T>(
-    label: &str,
-    result: Result<T, RuntimeError>,
-    context: &mut quickjs_oxide::Context,
-    expected_message: &str,
-) {
-    let Err(RuntimeError::Engine(error)) = result else {
-        panic!("{label} did not retain the Unsupported engine diagnostic");
-    };
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert_eq!(error.message(), expected_message);
-    assert!(context.take_exception().unwrap().is_none());
 }
 
 fn assert_dynamic_import_jobs(source: &str, install_test262_host: bool) {
@@ -149,17 +133,36 @@ fn public_entrypoints_execute_dynamic_import_promise_jobs() {
 }
 
 #[test]
-fn genuine_synchronous_module_frontiers_remain_unsupported() {
-    for source in ["await 1;", "for await (const value of []) {}"] {
+fn public_module_entrypoint_executes_top_level_await_jobs() {
+    for source in [
+        "globalThis.__tlaPublic = await 42;",
+        "for await (const value of [42]) { globalThis.__tlaPublic = value; }",
+    ] {
         let runtime = Runtime::new();
         let mut context = runtime.new_context();
-        let result = context.compile_module(source);
-        assert_unsupported(
-            "Context::compile_module",
-            result,
-            &mut context,
-            "top-level await is not implemented in this synchronous module slice",
+        let module = context
+            .compile_module(source)
+            .expect("Context::compile_module rejected top-level await");
+        let Value::Object(promise) = context
+            .execute_module(&module)
+            .expect("Context::execute_module rejected top-level await")
+        else {
+            panic!("module evaluation did not return a Promise");
+        };
+        assert_eq!(
+            runtime.promise_snapshot(&promise).unwrap().unwrap().state(),
+            PromiseState::Pending
         );
+        while runtime.execute_pending_job().unwrap() {}
+        assert_eq!(
+            runtime.promise_snapshot(&promise).unwrap().unwrap().state(),
+            PromiseState::Fulfilled
+        );
+        assert_eq!(
+            context.eval("globalThis.__tlaPublic").unwrap(),
+            Value::Int(42)
+        );
+        assert!(context.take_exception().unwrap().is_none());
     }
 }
 

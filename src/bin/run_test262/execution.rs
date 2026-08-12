@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use quickjs_oxide::{
     CompileOptions, CompleteOrdinaryPropertyDescriptor, Context, ErrorKind, JsString,
-    ModuleImportAttributes, ModuleLoadResult, ModuleLoader, ModuleLoaderError, ObjectRef, Runtime,
-    RuntimeError, Test262AgentSession, Value,
+    ModuleImportAttributes, ModuleLoadResult, ModuleLoader, ModuleLoaderError, ObjectRef,
+    PromiseState, Runtime, RuntimeError, Test262AgentSession, Value,
 };
 
 use super::admissions::{AdmissionCatalog, DynamicImportBytecodeExpectation, ModuleGraphRootGoal};
@@ -712,6 +712,10 @@ fn run_exact_module(
         return classify_normal(metadata);
     }
     match context.execute_module(&module) {
+        Ok(Value::Object(promise)) => {
+            finish_module_evaluation(runtime, context, metadata, &promise)
+        }
+        Ok(_) if metadata.is_async() => finish_async_test(runtime, context, metadata),
         Ok(_) => classify_normal(metadata),
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
             WorkerResult::failure(
@@ -749,33 +753,93 @@ fn finish_async_test(
     context: &mut Context,
     metadata: &Metadata,
 ) -> WorkerResult {
+    if let Err(result) = drain_pending_jobs(runtime, context, metadata) {
+        return result;
+    }
+    finish_async_test_after_jobs(runtime, context, metadata)
+}
+
+fn finish_module_evaluation(
+    runtime: &Runtime,
+    context: &mut Context,
+    metadata: &Metadata,
+    promise: &ObjectRef,
+) -> WorkerResult {
+    if let Err(result) = drain_pending_jobs(runtime, context, metadata) {
+        return result;
+    }
+
+    let snapshot = match runtime.promise_snapshot(promise) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return WorkerResult::failure(
+                "module-promise-invariant",
+                "runtime",
+                "Invariant",
+                "module evaluation returned an object without the Promise brand",
+            );
+        }
+        Err(error) => return engine_fault("engine-fault", "module-promise", error, None),
+    };
+    match snapshot.state() {
+        PromiseState::Rejected => {
+            let diagnostic = exception_diagnostic(runtime, snapshot.result().clone());
+            classify_completion(metadata, "runtime", &diagnostic)
+        }
+        PromiseState::Pending => WorkerResult::failure(
+            "fail-runtime",
+            "runtime",
+            "TypeError",
+            "module evaluation promise is pending after the job queue drained",
+        ),
+        PromiseState::Fulfilled if metadata.is_async() => {
+            finish_async_test_after_jobs(runtime, context, metadata)
+        }
+        PromiseState::Fulfilled => classify_normal(metadata),
+    }
+}
+
+fn drain_pending_jobs(
+    runtime: &Runtime,
+    context: &mut Context,
+    metadata: &Metadata,
+) -> Result<(), WorkerResult> {
     while runtime.is_job_pending() {
         match runtime.execute_pending_job() {
             Ok(true) => {}
             Ok(false) => {
-                return WorkerResult::failure(
+                return Err(WorkerResult::failure(
                     "async-job-invariant",
                     "async",
                     "Invariant",
                     "runtime reported a pending job but executed none",
-                );
+                ));
             }
             Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
-                return WorkerResult::failure(
+                return Err(WorkerResult::failure(
                     "unsupported-runtime",
                     "async-job",
                     "Unsupported",
                     error.message(),
-                );
+                ));
             }
             Err(RuntimeError::Exception) => {
                 let diagnostic = take_error(runtime, context, RuntimeError::Exception);
-                return classify_completion(metadata, "runtime", &diagnostic);
+                return Err(classify_completion(metadata, "runtime", &diagnostic));
             }
-            Err(error) => return engine_fault("engine-fault", "async-job", error, None),
+            Err(error) => {
+                return Err(engine_fault("engine-fault", "async-job", error, None));
+            }
         }
     }
+    Ok(())
+}
 
+fn finish_async_test_after_jobs(
+    runtime: &Runtime,
+    context: &mut Context,
+    metadata: &Metadata,
+) -> WorkerResult {
     match read_worker_print_log(runtime, context) {
         Ok(messages) => classify_async_print_log(metadata, &messages),
         Err(error) => WorkerResult::failure("async-host-error", "async-host", "HostError", error),
@@ -1181,8 +1245,8 @@ mod tests {
 
     use super::{
         ExactTest262ModuleLoader, ExceptionDiagnostic, authenticate_dynamic_import_bytecode,
-        classify_async_print_log, classify_completion, configure_runtime_can_block, run_worker,
-        take_error,
+        classify_async_print_log, classify_completion, configure_runtime_can_block,
+        finish_module_evaluation, install_worker_host, run_worker, take_error,
     };
     use crate::admissions::{AdmissionCatalog, DynamicImportBytecodeExpectation, sha256};
     use crate::metadata::{Metadata, NegativeExpectation};
@@ -1396,6 +1460,18 @@ mod tests {
             .compile_with_options(source, &CompileOptions::new("diagnostic-observer.js"))
             .unwrap();
         context.execute(&function).unwrap()
+    }
+
+    fn finish_async_module_promise(source: &str) -> super::WorkerResult {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        install_worker_host(&runtime, &mut context, true, None).unwrap();
+        let Value::Object(promise) = evaluate(&mut context, source) else {
+            panic!("module evaluation fixture did not return a Promise");
+        };
+        let mut metadata = Metadata::default();
+        metadata.flags.insert("async".to_owned());
+        finish_module_evaluation(&runtime, &mut context, &metadata, &promise)
     }
 
     #[test]
@@ -2005,6 +2081,61 @@ throw Object.create(proxyPrototype);
         assert_eq!(result.actual_phase, "async");
         assert_eq!(result.actual_type, "Test262Error");
         assert_eq!(result.detail, "sentinel");
+    }
+
+    #[test]
+    fn async_module_evaluation_drains_jobs_before_checking_done() {
+        let result = finish_async_module_promise(
+            r#"
+var moduleResolve;
+var modulePromise = new Promise(function (resolve) { moduleResolve = resolve; });
+Promise.resolve().then(function () {
+  moduleResolve(undefined);
+  print("Test262:AsyncTestComplete");
+});
+modulePromise;
+"#,
+        );
+
+        assert_eq!(result.outcome, "pass", "{}", result.detail);
+    }
+
+    #[test]
+    fn async_module_rejection_takes_precedence_over_done() {
+        let result = finish_async_module_promise(
+            r#"
+var moduleReject;
+var modulePromise = new Promise(function (_, reject) { moduleReject = reject; });
+Promise.resolve().then(function () {
+  print("Test262:AsyncTestComplete");
+  moduleReject(new TypeError("module rejected"));
+});
+modulePromise;
+"#,
+        );
+
+        assert_eq!(result.outcome, "fail-runtime");
+        assert_eq!(result.actual_phase, "runtime");
+        assert_eq!(result.actual_type, "TypeError");
+        assert_eq!(result.detail, "module rejected");
+    }
+
+    #[test]
+    fn pending_module_evaluation_takes_precedence_over_done() {
+        let result = finish_async_module_promise(
+            r#"
+print("Test262:AsyncTestComplete");
+new Promise(function () {});
+"#,
+        );
+
+        assert_eq!(result.outcome, "fail-runtime");
+        assert_eq!(result.actual_phase, "runtime");
+        assert_eq!(result.actual_type, "TypeError");
+        assert_eq!(
+            result.detail,
+            "module evaluation promise is pending after the job queue drained"
+        );
     }
 
     #[test]

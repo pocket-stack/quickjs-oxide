@@ -40,6 +40,7 @@ pub use debug::{
 pub use error::{Error, ErrorKind, SourceLocation, SourceSpan};
 pub use function::FunctionBytecodeRef;
 pub use heap::ContextId;
+pub use heap::PromiseState;
 pub use object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
     OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
@@ -47,8 +48,8 @@ pub use object::{
 pub use runtime::{
     Context, EvalOptions, HostServices, ModuleBytecodeRef, ModuleImportAttribute,
     ModuleImportAttributes, ModuleLoadResult, ModuleLoader, ModuleLoaderError,
-    ModuleLoaderRegistration, PendingJobError, PendingJobOutcome, PromiseRejectionEvent, Runtime,
-    RuntimeError,
+    ModuleLoaderRegistration, PendingJobError, PendingJobOutcome, PromiseRejectionEvent,
+    PromiseSnapshot, Runtime, RuntimeError,
 };
 #[cfg(feature = "test262-host")]
 pub use runtime::{Test262AgentError, Test262AgentSession};

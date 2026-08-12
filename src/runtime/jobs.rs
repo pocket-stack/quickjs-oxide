@@ -11,12 +11,6 @@ use crate::heap::{
 };
 
 #[derive(Clone, Debug)]
-pub(super) enum DynamicImportFinishOutcome {
-    Fulfilled { module: RawModuleRef },
-    Rejected { reason: RawValue },
-}
-
-#[derive(Clone, Debug)]
 pub(super) enum PendingJob {
     PromiseReaction {
         realm: ContextId,
@@ -41,14 +35,6 @@ pub(super) enum PendingJob {
         base_name: Option<JsString>,
         specifier: JsString,
         attributes: ModuleImportAttributes,
-    },
-    DynamicImportFinish {
-        realm: ContextId,
-        resolve: ObjectId,
-        reject: ObjectId,
-        reaction_resolve: ObjectId,
-        reaction_reject: ObjectId,
-        outcome: DynamicImportFinishOutcome,
     },
 }
 
@@ -164,8 +150,7 @@ impl PendingJob {
             Self::PromiseReaction { realm, .. }
             | Self::PromiseResolveThenable { realm, .. }
             | Self::FinalizationRegistryCleanup { realm, .. }
-            | Self::DynamicImportLoad { realm, .. }
-            | Self::DynamicImportFinish { realm, .. } => *realm,
+            | Self::DynamicImportLoad { realm, .. } => *realm,
         }
     }
 
@@ -222,28 +207,6 @@ impl PendingJob {
                 push(PendingJobRoot::Context(*realm));
                 push(PendingJobRoot::Object(*resolve));
                 push(PendingJobRoot::Object(*reject));
-            }
-            Self::DynamicImportFinish {
-                realm,
-                resolve,
-                reject,
-                reaction_resolve,
-                reaction_reject,
-                outcome,
-            } => {
-                push(PendingJobRoot::Context(*realm));
-                push(PendingJobRoot::Object(*resolve));
-                push(PendingJobRoot::Object(*reject));
-                push(PendingJobRoot::Object(*reaction_resolve));
-                push(PendingJobRoot::Object(*reaction_reject));
-                match outcome {
-                    DynamicImportFinishOutcome::Fulfilled { module } => {
-                        debug_assert_eq!(module.cache, *realm);
-                    }
-                    DynamicImportFinishOutcome::Rejected { reason } => {
-                        push(PendingJobRoot::Value(reason));
-                    }
-                }
             }
         }
         roots
@@ -469,21 +432,6 @@ impl Runtime {
                 specifier,
                 attributes,
             ),
-            PendingJob::DynamicImportFinish {
-                realm,
-                resolve,
-                reject,
-                reaction_resolve,
-                reaction_reject,
-                outcome,
-            } => self.execute_dynamic_import_finish_job(
-                *realm,
-                *resolve,
-                *reject,
-                *reaction_resolve,
-                *reaction_reject,
-                outcome,
-            ),
         }
     }
 
@@ -585,35 +533,6 @@ impl Runtime {
             specifier,
             attributes,
         })
-    }
-
-    pub(super) fn prepare_dynamic_import_finish_job(
-        &self,
-        realm: ContextId,
-        resolve: ObjectId,
-        reject: ObjectId,
-        reaction_resolve: ObjectId,
-        reaction_reject: ObjectId,
-        outcome: DynamicImportFinishOutcome,
-    ) -> Result<PendingJob, RuntimeError> {
-        if let DynamicImportFinishOutcome::Fulfilled { module } = &outcome
-            && module.cache != realm
-        {
-            return Err(RuntimeError::Invariant(
-                "dynamic import finish module belongs to another Context cache",
-            ));
-        }
-        let job = PendingJob::DynamicImportFinish {
-            realm,
-            resolve,
-            reject,
-            reaction_resolve,
-            reaction_reject,
-            outcome,
-        };
-        let _operation = self.operation();
-        self.0.state.borrow_mut().retain_pending_job_roots(&job)?;
-        Ok(job)
     }
 }
 

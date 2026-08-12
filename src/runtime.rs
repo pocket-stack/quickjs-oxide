@@ -38,7 +38,7 @@ pub use self::host::HostServices;
 use self::intrinsics::CanonicalNumericIndex;
 use self::intrinsics::date::SystemHostServices;
 use self::intrinsics::promise::HostPromiseRejectionTracker;
-pub use self::intrinsics::promise::PromiseRejectionEvent;
+pub use self::intrinsics::promise::{PromiseRejectionEvent, PromiseSnapshot};
 pub use self::jobs::{PendingJobError, PendingJobOutcome};
 pub use self::module::{
     ModuleBytecodeRef, ModuleImportAttribute, ModuleImportAttributes, ModuleLoadResult,
@@ -74,23 +74,23 @@ use crate::heap::{
     AutoInitProperty, BigIntAsNKind, BytecodeConstant, ClassInitializerKind, ClosureSource,
     ClosureVariable, ClosureVariableKind, ClosureVariableName, ConstructorKind, ContextData,
     ContextId, DateGetFieldKind, DateNativeKind, DateSetFieldKind, DateStringMethod,
-    DynamicFunctionKind, ErrorConstructorKind, EvalEnvironment, EvalKind, ForInCandidate,
-    ForInIteratorData, ForInProperty, FunctionBytecodeData, FunctionBytecodeId, FunctionDebugInfo,
-    FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats, GeneratorRealmData,
-    GeneratorResumeKind, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap, HeapCleanup,
-    HeapCounts, HeapError, JsonNativeKind, MathBinaryKind, MathMinMaxKind, MathUnaryKind, ModuleId,
-    NativeCProto, NativeFunctionId, NumberFormatKind, NumberParseKind, NumberPredicateKind,
-    ObjectAccessorKind, ObjectData, ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind,
-    ObjectKeysKind, ObjectKind, ObjectOwnPropertyKeysKind, ObjectPayload,
-    ParameterEnvironmentLayout, PrimitiveKind, PrimitiveObjectData, PropertySlot,
-    PublishedPrivateBindings, RawModuleEvaluationState, RawModuleInstance, RawModuleLinkRealm,
-    RawModuleLinkStatus, RawModuleNamespaceState, RawModuleRecord, RawModuleRecordBody,
-    RawModuleRef, RawModuleResolutionState, RawModuleTransition, RawPublishedModuleExport,
-    RawPublishedModuleExportTarget, RawValue, ReflectKind, RegExpNativeKind, ShapeId,
-    StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind,
-    StringPadKind, StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind,
-    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
-    WeakSymbolGcEvent,
+    DynamicFunctionKind, DynamicImportHandlerKind, ErrorConstructorKind, EvalEnvironment, EvalKind,
+    ForInCandidate, ForInIteratorData, ForInProperty, FunctionBytecodeData, FunctionBytecodeId,
+    FunctionDebugInfo, FunctionDebugPosition, FunctionKind, FunctionMetadata, GcStats,
+    GeneratorRealmData, GeneratorResumeKind, GlobalNumberPredicateKind, GlobalUriCodecKind, Heap,
+    HeapCleanup, HeapCounts, HeapError, InternalCallableData, JsonNativeKind, MathBinaryKind,
+    MathMinMaxKind, MathUnaryKind, ModuleEvaluationKind, ModuleId, NativeCProto, NativeFunctionId,
+    NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
+    ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind,
+    ObjectOwnPropertyKeysKind, ObjectPayload, ParameterEnvironmentLayout, PrimitiveKind,
+    PrimitiveObjectData, PropertySlot, PublishedPrivateBindings, RawModuleEvaluationState,
+    RawModuleInstance, RawModuleLinkRealm, RawModuleLinkStatus, RawModuleNamespaceState,
+    RawModuleRecord, RawModuleRecordBody, RawModuleRef, RawModuleResolutionState,
+    RawModuleTransition, RawPublishedModuleExport, RawPublishedModuleExportTarget, RawValue,
+    ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind, StringCreateHtmlKind,
+    StringIncludesKind, StringIndexOfKind, StringPadKind, StringReplaceKind, StringStaticKind,
+    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
+    VarRefId, VariableDefinition, WeakSymbolGcEvent,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -186,6 +186,9 @@ struct RuntimeState {
     /// [`ActiveFrameGuard`] owns the object and bytecode roots.
     active_frames: Vec<ActiveFrameRecord>,
     next_active_frame_token: u64,
+    /// QuickJS's runtime-global ordering source for async module evaluation.
+    /// Zero is a valid first stamp; exhaustion is reported before publication.
+    next_module_async_evaluation_order: u64,
     #[cfg(test)]
     active_frame_probe_snapshots: Vec<Vec<ActiveFrameRecord>>,
     /// Counts the ordinary `{ value, done }` wrappers produced by the native
@@ -773,6 +776,7 @@ impl Runtime {
                 well_known_symbols,
                 active_frames: Vec::new(),
                 next_active_frame_token: 1,
+                next_module_async_evaluation_order: 0,
                 #[cfg(test)]
                 active_frame_probe_snapshots: Vec::new(),
                 #[cfg(test)]
@@ -3693,31 +3697,41 @@ impl Runtime {
             (bytecode.metadata, bytecode.func_name.clone())
         };
         let context = state.heap.context(caller_realm)?;
-        let function_prototype = match metadata.function_kind {
-            FunctionKind::Normal => context.function_prototype,
-            FunctionKind::Generator => {
-                context
-                    .generator
-                    .ok_or(RuntimeError::Invariant(
-                        "generator closure realm has no Generator intrinsics",
-                    ))?
-                    .function_prototype
-            }
-            FunctionKind::Async => {
-                context
-                    .async_function
-                    .ok_or(RuntimeError::Invariant(
-                        "async closure realm has no AsyncFunction intrinsics",
-                    ))?
-                    .function_prototype
-            }
-            FunctionKind::AsyncGenerator => {
-                context
-                    .async_generator
-                    .ok_or(RuntimeError::Invariant(
-                        "async-generator closure realm has no AsyncGenerator intrinsics",
-                    ))?
-                    .function_prototype
+        // QuickJS stores a module's async bytecode in an ordinary hidden
+        // bytecode-function object.  The evaluator enters the async driver
+        // explicitly, while the link-only `this = true` call uses the same
+        // object as a synchronous declaration-instantiation entry point.
+        // Preserve that object shape instead of exposing an AsyncFunction
+        // prototype merely because every module root has async bytecode.
+        let function_prototype = if metadata.is_module {
+            context.function_prototype
+        } else {
+            match metadata.function_kind {
+                FunctionKind::Normal => context.function_prototype,
+                FunctionKind::Generator => {
+                    context
+                        .generator
+                        .ok_or(RuntimeError::Invariant(
+                            "generator closure realm has no Generator intrinsics",
+                        ))?
+                        .function_prototype
+                }
+                FunctionKind::Async => {
+                    context
+                        .async_function
+                        .ok_or(RuntimeError::Invariant(
+                            "async closure realm has no AsyncFunction intrinsics",
+                        ))?
+                        .function_prototype
+                }
+                FunctionKind::AsyncGenerator => {
+                    context
+                        .async_generator
+                        .ok_or(RuntimeError::Invariant(
+                            "async-generator closure realm has no AsyncGenerator intrinsics",
+                        ))?
+                        .function_prototype
+                }
             }
         };
         let shape = state.get_or_create_shape(Some(function_prototype), &[])?;

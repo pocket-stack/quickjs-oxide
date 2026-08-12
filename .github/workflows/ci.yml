@@ -69,6 +69,7 @@ jobs:
           node scripts/check-test262-artifact-inventory.mjs
           node --check scripts/test-negative-diagnostic-generator.mjs
           node --check scripts/generate-test262-dynamic-import-a.mjs
+          node --check scripts/generate-test262-tla-core-a.mjs
           node --check scripts/generate-test262-module-import-attributes-a.mjs
           node --check scripts/test-generate-test262-module-import-attributes-a.mjs
           node --check scripts/generate-test262-module-json-a.mjs
@@ -153,6 +154,8 @@ jobs:
             ./scripts/test-quickjs-dynamic-import-trace.sh
           suite=$(./scripts/prepare-test262.sh)
           node scripts/generate-test262-dynamic-import-a.mjs \
+            --suite "$suite" --check-current
+          node scripts/generate-test262-tla-core-a.mjs \
             --suite "$suite" --check-current
           node scripts/audit-negative-diagnostics.mjs \
             --contracts dev-support/test262/negative-diagnostics.tsv \
