@@ -1,0 +1,305 @@
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -32,6 +32,10 @@
+ #include <time.h>
+ #include <fenv.h>
+ #include <math.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ #if defined(__APPLE__)
+ #include <malloc/malloc.h>
+ #elif defined(__linux__) || defined(__GLIBC__)
+@@ -46,7 +50,156 @@
+ #include "libregexp.h"
+ #include "libunicode.h"
+ #include "dtoa.h"
++
++/* quickjs-oxide test-only dynamic-import trace protocol (QJODI1).
++ *
++ * The runner explicitly enables tracing before opening inputs, after verifying
++ * that descriptor 3 is a regular file.  We duplicate it once so later fopen()
++ * calls cannot redirect trace output.  All caller-controlled strings are
++ * encoded as byte-length-prefixed hexadecimal, and trace I/O preserves errno.
++ * A write failure terminates this test-only oracle instead of yielding partial
++ * evidence that could be mistaken for a complete trace.
++ */
++#define QJO_TRACE_FD 3
++
++static int qjo_trace_fd = -1;
++static BOOL qjo_trace_enabled;
++
++int qjs_oxide_trace_init(void)
++{
++    const char *enabled = getenv("QJS_OXIDE_DYNAMIC_IMPORT_TRACE");
++    struct stat st;
++    int saved_errno = errno;
++    int flags;
++
++    if (!enabled) {
++        errno = saved_errno;
++        return 0;
++    }
++    if (strcmp(enabled, "1") || fstat(QJO_TRACE_FD, &st) < 0 ||
++        !S_ISREG(st.st_mode))
++        return -1;
++    qjo_trace_fd = dup(QJO_TRACE_FD);
++    if (qjo_trace_fd < 0)
++        return -1;
++    flags = fcntl(qjo_trace_fd, F_GETFD);
++    if (flags < 0 || fcntl(qjo_trace_fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
++        close(qjo_trace_fd);
++        qjo_trace_fd = -1;
++        return -1;
++    }
++    qjo_trace_enabled = TRUE;
++    errno = saved_errno;
++    return 1;
++}
++
++BOOL qjs_oxide_trace_is_enabled(void)
++{
++    return qjo_trace_enabled;
++}
++
++static void qjo_trace_write(const char *buf, size_t len)
++{
++    while (len != 0) {
++        ssize_t ret = write(qjo_trace_fd, buf, len);
++        if (ret > 0) {
++            buf += ret;
++            len -= ret;
++        } else if (ret < 0 && errno == EINTR) {
++            continue;
++        } else {
++            _exit(74);
++        }
++    }
++}
++
++static void qjo_trace_cstr(const char *str)
++{
++    static const char hex[] = "0123456789abcdef";
++    char len_buf[32], encoded[256];
++    size_t len, offset;
++    int len_len;
++
++    if (!str) {
++        qjo_trace_write("-", 1);
++        return;
++    }
++    len = strlen(str);
++    len_len = snprintf(len_buf, sizeof(len_buf), "%zu:", len);
++    if (len_len > 0)
++        qjo_trace_write(len_buf, len_len);
++    for (offset = 0; offset < len;) {
++        size_t i, count = len - offset;
++        if (count > sizeof(encoded) / 2)
++            count = sizeof(encoded) / 2;
++        for (i = 0; i < count; i++) {
++            unsigned char c = (unsigned char)str[offset + i];
++            encoded[i * 2] = hex[c >> 4];
++            encoded[i * 2 + 1] = hex[c & 15];
++        }
++        qjo_trace_write(encoded, count * 2);
++        offset += count;
++    }
++}
+ 
++static void qjo_trace_normalize(const char *root_name, const char *base_name,
++                                const char *request, const char *normalized)
++{
++    int saved_errno = errno;
++
++    if (qjo_trace_enabled) {
++        qjo_trace_write("QJODI1\tN\t", sizeof("QJODI1\tN\t") - 1);
++        qjo_trace_cstr(root_name);
++        qjo_trace_write("\t", 1);
++        qjo_trace_cstr(base_name);
++        qjo_trace_write("\t", 1);
++        qjo_trace_cstr(request);
++        qjo_trace_write("\t", 1);
++        qjo_trace_cstr(normalized);
++        qjo_trace_write("\n", 1);
++    }
++    errno = saved_errno;
++}
++
++void qjs_oxide_trace_loader(const char *root_name, const char *request,
++                            const char *effective_path, const char *outcome,
++                            int load_errno)
++{
++    char errno_buf[32];
++    int saved_errno = errno;
++    int errno_len;
++
++    if (qjo_trace_enabled) {
++        qjo_trace_write("QJODI1\tL\t", sizeof("QJODI1\tL\t") - 1);
++        qjo_trace_cstr(root_name);
++        qjo_trace_write("\t", 1);
++        qjo_trace_cstr(request);
++        qjo_trace_write("\t", 1);
++        qjo_trace_cstr(effective_path);
++        qjo_trace_write("\t", 1);
++        qjo_trace_cstr(outcome);
++        errno_len = snprintf(errno_buf, sizeof(errno_buf), "\t%d\n", load_errno);
++        if (errno_len > 0)
++            qjo_trace_write(errno_buf, errno_len);
++    }
++    errno = saved_errno;
++}
++
++static void qjo_trace_tla(const char *root_name, const char *module_name,
++                          BOOL has_tla)
++{
++    int saved_errno = errno;
++
++    if (qjo_trace_enabled) {
++        qjo_trace_write("QJODI1\tT\t", sizeof("QJODI1\tT\t") - 1);
++        qjo_trace_cstr(root_name);
++        qjo_trace_write("\t", 1);
++        qjo_trace_cstr(module_name);
++        qjo_trace_write(has_tla ? "\t1\n" : "\t0\n", 3);
++    }
++    errno = saved_errno;
++}
++
+ #define OPTIMIZE         1
+ #define SHORT_OPCODES    1
+ #if defined(__EMSCRIPTEN__)
+@@ -29908,6 +30061,7 @@
+         cname = rt->module_normalize_func(ctx, base_cname, cname1,
+                                           rt->module_loader_opaque);
+     }
++    qjo_trace_normalize(ctx->rt->rt_info, base_cname, cname1, cname);
+     if (!cname)
+         return NULL;
+ 
+@@ -37156,8 +37310,10 @@
+         goto fail1;
+     }
+ 
+-    if (m != NULL)
++    if (m != NULL) {
+         m->has_tla = fd->has_await;
++        qjo_trace_tla(ctx->rt->rt_info, filename, m->has_tla);
++    }
+ 
+     /* create the function object and all the enclosed functions */
+     fun_obj = js_create_function(ctx, fd);
+--- a/run-test262.c
++++ b/run-test262.c
+@@ -46,6 +46,13 @@
+ 
+ #define CMD_NAME "run-test262"
+ 
++extern int qjs_oxide_trace_init(void);
++extern BOOL qjs_oxide_trace_is_enabled(void);
++extern void qjs_oxide_trace_loader(const char *root_name,
++                                   const char *request,
++                                   const char *effective_path,
++                                   const char *outcome, int load_errno);
++
+ typedef struct namelist_t {
+     char **array;
+     int count;
+@@ -663,6 +670,8 @@
+     Test262Agent *agent;
+     pthread_attr_t attr;
+ 
++    if (qjs_oxide_trace_is_enabled())
++        fatal(1, "QJODI1 trace does not support $262.agent");
+     if (JS_GetContextOpaque(ctx) != NULL)
+         return JS_ThrowTypeError(ctx, "cannot be called inside an agent");
+ 
+@@ -970,9 +979,12 @@
+     uint8_t *buf;
+     JSModuleDef *m;
+     char *filename, *slash, path[1024];
++    const char *requested_name;
++    int load_errno;
+ 
+     // interpret import("bar.js") from path/to/foo.js as
+     // import("path/to/bar.js") but leave import("./bar.js") untouched
++    requested_name = module_name;
+     filename = opaque;
+     if (!strchr(module_name, '/')) {
+         slash = strrchr(filename, '/');
+@@ -984,7 +996,11 @@
+     }
+ 
+     buf = js_load_file(ctx, &buf_len, module_name);
++    load_errno = errno;
+     if (!buf) {
++        qjs_oxide_trace_loader(filename, requested_name, module_name,
++                               "read_error", load_errno);
++        errno = load_errno;
+         JS_ThrowReferenceError(ctx, "could not load module filename '%s'",
+                                module_name);
+         return NULL;
+@@ -995,10 +1011,15 @@
+         JSValue val;
+         val = JS_ParseJSON(ctx, (char *)buf, buf_len, module_name);
+         js_free(ctx, buf);
+-        if (JS_IsException(val))
++        if (JS_IsException(val)) {
++            qjs_oxide_trace_loader(filename, requested_name, module_name,
++                                   "json_error", 0);
+             return NULL;
++        }
+         m = JS_NewCModule(ctx, module_name, json_module_init_test);
+         if (!m) {
++            qjs_oxide_trace_loader(filename, requested_name, module_name,
++                                   "module_error", 0);
+             JS_FreeValue(ctx, val);
+             return NULL;
+         }
+@@ -1011,12 +1032,16 @@
+         func_val = JS_Eval(ctx, (char *)buf, buf_len, module_name,
+                            JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+         js_free(ctx, buf);
+-        if (JS_IsException(func_val))
++        if (JS_IsException(func_val)) {
++            qjs_oxide_trace_loader(filename, requested_name, module_name,
++                                   "compile_error", 0);
+             return NULL;
++        }
+         /* the module is already referenced, so we must free it */
+         m = JS_VALUE_GET_PTR(func_val);
+         JS_FreeValue(ctx, func_val);
+     }
++    qjs_oxide_trace_loader(filename, requested_name, module_name, "ok", 0);
+     return m;
+ }
+ 
+@@ -2240,8 +2265,11 @@
+     BOOL is_module = FALSE;
+     BOOL can_block = TRUE;
+     BOOL count_skipped_features = FALSE;
++    BOOL trace_single_thread_requested = FALSE;
+     clock_t clocks;
+     
++    if (qjs_oxide_trace_init() < 0)
++        fatal(1, "QJODI1 trace requires fd 3 to be a regular file and the opt-in value to be 1");
+     init_thread_local_storage(tls);
+     pthread_mutex_init(&stats_mutex, NULL);
+ 
+@@ -2308,6 +2336,7 @@
+             slow_test_threshold = atoi(get_opt_arg(arg, argv[optind++]));
+         } else if (str_equal(arg, "-T")) {
+             nthreads = atoi(get_opt_arg(arg, argv[optind++]));
++            trace_single_thread_requested = (nthreads == 1);
+         } else if (str_equal(arg, "-N")) {
+             is_test262_harness = TRUE;
+         } else if (str_equal(arg, "--module")) {
+@@ -2325,6 +2354,9 @@
+     if (optind >= argc && !test_list.count)
+         help();
+ 
++    if (qjs_oxide_trace_is_enabled() && !trace_single_thread_requested)
++        fatal(1, "QJODI1 trace requires explicit -T 1");
++
+     if (is_test262_harness) {
+         return run_test262_harness_test(tls, argv[optind], is_module, can_block);
+     }
