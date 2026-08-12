@@ -10,18 +10,18 @@ QuickJS 2026-06-04 patch and configuration recorded in
 <!-- current-test262-metrics:start -->
 Metrics are reported in this order:
 
-1. **Full pass:** 79,451 / 102,037 (77.865%). Every frozen Test262 variant is in
+1. **Full pass:** 79,462 / 102,037 (77.876%). Every frozen Test262 variant is in
    the denominator.
-2. **Eligible coverage:** 79,501 / 102,037 (77.914%). This measures how much of
+2. **Eligible coverage:** 79,512 / 102,037 (77.925%). This measures how much of
    the full vector the current profile admits to execution.
-3. **Runnable pass quality:** 79,451 / 79,501 (99.937%). This is useful for
+3. **Runnable pass quality:** 79,462 / 79,512 (99.937%). This is useful for
    diagnosing admitted behavior, but it must not replace either coverage
    metric above.
 
 The frozen outcome summary is:
 
 ```text
-fail-parse=7 fail-runtime=43 pass=79451 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1094 unsupported-module=405 unsupported-negative-provenance=2562
+fail-parse=7 fail-runtime=43 pass=79462 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=1094 unsupported-module=394 unsupported-negative-provenance=2562
 ```
 <!-- current-test262-metrics:end -->
 
@@ -38,11 +38,11 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
 contract and legacy exemption ledger, focused manifest, and frozen TSV/JSONL
-receipts. `--focused` replays
-the current 6,395-variant focused vector and requires byte-identical output. It
-retains the dependency-closed private-callable coverage and adds the
-source-authenticated static import-attributes graph. `--full` runs every
-102,037 variant and checks the complete summary and report hashes.
+receipts. `--focused` replays the current 6,406-variant focused vector and
+requires byte-identical output. It retains the dependency-closed
+private-callable and static import-attributes coverage and adds the
+source-authenticated static JSON module graph. `--full` runs every 102,037
+variant and checks the complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
 its exact path is present in the audited-negative data. Every admitted

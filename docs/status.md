@@ -8,11 +8,11 @@ Parity.
 ## Current baseline
 
 <!-- current-test262-metrics:start -->
-The authoritative R3eo Test262 vector has:
+The authoritative R3ep Test262 vector has:
 
-- 79,451 full-corpus passes out of 102,037 variants (77.865%)
-- 79,501 eligible variants out of 102,037 (77.914%)
-- 79,451 passes out of 79,501 runnable variants (99.937%, secondary quality
+- 79,462 full-corpus passes out of 102,037 variants (77.876%)
+- 79,512 eligible variants out of 102,037 (77.925%)
+- 79,462 passes out of 79,512 runnable variants (99.937%, secondary quality
   metric)
 - 50 classified failures and no timeouts among eligible variants
 <!-- current-test262-metrics:end -->
@@ -37,7 +37,8 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   static blocks, and private brand checks with `#name in object`, including
   QuickJS-matched early errors
 - synchronous static-module graphs, live namespaces, default exports, static
-  import attributes with loader validation, and core `import.meta` semantics
+  import attributes with loader validation, JSON synthetic modules, and core
+  `import.meta` semantics
 - native command-line execution and a Rust/WASM browser playground
 
 The public API and Test262 runner now report the same engine diagnostics.
@@ -48,10 +49,10 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include dynamic import, JSON modules and dynamic import
-attributes, top-level await, remaining module-host behavior, and the
-unsupported/failed leaves recorded by the current Test262 vector. A Feature
-Parity claim additionally requires the acceptance contract in
+Major open frontiers include dynamic import and its import attributes,
+top-level await, JSON5/byte-oriented host loading, remaining module-host
+behavior, and the unsupported/failed leaves recorded by the current Test262
+vector. A Feature Parity claim additionally requires the acceptance contract in
 [`parity.md`](parity.md), including QuickJS differential evidence and
 non-Test262 behavior.
 

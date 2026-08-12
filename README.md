@@ -7,14 +7,15 @@ The engine is runnable, but it is not at Feature Parity yet. Implemented slices
 include binary data and Atomics, collections and weak references, Promise jobs,
 Unicode behavior, public/private class fields and private callable elements,
 and synchronous static-module graphs with default exports, live namespace
-objects, static import attributes, and core `import.meta` semantics. Dynamic
-import, JSON modules, top-level await, and QuickJS host-populated `import.meta`
-properties remain parity work.
+objects, static import attributes, JSON synthetic modules, and core
+`import.meta` semantics. Dynamic import, top-level await, JSON5/byte-oriented
+host loading, and QuickJS host-populated `import.meta` properties remain parity
+work.
 
 <!-- current-test262-metrics:start -->
-The authoritative R3eo Test262 baseline records **79,451 full-corpus passes
-out of 102,037 variants (77.865%)**, with **79,501 eligible variants
-(77.914%)**. The 79,451 / 79,501 runnable pass rate (99.937%) is a secondary
+The authoritative R3ep Test262 baseline records **79,462 full-corpus passes
+out of 102,037 variants (77.876%)**, with **79,512 eligible variants
+(77.925%)**. The 79,462 / 79,512 runnable pass rate (99.937%) is a secondary
 quality measure, not the headline compatibility metric.
 <!-- current-test262-metrics:end -->
 

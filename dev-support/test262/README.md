@@ -10,7 +10,9 @@ by a shell.
 
 The focused manifest is a sorted set of source paths. Its receipt remains a
 full `(path, variant)` vector, so one path may produce multiple metadata-driven
-variants.
+variants. The current R3ep vector includes the source-authenticated static JSON
+module graph; dynamic import and text modules remain excluded by generator
+canaries.
 
 `admissions.tsv` is the hash-pinned source of exact Module-goal graphs,
 dependency-free module roots, `$262.agent` host paths, and supplemental feature
