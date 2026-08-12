@@ -38,7 +38,7 @@ use crate::lexer::{
     NumberKind, NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
     quickjs_simple_lookahead_is_of,
 };
-use crate::module::UnlinkedModule;
+use crate::module::{ModuleImportAttribute, UnlinkedModule};
 use crate::source_text::SourceText;
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
@@ -278,7 +278,27 @@ pub(crate) fn compile_unlinked_module_with_name(
     name: JsString,
     debug_info: DebugInfoMode,
 ) -> Result<UnlinkedModule, Error> {
-    let mut tree = Parser::parse_module(source, name)?;
+    compile_unlinked_module_with_name_and_attribute_checker(source, name, debug_info, None)
+}
+
+/// Synchronous host validation performed as soon as one non-empty static
+/// import-attribute clause has been parsed.
+///
+/// Pinned QuickJS invokes `JSModuleCheckAttributes` before consuming the
+/// clause's closing brace and before parsing any following source. Returning
+/// an error here therefore must stop parsing immediately.
+pub(crate) trait ModuleImportAttributeChecker {
+    fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), Error>;
+}
+
+/// Compile a module while exposing QuickJS's parse-time attribute-check hook.
+pub(crate) fn compile_unlinked_module_with_name_and_attribute_checker(
+    source: &str,
+    name: JsString,
+    debug_info: DebugInfoMode,
+    checker: Option<&mut dyn ModuleImportAttributeChecker>,
+) -> Result<UnlinkedModule, Error> {
+    let mut tree = Parser::parse_module(source, name, checker)?;
     resolve_identifiers(&mut tree)?;
     if let Some(error) = tree.pending_unsupported.take() {
         return Err(error);
@@ -1887,11 +1907,15 @@ enum RootCompileContext {
 
 impl<'source> Parser<'source> {
     fn parse(source: &'source str, filename: JsString) -> Result<FunctionTree, Error> {
-        Self::parse_root(source, None, filename, RootCompileContext::Script)
+        Self::parse_root(source, None, filename, RootCompileContext::Script, None)
     }
 
-    fn parse_module(source: &'source str, filename: JsString) -> Result<FunctionTree, Error> {
-        Self::parse_root(source, None, filename, RootCompileContext::Module)
+    fn parse_module(
+        source: &'source str,
+        filename: JsString,
+        checker: Option<&mut dyn ModuleImportAttributeChecker>,
+    ) -> Result<FunctionTree, Error> {
+        Self::parse_root(source, None, filename, RootCompileContext::Module, checker)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1900,7 +1924,13 @@ impl<'source> Parser<'source> {
         filename: JsString,
         context: EvalCompileContext,
     ) -> Result<FunctionTree, Error> {
-        Self::parse_root(source, None, filename, RootCompileContext::Eval(context))
+        Self::parse_root(
+            source,
+            None,
+            filename,
+            RootCompileContext::Eval(context),
+            None,
+        )
     }
 
     fn parse_eval_source(
@@ -1913,6 +1943,7 @@ impl<'source> Parser<'source> {
             Some(source),
             filename,
             RootCompileContext::Eval(context),
+            None,
         )
     }
 
@@ -1921,6 +1952,7 @@ impl<'source> Parser<'source> {
         source_text: Option<&'source SourceText>,
         filename: JsString,
         context: RootCompileContext,
+        mut module_attribute_checker: Option<&mut dyn ModuleImportAttributeChecker>,
     ) -> Result<FunctionTree, Error> {
         if source.len() > i32::MAX as usize {
             return Err(Error::new(
@@ -2064,7 +2096,7 @@ impl<'source> Parser<'source> {
         parser.functions[0].strict = strict;
         parser.functions[0].arguments_forbidden = arguments_forbidden;
         if is_module {
-            parser.parse_module_body()?;
+            parser.parse_module_body(&mut module_attribute_checker)?;
         } else {
             parser.parse_script_body()?;
         }

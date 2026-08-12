@@ -4,7 +4,7 @@ use crate::bytecode::{
     Instruction, IteratorCallKind,
 };
 use crate::debug::DebugInfoMode;
-use crate::error::ErrorKind;
+use crate::error::{Error, ErrorKind};
 use crate::heap::{
     ClassInitializerKind, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
     ConstructorKind, EvalBindingSource, EvalCallerProfile, EvalCallerVariableTarget, EvalKind,
@@ -2159,7 +2159,9 @@ fn async_generator_return_hand_lowers_active_iterator_close() {
 }
 
 use crate::lexer::{LexError, LexErrorKind, Lexer, Position, Span};
-use crate::module::{ModuleExportTarget, ModuleImportCollisionDeclaration, ModuleImportName};
+use crate::module::{
+    ModuleExportTarget, ModuleImportAttributes, ModuleImportCollisionDeclaration, ModuleImportName,
+};
 use crate::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, OrdinaryPropertyDescriptor,
     PropertyKey, WellKnownSymbol,
@@ -2173,10 +2175,11 @@ use super::{
     ACTIVE_FUNCTION_LOCAL_NAME, BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME,
     EvalCompileContext, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
     FunctionTree, HOME_OBJECT_LOCAL_NAME, InMode, IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
-    MAX_LOCAL_VARIABLES, ModuleDeclarationExport, NEW_TARGET_LOCAL_NAME, Parser, ScopeId,
-    ScopeKind, SourceOffset, SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME,
-    build_scope_lifecycles, compile_script, compile_unlinked_eval_with_filename,
-    compile_unlinked_module_with_filename, compile_unlinked_script,
+    MAX_LOCAL_VARIABLES, ModuleDeclarationExport, ModuleImportAttributeChecker,
+    NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset, SuperCapabilities,
+    THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles, compile_script,
+    compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
+    compile_unlinked_module_with_name_and_attribute_checker, compile_unlinked_script,
     compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, resolve_identifiers,
     validate_scope_graph,
 };
@@ -2375,6 +2378,196 @@ fn module_root_rejects_html_comments_and_strict_with_before_execution() {
                 .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
     }
+}
+
+#[test]
+fn module_import_attributes_preserve_authored_state_order_and_decoded_strings() {
+    let module = compile_unlinked_module_with_filename(
+        r#"
+        import "./absent.js";
+        import "./empty.js" with {};
+        import value from "./binding.js"
+        with { if: "keyword", "double\u002dkey": '\u0078', 'single': "", };
+        export { value as renamed } from "./indirect.js" with { first: "1" };
+        export * from "./star.js" with { second: '2' };
+        "#,
+        "attributes.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+
+    let requests = module.requested_modules();
+    assert_eq!(requests.len(), 5);
+    assert!(matches!(
+        requests[0].attributes,
+        ModuleImportAttributes::Absent
+    ));
+    assert_eq!(requests[0].attributes.syntactic(), None);
+    assert_eq!(requests[0].attributes.effective(), None);
+
+    let ModuleImportAttributes::Present(empty) = &requests[1].attributes else {
+        panic!("empty with clause was not retained");
+    };
+    assert!(empty.is_empty());
+    assert!(requests[1].attributes.syntactic().unwrap().is_empty());
+    assert_eq!(requests[1].attributes.effective(), None);
+
+    let binding = requests[2]
+        .attributes
+        .effective()
+        .expect("binding import attributes");
+    assert_eq!(
+        binding
+            .iter()
+            .map(|attribute| (
+                attribute.key.to_utf8_lossy(),
+                attribute.value.to_utf8_lossy()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("if".to_owned(), "keyword".to_owned()),
+            ("double-key".to_owned(), "x".to_owned()),
+            ("single".to_owned(), String::new()),
+        ]
+    );
+    assert_eq!(
+        requests[3].attributes.effective().unwrap()[0]
+            .key
+            .to_utf8_lossy(),
+        "first"
+    );
+    assert_eq!(
+        requests[4].attributes.effective().unwrap()[0]
+            .value
+            .to_utf8_lossy(),
+        "2"
+    );
+}
+
+#[test]
+fn module_import_attribute_early_errors_match_pinned_quickjs() {
+    for source in [
+        r#"import "x" with { type: "json", "typ\u0065": "" };"#,
+        r#"import value from "x" with { type: "json", 'typ\u0065': "" };"#,
+        r#"export * from "x" with { type: "json", typ\u0065: "" };"#,
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "duplicate-attribute.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(error.message(), "duplicate with key", "{source}");
+        assert_eq!(
+            error.span().unwrap().start.byte_offset,
+            source.rfind("\"\"").unwrap(),
+            "{source}"
+        );
+    }
+
+    let invalid_key = r#"import "x" with { 0: "json" };"#;
+    let error = compile_unlinked_module_with_filename(
+        invalid_key,
+        "invalid-key.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Syntax);
+    assert_eq!(error.message(), "identifier expected");
+    assert_eq!(
+        error.span().unwrap().start.byte_offset,
+        invalid_key.find('0').unwrap()
+    );
+
+    let invalid_value = r#"import "x" with { type: json };"#;
+    let error = compile_unlinked_module_with_filename(
+        invalid_value,
+        "invalid-value.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Syntax);
+    assert_eq!(error.message(), "string expected");
+    assert_eq!(
+        error.span().unwrap().start.byte_offset,
+        invalid_value.find("type").unwrap()
+    );
+}
+
+#[derive(Default)]
+struct RecordingModuleAttributeChecker {
+    calls: Vec<Vec<(String, String)>>,
+    failure: Option<Error>,
+}
+
+impl ModuleImportAttributeChecker for RecordingModuleAttributeChecker {
+    fn check(&mut self, attributes: &[crate::module::ModuleImportAttribute]) -> Result<(), Error> {
+        self.calls.push(
+            attributes
+                .iter()
+                .map(|attribute| {
+                    (
+                        attribute.key.to_utf8_lossy(),
+                        attribute.value.to_utf8_lossy(),
+                    )
+                })
+                .collect(),
+        );
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+}
+
+#[test]
+fn module_import_attribute_checker_is_synchronous_and_skips_empty_clauses() {
+    let mut checker = RecordingModuleAttributeChecker::default();
+    let module = compile_unlinked_module_with_name_and_attribute_checker(
+        r#"
+        import "empty" with {};
+        import "first" with { a: "1", b: "2" };
+        export * from "second" with { c: "3" };
+        "#,
+        JsString::from_static("checker.mjs"),
+        DebugInfoMode::StripDebug,
+        Some(&mut checker),
+    )
+    .unwrap();
+    assert!(matches!(
+        module.requested_modules()[0].attributes,
+        ModuleImportAttributes::Present(ref attributes) if attributes.is_empty()
+    ));
+    assert_eq!(
+        checker.calls,
+        [
+            vec![
+                ("a".to_owned(), "1".to_owned()),
+                ("b".to_owned(), "2".to_owned())
+            ],
+            vec![("c".to_owned(), "3".to_owned())],
+        ]
+    );
+
+    let mut rejecting = RecordingModuleAttributeChecker {
+        calls: Vec::new(),
+        failure: Some(Error::new(ErrorKind::Type, "host rejected attributes")),
+    };
+    let error = compile_unlinked_module_with_name_and_attribute_checker(
+        r#"import "first" with { type: "json" }; @"#,
+        JsString::from_static("checker-order.mjs"),
+        DebugInfoMode::StripDebug,
+        Some(&mut rejecting),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Type);
+    assert_eq!(error.message(), "host rejected attributes");
+    assert_eq!(error.span(), None);
+    assert_eq!(
+        rejecting.calls,
+        [vec![("type".to_owned(), "json".to_owned())]]
+    );
 }
 
 #[test]
@@ -3016,20 +3209,28 @@ fn module_default_declarations_do_not_require_expression_terminators() {
 }
 
 #[test]
-fn module_import_attributes_invalid_clauses_and_duplicate_bindings_fail_closed() {
+fn module_import_attributes_and_invalid_clauses_preserve_binding_errors() {
     for source in [
         "import value from './dependency.js' with { type: 'json' };",
         "import value, { named } from './dependency.js' with { type: 'json' };",
         "import value, * as namespace from './dependency.js' with { type: 'json' };",
         "import { value } from './dependency.js' with { type: 'json' };",
     ] {
-        let error = compile_unlinked_module_with_filename(
+        let module = compile_unlinked_module_with_filename(
             source,
-            "unsupported-import.mjs",
+            "attribute-import.mjs",
             DebugInfoMode::StripDebug,
         )
-        .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported, "{source}");
+        .unwrap_or_else(|error| panic!("{source}: {error}"));
+        let [attribute] = module.requested_modules()[0]
+            .attributes
+            .effective()
+            .expect("non-empty attributes")
+        else {
+            panic!("{source}: expected one attribute");
+        };
+        assert_eq!(attribute.key.to_utf8_lossy(), "type", "{source}");
+        assert_eq!(attribute.value.to_utf8_lossy(), "json", "{source}");
     }
 
     for source in [

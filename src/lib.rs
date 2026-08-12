@@ -45,7 +45,8 @@ pub use object::{
     OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
 };
 pub use runtime::{
-    Context, EvalOptions, HostServices, ModuleBytecodeRef, ModuleLoader, ModuleLoaderError,
+    Context, EvalOptions, HostServices, ModuleBytecodeRef, ModuleImportAttribute,
+    ModuleImportAttributes, ModuleLoadResult, ModuleLoader, ModuleLoaderError,
     ModuleLoaderRegistration, PendingJobError, PendingJobOutcome, PromiseRejectionEvent, Runtime,
     RuntimeError,
 };

@@ -7,11 +7,15 @@
 //! included; top-level await and dynamic import remain later frontiers.
 
 use super::*;
-use crate::compiler::{CompileOptions, compile_unlinked_module_with_name};
+use crate::compiler::{
+    CompileOptions, ModuleImportAttributeChecker,
+    compile_unlinked_module_with_name_and_attribute_checker,
+};
 use crate::module::{
     ModuleExport, ModuleExportTarget, ModuleImport, ModuleImportCollision, ModuleImportName,
     ModuleLinkInitializer, ModuleRequest, ModuleRequestIndex, ModuleStarExport, UnlinkedModule,
 };
+pub use crate::module::{ModuleImportAttribute, ModuleImportAttributes};
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
@@ -55,6 +59,13 @@ impl From<String> for ModuleLoaderError {
     }
 }
 
+/// Extensible result returned by the attributes-aware module loader boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ModuleLoadResult {
+    SourceText(String),
+}
+
 /// Runtime-wide host boundary for source-text module normalization and load.
 ///
 /// The loaded-module cache itself is Context-owned, matching QuickJS. The
@@ -77,8 +88,38 @@ pub trait ModuleLoader: fmt::Debug {
             .map_err(|error| ModuleLoaderError::new(error.to_string()))
     }
 
-    /// Return UTF-8 ECMAScript source for one normalized module name.
-    fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError>;
+    /// Validate one request's non-empty effective attributes during parsing,
+    /// before normalization, cache lookup, or any following source text.
+    /// Absent attributes and an authored empty `with {}` clause both skip this
+    /// callback, matching QuickJS's lazily allocated attributes object.
+    fn check_attributes(
+        &self,
+        _attributes: &[ModuleImportAttribute],
+    ) -> Result<(), ModuleLoaderError> {
+        Ok(())
+    }
+
+    /// Legacy source-text loader entry point.
+    ///
+    /// Existing loaders can continue to implement only this method; the
+    /// default [`Self::load_with_attributes`] adapter preserves their behavior.
+    /// Attributes-aware loaders may instead override `load_with_attributes`.
+    fn load(&self, _normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+        Err(ModuleLoaderError::new(
+            "module loader does not implement source-text loading",
+        ))
+    }
+
+    /// Load one cache-missing normalized module with the effective attributes
+    /// from the request which selected it. An authored empty `with {}` clause
+    /// is exposed as [`ModuleImportAttributes::Absent`], matching QuickJS.
+    fn load_with_attributes(
+        &self,
+        normalized_name: &JsString,
+        _attributes: &ModuleImportAttributes,
+    ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+        self.load(normalized_name).map(ModuleLoadResult::SourceText)
+    }
 }
 
 /// Host-owned lifetime token for an installed [`ModuleLoader`].
@@ -551,6 +592,18 @@ struct ModuleResolutionGuard<'a> {
     active: &'a Cell<bool>,
 }
 
+struct ModuleLoaderAttributeChecker<'a> {
+    loader: &'a dyn ModuleLoader,
+}
+
+impl ModuleImportAttributeChecker for ModuleLoaderAttributeChecker<'_> {
+    fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), Error> {
+        self.loader
+            .check_attributes(attributes)
+            .map_err(|error| Error::new(ErrorKind::Type, error.to_string()))
+    }
+}
+
 impl Drop for ModuleResolutionGuard<'_> {
     fn drop(&mut self) {
         self.active.set(false);
@@ -645,10 +698,20 @@ impl Runtime {
         graph: &Rc<ModuleGraph>,
         source: &str,
         name: &JsString,
+        loader: Option<&dyn ModuleLoader>,
     ) -> Result<ModuleCompilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let debug_info = self.debug_info_mode();
-        let module = match compile_unlinked_module_with_name(source, name.clone(), debug_info) {
+        let mut checker = loader.map(|loader| ModuleLoaderAttributeChecker { loader });
+        let checker = checker
+            .as_mut()
+            .map(|checker| checker as &mut dyn ModuleImportAttributeChecker);
+        let module = match compile_unlinked_module_with_name_and_attribute_checker(
+            source,
+            name.clone(),
+            debug_info,
+            checker,
+        ) {
             Ok(module) => module,
             Err(error) => {
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
@@ -694,26 +757,7 @@ impl Runtime {
         filename: &str,
     ) -> Result<ModuleCompilation, RuntimeError> {
         let name = module_c_string_view(&JsString::try_from_utf8(filename)?)?;
-        let compilation = self.compile_module_record_in_realm(realm, graph, source, &name)?;
-        let ModuleCompilation::Published(module) = compilation else {
-            return Ok(compilation);
-        };
-        self.resolve_module_graph(realm, &module)?;
-        Ok(ModuleCompilation::Published(module))
-    }
-
-    fn resolve_module_graph(
-        &self,
-        realm: ContextId,
-        module: &ModuleBytecodeRef,
-    ) -> Result<(), RuntimeError> {
-        if !module.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("module bytecode"));
-        }
         if self.0.module_resolution_active.replace(true) {
-            module
-                .graph
-                .unpublish_failed_resolution(std::iter::once(module.id))?;
             return Err(RuntimeError::Invariant(
                 "module loader re-entered source-text module resolution",
             ));
@@ -721,11 +765,6 @@ impl Runtime {
         let _resolution_guard = ModuleResolutionGuard {
             active: &self.0.module_resolution_active,
         };
-        match &*module.record.resolution.borrow() {
-            ModuleResolutionState::Resolved(_) | ModuleResolutionState::Resolving => return Ok(()),
-            ModuleResolutionState::Unresolved => {}
-        }
-        *module.record.resolution.borrow_mut() = ModuleResolutionState::Resolving;
         let loader = {
             self.0
                 .module_loader
@@ -733,6 +772,29 @@ impl Runtime {
                 .as_ref()
                 .and_then(Weak::upgrade)
         };
+        let compilation =
+            self.compile_module_record_in_realm(realm, graph, source, &name, loader.as_deref())?;
+        let ModuleCompilation::Published(module) = compilation else {
+            return Ok(compilation);
+        };
+        self.resolve_module_graph(realm, &module, loader)?;
+        Ok(ModuleCompilation::Published(module))
+    }
+
+    fn resolve_module_graph(
+        &self,
+        realm: ContextId,
+        module: &ModuleBytecodeRef,
+        loader: Option<Rc<dyn ModuleLoader>>,
+    ) -> Result<(), RuntimeError> {
+        if !module.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("module bytecode"));
+        }
+        match &*module.record.resolution.borrow() {
+            ModuleResolutionState::Resolved(_) | ModuleResolutionState::Resolving => return Ok(()),
+            ModuleResolutionState::Unresolved => {}
+        }
+        *module.record.resolution.borrow_mut() = ModuleResolutionState::Resolving;
         let mut stack = vec![ModuleResolveFrame {
             module: module.clone(),
             next_request: 0,
@@ -791,18 +853,29 @@ impl Runtime {
                             "'",
                         ));
                     };
-                    let source = loader.load(&normalized_name).map_err(|error| {
-                        module_reference_error(
-                            "could not load module '",
+                    let loaded = loader
+                        .load_with_attributes(
                             &normalized_name,
-                            &format!("': {error}"),
+                            if request.attributes.effective().is_some() {
+                                &request.attributes
+                            } else {
+                                &ModuleImportAttributes::Absent
+                            },
                         )
-                    })?;
+                        .map_err(|error| {
+                            module_reference_error(
+                                "could not load module '",
+                                &normalized_name,
+                                &format!("': {error}"),
+                            )
+                        })?;
+                    let ModuleLoadResult::SourceText(source) = loaded;
                     match self.compile_module_record_in_realm(
                         realm,
                         &current.graph,
                         &source,
                         &normalized_name,
+                        Some(loader.as_ref()),
                     )? {
                         ModuleCompilation::Published(dependency) => dependency,
                         ModuleCompilation::Throw(exception) => {
@@ -2446,6 +2519,134 @@ mod tests {
     type SharedLoaderLoads = Rc<RefCell<Vec<String>>>;
     type SharedLoaderNormalizations = Rc<RefCell<Vec<(String, String)>>>;
     type SharedUtf16LoaderLoads = Rc<RefCell<Vec<Vec<u16>>>>;
+    type SharedAttributeChecks = Rc<RefCell<Vec<Vec<(String, String)>>>>;
+    type SharedAttributeLoads = Rc<RefCell<Vec<RecordedAttributeLoad>>>;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RecordedAttributeLoad {
+        name: String,
+        attributes: Option<Vec<(String, String)>>,
+    }
+
+    #[derive(Clone)]
+    struct AttributeLoaderControls {
+        checks: SharedAttributeChecks,
+        loads: SharedAttributeLoads,
+        normalizations: SharedLoaderNormalizations,
+        reject_checks: Rc<Cell<bool>>,
+        fail_loads: Rc<Cell<bool>>,
+    }
+
+    struct AttributeModuleLoader {
+        sources: SharedLoaderSources,
+        controls: AttributeLoaderControls,
+        clear_runtime_on_first_check: Option<Runtime>,
+        cleared: Cell<bool>,
+    }
+
+    impl fmt::Debug for AttributeModuleLoader {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("AttributeModuleLoader")
+        }
+    }
+
+    impl AttributeModuleLoader {
+        fn new(
+            sources: impl IntoIterator<Item = (&'static str, &'static str)>,
+        ) -> (Self, AttributeLoaderControls) {
+            let controls = AttributeLoaderControls {
+                checks: Rc::new(RefCell::new(Vec::new())),
+                loads: Rc::new(RefCell::new(Vec::new())),
+                normalizations: Rc::new(RefCell::new(Vec::new())),
+                reject_checks: Rc::new(Cell::new(false)),
+                fail_loads: Rc::new(Cell::new(false)),
+            };
+            (
+                Self {
+                    sources: Rc::new(RefCell::new(
+                        sources
+                            .into_iter()
+                            .map(|(name, source)| (name.to_owned(), source.to_owned()))
+                            .collect(),
+                    )),
+                    controls: controls.clone(),
+                    clear_runtime_on_first_check: None,
+                    cleared: Cell::new(false),
+                },
+                controls,
+            )
+        }
+    }
+
+    fn recorded_attribute_pairs(attributes: &[ModuleImportAttribute]) -> Vec<(String, String)> {
+        attributes
+            .iter()
+            .map(|attribute| {
+                (
+                    attribute.key.to_utf8_lossy(),
+                    attribute.value.to_utf8_lossy(),
+                )
+            })
+            .collect()
+    }
+
+    impl ModuleLoader for AttributeModuleLoader {
+        fn normalize(
+            &self,
+            base_name: &JsString,
+            specifier: &JsString,
+        ) -> Result<JsString, ModuleLoaderError> {
+            self.controls
+                .normalizations
+                .borrow_mut()
+                .push((base_name.to_utf8_lossy(), specifier.to_utf8_lossy()));
+            default_module_normalize_name(base_name, specifier)
+                .map_err(|error| ModuleLoaderError::new(error.to_string()))
+        }
+
+        fn check_attributes(
+            &self,
+            attributes: &[ModuleImportAttribute],
+        ) -> Result<(), ModuleLoaderError> {
+            self.controls
+                .checks
+                .borrow_mut()
+                .push(recorded_attribute_pairs(attributes));
+            if !self.cleared.replace(true)
+                && let Some(runtime) = &self.clear_runtime_on_first_check
+            {
+                runtime.clear_module_loader();
+            }
+            if self.controls.reject_checks.get() {
+                return Err(ModuleLoaderError::new("fixture rejected import attributes"));
+            }
+            Ok(())
+        }
+
+        fn load_with_attributes(
+            &self,
+            normalized_name: &JsString,
+            attributes: &ModuleImportAttributes,
+        ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+            let normalized_name = valid_fixture_module_name(normalized_name)?;
+            self.controls
+                .loads
+                .borrow_mut()
+                .push(RecordedAttributeLoad {
+                    name: normalized_name.clone(),
+                    attributes: attributes.syntactic().map(recorded_attribute_pairs),
+                });
+            if self.controls.fail_loads.get() {
+                return Err(ModuleLoaderError::new("fixture loader2 failure"));
+            }
+            self.sources
+                .borrow()
+                .get(&normalized_name)
+                .cloned()
+                .map(ModuleLoadResult::SourceText)
+                .ok_or_else(|| ModuleLoaderError::new("fixture module is missing"))
+        }
+    }
 
     fn valid_fixture_module_name(name: &JsString) -> Result<String, ModuleLoaderError> {
         String::from_utf16(&name.utf16_units().collect::<Vec<_>>())
@@ -2770,6 +2971,282 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn import_attribute_states_preserve_syntax_and_fold_empty_for_hosts() {
+        let absent = ModuleImportAttributes::Absent;
+        let empty = ModuleImportAttributes::Present(Vec::new().into_boxed_slice());
+        let present = ModuleImportAttributes::Present(
+            vec![ModuleImportAttribute {
+                key: JsString::from_static("type"),
+                value: JsString::from_static("javascript"),
+            }]
+            .into_boxed_slice(),
+        );
+
+        assert!(absent.syntactic().is_none());
+        assert!(absent.effective().is_none());
+        assert_eq!(empty.syntactic(), Some([].as_slice()));
+        assert!(empty.effective().is_none());
+        assert_eq!(
+            present.effective().map(recorded_attribute_pairs).unwrap(),
+            vec![("type".to_owned(), "javascript".to_owned())]
+        );
+    }
+
+    #[test]
+    fn loader2_observes_effective_attributes_only_on_cache_miss() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        context
+            .compile_module_with_filename("export const value = 39;", "pkg/cached.js")
+            .unwrap();
+        let (loader, controls) = AttributeModuleLoader::new([
+            ("pkg/shared.js", "export const value = 0;"),
+            ("pkg/absent.js", "export const value = 1;"),
+            ("pkg/empty.js", "export const value = 1;"),
+            ("pkg/present.js", "export const value = 1;"),
+        ]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import { value as cached } from "./cached.js" with { cache: "hit" };
+                import "./shared.js" with { flavor: "first" };
+                import "./shared.js" with { flavor: "second" };
+                import { value as absent } from "./absent.js";
+                import { value as empty } from "./empty.js" with {};
+                import { value as present } from "./present.js" with {
+                    first: "one",
+                    second: "two",
+                };
+                globalThis.__attributeLoader2 = cached + absent + empty + present;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__attributeLoader2 === 42");
+        assert_eq!(
+            &*controls.checks.borrow(),
+            &[
+                vec![("cache".to_owned(), "hit".to_owned())],
+                vec![("flavor".to_owned(), "first".to_owned())],
+                vec![("flavor".to_owned(), "second".to_owned())],
+                vec![
+                    ("first".to_owned(), "one".to_owned()),
+                    ("second".to_owned(), "two".to_owned()),
+                ],
+            ]
+        );
+        assert_eq!(
+            &*controls.loads.borrow(),
+            &[
+                RecordedAttributeLoad {
+                    name: "pkg/shared.js".to_owned(),
+                    attributes: Some(vec![("flavor".to_owned(), "first".to_owned())]),
+                },
+                RecordedAttributeLoad {
+                    name: "pkg/absent.js".to_owned(),
+                    attributes: None,
+                },
+                RecordedAttributeLoad {
+                    name: "pkg/empty.js".to_owned(),
+                    attributes: None,
+                },
+                RecordedAttributeLoad {
+                    name: "pkg/present.js".to_owned(),
+                    attributes: Some(vec![
+                        ("first".to_owned(), "one".to_owned()),
+                        ("second".to_owned(), "two".to_owned()),
+                    ]),
+                },
+            ]
+        );
+        assert_eq!(controls.normalizations.borrow().len(), 6);
+    }
+
+    #[test]
+    fn attribute_check_precedes_following_syntax_and_all_resolution_callbacks() {
+        let runtime = Runtime::new();
+        let (loader, controls) =
+            AttributeModuleLoader::new([("pkg/dependency.js", "export const value = 42;")]);
+        controls.reject_checks.set(true);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+
+        assert!(matches!(
+            context.compile_module_with_filename(
+                r#"import "./dependency.js" with { unsupported: "x" }; let = ;"#,
+                "pkg/entry.js",
+            ),
+            Err(RuntimeError::Exception)
+        ));
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("attribute check failure did not materialize a TypeError");
+        };
+        let name = runtime.intern_property_key("name").unwrap();
+        let message = runtime.intern_property_key("message").unwrap();
+        assert_eq!(
+            context.get_property(&error, &name).unwrap(),
+            Value::String(JsString::from_static("TypeError"))
+        );
+        assert_eq!(
+            context.get_property(&error, &message).unwrap(),
+            Value::String(JsString::from_static("fixture rejected import attributes"))
+        );
+        assert_eq!(
+            &*controls.checks.borrow(),
+            &[vec![("unsupported".to_owned(), "x".to_owned())]]
+        );
+        assert!(controls.normalizations.borrow().is_empty());
+        assert!(controls.loads.borrow().is_empty());
+
+        controls.reject_checks.set(false);
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import { value } from "./dependency.js" with { type: "javascript" };
+                globalThis.__attributeCheckRetry = value;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__attributeCheckRetry === 42");
+        assert_eq!(controls.loads.borrow().len(), 1);
+    }
+
+    #[test]
+    fn dependency_attribute_check_failure_rolls_back_graph_for_retry() {
+        let runtime = Runtime::new();
+        let (loader, controls) = AttributeModuleLoader::new([
+            (
+                "pkg/a.js",
+                r#"
+                import { value } from "./dependency.js" with { type: "javascript" };
+                export const answer = value + 1;
+                "#,
+            ),
+            ("pkg/dependency.js", "export const value = 41;"),
+        ]);
+        controls.reject_checks.set(true);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+
+        assert!(matches!(
+            context.compile_module_with_filename(
+                "import { answer } from './a.js'; export { answer };",
+                "pkg/entry.js",
+            ),
+            Err(RuntimeError::Exception)
+        ));
+        assert!(matches!(
+            context.take_exception().unwrap(),
+            Some(Value::Object(_))
+        ));
+        assert_eq!(
+            controls
+                .loads
+                .borrow()
+                .iter()
+                .map(|load| load.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pkg/a.js"]
+        );
+
+        controls.reject_checks.set(false);
+        let module = context
+            .compile_module_with_filename(
+                "import { answer } from './a.js'; globalThis.__attributeRollback = answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__attributeRollback === 42");
+        assert_eq!(
+            controls
+                .loads
+                .borrow()
+                .iter()
+                .map(|load| load.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pkg/a.js", "pkg/a.js", "pkg/dependency.js"]
+        );
+        assert_eq!(controls.checks.borrow().len(), 2);
+    }
+
+    #[test]
+    fn loader2_failure_unpublishes_root_and_retries_with_same_attributes() {
+        let runtime = Runtime::new();
+        let (loader, controls) =
+            AttributeModuleLoader::new([("pkg/dependency.js", "export const value = 42;")]);
+        controls.fail_loads.set(true);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let source = r#"
+            import { value } from "./dependency.js" with { type: "javascript" };
+            globalThis.__loader2Retry = value;
+        "#;
+
+        assert!(matches!(
+            context.compile_module_with_filename(source, "pkg/entry.js"),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            take_error_message(&runtime, &mut context),
+            JsString::from_static(
+                "could not load module 'pkg/dependency.js': fixture loader2 failure"
+            )
+        );
+        controls.fail_loads.set(false);
+
+        let module = context
+            .compile_module_with_filename(source, "pkg/entry.js")
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__loader2Retry === 42");
+        assert_eq!(controls.checks.borrow().len(), 2);
+        assert_eq!(controls.loads.borrow().len(), 2);
+        assert!(controls.loads.borrow().iter().all(
+            |load| load.attributes == Some(vec![("type".to_owned(), "javascript".to_owned())])
+        ));
+    }
+
+    #[test]
+    fn attribute_check_uses_loader_snapshot_for_the_complete_graph() {
+        let runtime = Runtime::new();
+        let (mut loader, controls) =
+            AttributeModuleLoader::new([("pkg/dependency.js", "export const value = 42;")]);
+        loader.clear_runtime_on_first_check = Some(runtime.clone());
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                import { value } from "./dependency.js" with { type: "javascript" };
+                globalThis.__attributeLoaderSnapshot = value;
+                "#,
+                "pkg/entry.js",
+            )
+            .unwrap();
+
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__attributeLoaderSnapshot === 42");
+        assert_eq!(controls.checks.borrow().len(), 1);
+        assert_eq!(controls.loads.borrow().len(), 1);
+
+        assert!(matches!(
+            context.compile_module_with_filename("import './fresh.js';", "pkg/next.js"),
+            Err(RuntimeError::Exception)
+        ));
+        assert!(matches!(
+            context.take_exception().unwrap(),
+            Some(Value::Object(_))
+        ));
+        assert_eq!(controls.loads.borrow().len(), 1);
     }
 
     #[test]

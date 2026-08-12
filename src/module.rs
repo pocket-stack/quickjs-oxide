@@ -20,10 +20,60 @@ pub(crate) const MODULE_IMPORT_META_BINDING_NAME: &str = "<import.meta>";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ModuleRequestIndex(pub(crate) u32);
 
+/// One decoded entry from a static import declaration's `with` clause.
+///
+/// QuickJS builds the corresponding null-prototype object in source order.
+/// Keeping the ordered entries structural here preserves that observable
+/// enumeration order without introducing a JavaScript heap object during
+/// parsing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleImportAttribute {
+    /// Decoded property key, after identifier and string-literal escapes.
+    pub key: JsString,
+    /// Decoded StringLiteral value.
+    pub value: JsString,
+}
+
+/// Syntactic import-attribute state for one requested module.
+///
+/// `Present([])` deliberately differs from [`Self::Absent`] so compiler and
+/// source tooling can retain whether `with {}` was authored. Pinned QuickJS
+/// does not allocate an attributes object until the first entry, however, so
+/// both states collapse to `None` through [`Self::effective`] at the host
+/// checker and loader boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModuleImportAttributes {
+    /// No `with` clause was authored.
+    Absent,
+    /// An authored `with` clause, possibly empty.
+    Present(Box<[ModuleImportAttribute]>),
+}
+
+impl ModuleImportAttributes {
+    /// Attributes exposed to QuickJS-compatible host hooks.
+    #[must_use]
+    pub fn effective(&self) -> Option<&[ModuleImportAttribute]> {
+        match self {
+            Self::Present(attributes) if !attributes.is_empty() => Some(attributes),
+            Self::Absent | Self::Present(_) => None,
+        }
+    }
+
+    /// Entries from an authored `with` clause, including an empty clause.
+    #[must_use]
+    pub fn syntactic(&self) -> Option<&[ModuleImportAttribute]> {
+        match self {
+            Self::Absent => None,
+            Self::Present(attributes) => Some(attributes),
+        }
+    }
+}
+
 /// One normalized-later module specifier from an import or re-export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ModuleRequest {
     pub(crate) specifier: JsString,
+    pub(crate) attributes: ModuleImportAttributes,
 }
 
 /// One imported binding linked to a root closure slot.

@@ -40,8 +40,10 @@ use self::intrinsics::date::SystemHostServices;
 use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::PromiseRejectionEvent;
 pub use self::jobs::{PendingJobError, PendingJobOutcome};
-pub use self::module::ModuleBytecodeRef;
-pub use self::module::{ModuleLoader, ModuleLoaderError, ModuleLoaderRegistration};
+pub use self::module::{
+    ModuleBytecodeRef, ModuleImportAttribute, ModuleImportAttributes, ModuleLoadResult,
+    ModuleLoader, ModuleLoaderError, ModuleLoaderRegistration,
+};
 #[cfg(feature = "test262-host")]
 pub use self::test262_agent::{Test262AgentError, Test262AgentSession};
 

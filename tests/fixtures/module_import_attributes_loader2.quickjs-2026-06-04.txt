@@ -1,0 +1,8 @@
+check[0] attrs=object proto=null count=1 before=syntax:cwe
+bad exception=SyntaxError
+check[1] attrs=object proto=null count=2 zebra=z:cwe alpha=a:cwe
+check[2] attrs=object proto=null count=1 second=2:cwe
+load[0] name=cached.js attrs=object proto=null count=2 zebra=z:cwe alpha=a:cwe
+load[1] name=empty.js attrs=undefined
+load[2] name=absent.js attrs=undefined
+entry result=ok
