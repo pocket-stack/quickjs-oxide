@@ -41,8 +41,8 @@ use self::intrinsics::promise::HostPromiseRejectionTracker;
 pub use self::intrinsics::promise::{PromiseRejectionEvent, PromiseSnapshot};
 pub use self::jobs::{PendingJobError, PendingJobOutcome};
 pub use self::module::{
-    ModuleBytecodeRef, ModuleImportAttribute, ModuleImportAttributes, ModuleLoadResult,
-    ModuleLoader, ModuleLoaderError, ModuleLoaderRegistration,
+    ModuleBytecodeRef, ModuleImportAttribute, ModuleImportAttributes, ModuleImportMetaProperty,
+    ModuleLoadResult, ModuleLoader, ModuleLoaderError, ModuleLoaderRegistration,
 };
 #[cfg(feature = "test262-host")]
 pub use self::test262_agent::{Test262AgentError, Test262AgentSession};

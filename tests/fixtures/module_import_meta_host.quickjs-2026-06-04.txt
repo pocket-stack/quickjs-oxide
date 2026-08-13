@@ -1,0 +1,1 @@
+[true,true,"file://entry.js",true,"file://dependency.js",false,{"value":"file://entry.js","writable":true,"enumerable":true,"configurable":true}]

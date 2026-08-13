@@ -446,6 +446,12 @@ pub(crate) enum RawModuleTransition {
 pub(crate) struct RawModuleRecord {
     pub(crate) name: JsString,
     pub(crate) body: RawModuleRecordBody,
+    /// Lazily allocated canonical `import.meta` object.
+    ///
+    /// This is the direct counterpart of QuickJS `JSModuleDef::meta_obj`:
+    /// the module record owns the object independently from the hidden
+    /// closure cell used by source text which actually reads `import.meta`.
+    pub(crate) import_meta: Option<ObjectId>,
     pub(crate) declaration_order: Rc<[u16]>,
     pub(crate) link_initializers: Rc<[ModuleLinkInitializer]>,
     pub(crate) import_collisions: Rc<[ModuleImportCollision]>,
@@ -12492,6 +12498,13 @@ impl Heap {
                 None
             }
         };
+        if let Some(import_meta) = record.import_meta
+            && self.object(import_meta)?.kind != ObjectKind::Ordinary
+        {
+            return Err(HeapError::Invariant(
+                "loaded-module import.meta has the wrong object class",
+            ));
+        }
         if let RawModuleEvaluationState::Errored(exception) = &record.evaluation {
             validate_module_storable_value(exception)?;
         }
@@ -19342,6 +19355,7 @@ fn raw_module_record_edges(record: &RawModuleRecord) -> Vec<RawId> {
             edges.extend(raw_value_edges(default_value));
         }
     }
+    edges.extend(record.import_meta.map(RawId::Object));
     if let Some(instance) = &record.instance {
         edges.extend(instance.slots.iter().flatten().copied().map(RawId::VarRef));
         edges.extend(instance.callable.map(RawId::Object));

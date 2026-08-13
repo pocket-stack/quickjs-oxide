@@ -47,9 +47,9 @@ pub use object::{
 };
 pub use runtime::{
     Context, EvalOptions, HostServices, ModuleBytecodeRef, ModuleImportAttribute,
-    ModuleImportAttributes, ModuleLoadResult, ModuleLoader, ModuleLoaderError,
-    ModuleLoaderRegistration, PendingJobError, PendingJobOutcome, PromiseRejectionEvent,
-    PromiseSnapshot, Runtime, RuntimeError,
+    ModuleImportAttributes, ModuleImportMetaProperty, ModuleLoadResult, ModuleLoader,
+    ModuleLoaderError, ModuleLoaderRegistration, PendingJobError, PendingJobOutcome,
+    PromiseRejectionEvent, PromiseSnapshot, Runtime, RuntimeError,
 };
 #[cfg(feature = "test262-host")]
 pub use runtime::{Test262AgentError, Test262AgentSession};

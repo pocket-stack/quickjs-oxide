@@ -59,14 +59,52 @@ impl From<String> for ModuleLoaderError {
 }
 
 /// Extensible result returned by the attributes-aware module loader boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ModuleLoadResult {
     SourceText(String),
+    /// Source text plus host-defined properties for that module's canonical
+    /// `import.meta` object.
+    ///
+    /// Properties are installed as writable, enumerable, configurable data
+    /// properties before the module record becomes visible in its Context
+    /// cache. An empty vector still materializes `import.meta`, matching a
+    /// host call to QuickJS `JS_GetImportMeta`.
+    SourceTextWithImportMeta {
+        source: String,
+        properties: Vec<ModuleImportMetaProperty>,
+    },
     /// Strict JSON source used to create a synthetic module with one
     /// `default` export. The host, not the engine, decides which requests are
     /// JSON; this variant deliberately carries no filename-extension policy.
     JsonText(String),
+}
+
+/// One host-defined data property for a source module's `import.meta` object.
+///
+/// The exact UTF-16 key and JavaScript value are preserved. Object and Symbol
+/// values must belong to the Runtime invoking the loader.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleImportMetaProperty {
+    key: JsString,
+    value: Value,
+}
+
+impl ModuleImportMetaProperty {
+    #[must_use]
+    pub const fn new(key: JsString, value: Value) -> Self {
+        Self { key, value }
+    }
+
+    #[must_use]
+    pub const fn key(&self) -> &JsString {
+        &self.key
+    }
+
+    #[must_use]
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
 }
 
 /// Runtime-wide host boundary for module normalization and loading.
@@ -552,6 +590,60 @@ impl Runtime {
         Ok(self.0.state.borrow().heap.loaded_module(module)?)
     }
 
+    /// Allocate and populate one fresh null-prototype import-meta object
+    /// before its module record is published. Keeping the public Values rooted
+    /// until every descriptor has committed makes a failed host initialization
+    /// leave neither a partial module record nor a stale cache entry.
+    fn new_module_import_meta(
+        &self,
+        properties: Vec<ModuleImportMetaProperty>,
+    ) -> Result<ObjectRef, RuntimeError> {
+        let meta = self.new_object(None)?;
+        for property in properties {
+            let key = self.intern_property_key_js_string(&property.key)?;
+            let defined = self.define_own_property(
+                &meta,
+                &key,
+                &OrdinaryPropertyDescriptor {
+                    value: DescriptorField::Present(property.value),
+                    writable: DescriptorField::Present(true),
+                    enumerable: DescriptorField::Present(true),
+                    configurable: DescriptorField::Present(true),
+                    ..OrdinaryPropertyDescriptor::new()
+                },
+            )?;
+            if !defined {
+                return Err(RuntimeError::Invariant(
+                    "fresh import.meta property definition was rejected",
+                ));
+            }
+        }
+        Ok(meta)
+    }
+
+    /// Rust counterpart of QuickJS `JS_GetImportMeta`: lazily allocate one
+    /// canonical null-prototype object and publish it as a module-owned edge.
+    fn get_or_create_module_import_meta(
+        &self,
+        module: RawModuleRef,
+    ) -> Result<ObjectRef, RuntimeError> {
+        if let Some(meta) = self.module_record(module)?.import_meta {
+            return Ok(ObjectRef::from_borrowed_handle(self.clone(), meta)?);
+        }
+
+        let meta = self.new_object(None)?;
+        self.mutate_module_record(module, |record| {
+            if record.import_meta.is_some() {
+                return Err(RuntimeError::Invariant(
+                    "module import.meta was published during initialization",
+                ));
+            }
+            record.import_meta = Some(meta.object_id());
+            Ok(())
+        })?;
+        Ok(meta)
+    }
+
     fn root_module(&self, raw: RawModuleRef) -> Result<ModuleBytecodeRef, RuntimeError> {
         let name = self.module_record(raw)?.name;
         self.retain_context_handle(raw.cache)?;
@@ -738,6 +830,7 @@ impl Runtime {
         realm: ContextId,
         source: &str,
         name: &JsString,
+        import_meta_properties: Option<Vec<ModuleImportMetaProperty>>,
     ) -> Result<ModuleCompilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let debug_info = self.debug_info_mode();
@@ -784,7 +877,10 @@ impl Runtime {
                 return Ok(ModuleCompilation::Throw(exception));
             }
         };
-        self.publish_unlinked_module(realm, module)
+        let import_meta = import_meta_properties
+            .map(|properties| self.new_module_import_meta(properties))
+            .transpose()?;
+        self.publish_unlinked_module(realm, module, import_meta.as_ref())
             .map(ModuleCompilation::Published)
     }
 
@@ -824,7 +920,7 @@ impl Runtime {
         let _resolution_guard = ModuleResolutionGuard {
             active: &self.0.module_resolution_active,
         };
-        let compilation = self.compile_module_record_in_realm(realm, source, &name)?;
+        let compilation = self.compile_module_record_in_realm(realm, source, &name, None)?;
         let ModuleCompilation::Published(module) = compilation else {
             return Ok(compilation);
         };
@@ -962,9 +1058,20 @@ impl Runtime {
                             })?
                     };
                     let compilation = match loaded {
-                        ModuleLoadResult::SourceText(source) => {
-                            self.compile_module_record_in_realm(realm, &source, &normalized_name)?
-                        }
+                        ModuleLoadResult::SourceText(source) => self
+                            .compile_module_record_in_realm(
+                                realm,
+                                &source,
+                                &normalized_name,
+                                None,
+                            )?,
+                        ModuleLoadResult::SourceTextWithImportMeta { source, properties } => self
+                            .compile_module_record_in_realm(
+                            realm,
+                            &source,
+                            &normalized_name,
+                            Some(properties),
+                        )?,
                         ModuleLoadResult::JsonText(source) => self
                             .compile_json_module_record_in_realm(
                                 realm,
@@ -1112,8 +1219,15 @@ impl Runtime {
                 };
                 let compilation = match loaded {
                     ModuleLoadResult::SourceText(source) => {
-                        self.compile_module_record_in_realm(realm, &source, &normalized_name)?
+                        self.compile_module_record_in_realm(realm, &source, &normalized_name, None)?
                     }
+                    ModuleLoadResult::SourceTextWithImportMeta { source, properties } => self
+                        .compile_module_record_in_realm(
+                            realm,
+                            &source,
+                            &normalized_name,
+                            Some(properties),
+                        )?,
                     ModuleLoadResult::JsonText(source) => {
                         self.compile_json_module_record_in_realm(realm, &source, &normalized_name)?
                     }
@@ -1168,6 +1282,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         module: UnlinkedModule,
+        import_meta: Option<&ObjectRef>,
     ) -> Result<RawModuleRef, RuntimeError> {
         bytecode_publish::verify_unlinked_module_tree(&module)?;
 
@@ -1198,6 +1313,7 @@ impl Runtime {
             body: ModuleRecordBody::SourceText {
                 function: function.bytecode_id(),
             },
+            import_meta: import_meta.map(ObjectRef::object_id),
             has_top_level_await: parts.has_top_level_await,
             declaration_order: Rc::from(parts.declaration_order),
             link_initializers: Rc::from(parts.link_initializers),
@@ -1239,6 +1355,7 @@ impl Runtime {
             body: ModuleRecordBody::Json {
                 default_value: raw_default_value,
             },
+            import_meta: None,
             has_top_level_await: false,
             declaration_order: Rc::from([]),
             link_initializers: Rc::from([]),
@@ -1433,7 +1550,7 @@ impl Runtime {
                             "published import.meta binding has invalid metadata",
                         ));
                     }
-                    let meta = self.new_object(None)?;
+                    let meta = self.get_or_create_module_import_meta(module)?;
                     Some(self.new_var_ref(
                         Value::Object(meta),
                         true,
@@ -3733,6 +3850,24 @@ impl Context {
                 Err(RuntimeError::Exception)
             }
         }
+    }
+
+    /// Return this module's canonical `import.meta` object, allocating it on
+    /// first request without linking or evaluating the module.
+    ///
+    /// This mirrors QuickJS `JS_GetImportMeta`: repeated calls and authored
+    /// `import.meta` expressions observe the same ordinary null-prototype
+    /// object. Hosts may define their own properties on the returned object
+    /// before calling [`Self::execute_module`].
+    pub fn get_module_import_meta(
+        &mut self,
+        module: &ModuleBytecodeRef,
+    ) -> Result<ObjectRef, RuntimeError> {
+        if !module.belongs_to(&self.runtime) {
+            return Err(RuntimeError::WrongRuntime("module bytecode"));
+        }
+        self.runtime.0.state.borrow().heap.context(self.realm)?;
+        self.runtime.get_or_create_module_import_meta(module.raw)
     }
 
     /// Link and evaluate one runtime-published static module, returning the
@@ -6586,6 +6721,246 @@ import("attributes.js", { with: attributeProxy })
         drop(module);
         runtime.run_gc().unwrap();
         assert_script_true(&mut context, "__lateReadMeta() === __dependencyMeta");
+    }
+
+    #[test]
+    fn host_gets_the_canonical_import_meta_before_linking() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                r#"
+                    globalThis.__hostMeta = import.meta;
+                    globalThis.__hostMetaAnswer = import.meta.answer;
+                "#,
+                "pkg/host-meta.js",
+            )
+            .unwrap();
+
+        let first = context.get_module_import_meta(&module).unwrap();
+        let second = context.get_module_import_meta(&module).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(runtime.get_prototype_of(&first).unwrap(), None);
+        assert!(runtime.is_extensible(&first).unwrap());
+
+        let answer = runtime.intern_property_key("answer").unwrap();
+        assert!(
+            context
+                .define_own_property(
+                    &first,
+                    &answer,
+                    &OrdinaryPropertyDescriptor {
+                        value: DescriptorField::Present(Value::Int(42)),
+                        writable: DescriptorField::Present(true),
+                        enumerable: DescriptorField::Present(true),
+                        configurable: DescriptorField::Present(true),
+                        ..OrdinaryPropertyDescriptor::new()
+                    },
+                )
+                .unwrap()
+        );
+
+        // Ordinary host/user mutations remain valid before linking; every
+        // following record replacement must keep accepting the same object.
+        let prototype = context.new_object().unwrap();
+        assert!(runtime.set_prototype_of(&first, Some(&prototype)).unwrap());
+        runtime.prevent_extensions(&first).unwrap();
+
+        context.execute_module(&module).unwrap();
+        let global = context.global_object().unwrap();
+        let observed = runtime.intern_property_key("__hostMeta").unwrap();
+        assert_eq!(
+            context.get_property(&global, &observed).unwrap(),
+            Value::Object(first.clone())
+        );
+        assert_script_true(&mut context, "__hostMetaAnswer === 42");
+
+        assert!(context.execute_module(&module).is_ok());
+    }
+
+    #[test]
+    fn module_record_owns_import_meta_through_gc_and_releases_cycles_with_its_cache() {
+        let runtime = Runtime::new();
+        let module = {
+            let mut context = runtime.new_context();
+            context.compile_module("export const answer = 42;").unwrap()
+        };
+        let mut host_context = runtime.new_context();
+        let meta = host_context.get_module_import_meta(&module).unwrap();
+        let self_key = runtime.intern_property_key("self").unwrap();
+        assert!(
+            host_context
+                .set_property(&meta, &self_key, Value::Object(meta.clone()))
+                .unwrap()
+        );
+        let meta_id = meta.object_id();
+        drop(meta);
+        runtime.run_gc().unwrap();
+        assert!(runtime.0.state.borrow().heap.object(meta_id).is_ok());
+
+        let observed = host_context.get_module_import_meta(&module).unwrap();
+        assert_eq!(observed.object_id(), meta_id);
+        drop(observed);
+        drop(module);
+        drop(host_context);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().context_nodes, 0);
+        assert_eq!(runtime.heap_counts().object_nodes, 0);
+    }
+
+    #[test]
+    fn loader_initializes_dependency_import_meta_before_publication() {
+        let runtime = Runtime::new();
+        let marker = runtime.new_object(None).unwrap();
+        let dependency = ModuleLoadResult::SourceTextWithImportMeta {
+            source: r#"
+                globalThis.__dependencyMetaChecks = [
+                    import.meta.url,
+                    import.meta.main,
+                    import.meta.marker,
+                    Object.getOwnPropertyDescriptor(import.meta, "url")
+                ];
+                export const answer = 42;
+            "#
+            .to_owned(),
+            properties: vec![
+                ModuleImportMetaProperty::new(
+                    JsString::from_static("url"),
+                    Value::String(JsString::from_static("file:///pkg/dependency.js")),
+                ),
+                ModuleImportMetaProperty::new(JsString::from_static("main"), Value::Bool(false)),
+                ModuleImportMetaProperty::new(
+                    JsString::from_static("marker"),
+                    Value::Object(marker.clone()),
+                ),
+            ],
+        };
+        let (loader, _, _) = JsonModuleLoader::new([("pkg/dependency.js", dependency)]);
+        let _loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import { answer } from './dependency.js'; globalThis.__entryAnswer = answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+        context.execute_module(&module).unwrap();
+
+        let marker_key = runtime
+            .intern_property_key("__dependencyMetaChecks")
+            .unwrap();
+        let global = context.global_object().unwrap();
+        let Value::Object(checks) = context.get_property(&global, &marker_key).unwrap() else {
+            panic!("dependency import.meta checks were not published");
+        };
+        let zero = runtime.intern_property_key("0").unwrap();
+        let one = runtime.intern_property_key("1").unwrap();
+        let two = runtime.intern_property_key("2").unwrap();
+        assert_eq!(
+            context.get_property(&checks, &zero).unwrap(),
+            Value::String(JsString::from_static("file:///pkg/dependency.js"))
+        );
+        assert_eq!(
+            context.get_property(&checks, &one).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            context.get_property(&checks, &two).unwrap(),
+            Value::Object(marker)
+        );
+        assert_script_true(
+            &mut context,
+            r#"
+                __entryAnswer === 42 &&
+                __dependencyMetaChecks[3].writable &&
+                __dependencyMetaChecks[3].enumerable &&
+                __dependencyMetaChecks[3].configurable
+            "#,
+        );
+    }
+
+    #[test]
+    fn import_meta_host_values_must_belong_to_the_loading_runtime() {
+        let runtime = Runtime::new();
+        let baseline_objects = runtime.heap_counts().object_nodes;
+        let local = runtime.new_object(None).unwrap();
+        let foreign = Runtime::new().new_object(None).unwrap();
+        let result = ModuleLoadResult::SourceTextWithImportMeta {
+            source: "export const answer = 42;".to_owned(),
+            properties: vec![
+                ModuleImportMetaProperty::new(
+                    JsString::from_static("local"),
+                    Value::Object(local.clone()),
+                ),
+                ModuleImportMetaProperty::new(
+                    JsString::from_static("foreign"),
+                    Value::Object(foreign),
+                ),
+            ],
+        };
+        let (loader, _, _) = JsonModuleLoader::new([("pkg/dependency.js", result)]);
+        let loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+
+        assert!(matches!(
+            context.compile_module_with_filename("import './dependency.js';", "pkg/entry.js",),
+            Err(RuntimeError::WrongRuntime("descriptor value"))
+        ));
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .loaded_module_slot_count(context.realm)
+                .unwrap(),
+            1,
+            "only the rolled-back entry tombstone may remain"
+        );
+        drop(loader_registration);
+        drop(local);
+        drop(context);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().object_nodes, baseline_objects);
+    }
+
+    #[test]
+    fn failed_deep_resolution_releases_published_dependency_import_meta() {
+        let runtime = Runtime::new();
+        let baseline_objects = runtime.heap_counts().object_nodes;
+        let marker = runtime.new_object(None).unwrap();
+        let dependency = ModuleLoadResult::SourceTextWithImportMeta {
+            source: "import './missing.js'; export const answer = 42;".to_owned(),
+            properties: vec![ModuleImportMetaProperty::new(
+                JsString::from_static("marker"),
+                Value::Object(marker.clone()),
+            )],
+        };
+        let (loader, _, _) = JsonModuleLoader::new([("pkg/dependency.js", dependency)]);
+        let loader_registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+
+        assert!(matches!(
+            context.compile_module_with_filename("import './dependency.js';", "pkg/entry.js"),
+            Err(RuntimeError::Exception)
+        ));
+        assert!(context.take_exception().unwrap().is_some());
+        assert_eq!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .heap
+                .loaded_module_slot_count(context.realm)
+                .unwrap(),
+            2,
+            "the failed entry and dependency remain only as cache tombstones"
+        );
+        drop(loader_registration);
+        drop(marker);
+        drop(context);
+        runtime.run_gc().unwrap();
+        assert_eq!(runtime.heap_counts().object_nodes, baseline_objects);
     }
 
     #[test]
