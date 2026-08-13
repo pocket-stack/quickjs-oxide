@@ -1,0 +1,9 @@
+success check[0] attrs=object has-exception=false
+success reentry result=module has-exception=false
+success outer result=module distinct=true checks=1 loads=0 has-exception=false
+success evaluate promise=fulfilled result=42 has-exception=false
+failure check[0] attrs=object has-exception=false
+failure reentry result=exception has-exception=true
+failure outer result=exception checks=1 loads=0 has-exception=true
+failure exception=SyntaxError has-exception-after-get=false
+failure retry result=module checks=1 loads=0 has-exception=false
