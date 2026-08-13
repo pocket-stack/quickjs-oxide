@@ -87,6 +87,8 @@ mod oracle_json;
 mod oracle_math_intrinsic;
 #[path = "oracle_member_access.rs"]
 mod oracle_member_access;
+#[path = "oracle_module_reentry.rs"]
+mod oracle_module_reentry;
 #[path = "oracle_number_kernels.rs"]
 mod oracle_number_kernels;
 #[path = "oracle_number_semantics.rs"]

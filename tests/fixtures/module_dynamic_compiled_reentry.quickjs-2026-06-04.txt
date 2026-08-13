@@ -1,0 +1,6 @@
+scheduled promise=pending normalizes=0 loads=0
+normalize[0] depth=0 context=same base=dynamic-reentry-entry.js spec=./outer.js
+load[0] depth=0 context=same name=outer.js
+normalize[1] depth=1 context=same base=outer.js spec=./inner.js
+load[1] depth=1 context=same name=inner.js
+final order=["inner","outer","entry"] result=42 promise=fulfilled promise-result=42
