@@ -181,8 +181,9 @@ impl ModuleImportMetaProperty {
 /// Runtime-wide host boundary for module normalization and loading.
 ///
 /// The loaded-module cache itself is Context-owned, matching QuickJS. The
-/// loader is called synchronously during module compilation/resolution and
-/// must not re-enter the same Runtime.
+/// loader is called synchronously during module compilation/resolution. Its
+/// Context-aware hooks may re-enter the same Runtime and compile a module to
+/// return as [`ModuleLoadResult::Compiled`], matching QuickJS's loader model.
 pub trait ModuleLoader: fmt::Debug {
     /// Normalize `specifier` relative to `base_name` before cache lookup.
     ///
@@ -547,36 +548,49 @@ enum ModuleEvaluationVisit {
     Poisoned,
 }
 
-struct ModuleResolutionGuard<'a> {
-    active: &'a Cell<bool>,
-}
-
 struct ModuleLoaderAttributeChecker<'a> {
     runtime: &'a Runtime,
     context: Context,
+    runtime_failure: Option<RuntimeError>,
+}
+
+enum ModuleHostCallbackOutcome<T> {
+    Completed(Result<T, ModuleLoaderError>),
+    Throw(Value),
 }
 
 impl ModuleImportAttributeChecker for ModuleLoaderAttributeChecker<'_> {
     fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), ModuleCompileFailure> {
+        if self.runtime_failure.is_some() {
+            return Err(Error::internal("module attribute host callback failed").into());
+        }
         let loader = self.runtime.current_module_loader();
         let Some(loader) = loader else {
             return Ok(());
         };
-        match loader.check_attributes_in_context(&mut self.context, attributes) {
-            Ok(()) => Ok(()),
-            Err(ModuleLoaderError {
+        let outcome = match self
+            .runtime
+            .invoke_module_host_callback(&mut self.context, |context| {
+                loader.check_attributes_in_context(context, attributes)
+            }) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.runtime_failure = Some(error);
+                return Err(Error::internal("module attribute host callback failed").into());
+            }
+        };
+        match outcome {
+            ModuleHostCallbackOutcome::Throw(exception) => {
+                Err(ModuleCompileFailure::Throw(exception))
+            }
+            ModuleHostCallbackOutcome::Completed(Ok(())) => Ok(()),
+            ModuleHostCallbackOutcome::Completed(Err(ModuleLoaderError {
                 kind: ModuleLoaderErrorKind::Message(message),
-            }) => Err(Error::new(ErrorKind::Type, message).into()),
-            Err(ModuleLoaderError {
+            })) => Err(Error::new(ErrorKind::Type, message).into()),
+            ModuleHostCallbackOutcome::Completed(Err(ModuleLoaderError {
                 kind: ModuleLoaderErrorKind::Exception(exception),
-            }) => Err(ModuleCompileFailure::Throw(exception)),
+            })) => Err(ModuleCompileFailure::Throw(exception)),
         }
-    }
-}
-
-impl Drop for ModuleResolutionGuard<'_> {
-    fn drop(&mut self) {
-        self.active.set(false);
     }
 }
 
@@ -678,6 +692,34 @@ impl Runtime {
         })
     }
 
+    fn invoke_module_host_callback<T>(
+        &self,
+        context: &mut Context,
+        callback: impl FnOnce(&mut Context) -> Result<T, ModuleLoaderError>,
+    ) -> Result<ModuleHostCallbackOutcome<T>, RuntimeError> {
+        let Ok(_guard) = super::native_stack::ModuleHostCallbackGuard::enter(self) else {
+            return Ok(ModuleHostCallbackOutcome::Throw(self.new_native_error(
+                context.realm,
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        };
+        Ok(ModuleHostCallbackOutcome::Completed(callback(context)))
+    }
+
+    fn propagate_module_host_throw<T>(
+        &self,
+        outcome: ModuleHostCallbackOutcome<T>,
+    ) -> Result<Result<T, ModuleLoaderError>, RuntimeError> {
+        match outcome {
+            ModuleHostCallbackOutcome::Completed(result) => Ok(result),
+            ModuleHostCallbackOutcome::Throw(exception) => {
+                self.set_pending_exception(exception)?;
+                Err(RuntimeError::Exception)
+            }
+        }
+    }
+
     fn finish_module_loader_error(
         &self,
         error: ModuleLoaderError,
@@ -722,27 +764,22 @@ impl Runtime {
         let Some(loader) = loader else {
             return Ok(NativeConversion::Value(()));
         };
-        if self.0.module_resolution_active.replace(true) {
-            return Err(RuntimeError::Invariant(
-                "module loader re-entered dynamic import attribute checking",
-            ));
-        }
-        let _guard = ModuleResolutionGuard {
-            active: &self.0.module_resolution_active,
-        };
         let mut context = self.module_callback_context(realm)?;
-        match loader.check_attributes_in_context(&mut context, attributes) {
-            Ok(()) => Ok(NativeConversion::Value(())),
-            Err(ModuleLoaderError {
+        match self.invoke_module_host_callback(&mut context, |context| {
+            loader.check_attributes_in_context(context, attributes)
+        })? {
+            ModuleHostCallbackOutcome::Throw(exception) => Ok(NativeConversion::Throw(exception)),
+            ModuleHostCallbackOutcome::Completed(Ok(())) => Ok(NativeConversion::Value(())),
+            ModuleHostCallbackOutcome::Completed(Err(ModuleLoaderError {
                 kind: ModuleLoaderErrorKind::Message(message),
-            }) => Ok(NativeConversion::Throw(self.new_native_error(
+            })) => Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
                 &message,
             )?)),
-            Err(ModuleLoaderError {
+            ModuleHostCallbackOutcome::Completed(Err(ModuleLoaderError {
                 kind: ModuleLoaderErrorKind::Exception(exception),
-            }) => {
+            })) => {
                 self.validate_value_domain(&exception, "module loader exception")?;
                 Ok(NativeConversion::Throw(exception))
             }
@@ -1007,13 +1044,18 @@ impl Runtime {
         let mut checker = ModuleLoaderAttributeChecker {
             runtime: self,
             context: self.module_callback_context(realm)?,
+            runtime_failure: None,
         };
-        let module = match compile_unlinked_module_with_name_and_attribute_checker(
+        let compilation = compile_unlinked_module_with_name_and_attribute_checker(
             source,
             name.clone(),
             debug_info,
             Some(&mut checker),
-        ) {
+        );
+        if let Some(error) = checker.runtime_failure.take() {
+            return Err(error);
+        }
+        let module = match compilation {
             Ok(module) => module,
             Err(ModuleCompileFailure::Throw(exception)) => {
                 self.validate_value_domain(&exception, "module loader exception")?;
@@ -1114,14 +1156,6 @@ impl Runtime {
         filename: &str,
     ) -> Result<ModuleCompilation, RuntimeError> {
         let name = module_c_string_view(&JsString::try_from_utf8(filename)?)?;
-        if self.0.module_resolution_active.replace(true) {
-            return Err(RuntimeError::Invariant(
-                "module loader re-entered source-text module resolution",
-            ));
-        }
-        let _resolution_guard = ModuleResolutionGuard {
-            active: &self.0.module_resolution_active,
-        };
         let compilation = self.compile_module_record_in_realm(realm, source, &name, None)?;
         let ModuleCompilation::Published(module) = compilation else {
             return Ok(compilation);
@@ -1200,7 +1234,11 @@ impl Runtime {
                     let loader = self.current_module_loader();
                     if let Some(loader) = loader {
                         let mut context = self.module_callback_context(realm)?;
-                        match loader.normalize_in_context(&mut context, &base_name, &specifier) {
+                        let outcome = self
+                            .invoke_module_host_callback(&mut context, |context| {
+                                loader.normalize_in_context(context, &base_name, &specifier)
+                            })?;
+                        match self.propagate_module_host_throw(outcome)? {
                             Ok(normalized) => normalized,
                             Err(error) => {
                                 let error = self.finish_module_loader_error(error, |message| {
@@ -1240,15 +1278,20 @@ impl Runtime {
                             ));
                         };
                         let mut context = self.module_callback_context(realm)?;
-                        match loader.load_with_attributes_in_context(
-                            &mut context,
-                            &normalized_name,
-                            if request.attributes.effective().is_some() {
-                                &request.attributes
-                            } else {
-                                &ModuleImportAttributes::Absent
-                            },
-                        ) {
+                        let attributes = if request.attributes.effective().is_some() {
+                            &request.attributes
+                        } else {
+                            &ModuleImportAttributes::Absent
+                        };
+                        let outcome =
+                            self.invoke_module_host_callback(&mut context, |context| {
+                                loader.load_with_attributes_in_context(
+                                    context,
+                                    &normalized_name,
+                                    attributes,
+                                )
+                            })?;
+                        match self.propagate_module_host_throw(outcome)? {
                             Ok(loaded) => loaded,
                             Err(error) => {
                                 let error = self.finish_module_loader_error(error, |message| {
@@ -1340,20 +1383,15 @@ impl Runtime {
     ) -> Result<RawModuleRef, RuntimeError> {
         let base_name = module_c_string_view(base_name)?;
         let specifier = module_c_string_view(specifier)?;
-        if self.0.module_resolution_active.replace(true) {
-            return Err(RuntimeError::Invariant(
-                "module loader re-entered dynamic import resolution",
-            ));
-        }
-        let _guard = ModuleResolutionGuard {
-            active: &self.0.module_resolution_active,
-        };
         let result = (|| {
             let normalized_name = {
                 let loader = self.current_module_loader();
                 if let Some(loader) = loader {
                     let mut context = self.module_callback_context(realm)?;
-                    match loader.normalize_in_context(&mut context, &base_name, &specifier) {
+                    let outcome = self.invoke_module_host_callback(&mut context, |context| {
+                        loader.normalize_in_context(context, &base_name, &specifier)
+                    })?;
+                    match self.propagate_module_host_throw(outcome)? {
                         Ok(normalized) => normalized,
                         Err(error) => {
                             let error = self.finish_module_loader_error(error, |message| {
@@ -1390,11 +1428,14 @@ impl Runtime {
                         ));
                     };
                     let mut context = self.module_callback_context(realm)?;
-                    match loader.load_with_attributes_in_context(
-                        &mut context,
-                        &normalized_name,
-                        attributes,
-                    ) {
+                    let outcome = self.invoke_module_host_callback(&mut context, |context| {
+                        loader.load_with_attributes_in_context(
+                            context,
+                            &normalized_name,
+                            attributes,
+                        )
+                    })?;
+                    match self.propagate_module_host_throw(outcome)? {
                         Ok(loaded) => loaded,
                         Err(error) => {
                             let error = self.finish_module_loader_error(error, |message| {
@@ -4787,36 +4828,173 @@ mod tests {
         }
     }
 
-    struct ReentrantModuleLoader {
-        context: Rc<RefCell<Context>>,
-        attempted: Cell<bool>,
-        rejected: Rc<Cell<bool>>,
+    type SharedReentryEvents = Rc<RefCell<Vec<(&'static str, usize, String, u64, ContextId)>>>;
+
+    struct ReentrantCompiledModuleLoader {
+        depth: Rc<Cell<usize>>,
+        maximum_load_depth: Rc<Cell<usize>>,
+        events: SharedReentryEvents,
     }
 
-    impl fmt::Debug for ReentrantModuleLoader {
+    impl fmt::Debug for ReentrantCompiledModuleLoader {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("ReentrantModuleLoader")
+            formatter.write_str("ReentrantCompiledModuleLoader")
         }
     }
 
-    impl ModuleLoader for ReentrantModuleLoader {
-        fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
-            if !self.attempted.replace(true) {
-                let result = self
-                    .context
-                    .borrow_mut()
-                    .compile_module_with_filename("export const stale = 1;", "pkg/reentrant.js");
-                self.rejected.set(matches!(
-                    result,
-                    Err(RuntimeError::Invariant(
-                        "module loader re-entered source-text module resolution"
-                    ))
-                ));
+    fn nested_compile_load_result(
+        context: &mut Context,
+        result: Result<ModuleBytecodeRef, RuntimeError>,
+    ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+        match result {
+            Ok(module) => Ok(ModuleLoadResult::Compiled(module)),
+            Err(RuntimeError::Exception) => {
+                let exception = context
+                    .take_exception()
+                    .map_err(|error| ModuleLoaderError::new(error.to_string()))?
+                    .ok_or_else(|| {
+                        ModuleLoaderError::new("nested module compilation lost its exception")
+                    })?;
+                Err(ModuleLoaderError::exception(exception))
             }
+            Err(error) => Err(ModuleLoaderError::new(error.to_string())),
+        }
+    }
+
+    impl ModuleLoader for ReentrantCompiledModuleLoader {
+        fn normalize_in_context(
+            &self,
+            context: &mut Context,
+            base_name: &JsString,
+            specifier: &JsString,
+        ) -> Result<JsString, ModuleLoaderError> {
+            self.events.borrow_mut().push((
+                "normalize",
+                self.depth.get(),
+                format!(
+                    "{}|{}",
+                    base_name.to_utf8_lossy(),
+                    specifier.to_utf8_lossy()
+                ),
+                context.id(),
+                context.realm_id(),
+            ));
+            default_module_normalize_name(base_name, specifier)
+                .map_err(|error| ModuleLoaderError::new(error.to_string()))
+        }
+
+        fn load_with_attributes_in_context(
+            &self,
+            context: &mut Context,
+            normalized_name: &JsString,
+            _attributes: &ModuleImportAttributes,
+        ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+            let normalized_name = valid_fixture_module_name(normalized_name)?;
+            let depth = self.depth.get();
+            self.maximum_load_depth
+                .set(self.maximum_load_depth.get().max(depth));
+            self.events.borrow_mut().push((
+                "load",
+                depth,
+                normalized_name.clone(),
+                context.id(),
+                context.realm_id(),
+            ));
+            self.depth.set(depth + 1);
+            let result = match normalized_name.as_str() {
+                "outer.js" => context.compile_module_with_filename(
+                    "import './inner.js'; globalThis.reentryOrder.push('outer'); export const outer = 1;",
+                    "outer.js",
+                ),
+                "inner.js" => context.compile_module_with_filename(
+                    "globalThis.reentryOrder.push('inner'); export const inner = 1;",
+                    "inner.js",
+                ),
+                _ => {
+                    self.depth.set(depth);
+                    return Err(ModuleLoaderError::new("fixture module is missing"));
+                }
+            };
+            self.depth.set(depth);
+            nested_compile_load_result(context, result)
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecursiveContextModuleLoader {
+        loads: Rc<Cell<usize>>,
+        active: Rc<Cell<usize>>,
+        maximum_active: Rc<Cell<usize>>,
+    }
+
+    #[derive(Debug)]
+    struct RecoveringNestedFailureModuleLoader {
+        observed_nested_failure: Rc<Cell<bool>>,
+        nested_missing_loads: Rc<Cell<usize>>,
+    }
+
+    impl ModuleLoader for RecoveringNestedFailureModuleLoader {
+        fn load_with_attributes_in_context(
+            &self,
+            context: &mut Context,
+            normalized_name: &JsString,
+            _attributes: &ModuleImportAttributes,
+        ) -> Result<ModuleLoadResult, ModuleLoaderError> {
             match valid_fixture_module_name(normalized_name)?.as_str() {
-                "pkg/dependency.js" => Ok("export const answer = 42;".to_owned()),
+                "selected.js" => {
+                    let failed = context.compile_module_with_filename(
+                        "import './nested-missing.js';",
+                        "nested-failed.js",
+                    );
+                    if !matches!(failed, Err(RuntimeError::Exception)) {
+                        return Err(ModuleLoaderError::new(
+                            "nested failure did not produce a JavaScript exception",
+                        ));
+                    }
+                    let exception = context
+                        .take_exception()
+                        .map_err(|error| ModuleLoaderError::new(error.to_string()))?;
+                    if exception.is_none() {
+                        return Err(ModuleLoaderError::new(
+                            "nested failure lost its JavaScript exception",
+                        ));
+                    }
+                    self.observed_nested_failure.set(true);
+                    let result = context.compile_module_with_filename(
+                        "export const answer = 42;",
+                        "selected-fallback.js",
+                    );
+                    nested_compile_load_result(context, result)
+                }
+                "nested-missing.js" => {
+                    self.nested_missing_loads
+                        .set(self.nested_missing_loads.get() + 1);
+                    Err(ModuleLoaderError::new("intentional nested load failure"))
+                }
                 _ => Err(ModuleLoaderError::new("fixture module is missing")),
             }
+        }
+    }
+
+    impl ModuleLoader for RecursiveContextModuleLoader {
+        fn load_with_attributes_in_context(
+            &self,
+            context: &mut Context,
+            normalized_name: &JsString,
+            _attributes: &ModuleImportAttributes,
+        ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+            let normalized_name = valid_fixture_module_name(normalized_name)?;
+            let next = self.loads.get() + 1;
+            self.loads.set(next);
+            let previous_depth = self.active.get();
+            let depth = previous_depth + 1;
+            self.active.set(depth);
+            self.maximum_active
+                .set(self.maximum_active.get().max(depth));
+            let source = format!("import './overflow-{next}.js';");
+            let result = context.compile_module_with_filename(&source, &normalized_name);
+            self.active.set(previous_depth);
+            nested_compile_load_result(context, result)
         }
     }
 
@@ -6527,6 +6705,8 @@ import("attributes.js", { with: attributeProxy })
         let runtime = Runtime::new();
         let panicking_registration = runtime.set_module_loader(PanickingModuleLoader);
         let mut context = runtime.new_context();
+        let stack_top_sentinel = Some(0x5a5a_usize);
+        runtime.0.host_stack_top.set(stack_top_sentinel);
 
         let panic = catch_unwind(AssertUnwindSafe(|| {
             let _ = context.compile_module_with_filename(
@@ -6535,6 +6715,8 @@ import("attributes.js", { with: attributeProxy })
             );
         }));
         assert!(panic.is_err());
+        assert_eq!(runtime.0.module_host_callback_depth.get(), 0);
+        assert_eq!(runtime.0.host_stack_top.get(), stack_top_sentinel);
         drop(panicking_registration);
         runtime.clear_module_loader();
 
@@ -6579,47 +6761,156 @@ import("attributes.js", { with: attributeProxy })
     }
 
     #[test]
-    fn loader_reentry_is_rejected_without_leaving_a_cached_module_record() {
+    fn compiled_loader_reentry_matches_pinned_quickjs_order_and_context() {
         let runtime = Runtime::new();
-        let rejected = Rc::new(Cell::new(false));
-        let loader_context = Rc::new(RefCell::new(runtime.new_context()));
-        let _loader_registration = runtime.set_module_loader(ReentrantModuleLoader {
-            context: loader_context.clone(),
-            attempted: Cell::new(false),
-            rejected: rejected.clone(),
+        let depth = Rc::new(Cell::new(0));
+        let maximum_load_depth = Rc::new(Cell::new(0));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _loader_registration = runtime.set_module_loader(ReentrantCompiledModuleLoader {
+            depth: depth.clone(),
+            maximum_load_depth: maximum_load_depth.clone(),
+            events: events.clone(),
         });
         let mut context = runtime.new_context();
+        let expected_id = context.id();
+        let expected_realm = context.realm_id();
+        context.eval("globalThis.reentryOrder = [];").unwrap();
         let module = context
             .compile_module_with_filename(
-                "import { answer } from './dependency.js'; globalThis.__reentryAnswer = answer;",
-                "pkg/entry.js",
+                "import './outer.js'; globalThis.reentryOrder.push('entry');",
+                "reentry-entry.js",
             )
             .unwrap();
         context.execute_module(&module).unwrap();
-        assert!(rejected.get());
-        assert_script_true(&mut context, "__reentryAnswer === 42");
+        assert_eq!(depth.get(), 0);
+        assert_eq!(maximum_load_depth.get(), 1);
+        assert_eq!(
+            events.borrow().as_slice(),
+            [
+                (
+                    "normalize",
+                    0,
+                    "reentry-entry.js|./outer.js".to_owned(),
+                    expected_id,
+                    expected_realm,
+                ),
+                (
+                    "load",
+                    0,
+                    "outer.js".to_owned(),
+                    expected_id,
+                    expected_realm,
+                ),
+                (
+                    "normalize",
+                    1,
+                    "outer.js|./inner.js".to_owned(),
+                    expected_id,
+                    expected_realm,
+                ),
+                (
+                    "load",
+                    1,
+                    "inner.js".to_owned(),
+                    expected_id,
+                    expected_realm,
+                ),
+            ]
+        );
+        assert_eq!(
+            context.eval("JSON.stringify(reentryOrder)").unwrap(),
+            Value::String(JsString::from_static("[\"inner\",\"outer\",\"entry\"]"))
+        );
+    }
 
-        // The rejected nested compilation must not become the oldest record
-        // for its name in the loader Context cache.
-        loader_context
-            .borrow_mut()
-            .compile_module_with_filename("export const stale = 42;", "pkg/reentrant.js")
+    #[test]
+    fn recursive_context_loader_overflow_is_catchable_and_runtime_recovers() {
+        std::thread::Builder::new()
+            .name("module-loader-reentry-stack-proof".to_owned())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = Runtime::new();
+                let loads = Rc::new(Cell::new(0));
+                let active = Rc::new(Cell::new(0));
+                let maximum_active = Rc::new(Cell::new(0));
+                let registration = runtime.set_module_loader(RecursiveContextModuleLoader {
+                    loads: loads.clone(),
+                    active: active.clone(),
+                    maximum_active: maximum_active.clone(),
+                });
+                let mut context = runtime.new_context();
+
+                assert!(matches!(
+                    context.compile_module_with_filename(
+                        "import './overflow-0.js';",
+                        "overflow-entry.js",
+                    ),
+                    Err(RuntimeError::Exception)
+                ));
+                let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+                    panic!("module-host overflow did not produce an Error object");
+                };
+                let name = runtime.intern_property_key("name").unwrap();
+                let message = runtime.intern_property_key("message").unwrap();
+                assert_eq!(
+                    context.get_property(&error, &name).unwrap(),
+                    Value::String(JsString::from_static("InternalError"))
+                );
+                assert_eq!(
+                    context.get_property(&error, &message).unwrap(),
+                    Value::String(JsString::from_static("stack overflow"))
+                );
+                assert!(loads.get() > 1);
+                assert!(maximum_active.get() > 1);
+                assert_eq!(active.get(), 0);
+                assert_eq!(runtime.0.module_host_callback_depth.get(), 0);
+                assert!(!context.has_exception());
+
+                drop(registration);
+                runtime.clear_module_loader();
+                let (recovery_loader, _, _) = MapModuleLoader::new([(
+                    "recovery.js",
+                    "export const answer = 42;",
+                )]);
+                let _recovery_registration = runtime.set_module_loader(recovery_loader);
+                let recovered = context
+                    .compile_module_with_filename(
+                        "import { answer } from './recovery.js'; globalThis.__moduleReentryRecovered = answer;",
+                        "recovery-entry.js",
+                    )
+                    .unwrap();
+                context.execute_module(&recovered).unwrap();
+                assert_script_true(&mut context, "__moduleReentryRecovered === 42");
+                assert_eq!(context.eval("6 * 7").unwrap(), Value::Int(42));
+            })
+            .unwrap()
+            .join()
             .unwrap();
-        let verification = loader_context
-            .borrow_mut()
+    }
+
+    #[test]
+    fn failed_nested_compilation_does_not_rollback_suspended_outer_resolution() {
+        let runtime = Runtime::new();
+        let observed_nested_failure = Rc::new(Cell::new(false));
+        let nested_missing_loads = Rc::new(Cell::new(0));
+        let _registration = runtime.set_module_loader(RecoveringNestedFailureModuleLoader {
+            observed_nested_failure: observed_nested_failure.clone(),
+            nested_missing_loads: nested_missing_loads.clone(),
+        });
+        let mut context = runtime.new_context();
+
+        let entry = context
             .compile_module_with_filename(
-                "import { stale } from './reentrant.js'; globalThis.__reentryRecovered = stale;",
-                "pkg/verification.js",
+                "import { answer } from './selected.js'; globalThis.__nestedFailureRecovered = answer;",
+                "nested-recovery-entry.js",
             )
             .unwrap();
-        loader_context
-            .borrow_mut()
-            .execute_module(&verification)
-            .unwrap();
-        assert_script_true(
-            &mut loader_context.borrow_mut(),
-            "__reentryRecovered === 42",
-        );
+        assert!(observed_nested_failure.get());
+        assert_eq!(nested_missing_loads.get(), 1);
+        assert!(!context.has_exception());
+        context.execute_module(&entry).unwrap();
+        assert_script_true(&mut context, "__nestedFailureRecovered === 42");
+        assert_eq!(runtime.0.module_host_callback_depth.get(), 0);
     }
 
     #[test]

@@ -22,6 +22,67 @@ fn current_host_stack_address() -> usize {
     std::ptr::from_ref(&marker).addr()
 }
 
+/// Marker returned when a module-host callback would exhaust the shared
+/// QuickJS-shaped native-stack budget.
+pub(in crate::runtime) struct ModuleHostStackOverflow;
+
+/// Panic-safe accounting for synchronous normalize, attribute, and load
+/// callbacks. The outermost module callback temporarily owns the stack-top
+/// marker; nested callbacks share it with bytecode and Proxy entry guards.
+#[must_use = "the guard must live across the module-host callback"]
+pub(in crate::runtime) struct ModuleHostCallbackGuard {
+    runtime: Runtime,
+    previous_depth: usize,
+    restore_top: bool,
+    previous_top: Option<usize>,
+}
+
+impl ModuleHostCallbackGuard {
+    pub(in crate::runtime) fn enter(runtime: &Runtime) -> Result<Self, ModuleHostStackOverflow> {
+        let previous_depth = runtime.0.module_host_callback_depth.get();
+        let next_depth = previous_depth
+            .checked_add(1)
+            .ok_or(ModuleHostStackOverflow)?;
+        let active_frames = !runtime.0.state.borrow().active_frames.is_empty();
+        let active_chain =
+            active_frames || runtime.0.proxy_method_depth.get() != 0 || previous_depth != 0;
+        let current = current_host_stack_address();
+        let previous_top = runtime.0.host_stack_top.get();
+        let restore_top = !active_chain;
+
+        if active_chain {
+            if let Some(top) = previous_top {
+                if top.abs_diff(current) >= HOST_STACK_BUDGET_BYTES {
+                    return Err(ModuleHostStackOverflow);
+                }
+            } else {
+                runtime.0.host_stack_top.set(Some(current));
+            }
+        } else {
+            runtime.0.host_stack_top.set(Some(current));
+        }
+        runtime.0.module_host_callback_depth.set(next_depth);
+        Ok(Self {
+            runtime: runtime.clone(),
+            previous_depth,
+            restore_top,
+            previous_top,
+        })
+    }
+}
+
+impl Drop for ModuleHostCallbackGuard {
+    fn drop(&mut self) {
+        self.runtime
+            .0
+            .module_host_callback_depth
+            .set(self.previous_depth);
+        if self.restore_top {
+            self.runtime.0.host_stack_top.set(self.previous_top);
+        }
+    }
+}
+
 impl Runtime {
     /// Approximate QuickJS's host-stack check with safe pointer-address
     /// arithmetic. The outermost guarded call captures a top marker; nested
@@ -34,8 +95,11 @@ impl Runtime {
     /// catch the overflow error.
     fn host_stack_would_overflow(&self) -> bool {
         let current = current_host_stack_address();
-        let active_frame_count = self.0.state.borrow().active_frames.len();
-        if active_frame_count == 0 {
+        let active_frames = !self.0.state.borrow().active_frames.is_empty();
+        let active_chain = active_frames
+            || self.0.proxy_method_depth.get() != 0
+            || self.0.module_host_callback_depth.get() != 0;
+        if !active_chain {
             self.0.host_stack_top.set(Some(current));
             return false;
         }
@@ -47,19 +111,7 @@ impl Runtime {
     }
 
     pub(in crate::runtime) fn proxy_method_stack_would_overflow(&self) -> bool {
-        if !self.0.state.borrow().active_frames.is_empty() {
-            return self.host_stack_would_overflow();
-        }
-        let current = current_host_stack_address();
-        if self.0.proxy_method_depth.get() == 0 {
-            self.0.host_stack_top.set(Some(current));
-            return false;
-        }
-        let Some(top) = self.0.host_stack_top.get() else {
-            self.0.host_stack_top.set(Some(current));
-            return false;
-        };
-        top.abs_diff(current) >= HOST_STACK_BUDGET_BYTES
+        self.host_stack_would_overflow()
     }
 
     /// Return the unchecked portion of QuickJS's one-MiB runtime stack budget.

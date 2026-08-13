@@ -9,9 +9,11 @@ Unicode behavior, class elements, and static-module graphs with live bindings,
 top-level await, import attributes, JSON modules, `import.meta`, and dynamic
 `import()`. The Rust embedding API and file-module CLI also expose QuickJS's
 canonical, host-populated `import.meta` object. JavaScript-valued module-host
-errors retain their exact values and object/Symbol identity. Module-host
-callback re-entry, JSON5/byte-oriented loading, and the remaining conformance
-gaps are still parity work.
+errors retain their exact values and object/Symbol identity. Context-aware
+module-host callbacks can synchronously compile and return same-Context
+modules, including nested loader re-entry protected by a finite host-stack
+budget. JSON5/byte-oriented loading and the remaining conformance gaps are
+still parity work.
 
 <!-- current-test262-metrics:start -->
 The authoritative R3es Test262 baseline records **79,475 full-corpus passes

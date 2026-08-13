@@ -124,13 +124,13 @@ struct RuntimeInner {
     /// passed its external source and bytecode admission checks.
     #[cfg(feature = "test262-host")]
     dynamic_import_bytecode_allowed: Cell<bool>,
-    /// Reject nested source-text module resolution from a loader callback.
-    /// The public loader contract forbids Runtime re-entry; making the graph
-    /// transaction explicit keeps a violating host from corrupting caches.
-    module_resolution_active: Cell<bool>,
-    /// Address marker captured at the outermost JavaScript/native call entry.
-    /// Nested call guards compare against it using QuickJS's one-MiB host-stack
-    /// budget; no pointer is dereferenced after the marker's lifetime ends.
+    /// Synchronous module-host callbacks currently on the native stack.
+    /// Loader re-entry is part of the QuickJS contract, so this participates
+    /// in the shared host-stack budget instead of acting as an exclusion lock.
+    module_host_callback_depth: Cell<usize>,
+    /// Address marker captured at the outermost JavaScript, native, or module-
+    /// host entry. Nested guards compare against it using QuickJS's one-MiB
+    /// host-stack budget; no pointer is dereferenced after the marker ends.
     host_stack_top: Cell<Option<usize>>,
     proxy_method_depth: Cell<usize>,
     next_context_id: Cell<u64>,
@@ -795,7 +795,7 @@ impl Runtime {
             module_loader: RefCell::new(None),
             #[cfg(feature = "test262-host")]
             dynamic_import_bytecode_allowed: Cell::new(true),
-            module_resolution_active: Cell::new(false),
+            module_host_callback_depth: Cell::new(0),
             host_stack_top: Cell::new(None),
             proxy_method_depth: Cell::new(0),
             next_context_id: Cell::new(0),
