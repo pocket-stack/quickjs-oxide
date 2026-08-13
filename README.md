@@ -7,8 +7,9 @@ The engine is runnable, but it is not at Feature Parity yet. Implemented slices
 include binary data and Atomics, collections and weak references, Promise jobs,
 Unicode behavior, class elements, and static-module graphs with live bindings,
 top-level await, import attributes, JSON modules, `import.meta`, and dynamic
-`import()`. JavaScript-valued module-host errors, JSON5/byte-oriented loading,
-host-populated `import.meta` properties, and the remaining conformance gaps are
+`import()`. The Rust embedding API and file-module CLI also expose QuickJS's
+canonical, host-populated `import.meta` object. JavaScript-valued module-host
+errors, JSON5/byte-oriented loading, and the remaining conformance gaps are
 still parity work.
 
 <!-- current-test262-metrics:start -->
@@ -35,6 +36,8 @@ cd quickjs-oxide
 ./scripts/demo-42.sh  # 42
 cargo run --quiet --bin qjs -- --print-result -e \
   '(function (a) { return a + 1; })(41)'  # 42
+# File modules: -m/--module, --script, .mjs and source detection
+cargo run --quiet --bin qjs -- examples/module-42.mjs  # 42
 ```
 
 ## Status

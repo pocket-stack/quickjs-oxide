@@ -38,11 +38,14 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   QuickJS-matched early errors
 - static-module graphs, live namespaces, default exports, top-level await with
   async dependency/SCC scheduling, static import attributes with loader
-  validation, JSON synthetic modules, and core `import.meta` semantics
+  validation, JSON synthetic modules, and canonical host-populated
+  `import.meta` objects
 - Script-goal dynamic `import()` with FIFO load/finish jobs, live host-loader
   callback sampling, import attributes, cached cycle-root evaluation Promises,
   namespace reuse, and Promise assimilation
-- native command-line execution and a Rust/WASM browser playground
+- native command-line execution, including file-module goal detection,
+  filesystem dependencies, top-level-await settlement, and `import.meta`
+  `url`/`main`; plus a Rust/WASM browser playground
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner

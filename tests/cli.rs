@@ -2,10 +2,74 @@ use crate::runtime_oracle::run_cli;
 #[path = "support/runtime_oracle.rs"]
 mod runtime_oracle;
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_MODULE_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+struct ModuleFixture {
+    root: PathBuf,
+}
+
+impl ModuleFixture {
+    fn new() -> Self {
+        let id = NEXT_MODULE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "quickjs-oxide-cli-module-{}-{id}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("remove stale CLI module fixture");
+        }
+        fs::create_dir_all(&root).expect("create CLI module fixture");
+        Self { root }
+    }
+
+    fn write(&self, relative: &str, source: &str) -> PathBuf {
+        let path = self.root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create CLI module fixture directory");
+        }
+        fs::write(&path, source).expect("write CLI module fixture");
+        path
+    }
+}
+
+impl Drop for ModuleFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
 
 fn qjs() -> Command {
     Command::new(env!("CARGO_BIN_EXE_qjs"))
+}
+
+fn cli_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    return path.replace('\\', "/");
+    #[cfg(not(windows))]
+    path.into_owned()
+}
+
+fn run_file(arguments: &[&str], path: &Path) -> std::process::Output {
+    qjs()
+        .args(arguments)
+        .arg(cli_path(path))
+        .output()
+        .expect("run qjs file")
+}
+
+fn expected_file_url(path: &Path) -> String {
+    let filename = cli_path(path);
+    if filename.contains(':') {
+        filename
+    } else {
+        format!("file://{}", path.canonicalize().unwrap().display())
+    }
 }
 
 #[test]
@@ -147,11 +211,274 @@ fn dynamic_import_reaches_the_async_host_rejection_path() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "ReferenceError:could not load module 'fixture'\n"
+    let diagnostic = String::from_utf8(output.stdout).unwrap();
+    assert!(diagnostic.starts_with("ReferenceError:"), "{diagnostic:?}");
+    assert!(
+        diagnostic.contains("module filename 'fixture'"),
+        "{diagnostic:?}"
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn eval_dynamic_import_uses_the_process_file_loader() {
+    let fixture = ModuleFixture::new();
+    let dependency = fixture.write(
+        "eval-dependency.mjs",
+        "export const answer = 42; export const main = import.meta.main;\n",
+    );
+    let specifier = dependency.to_string_lossy();
+    let source = format!(
+        "import({specifier:?}).then(function(module) {{ print(module.answer, module.main); }});"
+    );
+    let output = qjs().args(["-e", &source]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"42 false\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn eval_module_matches_qjs_platform_cmdline_import_meta_initialization() {
+    let output = qjs()
+        .args(["-m", "-e", "print(import.meta.url, import.meta.main)"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    #[cfg(windows)]
+    assert_eq!(output.stdout, b"file://<cmdline> true\n");
+    #[cfg(not(windows))]
+    assert_eq!(output.stdout, b"undefined undefined\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn explicit_module_modes_load_relative_files_and_wait_for_top_level_await() {
+    let fixture = ModuleFixture::new();
+    let dependency = fixture.write(
+        "dependency.js",
+        concat!(
+            "await Promise.resolve();\n",
+            "export const answer = 42;\n",
+            "export const dependencyMain = import.meta.main;\n",
+            "export const dependencyUrl = import.meta.url;\n",
+        ),
+    );
+    let entry = fixture.write(
+        "entry.js",
+        concat!(
+            "import { answer, dependencyMain, dependencyUrl } from './dependency.js';\n",
+            "print(answer);\n",
+            "print(import.meta.main);\n",
+            "print(import.meta.url);\n",
+            "print(dependencyMain);\n",
+            "print(dependencyUrl);\n",
+        ),
+    );
+    let expected = format!(
+        "42\ntrue\n{}\nfalse\n{}\n",
+        expected_file_url(&entry),
+        expected_file_url(&dependency),
+    );
+
+    for arguments in [["-m"].as_slice(), ["--module"].as_slice()] {
+        let output = run_file(arguments, &entry);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn file_loader_selects_json_and_rejects_unknown_import_attribute_keys() {
+    let fixture = ModuleFixture::new();
+    fixture.write("by-extension.json", r#"{"answer":40}"#);
+    fixture.write("by-attribute.data", r#"{"answer":2}"#);
+    let entry = fixture.write(
+        "json-entry.mjs",
+        concat!(
+            "import extension from './by-extension.json';\n",
+            "import attribute from './by-attribute.data' with { type: 'json' };\n",
+            "print(extension.answer + attribute.answer);\n",
+        ),
+    );
+    let json = run_file(&[], &entry);
+    assert!(
+        json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    assert_eq!(json.stdout, b"42\n");
+    assert!(json.stderr.is_empty());
+
+    let rejected = fixture.write(
+        "bad-attribute.mjs",
+        "import './by-extension.json' with { integrity: 'x' };\n",
+    );
+    let rejected = run_file(&[], &rejected);
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(rejected.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("TypeError: import attribute 'integrity' is not supported"),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+}
+
+#[test]
+fn file_goal_autodetects_mjs_and_leading_static_module_syntax() {
+    let fixture = ModuleFixture::new();
+    fixture.write("static-dependency.js", "print('static import');\n");
+    let extension = fixture.write(
+        "extension.mjs",
+        "await Promise.resolve(); print('extension');\n",
+    );
+    let syntax = fixture.write(
+        "syntax.js",
+        "// leading trivia\nexport const answer = 42; print(answer);\n",
+    );
+    let hashbang = fixture.write(
+        "hashbang.js",
+        "#!/usr/bin/env qjs\nexport const answer = 42; print(answer);\n",
+    );
+    let static_import = fixture.write("static-import.js", "import './static-dependency.js';\n");
+    let dotfile = fixture.write(".mjs", "await Promise.resolve(); print('dotfile');\n");
+
+    for (path, expected) in [
+        (&extension, b"extension\n".as_slice()),
+        (&syntax, b"42\n"),
+        (&hashbang, b"42\n"),
+        (&static_import, b"static import\n"),
+        (&dotfile, b"dotfile\n"),
+    ] {
+        let output = run_file(&[], path);
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, expected, "{}", path.display());
+        assert!(output.stderr.is_empty(), "{}", path.display());
+    }
+}
+
+#[test]
+fn script_override_wins_over_mjs_module_detection() {
+    let fixture = ModuleFixture::new();
+    let entry = fixture.write("forced-script.mjs", "export const answer = 42;\n");
+
+    let output = run_file(&["--script"], &entry);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("export"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let module_last = run_file(&["--script", "-m"], &entry);
+    assert!(
+        module_last.status.success(),
+        "{}",
+        String::from_utf8_lossy(&module_last.stderr)
+    );
+    assert!(module_last.stdout.is_empty());
+    assert!(module_last.stderr.is_empty());
+
+    let script_last = run_file(&["-m", "--script"], &entry);
+    assert_eq!(script_last.status.code(), Some(1));
+    assert!(script_last.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&script_last.stderr).contains("export"));
+}
+
+#[test]
+fn dynamic_import_stays_script_goal_and_uses_the_file_loader() {
+    let fixture = ModuleFixture::new();
+    fixture.write("dependency.mjs", "export const answer = 42;\n");
+    let entry = fixture.write(
+        "dynamic.js",
+        concat!(
+            "import('./dependency.mjs').then(function(module) { print(module.answer); });\n",
+            "print(this === globalThis);\n",
+        ),
+    );
+
+    let output = run_file(&[], &entry);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"true\n42\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn rejected_module_promise_is_reported_once() {
+    let fixture = ModuleFixture::new();
+    let entry = fixture.write("rejected.mjs", "await Promise.resolve(); throw 42;\n");
+
+    let output = run_file(&[], &entry);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"42\n");
+}
+
+#[test]
+fn missing_main_file_uses_the_qjs_path_diagnostic_shape() {
+    let fixture = ModuleFixture::new();
+    let missing = fixture.root.join("missing.js");
+    let output = run_file(&[], &missing);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    assert!(diagnostic.starts_with(&format!("{}: ", cli_path(&missing))));
+    assert!(!diagnostic.starts_with("qjs:"));
+}
+
+#[test]
+fn tracked_file_module_demo_returns_42() {
+    let demo = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/module-42.mjs");
+    let output = run_file(&[], &demo);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"42\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn tracked_file_module_demo_matches_quickjs_oracle() {
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP file-module differential: set QJS_ORACLE to upstream qjs");
+        return;
+    };
+    let demo = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/module-42.mjs");
+    let filename = cli_path(&demo);
+    let oxide = run_file(&[], &demo);
+    let quickjs = Command::new(oracle)
+        .arg(&filename)
+        .output()
+        .expect("run QuickJS file-module demo");
+
+    assert_eq!(oxide.status.code(), quickjs.status.code());
+    assert_eq!(oxide.stdout, quickjs.stdout);
+    assert_eq!(oxide.stderr, quickjs.stderr);
 }
 
 #[test]

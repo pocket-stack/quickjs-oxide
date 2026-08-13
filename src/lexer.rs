@@ -1987,6 +1987,89 @@ pub(crate) fn quickjs_simple_lookahead_is_of(mut source: &str) -> bool {
         .is_none_or(|ch| !is_identifier_continue(ch))
 }
 
+/// Reproduce the small raw scanner used by QuickJS `JS_DetectModule`.
+///
+/// This intentionally does not share the full ECMAScript lexer: upstream's
+/// heuristic performs literal keyword probes, treats escaped keyword tails as
+/// matches, and only distinguishes the first token after raw `import`.
+#[must_use]
+pub fn quickjs_detect_module(mut source: &str) -> bool {
+    if source.starts_with("#!") {
+        source = source
+            .find(['\r', '\n', '\u{2028}', '\u{2029}'])
+            .map_or("", |offset| &source[offset..]);
+    }
+    let Some((token, rest)) = quickjs_detect_module_token(source) else {
+        return false;
+    };
+    match token {
+        QuickJsDetectModuleToken::Export => true,
+        QuickJsDetectModuleToken::Import => !matches!(
+            quickjs_detect_module_token(rest).map(|(token, _)| token),
+            Some(QuickJsDetectModuleToken::Dot | QuickJsDetectModuleToken::LeftParen)
+        ),
+        QuickJsDetectModuleToken::Dot
+        | QuickJsDetectModuleToken::LeftParen
+        | QuickJsDetectModuleToken::Other => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum QuickJsDetectModuleToken {
+    Import,
+    Export,
+    Dot,
+    LeftParen,
+    Other,
+}
+
+fn quickjs_detect_module_token(mut source: &str) -> Option<(QuickJsDetectModuleToken, &str)> {
+    loop {
+        let ch = source.chars().next()?;
+        if source.starts_with("//") {
+            let (offset, terminator) = source
+                .char_indices()
+                .find(|(_, ch)| matches!(ch, '\0' | '\r' | '\n'))?;
+            if terminator == '\0' {
+                return None;
+            }
+            source = &source[offset..];
+        } else if source.starts_with("/*") {
+            let body = &source[2..];
+            let offset = body.find("*/")?;
+            if body[..offset].contains('\0') {
+                return None;
+            }
+            source = &source[2 + offset + 2..];
+        } else if is_line_terminator(ch) || is_js_whitespace(ch) {
+            source = &source[ch.len_utf8()..];
+        } else {
+            break;
+        }
+    }
+
+    if let Some(rest) = source.strip_prefix("import")
+        && rest
+            .chars()
+            .next()
+            .is_none_or(|ch| !is_identifier_continue(ch))
+    {
+        return Some((QuickJsDetectModuleToken::Import, rest));
+    } else if let Some(rest) = source.strip_prefix("export")
+        && rest
+            .chars()
+            .next()
+            .is_none_or(|ch| !is_identifier_continue(ch))
+    {
+        return Some((QuickJsDetectModuleToken::Export, rest));
+    } else if let Some(rest) = source.strip_prefix('.') {
+        return Some((QuickJsDetectModuleToken::Dot, rest));
+    } else if let Some(rest) = source.strip_prefix('(') {
+        return Some((QuickJsDetectModuleToken::LeftParen, rest));
+    }
+    Some((QuickJsDetectModuleToken::Other, source))
+}
+
 fn is_js_whitespace(ch: char) -> bool {
     matches!(
         ch,
@@ -2862,6 +2945,35 @@ mod tests {
             .find(|token| matches!(token.kind, TokenKind::Punctuator(Punctuator::Increment)))
             .unwrap();
         assert!(increment.line_terminator_before);
+    }
+
+    #[test]
+    fn quickjs_module_detection_keeps_the_raw_upstream_heuristic() {
+        for source in [
+            "export const answer = 42",
+            "#!/usr/bin/env qjs\nexport const answer = 42",
+            "/* leading */ import answer from './answer.js'",
+            r"export\u0061 = 1",
+            r"import\u0061 = 1",
+        ] {
+            assert!(quickjs_detect_module(source), "{source:?}");
+        }
+        for source in [
+            "import('./answer.js')",
+            "import . meta",
+            "import.1",
+            "// import at EOF",
+            "// import\u{2028}export const answer = 42",
+            "//\0\nexport const answer = 42",
+            "/*\0*/export const answer = 42",
+            "importπ",
+            "const importValue = 42",
+            "/* unterminated import",
+        ] {
+            assert!(!quickjs_detect_module(source), "{source:?}");
+        }
+        assert!(quickjs_detect_module("import /* unterminated"));
+        assert!(quickjs_detect_module("import /*\0*/ ("));
     }
 
     #[test]
