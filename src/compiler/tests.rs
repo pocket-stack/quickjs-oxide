@@ -2175,10 +2175,10 @@ use super::{
     ACTIVE_FUNCTION_LOCAL_NAME, BindingKind, BindingStorage, EVAL_VARIABLE_OBJECT_LOCAL_NAME,
     EvalCompileContext, FunctionIr, FunctionIrOptions, FunctionKind, FunctionSourceInfo,
     FunctionTree, HOME_OBJECT_LOCAL_NAME, InMode, IrScope, MAX_BYTECODE_STACK, MAX_CALL_ARGUMENTS,
-    MAX_LOCAL_VARIABLES, ModuleDeclarationExport, ModuleImportAttributeChecker,
-    NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset, SuperCapabilities,
-    THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles, compile_script,
-    compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
+    MAX_LOCAL_VARIABLES, ModuleCompileFailure, ModuleDeclarationExport,
+    ModuleImportAttributeChecker, NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset,
+    SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles,
+    compile_script, compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
     compile_unlinked_module_with_name_and_attribute_checker, compile_unlinked_script,
     compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, lower_unlinked_tree,
     resolve_identifiers, validate_scope_graph,
@@ -2503,11 +2503,14 @@ fn module_import_attribute_early_errors_match_pinned_quickjs() {
 #[derive(Default)]
 struct RecordingModuleAttributeChecker {
     calls: Vec<Vec<(String, String)>>,
-    failure: Option<Error>,
+    failure: Option<ModuleCompileFailure>,
 }
 
 impl ModuleImportAttributeChecker for RecordingModuleAttributeChecker {
-    fn check(&mut self, attributes: &[crate::module::ModuleImportAttribute]) -> Result<(), Error> {
+    fn check(
+        &mut self,
+        attributes: &[crate::module::ModuleImportAttribute],
+    ) -> Result<(), ModuleCompileFailure> {
         self.calls.push(
             attributes
                 .iter()
@@ -2557,20 +2560,41 @@ fn module_import_attribute_checker_is_synchronous_and_skips_empty_clauses() {
 
     let mut rejecting = RecordingModuleAttributeChecker {
         calls: Vec::new(),
-        failure: Some(Error::new(ErrorKind::Type, "host rejected attributes")),
+        failure: Some(Error::new(ErrorKind::Type, "host rejected attributes").into()),
     };
-    let error = compile_unlinked_module_with_name_and_attribute_checker(
-        r#"import "first" with { type: "json" }; @"#,
-        JsString::from_static("checker-order.mjs"),
-        DebugInfoMode::StripDebug,
-        Some(&mut rejecting),
-    )
-    .unwrap_err();
+    let ModuleCompileFailure::Engine(error) =
+        compile_unlinked_module_with_name_and_attribute_checker(
+            r#"import "first" with { type: "json" }; @"#,
+            JsString::from_static("checker-order.mjs"),
+            DebugInfoMode::StripDebug,
+            Some(&mut rejecting),
+        )
+        .unwrap_err()
+    else {
+        panic!("message-based checker failure was not an engine diagnostic");
+    };
     assert_eq!(error.kind(), ErrorKind::Type);
     assert_eq!(error.message(), "host rejected attributes");
     assert_eq!(error.span(), None);
     assert_eq!(
         rejecting.calls,
+        [vec![("type".to_owned(), "json".to_owned())]]
+    );
+
+    let mut throwing = RecordingModuleAttributeChecker {
+        calls: Vec::new(),
+        failure: Some(ModuleCompileFailure::Throw(Value::Int(42))),
+    };
+    let failure = compile_unlinked_module_with_name_and_attribute_checker(
+        r#"import "first" with { type: "json" }; @"#,
+        JsString::from_static("checker-throw-order.mjs"),
+        DebugInfoMode::StripDebug,
+        Some(&mut throwing),
+    )
+    .unwrap_err();
+    assert_eq!(failure, ModuleCompileFailure::Throw(Value::Int(42)));
+    assert_eq!(
+        throwing.calls,
         [vec![("type".to_owned(), "json".to_owned())]]
     );
 }

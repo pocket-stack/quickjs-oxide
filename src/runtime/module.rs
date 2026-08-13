@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::compiler::{
-    CompileOptions, ModuleImportAttributeChecker,
+    CompileOptions, ModuleCompileFailure, ModuleImportAttributeChecker,
     compile_unlinked_module_with_name_and_attribute_checker,
 };
 use crate::heap::PromiseState;
@@ -18,31 +18,95 @@ pub use crate::module::{ModuleImportAttribute, ModuleImportAttributes};
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-/// Failure reported by an embedder-provided static-module loader.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Failure reported by an embedder-provided module-host callback.
+///
+/// Message failures retain the Rust convenience API's native-error policy.
+/// [`Self::exception`] instead models QuickJS `JS_Throw`: its JavaScript value
+/// is propagated unchanged through static compilation or dynamic-import
+/// rejection, including object and Symbol identity.
+#[derive(Clone, Debug)]
 pub struct ModuleLoaderError {
-    message: String,
+    kind: ModuleLoaderErrorKind,
+}
+
+#[derive(Clone, Debug)]
+enum ModuleLoaderErrorKind {
+    Message(String),
+    Exception(Value),
 }
 
 impl ModuleLoaderError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            kind: ModuleLoaderErrorKind::Message(message.into()),
         }
     }
 
+    /// Return an abrupt JavaScript completion carrying `exception` exactly.
+    #[must_use]
+    pub const fn exception(exception: Value) -> Self {
+        Self {
+            kind: ModuleLoaderErrorKind::Exception(exception),
+        }
+    }
+
+    /// Return a stable human-readable description.
+    ///
+    /// For JavaScript-valued abrupt completions this returns
+    /// `"JavaScript exception"`; use [`Self::exception_value`] to inspect the
+    /// exact value or [`Self::message_text`] to distinguish both forms.
     #[must_use]
     pub fn message(&self) -> &str {
-        &self.message
+        match &self.kind {
+            ModuleLoaderErrorKind::Message(message) => message,
+            ModuleLoaderErrorKind::Exception(_) => "JavaScript exception",
+        }
+    }
+
+    /// Return the host diagnostic text, if this is a message failure.
+    #[must_use]
+    pub fn message_text(&self) -> Option<&str> {
+        match &self.kind {
+            ModuleLoaderErrorKind::Message(message) => Some(message),
+            ModuleLoaderErrorKind::Exception(_) => None,
+        }
+    }
+
+    /// Borrow the exact JavaScript exception value, if one was supplied.
+    #[must_use]
+    pub const fn exception_value(&self) -> Option<&Value> {
+        match &self.kind {
+            ModuleLoaderErrorKind::Message(_) => None,
+            ModuleLoaderErrorKind::Exception(exception) => Some(exception),
+        }
     }
 }
 
 impl fmt::Display for ModuleLoaderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+        formatter.write_str(self.message())
     }
 }
+
+impl PartialEq for ModuleLoaderError {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.kind, &other.kind) {
+            (ModuleLoaderErrorKind::Message(left), ModuleLoaderErrorKind::Message(right)) => {
+                left == right
+            }
+            (ModuleLoaderErrorKind::Exception(left), ModuleLoaderErrorKind::Exception(right)) => {
+                left.same_quickjs_representation(right)
+            }
+            _ => false,
+        }
+    }
+}
+
+// Equality is representation-based for exception values, including NaN
+// payload bits, so it is reflexive and preserves the public pre-exception API
+// bound.
+impl Eq for ModuleLoaderError {}
 
 impl StdError for ModuleLoaderError {}
 
@@ -448,7 +512,7 @@ struct ModuleLoaderAttributeChecker<'a> {
 }
 
 impl ModuleImportAttributeChecker for ModuleLoaderAttributeChecker<'_> {
-    fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), Error> {
+    fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), ModuleCompileFailure> {
         let loader = self
             .runtime
             .0
@@ -459,9 +523,15 @@ impl ModuleImportAttributeChecker for ModuleLoaderAttributeChecker<'_> {
         let Some(loader) = loader else {
             return Ok(());
         };
-        loader
-            .check_attributes(attributes)
-            .map_err(|error| Error::new(ErrorKind::Type, error.to_string()))
+        match loader.check_attributes(attributes) {
+            Ok(()) => Ok(()),
+            Err(ModuleLoaderError {
+                kind: ModuleLoaderErrorKind::Message(message),
+            }) => Err(Error::new(ErrorKind::Type, message).into()),
+            Err(ModuleLoaderError {
+                kind: ModuleLoaderErrorKind::Exception(exception),
+            }) => Err(ModuleCompileFailure::Throw(exception)),
+        }
     }
 }
 
@@ -534,6 +604,21 @@ impl fmt::Debug for ModuleBytecodeRef {
 }
 
 impl Runtime {
+    fn finish_module_loader_error(
+        &self,
+        error: ModuleLoaderError,
+        message: impl FnOnce(&str) -> RuntimeError,
+    ) -> Result<RuntimeError, RuntimeError> {
+        match error.kind {
+            ModuleLoaderErrorKind::Message(text) => Ok(message(&text)),
+            ModuleLoaderErrorKind::Exception(exception) => {
+                self.validate_value_domain(&exception, "module loader exception")?;
+                self.set_pending_exception(exception)?;
+                Ok(RuntimeError::Exception)
+            }
+        }
+    }
+
     /// Install the runtime-wide module loader used by subsequent Context
     /// module resolution. Existing Context caches remain intact.
     pub fn set_module_loader<L>(&self, loader: L) -> ModuleLoaderRegistration
@@ -578,11 +663,19 @@ impl Runtime {
         };
         match loader.check_attributes(attributes) {
             Ok(()) => Ok(NativeConversion::Value(())),
-            Err(error) => Ok(NativeConversion::Throw(self.new_native_error(
+            Err(ModuleLoaderError {
+                kind: ModuleLoaderErrorKind::Message(message),
+            }) => Ok(NativeConversion::Throw(self.new_native_error(
                 realm,
                 NativeErrorKind::Type,
-                &error.to_string(),
+                &message,
             )?)),
+            Err(ModuleLoaderError {
+                kind: ModuleLoaderErrorKind::Exception(exception),
+            }) => {
+                self.validate_value_domain(&exception, "module loader exception")?;
+                Ok(NativeConversion::Throw(exception))
+            }
         }
     }
 
@@ -845,7 +938,11 @@ impl Runtime {
             Some(&mut checker),
         ) {
             Ok(module) => module,
-            Err(error) => {
+            Err(ModuleCompileFailure::Throw(exception)) => {
+                self.validate_value_domain(&exception, "module loader exception")?;
+                return Ok(ModuleCompilation::Throw(exception));
+            }
+            Err(ModuleCompileFailure::Engine(error)) => {
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
                     return Err(RuntimeError::Engine(error));
                 };
@@ -1002,13 +1099,19 @@ impl Runtime {
                         .as_ref()
                         .and_then(Weak::upgrade);
                     if let Some(loader) = loader {
-                        loader.normalize(&base_name, &specifier).map_err(|error| {
-                            module_reference_error(
-                                "could not normalize module '",
-                                &specifier,
-                                &format!("': {error}"),
-                            )
-                        })?
+                        match loader.normalize(&base_name, &specifier) {
+                            Ok(normalized) => normalized,
+                            Err(error) => {
+                                let error = self.finish_module_loader_error(error, |message| {
+                                    module_reference_error(
+                                        "could not normalize module '",
+                                        &specifier,
+                                        &format!("': {message}"),
+                                    )
+                                })?;
+                                return Err(error);
+                            }
+                        }
                     } else {
                         default_module_normalize_name(&base_name, &specifier)?
                     }
@@ -1040,22 +1143,26 @@ impl Runtime {
                                 "'",
                             ));
                         };
-                        loader
-                            .load_with_attributes(
-                                &normalized_name,
-                                if request.attributes.effective().is_some() {
-                                    &request.attributes
-                                } else {
-                                    &ModuleImportAttributes::Absent
-                                },
-                            )
-                            .map_err(|error| {
-                                module_reference_error(
-                                    "could not load module '",
-                                    &normalized_name,
-                                    &format!("': {error}"),
-                                )
-                            })?
+                        match loader.load_with_attributes(
+                            &normalized_name,
+                            if request.attributes.effective().is_some() {
+                                &request.attributes
+                            } else {
+                                &ModuleImportAttributes::Absent
+                            },
+                        ) {
+                            Ok(loaded) => loaded,
+                            Err(error) => {
+                                let error = self.finish_module_loader_error(error, |message| {
+                                    module_reference_error(
+                                        "could not load module '",
+                                        &normalized_name,
+                                        &format!("': {message}"),
+                                    )
+                                })?;
+                                return Err(error);
+                            }
+                        }
                     };
                     let compilation = match loaded {
                         ModuleLoadResult::SourceText(source) => self
@@ -1172,13 +1279,19 @@ impl Runtime {
                     .as_ref()
                     .and_then(Weak::upgrade);
                 if let Some(loader) = loader {
-                    loader.normalize(&base_name, &specifier).map_err(|error| {
-                        module_reference_error(
-                            "could not normalize module '",
-                            &specifier,
-                            &format!("': {error}"),
-                        )
-                    })?
+                    match loader.normalize(&base_name, &specifier) {
+                        Ok(normalized) => normalized,
+                        Err(error) => {
+                            let error = self.finish_module_loader_error(error, |message| {
+                                module_reference_error(
+                                    "could not normalize module '",
+                                    &specifier,
+                                    &format!("': {message}"),
+                                )
+                            })?;
+                            return Err(error);
+                        }
+                    }
                 } else {
                     default_module_normalize_name(&base_name, &specifier)?
                 }
@@ -1207,15 +1320,19 @@ impl Runtime {
                             "'",
                         ));
                     };
-                    loader
-                        .load_with_attributes(&normalized_name, attributes)
-                        .map_err(|error| {
-                            module_reference_error(
-                                "could not load module '",
-                                &normalized_name,
-                                &format!("': {error}"),
-                            )
-                        })?
+                    match loader.load_with_attributes(&normalized_name, attributes) {
+                        Ok(loaded) => loaded,
+                        Err(error) => {
+                            let error = self.finish_module_loader_error(error, |message| {
+                                module_reference_error(
+                                    "could not load module '",
+                                    &normalized_name,
+                                    &format!("': {message}"),
+                                )
+                            })?;
+                            return Err(error);
+                        }
+                    }
                 };
                 let compilation = match loaded {
                     ModuleLoadResult::SourceText(source) => {
@@ -3894,6 +4011,28 @@ mod tests {
     use super::*;
     use crate::heap::{PromiseData, PromiseState};
 
+    fn assert_eq_implemented<T: Eq>() {}
+
+    #[test]
+    fn module_loader_error_keeps_eq_with_representation_exact_exceptions() {
+        assert_eq_implemented::<ModuleLoaderError>();
+        let nan = f64::from_bits(0x7ff8_0000_0000_0042);
+        assert_eq!(
+            ModuleLoaderError::exception(Value::Float(nan)),
+            ModuleLoaderError::exception(Value::Float(nan))
+        );
+        assert_ne!(
+            ModuleLoaderError::exception(Value::Float(nan)),
+            ModuleLoaderError::exception(Value::Float(f64::NAN))
+        );
+        assert_ne!(
+            ModuleLoaderError::new("JavaScript exception"),
+            ModuleLoaderError::exception(Value::String(JsString::from_static(
+                "JavaScript exception"
+            )))
+        );
+    }
+
     type SharedLoaderSources = Rc<RefCell<HashMap<String, String>>>;
     type SharedLoaderLoads = Rc<RefCell<Vec<String>>>;
     type SharedLoaderNormalizations = Rc<RefCell<Vec<(String, String)>>>;
@@ -4144,6 +4283,113 @@ mod tests {
                 .get(&normalized_name)
                 .cloned()
                 .ok_or_else(|| ModuleLoaderError::new("fixture module is missing"))
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum AbruptLoaderPhase {
+        Normalize,
+        CheckAttributes,
+        Load,
+    }
+
+    #[derive(Debug)]
+    struct AbruptModuleLoader {
+        phase: AbruptLoaderPhase,
+        exception: Value,
+        failing: Rc<Cell<bool>>,
+        loads: SharedLoaderLoads,
+    }
+
+    impl AbruptModuleLoader {
+        fn new(
+            phase: AbruptLoaderPhase,
+            exception: Value,
+        ) -> (Self, Rc<Cell<bool>>, SharedLoaderLoads) {
+            let failing = Rc::new(Cell::new(true));
+            let loads = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    phase,
+                    exception,
+                    failing: failing.clone(),
+                    loads: loads.clone(),
+                },
+                failing,
+                loads,
+            )
+        }
+
+        fn failure(&self, phase: AbruptLoaderPhase) -> Option<ModuleLoaderError> {
+            (self.failing.get() && self.phase == phase)
+                .then(|| ModuleLoaderError::exception(self.exception.clone()))
+        }
+    }
+
+    impl ModuleLoader for AbruptModuleLoader {
+        fn normalize(
+            &self,
+            base_name: &JsString,
+            specifier: &JsString,
+        ) -> Result<JsString, ModuleLoaderError> {
+            if let Some(error) = self.failure(AbruptLoaderPhase::Normalize) {
+                return Err(error);
+            }
+            default_module_normalize_name(base_name, specifier)
+                .map_err(|error| ModuleLoaderError::new(error.to_string()))
+        }
+
+        fn check_attributes(
+            &self,
+            _attributes: &[ModuleImportAttribute],
+        ) -> Result<(), ModuleLoaderError> {
+            match self.failure(AbruptLoaderPhase::CheckAttributes) {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
+
+        fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+            self.loads
+                .borrow_mut()
+                .push(valid_fixture_module_name(normalized_name)?);
+            if let Some(error) = self.failure(AbruptLoaderPhase::Load) {
+                return Err(error);
+            }
+            Ok("export const answer = 42;".to_owned())
+        }
+    }
+
+    #[derive(Debug)]
+    struct DependencyAttributeAbruptLoader {
+        exception: Value,
+        failing: Rc<Cell<bool>>,
+        loads: SharedLoaderLoads,
+    }
+
+    impl ModuleLoader for DependencyAttributeAbruptLoader {
+        fn check_attributes(
+            &self,
+            _attributes: &[ModuleImportAttribute],
+        ) -> Result<(), ModuleLoaderError> {
+            if self.failing.get() {
+                Err(ModuleLoaderError::exception(self.exception.clone()))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn load(&self, normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+            let normalized_name = valid_fixture_module_name(normalized_name)?;
+            self.loads.borrow_mut().push(normalized_name.clone());
+            match normalized_name.as_str() {
+                "pkg/dependency.js" => Ok(
+                    "import { answer } from './leaf.js' with { type: 'javascript' }; export { answer };"
+                        .to_owned(),
+                ),
+                "pkg/leaf.js" => Ok("export const answer = 42;".to_owned()),
+                _ => Err(ModuleLoaderError::new("fixture module is missing")),
+            }
         }
     }
 
@@ -4513,6 +4759,176 @@ mod tests {
             .raw_string_property_for_diagnostics(&error, &message_key)
             .unwrap()
             .expect("module Error object has no string message")
+    }
+
+    fn assert_static_loader_exception(
+        phase: AbruptLoaderPhase,
+        make_exception: impl FnOnce(&Runtime) -> Value,
+        source: &str,
+    ) {
+        let runtime = Runtime::new();
+        let exception = make_exception(&runtime);
+        let (loader, failing, loads) = AbruptModuleLoader::new(phase, exception.clone());
+        let _registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+
+        assert!(matches!(
+            context.compile_module_with_filename(source, "pkg/entry.js"),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(context.take_exception().unwrap(), Some(exception));
+        assert!(!context.has_exception());
+
+        failing.set(false);
+        let module = context
+            .compile_module_with_filename(source, "pkg/entry.js")
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__abruptRetry === 42");
+        let expected_loads = usize::from(phase == AbruptLoaderPhase::Load) + 1;
+        assert_eq!(loads.borrow().len(), expected_loads);
+    }
+
+    #[test]
+    fn module_loader_exception_values_are_not_wrapped_and_resolution_retries() {
+        assert_static_loader_exception(
+            AbruptLoaderPhase::Normalize,
+            |runtime| Value::Object(runtime.new_object(None).unwrap()),
+            "import { answer } from './dependency.js'; globalThis.__abruptRetry = answer;",
+        );
+        assert_static_loader_exception(
+            AbruptLoaderPhase::CheckAttributes,
+            |_| Value::Int(42),
+            "import { answer } from './dependency.js' with { type: 'javascript' }; globalThis.__abruptRetry = answer;",
+        );
+        assert_static_loader_exception(
+            AbruptLoaderPhase::Load,
+            |runtime| {
+                Value::Symbol(
+                    runtime
+                        .new_symbol(Some(JsString::from_static("load-reason")))
+                        .unwrap(),
+                )
+            },
+            "import { answer } from './dependency.js'; globalThis.__abruptRetry = answer;",
+        );
+    }
+
+    #[test]
+    fn dynamic_import_preserves_module_loader_exception_identity() {
+        let runtime = Runtime::new();
+        let reason = runtime.new_object(None).unwrap();
+        let (loader, _, loads) =
+            AbruptModuleLoader::new(AbruptLoaderPhase::Load, Value::Object(reason.clone()));
+        let _registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let promise =
+            eval_dynamic_import(&mut context, "import('./dependency.js')", "pkg/entry.js");
+
+        assert_eq!(
+            promise_snapshot(&runtime, &promise).state,
+            PromiseState::Pending
+        );
+        assert!(runtime.execute_pending_job().unwrap());
+        let snapshot = promise_snapshot(&runtime, &promise);
+        assert_eq!(snapshot.state, PromiseState::Rejected);
+        assert_eq!(
+            runtime.root_raw_value(&snapshot.result).unwrap(),
+            Value::Object(reason)
+        );
+        assert_eq!(loads.borrow().as_slice(), ["pkg/dependency.js"]);
+        assert!(!context.has_exception());
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn dynamic_import_attribute_checker_preserves_exception_identity() {
+        let runtime = Runtime::new();
+        let reason = runtime.new_object(None).unwrap();
+        let (loader, _, loads) = AbruptModuleLoader::new(
+            AbruptLoaderPhase::CheckAttributes,
+            Value::Object(reason.clone()),
+        );
+        let _registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let promise = eval_dynamic_import(
+            &mut context,
+            "import('./dependency.js', { with: { type: 'javascript' } })",
+            "pkg/entry.js",
+        );
+
+        let snapshot = promise_snapshot(&runtime, &promise);
+        assert_eq!(snapshot.state, PromiseState::Rejected);
+        assert_eq!(
+            runtime.root_raw_value(&snapshot.result).unwrap(),
+            Value::Object(reason)
+        );
+        assert!(loads.borrow().is_empty());
+        assert!(!context.has_exception());
+        assert!(!runtime.is_job_pending());
+    }
+
+    #[test]
+    fn foreign_runtime_module_loader_exceptions_are_rejected_before_publication() {
+        for phase in [
+            AbruptLoaderPhase::Normalize,
+            AbruptLoaderPhase::CheckAttributes,
+            AbruptLoaderPhase::Load,
+        ] {
+            let runtime = Runtime::new();
+            let foreign = Runtime::new().new_object(None).unwrap();
+            let (loader, _, _) = AbruptModuleLoader::new(phase, Value::Object(foreign));
+            let _registration = runtime.set_module_loader(loader);
+            let mut context = runtime.new_context();
+            let source = if phase == AbruptLoaderPhase::CheckAttributes {
+                "import './dependency.js' with { type: 'javascript' };"
+            } else {
+                "import './dependency.js';"
+            };
+
+            assert!(matches!(
+                context.compile_module_with_filename(source, "pkg/entry.js"),
+                Err(RuntimeError::WrongRuntime("module loader exception"))
+            ));
+            assert!(!context.has_exception());
+        }
+    }
+
+    #[test]
+    fn dependency_attribute_exception_rolls_back_the_resolution_graph_for_retry() {
+        let runtime = Runtime::new();
+        let reason = runtime.new_object(None).unwrap();
+        let failing = Rc::new(Cell::new(true));
+        let loads = Rc::new(RefCell::new(Vec::new()));
+        let loader = DependencyAttributeAbruptLoader {
+            exception: Value::Object(reason.clone()),
+            failing: failing.clone(),
+            loads: loads.clone(),
+        };
+        let _registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let source = "import './dependency.js'; globalThis.__dependencyAbruptRetry = 42;";
+
+        assert!(matches!(
+            context.compile_module_with_filename(source, "pkg/entry.js"),
+            Err(RuntimeError::Exception)
+        ));
+        assert_eq!(
+            context.take_exception().unwrap(),
+            Some(Value::Object(reason))
+        );
+        assert_eq!(loads.borrow().as_slice(), ["pkg/dependency.js"]);
+
+        failing.set(false);
+        let module = context
+            .compile_module_with_filename(source, "pkg/entry.js")
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__dependencyAbruptRetry === 42");
+        assert_eq!(
+            loads.borrow().as_slice(),
+            ["pkg/dependency.js", "pkg/dependency.js", "pkg/leaf.js"]
+        );
     }
 
     #[test]

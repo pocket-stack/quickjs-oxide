@@ -279,6 +279,7 @@ pub(crate) fn compile_unlinked_module_with_name(
     debug_info: DebugInfoMode,
 ) -> Result<UnlinkedModule, Error> {
     compile_unlinked_module_with_name_and_attribute_checker(source, name, debug_info, None)
+        .map_err(ModuleCompileFailure::into_engine_without_checker)
 }
 
 /// Synchronous host validation performed as soon as one non-empty static
@@ -288,7 +289,42 @@ pub(crate) fn compile_unlinked_module_with_name(
 /// clause's closing brace and before parsing any following source. Returning
 /// an error here therefore must stop parsing immediately.
 pub(crate) trait ModuleImportAttributeChecker {
-    fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), Error>;
+    fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), ModuleCompileFailure>;
+}
+
+/// Abrupt completion of the checked module-compilation path.
+///
+/// Ordinary compiler diagnostics remain [`Error`] values. The distinct
+/// JavaScript-value arm is required for QuickJS's module attribute callback:
+/// a host may throw any JavaScript value, which must cross the parser without
+/// being stringified or materialized as another native Error object.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ModuleCompileFailure {
+    Engine(Error),
+    Throw(Value),
+}
+
+impl From<Error> for ModuleCompileFailure {
+    fn from(error: Error) -> Self {
+        Self::Engine(error)
+    }
+}
+
+impl From<JsStringError> for ModuleCompileFailure {
+    fn from(error: JsStringError) -> Self {
+        Self::Engine(error.into())
+    }
+}
+
+impl ModuleCompileFailure {
+    fn into_engine_without_checker(self) -> Error {
+        match self {
+            Self::Engine(error) => error,
+            Self::Throw(_) => Error::internal(
+                "module compiler produced a host throw without an attribute checker",
+            ),
+        }
+    }
 }
 
 /// Compile a module while exposing QuickJS's parse-time attribute-check hook.
@@ -297,11 +333,11 @@ pub(crate) fn compile_unlinked_module_with_name_and_attribute_checker(
     name: JsString,
     debug_info: DebugInfoMode,
     checker: Option<&mut dyn ModuleImportAttributeChecker>,
-) -> Result<UnlinkedModule, Error> {
+) -> Result<UnlinkedModule, ModuleCompileFailure> {
     let mut tree = Parser::parse_module(source, name, checker)?;
     resolve_identifiers(&mut tree)?;
     if let Some(error) = tree.pending_unsupported.take() {
-        return Err(error);
+        return Err(error.into());
     }
     let name = tree.filename.clone();
     let module = tree
@@ -315,7 +351,7 @@ pub(crate) fn compile_unlinked_module_with_name_and_attribute_checker(
             .any(|operation| matches!(operation.op, IrOp::Bytecode(Instruction::Await)))
     });
     let function = lower_unlinked_tree(tree, debug_info)?;
-    module::finish_module(name, function, has_top_level_await, module)
+    module::finish_module(name, function, has_top_level_await, module).map_err(Into::into)
 }
 
 /// Compile one primitive-String eval as an independent synthetic root.
@@ -1914,13 +1950,14 @@ enum RootCompileContext {
 impl<'source> Parser<'source> {
     fn parse(source: &'source str, filename: JsString) -> Result<FunctionTree, Error> {
         Self::parse_root(source, None, filename, RootCompileContext::Script, None)
+            .map_err(ModuleCompileFailure::into_engine_without_checker)
     }
 
     fn parse_module(
         source: &'source str,
         filename: JsString,
         checker: Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<FunctionTree, Error> {
+    ) -> Result<FunctionTree, ModuleCompileFailure> {
         Self::parse_root(source, None, filename, RootCompileContext::Module, checker)
     }
 
@@ -1937,6 +1974,7 @@ impl<'source> Parser<'source> {
             RootCompileContext::Eval(context),
             None,
         )
+        .map_err(ModuleCompileFailure::into_engine_without_checker)
     }
 
     fn parse_eval_source(
@@ -1951,6 +1989,7 @@ impl<'source> Parser<'source> {
             RootCompileContext::Eval(context),
             None,
         )
+        .map_err(ModuleCompileFailure::into_engine_without_checker)
     }
 
     fn parse_root(
@@ -1959,12 +1998,13 @@ impl<'source> Parser<'source> {
         filename: JsString,
         context: RootCompileContext,
         mut module_attribute_checker: Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<FunctionTree, Error> {
+    ) -> Result<FunctionTree, ModuleCompileFailure> {
         if source.len() > i32::MAX as usize {
             return Err(Error::new(
                 ErrorKind::JsInternal,
                 "source is too large for QuickJS debug metadata",
-            ));
+            )
+            .into());
         }
         let is_module = matches!(&context, RootCompileContext::Module);
         let (
@@ -1999,9 +2039,9 @@ impl<'source> Parser<'source> {
             ),
             RootCompileContext::Eval(context) => {
                 if !matches!(context.kind, EvalKind::Direct | EvalKind::Indirect) {
-                    return Err(Error::internal(
-                        "eval compiler received a non-eval root kind",
-                    ));
+                    return Err(
+                        Error::internal("eval compiler received a non-eval root kind").into(),
+                    );
                 }
                 if context.kind == EvalKind::Indirect
                     && (!context.bindings.is_empty()
@@ -2014,7 +2054,8 @@ impl<'source> Parser<'source> {
                 {
                     return Err(Error::internal(
                         "indirect eval compiler received a caller environment",
-                    ));
+                    )
+                    .into());
                 }
                 let super_capabilities = SuperCapabilities {
                     super_call_allowed: context.super_call_allowed,

@@ -160,7 +160,7 @@ impl<'source> Parser<'source> {
     pub(super) fn parse_module_body(
         &mut self,
         checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ModuleCompileFailure> {
         while !self.at_eof() {
             if matches!(self.current().kind, TokenKind::Keyword(Keyword::Export)) {
                 self.parse_module_export(checker)?;
@@ -195,49 +195,54 @@ impl<'source> Parser<'source> {
     fn parse_module_export(
         &mut self,
         checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ModuleCompileFailure> {
         let export_span = self.current().span;
         self.advance()?;
         match self.current().kind {
             TokenKind::Punctuator(Punctuator::LeftBrace) => {
-                self.parse_module_export_clause(checker)
+                self.parse_module_export_clause(checker)?
             }
             TokenKind::Keyword(Keyword::Var) => self.with_module_declaration_export(
                 ModuleDeclarationExport::Named,
                 Self::parse_var_statement,
-            ),
+            )?,
             TokenKind::Keyword(Keyword::Let | Keyword::Const) => self
                 .with_module_declaration_export(
                     ModuleDeclarationExport::Named,
                     Self::parse_lexical_statement,
-                ),
+                )?,
             TokenKind::Keyword(Keyword::Function) => {
-                self.parse_module_function_declaration(ModuleDeclarationExport::Named)
+                self.parse_module_function_declaration(ModuleDeclarationExport::Named)?
             }
             TokenKind::Identifier(_) if self.async_function_ahead() => {
-                self.parse_module_function_declaration(ModuleDeclarationExport::Named)
+                self.parse_module_function_declaration(ModuleDeclarationExport::Named)?
             }
             TokenKind::Keyword(Keyword::Class) => self.with_module_declaration_export(
                 ModuleDeclarationExport::Named,
                 Self::parse_class_declaration,
-            ),
-            TokenKind::Keyword(Keyword::Default) => self.parse_module_default_export(export_span),
-            TokenKind::Punctuator(Punctuator::Multiply) => self.parse_module_star_export(checker),
-            _ => Err(self.syntax_here("invalid export syntax")),
+            )?,
+            TokenKind::Keyword(Keyword::Default) => {
+                self.parse_module_default_export(export_span)?
+            }
+            TokenKind::Punctuator(Punctuator::Multiply) => {
+                self.parse_module_star_export(checker)?
+            }
+            _ => return Err(self.syntax_here("invalid export syntax").into()),
         }
+        Ok(())
     }
 
     fn parse_module_import(
         &mut self,
         checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ModuleCompileFailure> {
         self.advance()?;
 
         if matches!(self.current().kind, TokenKind::String(_)) {
             let mut request = self.parse_module_specifier()?;
             request.attributes = self.parse_module_import_attributes(checker)?;
             self.add_module_request(request)?;
-            return self.consume_statement_terminator();
+            return Ok(self.consume_statement_terminator()?);
         }
 
         let mut imports = Vec::new();
@@ -256,7 +261,7 @@ impl<'source> Parser<'source> {
         if parse_secondary_clause && self.is_punctuator(Punctuator::Multiply) {
             self.advance()?;
             if !self.is_contextual_keyword("as") {
-                return Err(self.syntax_here("expecting 'as'"));
+                return Err(self.syntax_here("expecting 'as'").into());
             }
             self.advance()?;
             let (local_name, local_span) = self.module_binding_identifier()?;
@@ -275,7 +280,8 @@ impl<'source> Parser<'source> {
                         return Err(Error::syntax(
                             "imported keyword requires an 'as' binding",
                             source_span(imported_token.span),
-                        ));
+                        )
+                        .into());
                     };
                     validate_identifier_reservation(
                         &identifier,
@@ -294,7 +300,9 @@ impl<'source> Parser<'source> {
             }
             self.expect_punctuator(Punctuator::RightBrace)?;
         } else if parse_secondary_clause {
-            return Err(self.syntax_here("default, namespace, or named imports expected"));
+            return Err(self
+                .syntax_here("default, namespace, or named imports expected")
+                .into());
         }
         let request_index = self.parse_module_from_clause(checker)?;
         let module = self.module_ir_mut()?;
@@ -307,7 +315,7 @@ impl<'source> Parser<'source> {
                     binding,
                 }),
         );
-        self.consume_statement_terminator()
+        Ok(self.consume_statement_terminator()?)
     }
 
     fn add_module_request(
@@ -324,14 +332,14 @@ impl<'source> Parser<'source> {
     fn parse_module_from_clause(
         &mut self,
         checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<crate::module::ModuleRequestIndex, Error> {
+    ) -> Result<crate::module::ModuleRequestIndex, ModuleCompileFailure> {
         if !self.is_contextual_keyword("from") {
-            return Err(self.syntax_here("from clause expected"));
+            return Err(self.syntax_here("from clause expected").into());
         }
         self.advance()?;
         let mut request = self.parse_module_specifier()?;
         request.attributes = self.parse_module_import_attributes(checker)?;
-        self.add_module_request(request)
+        Ok(self.add_module_request(request)?)
     }
 
     fn parse_module_specifier(&mut self) -> Result<ModuleRequest, Error> {
@@ -350,7 +358,7 @@ impl<'source> Parser<'source> {
     fn parse_module_import_attributes(
         &mut self,
         checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<ModuleImportAttributes, Error> {
+    ) -> Result<ModuleImportAttributes, ModuleCompileFailure> {
         if !self.is_contextual_keyword("with")
             && !matches!(self.current().kind, TokenKind::Keyword(Keyword::With))
         {
@@ -366,7 +374,7 @@ impl<'source> Parser<'source> {
                 TokenKind::String(literal) => JsString::try_from_utf16(literal.value.utf16)?,
                 TokenKind::Identifier(identifier) => JsString::try_from_utf8(&identifier.value)?,
                 TokenKind::Keyword(keyword) => JsString::try_from_utf8(keyword.as_str())?,
-                _ => return Err(self.syntax_here("identifier expected")),
+                _ => return Err(self.syntax_here("identifier expected").into()),
             };
             self.advance()?;
             self.expect_punctuator(Punctuator::Colon)?;
@@ -375,10 +383,7 @@ impl<'source> Parser<'source> {
             let TokenKind::String(literal) = value_token.kind else {
                 // `js_parse_with_clause` intentionally reports a non-string
                 // value at the beginning of its key, not at the value token.
-                return Err(Error::syntax(
-                    "string expected",
-                    source_span(key_token.span),
-                ));
+                return Err(Error::syntax("string expected", source_span(key_token.span)).into());
             };
             if attributes
                 .iter()
@@ -386,7 +391,7 @@ impl<'source> Parser<'source> {
             {
                 // QuickJS checks for the duplicate while the value token is
                 // current, after proving that it is a StringLiteral.
-                return Err(self.syntax_here("duplicate with key"));
+                return Err(self.syntax_here("duplicate with key").into());
             }
             attributes.push(ModuleImportAttribute {
                 key,
@@ -509,7 +514,7 @@ impl<'source> Parser<'source> {
     fn parse_module_export_clause(
         &mut self,
         checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ModuleCompileFailure> {
         self.expect_punctuator(Punctuator::LeftBrace)?;
         let mut entries = Vec::new();
         while !self.is_punctuator(Punctuator::RightBrace) {
@@ -545,13 +550,13 @@ impl<'source> Parser<'source> {
                 module.add_local_export(local_name, export_name, span)?;
             }
         }
-        self.consume_statement_terminator()
+        Ok(self.consume_statement_terminator()?)
     }
 
     fn parse_module_star_export(
         &mut self,
         checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ModuleCompileFailure> {
         self.expect_punctuator(Punctuator::Multiply)?;
         if self.is_contextual_keyword("as") {
             self.advance()?;
@@ -573,7 +578,7 @@ impl<'source> Parser<'source> {
                 .star_exports
                 .push(ModuleStarExport { request });
         }
-        self.consume_statement_terminator()
+        Ok(self.consume_statement_terminator()?)
     }
 
     fn parse_module_default_export(&mut self, export_span: Span) -> Result<(), Error> {

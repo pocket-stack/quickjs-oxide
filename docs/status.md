@@ -42,7 +42,8 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   `import.meta` objects
 - Script-goal dynamic `import()` with FIFO load/finish jobs, live host-loader
   callback sampling, import attributes, cached cycle-root evaluation Promises,
-  namespace reuse, and Promise assimilation
+  namespace reuse, Promise assimilation, and exact propagation of arbitrary
+  JavaScript values thrown by normalize, attribute-check, and load callbacks
 - native command-line execution, including file-module goal detection,
   filesystem dependencies, top-level-await settlement, and `import.meta`
   `url`/`main`; plus a Rust/WASM browser playground
@@ -55,9 +56,9 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include JSON5/byte-oriented host loading, arbitrary
-JavaScript exception values and re-entry at module-host callbacks, and the
-unsupported/failed leaves recorded by the current Test262 vector.
+Major open frontiers include JSON5/byte-oriented host loading, initiating-
+Context access and legal re-entry at module-host callbacks, and the unsupported/
+failed leaves recorded by the current Test262 vector.
 Failed acyclic source graphs retry like QuickJS. For a failed cycle, Rust
 safely unpublishes every record that still points into the failed transaction;
 it does not reproduce pinned QuickJS's dangling dependency pointer. Reclaiming
