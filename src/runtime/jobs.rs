@@ -213,6 +213,54 @@ impl PendingJob {
     }
 }
 
+/// Own the queue's manual roots after one job has been removed from the FIFO.
+/// Normal completion releases them explicitly; a host panic releases them
+/// during unwind without converting the panic into a JavaScript rejection.
+#[must_use = "the guard owns a dequeued pending job's roots"]
+struct PendingJobRootGuard<'a> {
+    runtime: &'a Runtime,
+    job: Option<PendingJob>,
+}
+
+impl<'a> PendingJobRootGuard<'a> {
+    const fn new(runtime: &'a Runtime, job: PendingJob) -> Self {
+        Self {
+            runtime,
+            job: Some(job),
+        }
+    }
+
+    fn record(&self) -> &PendingJob {
+        self.job
+            .as_ref()
+            .expect("an armed pending-job root guard must own its record")
+    }
+
+    fn finish(mut self) -> Result<Option<ContextId>, RuntimeError> {
+        let job = self
+            .job
+            .take()
+            .ok_or(RuntimeError::Invariant("pending-job roots released twice"))?;
+        self.runtime
+            .0
+            .state
+            .borrow_mut()
+            .release_pending_job_roots_with_context(&job)
+    }
+}
+
+impl Drop for PendingJobRootGuard<'_> {
+    fn drop(&mut self) {
+        let Some(job) = self.job.take() else {
+            return;
+        };
+        let Ok(mut state) = self.runtime.0.state.try_borrow_mut() else {
+            return;
+        };
+        let _ = state.release_pending_job_roots_with_context(&job);
+    }
+}
+
 impl RuntimeState {
     fn retain_pending_job_root(&mut self, root: PendingJobRoot<'_>) -> Result<(), RuntimeError> {
         match root {
@@ -295,17 +343,50 @@ impl RuntimeState {
     ) -> Result<Option<ContextId>, RuntimeError> {
         let roots = job.roots();
         let mut context_after_release = None;
+        let mut found_context = false;
+        let mut first_error = None;
         for root in roots.iter().rev().flatten().copied() {
             if let PendingJobRoot::Context(context) = root {
-                let survives = self.heap.context_strong_count(context)? > 1;
-                self.release_pending_job_root(root)?;
-                context_after_release = Some(survives.then_some(context));
-            } else {
-                self.release_pending_job_root(root)?;
+                found_context = true;
+                let survives = match self.heap.context_strong_count(context) {
+                    Ok(count) => Some(count > 1),
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(RuntimeError::Heap(error));
+                        }
+                        None
+                    }
+                };
+                match self.release_pending_job_root(root) {
+                    Ok(()) => {
+                        if let Some(survives) = survives {
+                            context_after_release = Some(survives.then_some(context));
+                        }
+                    }
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+                continue;
+            }
+            if let Err(error) = self.release_pending_job_root(root)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
         }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        if !found_context {
+            return Err(RuntimeError::Invariant(
+                "pending job had no explicit realm root",
+            ));
+        }
         context_after_release.ok_or(RuntimeError::Invariant(
-            "pending job had no explicit realm root",
+            "pending job context survival was not recorded",
         ))
     }
 }
@@ -350,29 +431,26 @@ impl Runtime {
         let Some(job) = self.0.state.borrow_mut().pending_jobs.pop_front() else {
             return Ok(PendingJobOutcome::NoJob);
         };
-        let context = job.realm();
+        let job = PendingJobRootGuard::new(self, job);
+        let context = job.record().realm();
 
         // QuickJS frees a successful result, or leaves a thrown value in the
         // runtime exception slot, before testing whether the job realm has any
         // owner besides the queue. Do the same before releasing the argv-like
         // roots so a discarded return value cannot keep `pctx` spuriously live.
-        let execution =
-            self.execute_pending_job_record(&job)
-                .and_then(|completion| match completion {
-                    Completion::Return(value) => {
-                        drop(value);
-                        Ok(false)
-                    }
-                    Completion::Throw(value) => {
-                        self.set_pending_exception(value)?;
-                        Ok(true)
-                    }
-                });
-        let release = self
-            .0
-            .state
-            .borrow_mut()
-            .release_pending_job_roots_with_context(&job);
+        let execution = self
+            .execute_pending_job_record(job.record())
+            .and_then(|completion| match completion {
+                Completion::Return(value) => {
+                    drop(value);
+                    Ok(false)
+                }
+                Completion::Throw(value) => {
+                    self.set_pending_exception(value)?;
+                    Ok(true)
+                }
+            });
+        let release = job.finish();
         let (threw, context) = match (execution, release) {
             (Err(error), Ok(context)) => return Err(PendingJobError { context, error }),
             (Err(error), Err(_)) => {
@@ -539,6 +617,16 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PromiseState;
+
+    #[derive(Debug)]
+    struct PanickingDynamicModuleLoader;
+
+    impl ModuleLoader for PanickingDynamicModuleLoader {
+        fn load(&self, _normalized_name: &JsString) -> Result<String, ModuleLoaderError> {
+            panic!("intentional dynamic module loader panic")
+        }
+    }
 
     fn allocate_job_only_realm(runtime: &Runtime, source: ContextId) -> ContextId {
         let roots = {
@@ -628,5 +716,76 @@ mod tests {
             runtime.execute_pending_job_with_context().unwrap(),
             PendingJobOutcome::NoJob
         );
+    }
+
+    #[test]
+    fn dynamic_loader_panic_releases_dequeued_job_roots_without_settling_promise() {
+        let runtime = Runtime::new();
+        let _registration = runtime.set_module_loader(PanickingDynamicModuleLoader);
+        let mut context = runtime.new_context();
+        let Value::Object(promise) = context
+            .eval_with_filename("import('./panic.js')", "pkg/entry.js")
+            .unwrap()
+        else {
+            panic!("dynamic import did not return a Promise");
+        };
+
+        let (realm, resolve, reject) = {
+            let state = runtime.0.state.borrow();
+            assert_eq!(state.pending_jobs.len(), 1);
+            let PendingJob::DynamicImportLoad {
+                realm,
+                resolve,
+                reject,
+                ..
+            } = state.pending_jobs.front().unwrap()
+            else {
+                panic!("dynamic import scheduled the wrong job kind");
+            };
+            (*realm, *resolve, *reject)
+        };
+        let resolve_root = ObjectRef::from_borrowed_handle(runtime.clone(), resolve).unwrap();
+        let reject_root = ObjectRef::from_borrowed_handle(runtime.clone(), reject).unwrap();
+        let counts_before = {
+            let state = runtime.0.state.borrow();
+            (
+                state.heap.context_strong_count(realm).unwrap(),
+                state.heap.object_strong_count(resolve).unwrap(),
+                state.heap.object_strong_count(reject).unwrap(),
+            )
+        };
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = runtime.execute_pending_job_with_context();
+        }))
+        .expect_err("dynamic loader panic was unexpectedly swallowed");
+        let panic_message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(
+            panic_message,
+            Some("intentional dynamic module loader panic")
+        );
+
+        let counts_after = {
+            let state = runtime.0.state.borrow();
+            assert!(state.pending_jobs.is_empty());
+            (
+                state.heap.context_strong_count(realm).unwrap(),
+                state.heap.object_strong_count(resolve).unwrap(),
+                state.heap.object_strong_count(reject).unwrap(),
+            )
+        };
+        assert_eq!(counts_after.0 + 1, counts_before.0);
+        assert_eq!(counts_after.1 + 1, counts_before.1);
+        assert_eq!(counts_after.2 + 1, counts_before.2);
+        assert_eq!(
+            runtime.promise_snapshot(&promise).unwrap().unwrap().state(),
+            PromiseState::Pending
+        );
+        assert!(!context.has_exception());
+        assert_eq!(context.eval("40 + 2").unwrap(), Value::Int(42));
+        drop((resolve_root, reject_root));
     }
 }
