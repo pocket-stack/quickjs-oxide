@@ -599,6 +599,10 @@ impl FlattenFrame {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeError {
     WrongRuntime(&'static str),
+    WrongContext(&'static str),
+    /// A module handle escaped a resolution transaction which later rolled
+    /// back. Its append-only identity is stable but no longer executable.
+    AbortedModule,
     Invariant(&'static str),
     Exception,
     Engine(Error),
@@ -612,6 +616,8 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WrongRuntime(kind) => write!(formatter, "{kind} belongs to another runtime"),
+            Self::WrongContext(kind) => write!(formatter, "{kind} belongs to another context"),
+            Self::AbortedModule => formatter.write_str("module resolution was rolled back"),
             Self::Invariant(message) => write!(formatter, "runtime invariant failed: {message}"),
             Self::Exception => formatter.write_str("JavaScript exception"),
             Self::Engine(error) => error.fmt(formatter),
@@ -953,6 +959,7 @@ impl Runtime {
                         global_object.object_id(),
                         global_var_object.object_id(),
                     )
+                    .with_public_id(id)
                     .with_primitive_prototype(PrimitiveKind::Number, number_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::Boolean, boolean_prototype.object_id())
                     .with_primitive_prototype(PrimitiveKind::String, string_prototype.object_id())

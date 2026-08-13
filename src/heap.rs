@@ -747,6 +747,12 @@ pub struct TypedArrayRealmData {
 /// changing `ContextId` ownership.
 #[derive(Debug, PartialEq)]
 pub struct ContextData {
+    /// Stable public handle identity assigned by `Runtime::new_context`.
+    ///
+    /// Low-level heap tests and internal job-only realms deliberately leave
+    /// this absent; only a user-created Context may be reconstructed for a
+    /// host callback.
+    pub(crate) public_id: Option<u64>,
     pub object_prototype: ObjectId,
     pub function_prototype: ObjectId,
     /// Realm-local `%Array.prototype%`. QuickJS creates the prototype itself
@@ -872,6 +878,7 @@ impl ContextData {
         global_var_object: ObjectId,
     ) -> Self {
         Self {
+            public_id: None,
             object_prototype,
             function_prototype,
             array_prototype,
@@ -910,6 +917,13 @@ impl ContextData {
             initial_shapes: Vec::new(),
             loaded_modules: LoadedModuleCache::new(),
         }
+    }
+
+    /// Attach the stable public identity of a user-created Context.
+    #[must_use]
+    pub(crate) const fn with_public_id(mut self, id: u64) -> Self {
+        self.public_id = Some(id);
+        self
     }
 
     /// Attach one implemented primitive wrapper prototype to this realm.
@@ -12158,6 +12172,21 @@ impl Heap {
             .ok_or(HeapError::Invariant(
                 "loaded-module identity is out of bounds or tombstoned",
             ))
+    }
+
+    /// Return whether an append-only module identity still names a live
+    /// record. A rollback tombstone is a stable non-live state; out-of-range
+    /// identities and stale Contexts remain checked heap errors.
+    pub(crate) fn loaded_module_is_live(&self, module: RawModuleRef) -> Result<bool, HeapError> {
+        let record = self
+            .context(module.cache)?
+            .loaded_modules
+            .records
+            .get(module.module.0)
+            .ok_or(HeapError::Invariant(
+                "loaded-module identity is out of bounds",
+            ))?;
+        Ok(record.is_some())
     }
 
     /// Borrowed snapshots of every live record in construction order.

@@ -127,6 +127,13 @@ impl From<String> for ModuleLoaderError {
 #[non_exhaustive]
 pub enum ModuleLoadResult {
     SourceText(String),
+    /// A module compiled by the callback's initiating [`Context`].
+    ///
+    /// This is the safe Rust equivalent of QuickJS's loader returning the
+    /// `JSModuleDef *` produced by a nested compile-only evaluation. The
+    /// module must belong to the same Runtime and Context cache as the
+    /// callback which consumes it.
+    Compiled(ModuleBytecodeRef),
     /// Source text plus host-defined properties for that module's canonical
     /// `import.meta` object.
     ///
@@ -193,6 +200,20 @@ pub trait ModuleLoader: fmt::Debug {
             .map_err(|error| ModuleLoaderError::new(error.to_string()))
     }
 
+    /// Context-aware normalization hook used by the runtime.
+    ///
+    /// Existing loaders remain source-compatible through this adapter. New
+    /// hosts may override it to receive the exact initiating Context needed
+    /// by synchronous nested module compilation.
+    fn normalize_in_context(
+        &self,
+        _context: &mut Context,
+        base_name: &JsString,
+        specifier: &JsString,
+    ) -> Result<JsString, ModuleLoaderError> {
+        self.normalize(base_name, specifier)
+    }
+
     /// Validate one request's attributes before normalization, cache lookup,
     /// or any following source text. Static syntax calls this only for a
     /// non-empty effective `with {}` object; dynamic import calls it whenever
@@ -203,6 +224,15 @@ pub trait ModuleLoader: fmt::Debug {
         _attributes: &[ModuleImportAttribute],
     ) -> Result<(), ModuleLoaderError> {
         Ok(())
+    }
+
+    /// Context-aware import-attribute hook used by the runtime.
+    fn check_attributes_in_context(
+        &self,
+        _context: &mut Context,
+        attributes: &[ModuleImportAttribute],
+    ) -> Result<(), ModuleLoaderError> {
+        self.check_attributes(attributes)
     }
 
     /// Legacy source-text loader entry point.
@@ -226,6 +256,20 @@ pub trait ModuleLoader: fmt::Debug {
         _attributes: &ModuleImportAttributes,
     ) -> Result<ModuleLoadResult, ModuleLoaderError> {
         self.load(normalized_name).map(ModuleLoadResult::SourceText)
+    }
+
+    /// Context-aware load hook used by the runtime.
+    ///
+    /// Override this method to return [`ModuleLoadResult::Compiled`] from a
+    /// nested compile performed through `context`. The default preserves all
+    /// legacy source-text and attributes-aware loaders.
+    fn load_with_attributes_in_context(
+        &self,
+        _context: &mut Context,
+        normalized_name: &JsString,
+        attributes: &ModuleImportAttributes,
+    ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+        self.load_with_attributes(normalized_name, attributes)
     }
 }
 
@@ -509,21 +553,16 @@ struct ModuleResolutionGuard<'a> {
 
 struct ModuleLoaderAttributeChecker<'a> {
     runtime: &'a Runtime,
+    context: Context,
 }
 
 impl ModuleImportAttributeChecker for ModuleLoaderAttributeChecker<'_> {
     fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), ModuleCompileFailure> {
-        let loader = self
-            .runtime
-            .0
-            .module_loader
-            .borrow()
-            .as_ref()
-            .and_then(Weak::upgrade);
+        let loader = self.runtime.current_module_loader();
         let Some(loader) = loader else {
             return Ok(());
         };
-        match loader.check_attributes(attributes) {
+        match loader.check_attributes_in_context(&mut self.context, attributes) {
             Ok(()) => Ok(()),
             Err(ModuleLoaderError {
                 kind: ModuleLoaderErrorKind::Message(message),
@@ -593,6 +632,14 @@ impl ModuleBytecodeRef {
     }
 }
 
+impl PartialEq for ModuleBytecodeRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime.is_same_runtime(&other.runtime) && self.raw == other.raw
+    }
+}
+
+impl Eq for ModuleBytecodeRef {}
+
 impl fmt::Debug for ModuleBytecodeRef {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -604,6 +651,33 @@ impl fmt::Debug for ModuleBytecodeRef {
 }
 
 impl Runtime {
+    fn current_module_loader(&self) -> Option<Rc<dyn ModuleLoader>> {
+        self.0
+            .module_loader
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade)
+    }
+
+    fn module_callback_context(&self, realm: ContextId) -> Result<Context, RuntimeError> {
+        let id =
+            self.0
+                .state
+                .borrow()
+                .heap
+                .context(realm)?
+                .public_id
+                .ok_or(RuntimeError::Invariant(
+                    "module callback realm has no public Context identity",
+                ))?;
+        self.retain_context_handle(realm)?;
+        Ok(Context {
+            runtime: self.clone(),
+            id,
+            realm,
+        })
+    }
+
     fn finish_module_loader_error(
         &self,
         error: ModuleLoaderError,
@@ -644,12 +718,7 @@ impl Runtime {
         realm: ContextId,
         attributes: &[ModuleImportAttribute],
     ) -> Result<NativeConversion<()>, RuntimeError> {
-        let loader = self
-            .0
-            .module_loader
-            .borrow()
-            .as_ref()
-            .and_then(Weak::upgrade);
+        let loader = self.current_module_loader();
         let Some(loader) = loader else {
             return Ok(NativeConversion::Value(()));
         };
@@ -661,7 +730,8 @@ impl Runtime {
         let _guard = ModuleResolutionGuard {
             active: &self.0.module_resolution_active,
         };
-        match loader.check_attributes(attributes) {
+        let mut context = self.module_callback_context(realm)?;
+        match loader.check_attributes_in_context(&mut context, attributes) {
             Ok(()) => Ok(NativeConversion::Value(())),
             Err(ModuleLoaderError {
                 kind: ModuleLoaderErrorKind::Message(message),
@@ -680,7 +750,11 @@ impl Runtime {
     }
 
     fn module_record(&self, module: RawModuleRef) -> Result<ModuleRecord, RuntimeError> {
-        Ok(self.0.state.borrow().heap.loaded_module(module)?)
+        let state = self.0.state.borrow();
+        if !state.heap.loaded_module_is_live(module)? {
+            return Err(RuntimeError::AbortedModule);
+        }
+        Ok(state.heap.loaded_module(module)?)
     }
 
     /// Allocate and populate one fresh null-prototype import-meta object
@@ -930,7 +1004,10 @@ impl Runtime {
         // QuickJS samples the runtime's attribute checker separately for
         // every authored `with` clause, so callbacks may replace or clear it
         // before the parser reaches the next clause.
-        let mut checker = ModuleLoaderAttributeChecker { runtime: self };
+        let mut checker = ModuleLoaderAttributeChecker {
+            runtime: self,
+            context: self.module_callback_context(realm)?,
+        };
         let module = match compile_unlinked_module_with_name_and_attribute_checker(
             source,
             name.clone(),
@@ -1000,6 +1077,34 @@ impl Runtime {
         };
         self.publish_json_module(realm, name.clone(), value)
             .map(ModuleCompilation::Published)
+    }
+
+    fn compile_module_load_result_in_realm(
+        &self,
+        realm: ContextId,
+        normalized_name: &JsString,
+        loaded: ModuleLoadResult,
+    ) -> Result<ModuleCompilation, RuntimeError> {
+        match loaded {
+            ModuleLoadResult::SourceText(source) => {
+                self.compile_module_record_in_realm(realm, &source, normalized_name, None)
+            }
+            ModuleLoadResult::Compiled(module) => {
+                if !module.belongs_to(self) {
+                    return Err(RuntimeError::WrongRuntime("compiled module"));
+                }
+                if module.raw.cache != realm {
+                    return Err(RuntimeError::WrongContext("compiled module"));
+                }
+                self.module_record(module.raw)?;
+                Ok(ModuleCompilation::Published(module.raw))
+            }
+            ModuleLoadResult::SourceTextWithImportMeta { source, properties } => self
+                .compile_module_record_in_realm(realm, &source, normalized_name, Some(properties)),
+            ModuleLoadResult::JsonText(source) => {
+                self.compile_json_module_record_in_realm(realm, &source, normalized_name)
+            }
+        }
     }
 
     fn compile_module_in_realm(
@@ -1092,14 +1197,10 @@ impl Runtime {
                 // QuickJS re-reads the normalize hook for every request and
                 // does not retain it across the subsequent load callback.
                 let normalized_name = {
-                    let loader = self
-                        .0
-                        .module_loader
-                        .borrow()
-                        .as_ref()
-                        .and_then(Weak::upgrade);
+                    let loader = self.current_module_loader();
                     if let Some(loader) = loader {
-                        match loader.normalize(&base_name, &specifier) {
+                        let mut context = self.module_callback_context(realm)?;
+                        match loader.normalize_in_context(&mut context, &base_name, &specifier) {
                             Ok(normalized) => normalized,
                             Err(error) => {
                                 let error = self.finish_module_loader_error(error, |message| {
@@ -1130,12 +1231,7 @@ impl Runtime {
                     // again for this load only, then release the host before
                     // compiling and walking the dependency's own requests.
                     let loaded = {
-                        let loader = self
-                            .0
-                            .module_loader
-                            .borrow()
-                            .as_ref()
-                            .and_then(Weak::upgrade);
+                        let loader = self.current_module_loader();
                         let Some(loader) = loader else {
                             return Err(module_reference_error(
                                 "could not load module '",
@@ -1143,7 +1239,9 @@ impl Runtime {
                                 "'",
                             ));
                         };
-                        match loader.load_with_attributes(
+                        let mut context = self.module_callback_context(realm)?;
+                        match loader.load_with_attributes_in_context(
+                            &mut context,
                             &normalized_name,
                             if request.attributes.effective().is_some() {
                                 &request.attributes
@@ -1164,28 +1262,8 @@ impl Runtime {
                             }
                         }
                     };
-                    let compilation = match loaded {
-                        ModuleLoadResult::SourceText(source) => self
-                            .compile_module_record_in_realm(
-                                realm,
-                                &source,
-                                &normalized_name,
-                                None,
-                            )?,
-                        ModuleLoadResult::SourceTextWithImportMeta { source, properties } => self
-                            .compile_module_record_in_realm(
-                            realm,
-                            &source,
-                            &normalized_name,
-                            Some(properties),
-                        )?,
-                        ModuleLoadResult::JsonText(source) => self
-                            .compile_json_module_record_in_realm(
-                                realm,
-                                &source,
-                                &normalized_name,
-                            )?,
-                    };
+                    let compilation =
+                        self.compile_module_load_result_in_realm(realm, &normalized_name, loaded)?;
                     match compilation {
                         ModuleCompilation::Published(dependency) => dependency,
                         ModuleCompilation::Throw(exception) => {
@@ -1272,14 +1350,10 @@ impl Runtime {
         };
         let result = (|| {
             let normalized_name = {
-                let loader = self
-                    .0
-                    .module_loader
-                    .borrow()
-                    .as_ref()
-                    .and_then(Weak::upgrade);
+                let loader = self.current_module_loader();
                 if let Some(loader) = loader {
-                    match loader.normalize(&base_name, &specifier) {
+                    let mut context = self.module_callback_context(realm)?;
+                    match loader.normalize_in_context(&mut context, &base_name, &specifier) {
                         Ok(normalized) => normalized,
                         Err(error) => {
                             let error = self.finish_module_loader_error(error, |message| {
@@ -1307,12 +1381,7 @@ impl Runtime {
                 cached
             } else {
                 let loaded = {
-                    let loader = self
-                        .0
-                        .module_loader
-                        .borrow()
-                        .as_ref()
-                        .and_then(Weak::upgrade);
+                    let loader = self.current_module_loader();
                     let Some(loader) = loader else {
                         return Err(module_reference_error(
                             "could not load module '",
@@ -1320,7 +1389,12 @@ impl Runtime {
                             "'",
                         ));
                     };
-                    match loader.load_with_attributes(&normalized_name, attributes) {
+                    let mut context = self.module_callback_context(realm)?;
+                    match loader.load_with_attributes_in_context(
+                        &mut context,
+                        &normalized_name,
+                        attributes,
+                    ) {
                         Ok(loaded) => loaded,
                         Err(error) => {
                             let error = self.finish_module_loader_error(error, |message| {
@@ -1334,21 +1408,8 @@ impl Runtime {
                         }
                     }
                 };
-                let compilation = match loaded {
-                    ModuleLoadResult::SourceText(source) => {
-                        self.compile_module_record_in_realm(realm, &source, &normalized_name, None)?
-                    }
-                    ModuleLoadResult::SourceTextWithImportMeta { source, properties } => self
-                        .compile_module_record_in_realm(
-                            realm,
-                            &source,
-                            &normalized_name,
-                            Some(properties),
-                        )?,
-                    ModuleLoadResult::JsonText(source) => {
-                        self.compile_json_module_record_in_realm(realm, &source, &normalized_name)?
-                    }
-                };
+                let compilation =
+                    self.compile_module_load_result_in_realm(realm, &normalized_name, loaded)?;
                 match compilation {
                     ModuleCompilation::Published(module) => module,
                     ModuleCompilation::Throw(exception) => {
@@ -4033,6 +4094,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn module_bytecode_and_compiled_load_results_compare_by_module_identity() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let first = context
+            .compile_module_with_filename("export const value = 1;", "same.js")
+            .unwrap();
+        let second = context
+            .compile_module_with_filename("export const value = 2;", "same.js")
+            .unwrap();
+
+        assert_eq!(first, first.clone());
+        assert_ne!(first, second);
+        assert_eq!(
+            ModuleLoadResult::Compiled(first.clone()),
+            ModuleLoadResult::Compiled(first)
+        );
+    }
+
     type SharedLoaderSources = Rc<RefCell<HashMap<String, String>>>;
     type SharedLoaderLoads = Rc<RefCell<Vec<String>>>;
     type SharedLoaderNormalizations = Rc<RefCell<Vec<(String, String)>>>;
@@ -4040,6 +4120,7 @@ mod tests {
     type SharedAttributeChecks = Rc<RefCell<Vec<Vec<(String, String)>>>>;
     type SharedAttributeLoads = Rc<RefCell<Vec<RecordedAttributeLoad>>>;
     type SharedModuleLoadResults = Rc<RefCell<HashMap<String, ModuleLoadResult>>>;
+    type SharedCallbackContexts = Rc<RefCell<Vec<(&'static str, u64, ContextId)>>>;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedAttributeLoad {
@@ -4240,6 +4321,68 @@ mod tests {
         sources: HashMap<String, String>,
         loads: SharedLoaderLoads,
         normalizations: SharedLoaderNormalizations,
+    }
+
+    #[derive(Debug)]
+    struct ContextRecordingModuleLoader {
+        callbacks: SharedCallbackContexts,
+    }
+
+    impl ContextRecordingModuleLoader {
+        fn record(&self, phase: &'static str, context: &Context) {
+            self.callbacks
+                .borrow_mut()
+                .push((phase, context.id(), context.realm_id()));
+        }
+    }
+
+    impl ModuleLoader for ContextRecordingModuleLoader {
+        fn normalize_in_context(
+            &self,
+            context: &mut Context,
+            base_name: &JsString,
+            specifier: &JsString,
+        ) -> Result<JsString, ModuleLoaderError> {
+            self.record("normalize", context);
+            default_module_normalize_name(base_name, specifier)
+                .map_err(|error| ModuleLoaderError::new(error.to_string()))
+        }
+
+        fn check_attributes_in_context(
+            &self,
+            context: &mut Context,
+            _attributes: &[ModuleImportAttribute],
+        ) -> Result<(), ModuleLoaderError> {
+            self.record("attributes", context);
+            Ok(())
+        }
+
+        fn load_with_attributes_in_context(
+            &self,
+            context: &mut Context,
+            _normalized_name: &JsString,
+            _attributes: &ModuleImportAttributes,
+        ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+            self.record("load", context);
+            Ok(ModuleLoadResult::SourceText(
+                "export const answer = 42;".to_owned(),
+            ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct CompiledModuleLoader {
+        module: ModuleBytecodeRef,
+    }
+
+    impl ModuleLoader for CompiledModuleLoader {
+        fn load_with_attributes(
+            &self,
+            _normalized_name: &JsString,
+            _attributes: &ModuleImportAttributes,
+        ) -> Result<ModuleLoadResult, ModuleLoaderError> {
+            Ok(ModuleLoadResult::Compiled(self.module.clone()))
+        }
     }
 
     impl MapModuleLoader {
@@ -6480,6 +6623,92 @@ import("attributes.js", { with: attributeProxy })
     }
 
     #[test]
+    fn module_callbacks_receive_the_exact_initiating_context() {
+        let runtime = Runtime::new();
+        let callbacks = Rc::new(RefCell::new(Vec::new()));
+        let _registration = runtime.set_module_loader(ContextRecordingModuleLoader {
+            callbacks: callbacks.clone(),
+        });
+        let mut context = runtime.new_context();
+        let expected_id = context.id();
+        let expected_realm = context.realm_id();
+
+        let module = context
+            .compile_module_with_filename(
+                "import { answer } from './dependency.js' with { type: 'javascript' }; globalThis.__callbackContextAnswer = answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+        context.execute_module(&module).unwrap();
+        assert_script_true(&mut context, "__callbackContextAnswer === 42");
+        assert_eq!(
+            callbacks.borrow().as_slice(),
+            [
+                ("attributes", expected_id, expected_realm),
+                ("normalize", expected_id, expected_realm),
+                ("load", expected_id, expected_realm),
+            ]
+        );
+    }
+
+    #[test]
+    fn loader_accepts_a_compiled_module_from_the_initiating_context() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let dependency = context
+            .compile_module_with_filename("export const answer = 42;", "pkg/compiled-dependency.js")
+            .unwrap();
+        let _registration = runtime.set_module_loader(CompiledModuleLoader {
+            module: dependency.clone(),
+        });
+
+        let entry = context
+            .compile_module_with_filename(
+                "import { answer } from './selected.js'; globalThis.__compiledLoaderAnswer = answer;",
+                "pkg/entry.js",
+            )
+            .unwrap();
+        context.execute_module(&entry).unwrap();
+        assert_script_true(&mut context, "__compiledLoaderAnswer === 42");
+        assert_eq!(
+            context.runtime().module_dependencies(&entry).unwrap(),
+            [dependency]
+        );
+    }
+
+    #[test]
+    fn compiled_loader_result_rejects_foreign_runtime_and_context() {
+        let runtime = Runtime::new();
+        let foreign_runtime = Runtime::new();
+        let foreign_module = foreign_runtime
+            .new_context()
+            .compile_module("export const answer = 1;")
+            .unwrap();
+        let mut context = runtime.new_context();
+        let _registration = runtime.set_module_loader(CompiledModuleLoader {
+            module: foreign_module,
+        });
+        assert!(matches!(
+            context.compile_module_with_filename("import './selected.js';", "pkg/entry.js"),
+            Err(RuntimeError::WrongRuntime("compiled module"))
+        ));
+
+        drop(_registration);
+        runtime.clear_module_loader();
+        let other_module = runtime
+            .new_context()
+            .compile_module("export const answer = 2;")
+            .unwrap();
+        let _registration = runtime.set_module_loader(CompiledModuleLoader {
+            module: other_module,
+        });
+        assert!(matches!(
+            context.compile_module_with_filename("import './other.js';", "pkg/other-entry.js"),
+            Err(RuntimeError::WrongContext("compiled module"))
+        ));
+    }
+
+    #[test]
     fn loader_dependency_with_top_level_await_evaluates_asynchronously() {
         let runtime = Runtime::new();
         let (loader, loads, _) = MapModuleLoader::new([(
@@ -6573,6 +6802,42 @@ import("attributes.js", { with: attributeProxy })
                 .loaded_module_slot_count(context.realm)
                 .unwrap(),
             2
+        );
+    }
+
+    #[test]
+    fn escaped_module_handle_reports_aborted_after_resolution_rollback() {
+        let runtime = Runtime::new();
+        let (loader, _, _) = MapModuleLoader::new([]);
+        let _registration = runtime.set_module_loader(loader);
+        let mut context = runtime.new_context();
+        let name = JsString::from_static("pkg/aborted-entry.js");
+        let ModuleCompilation::Published(raw) = runtime
+            .compile_module_record_in_realm(context.realm, "import './missing.js';", &name, None)
+            .unwrap()
+        else {
+            panic!("ordinary source unexpectedly threw during compilation");
+        };
+        let handle = runtime.root_module(raw).unwrap();
+
+        assert!(matches!(
+            runtime.resolve_module_graph(context.realm, raw),
+            Err(RuntimeError::Exception)
+        ));
+        context.take_exception().unwrap();
+        assert_eq!(handle.name(), &name);
+        assert_eq!(handle, handle.clone());
+        assert_eq!(
+            context.get_module_import_meta(&handle),
+            Err(RuntimeError::AbortedModule)
+        );
+        assert_eq!(
+            context.link_module(&handle),
+            Err(RuntimeError::AbortedModule)
+        );
+        assert_eq!(
+            context.execute_module(&handle),
+            Err(RuntimeError::AbortedModule)
         );
     }
 

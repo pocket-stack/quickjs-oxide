@@ -975,6 +975,8 @@ fn engine_fault(
 ) -> WorkerResult {
     let actual_type = match &error {
         RuntimeError::WrongRuntime(_) => "WrongRuntime",
+        RuntimeError::WrongContext(_) => "WrongContext",
+        RuntimeError::AbortedModule => "AbortedModule",
         RuntimeError::Invariant(_) => "Invariant",
         RuntimeError::Exception => "MissingException",
         RuntimeError::Engine(_) => "EngineError",
