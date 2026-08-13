@@ -79,7 +79,7 @@ while IFS=$'\t' read -r id source source_hash expected expected_hash description
     descriptions+=("$description")
 done < <(tail -n +2 "$manifest")
 
-for required_id in import-attributes import-meta json; do
+for required_id in callback-contracts import-attributes import-meta json; do
     found=false
     for id in "${ids[@]}"; do
         [[ "$id" != "$required_id" ]] || found=true

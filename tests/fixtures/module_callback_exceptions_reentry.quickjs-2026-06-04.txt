@@ -1,0 +1,21 @@
+normalize[0] depth=0 stage=normalize-throw base=normalize-entry.js spec=./normalize.js
+normalize exception-kind=object identical=true
+check[0] stage=attribute-throw attrs=object
+attribute exception-kind=number identical=true
+normalize[1] depth=0 stage=load-throw base=load-entry.js spec=./load.js
+load[0] depth=0 stage=load-throw name=load.js
+load exception-kind=symbol identical=true
+normalize[2] depth=0 stage=load-recover base=load-retry-entry.js spec=./load.js
+load[1] depth=0 stage=load-recover name=load.js
+load-retry=true
+dynamic-scheduled=["before","after"]
+normalize[3] depth=0 stage=dynamic-throw base=callback-probe.js spec=./dynamic.js
+load[2] depth=0 stage=dynamic-throw name=dynamic.js
+dynamic-final=["before","after","catch:true"]
+normalize[4] depth=0 stage=reentry base=reentry-entry.js spec=./outer.js
+load[3] depth=0 stage=reentry name=outer.js
+normalize[5] depth=1 stage=reentry base=outer.js spec=./inner.js
+load[4] depth=1 stage=reentry name=inner.js
+reentry result=ok max-loader-depth=1
+reentry-order=["inner","outer","entry"]
+summary normalizes=6 checks=1 loads=5
