@@ -38,7 +38,7 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
 contract and legacy exemption ledger, focused manifest, and frozen TSV/JSONL
-receipts. `--focused` replays the current 6,414-variant focused vector and
+receipts. `--focused` replays the current 6,419-variant focused vector and
 requires byte-identical output. It retains the dependency-closed
 private-callable, static import-attributes, and static JSON module coverage and
 adds the source-authenticated dynamic-import Script-goal cohort. `--full` runs
