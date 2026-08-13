@@ -76,8 +76,7 @@ jobs:
           node --check scripts/test-generate-test262-module-json-a.mjs
           ./scripts/check-oracle-registry.sh
           ./scripts/test-quickjs-fixtures.sh --validate
-          ./scripts/test-module-import-attributes-oracle.sh --validate
-          ./scripts/test-module-json-oracle.sh --validate
+          ./scripts/test-module-c-oracles.sh --validate
           ./scripts/test-quickjs-dynamic-import-trace.sh --validate
           ./scripts/check-test262-host-boundary.sh
           ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
@@ -183,8 +182,7 @@ jobs:
           node scripts/test-negative-diagnostic-generator.mjs \
             --suite "$suite" --qjs "$oracle" --oxide ./target/debug/qjs
           ./scripts/test-quickjs-fixtures.sh --all --oxide ./target/debug/qjs
-          ./scripts/test-module-import-attributes-oracle.sh --check
-          ./scripts/test-module-json-oracle.sh --check
+          ./scripts/test-module-c-oracles.sh --check
           QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets \
             --features test262-host
 
