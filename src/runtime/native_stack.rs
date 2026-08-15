@@ -4,12 +4,13 @@ use super::*;
 use crate::heap::TypedArrayNativeKind;
 
 // QuickJS's optimized C runtime uses a one-MiB default stack budget. Rust
-// debug frames are materially larger than release frames, so preserve the
-// same finite-recursion semantic floor with a small debug-only allowance.
-// The two-MiB regression below proves that this still leaves enough stack to
-// materialize and catch a real recursive overflow.
+// debug frames are materially larger and vary across supported Rust/LLVM
+// releases, so preserve the same finite-recursion semantic floor with a
+// calibrated debug-only allowance. The two-MiB regression below proves that
+// this still leaves enough stack to materialize and catch a real recursive
+// overflow on both the CI MSRV and newer toolchains.
 const HOST_STACK_BUDGET_BYTES: usize = if cfg!(debug_assertions) {
-    1280 * 1024
+    1344 * 1024
 } else {
     1024 * 1024
 };
