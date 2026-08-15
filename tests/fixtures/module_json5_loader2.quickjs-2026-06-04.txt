@@ -1,0 +1,28 @@
+classification request[0] name=classification/data/strict-suffix.json observed-type-test=0 observed-json-suffix=true observed-json5-suffix=false
+classification request[1] name=classification/data/strict-attribute.data observed-type-test=1 observed-json-suffix=false observed-json5-suffix=false
+classification request[2] name=classification/data/extended.data observed-type-test=2 observed-json-suffix=false observed-json5-suffix=false
+classification request[3] name=classification/data/extended-on-json.json observed-type-test=2 observed-json-suffix=true observed-json5-suffix=false
+classification request[4] name=classification/data/script.json5 observed-type-test=0 observed-json-suffix=false observed-json5-suffix=true
+classification before-evaluate requests=5 type-test-0=2 type-test-json=1 type-test-json5=2 json-suffix=2 json5-suffix=1
+classification after-evaluate state=fulfilled requests=5
+classification value={"strictSuffix":true,"strictAttribute":true,"extended":{"singleQuote":true,"verticalEscape":true,"multiline":true,"trailingComma":true,"signedLeadingDot":true,"leadingDot":true,"hexadecimal":true,"octal":true,"binary":true,"nan":true,"positiveInfinity":true,"negativeInfinity":true},"json5OnJsonSuffix":"json5-on-json-suffix","json5ExtensionIsJavaScript":true,"defaultExportIdentity":true,"cacheNamespaceIdentity":true,"namespaceKeys":["default"]}
+classification cases=5 status=pass
+strict-suffix-reject request[0] name=strict-suffix-reject/data/strict-suffix-reject.json observed-type-test=0 observed-json-suffix=true observed-json5-suffix=false
+strict-suffix-reject error=SyntaxError message=expecting property name file=strict-suffix-reject/data/strict-suffix-reject.json line=1 column=2
+strict-suffix-reject case=pass
+strict-attribute-reject request[0] name=strict-attribute-reject/data/strict-attribute-reject.data observed-type-test=1 observed-json-suffix=false observed-json5-suffix=false
+strict-attribute-reject error=SyntaxError message=expecting property name file=strict-attribute-reject/data/strict-attribute-reject.data line=1 column=2
+strict-attribute-reject case=pass
+unicode-bare-reject request[0] name=unicode-bare-reject/data/unicode-bare.data observed-type-test=2 observed-json-suffix=false observed-json5-suffix=false
+unicode-bare-reject error=SyntaxError message=unexpected character file=unicode-bare-reject/data/unicode-bare.data line=1 column=2
+unicode-bare-reject case=pass
+number-dot-reject request[0] name=number-dot-reject/data/number-dot.data observed-type-test=2 observed-json-suffix=false observed-json5-suffix=false
+number-dot-reject error=SyntaxError message=Unterminated fractional number file=number-dot-reject/data/number-dot.data line=1 column=13
+number-dot-reject case=pass
+cr-continuation-reject request[0] name=cr-continuation-reject/data/cr-continuation.data observed-type-test=2 observed-json-suffix=false observed-json5-suffix=false
+cr-continuation-reject error=SyntaxError message=Bad escaped character file=cr-continuation-reject/data/cr-continuation.data line=1 column=16
+cr-continuation-reject case=pass
+crlf-continuation-reject request[0] name=crlf-continuation-reject/data/crlf-continuation.data observed-type-test=2 observed-json-suffix=false observed-json5-suffix=false
+crlf-continuation-reject error=SyntaxError message=Bad escaped character file=crlf-continuation-reject/data/crlf-continuation.data line=1 column=16
+crlf-continuation-reject case=pass
+json5 loader oracle cases=11 passed=11
