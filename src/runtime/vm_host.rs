@@ -1409,6 +1409,13 @@ impl RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    /// Dynamic/global environment records diagnose the resolved property atom
+    /// directly in QuickJS; strip-var-debug only erases local and ordinary
+    /// closure descriptor names.
+    fn dynamic_lexical_uninitialized_error(&self, name: Atom) -> Result<Error, Error> {
+        self.lexical_uninitialized_error_with_visibility(Some(name), true)
+    }
+
     /// QuickJS strips vardef names per function when StripDebug was sampled
     /// and that function contains no syntactic direct eval. Oxide retains some
     /// of those atoms as publication/authentication metadata, so diagnostics

@@ -291,7 +291,7 @@ impl RuntimeVmHost {
                 ));
             }
             if matches!(cell.value, RawValue::Uninitialized) {
-                return Err(self.lexical_uninitialized_error(Some(atom))?);
+                return Err(self.dynamic_lexical_uninitialized_error(atom)?);
             }
             if cell.is_const {
                 return Err(self.lexical_read_only_error(Some(atom))?);
@@ -395,7 +395,7 @@ impl RuntimeVmHost {
                 .map_err(|error| Error::internal(error.to_string()))?
                 .clone();
             if matches!(cell.value, RawValue::Uninitialized) {
-                return Err(self.lexical_uninitialized_error(Some(key.atom()))?);
+                return Err(self.dynamic_lexical_uninitialized_error(key.atom())?);
             }
             if cell.is_const {
                 return if strict {
