@@ -56,7 +56,7 @@ pub(super) struct ModuleGraphRootAdmission {
     pub(super) closure_file_count: usize,
     pub(super) priority: usize,
     pub(super) goal: ModuleGraphRootGoal,
-    pub(super) dynamic_import_expectation: Option<DynamicImportBytecodeExpectation>,
+    pub(super) dynamic_import_policy: Option<DynamicImportRootPolicy>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -66,9 +66,10 @@ pub(super) enum ModuleGraphRootGoal {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DynamicImportBytecodeExpectation {
+pub(super) enum DynamicImportRootPolicy {
     InitialImportTree,
     RuntimeCompiledImport,
+    ParseRejected,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,7 +217,7 @@ impl AdmissionCatalog {
                     }
                 }
                 "graph-root" | "dynamic-import-root" => {
-                    let (goal, dynamic_import_expectation) = if fields[0] == "graph-root" {
+                    let (goal, dynamic_import_policy) = if fields[0] == "graph-root" {
                         require_empty(
                             &fields,
                             &[3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15],
@@ -226,12 +227,11 @@ impl AdmissionCatalog {
                     } else {
                         require_empty(&fields, &[3, 4, 5, 6, 7, 8, 11, 12, 13, 15], line_number)?;
                         let expectation = match fields[14] {
-                            "initial-import-tree" => {
-                                DynamicImportBytecodeExpectation::InitialImportTree
-                            }
+                            "initial-import-tree" => DynamicImportRootPolicy::InitialImportTree,
                             "runtime-compiled-import" => {
-                                DynamicImportBytecodeExpectation::RuntimeCompiledImport
+                                DynamicImportRootPolicy::RuntimeCompiledImport
                             }
+                            "parse-rejected" => DynamicImportRootPolicy::ParseRejected,
                             "" => {
                                 return Err(format!(
                                     "admissions line {line_number} is missing dynamic import policy"
@@ -271,7 +271,7 @@ impl AdmissionCatalog {
                         closure_file_count,
                         priority,
                         goal,
-                        dynamic_import_expectation,
+                        dynamic_import_policy,
                     });
                 }
                 "graph-file" => {
@@ -499,6 +499,49 @@ impl AdmissionCatalog {
                     ));
                 }
                 _ => {}
+            }
+            if root.goal == ModuleGraphRootGoal::DynamicImportScript {
+                let expectation = root
+                    .dynamic_import_policy
+                    .expect("dynamic import roots always carry a policy");
+                let parse_negative = root_file
+                    .metadata
+                    .negative
+                    .as_ref()
+                    .is_some_and(|negative| negative.phase == "parse");
+                let parse_syntax_error =
+                    root_file
+                        .metadata
+                        .negative
+                        .as_ref()
+                        .is_some_and(|negative| {
+                            negative.phase == "parse" && negative.error_type == "SyntaxError"
+                        });
+                match expectation {
+                    DynamicImportRootPolicy::ParseRejected => {
+                        if !parse_syntax_error {
+                            return Err(format!(
+                                "parse-rejected dynamic import root must declare negative=parse/SyntaxError: {}/{}",
+                                root.group, root.path
+                            ));
+                        }
+                        if root.closure_file_count != 1 || !root_file.requests.is_empty() {
+                            return Err(format!(
+                                "parse-rejected dynamic import root must be a request-free one-file graph: {}/{}",
+                                root.group, root.path
+                            ));
+                        }
+                    }
+                    DynamicImportRootPolicy::InitialImportTree
+                    | DynamicImportRootPolicy::RuntimeCompiledImport => {
+                        if parse_negative {
+                            return Err(format!(
+                                "parse-negative dynamic import root must use the parse-rejected policy: {}/{}",
+                                root.group, root.path
+                            ));
+                        }
+                    }
+                }
             }
             let visited = reachable_paths(files, &root.path)?;
             if visited.len() != root.closure_file_count {
@@ -975,9 +1018,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{
-        AdmissionCatalog, DynamicImportBytecodeExpectation, HEADER, SupplementalPolicy, sha256,
-    };
+    use super::{AdmissionCatalog, DynamicImportRootPolicy, HEADER, SupplementalPolicy, sha256};
 
     const SHA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -1224,6 +1265,49 @@ mod tests {
         format!("{HEADER}\n{}\n", rows.join("\n"))
     }
 
+    fn parse_rejected_dynamic_import_catalog() -> String {
+        let mut rows = [
+            row([
+                "dynamic-import-root",
+                "dynamic-import-negative",
+                "test/invalid-dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "1",
+                "0",
+                "",
+                "",
+                "",
+                "parse-rejected",
+                "",
+            ]),
+            row([
+                "graph-file",
+                "dynamic-import-negative",
+                "test/invalid-dynamic.js",
+                SHA,
+                "",
+                "generated",
+                "dynamic-import",
+                "parse",
+                "SyntaxError",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        format!("{HEADER}\n{}\n", rows.join("\n"))
+    }
+
     fn resort_catalog(source: &str) -> String {
         let mut rows = source.lines().skip(1).collect::<Vec<_>>();
         rows.sort();
@@ -1298,8 +1382,8 @@ mod tests {
         let root = catalog.dynamic_import_root(path).unwrap();
         assert_eq!(root.closure_file_count, 2);
         assert_eq!(
-            root.dynamic_import_expectation,
-            Some(DynamicImportBytecodeExpectation::InitialImportTree)
+            root.dynamic_import_policy,
+            Some(DynamicImportRootPolicy::InitialImportTree)
         );
         assert!(catalog.graph_root(path).is_none());
 
@@ -1351,8 +1435,8 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(
-            root.dynamic_import_expectation,
-            Some(DynamicImportBytecodeExpectation::InitialImportTree)
+            root.dynamic_import_policy,
+            Some(DynamicImportRootPolicy::InitialImportTree)
         );
 
         let runtime = initial.replace("initial-import-tree", "runtime-compiled-import");
@@ -1362,8 +1446,19 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(
-            root.dynamic_import_expectation,
-            Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport)
+            root.dynamic_import_policy,
+            Some(DynamicImportRootPolicy::RuntimeCompiledImport)
+        );
+
+        let parse_rejected = parse_rejected_dynamic_import_catalog();
+        let root = AdmissionCatalog::parse(&parse_rejected)
+            .unwrap()
+            .dynamic_import_root(Path::new("test/invalid-dynamic.js"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            root.dynamic_import_policy,
+            Some(DynamicImportRootPolicy::ParseRejected)
         );
 
         let missing = initial.replace("initial-import-tree", "-");
@@ -1380,6 +1475,87 @@ mod tests {
         );
         let error = AdmissionCatalog::parse(&static_policy).unwrap_err();
         assert!(error.contains("unexpected data in field policy"), "{error}");
+    }
+
+    #[test]
+    fn parse_rejected_dynamic_import_policy_is_bidirectional() {
+        let valid = parse_rejected_dynamic_import_catalog();
+        AdmissionCatalog::parse(&valid).unwrap();
+
+        let missing_negative = valid
+            .replace("\tparse\tSyntaxError\t", "\t-\t-\t")
+            .replace("parse-rejected", "initial-import-tree");
+        AdmissionCatalog::parse(&missing_negative).unwrap();
+
+        let wrong_negative = valid.replace("\tparse\tSyntaxError\t", "\truntime\tSyntaxError\t");
+        let error = AdmissionCatalog::parse(&wrong_negative).unwrap_err();
+        assert!(error.contains("negative=parse/SyntaxError"), "{error}");
+
+        let false_bytecode_policy = valid.replace("parse-rejected", "initial-import-tree");
+        let error = AdmissionCatalog::parse(&false_bytecode_policy).unwrap_err();
+        assert!(
+            error.contains("must use the parse-rejected policy"),
+            "{error}"
+        );
+
+        let parse_type_error = valid
+            .replace("\tparse\tSyntaxError\t", "\tparse\tTypeError\t")
+            .replace("parse-rejected", "runtime-compiled-import");
+        let error = AdmissionCatalog::parse(&parse_type_error).unwrap_err();
+        assert!(
+            error.contains("must use the parse-rejected policy"),
+            "{error}"
+        );
+
+        let wrong_closure = valid.replace("\t1\t0\t", "\t2\t0\t");
+        let error = AdmissionCatalog::parse(&wrong_closure).unwrap_err();
+        assert!(error.contains("request-free one-file graph"), "{error}");
+
+        let mut requested_rows = valid
+            .lines()
+            .skip(1)
+            .map(|line| line.replace("\t1\t0\t", "\t2\t0\t"))
+            .collect::<Vec<_>>();
+        requested_rows.push(row([
+            "graph-file",
+            "dynamic-import-negative",
+            "test/fixture_FIXTURE.js",
+            SHA,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]));
+        requested_rows.push(row([
+            "graph-request",
+            "dynamic-import-negative",
+            "test/invalid-dynamic.js",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "0",
+            "./fixture_FIXTURE.js",
+            "test/fixture_FIXTURE.js",
+            "",
+            "",
+        ]));
+        requested_rows.sort();
+        let requested = format!("{HEADER}\n{}\n", requested_rows.join("\n"));
+        let error = AdmissionCatalog::parse(&requested).unwrap_err();
+        assert!(error.contains("request-free one-file graph"), "{error}");
     }
 
     #[test]

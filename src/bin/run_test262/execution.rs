@@ -13,7 +13,7 @@ use quickjs_oxide::{
     PromiseState, Runtime, RuntimeError, Test262AgentSession, Value,
 };
 
-use super::admissions::{AdmissionCatalog, DynamicImportBytecodeExpectation, ModuleGraphRootGoal};
+use super::admissions::{AdmissionCatalog, DynamicImportRootPolicy, ModuleGraphRootGoal};
 use super::metadata::{Metadata, parse_metadata};
 use super::report::WorkerResult;
 use super::requirements::{
@@ -375,14 +375,14 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         &source,
         &metadata,
     )?;
-    let dynamic_import_expectation = if exact_dynamic_import {
+    let dynamic_import_policy = if exact_dynamic_import {
         Some(
             admissions
                 .dynamic_import_root(&options.test)
-                .and_then(|root| root.dynamic_import_expectation)
+                .and_then(|root| root.dynamic_import_policy)
                 .ok_or_else(|| {
                     format!(
-                        "authenticated dynamic import root has no bytecode expectation: {}",
+                        "authenticated dynamic import root has no root policy: {}",
                         options.test.display()
                     )
                 })?,
@@ -390,6 +390,8 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     } else {
         None
     };
+    let parse_rejected_dynamic_import =
+        dynamic_import_policy == Some(DynamicImportRootPolicy::ParseRejected);
     if options.allow_agent_host
         && !is_exact_agent_host_test(&admissions, &options.test, &source, &metadata)?
     {
@@ -410,7 +412,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let module_resolution_started = Rc::new(Cell::new(false));
     let graph_loader_goal = if exact_module == Some(ExactModuleTest::FixtureGraph) {
         Some(ModuleGraphRootGoal::StaticModule)
-    } else if exact_dynamic_import {
+    } else if exact_dynamic_import && !parse_rejected_dynamic_import {
         Some(ModuleGraphRootGoal::DynamicImportScript)
     } else {
         None
@@ -538,12 +540,18 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     // Initial Script publication is host-side and executes no JavaScript.
     // Open the capability only for this compile so the immutable tree can be
     // inspected below, then close it again before any authored code runs.
-    runtime.set_dynamic_import_bytecode_allowed(true);
+    runtime.set_dynamic_import_bytecode_allowed(!parse_rejected_dynamic_import);
     let compilation = context.compile_with_options(&authored, &compile_options);
     runtime.set_dynamic_import_bytecode_allowed(false);
     let function = match compilation {
         Ok(function) => function,
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
+            if parse_rejected_dynamic_import {
+                return Err(format!(
+                    "parse-rejected Test262 dynamic-import root reached bytecode capability checking instead of SyntaxError: {}",
+                    options.test.display()
+                ));
+            }
             return Ok(WorkerResult::failure(
                 "unsupported-parser",
                 "parse",
@@ -553,14 +561,29 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
         }
         Err(RuntimeError::Exception) => {
             let diagnostic = take_error(&runtime, &mut context, RuntimeError::Exception);
+            if parse_rejected_dynamic_import && diagnostic.error_type != "SyntaxError" {
+                return Err(format!(
+                    "parse-rejected Test262 dynamic-import root produced {} instead of SyntaxError: {}",
+                    diagnostic.error_type,
+                    options.test.display()
+                ));
+            }
             return Ok(classify_completion(&metadata, "parse", &diagnostic));
         }
-        Err(error) => return Ok(engine_fault("engine-fault", "parse", error, None)),
+        Err(error) => {
+            if parse_rejected_dynamic_import {
+                return Err(format!(
+                    "parse-rejected Test262 dynamic-import root reached host policy instead of SyntaxError for {}: {error}",
+                    options.test.display()
+                ));
+            }
+            return Ok(engine_fault("engine-fault", "parse", error, None));
+        }
     };
     authenticate_dynamic_import_bytecode(
         &runtime,
         &function,
-        dynamic_import_expectation,
+        dynamic_import_policy,
         &options.test,
     )?;
     if metadata
@@ -595,7 +618,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
 fn authenticate_dynamic_import_bytecode(
     runtime: &Runtime,
     function: &quickjs_oxide::FunctionBytecodeRef,
-    expectation: Option<DynamicImportBytecodeExpectation>,
+    policy: Option<DynamicImportRootPolicy>,
     path: &Path,
 ) -> Result<(), String> {
     let contains_dynamic_import = runtime
@@ -606,21 +629,25 @@ fn authenticate_dynamic_import_bytecode(
                 path.display()
             )
         })?;
-    match (contains_dynamic_import, expectation) {
+    match (contains_dynamic_import, policy) {
         (true, None) => Err(format!(
             "Test262 dynamic-import worker rejected unaudited path: {}",
             path.display()
         )),
-        (false, Some(DynamicImportBytecodeExpectation::InitialImportTree)) => Err(format!(
+        (false, Some(DynamicImportRootPolicy::InitialImportTree)) => Err(format!(
             "authenticated Test262 dynamic-import root compiled without dynamic-import bytecode: {}",
             path.display()
         )),
-        (true, Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport)) => Err(format!(
+        (true, Some(DynamicImportRootPolicy::RuntimeCompiledImport)) => Err(format!(
             "runtime-compiled Test262 dynamic-import root unexpectedly contained initial dynamic-import bytecode: {}",
             path.display()
         )),
-        (true, Some(DynamicImportBytecodeExpectation::InitialImportTree))
-        | (false, Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport)) => {
+        (_, Some(DynamicImportRootPolicy::ParseRejected)) => Err(format!(
+            "parse-rejected Test262 dynamic-import root unexpectedly compiled: {}",
+            path.display()
+        )),
+        (true, Some(DynamicImportRootPolicy::InitialImportTree))
+        | (false, Some(DynamicImportRootPolicy::RuntimeCompiledImport)) => {
             runtime.set_dynamic_import_bytecode_allowed(true);
             Ok(())
         }
@@ -1237,7 +1264,7 @@ fn primitive_text(value: Value) -> String {
 mod tests {
     use std::cell::Cell;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1251,7 +1278,7 @@ mod tests {
         classify_async_print_log, classify_completion, configure_runtime_can_block,
         finish_module_evaluation, install_worker_host, run_worker, take_error,
     };
-    use crate::admissions::{AdmissionCatalog, DynamicImportBytecodeExpectation, sha256};
+    use crate::admissions::{AdmissionCatalog, DynamicImportRootPolicy, sha256};
     use crate::metadata::{Metadata, NegativeExpectation};
     use crate::{Variant, WorkerOptions};
 
@@ -1267,6 +1294,59 @@ mod tests {
         fields
             .map(|field| if field.is_empty() { "-" } else { field })
             .join("\t")
+    }
+
+    fn write_parse_rejected_admissions(
+        suite: &Path,
+        relative: &Path,
+        source: &str,
+    ) -> (PathBuf, String) {
+        const HEADER: &str = "kind\tgroup\tpath\tsource_sha256\tincludes\tflags\tfeatures\tnegative_phase\tnegative_type\tclosure_file_count\tpriority\trequest_index\tspecifier\tnormalized_path\tpolicy\tcohort";
+        let relative = relative.to_str().unwrap();
+        let source_sha256 = sha256(source.as_bytes());
+        let mut rows = [
+            admission_row([
+                "dynamic-import-root",
+                "parse-rejected",
+                relative,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "1",
+                "0",
+                "",
+                "",
+                "",
+                "parse-rejected",
+                "",
+            ]),
+            admission_row([
+                "graph-file",
+                "parse-rejected",
+                relative,
+                &source_sha256,
+                "",
+                "raw",
+                "dynamic-import",
+                "parse",
+                "SyntaxError",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        let contents = format!("{HEADER}\n{}\n", rows.join("\n"));
+        let path = suite.join("admissions.tsv");
+        fs::write(&path, &contents).unwrap();
+        (path, sha256(contents.as_bytes()))
     }
 
     fn json_loader_catalog(json_sha256: &str) -> AdmissionCatalog {
@@ -1784,7 +1864,7 @@ mod tests {
         authenticate_dynamic_import_bytecode(
             &runtime,
             &initial,
-            Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport),
+            Some(DynamicImportRootPolicy::RuntimeCompiledImport),
             &path,
         )
         .unwrap();
@@ -1798,7 +1878,7 @@ mod tests {
         let error = authenticate_dynamic_import_bytecode(
             &runtime,
             &unexpected_initial,
-            Some(DynamicImportBytecodeExpectation::RuntimeCompiledImport),
+            Some(DynamicImportRootPolicy::RuntimeCompiledImport),
             &path,
         )
         .unwrap_err();
@@ -1850,17 +1930,16 @@ mod tests {
         ));
         let relative = PathBuf::from("test/invalid-import-call.js");
         fs::create_dir_all(suite.join("test")).unwrap();
-        fs::write(
-            suite.join(&relative),
-            "/*---\nflags: [raw]\nfeatures: [dynamic-import]\nnegative:\n  phase: parse\n  type: SyntaxError\n---*/\nimport(,);\n",
-        )
-        .unwrap();
+        let source = "/*---\nflags: [raw]\nfeatures: [dynamic-import]\nnegative:\n  phase: parse\n  type: SyntaxError\n---*/\nnew import('');\n";
+        fs::write(suite.join(&relative), source).unwrap();
+        let (admissions, admissions_sha256) =
+            write_parse_rejected_admissions(&suite, &relative, source);
 
         let result = run_worker(&WorkerOptions {
             suite: suite.clone(),
             test: relative,
-            admissions: admissions_path(),
-            admissions_sha256: admissions_sha256(),
+            admissions,
+            admissions_sha256,
             variant: Variant::Sloppy,
             allow_async_host: false,
             allow_agent_host: false,
@@ -1871,6 +1950,75 @@ mod tests {
         assert_eq!(result.outcome, "pass", "{}", result.detail);
         assert_eq!(result.actual_phase, "parse");
         assert_eq!(result.actual_type, "SyntaxError");
+    }
+
+    #[test]
+    fn parse_rejected_dynamic_import_root_must_not_compile() {
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-dynamic-import-worker-parse-success-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let relative = PathBuf::from("test/invalid-import-call.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        let source = "/*---\nflags: [raw]\nfeatures: [dynamic-import]\nnegative:\n  phase: parse\n  type: SyntaxError\n---*/\n0;\n";
+        fs::write(suite.join(&relative), source).unwrap();
+        let (admissions, admissions_sha256) =
+            write_parse_rejected_admissions(&suite, &relative, source);
+
+        let error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            admissions,
+            admissions_sha256,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: false,
+        })
+        .unwrap_err();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert!(error.contains("parse-rejected"), "{error}");
+        assert!(error.contains("unexpectedly compiled"), "{error}");
+    }
+
+    #[test]
+    fn parse_rejected_dynamic_import_root_cannot_fall_through_to_host_policy() {
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-dynamic-import-worker-parse-capability-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let relative = PathBuf::from("test/invalid-import-call.js");
+        fs::create_dir_all(suite.join("test")).unwrap();
+        let source = "/*---\nflags: [raw]\nfeatures: [dynamic-import]\nnegative:\n  phase: parse\n  type: SyntaxError\n---*/\nimport('');\n";
+        fs::write(suite.join(&relative), source).unwrap();
+        let (admissions, admissions_sha256) =
+            write_parse_rejected_admissions(&suite, &relative, source);
+
+        let error = run_worker(&WorkerOptions {
+            suite: suite.clone(),
+            test: relative,
+            admissions,
+            admissions_sha256,
+            variant: Variant::Sloppy,
+            allow_async_host: false,
+            allow_agent_host: false,
+        })
+        .unwrap_err();
+        fs::remove_dir_all(suite).unwrap();
+
+        assert!(error.contains("parse-rejected"), "{error}");
+        assert!(
+            error.contains("host policy instead of SyntaxError"),
+            "{error}"
+        );
     }
 
     #[test]

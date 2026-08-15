@@ -11267,6 +11267,7 @@ fn reserved_property_names_and_import_calls_remain_distinct() {
         "import('module')?.()",
         "import('module')`tag`",
         "new (import('module'))",
+        "new C(import('module'))",
     ] {
         compile_unlinked_script(source)
             .unwrap_or_else(|error| panic!("valid ImportCall {source:?} failed: {error}"));
@@ -11289,6 +11290,16 @@ fn reserved_property_names_and_import_calls_remain_distinct() {
         ("import(source, {}, extra)", "expecting ')'"),
         ("new import(source)", "invalid use of 'import()'"),
         ("new import()", "invalid use of 'import()'"),
+        ("new/*gap*/import('module')", "invalid use of 'import()'"),
+        ("new\nimport('module')", "invalid use of 'import()'"),
+        (
+            "new import /* gap */ ('module')",
+            "invalid use of 'import()'",
+        ),
+        (
+            "(() => new/*gap*/import('module'))",
+            "invalid use of 'import()'",
+        ),
         ("import(source) = 1", "invalid assignment left-hand side"),
         ("import(source)++", "invalid increment/decrement operand"),
         ("++import(source)", "invalid increment/decrement operand"),

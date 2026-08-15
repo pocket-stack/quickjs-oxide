@@ -49,6 +49,7 @@ class-static-block.yield	js_parse_class	static blocks reject yield
 declaration.single-statement.class	js_parse_statement_or_decl	class declarations are forbidden where a single statement is required
 declaration.single-statement.function	js_parse_statement_or_decl	function declarations are forbidden outside Annex B allowances where a single statement is required
 declaration.single-statement.lexical	js_parse_statement_or_decl	lexical declarations are forbidden where a single statement is required
+dynamic-import.invalid-new-target	js_parse_postfix_expr	new cannot directly target ImportCall
 function-parameter.rest-default	js_parse_function_decl2	rest parameters cannot have default initializers
 function-parameter.rest-not-final	js_parse_function_decl2	rest parameters must be final
 generator.yield-identifier-reference	js_parse_unary	yield cannot be used as an identifier reference in generators

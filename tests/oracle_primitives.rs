@@ -702,6 +702,10 @@ const FUTURE_RESERVED_IMPORT_CALL_CASES: &[(&str, &str)] = &[
         "parenthesized dynamic import as a new target",
         "new (import('fixture'))",
     ),
+    (
+        "dynamic import as a constructor argument",
+        "new C(import('fixture'))",
+    ),
 ];
 
 const FUTURE_RESERVED_ERROR_CASES: &[(&str, &str)] = &[
@@ -735,6 +739,22 @@ const FUTURE_RESERVED_ERROR_CASES: &[(&str, &str)] = &[
     ),
     ("dynamic import as new target", "new import(source)"),
     ("empty dynamic import as new target", "new import()"),
+    (
+        "dynamic import as new target across comment trivia",
+        "new/*gap*/import(source)",
+    ),
+    (
+        "dynamic import as new target across newline trivia",
+        "new\nimport(source)",
+    ),
+    (
+        "dynamic import as new target before call trivia",
+        "new import /* gap */ (source)",
+    ),
+    (
+        "nested dynamic import as new target across trivia",
+        "(() => new/*gap*/import(source))",
+    ),
     ("dynamic import assignment target", "import(source) = 1"),
     ("dynamic import postfix update", "import(source)++"),
     ("dynamic import prefix update", "++import(source)"),
