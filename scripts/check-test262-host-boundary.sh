@@ -17,7 +17,9 @@ command -v cargo >/dev/null 2>&1 || die "cargo is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
 metadata=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-metadata.XXXXXX")
-trap 'rm -f -- "$metadata"' EXIT
+fake_runner=$(mktemp "${TMPDIR:-/tmp}/quickjs-oxide-fake-runner.XXXXXX")
+fake_runner_marker=$fake_runner.invoked
+trap 'rm -f -- "$metadata" "$fake_runner" "$fake_runner_marker"' EXIT
 cargo metadata --locked --format-version 1 --no-deps > "$metadata"
 
 python3 - "$metadata" <<'PY'
@@ -46,6 +48,16 @@ if len(runner) != 1:
     fail("cargo metadata must contain exactly one run-test262 target")
 if runner[0].get("required-features") != ["test262-host"]:
     fail("run-test262 must require exactly the test262-host feature")
+custom_build_targets = [
+    target for target in engine["targets"] if "custom-build" in target.get("kind", [])
+]
+if custom_build_targets:
+    fail("quickjs-oxide must not have an unhashed custom build target")
+path_dependencies = [
+    dependency for dependency in engine["dependencies"] if dependency.get("path") is not None
+]
+if path_dependencies:
+    fail("quickjs-oxide path dependencies must be added to engine semantics coverage")
 
 integration_targets = [
     target
@@ -188,6 +200,16 @@ require_gated(
 gate = Path("scripts/test-test262.sh").read_text()
 if "--features test262-host --bin run-test262" not in gate:
     fail("central Test262 gate must build run-test262 with test262-host")
+if gate.count("${TEST262_RUNNER+x}") != 1 or "runner_override" in gate:
+    fail("central Test262 gate must retire external runner overrides")
+if "QUICKJS_OXIDE_TEST262_ENGINE_SEMANTICS_SHA256=$workspace_engine_semantics_sha256" not in gate:
+    fail("central Test262 gate must bind the workspace fingerprint at compile time")
+if 'runner=$runner_dir/run-test262' not in gate or 'cp -p -- "$built_runner" "$runner"' not in gate:
+    fail("central Test262 gate must execute a private authenticated runner copy")
+if '--verify-runner-provenance "$workspace_engine_semantics_sha256"' not in gate:
+    fail("central Test262 gate must verify the compiled runner fingerprint")
+if "run-test262 accepted a stale engine semantics fingerprint" not in gate:
+    fail("central Test262 gate must probe that stale fingerprints are rejected")
 
 gc_gate = Path("scripts/test-host-gc-reentrant-oracle.sh").read_text()
 if "--features test262-host" not in gc_gate:
@@ -200,6 +222,27 @@ if parity_gate.count("--features test262-host") < 2:
 workflow = Path(".github/workflows/ci.yml").read_text()
 if "./scripts/check-test262-host-boundary.sh" not in workflow:
     fail("public fast CI must enforce the Test262 host boundary")
+if "./scripts/test-test262.sh --spec dev-support/test262/current.conf --runner-provenance" not in workflow:
+    fail("public fast CI must authenticate the compiled Test262 runner")
 
-print("Test262 host feature boundary passed.")
 PY
+
+printf '%s\n' '#!/bin/sh' \
+    'printf invoked > "$0.invoked"' \
+    "printf '%s\\n' 'run-test262 provenance: engine_semantics_sha256=0000000000000000000000000000000000000000000000000000000000000000'" \
+    > "$fake_runner"
+chmod +x "$fake_runner"
+expected_override_error='error: TEST262_RUNNER is retired; use CARGO_TARGET_DIR to reuse Cargo-authenticated builds'
+for runner_override in '' "$fake_runner" /definitely/stale/run-test262; do
+    set +e
+    TEST262_RUNNER="$runner_override" \
+        ./scripts/test-test262.sh --runner-provenance > "$metadata" 2>&1
+    status=$?
+    set -e
+    [[ "$status" == 1 ]] || die 'retired TEST262_RUNNER override was not rejected'
+    [[ "$(cat "$metadata")" == "$expected_override_error" ]] \
+        || die 'retired TEST262_RUNNER rejection drifted or executed the override'
+done
+[[ ! -e "$fake_runner_marker" ]] || die 'retired TEST262_RUNNER executed a spoofing shim'
+
+echo "Test262 host feature and runner provenance boundary passed."

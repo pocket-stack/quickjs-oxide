@@ -63,11 +63,21 @@ for `Cargo.toml`, `Cargo.lock`, `src/**`, the active profile/upstream pins, and
 the central preparation/gate scripts. It excludes generated caches, vendors,
 historical vectors, receipts, and `current.conf` itself. The spec remains
 separately authenticated, so excluding it avoids a circular checksum.
+The gate fixes that coverage contract independently of profile data and rejects
+known repository-local implicit build inputs until they are explicitly added to
+the contract.
+
+The gate always builds the Rust runner from the authenticated worktree. It
+embeds the workspace fingerprint at compile time, verifies the binding before
+execution, and runs a private byte-identical copy so another Cargo invocation
+cannot replace workers during a long run. `TEST262_RUNNER` is retired; use
+`CARGO_TARGET_DIR` to reuse Cargo's authenticated build cache.
 
 Use the one parameterized entry point:
 
 ```sh
 ./scripts/test-test262.sh --check
+./scripts/test-test262.sh --runner-provenance
 ./scripts/test-test262.sh --focused
 TEST262_WORKERS=2 ./scripts/test-test262.sh --full
 node scripts/audit-negative-diagnostics.mjs --suite /path/to/test262 \
@@ -98,7 +108,10 @@ is current or stale; staleness is explicit but does not fail fast CI. Focused
 byte-for-byte replay refuses a stale source. A full run may produce a new
 current-source receipt for promotion, but cannot authenticate against the old
 baseline hashes. Promotion updates the pinned source commit and result hashes
-only after report metadata matches the recomputed workspace fingerprint.
+only after report metadata matches the recomputed workspace fingerprint. The
+gate recomputes that fingerprint after building the runner and after execution,
+so concurrent source edits invalidate the receipt rather than producing a
+mixed-source baseline.
 
 The repository keeps only the current profile and focused receipt plus the
 small semantic ledgers used by runner unit tests. A fast inventory gate requires

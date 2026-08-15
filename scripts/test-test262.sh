@@ -10,8 +10,9 @@ root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 default_spec=dev-support/test262/current.conf
 
 usage() {
-    printf 'usage: %s [--spec FILE] [--check|--focused|--full]\n' "${0##*/}"
+    printf 'usage: %s [--spec FILE] [--check|--runner-provenance|--focused|--full]\n' "${0##*/}"
     printf '  --check    authenticate the baseline and report source freshness\n'
+    printf '  --runner-provenance  build and authenticate the current Rust runner\n'
     printf '  --focused  rerun and byte-compare the focused milestone receipt\n'
     printf '  --full     rerun and authenticate the complete Test262 result vector\n'
 }
@@ -28,7 +29,7 @@ while [[ $# -gt 0 ]]; do
             spec_arg=$2
             shift 2
             ;;
-        --check|--focused|--full)
+        --check|--runner-provenance|--focused|--full)
             [[ "$mode_seen" == false ]] || { usage >&2; exit 2; }
             mode=${1#--}
             mode_seen=true
@@ -44,6 +45,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+[[ -z ${TEST262_RUNNER+x} ]] \
+    || die 'TEST262_RUNNER is retired; use CARGO_TARGET_DIR to reuse Cargo-authenticated builds'
 
 case $spec_arg in
     /*) spec=$spec_arg ;;
@@ -392,6 +396,16 @@ value=$(spec_value engine_semantics_source)
     && "$(spec_value focused_eligible)" == "$(spec_value focused_runnable)" \
     && "$(spec_value full_eligible)" == "$(spec_value full_runnable)" ]] \
     || die 'unsupported Test262 gate spec contract'
+expected_engine_semantics_files='Cargo.lock,Cargo.toml,compat/test262-oxide.conf,compat/upstream.toml,scripts/prepare-test262.sh,scripts/test-test262.sh'
+[[ "$(spec_value engine_fingerprint_tool)" == scripts/test262-engine-fingerprint.mjs \
+    && "$(spec_value engine_semantics_files)" == "$expected_engine_semantics_files" \
+    && "$(spec_value engine_semantics_trees)" == src ]] \
+    || die 'engine semantics coverage cannot be weakened by profile data'
+for implicit_build_input in build.rs rust-toolchain rust-toolchain.toml \
+        .cargo/config .cargo/config.toml; do
+    [[ ! -e "$root/$implicit_build_input" ]] \
+        || die "$implicit_build_input must be added to the fixed engine semantics coverage"
+done
 
 validate_summary_contract() {
     local prefix=$1
@@ -496,9 +510,19 @@ baseline_engine_semantics_sha256=$(node "$engine_fingerprint_tool" --root "$root
     --trees "$(spec_value engine_semantics_trees)")
 [[ "$baseline_engine_semantics_sha256" == "$(spec_value engine_semantics_sha256)" ]] \
     || die 'baseline engine semantics fingerprint does not match its pinned source commit'
-workspace_engine_semantics_sha256=$(node "$engine_fingerprint_tool" --root "$root" \
-    --worktree --files "$(spec_value engine_semantics_files)" \
-    --trees "$(spec_value engine_semantics_trees)")
+workspace_engine_fingerprint() {
+    node "$engine_fingerprint_tool" --root "$root" \
+        --worktree --files "$(spec_value engine_semantics_files)" \
+        --trees "$(spec_value engine_semantics_trees)"
+}
+workspace_engine_semantics_sha256=$(workspace_engine_fingerprint)
+
+assert_workspace_engine_unchanged() {
+    local phase=$1 actual
+    actual=$(workspace_engine_fingerprint)
+    [[ "$actual" == "$workspace_engine_semantics_sha256" ]] \
+        || die "engine semantics changed during $phase: before=$workspace_engine_semantics_sha256 after=$actual"
+}
 
 sort "$manifest" >"$tmp/manifest.sorted"
 cmp -s "$manifest" "$tmp/manifest.sorted" || die 'focused manifest is not bytewise sorted'
@@ -524,31 +548,66 @@ fi
 if [[ "$mode" == focused ]]; then
     [[ "$workspace_engine_semantics_sha256" == "$baseline_engine_semantics_sha256" ]] \
         || die "Test262 baseline is stale: baseline=$baseline_engine_semantics_sha256 current=$workspace_engine_semantics_sha256; promote the milestone before focused replay"
-elif [[ "$workspace_engine_semantics_sha256" != "$baseline_engine_semantics_sha256" ]]; then
+elif [[ "$mode" == full && \
+        "$workspace_engine_semantics_sha256" != "$baseline_engine_semantics_sha256" ]]; then
     printf 'Test262 full run will produce a current-source receipt for promotion: baseline=%s current=%s\n' \
         "$baseline_engine_semantics_sha256" "$workspace_engine_semantics_sha256" >&2
+fi
+
+target_dir=${CARGO_TARGET_DIR:-$root/target}
+case $target_dir in
+    /*) ;;
+    *) target_dir=$root/$target_dir ;;
+esac
+[[ ! -L "$target_dir" ]] || die 'CARGO_TARGET_DIR must not be a symbolic link'
+build_host=$(rustc -vV | awk '$1=="host:" { print $2; found++ } END { if (found!=1) exit 1 }')
+QUICKJS_OXIDE_TEST262_ENGINE_SEMANTICS_SHA256=$workspace_engine_semantics_sha256 \
+    cargo build --locked --release --target "$build_host" \
+    --target-dir "$target_dir" --features test262-host --bin run-test262
+assert_workspace_engine_unchanged 'runner build'
+built_runner=$target_dir/$build_host/release/run-test262
+[[ -f "$built_runner" && -x "$built_runner" && ! -L "$built_runner" ]] \
+    || die 'run-test262 is not an executable regular file'
+mkdir -p "$output_dir"
+[[ -d "$output_dir" && ! -L "$output_dir" ]] \
+    || die 'target output directory must be a real directory'
+runner_dir=$(mktemp -d "$output_dir/.test262-runner.XXXXXX")
+trap 'rm -rf -- "$tmp" "$runner_dir"' EXIT
+runner=$runner_dir/run-test262
+cp -p -- "$built_runner" "$runner"
+[[ -f "$runner" && -x "$runner" && ! -L "$runner" ]] \
+    || die 'private run-test262 copy is not an executable regular file'
+[[ "$(sha256_file "$built_runner")" == "$(sha256_file "$runner")" ]] \
+    || die 'private run-test262 copy drifted during publication'
+provenance_output=$("$runner" \
+    --verify-runner-provenance "$workspace_engine_semantics_sha256")
+expected_provenance="run-test262 provenance: engine_semantics_sha256=$workspace_engine_semantics_sha256"
+[[ "$provenance_output" == "$expected_provenance" ]] \
+    || die 'run-test262 provenance output drifted'
+stale_probe_sha256=0000000000000000000000000000000000000000000000000000000000000000
+if [[ "$stale_probe_sha256" == "$workspace_engine_semantics_sha256" ]]; then
+    stale_probe_sha256=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+fi
+set +e
+stale_probe_output=$("$runner" \
+    --verify-runner-provenance "$stale_probe_sha256" 2>&1)
+stale_probe_status=$?
+set -e
+expected_stale_probe="run-test262 provenance: runner engine semantics fingerprint mismatch: compiled=$workspace_engine_semantics_sha256 expected=$stale_probe_sha256"
+[[ "$stale_probe_status" == 2 && "$stale_probe_output" == "$expected_stale_probe" ]] \
+    || die 'run-test262 accepted a stale engine semantics fingerprint'
+assert_workspace_engine_unchanged 'runner authentication'
+runner_sha256=$(sha256_file "$runner")
+printf 'Rust Test262 runner provenance passed: engine_semantics_sha256=%s binary_sha256=%s\n' \
+    "$workspace_engine_semantics_sha256" "$runner_sha256"
+
+if [[ "$mode" == runner-provenance ]]; then
+    exit 0
 fi
 
 workers=${TEST262_WORKERS:-2}
 [[ "$workers" =~ ^[1-9][0-9]*$ ]] \
     || { echo 'error: TEST262_WORKERS must be a positive integer' >&2; exit 2; }
-runner_override=${TEST262_RUNNER:-}
-if [[ -n "$runner_override" ]]; then
-    runner=$runner_override
-    [[ "$runner" == /* ]] || die 'TEST262_RUNNER must be an absolute path'
-else
-    target_dir=${CARGO_TARGET_DIR:-$root/target}
-    case $target_dir in
-        /*) ;;
-        *) target_dir=$root/$target_dir ;;
-    esac
-    build_host=$(rustc -vV | awk '$1=="host:" { print $2; found++ } END { if (found!=1) exit 1 }')
-    cargo build --locked --release --target "$build_host" \
-        --target-dir "$target_dir" --features test262-host --bin run-test262
-    runner=$target_dir/$build_host/release/run-test262
-fi
-[[ -f "$runner" && -x "$runner" && ! -L "$runner" ]] \
-    || die 'run-test262 is not an executable regular file'
 
 suite=$("$script_dir/prepare-test262.sh")
 [[ -n "$suite" && "$suite" == /* && -d "$suite/test" && -d "$suite/harness" \
@@ -578,6 +637,7 @@ if [[ "$mode" == focused ]]; then
         --mode "$(spec_value mode)" --workers "$workers" \
         --timeout-ms "$(spec_value timeout_ms)" --allow-failures)
     printf '%s\n' "$run_output"
+    assert_workspace_engine_unchanged 'focused execution'
     verify_report "$replay" "${replay%.tsv}.jsonl" focused \
         "$workspace_engine_semantics_sha256"
     cmp -s "$focused_tsv" "$replay" || die 'focused TSV replay is not byte-identical'
@@ -614,6 +674,7 @@ run_output=$("$runner" --suite "$suite" --config "$source_dir/test262.conf" \
     --mode "$(spec_value mode)" --workers "$workers" \
     --timeout-ms "$(spec_value timeout_ms)" --allow-failures)
 printf '%s\n' "$run_output"
+assert_workspace_engine_unchanged 'full execution'
 execution_line=$(printf '%s\n' "$run_output" | \
     awk '/^execution: runnable=/ { print; found++ } END { if (found!=1) exit 1 }')
 actual_runnable=${execution_line#*runnable=}

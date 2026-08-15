@@ -31,6 +31,7 @@ One script consumes one inert data spec:
 
 ```sh
 ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
+./scripts/test-test262.sh --spec dev-support/test262/current.conf --runner-provenance
 ./scripts/test-test262.sh --spec dev-support/test262/current.conf --focused
 TEST262_WORKERS=2 ./scripts/test-test262.sh \
   --spec dev-support/test262/current.conf --full
@@ -38,7 +39,9 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 
 `--check` authenticates the current upstream pin, profile, negative-diagnostic
 contract and legacy exemption ledger, focused manifest, and frozen TSV/JSONL
-receipts. `--focused` replays the current 6,419-variant focused vector and
+receipts. `--runner-provenance` builds the Rust runner with the current source
+fingerprint, verifies the embedded binding, and executes no Test262 cases.
+`--focused` replays the current 6,419-variant focused vector and
 requires byte-identical output. It retains the dependency-closed
 private-callable, static import-attributes, and static JSON module coverage and
 adds the source-authenticated dynamic-import Script-goal cohort. `--full` runs

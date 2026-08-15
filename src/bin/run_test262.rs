@@ -58,6 +58,9 @@ const TEST262_METADATA_SHA256: &str =
     "a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a";
 const QUICKJS_VERSION: &str = "2026-06-04";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+const ENGINE_SEMANTICS_ENV: &str = "QUICKJS_OXIDE_TEST262_ENGINE_SEMANTICS_SHA256";
+const COMPILED_ENGINE_SEMANTICS_SHA256: Option<&str> =
+    option_env!("QUICKJS_OXIDE_TEST262_ENGINE_SEMANTICS_SHA256");
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Variant {
@@ -157,6 +160,7 @@ enum Invocation {
     Coordinator(Box<CoordinatorOptions>),
     Worker(WorkerOptions),
     MetadataAudit(MetadataAuditOptions),
+    RunnerProvenance(String),
     Help,
 }
 
@@ -194,15 +198,68 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Invocation::Coordinator(options) => match run_coordinator(&options) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::from(1),
-            Err(error) => {
-                eprintln!("run-test262: {error}");
-                ExitCode::from(2)
+        Invocation::RunnerProvenance(expected) => {
+            match validate_runner_provenance_binding(COMPILED_ENGINE_SEMANTICS_SHA256, &expected) {
+                Ok(()) => {
+                    println!("run-test262 provenance: engine_semantics_sha256={expected}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("run-test262 provenance: {error}");
+                    ExitCode::from(2)
+                }
             }
-        },
+        }
+        Invocation::Coordinator(options) => {
+            if let Err(error) = validate_runner_provenance_binding(
+                COMPILED_ENGINE_SEMANTICS_SHA256,
+                &options.engine_semantics_sha256,
+            ) {
+                eprintln!("run-test262: {error}");
+                return ExitCode::from(2);
+            }
+            match run_coordinator(&options) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("run-test262: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
     }
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_runner_provenance_binding(
+    compiled: Option<&str>,
+    expected: &str,
+) -> Result<(), String> {
+    if !is_lowercase_sha256(expected) {
+        return Err("expected engine semantics fingerprint is not a lowercase SHA-256".to_owned());
+    }
+    let Some(compiled) = compiled else {
+        return Err(format!(
+            "runner was built without {ENGINE_SEMANTICS_ENV}; use scripts/test-test262.sh"
+        ));
+    };
+    if !is_lowercase_sha256(compiled) {
+        return Err(format!(
+            "runner contains an invalid {ENGINE_SEMANTICS_ENV} binding"
+        ));
+    }
+    if compiled != expected {
+        return Err(format!(
+            "runner engine semantics fingerprint mismatch: compiled={compiled} expected={expected}"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, String> {
@@ -213,6 +270,24 @@ fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, S
                 .map_err(|_| "arguments must be valid UTF-8".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    const PROVENANCE_OPTION: &str = "--verify-runner-provenance";
+    if arguments
+        .first()
+        .is_some_and(|value| value == PROVENANCE_OPTION)
+    {
+        if arguments.len() != 2 || !is_lowercase_sha256(&arguments[1]) {
+            return Err(format!(
+                "{PROVENANCE_OPTION} requires exactly one lowercase SHA-256"
+            ));
+        }
+        return Ok(Invocation::RunnerProvenance(arguments[1].clone()));
+    }
+    if arguments.iter().any(|value| value == PROVENANCE_OPTION) {
+        return Err(format!(
+            "{PROVENANCE_OPTION} cannot be combined with other options"
+        ));
+    }
+
     if arguments
         .iter()
         .any(|argument| argument == "--help" || argument == "-h")
@@ -499,6 +574,8 @@ usage: run-test262 --suite DIR --config FILE --admissions FILE --admissions-sha2
   --allow-failures     record a baseline without returning a failing status\n\
   --validate-metadata FILE\n\
                        serialize the complete pinned metadata inventory\n\
+  --verify-runner-provenance SHA256\n\
+                       verify the source fingerprint embedded by the central gate\n\
 \n\
 Every variant runs in a fresh subprocess. Module graphs and dynamic import remain\n\
 fail-closed outside source-authenticated admissions; async tests remain fail-closed\n\
@@ -1097,7 +1174,10 @@ mod cli_tests {
     use std::ffi::OsString;
     use std::path::Path;
 
-    use super::{Invocation, default_worker_count, parse_args, sha256_file};
+    use super::{
+        Invocation, default_worker_count, parse_args, sha256_file,
+        validate_runner_provenance_binding,
+    };
 
     fn parse(values: &[&str]) -> Result<Invocation, String> {
         let mut values = values.to_vec();
@@ -1254,6 +1334,79 @@ mod cli_tests {
         assert_eq!(
             invalid,
             "--engine-semantics-sha256 must be a lowercase SHA-256"
+        );
+    }
+
+    #[test]
+    fn runner_provenance_is_exclusive_and_requires_a_canonical_fingerprint() {
+        let expected = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let invocation = parse_args(
+            ["--verify-runner-provenance", expected]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .unwrap();
+        let Invocation::RunnerProvenance(actual) = invocation else {
+            panic!("provenance arguments selected another invocation");
+        };
+        assert_eq!(actual, expected);
+
+        let invalid = parse_args(
+            ["--verify-runner-provenance", "ABC"]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .err()
+        .expect("invalid provenance fingerprint must fail");
+        assert_eq!(
+            invalid,
+            "--verify-runner-provenance requires exactly one lowercase SHA-256"
+        );
+
+        let combined = parse_args(
+            ["--suite", "suite", "--verify-runner-provenance", expected]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .err()
+        .expect("combined provenance mode must fail");
+        assert_eq!(
+            combined,
+            "--verify-runner-provenance cannot be combined with other options"
+        );
+
+        let help_combined = parse_args(
+            ["--verify-runner-provenance", expected, "--help"]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .err()
+        .expect("provenance mode must not be bypassed by help");
+        assert_eq!(
+            help_combined,
+            "--verify-runner-provenance requires exactly one lowercase SHA-256"
+        );
+    }
+
+    #[test]
+    fn runner_provenance_rejects_unbound_invalid_and_stale_binaries() {
+        let current = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let stale = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+        assert!(validate_runner_provenance_binding(Some(current), current).is_ok());
+        assert_eq!(
+            validate_runner_provenance_binding(None, current).unwrap_err(),
+            "runner was built without QUICKJS_OXIDE_TEST262_ENGINE_SEMANTICS_SHA256; use scripts/test-test262.sh"
+        );
+        assert_eq!(
+            validate_runner_provenance_binding(Some("invalid"), current).unwrap_err(),
+            "runner contains an invalid QUICKJS_OXIDE_TEST262_ENGINE_SEMANTICS_SHA256 binding"
+        );
+        assert_eq!(
+            validate_runner_provenance_binding(Some(stale), current).unwrap_err(),
+            format!(
+                "runner engine semantics fingerprint mismatch: compiled={stale} expected={current}"
+            )
         );
     }
 

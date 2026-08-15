@@ -81,6 +81,7 @@ jobs:
           ./scripts/test-quickjs-dynamic-import-trace.sh --validate
           ./scripts/check-test262-host-boundary.sh
           ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
+          ./scripts/test-test262.sh --spec dev-support/test262/current.conf --runner-provenance
           node scripts/current-test262-metrics.mjs --check-docs
           ./scripts/check-rust-only.sh
 
