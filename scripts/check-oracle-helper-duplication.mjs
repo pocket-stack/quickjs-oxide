@@ -9,6 +9,7 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDirectory, "..");
 const supportDirectory = resolve(root, "tests/support");
 const providerFiles = [
+  resolve(supportDirectory, "object_graph_observation.rs"),
   resolve(supportDirectory, "runtime_completion_oracle.rs"),
   resolve(supportDirectory, "runtime_observation.rs"),
 ];
@@ -157,12 +158,66 @@ const tombstoneSources = [
     }
 }`,
   },
+  {
+    label: "Object graph descriptor-bit formatter without a trailing argument comma",
+    origin: "tests/oracle/object/oracle_object_descriptors.rs",
+    replacement: "object_graph_observation::data_bits",
+    source: String.raw`fn data_bits(writable: bool, enumerable: bool, configurable: bool) -> String {
+    format!(
+        "D:{}{}{}",
+        Number(writable),
+        Number(enumerable),
+        Number(configurable)
+    )
+}`,
+  },
+  {
+    label: "Object graph integer-property reader",
+    origin: "tests/oracle/object/oracle_object_assign.rs",
+    replacement: "object_graph_observation::int_property",
+    source: String.raw`fn int_property(runtime: &Runtime, context: &mut Context, object: &ObjectRef, name: &str) -> i32 {
+    let Value::Int(value) = context
+        .get_property(object, &runtime.intern_property_key(name).unwrap())
+        .unwrap()
+    else {
+        panic!("{name} was not an Int property");
+    };
+    value
+}`,
+  },
 ];
 
-// All exact copies of the shared providers were retired with this gate. Keep
-// the mechanism explicit so a narrowly justified exception remains a reviewed
-// path-and-fingerprint decision instead of a global clone-count waiver.
-const providerAllowlist = new Set();
+// The Object graph cleanup was deliberately bounded to eight oracle modules.
+// Adjacent pre-existing copies stay explicit as path-and-fingerprint
+// exceptions, so the gate still rejects any new copy and detects stale entries.
+const helperAllowlist = new Set([
+  "tests/oracle/collections/oracle_map.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/collections/oracle_set.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/collections/oracle_weak_collections.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/errors/oracle_errors.rs\u0000decb1b0e66595c263bc68421bb9797396e381256f18cfb9bf9892c576822ad4a",
+  "tests/oracle/function_semantics/oracle_function_prototype_prefix.rs\u0000decb1b0e66595c263bc68421bb9797396e381256f18cfb9bf9892c576822ad4a",
+  "tests/oracle/global/oracle_global_numeric_predicates.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/global/oracle_global_uri_codecs.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/number/oracle_number_constructor_conversion.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/object/oracle_object_group_by.rs\u00002ecb9b416736102f1170cfa102c85182007491633a58badf2c1677354d8fa244",
+  "tests/oracle/object/oracle_object_group_by.rs\u00003da3ed15c59afc7ed8c28f61354fa7f1ad406d948f45faa8d6989b5805fbeec7",
+  "tests/oracle/object/oracle_object_group_by.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/object/oracle_object_group_by.rs\u0000174e66d9def3034c785ba13ce8818d1a4b6132fa1aa62f3956f8a870a18c6690",
+  "tests/oracle/object/oracle_object_group_by.rs\u0000ae3af224efe82f1d4d7b2adf0ac80991c51681123f90bc2ed647e15b29c3832d",
+  "tests/oracle/object/oracle_object_group_by.rs\u0000decb1b0e66595c263bc68421bb9797396e381256f18cfb9bf9892c576822ad4a",
+  "tests/oracle/object/oracle_object_intrinsic.rs\u00002ecb9b416736102f1170cfa102c85182007491633a58badf2c1677354d8fa244",
+  "tests/oracle/object/oracle_object_intrinsic.rs\u00005d9661cb5d6d4945fe9108896091b79c50bcf99ec24a535d745088a4bd150a86",
+  "tests/oracle/object/oracle_object_intrinsic.rs\u0000decb1b0e66595c263bc68421bb9797396e381256f18cfb9bf9892c576822ad4a",
+  "tests/oracle/string/oracle_string_index_search.rs\u0000ae3af224efe82f1d4d7b2adf0ac80991c51681123f90bc2ed647e15b29c3832d",
+  "tests/oracle/string/oracle_string_index_search.rs\u0000174e66d9def3034c785ba13ce8818d1a4b6132fa1aa62f3956f8a870a18c6690",
+  "tests/oracle/string/oracle_string_index_search.rs\u0000c09ce90549ab8e65e6a88c4f7261c5ec6e7aa8a11bee43106b827b8823bc1377",
+  "tests/oracle/string/oracle_string_index_search.rs\u0000decb1b0e66595c263bc68421bb9797396e381256f18cfb9bf9892c576822ad4a",
+  "tests/oracle/string/oracle_string_intrinsic.rs\u00003da3ed15c59afc7ed8c28f61354fa7f1ad406d948f45faa8d6989b5805fbeec7",
+  "tests/oracle/string/oracle_string_intrinsic.rs\u0000c09ce90549ab8e65e6a88c4f7261c5ec6e7aa8a11bee43106b827b8823bc1377",
+  "tests/oracle/string/oracle_string_intrinsic.rs\u0000decb1b0e66595c263bc68421bb9797396e381256f18cfb9bf9892c576822ad4a",
+  "tests/oracle/string/oracle_string_split.rs\u0000174e66d9def3034c785ba13ce8818d1a4b6132fa1aa62f3956f8a870a18c6690",
+  "tests/oracle_math_intrinsic.rs\u00002ecb9b416736102f1170cfa102c85182007491633a58badf2c1677354d8fa244",
+]);
 
 runCanaries();
 
@@ -170,6 +225,7 @@ const providers = loadProviders();
 const tombstones = loadTombstones();
 const consumerFiles = collectConsumerFiles();
 const functions = consumerFiles.flatMap((path) => scanFile(path));
+runAllowlistMultiplicityCanary(functions, providers, tombstones);
 const failures = checkFunctions(functions, providers, tombstones);
 
 if (options.report) {
@@ -283,15 +339,16 @@ function scanFile(path) {
 
 function checkFunctions(functions, providers, tombstones) {
   const failures = [];
-  const usedAllowlist = new Set();
+  const allowlistUseCounts = new Map();
   for (const helper of functions) {
     const displayPath = display(helper.path);
+    const allowlistKey = `${displayPath}\0${helper.fingerprint}`;
+    const allowlisted = helperAllowlist.has(allowlistKey);
+    let protectedHelper = false;
     const providersForFingerprint = providers.get(helper.fingerprint);
     if (providersForFingerprint !== undefined) {
-      const allowlistKey = `${displayPath}\0${helper.fingerprint}`;
-      if (providerAllowlist.has(allowlistKey)) {
-        usedAllowlist.add(allowlistKey);
-      } else {
+      protectedHelper = true;
+      if (!allowlisted) {
         const providerNames = providersForFingerprint
           .map((provider) => provider.name)
           .sort()
@@ -305,20 +362,54 @@ function checkFunctions(functions, providers, tombstones) {
     }
     const tombstone = tombstones.get(helper.fingerprint);
     if (tombstone !== undefined) {
-      failures.push(
-        `${displayPath}:${helper.line} restores retired ${tombstone.label} ` +
-          `(from ${tombstone.origin}); use ${tombstone.replacement}`,
+      protectedHelper = true;
+      if (!allowlisted) {
+        failures.push(
+          `${displayPath}:${helper.line} restores retired ${tombstone.label} ` +
+            `(from ${tombstone.origin}); use ${tombstone.replacement}`,
+        );
+      }
+    }
+    if (allowlisted && protectedHelper) {
+      allowlistUseCounts.set(
+        allowlistKey,
+        (allowlistUseCounts.get(allowlistKey) ?? 0) + 1,
       );
     }
   }
-  for (const allowlistKey of providerAllowlist) {
-    if (!usedAllowlist.has(allowlistKey)) {
+  for (const allowlistKey of helperAllowlist) {
+    const useCount = allowlistUseCounts.get(allowlistKey) ?? 0;
+    if (useCount === 0) {
       failures.push(
-        `stale shared-provider allowlist entry: ${allowlistKey.replace("\0", " ")}`,
+        `stale shared-helper allowlist entry: ${allowlistKey.replace("\0", " ")}`,
+      );
+    } else if (useCount !== 1) {
+      failures.push(
+        `shared-helper allowlist multiplicity drift: ` +
+          `${allowlistKey.replace("\0", " ")} expected=1 actual=${useCount}`,
       );
     }
   }
   return failures.sort();
+}
+
+function runAllowlistMultiplicityCanary(functions, providers, tombstones) {
+  const [allowlistKey] = helperAllowlist;
+  const helper = functions.find(
+    (candidate) =>
+      `${display(candidate.path)}\0${candidate.fingerprint}` === allowlistKey,
+  );
+  if (helper === undefined) {
+    fail("allowlist multiplicity canary could not find its protected helper");
+  }
+  const failures = checkFunctions([helper, helper], providers, tombstones);
+  if (
+    !failures.some((failure) =>
+      failure.startsWith("shared-helper allowlist multiplicity drift:"),
+    )
+  ) {
+    fail("allowlist multiplicity canary accepted a second protected helper copy");
+  }
 }
 
 function printCensus(functions, consumerFiles, providers, tombstones) {

@@ -1,3 +1,7 @@
+use crate::object_graph_observation::{
+    data_bits, data_descriptor, eval_object, global_callable, int_property, intrinsic_prototype,
+    oracle_lines, own_key_names,
+};
 use crate::quickjs_oracle::observe_completion as observe_oracle;
 use crate::runtime_completion_oracle::compare_eval_completion_cases as compare_cases;
 use crate::runtime_observation::{
@@ -6,10 +10,7 @@ use crate::runtime_observation::{
 use crate::runtime_oracle::value_type;
 use std::ffi::OsStr;
 
-use quickjs_oxide::{
-    CallableRef, CompleteOrdinaryPropertyDescriptor, Context, ObjectRef, PropertyKey, Runtime,
-    RuntimeError, Value,
-};
+use quickjs_oxide::{Runtime, RuntimeError, Value};
 
 // Pins QuickJS 2026-06-04 `js_object_seal` and `js_object_isSealed` for
 // Object.seal/freeze/isSealed/isFrozen. Proxy trap invariants and non-empty
@@ -584,99 +585,4 @@ fn rust_graph_observations() -> Vec<String> {
 
 fn oracle_graph_observations(oracle: &OsStr) -> Vec<String> {
     oracle_lines(oracle, GRAPH_ORACLE, "Object integrity graph")
-}
-
-fn oracle_lines(oracle: &OsStr, source: &str, description: &str) -> Vec<String> {
-    super::quickjs_oracle::eval_std_lines(oracle, source, description)
-}
-
-fn global_callable(runtime: &Runtime, context: &mut Context, name: &str) -> CallableRef {
-    let global = context.global_object().unwrap();
-    property_callable(runtime, context, &global, name)
-}
-
-fn intrinsic_prototype(
-    runtime: &Runtime,
-    context: &mut Context,
-    constructor_name: &str,
-) -> ObjectRef {
-    let constructor = global_callable(runtime, context, constructor_name);
-    let Value::Object(prototype) = context
-        .get_property(
-            constructor.as_object(),
-            &runtime.intern_property_key("prototype").unwrap(),
-        )
-        .unwrap()
-    else {
-        panic!("{constructor_name}.prototype was not an object");
-    };
-    prototype
-}
-
-fn eval_object(context: &mut Context, source: &str) -> ObjectRef {
-    let Value::Object(object) = context.eval(source).unwrap() else {
-        panic!("{source:?} did not evaluate to an object");
-    };
-    object
-}
-
-fn own_key_names(runtime: &Runtime, object: &ObjectRef) -> Vec<String> {
-    runtime
-        .own_property_keys(object)
-        .unwrap()
-        .into_iter()
-        .map(|key| {
-            runtime
-                .property_key_to_js_string(&key)
-                .unwrap()
-                .to_utf8_lossy()
-        })
-        .collect()
-}
-
-fn data_descriptor(
-    runtime: &Runtime,
-    object: &ObjectRef,
-    key: &PropertyKey,
-) -> (Value, bool, bool, bool) {
-    let CompleteOrdinaryPropertyDescriptor::Data {
-        value,
-        writable,
-        enumerable,
-        configurable,
-    } = runtime
-        .get_own_property(object, key)
-        .unwrap()
-        .expect("missing data descriptor")
-    else {
-        panic!("property was not a data descriptor");
-    };
-    (value, writable, enumerable, configurable)
-}
-
-fn int_property(runtime: &Runtime, context: &mut Context, object: &ObjectRef, name: &str) -> i32 {
-    let Value::Int(value) = context
-        .get_property(object, &runtime.intern_property_key(name).unwrap())
-        .unwrap()
-    else {
-        panic!("{name} was not an Int property");
-    };
-    value
-}
-
-fn data_bits(writable: bool, enumerable: bool, configurable: bool) -> String {
-    format!(
-        "D:{}{}{}",
-        Number(writable),
-        Number(enumerable),
-        Number(configurable),
-    )
-}
-
-struct Number(bool);
-
-impl std::fmt::Display for Number {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(if self.0 { "1" } else { "0" })
-    }
 }

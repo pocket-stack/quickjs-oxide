@@ -1,5 +1,7 @@
 // Keep this registry sorted by wrapper path; the test262 aliases intentionally
 // differ from their filenames so one filter selects the feature-gated host tests.
+#[path = "support/object_graph_observation.rs"]
+mod object_graph_observation;
 #[path = "support/quickjs_argv_completion_oracle.rs"]
 mod quickjs_argv_completion_oracle;
 #[path = "support/quickjs_array_completion_oracle.rs"]
