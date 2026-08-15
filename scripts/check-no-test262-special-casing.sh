@@ -15,6 +15,24 @@ die() {
 
 command -v rg >/dev/null 2>&1 || die "ripgrep is required"
 
+# A Rust `#[path]` can make a production module compile source outside the
+# roots scanned below. Permit exactly one such escape: the runtime module's
+# unit tests, guarded by `cfg(test)` and rooted under the repository test tree.
+# Keeping the declaration exact makes deleting the cfg guard or adding another
+# unscanned production input fail closed.
+external_module_paths=$(rg --with-filename --no-heading --color never \
+    --glob '*.rs' -- '^#\[path[[:space:]]*=[[:space:]]*"\.\./' src || true)
+[[ "$external_module_paths" == \
+    'src/runtime/module.rs:#[path = "../../tests/unit/runtime_module/tests.rs"]' ]] \
+    || die 'production sources contain an unauthenticated external module path'
+rg --quiet --multiline --pcre2 -- \
+    '^#\[cfg\(test\)\]\n#\[path = "\.\./\.\./tests/unit/runtime_module/tests\.rs"\]\nmod tests;$' \
+    src/runtime/module.rs \
+    || die 'external runtime unit tests are not protected by the exact cfg(test) boundary'
+[[ -f tests/unit/runtime_module/tests.rs \
+    && ! -L tests/unit/runtime_module/tests.rs ]] \
+    || die 'external runtime unit-test module must be a regular repository file'
+
 scan_roots=(src web/wasm/src Cargo.toml web/wasm/Cargo.toml)
 while IFS= read -r build_script; do
     scan_roots+=("$build_script")
