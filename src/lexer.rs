@@ -26,7 +26,7 @@ use std::iter::FusedIterator;
 use std::ops::Range;
 
 use crate::source_text::SourceText;
-use crate::value::{JsString as RuntimeJsString, JsStringError};
+use crate::value::{JsString as RuntimeJsString, JsStringError, decode_quickjs_utf8};
 
 const TEMPLATE_QUOTE: char = '\u{0060}';
 
@@ -2099,12 +2099,20 @@ pub(crate) fn quickjs_simple_lookahead_is_of(mut source: &str) -> bool {
 /// heuristic performs literal keyword probes, treats escaped keyword tails as
 /// matches, and only distinguishes the first token after raw `import`.
 #[must_use]
-pub fn quickjs_detect_module(mut source: &str) -> bool {
-    if source.starts_with("#!") {
-        source = source
-            .find(['\r', '\n', '\u{2028}', '\u{2029}'])
-            .map_or("", |offset| &source[offset..]);
-    }
+pub fn quickjs_detect_module(source: &str) -> bool {
+    quickjs_detect_module_bytes(source.as_bytes())
+}
+
+/// Apply QuickJS's module-detection heuristic to an explicitly sized source
+/// buffer without decoding or replacing authored bytes.
+///
+/// Like upstream `JS_DetectModule`, the shebang scan observes the explicit
+/// buffer length, while the following simple token scanner treats an embedded
+/// NUL as end of input. Malformed UTF-8 is skipped inside comments and a
+/// shebang but remains a non-identifier token everywhere else.
+#[must_use]
+pub fn quickjs_detect_module_bytes(mut source: &[u8]) -> bool {
+    source = quickjs_detect_module_skip_shebang(source);
     let Some((token, rest)) = quickjs_detect_module_token(source) else {
         return false;
     };
@@ -2129,51 +2137,92 @@ enum QuickJsDetectModuleToken {
     Other,
 }
 
-fn quickjs_detect_module_token(mut source: &str) -> Option<(QuickJsDetectModuleToken, &str)> {
+fn quickjs_detect_module_skip_shebang(source: &[u8]) -> &[u8] {
+    if !source.starts_with(b"#!") {
+        return source;
+    }
+
+    let mut offset = 2;
+    while offset < source.len() {
+        match source[offset] {
+            b'\r' | b'\n' => break,
+            byte if byte >= 0x80 => match decode_quickjs_utf8(&source[offset..]) {
+                Some((0x2028 | 0x2029, consumed)) => {
+                    offset += consumed;
+                    break;
+                }
+                Some((_, consumed)) => offset += consumed,
+                None => offset += 1,
+            },
+            _ => offset += 1,
+        }
+    }
+    &source[offset..]
+}
+
+fn quickjs_detect_module_token(mut source: &[u8]) -> Option<(QuickJsDetectModuleToken, &[u8])> {
     loop {
-        let ch = source.chars().next()?;
-        if source.starts_with("//") {
-            let (offset, terminator) = source
-                .char_indices()
-                .find(|(_, ch)| matches!(ch, '\0' | '\r' | '\n'))?;
-            if terminator == '\0' {
+        let &byte = source.first()?;
+        if source.starts_with(b"//") {
+            let (offset, &terminator) = source
+                .iter()
+                .enumerate()
+                .find(|(_, byte)| matches!(byte, b'\0' | b'\r' | b'\n'))?;
+            if terminator == b'\0' {
                 return None;
             }
             source = &source[offset..];
-        } else if source.starts_with("/*") {
+        } else if source.starts_with(b"/*") {
             let body = &source[2..];
-            let offset = body.find("*/")?;
-            if body[..offset].contains('\0') {
-                return None;
+            let mut offset = 0;
+            loop {
+                let &body_byte = body.get(offset)?;
+                if body_byte == b'\0' {
+                    return None;
+                }
+                if body_byte == b'*' && body.get(offset + 1) == Some(&b'/') {
+                    source = &body[offset + 2..];
+                    break;
+                }
+                offset += 1;
             }
-            source = &source[2 + offset + 2..];
-        } else if is_line_terminator(ch) || is_js_whitespace(ch) {
-            source = &source[ch.len_utf8()..];
         } else {
-            break;
+            let (code_point, consumed) = if byte < 0x80 {
+                (u32::from(byte), 1)
+            } else {
+                let Some(decoded) = decode_quickjs_utf8(source) else {
+                    break;
+                };
+                decoded
+            };
+            let is_space = char::from_u32(code_point)
+                .is_some_and(|ch| is_line_terminator(ch) || is_js_whitespace(ch));
+            if !is_space {
+                break;
+            }
+            source = &source[consumed..];
         }
     }
 
-    if let Some(rest) = source.strip_prefix("import")
-        && rest
-            .chars()
-            .next()
-            .is_none_or(|ch| !is_identifier_continue(ch))
+    if let Some(rest) = source.strip_prefix(b"import")
+        && !quickjs_detect_module_starts_identifier_continue(rest)
     {
         return Some((QuickJsDetectModuleToken::Import, rest));
-    } else if let Some(rest) = source.strip_prefix("export")
-        && rest
-            .chars()
-            .next()
-            .is_none_or(|ch| !is_identifier_continue(ch))
+    } else if let Some(rest) = source.strip_prefix(b"export")
+        && !quickjs_detect_module_starts_identifier_continue(rest)
     {
         return Some((QuickJsDetectModuleToken::Export, rest));
-    } else if let Some(rest) = source.strip_prefix('.') {
+    } else if let Some(rest) = source.strip_prefix(b".") {
         return Some((QuickJsDetectModuleToken::Dot, rest));
-    } else if let Some(rest) = source.strip_prefix('(') {
+    } else if let Some(rest) = source.strip_prefix(b"(") {
         return Some((QuickJsDetectModuleToken::LeftParen, rest));
     }
     Some((QuickJsDetectModuleToken::Other, source))
+}
+
+fn quickjs_detect_module_starts_identifier_continue(source: &[u8]) -> bool {
+    decode_quickjs_utf8(source)
+        .is_some_and(|(code_point, _)| is_identifier_continue_code_point(code_point))
 }
 
 fn is_js_whitespace(ch: char) -> bool {
@@ -3211,6 +3260,30 @@ mod tests {
         }
         assert!(quickjs_detect_module("import /* unterminated"));
         assert!(quickjs_detect_module("import /*\0*/ ("));
+    }
+
+    #[test]
+    fn quickjs_module_detection_preserves_raw_bytes() {
+        for source in [
+            b"/*\x80*/export const answer = 42".as_slice(),
+            b"//\xff\nimport answer from './answer.js'",
+            b"#!\x80\xff\0ignored\nexport const answer = 42",
+            b"\xc2\xa0export const answer = 42",
+            b"import\x80",
+            b"/*\xed\xa0\x80*/export const answer = 42",
+        ] {
+            assert!(quickjs_detect_module_bytes(source), "{source:?}");
+        }
+        for source in [
+            b"/*\x80\0*/export const answer = 42".as_slice(),
+            b"//\x80\0\nexport const answer = 42",
+            b"\x80/* ignored */export const answer = 42",
+            b"import\xcf\x80",
+            b"import/*\x80*/('./answer.js')",
+            b"import/*\xff*/.meta",
+        ] {
+            assert!(!quickjs_detect_module_bytes(source), "{source:?}");
+        }
     }
 
     #[test]

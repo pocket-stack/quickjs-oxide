@@ -7,7 +7,44 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const NORMALIZED_SCRIPT_FILENAME: &str = "<raw-script>";
 const NORMALIZED_MODULE_FILENAME: &str = "<raw-module>";
+const NORMALIZED_JSON_MODULE_FILENAME: &str = "<raw-json-module>";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+const STRICT_JSON_MODULE_SOURCE: &str = r#"
+import value from "./value.json" with { type: "json" };
+(function () {
+    function encode(value) {
+        var string = String(value);
+        var output = typeof value + "|";
+        for (var index = 0; index < string.length; index++) {
+            if (index) output += ",";
+            output += ("0000" + string.charCodeAt(index).toString(16)).slice(-4);
+        }
+        return output;
+    }
+    var observation = encode(value.value);
+    globalThis.__qjoRawJsonEncodedObservation = observation;
+    if (typeof print === "function") print(observation);
+})()
+"#;
+
+const EXTENDED_JSON_MODULE_SOURCE: &str = r#"
+import value from "./value.data" with { type: "json5" };
+(function () {
+    function encode(value) {
+        var string = String(value);
+        var output = typeof value + "|";
+        for (var index = 0; index < string.length; index++) {
+            if (index) output += ",";
+            output += ("0000" + string.charCodeAt(index).toString(16)).slice(-4);
+        }
+        return output;
+    }
+    var observation = encode(value.value);
+    globalThis.__qjoRawJsonEncodedObservation = observation;
+    if (typeof print === "function") print(observation);
+})()
+"#;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RawScriptObservation {
@@ -30,6 +67,18 @@ pub(crate) fn normalized_filename() -> &'static str {
 
 pub(crate) fn normalized_module_filename() -> &'static str {
     NORMALIZED_MODULE_FILENAME
+}
+
+pub(crate) fn normalized_json_module_filename() -> &'static str {
+    NORMALIZED_JSON_MODULE_FILENAME
+}
+
+pub(crate) fn raw_json_module_source(extended: bool) -> &'static str {
+    if extended {
+        EXTENDED_JSON_MODULE_SOURCE
+    } else {
+        STRICT_JSON_MODULE_SOURCE
+    }
 }
 
 pub(crate) fn observe_raw_script(
@@ -64,6 +113,29 @@ pub(crate) fn observe_raw_module(
     )
 }
 
+pub(crate) fn observe_raw_json_module(
+    oracle: &OsStr,
+    source: &[u8],
+    extended: bool,
+    description: &str,
+) -> RawModuleObservation {
+    let graph = TempJsonModuleGraph::new(source, extended, description);
+    let output = Command::new(oracle)
+        .arg("--module")
+        .arg(&graph.root_path)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!("could not run QuickJS raw JSON module for {description}: {error}")
+        });
+    observe_output(
+        output,
+        &graph.payload_path,
+        description,
+        "JSON module",
+        NORMALIZED_JSON_MODULE_FILENAME,
+    )
+}
+
 fn observe_raw_source(
     oracle: &OsStr,
     source: &[u8],
@@ -82,6 +154,16 @@ fn observe_raw_source(
             panic!("could not run QuickJS raw {kind} for {description}: {error}")
         });
 
+    observe_output(output, &script.path, description, kind, normalized_filename)
+}
+
+fn observe_output(
+    output: std::process::Output,
+    diagnostic_path: &std::path::Path,
+    description: &str,
+    kind: &str,
+    normalized_filename: &str,
+) -> RawScriptObservation {
     if output.status.success() {
         assert!(
             output.stderr.is_empty(),
@@ -142,7 +224,7 @@ fn observe_raw_source(
     });
     assert_eq!(
         filename,
-        script.path.to_string_lossy(),
+        diagnostic_path.to_string_lossy(),
         "QuickJS changed the raw {kind} filename for {description}",
     );
 
@@ -152,6 +234,45 @@ fn observe_raw_source(
         filename: normalized_filename.to_owned(),
         line,
         column,
+    }
+}
+
+struct TempJsonModuleGraph {
+    directory: PathBuf,
+    root_path: PathBuf,
+    payload_path: PathBuf,
+}
+
+impl TempJsonModuleGraph {
+    fn new(source: &[u8], extended: bool, description: &str) -> Self {
+        let directory = create_temp_directory("json-module", description);
+        let root_path = directory.join("entry.mjs");
+        let payload_path = directory.join(if extended { "value.data" } else { "value.json" });
+        write_source_file(
+            &root_path,
+            raw_json_module_source(extended).as_bytes(),
+            description,
+            "JSON module root",
+        );
+        write_source_file(
+            &payload_path,
+            source,
+            description,
+            "raw JSON module payload",
+        );
+        Self {
+            directory,
+            root_path,
+            payload_path,
+        }
+    }
+}
+
+impl Drop for TempJsonModuleGraph {
+    fn drop(&mut self) {
+        let _ = remove_file(&self.root_path);
+        let _ = remove_file(&self.payload_path);
+        let _ = remove_dir(&self.directory);
     }
 }
 
@@ -174,38 +295,10 @@ struct TempSource {
 
 impl TempSource {
     fn new(source: &[u8], description: &str, kind: &str, filename: &str) -> Self {
-        let directory = loop {
-            let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-            let candidate = std::env::temp_dir().join(format!(
-                "quickjs-oxide-raw-{kind}-{}-{id}",
-                std::process::id(),
-            ));
-            match create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    panic!(
-                        "could not create QuickJS raw-{kind} directory for {description}: {error}"
-                    )
-                }
-            }
-        };
+        let directory = create_temp_directory(kind, description);
         let path = directory.join(filename);
         let script = Self { directory, path };
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&script.path)
-            .unwrap_or_else(|error| {
-                panic!("could not create QuickJS raw {kind} for {description}: {error}")
-            });
-        file.write_all(source).unwrap_or_else(|error| {
-            panic!("could not write QuickJS raw {kind} for {description}: {error}")
-        });
-        file.flush().unwrap_or_else(|error| {
-            panic!("could not flush QuickJS raw {kind} for {description}: {error}")
-        });
-        drop(file);
+        write_source_file(&script.path, source, description, kind);
         script
     }
 }
@@ -215,4 +308,37 @@ impl Drop for TempSource {
         let _ = remove_file(&self.path);
         let _ = remove_dir(&self.directory);
     }
+}
+
+fn create_temp_directory(kind: &str, description: &str) -> PathBuf {
+    loop {
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let candidate = std::env::temp_dir().join(format!(
+            "quickjs-oxide-raw-{kind}-{}-{id}",
+            std::process::id(),
+        ));
+        match create_dir(&candidate) {
+            Ok(()) => return candidate,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                panic!("could not create QuickJS raw-{kind} directory for {description}: {error}")
+            }
+        }
+    }
+}
+
+fn write_source_file(path: &std::path::Path, source: &[u8], description: &str, kind: &str) {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .unwrap_or_else(|error| {
+            panic!("could not create QuickJS raw {kind} for {description}: {error}")
+        });
+    file.write_all(source).unwrap_or_else(|error| {
+        panic!("could not write QuickJS raw {kind} for {description}: {error}")
+    });
+    file.flush().unwrap_or_else(|error| {
+        panic!("could not flush QuickJS raw {kind} for {description}: {error}")
+    });
 }

@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
-use quickjs_oxide::lexer::quickjs_detect_module;
+use quickjs_oxide::lexer::quickjs_detect_module_bytes;
 use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{
     Context, DebugInfoMode, DescriptorField, JsString, ModuleImportAttributes,
@@ -59,16 +59,16 @@ impl ModuleLoader for FileModuleLoader {
         let units = normalized_name.utf16_units().collect::<Vec<_>>();
         let filename = String::from_utf16(&units)
             .map_err(|_| ModuleLoaderError::new("module filename is not valid Unicode"))?;
-        let source = std::fs::read_to_string(&filename)
+        let source = std::fs::read(&filename)
             .map_err(|_| ModuleLoaderError::new(format!("module filename '{filename}'")))?;
         if import_type_is(attributes, "json5") {
-            return Ok(ModuleLoadResult::Json5Text(source));
+            return Ok(ModuleLoadResult::Json5Bytes(source));
         }
         if filename.ends_with(".json") || import_type_is(attributes, "json") {
-            return Ok(ModuleLoadResult::JsonText(source));
+            return Ok(ModuleLoadResult::JsonBytes(source));
         }
         let url = canonical_file_url(&filename).map_err(ModuleLoaderError::new)?;
-        Ok(ModuleLoadResult::SourceTextWithImportMeta {
+        Ok(ModuleLoadResult::SourceBytesWithImportMeta {
             source,
             properties: module_import_meta_properties(&url, false)
                 .map_err(|error| ModuleLoaderError::new(error.to_string()))?,
@@ -232,7 +232,7 @@ fn main() -> ExitCode {
         #[cfg(not(windows))]
         let main_module_path = None;
         return evaluate(
-            &source,
+            EvaluationSource::Utf8(&source),
             "<cmdline>",
             source_goal,
             main_module_path,
@@ -246,7 +246,7 @@ fn main() -> ExitCode {
         println!("  -v, --version     show version and compatibility target");
         return ExitCode::SUCCESS;
     };
-    match std::fs::read_to_string(file) {
+    match std::fs::read(file) {
         Ok(source) => {
             let source_goal = match source_goal {
                 SourceGoal::Auto if is_module_file(file, &source) => SourceGoal::Module,
@@ -254,7 +254,7 @@ fn main() -> ExitCode {
                 source_goal => source_goal,
             };
             evaluate(
-                &source,
+                EvaluationSource::Bytes(&source),
                 file,
                 source_goal,
                 Some(file),
@@ -269,8 +269,14 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Clone, Copy)]
+enum EvaluationSource<'a> {
+    Utf8(&'a str),
+    Bytes(&'a [u8]),
+}
+
 fn evaluate(
-    source: &str,
+    source: EvaluationSource<'_>,
     filename: &str,
     source_goal: SourceGoal,
     main_module_path: Option<&str>,
@@ -288,9 +294,11 @@ fn evaluate(
         return ExitCode::from(1);
     }
     let evaluation = match source_goal {
-        SourceGoal::Script => context
-            .eval_with_filename(source, filename)
-            .map_err(EvaluationError::Runtime),
+        SourceGoal::Script => match source {
+            EvaluationSource::Utf8(source) => context.eval_with_filename(source, filename),
+            EvaluationSource::Bytes(source) => context.eval_bytes_with_filename(source, filename),
+        }
+        .map_err(EvaluationError::Runtime),
         SourceGoal::Module => {
             evaluate_module(&runtime, &mut context, source, filename, main_module_path)
         }
@@ -345,18 +353,23 @@ fn evaluate(
     }
 }
 
-fn is_module_file(filename: &str, source: &str) -> bool {
-    filename.ends_with(".mjs") || quickjs_detect_module(source)
+fn is_module_file(filename: &str, source: &[u8]) -> bool {
+    filename.ends_with(".mjs") || quickjs_detect_module_bytes(source)
 }
 
 fn evaluate_module(
     runtime: &Runtime,
     context: &mut Context,
-    source: &str,
+    source: EvaluationSource<'_>,
     filename: &str,
     main_module_path: Option<&str>,
 ) -> Result<Value, EvaluationError> {
-    let module = context.compile_module_with_filename(source, filename)?;
+    let module = match source {
+        EvaluationSource::Utf8(source) => context.compile_module_with_filename(source, filename),
+        EvaluationSource::Bytes(source) => {
+            context.compile_module_bytes_with_filename(source, filename)
+        }
+    }?;
     if let Some(main_module_path) = main_module_path {
         let url = canonical_file_url(main_module_path).map_err(EvaluationError::Host)?;
         let import_meta = context.get_module_import_meta(&module)?;

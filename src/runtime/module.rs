@@ -165,11 +165,21 @@ pub enum ModuleLoadResult {
     /// `default` export. The host, not the engine, decides which requests are
     /// JSON; this variant deliberately carries no filename-extension policy.
     JsonText(String),
+    /// One explicitly sized strict JSON module payload.
+    ///
+    /// This preserves QuickJS-compatible WTF-8, CESU-8, malformed bytes, and
+    /// raw diagnostic columns rather than decoding through a Rust `String`.
+    JsonBytes(Vec<u8>),
     /// QuickJS extended-JSON source used to create a synthetic module with one
     /// `default` export. This is the exact `JS_PARSE_JSON_EXT` grammar selected
     /// by QuickJS's file loader for `type: "json5"`; the host still owns all
     /// extension and import-attribute policy.
     Json5Text(String),
+    /// One explicitly sized QuickJS extended-JSON module payload.
+    ///
+    /// Malformed bytes inside comments remain skippable exactly where the
+    /// pinned byte-oriented parser skips them.
+    Json5Bytes(Vec<u8>),
 }
 
 /// One host-defined data property for a source module's `import.meta` object.
@@ -1346,6 +1356,24 @@ impl Runtime {
             .map(ModuleCompilation::Published)
     }
 
+    /// Parse byte-exact host-selected strict JSON and publish a synthetic
+    /// module record without first performing a lossy string conversion.
+    fn compile_json_module_bytes_record_in_realm(
+        &self,
+        realm: ContextId,
+        source: &[u8],
+        name: &JsString,
+    ) -> Result<ModuleCompilation, RuntimeError> {
+        let value = match self.parse_json_module_bytes(realm, source, name)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(exception) => {
+                return Ok(ModuleCompilation::Throw(exception));
+            }
+        };
+        self.publish_json_module(realm, name.clone(), value)
+            .map(ModuleCompilation::Published)
+    }
+
     /// Parse host-selected QuickJS extended JSON and publish the same genuine
     /// synthetic module shape as strict JSON modules.
     fn compile_json5_module_record_in_realm(
@@ -1356,6 +1384,24 @@ impl Runtime {
     ) -> Result<ModuleCompilation, RuntimeError> {
         let source = JsString::try_from_utf8(source)?;
         let value = match self.parse_json5_module_text(realm, &source, name)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(exception) => {
+                return Ok(ModuleCompilation::Throw(exception));
+            }
+        };
+        self.publish_json_module(realm, name.clone(), value)
+            .map(ModuleCompilation::Published)
+    }
+
+    /// Parse byte-exact host-selected extended JSON and publish the same
+    /// genuine synthetic module shape as the text boundary.
+    fn compile_json5_module_bytes_record_in_realm(
+        &self,
+        realm: ContextId,
+        source: &[u8],
+        name: &JsString,
+    ) -> Result<ModuleCompilation, RuntimeError> {
+        let value = match self.parse_json5_module_bytes(realm, source, name)? {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(exception) => {
                 return Ok(ModuleCompilation::Throw(exception));
@@ -1400,8 +1446,14 @@ impl Runtime {
             ModuleLoadResult::JsonText(source) => {
                 self.compile_json_module_record_in_realm(realm, &source, normalized_name)
             }
+            ModuleLoadResult::JsonBytes(source) => {
+                self.compile_json_module_bytes_record_in_realm(realm, &source, normalized_name)
+            }
             ModuleLoadResult::Json5Text(source) => {
                 self.compile_json5_module_record_in_realm(realm, &source, normalized_name)
+            }
+            ModuleLoadResult::Json5Bytes(source) => {
+                self.compile_json5_module_bytes_record_in_realm(realm, &source, normalized_name)
             }
         }
     }

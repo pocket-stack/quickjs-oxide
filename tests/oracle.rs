@@ -21,6 +21,8 @@ mod runtime_oracle;
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "oracle/raw_json_module_bytes.rs"]
+mod raw_json_module_bytes;
 #[path = "oracle/raw_module_bytes.rs"]
 mod raw_module_bytes;
 #[path = "oracle/raw_script_bytes.rs"]

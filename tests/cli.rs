@@ -28,6 +28,10 @@ impl ModuleFixture {
     }
 
     fn write(&self, relative: &str, source: &str) -> PathBuf {
+        self.write_bytes(relative, source.as_bytes())
+    }
+
+    fn write_bytes(&self, relative: &str, source: &[u8]) -> PathBuf {
         let path = self.root.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create CLI module fixture directory");
@@ -387,6 +391,132 @@ fn file_goal_autodetects_mjs_and_leading_static_module_syntax() {
         assert_eq!(output.stdout, expected, "{}", path.display());
         assert!(output.stderr.is_empty(), "{}", path.display());
     }
+}
+
+#[test]
+fn file_goal_preserves_raw_bytes_during_detection_and_evaluation() {
+    let fixture = ModuleFixture::new();
+    let raw_script = fixture.write_bytes("raw-script.js", b"/*\x80*/print(42);\n");
+    let raw_module = fixture.write_bytes(
+        "raw-module.js",
+        b"/*\xff*/export const answer = 42; print(answer);\n",
+    );
+    let raw_hashbang_module = fixture.write_bytes(
+        "raw-hashbang.js",
+        b"#!\x80\xff\nexport const answer = 42; print(answer);\n",
+    );
+
+    for path in [&raw_script, &raw_module, &raw_hashbang_module] {
+        let output = run_file(&[], path);
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"42\n", "{}", path.display());
+        assert!(output.stderr.is_empty(), "{}", path.display());
+    }
+
+    let nul_comment = fixture.write_bytes(
+        "nul-comment.js",
+        b"/*\0*/export const answer = 42; print(answer);\n",
+    );
+    let automatic = run_file(&[], &nul_comment);
+    assert_eq!(automatic.status.code(), Some(1));
+    assert!(automatic.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&automatic.stderr).contains("export"),
+        "{}",
+        String::from_utf8_lossy(&automatic.stderr)
+    );
+
+    let forced_module = run_file(&["--module"], &nul_comment);
+    assert!(
+        forced_module.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced_module.stderr)
+    );
+    assert_eq!(forced_module.stdout, b"42\n");
+    assert!(forced_module.stderr.is_empty());
+
+    let forced_script = run_file(&["--script"], &raw_module);
+    assert_eq!(forced_script.status.code(), Some(1));
+    assert!(forced_script.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&forced_script.stderr).contains("export"));
+}
+
+#[test]
+fn file_module_loader_preserves_raw_dependency_bytes() {
+    let fixture = ModuleFixture::new();
+    fixture.write_bytes("raw-dependency.js", b"/*\x80*/export const answer = 42;\n");
+    let entry = fixture.write(
+        "raw-dependency-entry.mjs",
+        "import { answer } from './raw-dependency.js'; print(answer);\n",
+    );
+
+    let output = run_file(&[], &entry);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"42\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn file_module_loader_preserves_raw_json_dependency_bytes() {
+    let fixture = ModuleFixture::new();
+    fixture.write_bytes(
+        "raw-value.json",
+        b"{\"wtf\":\"\xed\xa0\x80\",\"cesu\":\"\xed\xa0\xbd\xed\xb8\x80\"}",
+    );
+    fixture.write_bytes(
+        "raw-value.data",
+        b"/*\x80*/{answer:42,marker:'\xed\xa0\x80',}",
+    );
+    let entry = fixture.write(
+        "raw-json-entry.mjs",
+        concat!(
+            "import strict from './raw-value.json';\n",
+            "import extended from './raw-value.data' with { type: 'json5' };\n",
+            "const exact = strict.wtf.length === 1 && ",
+            "strict.wtf.charCodeAt(0) === 0xd800 && ",
+            "strict.cesu.length === 2 && ",
+            "strict.cesu.codePointAt(0) === 0x1f600 && ",
+            "extended.marker.length === 1 && ",
+            "extended.marker.charCodeAt(0) === 0xd800;\n",
+            "print(exact ? extended.answer : 0);\n",
+        ),
+    );
+
+    let output = run_file(&[], &entry);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"42\n");
+    assert!(output.stderr.is_empty());
+
+    let malformed = fixture.write_bytes("malformed.json", b"{\"x\":\"\x80\"}");
+    let malformed_entry = fixture.write(
+        "malformed-entry.mjs",
+        "import value from './malformed.json'; print(value);\n",
+    );
+    let malformed_output = run_file(&[], &malformed_entry);
+    assert_eq!(malformed_output.status.code(), Some(1));
+    assert!(malformed_output.stdout.is_empty());
+    let diagnostic = String::from_utf8(malformed_output.stderr).unwrap();
+    assert!(
+        diagnostic.contains("SyntaxError: Bad UTF-8 sequence"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains(&format!("{}:1:7", cli_path(&malformed))),
+        "{diagnostic}"
+    );
 }
 
 #[test]

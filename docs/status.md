@@ -28,9 +28,11 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 ## Implemented architecture
 
 - Rust compiler, verified bytecode, runtime, jobs, modules, and embedding API
-- byte-exact Script and ECMAScript Module embedding APIs, including raw module
-  loader payloads, with QuickJS-compatible malformed UTF-8, WTF-8, source
-  retention, and diagnostic locations
+- byte-exact Script and ECMAScript Module embedding APIs and loader payloads,
+  with QuickJS-compatible malformed UTF-8, WTF-8/CESU-8, source retention, and
+  diagnostic locations
+- byte-exact strict and extended JSON module-loader payloads plus CLI file
+  ingestion, preserving malformed-byte semantics and diagnostic locations
 - binary data, typed arrays, shared memory, and Atomics slices
 - collections, weak references, finalization, Promises, and iterator slices
 - Unicode 17 case, identifier, normalization, and property data
@@ -55,9 +57,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   its attribute callback, successful completion preserves the same identity,
   and failed/referenced identities remain deterministic without unsafe raw
   pointer reuse
-- native command-line execution, including file-module goal detection,
-  filesystem dependencies, top-level-await settlement, and `import.meta`
-  `url`/`main`; plus a Rust/WASM browser playground
+- native command-line execution, including byte-preserving file-module goal
+  detection and filesystem dependencies, top-level-await settlement, and
+  `import.meta` `url`/`main`; plus a Rust/WASM browser playground
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -67,9 +69,9 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include byte-exact JSON-module and CLI source loading,
-remaining module-host lifetime and allocation-failure edge matrices, and the
-unsupported/failed leaves recorded by the current Test262 vector.
+Major open frontiers include remaining module-host lifetime and
+allocation-failure edge matrices and the unsupported/failed leaves recorded by
+the current Test262 vector.
 Failed acyclic source graphs retry like QuickJS. Parse-time resolution success and
 one-shot failure latches match the pinned callback order; an incomplete graph
 is non-executable and dynamic import rejects deterministically. Rust safely

@@ -105,9 +105,23 @@ struct JsonParser<'a> {
     runtime: &'a Runtime,
     realm: ContextId,
     units: Vec<u16>,
+    /// UTF-16-unit offsets whose DEL carrier represents one malformed source
+    /// byte. Genuine U+007F input has no entry and therefore keeps its normal
+    /// JSON string semantics.
+    invalid_unit_offsets: Vec<usize>,
+    /// The explicitly sized host buffer used by JSON module parsing. Keeping
+    /// this borrowed rather than copying it lets diagnostics recover the
+    /// exact QuickJS byte column, including CESU-8 and malformed sequences.
+    raw_source: Option<&'a [u8]>,
     cursor: usize,
     retain_record: bool,
     mode: JsonParseMode,
+}
+
+#[derive(Clone, Copy)]
+enum JsonModuleSource<'source> {
+    Text(&'source JsString),
+    Bytes(&'source [u8]),
 }
 
 impl Runtime {
@@ -122,6 +136,8 @@ impl Runtime {
             runtime: self,
             realm,
             units: source.utf16_units().collect(),
+            invalid_unit_offsets: Vec::new(),
+            raw_source: None,
             cursor: 0,
             retain_record,
             mode: JsonParseMode::Strict,
@@ -143,7 +159,30 @@ impl Runtime {
         source: &JsString,
         filename: &JsString,
     ) -> Result<NativeConversion<Value>, RuntimeError> {
-        self.parse_json_module_text_with_mode(realm, source, filename, JsonParseMode::Strict)
+        self.parse_json_module_source_with_mode(
+            realm,
+            JsonModuleSource::Text(source),
+            filename,
+            JsonParseMode::Strict,
+        )
+    }
+
+    /// Parse one strict JSON module from an explicitly sized byte buffer.
+    ///
+    /// Unlike an intermediate [`JsString`], this preserves malformed UTF-8,
+    /// surrogate encodings, and byte-oriented QuickJS diagnostics.
+    pub(in crate::runtime) fn parse_json_module_bytes(
+        &self,
+        realm: ContextId,
+        source: &[u8],
+        filename: &JsString,
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
+        self.parse_json_module_source_with_mode(
+            realm,
+            JsonModuleSource::Bytes(source),
+            filename,
+            JsonParseMode::Strict,
+        )
     }
 
     /// Parse one host-selected QuickJS extended-JSON module payload.
@@ -156,30 +195,52 @@ impl Runtime {
         source: &JsString,
         filename: &JsString,
     ) -> Result<NativeConversion<Value>, RuntimeError> {
-        self.parse_json_module_text_with_mode(
+        self.parse_json_module_source_with_mode(
             realm,
-            source,
+            JsonModuleSource::Text(source),
             filename,
             JsonParseMode::QuickJsExtended,
         )
     }
 
-    fn parse_json_module_text_with_mode(
+    /// Parse one host-selected QuickJS extended-JSON module from an explicitly
+    /// sized byte buffer.
+    pub(in crate::runtime) fn parse_json5_module_bytes(
         &self,
         realm: ContextId,
-        source: &JsString,
+        source: &[u8],
+        filename: &JsString,
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
+        self.parse_json_module_source_with_mode(
+            realm,
+            JsonModuleSource::Bytes(source),
+            filename,
+            JsonParseMode::QuickJsExtended,
+        )
+    }
+
+    fn parse_json_module_source_with_mode<'source>(
+        &self,
+        realm: ContextId,
+        source: JsonModuleSource<'source>,
         filename: &JsString,
         mode: JsonParseMode,
     ) -> Result<NativeConversion<Value>, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
-        let units = source.utf16_units().collect::<Vec<_>>();
-        let mut parser = JsonParser {
-            runtime: self,
-            realm,
-            units,
-            cursor: 0,
-            retain_record: false,
-            mode,
+        let mut parser = match source {
+            JsonModuleSource::Text(source) => JsonParser {
+                runtime: self,
+                realm,
+                units: source.utf16_units().collect(),
+                invalid_unit_offsets: Vec::new(),
+                raw_source: None,
+                cursor: 0,
+                retain_record: false,
+                mode,
+            },
+            JsonModuleSource::Bytes(source) => {
+                JsonParser::try_from_raw_bytes(self, realm, source, mode)?
+            }
         };
         match parser.parse_document() {
             Ok((value, None)) => Ok(NativeConversion::Value(value)),
@@ -187,7 +248,7 @@ impl Runtime {
                 "JSON module parsing unexpectedly retained a parse record",
             )),
             Err(JsonParseFailure::Syntax(failure)) => {
-                let position = json_source_location(&parser.units, failure.offset)?;
+                let position = parser.source_location(failure.offset)?;
                 let exception = self.new_native_error_without_backtrace_from_error(
                     realm,
                     NativeErrorKind::Syntax,
@@ -208,7 +269,63 @@ impl Runtime {
     }
 }
 
-impl JsonParser<'_> {
+impl<'a> JsonParser<'a> {
+    fn try_from_raw_bytes(
+        runtime: &'a Runtime,
+        realm: ContextId,
+        source: &'a [u8],
+        mode: JsonParseMode,
+    ) -> Result<Self, RuntimeError> {
+        let mut units = Vec::new();
+        units
+            .try_reserve_exact(source.len())
+            .map_err(|_| JsStringError::OutOfMemory)?;
+        let mut invalid_unit_offsets = Vec::new();
+        let mut byte_offset = 0;
+        while byte_offset < source.len() {
+            let byte = source[byte_offset];
+            if byte < 0x80 {
+                units.push(u16::from(byte));
+                byte_offset += 1;
+                continue;
+            }
+
+            match crate::value::decode_quickjs_utf8(&source[byte_offset..]) {
+                Some((code_point, consumed)) if code_point <= 0x10_ffff => {
+                    if code_point <= 0xffff {
+                        units.push(code_point as u16);
+                    } else {
+                        let scalar = code_point - 0x1_0000;
+                        units.push(0xd800 | ((scalar >> 10) as u16));
+                        units.push(0xdc00 | ((scalar & 0x3ff) as u16));
+                    }
+                    byte_offset += consumed;
+                }
+                Some(_) | None => {
+                    invalid_unit_offsets
+                        .try_reserve(1)
+                        .map_err(|_| JsStringError::OutOfMemory)?;
+                    invalid_unit_offsets.push(units.len());
+                    // DEL occupies one unit but is semantically inert while
+                    // its offset is present in `invalid_unit_offsets`.
+                    units.push(u16::from(b'\x7f'));
+                    byte_offset += 1;
+                }
+            }
+        }
+
+        Ok(Self {
+            runtime,
+            realm,
+            units,
+            invalid_unit_offsets,
+            raw_source: Some(source),
+            cursor: 0,
+            retain_record: false,
+            mode,
+        })
+    }
+
     fn parse_document(&mut self) -> JsonParseResult<(Value, Option<JsonParseRecord>)> {
         self.skip_whitespace()?;
         let result = self.parse_value(0)?;
@@ -228,6 +345,9 @@ impl JsonParser<'_> {
             return self.syntax("stack overflow");
         }
         self.skip_whitespace()?;
+        if self.current_unit_is_invalid() {
+            return self.syntax("unexpected character");
+        }
         let Some(unit) = self.peek() else {
             return self.syntax("Unexpected end of JSON input");
         };
@@ -279,6 +399,9 @@ impl JsonParser<'_> {
 
         loop {
             self.skip_whitespace()?;
+            if self.current_unit_is_invalid() {
+                return self.syntax("unexpected character");
+            }
             let name = match self.peek() {
                 Some(unit)
                     if unit == u16::from(b'"')
@@ -398,6 +521,9 @@ impl JsonParser<'_> {
             };
             let unit_offset = self.cursor;
             self.cursor += 1;
+            if self.invalid_unit_at(unit_offset) {
+                return self.syntax_at(unit_offset, "Bad UTF-8 sequence");
+            }
             match unit {
                 unit if unit == separator => break,
                 unit if unit < 0x20 => {
@@ -492,10 +618,11 @@ impl JsonParser<'_> {
                         .and_then(hex_value)
                         .is_none_or(|digit| u32::from(digit) >= radix)
                     {
-                        let Some(token) = self.peek().map(display_percent_c_unit) else {
+                        let Some(unit) = self.peek() else {
                             return self.syntax("Unexpected token '");
                         };
-                        return self.syntax(&format!("Unexpected token '{token}'"));
+                        let message = self.unexpected_percent_c_message_at(self.cursor, unit)?;
+                        return self.syntax(&message);
                     }
                     while self
                         .peek()
@@ -537,10 +664,8 @@ impl JsonParser<'_> {
                 self.cursor += 1;
             }
         } else {
-            return self.syntax(&format!(
-                "Unexpected token '{}'",
-                display_percent_c_unit(first)
-            ));
+            let message = self.unexpected_percent_c_message_at(self.cursor, first)?;
+            return self.syntax(&message);
         }
 
         if self.consume_ascii(b'.') {
@@ -660,7 +785,7 @@ impl JsonParser<'_> {
         let Some(unit) = self.peek() else {
             return Ok(());
         };
-        let result = if unit >= 0x80 {
+        let result = if self.current_unit_is_invalid() || unit >= 0x80 {
             self.syntax("unexpected character")
         } else if unit == u16::from(b'"') || (self.mode.is_extended() && unit == u16::from(b'\'')) {
             self.parse_string(unit).map(|_| ())
@@ -743,6 +868,65 @@ impl JsonParser<'_> {
         self.units.get(self.cursor.checked_add(offset)?).copied()
     }
 
+    fn current_unit_is_invalid(&self) -> bool {
+        self.invalid_unit_at(self.cursor)
+    }
+
+    fn invalid_unit_at(&self, offset: usize) -> bool {
+        self.invalid_unit_offsets.binary_search(&offset).is_ok()
+    }
+
+    fn display_percent_c_unit_at(&self, offset: usize, unit: u16) -> char {
+        if self.invalid_unit_at(offset) {
+            '\u{fffd}'
+        } else {
+            display_percent_c_unit(unit)
+        }
+    }
+
+    fn unexpected_percent_c_message_at(&self, offset: usize, unit: u16) -> JsonParseResult<String> {
+        if unit == 0 {
+            // `vsnprintf("...%c...", 0)` terminates the C string before the
+            // format's closing quote, including for an embedded source NUL.
+            return Ok("Unexpected token '".to_owned());
+        }
+        let omit_closing_quote = if self.invalid_unit_at(offset) {
+            let raw_source =
+                self.raw_source
+                    .ok_or(JsonParseFailure::Runtime(RuntimeError::Invariant(
+                        "JSON invalid-unit marker has no raw source",
+                    )))?;
+            let byte_offset = json_raw_byte_offset(raw_source, offset)?;
+            let byte = *raw_source
+                .get(byte_offset)
+                .ok_or(JsonParseFailure::Runtime(RuntimeError::Invariant(
+                    "JSON invalid-unit byte offset is invalid",
+                )))?;
+            // QuickJS materializes the `vsnprintf` bytes through its malformed
+            // UTF-8 decoder. A lone continuation consumes the following ASCII
+            // quote as part of the replacement span; invalid lead bytes do not.
+            (0x80..=0xbf).contains(&byte)
+        } else {
+            false
+        };
+        let token = self.display_percent_c_unit_at(offset, unit);
+        Ok(if omit_closing_quote {
+            format!("Unexpected token '{token}")
+        } else {
+            format!("Unexpected token '{token}'")
+        })
+    }
+
+    fn source_location(&self, offset: usize) -> Result<LineColumn, RuntimeError> {
+        let Some(raw_source) = self.raw_source else {
+            return json_source_location(&self.units, offset);
+        };
+        let byte_offset = json_raw_byte_offset(raw_source, offset)?;
+        QuickJsSourceLocator::from_bytes(raw_source)
+            .locate_byte_offset(byte_offset)
+            .map_err(|_| RuntimeError::Invariant("JSON diagnostic byte offset is invalid"))
+    }
+
     fn syntax<T>(&self, message: &str) -> JsonParseResult<T> {
         self.syntax_at(self.cursor, message)
     }
@@ -790,6 +974,47 @@ fn json_source_location(units: &[u16], offset: usize) -> Result<LineColumn, Runt
         };
     }
     Ok(LineColumn::new(line, column))
+}
+
+/// Translate the parser's decoded UTF-16 cursor back to the exact byte
+/// boundary used by QuickJS's `JSParseState`. Valid non-BMP scalars contribute
+/// two parser units but one raw source column; CESU-8 surrogate pairs remain
+/// two separately encoded units and therefore two columns.
+fn json_raw_byte_offset(source: &[u8], unit_offset: usize) -> Result<usize, RuntimeError> {
+    let mut byte_cursor = 0;
+    let mut unit_cursor = 0;
+    while byte_cursor < source.len() {
+        if unit_cursor == unit_offset {
+            return Ok(byte_cursor);
+        }
+
+        let byte = source[byte_cursor];
+        let (consumed, produced_units) = if byte < 0x80 {
+            (1, 1)
+        } else {
+            match crate::value::decode_quickjs_utf8(&source[byte_cursor..]) {
+                Some((code_point, consumed)) if code_point <= 0xffff => (consumed, 1),
+                Some((code_point, consumed)) if code_point <= 0x10_ffff => (consumed, 2),
+                Some(_) | None => (1, 1),
+            }
+        };
+        if unit_offset < unit_cursor + produced_units {
+            // No JSON grammar error can point between the two UTF-16 units of
+            // one valid non-BMP scalar. Retain a deterministic source start if
+            // a future caller nevertheless requests that interior position.
+            return Ok(byte_cursor);
+        }
+        unit_cursor += produced_units;
+        byte_cursor += consumed;
+    }
+
+    if unit_cursor == unit_offset {
+        Ok(source.len())
+    } else {
+        Err(RuntimeError::Invariant(
+            "JSON diagnostic offset is outside its raw source",
+        ))
+    }
 }
 
 fn is_ascii_digit(unit: u16) -> bool {
