@@ -61,6 +61,9 @@ impl ModuleLoader for FileModuleLoader {
             .map_err(|_| ModuleLoaderError::new("module filename is not valid Unicode"))?;
         let source = std::fs::read_to_string(&filename)
             .map_err(|_| ModuleLoaderError::new(format!("module filename '{filename}'")))?;
+        if import_type_is(attributes, "json5") {
+            return Ok(ModuleLoadResult::Json5Text(source));
+        }
         if filename.ends_with(".json") || import_type_is(attributes, "json") {
             return Ok(ModuleLoadResult::JsonText(source));
         }

@@ -9,6 +9,18 @@ use super::super::super::*;
 
 const MAX_JSON_PARSE_DEPTH: usize = 256;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JsonParseMode {
+    Strict,
+    QuickJsExtended,
+}
+
+impl JsonParseMode {
+    const fn is_extended(self) -> bool {
+        matches!(self, Self::QuickJsExtended)
+    }
+}
+
 pub(super) struct JsonParseRecord {
     original: Value,
     kind: JsonParseRecordKind,
@@ -95,6 +107,7 @@ struct JsonParser<'a> {
     units: Vec<u16>,
     cursor: usize,
     retain_record: bool,
+    mode: JsonParseMode,
 }
 
 impl Runtime {
@@ -111,6 +124,7 @@ impl Runtime {
             units: source.utf16_units().collect(),
             cursor: 0,
             retain_record,
+            mode: JsonParseMode::Strict,
         };
         match parser.parse_document() {
             Ok(value) => Ok(NativeConversion::Value(value)),
@@ -129,6 +143,34 @@ impl Runtime {
         source: &JsString,
         filename: &JsString,
     ) -> Result<NativeConversion<Value>, RuntimeError> {
+        self.parse_json_module_text_with_mode(realm, source, filename, JsonParseMode::Strict)
+    }
+
+    /// Parse one host-selected QuickJS extended-JSON module payload.
+    ///
+    /// This is deliberately separate from `JSON.parse` and strict JSON
+    /// modules: only an attributes-aware host loader may select this mode.
+    pub(in crate::runtime) fn parse_json5_module_text(
+        &self,
+        realm: ContextId,
+        source: &JsString,
+        filename: &JsString,
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
+        self.parse_json_module_text_with_mode(
+            realm,
+            source,
+            filename,
+            JsonParseMode::QuickJsExtended,
+        )
+    }
+
+    fn parse_json_module_text_with_mode(
+        &self,
+        realm: ContextId,
+        source: &JsString,
+        filename: &JsString,
+        mode: JsonParseMode,
+    ) -> Result<NativeConversion<Value>, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let units = source.utf16_units().collect::<Vec<_>>();
         let mut parser = JsonParser {
@@ -137,6 +179,7 @@ impl Runtime {
             units,
             cursor: 0,
             retain_record: false,
+            mode,
         };
         match parser.parse_document() {
             Ok((value, None)) => Ok(NativeConversion::Value(value)),
@@ -167,14 +210,14 @@ impl Runtime {
 
 impl JsonParser<'_> {
     fn parse_document(&mut self) -> JsonParseResult<(Value, Option<JsonParseRecord>)> {
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         let result = self.parse_value(0)?;
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         if self.cursor != self.units.len() {
             // QuickJS lexes the next token before reporting trailing data, so
             // malformed trailing strings/numbers retain their lexical error.
             let trailing_start = self.cursor;
-            self.validate_trailing_token()?;
+            self.validate_current_token_lexically()?;
             return self.syntax_at(trailing_start, "unexpected data at the end");
         }
         Ok(result)
@@ -184,24 +227,35 @@ impl JsonParser<'_> {
         if depth > MAX_JSON_PARSE_DEPTH {
             return self.syntax("stack overflow");
         }
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         let Some(unit) = self.peek() else {
             return self.syntax("Unexpected end of JSON input");
         };
         match unit {
             unit if unit == u16::from(b'{') => self.parse_object(depth),
             unit if unit == u16::from(b'[') => self.parse_array(depth),
-            unit if unit == u16::from(b'"') => {
+            unit if unit == u16::from(b'"')
+                || (self.mode.is_extended() && unit == u16::from(b'\'')) =>
+            {
                 let start = self.cursor;
-                let string = self.parse_string()?;
+                let string = self.parse_string(unit)?;
                 let end = self.cursor;
                 let value = Value::String(string);
                 let record = self.primitive_record(value.clone(), start, end);
                 Ok((value, record))
             }
-            unit if unit == u16::from(b'-') || is_ascii_digit(unit) => self.parse_number_value(),
+            unit if unit == u16::from(b'-')
+                || is_ascii_digit(unit)
+                || (self.mode.is_extended()
+                    && (unit == u16::from(b'+')
+                        || (unit == u16::from(b'.')
+                            && self.peek_at(1).is_some_and(is_ascii_digit)))) =>
+            {
+                self.parse_number_value()
+            }
             unit if is_ascii_identifier_start(unit) => self.parse_identifier_value(),
             unit if unit >= 0x80 => self.syntax("unexpected character"),
+            0 => self.syntax("unexpected token: ''"),
             _ => self.syntax(&format!("unexpected token: '{}'", display_unit(unit))),
         }
     }
@@ -210,7 +264,7 @@ impl JsonParser<'_> {
         self.cursor += 1;
         let object = self.runtime.new_ordinary_object_in_realm(self.realm)?;
         let mut entries = Vec::new();
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         if self.consume_ascii(b'}') {
             let value = Value::Object(object);
             let record = self.retain_record.then(|| JsonParseRecord {
@@ -224,16 +278,29 @@ impl JsonParser<'_> {
         }
 
         loop {
-            self.skip_whitespace();
-            if self.peek() != Some(u16::from(b'"')) {
-                return self.syntax("expecting property name");
-            }
-            let name = self.parse_string()?;
+            self.skip_whitespace()?;
+            let name = match self.peek() {
+                Some(unit)
+                    if unit == u16::from(b'"')
+                        || (self.mode.is_extended() && unit == u16::from(b'\'')) =>
+                {
+                    self.parse_string(unit)?
+                }
+                Some(unit) if self.mode.is_extended() && is_ascii_identifier_start(unit) => {
+                    self.parse_identifier_name()
+                }
+                Some(unit) if unit >= 0x80 => return self.syntax("unexpected character"),
+                _ => {
+                    self.validate_current_token_lexically()?;
+                    return self.syntax("expecting property name");
+                }
+            };
             let key = self
                 .runtime
                 .intern_property_key_js_string(&name)
                 .map_err(RuntimeError::from)?;
-            self.skip_whitespace();
+            self.skip_whitespace()?;
+            self.validate_current_token_lexically()?;
             if !self.consume_ascii(b':') {
                 return self.syntax("expecting ':'");
             }
@@ -243,8 +310,13 @@ impl JsonParser<'_> {
                 entries.push(JsonObjectParseRecordEntry { key, record });
             }
 
-            self.skip_whitespace();
+            self.skip_whitespace()?;
+            self.validate_current_token_lexically()?;
             if self.consume_ascii(b',') {
+                self.skip_whitespace()?;
+                if self.mode.is_extended() && self.consume_ascii(b'}') {
+                    break;
+                }
                 continue;
             }
             if !self.consume_ascii(b'}') {
@@ -268,7 +340,7 @@ impl JsonParser<'_> {
         self.cursor += 1;
         let array = self.runtime.new_array(self.realm)?;
         let mut elements = Vec::new();
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         if self.consume_ascii(b']') {
             let value = Value::Object(array);
             let record = self.retain_record.then(|| JsonParseRecord {
@@ -292,8 +364,13 @@ impl JsonParser<'_> {
                 )))
             })?;
 
-            self.skip_whitespace();
+            self.skip_whitespace()?;
+            self.validate_current_token_lexically()?;
             if self.consume_ascii(b',') {
+                self.skip_whitespace()?;
+                if self.mode.is_extended() && self.consume_ascii(b']') {
+                    break;
+                }
                 continue;
             }
             if !self.consume_ascii(b']') {
@@ -310,8 +387,8 @@ impl JsonParser<'_> {
         Ok((value, record))
     }
 
-    fn parse_string(&mut self) -> JsonParseResult<JsString> {
-        debug_assert_eq!(self.peek(), Some(u16::from(b'"')));
+    fn parse_string(&mut self, separator: u16) -> JsonParseResult<JsString> {
+        debug_assert_eq!(self.peek(), Some(separator));
         let token_start = self.cursor;
         self.cursor += 1;
         let mut output = Vec::new();
@@ -322,7 +399,7 @@ impl JsonParser<'_> {
             let unit_offset = self.cursor;
             self.cursor += 1;
             match unit {
-                unit if unit == u16::from(b'"') => break,
+                unit if unit == separator => break,
                 unit if unit < 0x20 => {
                     return self.syntax_at(unit_offset, "Bad control character in string literal");
                 }
@@ -333,7 +410,7 @@ impl JsonParser<'_> {
                     let escaped_offset = self.cursor;
                     self.cursor += 1;
                     match escaped {
-                        unit if unit == u16::from(b'"')
+                        unit if unit == separator
                             || unit == u16::from(b'\\')
                             || unit == u16::from(b'/') =>
                         {
@@ -344,6 +421,10 @@ impl JsonParser<'_> {
                         unit if unit == u16::from(b'n') => output.push(0x0a),
                         unit if unit == u16::from(b'r') => output.push(0x0d),
                         unit if unit == u16::from(b't') => output.push(0x09),
+                        unit if unit == u16::from(b'v') && self.mode.is_extended() => {
+                            output.push(0x0b)
+                        }
+                        unit if unit == u16::from(b'\n') && self.mode.is_extended() => continue,
                         unit if unit == u16::from(b'u') => {
                             let mut value = 0_u16;
                             for _ in 0..4 {
@@ -366,14 +447,86 @@ impl JsonParser<'_> {
 
     fn parse_number_value(&mut self) -> JsonParseResult<(Value, Option<JsonParseRecord>)> {
         let start = self.cursor;
-        if self.consume_ascii(b'-') && self.peek().is_none() {
+        let negative = if self.consume_ascii(b'-') {
+            true
+        } else {
+            if self.mode.is_extended() {
+                self.consume_ascii(b'+');
+            }
+            false
+        };
+        if self.cursor != start && self.peek().is_none() {
             return self.syntax("Unexpected token '");
         }
+
+        if self.mode.is_extended() {
+            if ascii_starts_with(&self.units[self.cursor..], b"Infinity") {
+                self.cursor += b"Infinity".len();
+                let value = Value::number(if negative {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                });
+                let record = self.primitive_record(value.clone(), start, self.cursor);
+                return Ok((value, record));
+            }
+            if ascii_starts_with(&self.units[self.cursor..], b"NaN") {
+                self.cursor += b"NaN".len();
+                let value = Value::number(f64::NAN);
+                let record = self.primitive_record(value.clone(), start, self.cursor);
+                return Ok((value, record));
+            }
+
+            if self.peek() == Some(u16::from(b'0')) {
+                let radix = match self.peek_at(1) {
+                    Some(unit) if unit == u16::from(b'x') || unit == u16::from(b'X') => Some(16),
+                    Some(unit) if unit == u16::from(b'o') || unit == u16::from(b'O') => Some(8),
+                    Some(unit) if unit == u16::from(b'b') || unit == u16::from(b'B') => Some(2),
+                    _ => None,
+                };
+                if let Some(radix) = radix {
+                    self.cursor += 2;
+                    let digits_start = self.cursor;
+                    if self
+                        .peek()
+                        .and_then(hex_value)
+                        .is_none_or(|digit| u32::from(digit) >= radix)
+                    {
+                        let Some(token) = self.peek().map(display_percent_c_unit) else {
+                            return self.syntax("Unexpected token '");
+                        };
+                        return self.syntax(&format!("Unexpected token '{token}'"));
+                    }
+                    while self
+                        .peek()
+                        .and_then(hex_value)
+                        .is_some_and(|digit| u32::from(digit) < radix)
+                    {
+                        self.cursor += 1;
+                    }
+                    let digits =
+                        JsString::from_owned_utf16(self.units[digits_start..self.cursor].to_vec());
+                    let mut number = crate::number_parse::parse_int(
+                        &digits,
+                        i32::try_from(radix).expect("JSON radix fits i32"),
+                    );
+                    if negative {
+                        number = -number;
+                    }
+                    let value = Value::number(number);
+                    let record = self.primitive_record(value.clone(), start, self.cursor);
+                    return Ok((value, record));
+                }
+            }
+        }
+
         let digits_start = self.cursor;
         let Some(first) = self.peek() else {
             return self.syntax("Unexpected end of JSON input");
         };
-        if first == u16::from(b'0') {
+        if self.mode.is_extended() && first == u16::from(b'.') {
+            // The fractional scanner below consumes the leading decimal point.
+        } else if first == u16::from(b'0') {
             self.cursor += 1;
             if self.peek().is_some_and(is_ascii_digit) {
                 return self.syntax_at(digits_start, "Unexpected number");
@@ -384,7 +537,10 @@ impl JsonParser<'_> {
                 self.cursor += 1;
             }
         } else {
-            return self.syntax(&format!("Unexpected token '{}'", display_unit(first)));
+            return self.syntax(&format!(
+                "Unexpected token '{}'",
+                display_percent_c_unit(first)
+            ));
         }
 
         if self.consume_ascii(b'.') {
@@ -421,6 +577,16 @@ impl JsonParser<'_> {
         Ok((value, record))
     }
 
+    fn parse_identifier_name(&mut self) -> JsString {
+        let start = self.cursor;
+        debug_assert!(self.peek().is_some_and(is_ascii_identifier_start));
+        self.cursor += 1;
+        while self.peek().is_some_and(is_ascii_identifier_continue) {
+            self.cursor += 1;
+        }
+        JsString::from_owned_utf16(self.units[start..self.cursor].to_vec())
+    }
+
     fn parse_identifier_value(&mut self) -> JsonParseResult<(Value, Option<JsonParseRecord>)> {
         let start = self.cursor;
         self.cursor += 1;
@@ -435,6 +601,10 @@ impl JsonParser<'_> {
             Value::Bool(false)
         } else if ascii_eq(spelling, b"null") {
             Value::Null
+        } else if self.mode.is_extended() && ascii_eq(spelling, b"NaN") {
+            Value::number(f64::NAN)
+        } else if self.mode.is_extended() && ascii_eq(spelling, b"Infinity") {
+            Value::number(f64::INFINITY)
         } else {
             let token = spelling
                 .iter()
@@ -482,27 +652,77 @@ impl JsonParser<'_> {
         Ok(())
     }
 
-    fn validate_trailing_token(&mut self) -> JsonParseResult<()> {
+    /// QuickJS keeps one token of lookahead. Container punctuation errors are
+    /// therefore reported only after the intervening token has been lexed;
+    /// malformed strings and numbers retain their more specific diagnostics.
+    fn validate_current_token_lexically(&mut self) -> JsonParseResult<()> {
+        let saved_cursor = self.cursor;
         let Some(unit) = self.peek() else {
             return Ok(());
         };
-        if unit >= 0x80 {
-            return self.syntax("unexpected character");
+        let result = if unit >= 0x80 {
+            self.syntax("unexpected character")
+        } else if unit == u16::from(b'"') || (self.mode.is_extended() && unit == u16::from(b'\'')) {
+            self.parse_string(unit).map(|_| ())
+        } else if unit == u16::from(b'-')
+            || is_ascii_digit(unit)
+            || (self.mode.is_extended()
+                && (unit == u16::from(b'+')
+                    || (unit == u16::from(b'.') && self.peek_at(1).is_some_and(is_ascii_digit))))
+        {
+            self.parse_number_value().map(|_| ())
+        } else {
+            Ok(())
+        };
+        if result.is_ok() {
+            self.cursor = saved_cursor;
         }
-        if unit == u16::from(b'"') {
-            let _ = self.parse_string()?;
-        } else if unit == u16::from(b'-') || is_ascii_digit(unit) {
-            let _ = self.parse_number_value()?;
-        }
-        Ok(())
+        result
     }
 
-    fn skip_whitespace(&mut self) {
-        while self
-            .peek()
-            .is_some_and(|unit| matches!(unit, 0x09 | 0x0a | 0x0d | 0x20))
-        {
-            self.cursor += 1;
+    fn skip_whitespace(&mut self) -> JsonParseResult<()> {
+        loop {
+            while self.peek().is_some_and(|unit| {
+                matches!(unit, 0x09 | 0x0a | 0x0d | 0x20)
+                    || (self.mode.is_extended() && matches!(unit, 0x0b | 0x0c))
+            }) {
+                self.cursor += 1;
+            }
+            if !self.mode.is_extended() || self.peek() != Some(u16::from(b'/')) {
+                return Ok(());
+            }
+            match self.peek_at(1) {
+                Some(unit) if unit == u16::from(b'/') => {
+                    self.cursor += 2;
+                    while self
+                        .peek()
+                        .is_some_and(|unit| !matches!(unit, 0x0a | 0x0d | 0x2028 | 0x2029))
+                    {
+                        self.cursor += 1;
+                    }
+                    if self
+                        .peek()
+                        .is_some_and(|unit| matches!(unit, 0x2028 | 0x2029))
+                    {
+                        self.cursor += 1;
+                    }
+                }
+                Some(unit) if unit == u16::from(b'*') => {
+                    let comment_start = self.cursor;
+                    self.cursor += 2;
+                    loop {
+                        let Some(unit) = self.peek() else {
+                            return self.syntax_at(comment_start, "unexpected end of comment");
+                        };
+                        if unit == u16::from(b'*') && self.peek_at(1) == Some(u16::from(b'/')) {
+                            self.cursor += 2;
+                            break;
+                        }
+                        self.cursor += 1;
+                    }
+                }
+                _ => return Ok(()),
+            }
         }
     }
 
@@ -517,6 +737,10 @@ impl JsonParser<'_> {
 
     fn peek(&self) -> Option<u16> {
         self.units.get(self.cursor).copied()
+    }
+
+    fn peek_at(&self, offset: usize) -> Option<u16> {
+        self.units.get(self.cursor.checked_add(offset)?).copied()
     }
 
     fn syntax<T>(&self, message: &str) -> JsonParseResult<T> {
@@ -606,6 +830,26 @@ fn ascii_eq(units: &[u16], bytes: &[u8]) -> bool {
             .all(|(unit, byte)| *unit == u16::from(*byte))
 }
 
+fn ascii_starts_with(units: &[u16], bytes: &[u8]) -> bool {
+    units.len() >= bytes.len()
+        && units
+            .iter()
+            .zip(bytes)
+            .take(bytes.len())
+            .all(|(unit, byte)| *unit == u16::from(*byte))
+}
+
 fn display_unit(unit: u16) -> char {
     char::from_u32(u32::from(unit)).unwrap_or('\u{fffd}')
+}
+
+/// QuickJS's numeric diagnostics format one raw UTF-8 byte with `%c`.
+/// A non-ASCII leading byte is invalid UTF-8 on its own and becomes U+FFFD
+/// when the resulting error string is materialized.
+fn display_percent_c_unit(unit: u16) -> char {
+    if unit >= 0x80 {
+        '\u{fffd}'
+    } else {
+        display_unit(unit)
+    }
 }

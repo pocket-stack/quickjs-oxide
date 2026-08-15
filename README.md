@@ -14,8 +14,9 @@ module-host callbacks can synchronously compile and return same-Context
 modules, including nested loader re-entry protected by a finite host-stack
 budget. Parse-in-progress module identities and source-order request prefixes
 are visible to those callbacks in QuickJS order, with unsafe failed identities
-represented deterministically. JSON5/byte-oriented loading and the remaining
-conformance gaps are still parity work.
+represented deterministically. QuickJS extended-JSON text modules are
+supported; byte-oriented loading and the remaining conformance gaps are still
+parity work.
 
 <!-- current-test262-metrics:start -->
 The authoritative R3eu Test262 baseline records **79,475 full-corpus passes
@@ -44,6 +45,10 @@ cargo run --quiet --bin qjs -- --print-result -e \
 # File modules: -m/--module, --script, .mjs and source detection
 cargo run --quiet --bin qjs -- examples/module-42.mjs  # 42
 ```
+
+The file loader follows QuickJS policy: `.json` is strict JSON,
+`type: "json5"` selects QuickJS extended JSON for any suffix, and a `.json5`
+file without that attribute remains a JavaScript module.
 
 ## Status
 

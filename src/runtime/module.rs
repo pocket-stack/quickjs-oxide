@@ -152,6 +152,11 @@ pub enum ModuleLoadResult {
     /// `default` export. The host, not the engine, decides which requests are
     /// JSON; this variant deliberately carries no filename-extension policy.
     JsonText(String),
+    /// QuickJS extended-JSON source used to create a synthetic module with one
+    /// `default` export. This is the exact `JS_PARSE_JSON_EXT` grammar selected
+    /// by QuickJS's file loader for `type: "json5"`; the host still owns all
+    /// extension and import-attribute policy.
+    Json5Text(String),
 }
 
 /// One host-defined data property for a source module's `import.meta` object.
@@ -1265,6 +1270,25 @@ impl Runtime {
             .map(ModuleCompilation::Published)
     }
 
+    /// Parse host-selected QuickJS extended JSON and publish the same genuine
+    /// synthetic module shape as strict JSON modules.
+    fn compile_json5_module_record_in_realm(
+        &self,
+        realm: ContextId,
+        source: &str,
+        name: &JsString,
+    ) -> Result<ModuleCompilation, RuntimeError> {
+        let source = JsString::try_from_utf8(source)?;
+        let value = match self.parse_json5_module_text(realm, &source, name)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(exception) => {
+                return Ok(ModuleCompilation::Throw(exception));
+            }
+        };
+        self.publish_json_module(realm, name.clone(), value)
+            .map(ModuleCompilation::Published)
+    }
+
     fn compile_module_load_result_in_realm(
         &self,
         realm: ContextId,
@@ -1289,6 +1313,9 @@ impl Runtime {
                 .compile_module_record_in_realm(realm, &source, normalized_name, Some(properties)),
             ModuleLoadResult::JsonText(source) => {
                 self.compile_json_module_record_in_realm(realm, &source, normalized_name)
+            }
+            ModuleLoadResult::Json5Text(source) => {
+                self.compile_json5_module_record_in_realm(realm, &source, normalized_name)
             }
         }
     }

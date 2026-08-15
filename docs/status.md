@@ -38,8 +38,8 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   QuickJS-matched early errors
 - static-module graphs, live namespaces, default exports, top-level await with
   async dependency/SCC scheduling, static import attributes with loader
-  validation, JSON synthetic modules, and canonical host-populated
-  `import.meta` objects
+  validation, strict and QuickJS-extended JSON synthetic modules, and
+  canonical host-populated `import.meta` objects
 - Script-goal dynamic `import()` with FIFO load/finish jobs, live host-loader
   callback sampling, import attributes, cached cycle-root evaluation Promises,
   namespace reuse, Promise assimilation, and exact propagation of arbitrary
@@ -64,9 +64,10 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include JSON5/byte-oriented host loading, remaining
-module-host lifetime and allocation-failure edge matrices, and the
-unsupported/failed leaves recorded by the current Test262 vector. Failed
+Major open frontiers include raw-byte module payloads such as malformed UTF-8
+and WTF-8, remaining module-host lifetime and allocation-failure edge matrices,
+and the unsupported/failed leaves recorded by the current Test262 vector.
+Failed
 acyclic source graphs retry like QuickJS. Parse-time resolution success and
 one-shot failure latches match the pinned callback order; an incomplete graph
 is non-executable and dynamic import rejects deterministically. Rust safely

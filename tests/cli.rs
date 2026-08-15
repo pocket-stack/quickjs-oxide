@@ -301,16 +301,30 @@ fn explicit_module_modes_load_relative_files_and_wait_for_top_level_await() {
 }
 
 #[test]
-fn file_loader_selects_json_and_rejects_unknown_import_attribute_keys() {
+fn file_loader_matches_quickjs_json_json5_classification_and_rejects_unknown_keys() {
     let fixture = ModuleFixture::new();
     fixture.write("by-extension.json", r#"{"answer":40}"#);
     fixture.write("by-attribute.data", r#"{"answer":2}"#);
+    fixture.write("by-json5-attribute.data", "{answer:+3,}");
+    fixture.write("script.json5", "export default 4;\n");
+    fixture.write("strict-override.json5", r#"{"answer":5}"#);
+    fixture.write("extended-override.json", "{answer:0b110,}");
+    fixture.write("unknown-on-json.json", r#"{"answer":7}"#);
+    fixture.write("unknown-on-data.data", "export default 8;\n");
     let entry = fixture.write(
         "json-entry.mjs",
         concat!(
             "import extension from './by-extension.json';\n",
             "import attribute from './by-attribute.data' with { type: 'json' };\n",
-            "print(extension.answer + attribute.answer);\n",
+            "import json5 from './by-json5-attribute.data' with { type: 'json5' };\n",
+            "import script from './script.json5';\n",
+            "import strictOverride from './strict-override.json5' with { type: 'json' };\n",
+            "import extendedOverride from './extended-override.json' with { type: 'json5' };\n",
+            "import unknownJson from './unknown-on-json.json' with { type: 'other' };\n",
+            "import unknownData from './unknown-on-data.data' with { type: 'other' };\n",
+            "print([extension.answer, attribute.answer, json5.answer, script, ",
+            "strictOverride.answer, extendedOverride.answer, unknownJson.answer, ",
+            "unknownData].join(','));\n",
         ),
     );
     let json = run_file(&[], &entry);
@@ -319,7 +333,7 @@ fn file_loader_selects_json_and_rejects_unknown_import_attribute_keys() {
         "{}",
         String::from_utf8_lossy(&json.stderr)
     );
-    assert_eq!(json.stdout, b"42\n");
+    assert_eq!(json.stdout, b"40,2,3,4,5,6,7,8\n");
     assert!(json.stderr.is_empty());
 
     let rejected = fixture.write(
