@@ -8,6 +8,8 @@ mod quickjs_argv_completion_oracle;
 mod quickjs_array_completion_oracle;
 #[path = "support/quickjs_oracle.rs"]
 mod quickjs_oracle;
+#[path = "support/quickjs_raw_source_oracle.rs"]
+mod quickjs_raw_source_oracle;
 #[path = "support/quickjs_syntax_diagnostic_oracle.rs"]
 mod quickjs_syntax_diagnostic_oracle;
 #[path = "support/runtime_completion_oracle.rs"]
@@ -18,6 +20,9 @@ mod runtime_observation;
 mod runtime_oracle;
 #[path = "support/mod.rs"]
 mod support;
+
+#[path = "oracle/raw_script_bytes.rs"]
+mod raw_script_bytes;
 
 #[path = "oracle_argument_semantics.rs"]
 mod oracle_argument_semantics;

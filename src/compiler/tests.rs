@@ -2184,7 +2184,7 @@ use super::{
     compile_unlinked_module_with_name_and_attribute_checker, compile_unlinked_script,
     compile_unlinked_script_source_with_filename, compile_unlinked_script_with_filename,
     ensure_closure_variable, lex_error, lower_unlinked_tree, resolve_identifiers,
-    validate_scope_graph,
+    validate_scope_graph, validate_source_length,
 };
 
 #[test]
@@ -14110,6 +14110,18 @@ fn debug_metadata_tracks_operator_tail_call_and_root_call_sites() {
 }
 
 #[test]
+fn source_length_guard_matches_quickjs_signed_debug_limit() {
+    assert_eq!(validate_source_length(i32::MAX as usize), Ok(()));
+
+    let error = validate_source_length(i32::MAX as usize + 1).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::JsInternal);
+    assert_eq!(
+        error.message(),
+        "source is too large for QuickJS debug metadata"
+    );
+}
+
+#[test]
 fn raw_script_debug_uses_authored_bytes_for_columns_and_function_source() {
     fn compile(raw: &[u8]) -> crate::function::UnlinkedFunction {
         let source = SourceText::try_from_raw_bytes(raw).unwrap();
@@ -14206,6 +14218,20 @@ fn raw_script_malformed_diagnostics_match_quickjs_context_and_location() {
             (1, expected_offset as u32 + 1)
         );
     }
+}
+
+#[test]
+fn raw_script_nul_token_uses_quickjs_empty_spelling() {
+    let source = SourceText::try_from_raw_bytes(b"void \0;").unwrap();
+    let error =
+        compile_unlinked_script_source_with_filename(&source, "raw-nul.js", DebugInfoMode::Full)
+            .unwrap_err();
+    let location = error.span().unwrap().start;
+
+    assert_eq!(error.kind(), ErrorKind::Syntax);
+    assert_eq!(error.message(), "unexpected token in expression: ''");
+    assert_eq!(location.byte_offset, 5);
+    assert_eq!((location.line, location.column), (1, 6));
 }
 
 #[test]

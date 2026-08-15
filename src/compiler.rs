@@ -261,9 +261,31 @@ pub(crate) fn compile_unlinked_script_with_filename(
     lower_unlinked_tree(tree, debug_info)
 }
 
-/// Compile one byte-exact Script carrier without widening the public `&str`
-/// embedding boundary. This is the internal substrate for raw-source parity.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Reject source buffers which cannot fit QuickJS's signed debug-source
+/// length before any byte-oriented carrier allocation is attempted.
+pub(crate) fn validate_source_length(source_len: usize) -> Result<(), Error> {
+    i32::try_from(source_len).map(|_| ()).map_err(|_| {
+        Error::new(
+            ErrorKind::JsInternal,
+            "source is too large for QuickJS debug metadata",
+        )
+    })
+}
+
+/// Compile one explicitly sized Script buffer after applying QuickJS's signed
+/// source-length guard, before allocating its byte-exact carrier.
+pub(crate) fn compile_unlinked_script_bytes_with_filename(
+    source: &[u8],
+    filename: &str,
+    debug_info: DebugInfoMode,
+) -> Result<UnlinkedFunction, Error> {
+    validate_source_length(source.len())?;
+    let source = SourceText::try_from_raw_bytes(source)?;
+    compile_unlinked_script_source_with_filename(&source, filename, debug_info)
+}
+
+/// Compile one byte-exact Script carrier for the public byte-oriented
+/// embedding boundary.
 pub(crate) fn compile_unlinked_script_source_with_filename(
     source: &SourceText,
     filename: &str,
@@ -2041,13 +2063,7 @@ impl<'source> Parser<'source> {
         context: RootCompileContext,
         mut module_attribute_checker: Option<&mut dyn ModuleImportAttributeChecker>,
     ) -> Result<FunctionTree, ModuleCompileFailure> {
-        if source.len() > i32::MAX as usize {
-            return Err(Error::new(
-                ErrorKind::JsInternal,
-                "source is too large for QuickJS debug metadata",
-            )
-            .into());
-        }
+        validate_source_length(source.len())?;
         let is_module = matches!(&context, RootCompileContext::Module);
         let (
             root_kind,
@@ -6984,14 +7000,17 @@ impl<'source> Parser<'source> {
                     punctuator.as_str()
                 )));
             }
+            // QuickJS gives a raw NUL token an empty printable spelling. Do
+            // not embed the byte itself in the diagnostic: the later native
+            // error C-string boundary would truncate the closing quote.
+            TokenKind::RawAscii(0) | TokenKind::Eof => {
+                return Err(self.syntax_here("unexpected token in expression: ''"));
+            }
             TokenKind::RawAscii(byte) => {
                 return Err(self.syntax_here(format!(
                     "unexpected token in expression: '{}'",
                     char::from(byte)
                 )));
-            }
-            TokenKind::Eof => {
-                return Err(self.syntax_here("unexpected token in expression: ''"));
             }
         }
         Ok(())

@@ -58,7 +58,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::atom::{Atom, AtomError, AtomKind, AtomSpelling, AtomTable, PropertyKeyKind};
 use crate::compiler::{
-    CompileOptions, DEFAULT_EVAL_FILENAME, compile_unlinked_script_with_filename,
+    CompileOptions, DEFAULT_EVAL_FILENAME, compile_unlinked_script_bytes_with_filename,
+    compile_unlinked_script_with_filename,
 };
 use crate::debug::{DebugInfoMode, LineColumn, QuickJsSourceLocator};
 use crate::error::{Error, ErrorKind, NativeErrorKind, NativeErrorMessage};
@@ -4651,9 +4652,40 @@ impl Runtime {
         source: &str,
         filename: &str,
     ) -> Result<Compilation, RuntimeError> {
+        self.compile_script_in_realm(
+            realm,
+            QuickJsSourceLocator::new(source),
+            filename,
+            |debug_info| compile_unlinked_script_with_filename(source, filename, debug_info),
+        )
+    }
+
+    /// Construct, compile, and publish one explicitly sized source buffer
+    /// inside the same exception boundary as ordinary UTF-8 source.
+    fn compile_bytes_in_realm(
+        &self,
+        realm: ContextId,
+        source: &[u8],
+        filename: &str,
+    ) -> Result<Compilation, RuntimeError> {
+        self.compile_script_in_realm(
+            realm,
+            QuickJsSourceLocator::from_bytes(source),
+            filename,
+            |debug_info| compile_unlinked_script_bytes_with_filename(source, filename, debug_info),
+        )
+    }
+
+    fn compile_script_in_realm(
+        &self,
+        realm: ContextId,
+        source_locator: QuickJsSourceLocator<'_>,
+        filename: &str,
+        compile: impl FnOnce(DebugInfoMode) -> Result<UnlinkedFunction, Error>,
+    ) -> Result<Compilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let debug_info = self.debug_info_mode();
-        let function = match compile_unlinked_script_with_filename(source, filename, debug_info) {
+        let function = match compile(debug_info) {
             Ok(function) => function,
             Err(error) => {
                 let Some(kind) = NativeErrorKind::from_javascript_error(error.kind()) else {
@@ -4661,7 +4693,7 @@ impl Runtime {
                 };
                 let explicit_location = if error.kind() == ErrorKind::Syntax {
                     if let Some(span) = error.span() {
-                        let position = QuickJsSourceLocator::new(source)
+                        let position = source_locator
                             .locate_byte_offset(span.start.byte_offset)
                             .map_err(|_| {
                                 RuntimeError::Invariant(
@@ -10253,6 +10285,12 @@ impl Context {
         self.compile_with_options(source, &CompileOptions::default())
     }
 
+    /// Compile one explicitly sized source buffer. Full debug mode retains
+    /// byte-exact authored ranges for nested functions.
+    pub fn compile_bytes(&mut self, source: &[u8]) -> Result<FunctionBytecodeRef, RuntimeError> {
+        self.compile_bytes_with_options(source, &CompileOptions::default())
+    }
+
     /// Compile one script with an explicit filename attached independently to
     /// every published function's debug metadata.
     pub fn compile_with_filename(
@@ -10261,6 +10299,16 @@ impl Context {
         filename: &str,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
         self.compile_with_options(source, &CompileOptions::new(filename))
+    }
+
+    /// Compile one explicitly sized source buffer with an explicit debug
+    /// filename.
+    pub fn compile_bytes_with_filename(
+        &mut self,
+        source: &[u8],
+        filename: &str,
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
+        self.compile_bytes_with_options(source, &CompileOptions::new(filename))
     }
 
     /// Compile one script with named compilation options.
@@ -10274,10 +10322,34 @@ impl Context {
         source: &str,
         options: &CompileOptions,
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        match self
+        let compilation = self
             .runtime
-            .compile_in_realm(self.realm, source, &options.filename)?
-        {
+            .compile_in_realm(self.realm, source, &options.filename)?;
+        self.finish_compilation(compilation)
+    }
+
+    /// Compile one explicitly sized source buffer with named compilation
+    /// options.
+    ///
+    /// Source bytes are parsed with QuickJS-compatible UTF-8/WTF-8 handling;
+    /// malformed bytes remain observable in permitted source regions and
+    /// produce syntax errors where the grammar requires source characters.
+    pub fn compile_bytes_with_options(
+        &mut self,
+        source: &[u8],
+        options: &CompileOptions,
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
+        let compilation =
+            self.runtime
+                .compile_bytes_in_realm(self.realm, source, &options.filename)?;
+        self.finish_compilation(compilation)
+    }
+
+    fn finish_compilation(
+        &mut self,
+        compilation: Compilation,
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
+        match compilation {
             Compilation::Published(function) => Ok(function),
             Compilation::Throw(exception) => {
                 self.runtime.set_pending_exception(exception)?;
@@ -10396,6 +10468,11 @@ impl Context {
         self.eval_with_options(source, &EvalOptions::default())
     }
 
+    /// Compile and evaluate one explicitly sized source buffer.
+    pub fn eval_bytes(&mut self, source: &[u8]) -> Result<Value, RuntimeError> {
+        self.eval_bytes_with_options(source, &EvalOptions::default())
+    }
+
     /// Compile and evaluate a script with an explicit debug filename.
     pub fn eval_with_filename(
         &mut self,
@@ -10405,18 +10482,49 @@ impl Context {
         self.eval_with_options(source, &EvalOptions::new(filename))
     }
 
+    /// Compile and evaluate one explicitly sized source buffer with an
+    /// explicit debug filename.
+    pub fn eval_bytes_with_filename(
+        &mut self,
+        source: &[u8],
+        filename: &str,
+    ) -> Result<Value, RuntimeError> {
+        self.eval_bytes_with_options(source, &EvalOptions::new(filename))
+    }
+
     /// Compile and evaluate a script with filename and execution options.
     pub fn eval_with_options(
         &mut self,
         source: &str,
         options: &EvalOptions,
     ) -> Result<Value, RuntimeError> {
+        self.eval_compiling_with_options(options, |context, compile_options| {
+            context.compile_with_options(source, compile_options)
+        })
+    }
+
+    /// Compile and evaluate one explicitly sized source buffer with filename
+    /// and execution options.
+    pub fn eval_bytes_with_options(
+        &mut self,
+        source: &[u8],
+        options: &EvalOptions,
+    ) -> Result<Value, RuntimeError> {
+        self.eval_compiling_with_options(options, |context, compile_options| {
+            context.compile_bytes_with_options(source, compile_options)
+        })
+    }
+
+    fn eval_compiling_with_options(
+        &mut self,
+        options: &EvalOptions,
+        compile: impl FnOnce(&mut Self, &CompileOptions) -> Result<FunctionBytecodeRef, RuntimeError>,
+    ) -> Result<Value, RuntimeError> {
         let barrier = self
             .runtime
             .install_backtrace_barrier(options.backtrace_barrier)?;
         let result = (|| {
-            let function =
-                self.compile_with_options(source, &CompileOptions::new(&options.filename))?;
+            let function = compile(self, &CompileOptions::new(&options.filename))?;
             self.execute(&function)
         })();
         barrier.finish()?;

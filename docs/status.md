@@ -28,6 +28,8 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 ## Implemented architecture
 
 - Rust compiler, verified bytecode, runtime, jobs, modules, and embedding API
+- byte-exact Script embedding APIs with QuickJS-compatible malformed UTF-8,
+  WTF-8, source retention, and diagnostic locations
 - binary data, typed arrays, shared memory, and Atomics slices
 - collections, weak references, finalization, Promises, and iterator slices
 - Unicode 17 case, identifier, normalization, and property data
