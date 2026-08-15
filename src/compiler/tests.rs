@@ -11124,6 +11124,36 @@ fn always_reserved_words_use_quickjs_syntax_diagnostics() {
 }
 
 #[test]
+fn statement_and_binary_keywords_in_expression_position_are_syntax_errors() {
+    for keyword in [
+        "return",
+        "instanceof",
+        "do",
+        "while",
+        "break",
+        "continue",
+        "switch",
+        "throw",
+        "try",
+        "with",
+    ] {
+        let source = format!("var x = {keyword};");
+        let error = compile_unlinked_script(&source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}: {error}");
+        assert_eq!(
+            error.message(),
+            format!("unexpected token in expression: '{keyword}'"),
+            "{source:?}",
+        );
+        let span = error
+            .span()
+            .expect("keyword SyntaxError lost its source span");
+        assert_eq!(span.start.byte_offset, 8, "{source:?}");
+        assert_eq!(span.end.byte_offset, 8 + keyword.len(), "{source:?}");
+    }
+}
+
+#[test]
 fn statement_keywords_in_primary_expression_use_quickjs_syntax_diagnostics() {
     for (source, keyword, column) in [
         ("({[if (0) 0;]})", "if", 4),

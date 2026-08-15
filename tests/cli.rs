@@ -202,6 +202,34 @@ fn unsupported_source_fails_instead_of_falling_back_to_an_external_engine() {
 }
 
 #[test]
+fn expression_position_statement_keywords_expose_quickjs_syntax_errors() {
+    for keyword in [
+        "return",
+        "instanceof",
+        "do",
+        "while",
+        "break",
+        "continue",
+        "switch",
+        "throw",
+        "try",
+        "with",
+    ] {
+        let source = format!("var x = {keyword};");
+        let output = qjs().args(["-e", &source]).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{source:?}");
+        assert!(output.stdout.is_empty(), "{source:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!(
+                "SyntaxError: unexpected token in expression: '{keyword}'\n    at <cmdline>:1:9\n"
+            ),
+            "{source:?}",
+        );
+    }
+}
+
+#[test]
 fn dynamic_import_reaches_the_async_host_rejection_path() {
     let output = qjs()
         .args([

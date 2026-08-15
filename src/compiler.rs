@@ -6981,10 +6981,10 @@ impl<'source> Parser<'source> {
                 )));
             }
             TokenKind::Keyword(keyword) => {
-                return Err(Error::unsupported(
-                    format!("{} syntax is not implemented yet", keyword.as_str()),
-                    source_span(token.span),
-                ));
+                return Err(self.syntax_here(format!(
+                    "unexpected token in expression: '{}'",
+                    keyword.as_str()
+                )));
             }
             TokenKind::RegExp(literal) => {
                 // Pinned QuickJS calls `compile_regexp` before advancing to the
