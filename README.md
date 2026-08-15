@@ -19,9 +19,9 @@ loader boundaries accept byte-exact source buffers, and the file CLI preserves
 those bytes end to end. The remaining conformance gaps are still parity work.
 
 <!-- current-test262-metrics:start -->
-The authoritative R3ex Test262 baseline records **79,509 full-corpus passes
-out of 102,037 variants (77.922%)**, with **79,559 eligible variants
-(77.971%)**. The 79,509 / 79,559 runnable pass rate (99.937%) is a secondary
+The authoritative R3ey Test262 baseline records **79,557 full-corpus passes
+out of 102,037 variants (77.969%)**, with **79,607 eligible variants
+(78.018%)**. The 79,557 / 79,607 runnable pass rate (99.937%) is a secondary
 quality measure, not the headline compatibility metric.
 <!-- current-test262-metrics:end -->
 
