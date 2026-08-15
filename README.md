@@ -18,7 +18,7 @@ represented deterministically. JSON5/byte-oriented loading and the remaining
 conformance gaps are still parity work.
 
 <!-- current-test262-metrics:start -->
-The authoritative R3et Test262 baseline records **79,475 full-corpus passes
+The authoritative R3eu Test262 baseline records **79,475 full-corpus passes
 out of 102,037 variants (77.888%)**, with **79,525 eligible variants
 (77.937%)**. The 79,475 / 79,525 runnable pass rate (99.937%) is a secondary
 quality measure, not the headline compatibility metric.
