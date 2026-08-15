@@ -163,9 +163,13 @@ pub(super) fn is_exact_dynamic_import_script_test(
             path.display()
         ));
     }
-    if metadata.features.len() != 1 || metadata.features[0] != "dynamic-import" {
+    if !metadata
+        .features
+        .iter()
+        .any(|feature| feature == "dynamic-import")
+    {
         return Err(format!(
-            "dynamic import root must declare exactly the dynamic-import feature: {}",
+            "dynamic import root must declare the dynamic-import feature: {}",
             path.display()
         ));
     }
@@ -1493,6 +1497,14 @@ mod tests {
         const HEADER: &str = "kind\tgroup\tpath\tsource_sha256\tincludes\tflags\tfeatures\tnegative_phase\tnegative_type\tclosure_file_count\tpriority\trequest_index\tspecifier\tnormalized_path\tpolicy\tcohort";
         let root_sha256 = crate::admissions::sha256(root_source.as_bytes());
         let fixture_sha256 = crate::admissions::sha256(fixture_source.as_bytes());
+        let root_metadata = parse_metadata(root_source).unwrap();
+        let root_flags = root_metadata
+            .flags
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",");
+        let root_features = root_metadata.features.join(",");
         let mut rows = [
             admission_row([
                 "dynamic-import-root",
@@ -1518,8 +1530,8 @@ mod tests {
                 "test/dynamic.js",
                 &root_sha256,
                 "",
-                "async",
-                "dynamic-import",
+                &root_flags,
+                &root_features,
                 "",
                 "",
                 "",
@@ -3215,6 +3227,7 @@ mod tests {
     #[test]
     fn dynamic_import_script_goal_authenticates_the_exact_recursive_graph() {
         const ROOT_SOURCE: &str = "/*---\nflags: [async]\nfeatures: [dynamic-import]\n---*/\nimport(\"./fixture_FIXTURE.js\").then($DONE, $DONE);\n";
+        const EXTENDED_ROOT_SOURCE: &str = "/*---\nflags: [async]\nfeatures: [dynamic-import, exponentiation]\n---*/\nimport(\"./fixture_FIXTURE.js\").then($DONE, $DONE);\n";
         const FIXTURE_SOURCE: &str = "export const value = 42;\n";
         let catalog = dynamic_import_catalog(ROOT_SOURCE, FIXTURE_SOURCE);
         let root = Path::new("test/dynamic.js");
@@ -3270,15 +3283,39 @@ mod tests {
         .unwrap_err();
         assert!(drift.contains("source drifted"), "{drift}");
 
-        let mut broadened = metadata.clone();
-        broadened.features.push("import-attributes".to_owned());
-        let error =
-            is_exact_dynamic_import_script_test(&catalog, &suite, root, ROOT_SOURCE, &broadened)
-                .unwrap_err();
+        let extended_catalog = dynamic_import_catalog(EXTENDED_ROOT_SOURCE, FIXTURE_SOURCE);
+        let extended_metadata = parse_metadata(EXTENDED_ROOT_SOURCE).unwrap();
+        fs::write(suite.join(root), EXTENDED_ROOT_SOURCE).unwrap();
+        assert_eq!(
+            is_exact_dynamic_import_script_test(
+                &extended_catalog,
+                &suite,
+                root,
+                EXTENDED_ROOT_SOURCE,
+                &extended_metadata,
+            ),
+            Ok(true),
+            "an exact dynamic Script may retain independently gated feature metadata"
+        );
+
+        let mut missing_dynamic_import = extended_metadata.clone();
+        missing_dynamic_import
+            .features
+            .retain(|feature| feature != "dynamic-import");
+        let error = is_exact_dynamic_import_script_test(
+            &extended_catalog,
+            &suite,
+            root,
+            EXTENDED_ROOT_SOURCE,
+            &missing_dynamic_import,
+        )
+        .unwrap_err();
         assert!(
-            error.contains("exactly the dynamic-import feature"),
+            error.contains("must declare the dynamic-import feature"),
             "{error}"
         );
+
+        fs::write(suite.join(root), ROOT_SOURCE).unwrap();
 
         fs::write(
             suite.join("test/fixture_FIXTURE.js"),

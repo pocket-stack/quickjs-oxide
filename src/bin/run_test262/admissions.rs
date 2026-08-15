@@ -487,11 +487,14 @@ impl AdmissionCatalog {
                     ));
                 }
                 ModuleGraphRootGoal::DynamicImportScript
-                    if root_file.metadata.features.len() != 1
-                        || root_file.metadata.features[0] != "dynamic-import" =>
+                    if !root_file
+                        .metadata
+                        .features
+                        .iter()
+                        .any(|feature| feature == "dynamic-import") =>
                 {
                     return Err(format!(
-                        "dynamic import graph root must declare exactly the dynamic-import feature: {}/{}",
+                        "dynamic import graph root must declare the dynamic-import feature: {}/{}",
                         root.group, root.path
                     ));
                 }
@@ -1324,7 +1327,7 @@ mod tests {
         );
         let error = AdmissionCatalog::parse(&missing_feature).unwrap_err();
         assert!(
-            error.contains("must declare exactly the dynamic-import feature"),
+            error.contains("must declare the dynamic-import feature"),
             "{error}"
         );
 
@@ -1332,10 +1335,10 @@ mod tests {
             &format!("test/dynamic.js\t{SHA}\t-\tasync\tdynamic-import"),
             &format!("test/dynamic.js\t{SHA}\t-\tasync\tdynamic-import,import-attributes"),
         );
-        let error = AdmissionCatalog::parse(&extra_feature).unwrap_err();
-        assert!(
-            error.contains("must declare exactly the dynamic-import feature"),
-            "{error}"
+        let catalog = AdmissionCatalog::parse(&extra_feature).unwrap();
+        assert_eq!(
+            catalog.graph_files("dynamic-import")[0].metadata.features,
+            ["dynamic-import", "import-attributes"]
         );
     }
 
