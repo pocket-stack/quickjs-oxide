@@ -1,0 +1,6 @@
+nested:42
+nested-deep:43
+nested-after:42
+sibling:44
+outer-runtime:1
+outer-export:1

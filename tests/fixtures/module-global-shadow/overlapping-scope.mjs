@@ -1,0 +1,6 @@
+{
+  {
+    var value;
+  }
+  let value;
+}

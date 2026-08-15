@@ -2271,6 +2271,81 @@ fn module_export_duplicate_and_missing_binding_are_early_errors() {
 }
 
 #[test]
+fn module_normal_bindings_follow_quickjs_lexical_scope_overlap() {
+    for source in [
+        "var value; { let value; }",
+        "for (var value; false;) {} for (let value; false;) {}",
+        "for await (var value of []) {} for await (let value of []) {}",
+        "function value() {} { let value; }",
+        "export var value; { const value = 1; }",
+        // QuickJS keeps the first module-global record's declaration scope.
+        "var value; { var value; let value; }",
+        "import value from './dependency.js'; var value; { let value; }",
+    ] {
+        compile_unlinked_module_with_filename(
+            source,
+            "module-inner-lexical-shadow.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_or_else(|error| panic!("QuickJS accepts {source:?}: {error}"));
+    }
+
+    for source in [
+        "var value; let value;",
+        "{ var value; let value; }",
+        "{ { var value; } let value; }",
+        "let value; var value;",
+        "export var value; export let value;",
+        "var value; { let value; let value; }",
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "module-overlapping-lexical.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .expect_err("overlapping module var and lexical declarations must conflict");
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+    }
+}
+
+#[test]
+fn module_inner_lexical_shadow_keeps_the_exported_module_cell() {
+    let module = compile_unlinked_module_with_filename(
+        "for (var value of [1]) {} export { value }; for (let value of [42]) { void value; }",
+        "module-export-inner-shadow.mjs",
+        DebugInfoMode::StripDebug,
+    )
+    .unwrap();
+
+    let [export] = module.exports() else {
+        panic!("module var export table changed: {:?}", module.exports());
+    };
+    assert_eq!(export.export_name.to_utf8_lossy(), "value");
+    let ModuleExportTarget::Local { closure_index } = export.target else {
+        panic!("module var export stopped targeting its local cell");
+    };
+    let function = module.function();
+    assert_eq!(function.closure_variables().len(), 1);
+    let descriptor = function.closure_variables()[usize::from(closure_index)];
+    assert_eq!(descriptor.source, ClosureSource::ModuleDeclaration);
+    assert!(!descriptor.is_lexical);
+    assert!(!descriptor.is_const);
+    assert!(matches!(
+        module.link_initializers(),
+        [crate::module::ModuleLinkInitializer {
+            closure_index: actual,
+            value: crate::module::ModuleLinkInitializerValue::Undefined,
+        }] if *actual == closure_index
+    ));
+    let value = JsString::from_static("value");
+    assert!(
+        function.local_definitions().iter().any(|definition| {
+            definition.name.as_ref() == Some(&value) && definition.is_lexical
+        })
+    );
+}
+
+#[test]
 fn module_string_export_names_reject_unpaired_surrogates_like_quickjs() {
     for source in [
         r#"const value = 42; export { value as "\ud800" };"#,

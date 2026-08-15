@@ -4919,9 +4919,12 @@ impl<'source> Parser<'source> {
                     ));
                 }
                 (BindingStorage::External(_), _) => "",
-                (BindingStorage::Module(_), BindingKind::Normal) => {
+                (BindingStorage::Module(_), BindingKind::Normal)
+                    if function.scope_is_within(binding.declaration_scope, scope) =>
+                {
                     "invalid redefinition of module identifier"
                 }
+                (BindingStorage::Module(_), BindingKind::Normal) => "",
                 (BindingStorage::Module(_), _) => {
                     return Err(Error::internal(
                         "non-var module binding leaked into the function var scope",

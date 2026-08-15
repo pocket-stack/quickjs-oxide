@@ -1,10 +1,16 @@
 use std::cell::{Cell, RefCell};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::rc::Rc;
 
 use quickjs_oxide::{
     Context, ContextId, JsString, ModuleImportAttributes, ModuleLoadResult, ModuleLoader,
     ModuleLoaderError, PromiseState, Runtime, Value,
 };
+
+const MODULE_GLOBAL_SHADOW_TRANSCRIPT: &str =
+    include_str!("fixtures/module-global-shadow/quickjs-2026-06-04.txt");
 
 #[derive(Debug, PartialEq, Eq)]
 struct CallbackEvent {
@@ -181,4 +187,83 @@ fn dynamic_import_accepts_reentrant_compiled_modules_from_the_initiating_context
     assert_eq!(snapshot.result(), &Value::Int(42));
     assert!(!runtime.is_job_pending());
     assert_eq!(context.take_exception().unwrap(), None);
+}
+
+#[test]
+fn module_global_binding_survives_nested_and_sibling_lexical_shadowing() {
+    let fixture = module_global_shadow_fixture_dir();
+    let oxide =
+        run_module_global_shadow_file(env!("CARGO_BIN_EXE_qjs").as_ref(), &fixture, "entry.mjs");
+    assert_module_global_shadow_success("quickjs-oxide", "entry.mjs", &oxide);
+    assert_eq!(
+        String::from_utf8_lossy(&oxide.stdout),
+        MODULE_GLOBAL_SHADOW_TRANSCRIPT,
+        "quickjs-oxide confused the exported module cell with a nested or sibling lexical",
+    );
+
+    for invalid in ["same-scope.mjs", "overlapping-scope.mjs"] {
+        let rejected =
+            run_module_global_shadow_file(env!("CARGO_BIN_EXE_qjs").as_ref(), &fixture, invalid);
+        assert_module_global_shadow_rejection("quickjs-oxide", invalid, &rejected);
+    }
+
+    let Some(oracle) = std::env::var_os("QJS_ORACLE") else {
+        eprintln!("SKIP module-global shadow differential: set QJS_ORACLE to pinned upstream qjs");
+        return;
+    };
+    let quickjs = run_module_global_shadow_file(&oracle, &fixture, "entry.mjs");
+    assert_module_global_shadow_success("pinned QuickJS", "entry.mjs", &quickjs);
+    assert_eq!(
+        String::from_utf8_lossy(&quickjs.stdout),
+        MODULE_GLOBAL_SHADOW_TRANSCRIPT,
+        "pinned QuickJS transcript differs from the frozen module-global shadow fixture",
+    );
+    assert_eq!(
+        oxide.stdout, quickjs.stdout,
+        "quickjs-oxide module-global shadow transcript differs from pinned QuickJS",
+    );
+
+    for invalid in ["same-scope.mjs", "overlapping-scope.mjs"] {
+        let rejected = run_module_global_shadow_file(&oracle, &fixture, invalid);
+        assert_module_global_shadow_rejection("pinned QuickJS", invalid, &rejected);
+    }
+}
+
+fn module_global_shadow_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module-global-shadow")
+}
+
+fn run_module_global_shadow_file(executable: &OsStr, fixture: &Path, filename: &str) -> Output {
+    Command::new(executable)
+        .args(["--module", filename])
+        .current_dir(fixture)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!("could not run {executable:?} for module-global shadow {filename}: {error}")
+        })
+}
+
+fn assert_module_global_shadow_success(engine: &str, filename: &str, output: &Output) {
+    assert!(
+        output.status.success(),
+        "{engine} rejected module-global shadow fixture {filename}: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{engine} wrote stderr for module-global shadow fixture {filename}: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn assert_module_global_shadow_rejection(engine: &str, filename: &str, output: &Output) {
+    assert!(
+        !output.status.success(),
+        "{engine} accepted conflicting module declarations in {filename}",
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("SyntaxError"),
+        "{engine} did not report SyntaxError for {filename}: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
