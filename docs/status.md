@@ -74,6 +74,11 @@ host is isolated behind a non-default feature.
 Major open frontiers include remaining module-host lifetime and
 allocation-failure edge matrices and the unsupported/failed leaves recorded by
 the current Test262 vector.
+The private BC_VERSION 5 foundation now has bounded wire primitives and the
+pinned BigInt payload codec, including QuickJS's asymmetric 16,385-limb writer
+edge. It is not a public binary-object API yet: `num-bigint` lacks fallible
+construction, so decoder OOM mapping and allocator fault-injection remain a
+hardening gate before untrusted input admission.
 Failed acyclic source graphs retry like QuickJS. Parse-time resolution success and
 one-shot failure latches match the pinned callback order; an incomplete graph
 is non-executable and dynamic import rejects deterministically. Rust safely

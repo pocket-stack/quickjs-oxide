@@ -33,6 +33,33 @@ pub const BIGINT_LIMB_BITS: u64 = 64;
 
 const MAX_BIGINT_LIMBS: u64 = MAX_BIGINT_BITS / BIGINT_LIMB_BITS;
 
+/// Maximum byte payload accepted by the QuickJS BC5 binary-object reader.
+///
+/// `bc_get_bigint()` allocates one 64-bit limb for every eight payload bytes,
+/// so its 16,384-limb allocation limit is exactly 128 KiB. This is not a
+/// writer limit: QuickJS can hold an extra sign limb after selected operations
+/// and will serialize such a value even when its own reader cannot reload it.
+pub(crate) const BC5_BIGINT_READ_MAX_BYTES: usize = (MAX_BIGINT_BITS / 8) as usize;
+
+/// A failure while encoding or decoding a BC5 BigInt payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Bc5BigIntCodecError {
+    /// The canonical or declared payload length exceeds the effective budget.
+    ByteLengthLimitExceeded {
+        byte_length: usize,
+        max_byte_length: usize,
+    },
+    /// The declared payload extends past the bytes supplied by the caller.
+    Truncated {
+        byte_length: usize,
+        available: usize,
+    },
+    /// The payload contains a redundant most-significant sign byte.
+    NonMinimalEncoding,
+    /// Rust could not reserve storage for the bounded encoded payload.
+    OutputAllocationFailed,
+}
+
 /// A failure produced by the BigInt value layer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BigIntError {
@@ -235,6 +262,99 @@ impl JsBigInt {
             BigIntRepr::Short(value) => BigInt::from(*value),
             BigIntRepr::Heap(value) => value.as_ref().clone(),
         }
+    }
+
+    /// Encode the canonical signed little-endian two's-complement payload used
+    /// by QuickJS BC5 binary objects.
+    ///
+    /// Zero has an empty payload. The caller's byte budget is the only
+    /// serialization limit, and it is checked before allocating the output
+    /// buffer. Unlike the reader, pinned QuickJS does not impose its 128 KiB
+    /// BigInt allocation guard on serialization.
+    #[allow(dead_code)] // Staged for the binary-object reader/writer.
+    pub(crate) fn encode_bc5_signed_le(
+        &self,
+        max_byte_length: usize,
+    ) -> Result<Vec<u8>, Bc5BigIntCodecError> {
+        let byte_length = self.bc5_canonical_byte_length();
+        if byte_length > max_byte_length {
+            return Err(Bc5BigIntCodecError::ByteLengthLimitExceeded {
+                byte_length,
+                max_byte_length,
+            });
+        }
+
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(byte_length)
+            .map_err(|_| Bc5BigIntCodecError::OutputAllocationFailed)?;
+        output.resize(byte_length, 0);
+
+        match &self.0 {
+            BigIntRepr::Short(value) => {
+                output.copy_from_slice(&value.to_le_bytes()[..byte_length]);
+            }
+            BigIntRepr::Heap(value) => {
+                for (limb_index, limb) in value.iter_u64_digits().enumerate() {
+                    let offset = limb_index * 8;
+                    if offset >= byte_length {
+                        break;
+                    }
+                    let limb = limb.to_le_bytes();
+                    let end = (offset + limb.len()).min(byte_length);
+                    output[offset..end].copy_from_slice(&limb[..end - offset]);
+                }
+                if value.sign() == Sign::Minus {
+                    twos_complement_le(&mut output);
+                }
+            }
+        }
+
+        debug_assert!(is_minimal_bc5_signed_le(&output));
+        Ok(output)
+    }
+
+    /// Decode a signed little-endian two's-complement BC5 BigInt payload.
+    ///
+    /// `byte_length` is kept separate from `input` so the binary-object reader
+    /// can report a truncated payload without slicing past the end. On success
+    /// the returned byte count is exactly `byte_length`; trailing input belongs
+    /// to the next BC5 field. When `require_minimal` is true, redundant sign
+    /// extension bytes (including the one-byte encoding of zero) are rejected.
+    ///
+    /// `num-bigint` does not expose fallible construction, so process-wide OOM
+    /// during the bounded conversion remains an explicit pre-admission
+    /// hardening frontier. This private staged helper does not claim to map
+    /// that allocator failure into this result yet.
+    #[allow(dead_code)] // Staged for the binary-object reader/writer.
+    pub(crate) fn decode_bc5_signed_le(
+        input: &[u8],
+        byte_length: usize,
+        max_byte_length: usize,
+        require_minimal: bool,
+    ) -> Result<(Self, usize), Bc5BigIntCodecError> {
+        let max_byte_length = max_byte_length.min(BC5_BIGINT_READ_MAX_BYTES);
+        if byte_length > max_byte_length {
+            return Err(Bc5BigIntCodecError::ByteLengthLimitExceeded {
+                byte_length,
+                max_byte_length,
+            });
+        }
+        if input.len() < byte_length {
+            return Err(Bc5BigIntCodecError::Truncated {
+                byte_length,
+                available: input.len(),
+            });
+        }
+
+        let payload = &input[..byte_length];
+        if require_minimal && !is_minimal_bc5_signed_le(payload) {
+            return Err(Bc5BigIntCodecError::NonMinimalEncoding);
+        }
+
+        let value = BigInt::from_signed_bytes_le(payload);
+        debug_assert!(signed_limb_len(&value) <= MAX_BIGINT_LIMBS);
+        Ok((Self::normalize(value), byte_length))
     }
 
     /// Convert this integer to the nearest IEEE-754 binary64 value.
@@ -660,6 +780,30 @@ impl JsBigInt {
         }
     }
 
+    fn bc5_canonical_byte_length(&self) -> usize {
+        if self.is_zero() {
+            return 0;
+        }
+
+        let magnitude_bits = self.magnitude_bits();
+        let signed_bits = if self.is_negative() && self.magnitude_is_power_of_two() {
+            magnitude_bits
+        } else {
+            magnitude_bits + 1
+        };
+        usize::try_from(signed_bits.div_ceil(8)).expect("QuickJS's BigInt bit limit fits in usize")
+    }
+
+    fn magnitude_is_power_of_two(&self) -> bool {
+        match &self.0 {
+            BigIntRepr::Short(value) => value.unsigned_abs().is_power_of_two(),
+            BigIntRepr::Heap(value) => {
+                let bits = value.bits();
+                bits != 0 && value.magnitude().trailing_zeros() == Some(bits - 1)
+            }
+        }
+    }
+
     fn checked_binary(
         &self,
         rhs: &Self,
@@ -1023,6 +1167,28 @@ fn signed_limb_len(value: &BigInt) -> u64 {
     signed_bits.div_ceil(BIGINT_LIMB_BITS).max(1)
 }
 
+fn is_minimal_bc5_signed_le(payload: &[u8]) -> bool {
+    match payload {
+        [] => true,
+        [0] => false,
+        [.., previous, 0] if previous & 0x80 == 0 => false,
+        [.., previous, 0xff] if previous & 0x80 != 0 => false,
+        _ => true,
+    }
+}
+
+fn twos_complement_le(bytes: &mut [u8]) {
+    let mut carry = true;
+    for byte in bytes {
+        *byte = !*byte;
+        if carry {
+            let (value, overflow) = byte.overflowing_add(1);
+            *byte = value;
+            carry = overflow;
+        }
+    }
+}
+
 fn is_ecmascript_whitespace(character: char) -> bool {
     matches!(
         character,
@@ -1047,7 +1213,10 @@ fn is_ecmascript_whitespace(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BIGINT_LIMB_BITS, BigIntError, JsBigInt, MAX_BIGINT_BITS, MAX_BIGINT_LIMBS};
+    use super::{
+        BC5_BIGINT_READ_MAX_BYTES, BIGINT_LIMB_BITS, Bc5BigIntCodecError, BigIntError, JsBigInt,
+        MAX_BIGINT_BITS, MAX_BIGINT_LIMBS,
+    };
 
     fn bigint(source: &str) -> JsBigInt {
         JsBigInt::parse_js_string(source).unwrap()
@@ -1118,6 +1287,192 @@ mod tests {
             bigint("-170141183460469231731687303715884105729").signed_limb_len(),
             3
         );
+    }
+
+    #[test]
+    fn bc5_bigint_payloads_match_canonical_signed_little_endian_boundaries() {
+        let cases: [(&str, &[u8]); 9] = [
+            ("0", &[]),
+            ("1", &[0x01]),
+            ("-1", &[0xff]),
+            ("127", &[0x7f]),
+            ("128", &[0x80, 0x00]),
+            ("255", &[0xff, 0x00]),
+            ("256", &[0x00, 0x01]),
+            ("-128", &[0x80]),
+            ("-129", &[0x7f, 0xff]),
+        ];
+
+        for (source, expected) in cases {
+            let value = bigint(source);
+            let encoded = value
+                .encode_bc5_signed_le(BC5_BIGINT_READ_MAX_BYTES)
+                .unwrap();
+            assert_eq!(encoded, expected, "encoding {source}");
+
+            let (decoded, consumed) = JsBigInt::decode_bc5_signed_le(
+                &encoded,
+                encoded.len(),
+                BC5_BIGINT_READ_MAX_BYTES,
+                true,
+            )
+            .unwrap();
+            assert_eq!(decoded, value, "decoding {source}");
+            assert_eq!(consumed, encoded.len());
+        }
+    }
+
+    #[test]
+    fn bc5_bigint_payloads_round_trip_large_positive_and_negative_values() {
+        for source in [
+            "123456789012345678901234567890123456789012345678901234567890",
+            "-123456789012345678901234567890123456789012345678901234567890",
+        ] {
+            let value = bigint(source);
+            let encoded = value
+                .encode_bc5_signed_le(BC5_BIGINT_READ_MAX_BYTES)
+                .unwrap();
+            assert!(encoded.len() > 16);
+            assert_eq!(encoded, value.to_bigint().to_signed_bytes_le());
+
+            let (decoded, consumed) = JsBigInt::decode_bc5_signed_le(
+                &encoded,
+                encoded.len(),
+                BC5_BIGINT_READ_MAX_BYTES,
+                true,
+            )
+            .unwrap();
+            assert_eq!(decoded, value);
+            assert_eq!(consumed, encoded.len());
+        }
+    }
+
+    #[test]
+    fn bc5_bigint_minimal_validation_rejects_redundant_sign_bytes() {
+        let cases: [(&[u8], i64); 3] = [(&[0x00], 0), (&[0x01, 0x00], 1), (&[0xff, 0xff], -1)];
+
+        for (payload, expected) in cases {
+            assert_eq!(
+                JsBigInt::decode_bc5_signed_le(
+                    payload,
+                    payload.len(),
+                    BC5_BIGINT_READ_MAX_BYTES,
+                    true,
+                ),
+                Err(Bc5BigIntCodecError::NonMinimalEncoding)
+            );
+
+            let (decoded, consumed) = JsBigInt::decode_bc5_signed_le(
+                payload,
+                payload.len(),
+                BC5_BIGINT_READ_MAX_BYTES,
+                false,
+            )
+            .unwrap();
+            assert_eq!(decoded, JsBigInt::from(expected));
+            assert_eq!(consumed, payload.len());
+            assert_eq!(
+                decoded
+                    .encode_bc5_signed_le(BC5_BIGINT_READ_MAX_BYTES)
+                    .unwrap()
+                    .len(),
+                usize::from(expected != 0)
+            );
+        }
+
+        for canonical in [&[0x80, 0x00][..], &[0x7f, 0xff][..]] {
+            assert!(
+                JsBigInt::decode_bc5_signed_le(
+                    canonical,
+                    canonical.len(),
+                    BC5_BIGINT_READ_MAX_BYTES,
+                    true,
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn bc5_bigint_decode_obeys_declared_length_and_allocation_budget() {
+        assert_eq!(
+            JsBigInt::decode_bc5_signed_le(&[0x01], 2, 2, true),
+            Err(Bc5BigIntCodecError::Truncated {
+                byte_length: 2,
+                available: 1,
+            })
+        );
+        assert_eq!(
+            JsBigInt::decode_bc5_signed_le(&[0x01], 2, 1, true),
+            Err(Bc5BigIntCodecError::ByteLengthLimitExceeded {
+                byte_length: 2,
+                max_byte_length: 1,
+            })
+        );
+        assert_eq!(
+            JsBigInt::decode_bc5_signed_le(&[], BC5_BIGINT_READ_MAX_BYTES + 1, usize::MAX, false,),
+            Err(Bc5BigIntCodecError::ByteLengthLimitExceeded {
+                byte_length: BC5_BIGINT_READ_MAX_BYTES + 1,
+                max_byte_length: BC5_BIGINT_READ_MAX_BYTES,
+            })
+        );
+        assert_eq!(
+            JsBigInt::from(128).encode_bc5_signed_le(1),
+            Err(Bc5BigIntCodecError::ByteLengthLimitExceeded {
+                byte_length: 2,
+                max_byte_length: 1,
+            })
+        );
+
+        let (decoded, consumed) = JsBigInt::decode_bc5_signed_le(&[42, 0xaa], 1, 1, true).unwrap();
+        assert_eq!(decoded, JsBigInt::from(42));
+        assert_eq!(consumed, 1);
+    }
+
+    #[test]
+    fn bc5_bigint_writer_preserves_the_extra_sign_limb_reader_gap() {
+        let positive = JsBigInt::one()
+            .shl(&JsBigInt::from(MAX_BIGINT_BITS - 1))
+            .unwrap();
+        assert_eq!(positive.signed_limb_len(), MAX_BIGINT_LIMBS + 1);
+
+        let encoded = positive
+            .encode_bc5_signed_le(BC5_BIGINT_READ_MAX_BYTES + 1)
+            .unwrap();
+        assert_eq!(encoded.len(), BC5_BIGINT_READ_MAX_BYTES + 1);
+        assert_eq!(&encoded[encoded.len() - 2..], &[0x80, 0x00]);
+        assert_eq!(
+            positive.encode_bc5_signed_le(BC5_BIGINT_READ_MAX_BYTES),
+            Err(Bc5BigIntCodecError::ByteLengthLimitExceeded {
+                byte_length: BC5_BIGINT_READ_MAX_BYTES + 1,
+                max_byte_length: BC5_BIGINT_READ_MAX_BYTES,
+            })
+        );
+        assert_eq!(
+            JsBigInt::decode_bc5_signed_le(&encoded, encoded.len(), usize::MAX, true),
+            Err(Bc5BigIntCodecError::ByteLengthLimitExceeded {
+                byte_length: BC5_BIGINT_READ_MAX_BYTES + 1,
+                max_byte_length: BC5_BIGINT_READ_MAX_BYTES,
+            })
+        );
+
+        let negative = JsBigInt::from(-1)
+            .shl(&JsBigInt::from(MAX_BIGINT_BITS - 1))
+            .unwrap();
+        let encoded = negative
+            .encode_bc5_signed_le(BC5_BIGINT_READ_MAX_BYTES)
+            .unwrap();
+        assert_eq!(encoded.len(), BC5_BIGINT_READ_MAX_BYTES);
+        assert_eq!(encoded.last(), Some(&0x80));
+        let (decoded, consumed) = JsBigInt::decode_bc5_signed_le(
+            &encoded,
+            encoded.len(),
+            BC5_BIGINT_READ_MAX_BYTES,
+            true,
+        )
+        .unwrap();
+        assert_eq!(decoded, negative);
+        assert_eq!(consumed, encoded.len());
     }
 
     #[test]

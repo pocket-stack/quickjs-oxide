@@ -8,6 +8,7 @@ mod arguments;
 mod async_from_sync_iterator;
 mod async_function;
 mod async_generator;
+mod binary_object;
 mod buffer_access;
 mod bytecode_publish;
 mod class;
