@@ -312,10 +312,7 @@ impl GlobalBindingCreationMode {
 }
 
 struct DynamicSourceBuilder {
-    source: String,
-    utf16_len: usize,
-    limit: usize,
-    failed: bool,
+    source: JsStringBuilder,
 }
 
 impl DynamicSourceBuilder {
@@ -326,38 +323,20 @@ impl DynamicSourceBuilder {
     fn with_limit(limit: usize) -> Self {
         let limit = limit.min(JsString::MAX_LEN);
         Self {
-            source: String::with_capacity(64.min(limit)),
-            utf16_len: 0,
-            limit,
-            failed: false,
+            source: JsStringBuilder::with_limit(64.min(limit), limit),
         }
     }
 
     fn push_str(&mut self, value: &str) -> Result<(), JsStringError> {
-        if self.failed {
-            return Err(JsStringError::TooLong);
-        }
-        let additional = value.encode_utf16().count();
-        let next_len =
-            match JsString::checked_length_with_limit(self.utf16_len, additional, self.limit) {
-                Ok(next_len) => next_len,
-                Err(error) => {
-                    self.source = String::new();
-                    self.utf16_len = 0;
-                    self.failed = true;
-                    return Err(error);
-                }
-            };
-        self.source.push_str(value);
-        self.utf16_len = next_len;
-        Ok(())
+        self.source.push_utf8(value)
     }
 
-    fn finish(self) -> Result<String, JsStringError> {
-        if self.failed {
-            return Err(JsStringError::TooLong);
-        }
-        Ok(self.source)
+    fn push_js_string(&mut self, value: &JsString) -> Result<(), JsStringError> {
+        self.source.push_js_string(value)
+    }
+
+    fn finish(self) -> Result<JsString, JsStringError> {
+        self.source.finish()
     }
 }
 
@@ -6407,20 +6386,8 @@ impl Runtime {
         &self,
         realm: ContextId,
         value: &Value,
-    ) -> Result<NativeConversion<String>, RuntimeError> {
-        let value = match self.native_to_js_string(realm, value)? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-        };
-        let units = value.utf16_units().collect::<Vec<_>>();
-        match String::from_utf16(&units) {
-            Ok(value) => Ok(NativeConversion::Value(value)),
-            Err(_) => Ok(NativeConversion::Throw(self.new_native_error(
-                realm,
-                NativeErrorKind::Internal,
-                "dynamic Function source containing a lone UTF-16 surrogate is not implemented",
-            )?)),
-        }
+    ) -> Result<NativeConversion<JsString>, RuntimeError> {
+        self.native_to_js_string(realm, value)
     }
 
     fn native_to_number(
@@ -6879,7 +6846,7 @@ impl Runtime {
                     NativeConversion::Value(parameter) => parameter,
                     NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
                 };
-            source.push_str(&parameter)?;
+            source.push_js_string(&parameter)?;
         }
         source.push_str("\n) {\n")?;
         if arguments.actual_arg_count != 0 {
@@ -6890,25 +6857,15 @@ impl Runtime {
                 NativeConversion::Value(body) => body,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-            source.push_str(&body)?;
+            source.push_js_string(&body)?;
         }
         source.push_str("\n})")?;
         let source = source.finish()?;
 
-        let script = match self.compile_in_realm(realm, &source, DEFAULT_EVAL_FILENAME)? {
-            Compilation::Published(script) => script,
-            Compilation::Throw(value) => return Ok(Completion::Throw(value)),
+        let value = match self.execute_indirect_string_eval(realm, &source)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let script_callable = self.new_bytecode_closure(realm, &script)?;
-        let global_object = {
-            let global_object = self.0.state.borrow().heap.context(realm)?.global_object;
-            ObjectRef::from_borrowed_handle(self.clone(), global_object)?
-        };
-        let value =
-            match self.call_internal(realm, &script_callable, Value::Object(global_object), &[])? {
-                Completion::Return(value) => value,
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
 
         if matches!(new_target, Value::Undefined) {
             return Ok(Completion::Return(value));

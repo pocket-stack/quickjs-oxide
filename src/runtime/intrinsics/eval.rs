@@ -78,14 +78,7 @@ impl Runtime {
         let Value::String(source) = input else {
             return Ok(Completion::Return(input));
         };
-        let global_object = self.global_object_for_realm(realm)?;
-        self.execute_string_eval(
-            realm,
-            &source,
-            EvalCompileContext::indirect(),
-            &[],
-            Value::Object(global_object),
-        )
+        self.execute_indirect_string_eval(realm, &source)
     }
 
     /// Execute the original-eval branch selected by QuickJS `OP_eval` after
@@ -413,6 +406,24 @@ impl Runtime {
         let callable =
             self.new_eval_bytecode_closure(realm, &function, kind, &bindings, environment_roots)?;
         self.call_internal(realm, &callable, this_value, &[])
+    }
+
+    /// Execute an ECMAScript String as QuickJS `JS_EVAL_TYPE_INDIRECT`.
+    /// Dynamic Function-family constructors share this exact source boundary
+    /// with the global `eval` intrinsic after assembling their wrapper.
+    pub(in crate::runtime) fn execute_indirect_string_eval(
+        &self,
+        realm: ContextId,
+        source: &JsString,
+    ) -> Result<Completion, RuntimeError> {
+        let global_object = self.global_object_for_realm(realm)?;
+        self.execute_string_eval(
+            realm,
+            source,
+            EvalCompileContext::indirect(),
+            &[],
+            Value::Object(global_object),
+        )
     }
 
     fn eval_source_text(source: &JsString) -> Result<SourceText, RuntimeError> {

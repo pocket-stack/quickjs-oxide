@@ -254,21 +254,29 @@ fn atom_named_vm_and_global_errors_use_the_runtime_atom_table() {
 fn dynamic_source_builder_latches_utf16_length_failure() {
     let mut exact = DynamicSourceBuilder::with_limit(3);
     assert_eq!(exact.push_str("a😀"), Ok(()));
-    assert_eq!(exact.utf16_len, 3);
-    assert_eq!(exact.finish(), Ok("a😀".to_owned()));
+    assert_eq!(exact.finish(), Ok(JsString::try_from_utf8("a😀").unwrap()));
+
+    let high = JsString::try_from_utf16([0xd801]).unwrap();
+    let low = JsString::try_from_utf16([0xdc00]).unwrap();
+    let mut split_pair = DynamicSourceBuilder::with_limit(2);
+    assert_eq!(split_pair.push_js_string(&high), Ok(()));
+    assert_eq!(split_pair.push_js_string(&low), Ok(()));
+    assert_eq!(
+        split_pair
+            .finish()
+            .unwrap()
+            .utf16_units()
+            .collect::<Vec<_>>(),
+        vec![0xd801, 0xdc00]
+    );
 
     let mut failed = DynamicSourceBuilder::with_limit(5);
     assert_eq!(failed.push_str("a😀"), Ok(()));
-    assert_eq!(failed.utf16_len, 3);
 
     assert_eq!(failed.push_str("abc"), Err(JsStringError::TooLong));
-    assert!(failed.source.is_empty());
-    assert_eq!(failed.utf16_len, 0);
 
     assert_eq!(failed.push_str("b"), Err(JsStringError::TooLong));
     assert_eq!(failed.push_str(""), Err(JsStringError::TooLong));
-    assert!(failed.source.is_empty());
-    assert_eq!(failed.utf16_len, 0);
     assert_eq!(failed.finish(), Err(JsStringError::TooLong));
 }
 
@@ -6705,10 +6713,19 @@ fn function_constructor_intrinsic_and_dynamic_source_match_quickjs() {
     let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
         panic!("lone-surrogate source did not throw an Error");
     };
-    assert_eq!(
-        context.get_property(&error, &name).unwrap(),
-        Value::String(JsString::from_static("InternalError"))
-    );
+    for (property_name, expected) in [
+        ("name", Value::String(JsString::from_static("SyntaxError"))),
+        (
+            "message",
+            Value::String(JsString::from_static("unexpected character")),
+        ),
+        ("fileName", Value::String(JsString::from_static("<input>"))),
+        ("lineNumber", Value::Int(3)),
+        ("columnNumber", Value::Int(1)),
+    ] {
+        let key = runtime.intern_property_key(property_name).unwrap();
+        assert_eq!(context.get_property(&error, &key).unwrap(), expected);
+    }
 }
 
 #[test]

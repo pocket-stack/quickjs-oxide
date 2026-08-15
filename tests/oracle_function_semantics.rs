@@ -7,6 +7,8 @@ mod oracle_function_bind_to_string;
 mod oracle_function_constructor;
 #[path = "oracle/function_semantics/oracle_function_debug_accessors.rs"]
 mod oracle_function_debug_accessors;
+#[path = "oracle/function_semantics/oracle_function_dynamic_wtf8.rs"]
+mod oracle_function_dynamic_wtf8;
 #[path = "oracle/function_semantics/oracle_function_prototype_prefix.rs"]
 mod oracle_function_prototype_prefix;
 #[path = "oracle/function_semantics/oracle_functions.rs"]
