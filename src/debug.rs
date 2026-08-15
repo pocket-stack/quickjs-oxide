@@ -133,18 +133,28 @@ impl fmt::Display for DebugMetadataError {
 
 impl Error for DebugMetadataError {}
 
-/// Convert authoritative UTF-8 byte offsets with pinned QuickJS's exact
-/// `get_line_col` rules: LF is the only newline and continuation bytes do not
-/// advance the column.
+/// Convert authoritative source-buffer byte offsets with pinned QuickJS's
+/// exact `get_line_col` rules: LF is the only newline and bytes shaped like
+/// UTF-8 continuations do not advance the column. Raw parser inputs need not
+/// themselves be valid UTF-8.
 #[derive(Clone, Copy, Debug)]
 pub struct QuickJsSourceLocator<'source> {
-    source: &'source str,
+    source: &'source [u8],
+    utf8: Option<&'source str>,
 }
 
 impl<'source> QuickJsSourceLocator<'source> {
     #[must_use]
     pub const fn new(source: &'source str) -> Self {
-        Self { source }
+        Self {
+            source: source.as_bytes(),
+            utf8: Some(source),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn from_bytes(source: &'source [u8]) -> Self {
+        Self { source, utf8: None }
     }
 
     pub fn locate(self, offset: SourceOffset) -> Result<LineColumn, DebugMetadataError> {
@@ -155,13 +165,16 @@ impl<'source> QuickJsSourceLocator<'source> {
         if byte_offset > self.source.len() {
             return Err(DebugMetadataError::OffsetOutOfBounds);
         }
-        if !self.source.is_char_boundary(byte_offset) {
+        if self
+            .utf8
+            .is_some_and(|source| !source.is_char_boundary(byte_offset))
+        {
             return Err(DebugMetadataError::OffsetNotUtf8Boundary);
         }
 
         let mut line = 0_u32;
         let mut column = 0_u32;
-        for byte in &self.source.as_bytes()[..byte_offset] {
+        for byte in &self.source[..byte_offset] {
             if *byte == b'\n' {
                 line = line
                     .checked_add(1)
@@ -223,6 +236,25 @@ mod tests {
         assert_eq!(
             locator.locate_byte_offset(1),
             Err(DebugMetadataError::OffsetNotUtf8Boundary)
+        );
+    }
+
+    #[test]
+    fn quickjs_raw_locator_preserves_cesu8_and_malformed_byte_columns() {
+        let canonical = QuickJsSourceLocator::from_bytes(b"/*\xf0\x9f\x98\x80*/@");
+        let cesu8 = QuickJsSourceLocator::from_bytes(b"/*\xed\xa0\xbd\xed\xb8\x80*/@");
+        let continuation = QuickJsSourceLocator::from_bytes(b"/*\x80*/@");
+        let invalid_lead = QuickJsSourceLocator::from_bytes(b"/*\xff*/@");
+
+        assert_eq!(canonical.locate_byte_offset(8), Ok(LineColumn::new(0, 5)));
+        assert_eq!(cesu8.locate_byte_offset(10), Ok(LineColumn::new(0, 6)));
+        assert_eq!(
+            continuation.locate_byte_offset(5),
+            Ok(LineColumn::new(0, 4))
+        );
+        assert_eq!(
+            invalid_lead.locate_byte_offset(5),
+            Ok(LineColumn::new(0, 5))
         );
     }
 

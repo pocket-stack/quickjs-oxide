@@ -261,6 +261,22 @@ pub(crate) fn compile_unlinked_script_with_filename(
     lower_unlinked_tree(tree, debug_info)
 }
 
+/// Compile one byte-exact Script carrier without widening the public `&str`
+/// embedding boundary. This is the internal substrate for raw-source parity.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn compile_unlinked_script_source_with_filename(
+    source: &SourceText,
+    filename: &str,
+    debug_info: DebugInfoMode,
+) -> Result<UnlinkedFunction, Error> {
+    let mut tree = Parser::parse_script_source(source, JsString::try_from_utf8(filename)?)?;
+    resolve_identifiers(&mut tree)?;
+    if let Some(error) = tree.pending_unsupported.take() {
+        return Err(error);
+    }
+    lower_unlinked_tree(tree, debug_info)
+}
+
 /// Compile one ECMAScript module into its runtime-independent module record.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn compile_unlinked_module_with_filename(
@@ -1971,6 +1987,20 @@ impl<'source> Parser<'source> {
         checker: Option<&mut dyn ModuleImportAttributeChecker>,
     ) -> Result<FunctionTree, ModuleCompileFailure> {
         Self::parse_root(source, None, filename, RootCompileContext::Module, checker)
+    }
+
+    fn parse_script_source(
+        source: &'source SourceText,
+        filename: JsString,
+    ) -> Result<FunctionTree, Error> {
+        Self::parse_root(
+            source.carrier(),
+            Some(source),
+            filename,
+            RootCompileContext::Script,
+            None,
+        )
+        .map_err(ModuleCompileFailure::into_engine_without_checker)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -16098,7 +16128,7 @@ fn build_unlinked_debug(
     pc_sites: &[Option<SourceOffset>],
 ) -> Result<UnlinkedFunctionDebug, Error> {
     let carrier = source.carrier();
-    let locator = QuickJsSourceLocator::new(carrier);
+    let locator = QuickJsSourceLocator::from_bytes(source.raw_bytes());
     let definition = locator
         .locate(definition)
         .map_err(|error| Error::internal(error.to_string()))?;
@@ -16134,7 +16164,7 @@ fn build_unlinked_debug(
                 return Err(Error::internal("function source range is invalid"));
             }
             source
-                .try_range_to_wtf8_bytes(start..end)
+                .try_range_to_raw_bytes(start..end)
                 .map_err(|_| Error::from(JsStringError::OutOfMemory))?
                 .map(Vec::into_boxed_slice)
                 .ok_or_else(|| Error::internal("function source range is invalid"))

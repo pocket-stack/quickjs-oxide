@@ -23,7 +23,6 @@ use crate::module::{
     ModuleExportTarget, ModuleImportCollisionDeclaration, ModuleImportName,
     ModuleLinkInitializerValue, UnlinkedModule,
 };
-use crate::source_text::try_is_canonical_wtf8;
 
 /// Intern every semantically retained direct-eval binding name while keeping
 /// the parent publication routine's atom transaction authoritative. The
@@ -4566,15 +4565,6 @@ fn verify_unlinked_debug(function: &UnlinkedFunction) -> Result<(), RuntimeError
     let Some(debug) = function.debug() else {
         return Ok(());
     };
-    if let Some(source) = debug.source.as_deref() {
-        let valid = try_is_canonical_wtf8(source)
-            .map_err(|error| RuntimeError::Engine(Error::from(error)))?;
-        if !valid {
-            return Err(RuntimeError::Engine(Error::internal(
-                "bytecode debug source is not canonical WTF-8",
-            )));
-        }
-    }
     let Some(table) = &debug.pc2line else {
         return Ok(());
     };

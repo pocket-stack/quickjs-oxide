@@ -1708,7 +1708,7 @@ impl JsString {
     }
 }
 
-fn decode_quickjs_utf8(value: &[u8]) -> Option<(u32, usize)> {
+pub(crate) fn decode_quickjs_utf8(value: &[u8]) -> Option<(u32, usize)> {
     let first = *value.first()?;
     if first < 0x80 {
         return Some((u32::from(first), 1));

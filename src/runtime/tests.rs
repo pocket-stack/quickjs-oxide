@@ -14110,15 +14110,16 @@ fn debug_draft(debug: UnlinkedFunctionDebug) -> UnlinkedFunction {
 }
 
 #[test]
-fn publication_accepts_canonical_wtf8_debug_source() {
+fn publication_accepts_arbitrary_debug_source_bytes() {
     let runtime = Runtime::new();
-    let context = runtime.new_context();
-    let source = vec![b'(', 0xed, 0xa0, 0x80, 0xee, 0x80, 0x80, b')'];
+    let mut context = runtime.new_context();
+    let source =
+        b"function f(){/*\x80Q*/\0\xef\xbb\xbf\xed\xa0\xbd\xed\xb8\x80\xed\xa0\x80\xff}".to_vec();
     let function = runtime
         .publish_unlinked_function(
             context.realm,
             debug_draft(UnlinkedFunctionDebug {
-                filename: JsString::from_static("wtf8.js"),
+                filename: JsString::from_static("raw-source.js"),
                 pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
                 source: Some(source.clone().into_boxed_slice()),
             }),
@@ -14127,12 +14128,28 @@ fn publication_accepts_canonical_wtf8_debug_source() {
 
     assert_eq!(
         runtime.test_function_debug_source(&function).unwrap(),
-        Some(source)
+        Some(source.clone())
     );
+
+    let callable = runtime
+        .new_bytecode_closure(context.realm, &function)
+        .unwrap();
+    let function_prototype = context.function_prototype().unwrap();
+    let to_string = property_callable(&runtime, &mut context, &function_prototype, "toString");
+    let actual = context
+        .call(&to_string, Value::Object(callable.as_object().clone()), &[])
+        .unwrap();
+    let expected = JsString::try_from_bytes(&source).unwrap();
+    assert_eq!(actual, Value::String(expected.clone()));
+    let units = expected.utf16_units().collect::<Vec<_>>();
+    assert!(units.contains(&0xfffd));
+    assert!(!units.contains(&u16::from(b'Q')));
+    assert!(units.contains(&0));
+    assert!(units.contains(&0xd800));
 }
 
 #[test]
-fn publication_rejects_malformed_debug_pc_order_range_source_and_position() {
+fn publication_rejects_malformed_debug_pc_order_range_and_position() {
     let runtime = Runtime::new();
     let context = runtime.new_context();
     let baseline = runtime.heap_counts().function_bytecode_nodes;
@@ -14165,23 +14182,6 @@ fn publication_rejects_malformed_debug_pc_order_range_source_and_position() {
                 ],
             )),
             source: None,
-        },
-        UnlinkedFunctionDebug {
-            filename: JsString::from_static("utf8.js"),
-            pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
-            source: Some(vec![0xff].into_boxed_slice()),
-        },
-        UnlinkedFunctionDebug {
-            filename: JsString::from_static("cesu8.js"),
-            pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
-            // CESU-8 for U+1F600 is not canonical when QuickJS's eval/source
-            // conversion runs with `cesu8 = false`.
-            source: Some(vec![0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80].into_boxed_slice()),
-        },
-        UnlinkedFunctionDebug {
-            filename: JsString::from_static("overlong.js"),
-            pc2line: Some(Pc2LineTable::new(LineColumn::new(0, 0), Vec::new())),
-            source: Some(vec![0xc0, 0x80].into_boxed_slice()),
         },
         UnlinkedFunctionDebug {
             filename: JsString::from_static("position.js"),

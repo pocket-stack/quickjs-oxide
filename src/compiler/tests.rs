@@ -2168,6 +2168,7 @@ use crate::object::{
     PropertyKey, WellKnownSymbol,
 };
 use crate::runtime::{Context, Runtime, RuntimeError};
+use crate::source_text::SourceText;
 use crate::value::{JsString, Value};
 use crate::vm::Vm;
 
@@ -2181,8 +2182,9 @@ use super::{
     SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles,
     compile_script, compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
     compile_unlinked_module_with_name_and_attribute_checker, compile_unlinked_script,
-    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, lower_unlinked_tree,
-    resolve_identifiers, validate_scope_graph,
+    compile_unlinked_script_source_with_filename, compile_unlinked_script_with_filename,
+    ensure_closure_variable, lex_error, lower_unlinked_tree, resolve_identifiers,
+    validate_scope_graph,
 };
 
 #[test]
@@ -14105,6 +14107,132 @@ fn debug_metadata_tracks_operator_tail_call_and_root_call_sites() {
         runtime.test_function_debug_source(&inner).unwrap(),
         Some(b"function inner(){ return 1n + 1; }".to_vec())
     );
+}
+
+#[test]
+fn raw_script_debug_uses_authored_bytes_for_columns_and_function_source() {
+    fn compile(raw: &[u8]) -> crate::function::UnlinkedFunction {
+        let source = SourceText::try_from_raw_bytes(raw).unwrap();
+        compile_unlinked_script_source_with_filename(&source, "raw.js", DebugInfoMode::Full)
+            .unwrap()
+    }
+
+    for (raw, expected_column) in [
+        (b"/*\xf0\x9f\x98\x80*/function f(){}".as_slice(), 5),
+        (b"/*\xed\xa0\xbd\xed\xb8\x80*/function f(){}", 6),
+    ] {
+        let root = compile(raw);
+        let child = root
+            .constants()
+            .iter()
+            .find_map(|constant| constant.as_child())
+            .expect("function declaration child");
+        assert_eq!(
+            child.debug().unwrap().pc2line.as_ref().unwrap().definition,
+            crate::LineColumn::new(0, expected_column),
+            "{raw:02x?}"
+        );
+    }
+
+    let raw =
+        b"function f(){\xef\xbb\xbf/*\x80X*/return '\0\xed\xa0\xbd\xed\xb8\x80\xed\xa0\x80';}";
+    let root = compile(raw);
+    let child = root
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("function declaration child");
+    assert_eq!(
+        child.debug().unwrap().source.as_deref(),
+        Some(raw.as_slice())
+    );
+}
+
+#[test]
+fn raw_script_rejects_malformed_bytes_in_regexp_before_value_conversion() {
+    for raw in [b"/\x80/;".as_slice(), b"/a\\\x80/;", b"/a/\x80;"] {
+        let source = SourceText::try_from_raw_bytes(raw).unwrap();
+        let error = compile_unlinked_script_source_with_filename(
+            &source,
+            "raw-regexp.js",
+            DebugInfoMode::Full,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{raw:02x?}");
+        assert_eq!(error.message(), "invalid UTF-8 sequence", "{raw:02x?}");
+        assert!(source.invalid_byte_at(error.span().unwrap().start.byte_offset));
+    }
+}
+
+#[test]
+fn raw_script_malformed_diagnostics_match_quickjs_context_and_location() {
+    for (raw, expected_message, expected_offset) in [
+        (b"void \x80;".as_slice(), "unexpected character", 5_usize),
+        (b"void '\x80';", "invalid UTF-8 sequence", 5),
+        (b"void '\\\x80';", "invalid UTF-8 sequence", 5),
+        (
+            b"void '\\x\x80';",
+            "malformed escape sequence in string literal",
+            6,
+        ),
+        (
+            b"void '\\u\x80';",
+            "malformed escape sequence in string literal",
+            6,
+        ),
+        (
+            b"void '\\u{\x80}';",
+            "malformed escape sequence in string literal",
+            6,
+        ),
+        (b"void `\x80`;", "invalid UTF-8 sequence", 6),
+        (b"void `\\u\x80`;", "invalid UTF-8 sequence", 8),
+        (b"void /\x80/;", "invalid UTF-8 sequence", 6),
+        (b"var a\\u\x80;", "expecting ';'", 5),
+    ] {
+        let source = SourceText::try_from_raw_bytes(raw).unwrap();
+        let error = compile_unlinked_script_source_with_filename(
+            &source,
+            "raw-diagnostic.js",
+            DebugInfoMode::Full,
+        )
+        .unwrap_err();
+        let location = error.span().unwrap().start;
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{raw:02x?}");
+        assert_eq!(error.message(), expected_message, "{raw:02x?}");
+        assert_eq!(location.byte_offset, expected_offset, "{raw:02x?}");
+        assert_eq!(
+            (location.line, location.column),
+            (1, expected_offset as u32 + 1)
+        );
+    }
+}
+
+#[test]
+fn raw_script_error_columns_scan_authored_comment_bytes() {
+    for (raw, expected_column) in [
+        (b"/*\x80*/@".as_slice(), 5_u32),
+        (b"/*\xff*/@", 6),
+        (b"/*\xc0\x80*/@", 6),
+        (b"/*\xe2\x82*/@", 6),
+        (b"/*\xf4\x90\x80\x80*/@", 6),
+        (b"/*\xf8\x88\x80\x80\x80*/@", 6),
+        (b"/*\xed\xa0\xbd*/@", 6),
+        (b"/*\xed\xa0\xbd\xed\xb8\x80*/@", 7),
+        (b"/*\xf0\x9f\x98\x80*/@", 6),
+    ] {
+        let source = SourceText::try_from_raw_bytes(raw).unwrap();
+        let error = compile_unlinked_script_source_with_filename(
+            &source,
+            "raw-column.js",
+            DebugInfoMode::Full,
+        )
+        .unwrap_err();
+        let location = error.span().unwrap().start;
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{raw:02x?}");
+        assert_eq!(location.byte_offset, raw.len() - 1, "{raw:02x?}");
+        assert_eq!((location.line, location.column), (1, expected_column));
+    }
 }
 
 #[test]

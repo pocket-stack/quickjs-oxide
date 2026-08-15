@@ -669,6 +669,10 @@ impl<'a> Lexer<'a> {
             });
         }
 
+        if self.invalid_source_byte_at(self.offset) {
+            return Err(self.invalid_utf8_error_here("unexpected character"));
+        }
+
         if goal == LexicalGoal::RegExp {
             if self.peek_char() == Some('/') {
                 return self.scan_regexp(start, line_terminator_before);
@@ -715,16 +719,26 @@ impl<'a> Lexer<'a> {
             .is_some_and(|rest| rest.starts_with(text))
     }
 
-    fn lone_surrogate_at(&self, byte_offset: usize) -> Option<u16> {
+    fn surrogate_at(&self, byte_offset: usize) -> Option<u16> {
         self.source_text
-            .and_then(|source| source.lone_surrogate_at(byte_offset))
+            .and_then(|source| source.surrogate_at(byte_offset))
+    }
+
+    fn invalid_source_byte_at(&self, byte_offset: usize) -> bool {
+        self.source_text
+            .is_some_and(|source| source.invalid_byte_at(byte_offset))
+    }
+
+    fn invalid_utf8_error_here(&self, message: &'static str) -> LexError {
+        self.error_here(LexErrorKind::UnexpectedCharacter, message)
     }
 
     fn semantic_utf16_units(&self, range: Range<usize>) -> Option<Vec<u16>> {
         if let Some(source) = self.source_text {
             return source
                 .slice(range)
-                .map(|slice| slice.semantic_utf16_units().collect());
+                .and_then(|slice| slice.semantic_utf16_units())
+                .map(Iterator::collect);
         }
         self.source
             .get(range)
@@ -754,14 +768,30 @@ impl<'a> Lexer<'a> {
             return Some('\r');
         }
 
-        self.offset += ch.len_utf8();
+        let byte_len = ch.len_utf8();
+        let column_delta = self.quickjs_column_delta(self.offset, byte_len);
+        self.offset += byte_len;
         if is_line_terminator(ch) {
             self.line = self.line.saturating_add(1);
             self.column = 1;
         } else {
-            self.column = self.column.saturating_add(1);
+            self.column = self.column.saturating_add(column_delta);
         }
         Some(ch)
+    }
+
+    fn quickjs_column_delta(&self, byte_offset: usize, byte_len: usize) -> u32 {
+        let Some(raw) = self.source_text.and_then(|source| {
+            source
+                .raw_bytes()
+                .get(byte_offset..byte_offset.saturating_add(byte_len))
+        }) else {
+            return 1;
+        };
+        raw.iter()
+            .copied()
+            .filter(|byte| !(0x80..=0xbf).contains(byte))
+            .count() as u32
     }
 
     fn consume_ascii(&mut self, text: &str) {
@@ -790,16 +820,19 @@ impl<'a> Lexer<'a> {
         let start = self.current_position();
         let mut end = start;
         if let Some(ch) = self.peek_char() {
-            end.byte_offset += if ch == '\r' && self.starts_with("\r\n") {
+            let byte_len = if ch == '\r' && self.starts_with("\r\n") {
                 2
             } else {
                 ch.len_utf8()
             };
+            end.byte_offset += byte_len;
             if is_line_terminator(ch) {
                 end.line = end.line.saturating_add(1);
                 end.column = 1;
             } else {
-                end.column = end.column.saturating_add(1);
+                end.column = end
+                    .column
+                    .saturating_add(self.quickjs_column_delta(self.offset, byte_len));
             }
         }
         LexError {
@@ -1059,6 +1092,9 @@ impl<'a> Lexer<'a> {
     fn scan_identifier_escape(&mut self) -> Result<u32, LexError> {
         let start = self.current_position();
         self.bump_char();
+        if self.invalid_source_byte_at(self.offset) {
+            return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+        }
         if self.peek_char() != Some('u') {
             return Err(self.error_from(
                 start,
@@ -1310,6 +1346,13 @@ impl<'a> Lexer<'a> {
         let mut has_legacy_octal_escape = false;
 
         loop {
+            if self.invalid_source_byte_at(self.offset) {
+                return Err(self.error_from(
+                    start,
+                    LexErrorKind::UnexpectedCharacter,
+                    "invalid UTF-8 sequence",
+                ));
+            }
             let Some(ch) = self.peek_char() else {
                 return Err(self.error_from(
                     start,
@@ -1334,7 +1377,19 @@ impl<'a> Lexer<'a> {
             }
             if ch == '\\' {
                 has_escape = true;
-                let escape = self.scan_escape_sequence(false)?;
+                let escape = match self.scan_escape_sequence(false) {
+                    Err(error)
+                        if error.kind == LexErrorKind::UnexpectedCharacter
+                            && error.message == "invalid UTF-8 sequence" =>
+                    {
+                        return Err(self.error_from(
+                            start,
+                            LexErrorKind::UnexpectedCharacter,
+                            error.message,
+                        ));
+                    }
+                    result => result?,
+                };
                 has_legacy_octal_escape |= escape.legacy_octal;
                 if let Some(code_point) = escape.code_point {
                     value
@@ -1344,7 +1399,7 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
-            let lone_surrogate = self.lone_surrogate_at(self.offset);
+            let lone_surrogate = self.surrogate_at(self.offset);
             self.bump_char();
             if let Some(unit) = lone_surrogate {
                 value
@@ -1362,6 +1417,9 @@ impl<'a> Lexer<'a> {
         let start = self.current_position();
         debug_assert_eq!(self.peek_char(), Some('\\'));
         self.bump_char();
+        if self.invalid_source_byte_at(self.offset) {
+            return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+        }
         let Some(ch) = self.peek_char() else {
             return Err(self.error_from(
                 start,
@@ -1404,12 +1462,16 @@ impl<'a> Lexer<'a> {
         match ch {
             'x' => {
                 self.bump_char();
-                let value = self.scan_fixed_hex_digits(2, start)?;
+                let value = self
+                    .scan_fixed_hex_digits(2, start)
+                    .map_err(|error| self.remap_string_escape_utf8(error, start, template))?;
                 Ok(EscapeValue::code_point(value))
             }
             'u' => {
                 self.bump_char();
-                let value = self.scan_unicode_escape_value(start)?;
+                let value = self
+                    .scan_unicode_escape_value(start)
+                    .map_err(|error| self.remap_string_escape_utf8(error, start, template))?;
                 Ok(EscapeValue::code_point(value))
             }
             '0'..='7' => {
@@ -1441,7 +1503,7 @@ impl<'a> Lexer<'a> {
                 Ok(EscapeValue::legacy(ch as u32))
             }
             _ => {
-                let lone_surrogate = self.lone_surrogate_at(self.offset);
+                let lone_surrogate = self.surrogate_at(self.offset);
                 self.bump_char();
                 Ok(EscapeValue::code_point(
                     lone_surrogate.map(u32::from).unwrap_or(ch as u32),
@@ -1466,12 +1528,35 @@ impl<'a> Lexer<'a> {
         value
     }
 
+    fn remap_string_escape_utf8(
+        &self,
+        error: LexError,
+        start: Position,
+        template: bool,
+    ) -> LexError {
+        if !template
+            && error.kind == LexErrorKind::UnexpectedCharacter
+            && error.message == "invalid UTF-8 sequence"
+        {
+            self.error_from(
+                start,
+                LexErrorKind::InvalidEscape,
+                "malformed escape sequence in string literal",
+            )
+        } else {
+            error
+        }
+    }
+
     fn scan_unicode_escape_value(&mut self, start: Position) -> Result<u32, LexError> {
         if self.peek_char() == Some('{') {
             self.bump_char();
             let mut digits = 0;
             let mut value = 0_u32;
             while let Some(ch) = self.peek_char() {
+                if self.invalid_source_byte_at(self.offset) {
+                    return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+                }
                 let Some(digit) = ch.to_digit(16) else {
                     break;
                 };
@@ -1507,6 +1592,9 @@ impl<'a> Lexer<'a> {
     fn scan_fixed_hex_digits(&mut self, count: usize, start: Position) -> Result<u32, LexError> {
         let mut value = 0_u32;
         for _ in 0..count {
+            if self.invalid_source_byte_at(self.offset) {
+                return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+            }
             let Some(ch) = self.peek_char() else {
                 return Err(self.error_from(
                     start,
@@ -1562,6 +1650,9 @@ impl<'a> Lexer<'a> {
         let mut invalid_escape = None;
 
         loop {
+            if self.invalid_source_byte_at(self.offset) {
+                return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+            }
             let Some(ch) = self.peek_char() else {
                 return Err(self.error_from(
                     start,
@@ -1622,6 +1713,12 @@ impl<'a> Lexer<'a> {
                 // `${`, even if the cooked escape scanner inspected it.
                 let mut cooked_cursor = self.clone();
                 let escape = cooked_cursor.scan_escape_sequence(true);
+                if let Err(error) = &escape
+                    && error.kind == LexErrorKind::UnexpectedCharacter
+                    && error.message == "invalid UTF-8 sequence"
+                {
+                    return Err(error.clone());
+                }
                 if escape.is_ok() {
                     *self = cooked_cursor;
                 } else {
@@ -1655,7 +1752,7 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
-            let lone_surrogate = self.lone_surrogate_at(self.offset);
+            let lone_surrogate = self.surrogate_at(self.offset);
             self.bump_char();
             if let Some(unit) = lone_surrogate {
                 raw_value
@@ -1709,6 +1806,9 @@ impl<'a> Lexer<'a> {
         let mut in_character_class = false;
 
         let pattern_end = loop {
+            if self.invalid_source_byte_at(self.offset) {
+                return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+            }
             let Some(ch) = self.peek_char() else {
                 return Err(self.error_from(
                     start,
@@ -1729,6 +1829,9 @@ impl<'a> Lexer<'a> {
             }
             if ch == '\\' {
                 self.bump_char();
+                if self.invalid_source_byte_at(self.offset) {
+                    return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+                }
                 let Some(escaped) = self.peek_char() else {
                     return Err(self.error_from(
                         start,
@@ -1755,6 +1858,9 @@ impl<'a> Lexer<'a> {
 
         let flags_start = self.offset;
         while let Some(ch) = self.peek_char() {
+            if self.invalid_source_byte_at(self.offset) {
+                return Err(self.invalid_utf8_error_here("invalid UTF-8 sequence"));
+            }
             if is_identifier_continue(ch) {
                 self.bump_char();
             } else {
@@ -2657,6 +2763,137 @@ mod tests {
             pattern.utf16_units().collect::<Vec<_>>(),
             [0xd800, 0xe000, 0x5c, 0xdfff]
         );
+    }
+
+    #[test]
+    fn raw_source_invalid_bytes_are_skipped_only_inside_trivia() {
+        let source = SourceText::try_from_raw_bytes(
+            b"#! invalid \x80\n// invalid \xc0\x80\n/* invalid \xffX */ 42",
+        )
+        .unwrap();
+        let tokens = Lexer::with_source_text(&source, LexerOptions::default())
+            .tokenize()
+            .unwrap();
+
+        let TokenKind::Number(number) = &tokens[0].kind else {
+            panic!("expected number after raw-byte comments");
+        };
+        assert_eq!(number.raw, "42");
+        assert!(matches!(tokens[1].kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn raw_source_string_diagnostics_keep_quickjs_token_context() {
+        for (raw, kind, message, expected_offset) in [
+            (
+                b"'\x80'".as_slice(),
+                LexErrorKind::UnexpectedCharacter,
+                "invalid UTF-8 sequence",
+                0,
+            ),
+            (
+                b"'\\\x80'",
+                LexErrorKind::UnexpectedCharacter,
+                "invalid UTF-8 sequence",
+                0,
+            ),
+            (
+                b"'\\x\x80'",
+                LexErrorKind::InvalidEscape,
+                "malformed escape sequence in string literal",
+                1,
+            ),
+            (
+                b"'\\u\x80'",
+                LexErrorKind::InvalidEscape,
+                "malformed escape sequence in string literal",
+                1,
+            ),
+            (
+                b"'\\u{\x80}'",
+                LexErrorKind::InvalidEscape,
+                "malformed escape sequence in string literal",
+                1,
+            ),
+        ] {
+            let source = SourceText::try_from_raw_bytes(raw).unwrap();
+            let error = Lexer::with_source_text(&source, LexerOptions::default())
+                .next_token()
+                .unwrap_err();
+            assert_eq!(error.kind, kind, "{raw:02x?}");
+            assert_eq!(error.message, message, "{raw:02x?}");
+            assert_eq!(error.span.start.byte_offset, expected_offset, "{raw:02x?}");
+        }
+    }
+
+    #[test]
+    fn raw_source_template_and_regexp_diagnostics_point_at_malformed_byte() {
+        for (raw, expected_offset) in [
+            (b"`\x80`".as_slice(), 1),
+            (b"`\\\x80`", 2),
+            (b"`\\x\x80`", 3),
+            (b"`\\u\x80`", 3),
+            (b"`\\u{\x80}`", 4),
+        ] {
+            let source = SourceText::try_from_raw_bytes(raw).unwrap();
+            let error = Lexer::with_source_text(&source, LexerOptions::default())
+                .next_token()
+                .unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::UnexpectedCharacter, "{raw:02x?}");
+            assert_eq!(error.message, "invalid UTF-8 sequence", "{raw:02x?}");
+            assert_eq!(error.span.start.byte_offset, expected_offset, "{raw:02x?}");
+            assert!(source.invalid_byte_at(expected_offset));
+        }
+
+        for raw in [b"/\x80/".as_slice(), b"/a\\\x80/", b"/a/\x80"] {
+            let source = SourceText::try_from_raw_bytes(raw).unwrap();
+            let error = Lexer::with_source_text(&source, LexerOptions::default())
+                .next_token_with_goal(LexicalGoal::RegExp)
+                .unwrap_err();
+            assert_eq!(error.kind, LexErrorKind::UnexpectedCharacter, "{raw:02x?}");
+            assert_eq!(error.message, "invalid UTF-8 sequence", "{raw:02x?}");
+            assert!(source.invalid_byte_at(error.span.start.byte_offset));
+        }
+    }
+
+    #[test]
+    fn raw_source_identifier_escape_stops_before_the_backslash() {
+        let identifier = SourceText::try_from_raw_bytes(b"a\\u\x80").unwrap();
+        let mut lexer = Lexer::with_source_text(&identifier, LexerOptions::default());
+        let token = lexer.next_token().unwrap();
+        let TokenKind::Identifier(name) = token.kind else {
+            panic!("expected identifier before malformed escape");
+        };
+        assert_eq!(name.value, "a");
+        assert_eq!(token.span.end.byte_offset, 1);
+        let backslash = lexer.next_token().unwrap();
+        assert!(matches!(backslash.kind, TokenKind::RawAscii(b'\\')));
+        assert_eq!(backslash.span.start.byte_offset, 1);
+    }
+
+    #[test]
+    fn raw_source_malformed_bytes_never_enter_number_values() {
+        let number = SourceText::try_from_raw_bytes(b"1\x80").unwrap();
+        let mut lexer = Lexer::with_source_text(&number, LexerOptions::default());
+        assert!(matches!(
+            lexer.next_token().unwrap().kind,
+            TokenKind::Number(_)
+        ));
+        let error = lexer.next_token().unwrap_err();
+        assert_eq!(error.span.start.byte_offset, 1);
+        assert_eq!(error.message, "unexpected character");
+    }
+
+    #[test]
+    fn genuine_del_and_pua_are_not_raw_source_markers() {
+        let source = SourceText::try_from_raw_bytes("'\u{7f}\u{e000}'".as_bytes()).unwrap();
+        let token = Lexer::with_source_text(&source, LexerOptions::default())
+            .next_token()
+            .unwrap();
+        let TokenKind::String(string) = token.kind else {
+            panic!("expected string containing genuine DEL and PUA");
+        };
+        assert_eq!(string.value.utf16, [0x7f, 0xe000]);
     }
 
     #[test]

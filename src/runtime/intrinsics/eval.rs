@@ -439,7 +439,7 @@ impl Runtime {
                     };
                     let explicit_location = if error.kind() == ErrorKind::Syntax {
                         if let Some(span) = error.span() {
-                            let position = QuickJsSourceLocator::new(source.carrier())
+                            let position = QuickJsSourceLocator::from_bytes(source.raw_bytes())
                                 .locate_byte_offset(span.start.byte_offset)
                                 .map_err(|_| {
                                     RuntimeError::Invariant(

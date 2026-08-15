@@ -39,7 +39,6 @@ use crate::module::{
 use crate::regexp::CompiledRegExp;
 use crate::shape::{PropertyFlags, PropertyStorageKind, Shape, ShapeError};
 use crate::shared_memory::{SharedBufferHandle, SharedMemoryError};
-use crate::source_text::try_is_canonical_wtf8;
 use crate::value::JsString;
 
 /// Stable identity of an object slot until that slot is reclaimed.
@@ -10972,15 +10971,6 @@ impl Heap {
                 ));
             }
             *count -= 1;
-            if debug
-                .source
-                .as_deref()
-                .is_some_and(|source| !try_is_canonical_wtf8(source).is_ok_and(|valid| valid))
-            {
-                return Err(HeapError::Invariant(
-                    "bytecode debug source is not canonical WTF-8",
-                ));
-            }
             if let Some(table) = &debug.pc2line {
                 if table.definition.line == u32::MAX || table.definition.column == u32::MAX {
                     return Err(HeapError::Invariant(
