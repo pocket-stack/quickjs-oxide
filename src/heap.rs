@@ -1285,6 +1285,10 @@ pub struct FunctionMetadata {
     pub closure_count: u16,
     pub max_stack: u16,
     pub strict: bool,
+    /// QuickJS `strip_var_debug`: this function sampled StripDebug and has no
+    /// syntactic direct eval, so ordinary local/closure names are hidden from
+    /// TDZ diagnostics even when Oxide retains them as semantic metadata.
+    pub strip_variable_debug: bool,
     /// Authenticates the parentless callable owned by one Module record. A
     /// nested function may never carry this bit.
     pub is_module: bool,

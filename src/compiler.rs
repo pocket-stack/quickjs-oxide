@@ -15309,6 +15309,8 @@ fn lower_unlinked_tree(
                 .map_err(|_| Error::new(ErrorKind::JsInternal, "too many closure variables"))?,
             max_stack,
             strict: function.strict,
+            strip_variable_debug: debug_info == DebugInfoMode::StripDebug
+                && function.eval_environments.is_empty(),
             is_module: matches!(function.kind, FunctionKind::Module),
             super_call_allowed: function.super_call_allowed,
             super_allowed: function.super_allowed,

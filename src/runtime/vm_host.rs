@@ -376,6 +376,8 @@ pub(super) struct RuntimeVmHost {
     /// bytecode errors which belong to `current_realm`.
     caller_realm: ContextId,
     current_bytecode: Option<FunctionBytecodeRef>,
+    /// Compile-time QuickJS `strip_var_debug` decision for this exact frame.
+    strip_variable_debug: bool,
     /// Current callee retained for sloppy mapped `arguments.callee`.
     /// Detached host-only tests do not execute the arguments opcode.
     current_function: Option<ObjectRef>,
@@ -580,6 +582,7 @@ impl RuntimeVmHost {
             current_realm,
             caller_realm: current_realm,
             current_bytecode: None,
+            strip_variable_debug: false,
             current_function: None,
             actual_argument_count: 0,
             constants: Rc::from([]),
@@ -637,6 +640,7 @@ impl RuntimeVmHost {
             current_realm,
             caller_realm: current_realm,
             current_bytecode: Some(root),
+            strip_variable_debug: metadata.strip_variable_debug,
             current_function: None,
             actual_argument_count: arguments.len(),
             constants,
@@ -862,6 +866,7 @@ impl RuntimeVmHost {
             current_realm: data.vm.callee_realm,
             caller_realm: resume_caller_realm,
             current_bytecode: Some(root.clone()),
+            strip_variable_debug: metadata.strip_variable_debug,
             current_function: Some(current_function),
             actual_argument_count: data.actual_argument_count,
             constants,
@@ -1369,13 +1374,23 @@ impl RuntimeVmHost {
         })
     }
 
-    fn lexical_uninitialized_error(&self, name: Option<Atom>) -> Result<Error, Error> {
+    fn lexical_uninitialized_error_with_visibility(
+        &self,
+        name: Option<Atom>,
+        name_visible: bool,
+    ) -> Result<Error, Error> {
         let Some(name) = name else {
             return Ok(Error::new(
                 ErrorKind::Reference,
                 "lexical variable is not initialized",
             ));
         };
+        if !name_visible {
+            return Ok(Error::new(
+                ErrorKind::Reference,
+                "lexical variable is not initialized",
+            ));
+        }
         // Compiler-only pseudo names must not leak into observable diagnostics.
         // QuickJS stores this identity as JS_ATOM_this and therefore reports
         // `this`, while this typed compiler uses the unspellable `<this>` name
@@ -1392,6 +1407,35 @@ impl RuntimeVmHost {
         self.runtime
             .native_atom_error(ErrorKind::Reference, "", &key, " is not initialized")
             .map_err(runtime_error_to_vm_error)
+    }
+
+    /// QuickJS strips vardef names per function when StripDebug was sampled
+    /// and that function contains no syntactic direct eval. Oxide retains some
+    /// of those atoms as publication/authentication metadata, so diagnostics
+    /// must apply the same independent rule without deleting semantic names.
+    fn local_lexical_uninitialized_error(&self, name: Option<Atom>) -> Result<Error, Error> {
+        self.lexical_uninitialized_error_with_visibility(name, !self.strip_variable_debug)
+    }
+
+    fn closure_lexical_uninitialized_error(
+        &self,
+        source: ClosureSource,
+        name: Option<Atom>,
+    ) -> Result<Error, Error> {
+        let semantic_name = matches!(
+            source,
+            ClosureSource::GlobalDeclaration
+                | ClosureSource::Global
+                | ClosureSource::ParentGlobal(_)
+                | ClosureSource::ModuleDeclaration
+                | ClosureSource::ModuleImport
+                | ClosureSource::ModuleImportCollision
+                | ClosureSource::ModuleImportMeta
+        );
+        self.lexical_uninitialized_error_with_visibility(
+            name,
+            semantic_name || !self.strip_variable_debug,
+        )
     }
 
     fn lexical_read_only_error(&self, name: Option<Atom>) -> Result<Error, Error> {
@@ -2055,6 +2099,7 @@ impl Runtime {
             current_realm: realm,
             caller_realm,
             current_bytecode: Some(root),
+            strip_variable_debug: metadata.strip_variable_debug,
             current_function: Some(callable.as_object().clone()),
             actual_argument_count: arguments.len(),
             constants,
@@ -4218,14 +4263,16 @@ impl VmHost for RuntimeVmHost {
             FrameBinding::Private(_) | FrameBinding::PrivateCallable(_) => Err(Error::internal(
                 "checked local read reached a private-element frame cell",
             )),
-            FrameBinding::Uninitialized => Err(self.lexical_uninitialized_error(definition.name)?),
+            FrameBinding::Uninitialized => {
+                Err(self.local_lexical_uninitialized_error(definition.name)?)
+            }
             FrameBinding::Captured(root) => {
                 let raw = self
                     .runtime
                     .raw_var_ref_value(root)
                     .map_err(runtime_error_to_vm_error)?;
                 if matches!(raw, RawValue::Uninitialized) {
-                    Err(self.lexical_uninitialized_error(definition.name)?)
+                    Err(self.local_lexical_uninitialized_error(definition.name)?)
                 } else {
                     self.runtime
                         .root_raw_value(&raw)
@@ -4365,7 +4412,9 @@ impl VmHost for RuntimeVmHost {
             FrameBinding::Private(_) | FrameBinding::PrivateCallable(_) => Err(Error::internal(
                 "checked local write reached a private-element frame cell",
             )),
-            FrameBinding::Uninitialized => Err(self.lexical_uninitialized_error(definition.name)?),
+            FrameBinding::Uninitialized => {
+                Err(self.local_lexical_uninitialized_error(definition.name)?)
+            }
             FrameBinding::Captured(root) => {
                 let cell = self
                     .runtime
@@ -4377,7 +4426,7 @@ impl VmHost for RuntimeVmHost {
                     .map_err(|error| Error::internal(error.to_string()))?
                     .clone();
                 if matches!(cell.value, RawValue::Uninitialized) {
-                    return Err(self.lexical_uninitialized_error(definition.name)?);
+                    return Err(self.local_lexical_uninitialized_error(definition.name)?);
                 }
                 if cell.is_const {
                     return Err(self.lexical_read_only_error(definition.name)?);
@@ -4496,7 +4545,10 @@ impl VmHost for RuntimeVmHost {
             .raw_var_ref_value(root)
             .map_err(runtime_error_to_vm_error)?;
         if matches!(raw, RawValue::Uninitialized) {
-            return Err(self.lexical_uninitialized_error(self.closure_name(index)?)?);
+            return Err(self.closure_lexical_uninitialized_error(
+                descriptor.source,
+                self.closure_name(index)?,
+            )?);
         }
         self.runtime
             .root_raw_value(&raw)
@@ -4533,7 +4585,7 @@ impl VmHost for RuntimeVmHost {
             .clone();
         let name = self.closure_name(index)?;
         if matches!(cell.value, RawValue::Uninitialized) {
-            return Err(self.lexical_uninitialized_error(name)?);
+            return Err(self.closure_lexical_uninitialized_error(descriptor.source, name)?);
         }
         if cell.is_const {
             return Err(self.lexical_read_only_error(name)?);

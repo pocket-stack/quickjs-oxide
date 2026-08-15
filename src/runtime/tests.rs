@@ -6997,6 +6997,100 @@ fn function_constructor_samples_strip_mode_and_keeps_parse_locations() {
         ))
     );
 
+    let message = runtime.intern_property_key("message").unwrap();
+    for (description, body, expected_name, expected_message) in [
+        (
+            "local TDZ",
+            "for(let value=value;false;){}",
+            "ReferenceError",
+            "lexical variable is not initialized",
+        ),
+        (
+            "direct-eval local TDZ",
+            "eval('');for(let value=value;false;){}",
+            "ReferenceError",
+            "value is not initialized",
+        ),
+        (
+            "direct-eval environment TDZ",
+            "let value=eval('value')",
+            "ReferenceError",
+            "lexical variable is not initialized",
+        ),
+        (
+            "nested direct-eval environment TDZ",
+            "let value=eval(\"eval('');value\")",
+            "ReferenceError",
+            "value is not initialized",
+        ),
+        (
+            "closure TDZ read",
+            "let read=()=>value;return read();let value",
+            "ReferenceError",
+            "lexical variable is not initialized",
+        ),
+        (
+            "closure TDZ write",
+            "let write=()=>value=1;return write();let value",
+            "ReferenceError",
+            "lexical variable is not initialized",
+        ),
+        (
+            "parent direct-eval child closure TDZ",
+            "eval('');let read=()=>value;return read();let value",
+            "ReferenceError",
+            "lexical variable is not initialized",
+        ),
+        (
+            "child direct-eval closure TDZ",
+            "let read=()=>{eval('');return value};return read();let value",
+            "ReferenceError",
+            "value is not initialized",
+        ),
+        (
+            "derived this TDZ with descendant eval",
+            "class A extends Object{constructor(){let f=()=>eval('');this.x;super()}}new A",
+            "ReferenceError",
+            "lexical variable is not initialized",
+        ),
+        (
+            "closure readonly write",
+            "let write;{const value=1;write=()=>value=2}return write()",
+            "TypeError",
+            "'value' is read-only",
+        ),
+    ] {
+        let Value::Object(function) = context
+            .call(
+                &constructor,
+                Value::Undefined,
+                &[Value::String(JsString::from_static(body))],
+            )
+            .unwrap_or_else(|error| panic!("strip-debug {description} failed to compile: {error}"))
+        else {
+            panic!("strip-debug {description} did not return an object");
+        };
+        let function = runtime.as_callable(&function).unwrap().unwrap();
+        assert_eq!(
+            context.call(&function, Value::Undefined, &[]),
+            Err(RuntimeError::Exception),
+            "{description}"
+        );
+        let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+            panic!("strip-debug {description} did not throw an Error");
+        };
+        assert_eq!(
+            context.get_property(&error, &name).unwrap(),
+            Value::String(JsString::from_static(expected_name)),
+            "{description}"
+        );
+        assert_eq!(
+            context.get_property(&error, &message).unwrap(),
+            Value::String(JsString::from_static(expected_message)),
+            "{description}"
+        );
+    }
+
     assert_eq!(
         context.call(
             &constructor,
