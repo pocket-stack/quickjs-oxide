@@ -14,6 +14,14 @@ pub(in crate::runtime) use host::SystemHostServices;
 
 use super::*;
 
+/// Side-effect-free ISO rendering used by the qjs diagnostic value printer.
+/// Invalid dates deliberately return `None`: pinned `JS_PrintValue` then falls
+/// back to the ordinary `Date { ... }` object shell instead of throwing.
+pub(in crate::runtime) fn qjs_print_iso_string(value: f64) -> Option<String> {
+    let fields = calendar::get_date_fields(value, false, false, |_| 0);
+    format::format_date_string(fields.as_ref(), format::DateStringKind::IsoString).ok()
+}
+
 impl Runtime {
     /// Install the complete pinned `js_date_funcs` and
     /// `js_date_proto_funcs` tables. `%Date.prototype%` is an ordinary object

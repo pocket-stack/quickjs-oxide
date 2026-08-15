@@ -575,12 +575,13 @@ impl Runtime {
         Ok(self.0.state.borrow().heap.set_size(set.object_id())?)
     }
 
-    fn next_live_set_value(
+    fn next_live_set_record(
         &self,
         set: &ObjectRef,
         index: &mut usize,
-    ) -> Result<Option<Value>, RuntimeError> {
+    ) -> Result<Option<(usize, Value)>, RuntimeError> {
         loop {
+            let record_index = *index;
             let record = self
                 .0
                 .state
@@ -598,8 +599,18 @@ impl Runtime {
             let Some(key) = key else {
                 continue;
             };
-            return Ok(Some(self.root_raw_value(&key)?));
+            return Ok(Some((record_index, self.root_raw_value(&key)?)));
         }
+    }
+
+    fn next_live_set_value(
+        &self,
+        set: &ObjectRef,
+        index: &mut usize,
+    ) -> Result<Option<Value>, RuntimeError> {
+        Ok(self
+            .next_live_set_record(set, index)?
+            .map(|(_, value)| value))
     }
 
     fn call_set_add(
@@ -725,13 +736,19 @@ impl Runtime {
             .cloned()
             .unwrap_or(Value::Undefined);
         let mut index = 0_usize;
-        while let Some(value) = self.next_live_set_value(&set, &mut index)? {
-            match self.call_internal(
+        while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
+            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Set {
+                object: set.object_id(),
+                index: record_index,
+            });
+            let callback_result = self.call_internal(
                 realm,
                 &callback,
                 this_arg.clone(),
                 &[value.clone(), value, Value::Object(set.clone())],
-            )? {
+            );
+            active_record.finish()?;
+            match callback_result? {
                 Completion::Return(_) => {}
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             }
@@ -818,9 +835,9 @@ impl Runtime {
         let state = self
             .0
             .state
-            .borrow()
+            .borrow_mut()
             .heap
-            .set_iterator_state(iterator.object_id());
+            .begin_set_iterator_next(iterator.object_id());
         let (set, mut index, kind) = match state {
             Ok(state) => state,
             Err(HeapError::Invariant(_)) => {
@@ -841,6 +858,7 @@ impl Runtime {
             });
         };
         loop {
+            let record_index = index;
             let record = self
                 .0
                 .state
@@ -869,6 +887,11 @@ impl Runtime {
             let Some(key) = key else {
                 continue;
             };
+            self.0
+                .state
+                .borrow_mut()
+                .heap
+                .set_set_iterator_current(iterator.object_id(), record_index)?;
             let value = self.root_raw_value(&key)?;
             let value = match kind {
                 SetIteratorKind::Value => value,
@@ -1200,8 +1223,15 @@ impl Runtime {
 
         if i64::try_from(self.set_size_value(&set)?).unwrap_or(i64::MAX) <= other.size {
             let mut index = 0_usize;
-            while let Some(value) = self.next_live_set_value(&set, &mut index)? {
-                match self.call_set_like_has(realm, &other, value)? {
+            while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
+                let active_record =
+                    self.push_active_collection_record(ActiveCollectionRecord::Set {
+                        object: set.object_id(),
+                        index: record_index,
+                    });
+                let has_result = self.call_set_like_has(realm, &other, value);
+                active_record.finish()?;
+                match has_result? {
                     NativeConversion::Value(true) => {
                         return Ok(Completion::Return(Value::Bool(false)));
                     }
@@ -1255,8 +1285,14 @@ impl Runtime {
             return Ok(Completion::Return(Value::Bool(false)));
         }
         let mut index = 0_usize;
-        while let Some(value) = self.next_live_set_value(&set, &mut index)? {
-            match self.call_set_like_has(realm, &other, value)? {
+        while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
+            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Set {
+                object: set.object_id(),
+                index: record_index,
+            });
+            let has_result = self.call_set_like_has(realm, &other, value);
+            active_record.finish()?;
+            match has_result? {
                 NativeConversion::Value(true) => {}
                 NativeConversion::Value(false) => {
                     return Ok(Completion::Return(Value::Bool(false)));
@@ -1353,8 +1389,14 @@ impl Runtime {
 
         let result = self.new_set_in_realm(realm)?;
         let mut index = 0_usize;
-        while let Some(value) = self.next_live_set_value(&set, &mut index)? {
-            let present = match self.call_set_like_has(realm, &other, value.clone())? {
+        while let Some((record_index, value)) = self.next_live_set_record(&set, &mut index)? {
+            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Set {
+                object: set.object_id(),
+                index: record_index,
+            });
+            let has_result = self.call_set_like_has(realm, &other, value.clone());
+            active_record.finish()?;
+            let present = match has_result? {
                 NativeConversion::Value(present) => present,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
@@ -1387,8 +1429,17 @@ impl Runtime {
 
         if i64::try_from(self.set_size_value(&set)?).unwrap_or(i64::MAX) <= other.size {
             let mut index = 0_usize;
-            while let Some(value) = self.next_live_set_value(&result, &mut index)? {
-                let present = match self.call_set_like_has(realm, &other, value.clone())? {
+            while let Some((record_index, value)) =
+                self.next_live_set_record(&result, &mut index)?
+            {
+                let active_record =
+                    self.push_active_collection_record(ActiveCollectionRecord::Set {
+                        object: result.object_id(),
+                        index: record_index,
+                    });
+                let has_result = self.call_set_like_has(realm, &other, value.clone());
+                active_record.finish()?;
+                let present = match has_result? {
                     NativeConversion::Value(present) => present,
                     NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
                 };

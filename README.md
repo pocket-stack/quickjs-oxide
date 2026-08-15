@@ -42,6 +42,7 @@ cd quickjs-oxide
 ./scripts/demo-42.sh  # 42
 cargo run --quiet --bin qjs -- --print-result -e \
   '(function (a) { return a + 1; })(41)'  # 42
+cargo run --quiet --bin qjs -- -e 'console.log({ answer: 42 })'
 # File modules: -m/--module, --script, .mjs and source detection
 cargo run --quiet --bin qjs -- examples/module-42.mjs  # 42
 ```

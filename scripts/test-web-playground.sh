@@ -159,6 +159,18 @@ assert.deepEqual(
   },
 );
 
+const qjsHostIsolation = evaluate(
+  '(typeof print) + "|" + (typeof console)',
+);
+assert.deepEqual(
+  {
+    ok: qjsHostIsolation.ok,
+    kind: qjsHostIsolation.kind,
+    text: qjsHostIsolation.text,
+  },
+  { ok: true, kind: "string", text: "undefined|undefined" },
+);
+
 const evalVarDestructuring = evaluate(`
   (function () {
     eval("var { answer = function () { return 42; } } = {};");

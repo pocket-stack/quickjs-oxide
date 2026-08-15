@@ -1108,6 +1108,45 @@ impl JsString {
         )
     }
 
+    /// Visit the current flat leaves in logical order without linearizing a
+    /// rope. QuickJS's diagnostic String printer decodes each leaf
+    /// independently, so surrogate pairs do not cross a live rope boundary.
+    /// A previously linearized rope exposes its replacement flat value as one
+    /// leaf, matching QuickJS's in-place `flat + empty` transition.
+    pub(crate) fn for_each_flat_leaf(&self, mut visitor: impl FnMut(&Self)) {
+        let mut stack: [Option<Self>; 61] = std::array::from_fn(|_| None);
+        stack[0] = Some(self.clone());
+        let mut stack_len = 1;
+        while stack_len != 0 {
+            stack_len -= 1;
+            let node = stack[stack_len]
+                .take()
+                .expect("String flat-leaf traversal stack contained a hole");
+            match node.0.as_ref() {
+                StringRepr::Latin1(_) | StringRepr::Utf16(_) => visitor(&node),
+                StringRepr::Rope(rope) => match &*rope.state.borrow() {
+                    RopeState::Tree { left, right } => {
+                        assert!(
+                            stack_len + 2 <= stack.len(),
+                            "String rope exceeded its bounded flat-leaf traversal depth"
+                        );
+                        stack[stack_len] = Some(right.clone());
+                        stack[stack_len + 1] = Some(left.clone());
+                        stack_len += 2;
+                    }
+                    RopeState::Linearized { flat } => {
+                        assert!(
+                            stack_len < stack.len(),
+                            "String rope exceeded its bounded flat-leaf traversal depth"
+                        );
+                        stack[stack_len] = Some(flat.clone());
+                        stack_len += 1;
+                    }
+                },
+            }
+        }
+    }
+
     fn quickjs_hash(&self, seed: u32) -> u32 {
         self.utf16_units().fold(seed, |hash, unit| {
             hash.wrapping_mul(263).wrapping_add(u32::from(unit))
@@ -1633,7 +1672,8 @@ impl JsString {
     /// surrogates are deliberately retained as three-byte WTF-8 sequences.
     /// Embedded U+0000 is returned as an ordinary zero byte; the terminating C
     /// NUL owned by QuickJS is not part of its reported length and is therefore
-    /// not included in this safe Rust byte vector.
+    /// not included in this safe Rust byte vector. As in QuickJS, converting a
+    /// rope caches its flat representation on the shared String identity.
     ///
     /// # Errors
     /// Returns [`TryReserveError`] if the output buffer cannot be reserved.
@@ -1641,12 +1681,23 @@ impl JsString {
         self.try_to_quickjs_utf8_bytes(false)
     }
 
+    /// Append the WTF-8 bytes exposed by `JS_ToCStringLen2(..., false)` to an
+    /// existing buffer while preserving the same rope-linearization side
+    /// effect as [`Self::try_to_wtf8_bytes`].
+    pub(crate) fn try_append_wtf8_bytes(
+        &self,
+        output: &mut Vec<u8>,
+    ) -> Result<(), TryReserveError> {
+        self.try_append_quickjs_utf8_bytes(output, false)
+    }
+
     /// Encode the byte slice exposed by QuickJS `JS_ToCStringLen2` when its
     /// `cesu8` flag is true.
     ///
     /// Every UTF-16 code unit is encoded independently, so a valid surrogate
     /// pair occupies two three-byte CESU-8 sequences. Embedded U+0000 is
-    /// retained and no trailing C NUL is included in the returned vector.
+    /// retained and no trailing C NUL is included in the returned vector. Rope
+    /// conversion has the same shared flat-cache transition as the WTF-8 path.
     ///
     /// # Errors
     /// Returns [`TryReserveError`] if the output buffer cannot be reserved.
@@ -1655,12 +1706,26 @@ impl JsString {
     }
 
     fn try_to_quickjs_utf8_bytes(&self, cesu8: bool) -> Result<Vec<u8>, TryReserveError> {
-        let encoded_len = quickjs_utf8_length(self.utf16_units(), cesu8);
         let mut output = Vec::new();
-        output.try_reserve_exact(encoded_len)?;
-        output.extend(QuickJsUtf8Bytes::new(self, cesu8));
-        debug_assert_eq!(output.len(), encoded_len);
+        self.try_append_quickjs_utf8_bytes(&mut output, cesu8)?;
         Ok(output)
+    }
+
+    fn try_append_quickjs_utf8_bytes(
+        &self,
+        output: &mut Vec<u8>,
+        cesu8: bool,
+    ) -> Result<(), TryReserveError> {
+        // JS_ToCStringLen2 first rewrites a rope to its cached flat form. The
+        // root keeps its rope identity, but later diagnostics observe one
+        // logical leaf instead of the former tree boundary.
+        let value = self.linearize();
+        let encoded_len = quickjs_utf8_length(value.utf16_units(), cesu8);
+        let initial_len = output.len();
+        output.try_reserve_exact(encoded_len)?;
+        output.extend(QuickJsUtf8Bytes::new(&value, cesu8));
+        debug_assert_eq!(output.len(), initial_len + encoded_len);
+        Ok(())
     }
 
     pub(crate) fn wtf8_bytes(&self) -> impl Iterator<Item = u8> {
@@ -2471,6 +2536,9 @@ mod tests {
             .try_concat(&low_and_tail)
             .unwrap();
         assert!(!across_leaf.is_flat());
+        let mut leaf_lengths = Vec::new();
+        across_leaf.for_each_flat_leaf(|leaf| leaf_lengths.push(leaf.len()));
+        assert_eq!(leaf_lengths, [8193, 1, 513]);
         let flat = JsString::try_from_utf16(
             std::iter::repeat_n(u16::from(b'a'), 8193)
                 .chain([0xd83d, 0xde00])
@@ -2480,6 +2548,9 @@ mod tests {
         let wtf8 = across_leaf.try_to_wtf8_bytes().unwrap();
         assert_eq!(&wtf8[8193..8197], &[0xf0, 0x9f, 0x98, 0x80]);
         assert_eq!(wtf8, flat.try_to_wtf8_bytes().unwrap());
+        leaf_lengths.clear();
+        across_leaf.for_each_flat_leaf(|leaf| leaf_lengths.push(leaf.len()));
+        assert_eq!(leaf_lengths, [across_leaf.len()]);
         let cesu8 = across_leaf.try_to_cesu8_bytes().unwrap();
         assert_eq!(&cesu8[8193..8199], &[0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80]);
         assert_eq!(cesu8, flat.try_to_cesu8_bytes().unwrap());

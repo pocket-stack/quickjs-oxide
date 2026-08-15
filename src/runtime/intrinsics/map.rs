@@ -792,6 +792,7 @@ impl Runtime {
             .unwrap_or(Value::Undefined);
         let mut index = 0_usize;
         loop {
+            let record_index = index;
             let record = self
                 .0
                 .state
@@ -811,12 +812,18 @@ impl Runtime {
             };
             let key = self.root_raw_value(&key)?;
             let value = self.root_raw_value(&value)?;
-            match self.call_internal(
+            let active_record = self.push_active_collection_record(ActiveCollectionRecord::Map {
+                object: map.object_id(),
+                index: record_index,
+            });
+            let callback_result = self.call_internal(
                 realm,
                 &callback,
                 this_arg.clone(),
                 &[value, key, Value::Object(map.clone())],
-            )? {
+            );
+            active_record.finish()?;
+            match callback_result? {
                 Completion::Return(_) => {}
                 Completion::Throw(value) => return Ok(Completion::Throw(value)),
             }
@@ -903,9 +910,9 @@ impl Runtime {
         let state = self
             .0
             .state
-            .borrow()
+            .borrow_mut()
             .heap
-            .map_iterator_state(iterator.object_id());
+            .begin_map_iterator_next(iterator.object_id());
         let (map, mut index, kind) = match state {
             Ok(state) => state,
             Err(HeapError::Invariant(_)) => {
@@ -926,6 +933,7 @@ impl Runtime {
             });
         };
         loop {
+            let record_index = index;
             let record = self
                 .0
                 .state
@@ -954,6 +962,11 @@ impl Runtime {
             let Some(key) = key else {
                 continue;
             };
+            self.0
+                .state
+                .borrow_mut()
+                .heap
+                .set_map_iterator_current(iterator.object_id(), record_index)?;
             let key = self.root_raw_value(&key)?;
             let value = match kind {
                 MapIteratorKind::Key => key,
@@ -1109,6 +1122,49 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_collection_record_guard_is_lifo_and_panic_safe() {
+        let runtime = Runtime::new();
+        let context = runtime.new_context();
+        let map = runtime.new_map_in_realm(context.realm).unwrap();
+        let record = ActiveCollectionRecord::Map {
+            object: map.object_id(),
+            index: 0,
+        };
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _active_record = runtime.push_active_collection_record(record);
+            panic!("active collection record unwind probe");
+        }));
+        assert!(unwind.is_err());
+        assert!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .active_collection_records
+                .is_empty()
+        );
+
+        let outer = runtime.push_active_collection_record(record);
+        let inner = runtime.push_active_collection_record(record);
+        assert!(matches!(
+            outer.finish(),
+            Err(RuntimeError::Invariant(
+                "active collection record stack was not restored in LIFO order"
+            ))
+        ));
+        drop(inner);
+        assert!(
+            runtime
+                .0
+                .state
+                .borrow()
+                .active_collection_records
+                .is_empty()
+        );
+    }
 
     #[test]
     fn table_backed_symbol_atoms_return_after_map_mutations() {

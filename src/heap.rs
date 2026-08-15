@@ -21,7 +21,7 @@
 //! making this low-level arena depend on `AtomTable` mutability or callbacks.
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::hash::Hash;
@@ -4873,6 +4873,27 @@ pub struct MapRecord {
     pub value: RawValue,
 }
 
+/// Printer-only snapshot of Map/Set records retained by live iterators.
+///
+/// The heap arena is intentionally scanned once for both collection classes.
+/// Grouping by source object lets one side-effect-free diagnostic traversal
+/// reuse the result for every nested Map and Set it renders.
+#[derive(Debug, Default)]
+pub(crate) struct CollectionIteratorCurrentIndices {
+    maps: HashMap<ObjectId, HashSet<usize>>,
+    sets: HashMap<ObjectId, HashSet<usize>>,
+}
+
+impl CollectionIteratorCurrentIndices {
+    pub(crate) fn map(&self, source: ObjectId) -> Option<&HashSet<usize>> {
+        self.maps.get(&source)
+    }
+
+    pub(crate) fn set(&self, source: ObjectId) -> Option<&HashSet<usize>> {
+        self.sets.get(&source)
+    }
+}
+
 /// Non-owning key identity stored by WeakMap and WeakSet.
 ///
 /// Copying or storing this value deliberately retains neither an arena object
@@ -5710,6 +5731,10 @@ pub enum ObjectPayload {
     /// the Map is live, preserving mutation-sensitive iterator semantics.
     Map {
         records: Vec<MapRecord>,
+        /// Ordered stable indices of live records. Historical tombstones stay
+        /// in `records` for iterators, but bounded diagnostic traversal does
+        /// not need to rescan them.
+        live_indices: BTreeSet<usize>,
         size: usize,
     },
     /// `JS_CLASS_MAP_ITERATOR`: the source Map remains an owned edge until
@@ -5718,6 +5743,10 @@ pub enum ObjectPayload {
     MapIterator {
         object: Option<ObjectId>,
         next_index: usize,
+        /// Stable record returned by the most recent successful `next()`.
+        /// QuickJS retains that record until the iterator advances again, so
+        /// deleting it can leave a printer-visible zombie in the source Map.
+        current_index: Option<usize>,
         kind: MapIteratorKind,
     },
     /// `JS_CLASS_SET`: the ordered record layout is shared with Map, but each
@@ -5725,6 +5754,8 @@ pub enum ObjectPayload {
     /// `undefined`. A distinct payload preserves the unforgeable Set brand.
     Set {
         records: Vec<MapRecord>,
+        /// Ordered stable indices of live elements; see the Map counterpart.
+        live_indices: BTreeSet<usize>,
         size: usize,
     },
     /// `JS_CLASS_SET_ITERATOR`: the source Set remains an owned edge until
@@ -5733,6 +5764,9 @@ pub enum ObjectPayload {
     SetIterator {
         object: Option<ObjectId>,
         next_index: usize,
+        /// Stable record returned by the most recent successful `next()`.
+        /// This mirrors `JSMapIteratorData.cur_record` for Set iterators.
+        current_index: Option<usize>,
         kind: SetIteratorKind,
     },
     /// `JS_CLASS_WEAKMAP`: generation-checked weak keys, strongly owned
@@ -5854,6 +5888,9 @@ pub enum ObjectKind {
     Ordinary,
     /// `JS_CLASS_MODULE_NS`: null-prototype, non-extensible live export view.
     ModuleNamespace,
+    /// `JS_CLASS_ITERATOR`: ordinary internal methods with a distinct class
+    /// tag for direct subclasses of the abstract Iterator constructor.
+    Iterator,
     Array,
     Arguments,
     ArrayIterator,
@@ -7050,6 +7087,9 @@ pub enum NativeFunctionId {
     /// qjs-host `print`, installed explicitly by the CLI rather than as an
     /// ECMAScript intrinsic in every Context.
     QjsPrint,
+    /// qjs-host `console.log`; it shares `print` rendering but explicitly
+    /// flushes stdout after the line, matching `quickjs-libc.c`.
+    QjsConsoleLog,
     PrimitivePrototypeToString(PrimitiveKind),
     PrimitivePrototypeValueOf(PrimitiveKind),
     StringPrototypeCharAt(StringCharAtKind),
@@ -7596,6 +7636,7 @@ impl NativeFunctionId {
             | Self::PrimitivePrototypeValueOf(_)
             | Self::StringStatic(_)
             | Self::QjsPrint
+            | Self::QjsConsoleLog
             | Self::StringPrototypeCharCodeAt
             | Self::StringPrototypeConcat
             | Self::StringPrototypeCodePointAt
@@ -7910,6 +7951,24 @@ impl ObjectData {
         }
     }
 
+    /// Construct one `JS_CLASS_ITERATOR` object. It deliberately shares the
+    /// ordinary payload and internal methods; only the QuickJS class tag is
+    /// distinct.
+    #[must_use]
+    pub const fn iterator(shape: ShapeId, slots: Vec<PropertySlot>) -> Self {
+        Self {
+            shape,
+            slots,
+            private_brand_home: None,
+            is_html_dda: false,
+            extensible: true,
+            immutable_prototype: false,
+            is_constructor: false,
+            kind: ObjectKind::Iterator,
+            payload: ObjectPayload::Ordinary,
+        }
+    }
+
     /// Construct one `JS_CLASS_MODULE_NS` exotic object.
     ///
     /// Export bindings remain ordinary `PropertySlot::VarRef` edges, while
@@ -8162,6 +8221,7 @@ impl ObjectData {
             kind: ObjectKind::Map,
             payload: ObjectPayload::Map {
                 records: Vec::new(),
+                live_indices: BTreeSet::new(),
                 size: 0,
             },
         }
@@ -8187,6 +8247,7 @@ impl ObjectData {
             payload: ObjectPayload::MapIterator {
                 object: Some(object),
                 next_index: 0,
+                current_index: None,
                 kind,
             },
         }
@@ -8208,6 +8269,7 @@ impl ObjectData {
             kind: ObjectKind::Set,
             payload: ObjectPayload::Set {
                 records: Vec::new(),
+                live_indices: BTreeSet::new(),
                 size: 0,
             },
         }
@@ -8320,6 +8382,7 @@ impl ObjectData {
             payload: ObjectPayload::SetIterator {
                 object: Some(object),
                 next_index: 0,
+                current_index: None,
                 kind,
             },
         }
@@ -14443,13 +14506,21 @@ impl Heap {
         new_edges.extend(raw_value_edges(&value));
         self.retain_edges_transactionally(&new_edges)?;
 
-        let ObjectPayload::Map { records, size } = &mut self.object_mut(id)?.payload else {
+        let ObjectPayload::Map {
+            records,
+            live_indices,
+            size,
+        } = &mut self.object_mut(id)?.payload
+        else {
             unreachable!("Map payload was validated before retaining record edges")
         };
+        let record_index = records.len();
         records.push(MapRecord {
             key: Some(key),
             value,
         });
+        let inserted = live_indices.insert(record_index);
+        debug_assert!(inserted, "fresh Map record index was already live");
         *size = next_size;
         Ok(HeapCleanup::default())
     }
@@ -14513,7 +14584,12 @@ impl Heap {
         index: usize,
     ) -> Result<HeapCleanup, HeapError> {
         let (key, value) = {
-            let ObjectPayload::Map { records, size } = &mut self.object_mut(id)?.payload else {
+            let ObjectPayload::Map {
+                records,
+                live_indices,
+                size,
+            } = &mut self.object_mut(id)?.payload
+            else {
                 return Err(HeapError::Invariant(
                     "Map deletion reached an object with the wrong class",
                 ));
@@ -14526,6 +14602,11 @@ impl Heap {
             let record = records.get_mut(index).ok_or(HeapError::Invariant(
                 "Map deletion requires a live record index",
             ))?;
+            if record.key.is_none() || !live_indices.remove(&index) {
+                return Err(HeapError::Invariant(
+                    "Map deletion requires a live record index",
+                ));
+            }
             let key = record.key.take().ok_or(HeapError::Invariant(
                 "Map deletion requires a live record index",
             ))?;
@@ -14552,7 +14633,12 @@ impl Heap {
     /// after the object mutation has completed.
     pub fn map_clear(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
         let removed = {
-            let ObjectPayload::Map { records, size } = &mut self.object_mut(id)?.payload else {
+            let ObjectPayload::Map {
+                records,
+                live_indices,
+                size,
+            } = &mut self.object_mut(id)?.payload
+            else {
                 return Err(HeapError::Invariant(
                     "Map clear reached an object with the wrong class",
                 ));
@@ -14564,6 +14650,7 @@ impl Heap {
                     removed.push((key, value));
                 }
             }
+            live_indices.clear();
             *size = 0;
             removed
         };
@@ -14593,12 +14680,34 @@ impl Heap {
             object,
             next_index,
             kind,
+            ..
         } = &self.object(id)?.payload
         else {
             return Err(HeapError::Invariant(
                 "Map Iterator state reached an object with the wrong class",
             ));
         };
+        Ok((*object, *next_index, *kind))
+    }
+
+    /// Begin one Map Iterator `next()` call and release the record retained by
+    /// its preceding successful step. The stable cursor itself is unchanged.
+    pub fn begin_map_iterator_next(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<(Option<ObjectId>, usize, MapIteratorKind), HeapError> {
+        let ObjectPayload::MapIterator {
+            object,
+            next_index,
+            current_index,
+            kind,
+        } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Map Iterator state reached an object with the wrong class",
+            ));
+        };
+        *current_index = None;
         Ok((*object, *next_index, *kind))
     }
 
@@ -14626,16 +14735,53 @@ impl Heap {
         Ok(())
     }
 
+    /// Retain the live Map record returned by the current iterator step until
+    /// the next call begins or the iterator is exhausted.
+    pub fn set_map_iterator_current(
+        &mut self,
+        id: ObjectId,
+        current_index: usize,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::MapIterator {
+            object,
+            next_index,
+            current_index: stored,
+            ..
+        } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Map Iterator current record reached an object with the wrong class",
+            ));
+        };
+        if object.is_none() {
+            return Err(HeapError::Invariant(
+                "completed Map Iterator retained a record",
+            ));
+        }
+        if current_index >= *next_index {
+            return Err(HeapError::Invariant(
+                "Map Iterator retained a record beyond its cursor",
+            ));
+        }
+        *stored = Some(current_index);
+        Ok(())
+    }
+
     /// Permanently detach an exhausted Map Iterator source and release its
     /// owned object edge. Repeated completion is idempotent.
     pub fn finish_map_iterator(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
         let source = {
-            let ObjectPayload::MapIterator { object, .. } = &mut self.object_mut(id)?.payload
+            let ObjectPayload::MapIterator {
+                object,
+                current_index,
+                ..
+            } = &mut self.object_mut(id)?.payload
             else {
                 return Err(HeapError::Invariant(
                     "Map Iterator completion reached an object with the wrong class",
                 ));
             };
+            *current_index = None;
             object.take()
         };
         let Some(source) = source else {
@@ -14695,13 +14841,21 @@ impl Heap {
         let new_edges = raw_value_edges(&key);
         self.retain_edges_transactionally(&new_edges)?;
 
-        let ObjectPayload::Set { records, size } = &mut self.object_mut(id)?.payload else {
+        let ObjectPayload::Set {
+            records,
+            live_indices,
+            size,
+        } = &mut self.object_mut(id)?.payload
+        else {
             unreachable!("Set payload was validated before retaining record edges")
         };
+        let record_index = records.len();
         records.push(MapRecord {
             key: Some(key),
             value: RawValue::Undefined,
         });
+        let inserted = live_indices.insert(record_index);
+        debug_assert!(inserted, "fresh Set record index was already live");
         *size = next_size;
         Ok(HeapCleanup::default())
     }
@@ -14715,7 +14869,12 @@ impl Heap {
         index: usize,
     ) -> Result<HeapCleanup, HeapError> {
         let key = {
-            let ObjectPayload::Set { records, size } = &mut self.object_mut(id)?.payload else {
+            let ObjectPayload::Set {
+                records,
+                live_indices,
+                size,
+            } = &mut self.object_mut(id)?.payload
+            else {
                 return Err(HeapError::Invariant(
                     "Set deletion reached an object with the wrong class",
                 ));
@@ -14731,6 +14890,11 @@ impl Heap {
             if !matches!(record.value, RawValue::Undefined) {
                 return Err(HeapError::Invariant(
                     "Set record value slot is not undefined",
+                ));
+            }
+            if record.key.is_none() || !live_indices.remove(&index) {
+                return Err(HeapError::Invariant(
+                    "Set deletion requires a live record index",
                 ));
             }
             let key = record.key.take().ok_or(HeapError::Invariant(
@@ -14754,7 +14918,12 @@ impl Heap {
     /// after the payload mutation completes.
     pub fn set_clear(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
         let removed = {
-            let ObjectPayload::Set { records, size } = &mut self.object_mut(id)?.payload else {
+            let ObjectPayload::Set {
+                records,
+                live_indices,
+                size,
+            } = &mut self.object_mut(id)?.payload
+            else {
                 return Err(HeapError::Invariant(
                     "Set clear reached an object with the wrong class",
                 ));
@@ -14773,6 +14942,7 @@ impl Heap {
                     removed.push(key);
                 }
             }
+            live_indices.clear();
             *size = 0;
             removed
         };
@@ -15102,12 +15272,34 @@ impl Heap {
             object,
             next_index,
             kind,
+            ..
         } = &self.object(id)?.payload
         else {
             return Err(HeapError::Invariant(
                 "Set Iterator state reached an object with the wrong class",
             ));
         };
+        Ok((*object, *next_index, *kind))
+    }
+
+    /// Begin one Set Iterator `next()` call and release the record retained by
+    /// its preceding successful step. The stable cursor itself is unchanged.
+    pub fn begin_set_iterator_next(
+        &mut self,
+        id: ObjectId,
+    ) -> Result<(Option<ObjectId>, usize, SetIteratorKind), HeapError> {
+        let ObjectPayload::SetIterator {
+            object,
+            next_index,
+            current_index,
+            kind,
+        } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Set Iterator state reached an object with the wrong class",
+            ));
+        };
+        *current_index = None;
         Ok((*object, *next_index, *kind))
     }
 
@@ -15135,16 +15327,53 @@ impl Heap {
         Ok(())
     }
 
+    /// Retain the live Set record returned by the current iterator step until
+    /// the next call begins or the iterator is exhausted.
+    pub fn set_set_iterator_current(
+        &mut self,
+        id: ObjectId,
+        current_index: usize,
+    ) -> Result<(), HeapError> {
+        let ObjectPayload::SetIterator {
+            object,
+            next_index,
+            current_index: stored,
+            ..
+        } = &mut self.object_mut(id)?.payload
+        else {
+            return Err(HeapError::Invariant(
+                "Set Iterator current record reached an object with the wrong class",
+            ));
+        };
+        if object.is_none() {
+            return Err(HeapError::Invariant(
+                "completed Set Iterator retained a record",
+            ));
+        }
+        if current_index >= *next_index {
+            return Err(HeapError::Invariant(
+                "Set Iterator retained a record beyond its cursor",
+            ));
+        }
+        *stored = Some(current_index);
+        Ok(())
+    }
+
     /// Permanently detach an exhausted Set Iterator source and release its
     /// owned object edge. Repeated completion is idempotent.
     pub fn finish_set_iterator(&mut self, id: ObjectId) -> Result<HeapCleanup, HeapError> {
         let source = {
-            let ObjectPayload::SetIterator { object, .. } = &mut self.object_mut(id)?.payload
+            let ObjectPayload::SetIterator {
+                object,
+                current_index,
+                ..
+            } = &mut self.object_mut(id)?.payload
             else {
                 return Err(HeapError::Invariant(
                     "Set Iterator completion reached an object with the wrong class",
                 ));
             };
+            *current_index = None;
             object.take()
         };
         let Some(source) = source else {
@@ -15152,6 +15381,44 @@ impl Heap {
         };
         self.release_raw_no_drain(RawId::Object(source))?;
         self.drain_zero_queue()
+    }
+
+    /// Snapshot every stable source record currently retained by a live Map or
+    /// Set Iterator. A qjs value printer builds this index lazily, then reuses
+    /// it for all collections reached during the same bounded traversal.
+    pub(crate) fn collection_iterator_current_indices(&self) -> CollectionIteratorCurrentIndices {
+        let mut indices = CollectionIteratorCurrentIndices::default();
+        for slot in &self.slots {
+            let SlotState::Live(node) = &slot.state else {
+                continue;
+            };
+            match &node.data {
+                NodeData::Object(ObjectData {
+                    payload:
+                        ObjectPayload::MapIterator {
+                            object: Some(source),
+                            current_index: Some(current),
+                            ..
+                        },
+                    ..
+                }) => {
+                    indices.maps.entry(*source).or_default().insert(*current);
+                }
+                NodeData::Object(ObjectData {
+                    payload:
+                        ObjectPayload::SetIterator {
+                            object: Some(source),
+                            current_index: Some(current),
+                            ..
+                        },
+                    ..
+                }) => {
+                    indices.sets.entry(*source).or_default().insert(*current);
+                }
+                _ => {}
+            }
+        }
+        indices
     }
 
     /// Snapshot one genuine Iterator Helper payload. Raw values in the clone
@@ -17787,6 +18054,7 @@ impl Heap {
                 ObjectKind::Ordinary,
                 ObjectPayload::Ordinary | ObjectPayload::RawJson
             ) | (ObjectKind::ModuleNamespace, ObjectPayload::Ordinary)
+                | (ObjectKind::Iterator, ObjectPayload::Ordinary)
                 | (ObjectKind::Array, ObjectPayload::Array { .. })
                 | (ObjectKind::Arguments, ObjectPayload::Arguments { .. })
                 | (
@@ -18548,9 +18816,15 @@ impl Heap {
                 ));
             }
         }
-        if let ObjectPayload::Map { records, size } = &object.payload {
+        if let ObjectPayload::Map {
+            records,
+            live_indices,
+            size,
+        } = &object.payload
+        {
             let mut live = 0usize;
-            for record in records {
+            let mut expected_indices = BTreeSet::new();
+            for (index, record) in records.iter().enumerate() {
                 match &record.key {
                     Some(key) => {
                         if !is_map_storable_value(key) || !is_map_storable_value(&record.value) {
@@ -18561,6 +18835,7 @@ impl Heap {
                         live = live.checked_add(1).ok_or(HeapError::Overflow {
                             operation: "validating Map size",
                         })?;
+                        expected_indices.insert(index);
                     }
                     None if !matches!(record.value, RawValue::Undefined) => {
                         return Err(HeapError::Invariant(
@@ -18575,20 +18850,49 @@ impl Heap {
                     "Map live record count does not match its payload",
                 ));
             }
-        }
-        if let ObjectPayload::MapIterator {
-            object: Some(map), ..
-        } = &object.payload
-        {
-            if !matches!(self.object(*map)?.payload, ObjectPayload::Map { .. }) {
+            if *live_indices != expected_indices {
                 return Err(HeapError::Invariant(
-                    "Map Iterator source does not have the Map class",
+                    "Map live index does not match its record layout",
                 ));
             }
         }
-        if let ObjectPayload::Set { records, size } = &object.payload {
+        if let ObjectPayload::MapIterator {
+            object: source,
+            next_index,
+            current_index,
+            ..
+        } = &object.payload
+        {
+            match (source, current_index) {
+                (Some(map), current) => {
+                    let ObjectPayload::Map { records, .. } = &self.object(*map)?.payload else {
+                        return Err(HeapError::Invariant(
+                            "Map Iterator source does not have the Map class",
+                        ));
+                    };
+                    if current.is_some_and(|index| index >= *next_index || index >= records.len()) {
+                        return Err(HeapError::Invariant(
+                            "Map Iterator current record is outside its stable cursor",
+                        ));
+                    }
+                }
+                (None, None) => {}
+                (None, Some(_)) => {
+                    return Err(HeapError::Invariant(
+                        "completed Map Iterator retains a current record",
+                    ));
+                }
+            }
+        }
+        if let ObjectPayload::Set {
+            records,
+            live_indices,
+            size,
+        } = &object.payload
+        {
             let mut live = 0usize;
-            for record in records {
+            let mut expected_indices = BTreeSet::new();
+            for (index, record) in records.iter().enumerate() {
                 if !matches!(record.value, RawValue::Undefined) {
                     return Err(HeapError::Invariant(
                         "Set record value slot is not undefined",
@@ -18603,6 +18907,7 @@ impl Heap {
                     live = live.checked_add(1).ok_or(HeapError::Overflow {
                         operation: "validating Set size",
                     })?;
+                    expected_indices.insert(index);
                 }
             }
             if live != *size {
@@ -18610,15 +18915,38 @@ impl Heap {
                     "Set live record count does not match its payload",
                 ));
             }
+            if *live_indices != expected_indices {
+                return Err(HeapError::Invariant(
+                    "Set live index does not match its record layout",
+                ));
+            }
         }
         if let ObjectPayload::SetIterator {
-            object: Some(set), ..
+            object: source,
+            next_index,
+            current_index,
+            ..
         } = &object.payload
         {
-            if !matches!(self.object(*set)?.payload, ObjectPayload::Set { .. }) {
-                return Err(HeapError::Invariant(
-                    "Set Iterator source does not have the Set class",
-                ));
+            match (source, current_index) {
+                (Some(set), current) => {
+                    let ObjectPayload::Set { records, .. } = &self.object(*set)?.payload else {
+                        return Err(HeapError::Invariant(
+                            "Set Iterator source does not have the Set class",
+                        ));
+                    };
+                    if current.is_some_and(|index| index >= *next_index || index >= records.len()) {
+                        return Err(HeapError::Invariant(
+                            "Set Iterator current record is outside its stable cursor",
+                        ));
+                    }
+                }
+                (None, None) => {}
+                (None, Some(_)) => {
+                    return Err(HeapError::Invariant(
+                        "completed Set Iterator retains a current record",
+                    ));
+                }
             }
         }
         if let ObjectPayload::WeakMap { records } = &object.payload {
@@ -23051,6 +23379,7 @@ mod tests {
                     key: Some(RawValue::Int(1)),
                     value: RawValue::Int(2),
                 }],
+                live_indices: [0].into_iter().collect(),
                 size: 1,
             },
         };

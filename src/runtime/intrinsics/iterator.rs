@@ -403,7 +403,7 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         Ok(Completion::Return(Value::Object(
-            self.new_object(Some(&prototype))?,
+            self.new_iterator_object(&prototype)?,
         )))
     }
 

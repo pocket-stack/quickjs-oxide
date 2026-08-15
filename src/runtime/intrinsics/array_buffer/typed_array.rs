@@ -57,6 +57,16 @@ pub(in crate::runtime) struct TypedArrayState {
     pub resizable: bool,
 }
 
+/// Bounded, borrow-free element snapshot for the qjs diagnostic printer.
+/// Indexed values are copied while the ArrayBuffer-family access token is
+/// live, so the printer never holds `RuntimeState` across an SAB lock or
+/// recursively re-snapshots a resizable view element by element.
+pub(in crate::runtime) struct TypedArrayPrintSnapshot {
+    pub element: TypedArrayElementKind,
+    pub length: u32,
+    pub values: Vec<Value>,
+}
+
 impl Runtime {
     /// Install the hidden `%TypedArray%` constructor/prototype pair and the
     /// twelve public concrete classes in QuickJS class-id order.
@@ -1678,6 +1688,61 @@ impl Runtime {
         object: &ObjectRef,
     ) -> Result<u32, RuntimeError> {
         Ok(self.typed_array_state(object)?.length)
+    }
+
+    pub(in crate::runtime) fn qjs_typed_array_print_snapshot(
+        &self,
+        object: ObjectId,
+        max_items: u32,
+    ) -> Result<TypedArrayPrintSnapshot, RuntimeError> {
+        let snapshot = {
+            let state = self.0.state.borrow();
+            let ObjectPayload::TypedArray(data) = &state.heap.object(object)?.payload else {
+                return Err(RuntimeError::Invariant(
+                    "qjs TypedArray printer reached another object class",
+                ));
+            };
+            TypedArraySnapshot {
+                buffer: data.view.buffer,
+                byte_offset: data.view.byte_offset,
+                fixed_byte_length: data.view.fixed_byte_length,
+                element: data.element,
+            }
+        };
+        let view = self.typed_array_state_from_snapshot(snapshot)?;
+        if view.out_of_bounds || view.length == 0 || max_items == 0 {
+            return Ok(TypedArrayPrintSnapshot {
+                element: snapshot.element,
+                length: view.length,
+                values: Vec::new(),
+            });
+        }
+
+        let count = view.length.min(max_items);
+        let width = usize::from(snapshot.element.byte_length());
+        let byte_offset = usize::try_from(snapshot.byte_offset)
+            .map_err(|_| RuntimeError::Invariant("qjs TypedArray byte offset overflowed usize"))?;
+        let byte_length = usize::try_from(count)
+            .ok()
+            .and_then(|count| count.checked_mul(width))
+            .ok_or(RuntimeError::Invariant(
+                "qjs TypedArray print range overflowed usize",
+            ))?;
+        let access = self.snapshot_buffer_access(snapshot.buffer)?;
+        let values = self.with_buffer_range(&access, byte_offset, byte_length, |bytes| {
+            let mut values = Vec::with_capacity(count as usize);
+            for bytes in bytes.chunks_exact(width) {
+                let mut word = [0_u8; 8];
+                word[..width].copy_from_slice(bytes);
+                values.push(typed_array_decode(snapshot.element, word));
+            }
+            values
+        })?;
+        Ok(TypedArrayPrintSnapshot {
+            element: snapshot.element,
+            length: view.length,
+            values,
+        })
     }
 
     pub(in crate::runtime) fn typed_array_validated_length(

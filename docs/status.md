@@ -59,7 +59,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   pointer reuse
 - native command-line execution, including byte-preserving file-module goal
   detection and filesystem dependencies, top-level-await settlement, and
-  `import.meta` `url`/`main`; plus a Rust/WASM browser playground
+  `import.meta` `url`/`main`; qjs-compatible side-effect-free structured
+  `print`/`console.log` output with byte-exact WTF-8 String transport; plus a
+  Rust/WASM browser playground
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner

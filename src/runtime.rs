@@ -27,6 +27,7 @@ mod object_literal;
 mod private_elements;
 mod properties;
 mod qjs_host;
+mod qjs_value_printer;
 mod template_object;
 #[cfg(feature = "test262-host")]
 mod test262_agent;
@@ -84,14 +85,15 @@ use crate::heap::{
     NumberFormatKind, NumberParseKind, NumberPredicateKind, ObjectAccessorKind, ObjectData,
     ObjectExtensibilityKind, ObjectId, ObjectIntegrityKind, ObjectKeysKind, ObjectKind,
     ObjectOwnPropertyKeysKind, ObjectPayload, ParameterEnvironmentLayout, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, PublishedPrivateBindings, RawModuleEvaluationState,
-    RawModuleInstance, RawModuleLinkRealm, RawModuleLinkStatus, RawModuleNamespaceState,
-    RawModuleRecord, RawModuleRecordBody, RawModuleRef, RawModuleResolutionState,
-    RawModuleTransition, RawPublishedModuleExport, RawPublishedModuleExportTarget, RawValue,
-    ReflectKind, RegExpNativeKind, ShapeId, StringCaseKind, StringCharAtKind, StringCreateHtmlKind,
-    StringIncludesKind, StringIndexOfKind, StringPadKind, StringReplaceKind, StringStaticKind,
-    StringSubrangeKind, StringTrimKind, StringWellFormedKind, SymbolRegistryKind, VarRefData,
-    VarRefId, VariableDefinition, WeakSymbolGcEvent,
+    PrimitiveObjectData, PromiseResolvingKind, PropertySlot, PublishedPrivateBindings,
+    RawModuleEvaluationState, RawModuleInstance, RawModuleLinkRealm, RawModuleLinkStatus,
+    RawModuleNamespaceState, RawModuleRecord, RawModuleRecordBody, RawModuleRef,
+    RawModuleResolutionState, RawModuleTransition, RawPublishedModuleExport,
+    RawPublishedModuleExportTarget, RawValue, ReflectKind, RegExpNativeKind, ShapeId,
+    StringCaseKind, StringCharAtKind, StringCreateHtmlKind, StringIncludesKind, StringIndexOfKind,
+    StringPadKind, StringReplaceKind, StringStaticKind, StringSubrangeKind, StringTrimKind,
+    StringWellFormedKind, SymbolRegistryKind, VarRefData, VarRefId, VariableDefinition,
+    WeakSymbolGcEvent,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
@@ -149,6 +151,9 @@ enum DeferredRefOp {
         token: ActiveFrameToken,
         depth: usize,
     },
+    ActiveCollectionRecordsTruncate {
+        depth: usize,
+    },
     BacktraceBarrierRestore {
         token: ActiveFrameToken,
         previous: bool,
@@ -186,6 +191,12 @@ struct RuntimeState {
     /// stable identities and diagnostic state; the corresponding stack-local
     /// [`ActiveFrameGuard`] owns the object and bytecode roots.
     active_frames: Vec<ActiveFrameRecord>,
+    /// Collection records retained across an active user callback. QuickJS
+    /// keeps the current Map/Set record alive during `forEach` and direct Set
+    /// method traversal, which makes a deletion transiently visible to
+    /// `JS_PrintValue` as an empty record. [`ActiveCollectionRecordGuard`]
+    /// restores this diagnostic stack on every exit path.
+    active_collection_records: Vec<ActiveCollectionRecord>,
     next_active_frame_token: u64,
     /// QuickJS's runtime-global ordering source for async module evaluation.
     /// Zero is a valid first stamp; exhaustion is reported before publication.
@@ -197,6 +208,12 @@ struct RuntimeState {
     /// not increment this counter.
     #[cfg(test)]
     iterator_result_allocations: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveCollectionRecord {
+    Map { object: ObjectId, index: usize },
+    Set { object: ObjectId, index: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -678,6 +695,18 @@ struct ActiveFrameGuard {
     _bytecode_root: Option<FunctionBytecodeRef>,
 }
 
+/// LIFO scope for one Map/Set record exposed to QuickJS-style diagnostics.
+///
+/// Normal execution calls [`Self::finish`] so stack corruption becomes an
+/// engine error. `Drop` truncates the scope suffix during unwinding, ensuring
+/// a panicking callback cannot leave a stale record visible to later prints.
+struct ActiveCollectionRecordGuard {
+    runtime: Runtime,
+    record: ActiveCollectionRecord,
+    depth: usize,
+    active: bool,
+}
+
 struct BacktraceBarrierGuard {
     runtime: Runtime,
     token: Option<ActiveFrameToken>,
@@ -702,6 +731,26 @@ impl Drop for ActiveFrameGuard {
         if self.active {
             self.runtime
                 .pop_active_frame_fallback(self.token, self.depth);
+            self.active = false;
+        }
+    }
+}
+
+impl ActiveCollectionRecordGuard {
+    fn finish(mut self) -> Result<(), RuntimeError> {
+        let result = self
+            .runtime
+            .pop_active_collection_record(self.record, self.depth);
+        self.active = false;
+        result
+    }
+}
+
+impl Drop for ActiveCollectionRecordGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.runtime
+                .pop_active_collection_record_fallback(self.depth);
             self.active = false;
         }
     }
@@ -771,6 +820,7 @@ impl Runtime {
                 shape_fingerprints: HashMap::new(),
                 well_known_symbols,
                 active_frames: Vec::new(),
+                active_collection_records: Vec::new(),
                 next_active_frame_token: 1,
                 next_module_async_evaluation_order: 0,
                 #[cfg(test)]
@@ -1357,6 +1407,21 @@ impl Runtime {
 
     /// Allocate an ordinary object whose prototype is `prototype` or null.
     pub fn new_object(&self, prototype: Option<&ObjectRef>) -> Result<ObjectRef, RuntimeError> {
+        self.new_empty_object_with(prototype, ObjectData::ordinary)
+    }
+
+    pub(in crate::runtime) fn new_iterator_object(
+        &self,
+        prototype: &ObjectRef,
+    ) -> Result<ObjectRef, RuntimeError> {
+        self.new_empty_object_with(Some(prototype), ObjectData::iterator)
+    }
+
+    fn new_empty_object_with(
+        &self,
+        prototype: Option<&ObjectRef>,
+        build: fn(ShapeId, Vec<PropertySlot>) -> ObjectData,
+    ) -> Result<ObjectRef, RuntimeError> {
         let _operation = self.operation();
         if prototype.is_some_and(|prototype| !prototype.belongs_to(self)) {
             return Err(RuntimeError::WrongRuntime("prototype"));
@@ -1365,10 +1430,7 @@ impl Runtime {
 
         let mut state = self.0.state.borrow_mut();
         let shape = state.get_or_create_shape(prototype, &[])?;
-        let object = match state
-            .heap
-            .allocate_object(ObjectData::ordinary(shape, Vec::new()))
-        {
+        let object = match state.heap.allocate_object(build(shape, Vec::new())) {
             Ok(object) => object,
             Err(error) => {
                 let cleanup = state.heap.release_shape(shape)?;
@@ -4866,6 +4928,24 @@ impl Runtime {
         Ok(FunctionBytecodeRef::from_borrowed_handle(self.clone(), id)?)
     }
 
+    fn push_active_collection_record(
+        &self,
+        record: ActiveCollectionRecord,
+    ) -> ActiveCollectionRecordGuard {
+        let depth = {
+            let mut state = self.0.state.borrow_mut();
+            let depth = state.active_collection_records.len();
+            state.active_collection_records.push(record);
+            depth
+        };
+        ActiveCollectionRecordGuard {
+            runtime: self.clone(),
+            record,
+            depth,
+            active: true,
+        }
+    }
+
     fn push_active_frame(
         &self,
         function_root: ObjectRef,
@@ -5154,6 +5234,36 @@ impl Runtime {
                 .deferred_references
                 .borrow_mut()
                 .push_front(DeferredRefOp::BacktraceBarrierRestore { token, previous });
+        }
+    }
+
+    fn pop_active_collection_record(
+        &self,
+        record: ActiveCollectionRecord,
+        depth: usize,
+    ) -> Result<(), RuntimeError> {
+        let mut state = self.0.state.borrow_mut();
+        if state.active_collection_records.len() == depth + 1
+            && state.active_collection_records.last() == Some(&record)
+        {
+            state.active_collection_records.pop();
+            return Ok(());
+        }
+
+        state.active_collection_records.truncate(depth);
+        Err(RuntimeError::Invariant(
+            "active collection record stack was not restored in LIFO order",
+        ))
+    }
+
+    fn pop_active_collection_record_fallback(&self, depth: usize) {
+        if let Ok(mut state) = self.0.state.try_borrow_mut() {
+            state.active_collection_records.truncate(depth);
+        } else {
+            self.0
+                .deferred_references
+                .borrow_mut()
+                .push_front(DeferredRefOp::ActiveCollectionRecordsTruncate { depth });
         }
     }
 
@@ -9112,6 +9222,9 @@ impl Runtime {
                         state.active_frames.truncate(depth);
                     }
                 }
+                DeferredRefOp::ActiveCollectionRecordsTruncate { depth } => {
+                    state.active_collection_records.truncate(depth);
+                }
                 DeferredRefOp::BacktraceBarrierRestore { token, previous } => {
                     if let Some(frame) = state
                         .active_frames
@@ -9322,7 +9435,10 @@ fn raw_string_property_on_object(
             "backtrace name shape has no parallel property slot",
         ))?;
     Ok(match slot {
-        PropertySlot::Data(RawValue::String(value)) => RawStringProperty::String(value.clone()),
+        PropertySlot::Data(RawValue::String(value)) if value.is_flat() => {
+            RawStringProperty::String(value.clone())
+        }
+        PropertySlot::Data(RawValue::String(_)) => RawStringProperty::Other,
         PropertySlot::Data(_)
         | PropertySlot::VarRef(_)
         | PropertySlot::Accessor { .. }
@@ -9673,6 +9789,10 @@ impl Drop for RuntimeInner {
                     } else if state.active_frames.len() > depth {
                         state.active_frames.truncate(depth);
                     }
+                    Ok(())
+                }
+                DeferredRefOp::ActiveCollectionRecordsTruncate { depth } => {
+                    state.active_collection_records.truncate(depth);
                     Ok(())
                 }
                 DeferredRefOp::BacktraceBarrierRestore { token, previous } => {

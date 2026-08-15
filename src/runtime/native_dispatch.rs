@@ -713,7 +713,9 @@ impl Runtime {
             NativeFunctionId::Test262Agent(kind) => {
                 self.call_test262_agent(realm, kind, invocation, arguments)
             }
-            NativeFunctionId::QjsPrint => self.call_qjs_print(realm, invocation, arguments),
+            target @ (NativeFunctionId::QjsPrint | NativeFunctionId::QjsConsoleLog) => {
+                self.call_qjs_output(target, invocation, arguments)
+            }
             NativeFunctionId::PrimitivePrototypeToString(kind) => {
                 self.call_primitive_prototype_to_string(realm, kind, invocation, arguments)
             }

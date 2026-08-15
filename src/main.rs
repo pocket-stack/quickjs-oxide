@@ -1,4 +1,4 @@
-use std::fmt::Write as _;
+use std::io::Write as _;
 use std::process::ExitCode;
 
 use quickjs_oxide::lexer::quickjs_detect_module_bytes;
@@ -6,11 +6,8 @@ use quickjs_oxide::value::number_to_string;
 use quickjs_oxide::{
     Context, DebugInfoMode, DescriptorField, JsString, ModuleImportAttributes,
     ModuleImportMetaProperty, ModuleLoadResult, ModuleLoader, ModuleLoaderError,
-    OrdinaryPropertyDescriptor, PromiseState, PropertyKey, QUICKJS_COMPAT_VERSION, Runtime,
-    RuntimeError, Value,
+    OrdinaryPropertyDescriptor, PromiseState, QUICKJS_COMPAT_VERSION, Runtime, RuntimeError, Value,
 };
-
-const QUICKJS_PRINT_MAX_STRING_LENGTH: usize = 1_000;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum SourceGoal {
@@ -289,7 +286,7 @@ fn evaluate(
     // Script-goal `-e`, so dynamic import has the same host boundary everywhere.
     let _module_loader = runtime.set_module_loader(FileModuleLoader);
     let mut context = runtime.new_context();
-    if let Err(error) = context.install_qjs_print() {
+    if let Err(error) = context.install_qjs_helpers() {
         eprintln!("{error}");
         return ExitCode::from(1);
     }
@@ -311,10 +308,7 @@ fn evaluate(
                     Ok(true) => {}
                     Ok(false) => break,
                     Err(RuntimeError::Exception) => {
-                        match format_pending_exception(&runtime, &mut context) {
-                            Some(exception) => eprintln!("{exception}"),
-                            None => eprintln!("JavaScript exception"),
-                        }
+                        report_exception(format_pending_exception(&runtime, &mut context));
                         return ExitCode::from(1);
                     }
                     Err(error) => {
@@ -329,10 +323,7 @@ fn evaluate(
             ExitCode::SUCCESS
         }
         Err(EvaluationError::Rejected(exception)) => {
-            match format_exception(&runtime, &exception) {
-                Some(exception) => eprintln!("{exception}"),
-                None => eprintln!("JavaScript exception"),
-            }
+            report_exception(format_exception(&runtime, &exception));
             ExitCode::from(1)
         }
         Err(EvaluationError::Host(error)) => {
@@ -340,10 +331,7 @@ fn evaluate(
             ExitCode::from(1)
         }
         Err(EvaluationError::Runtime(RuntimeError::Exception)) => {
-            match format_pending_exception(&runtime, &mut context) {
-                Some(exception) => eprintln!("{exception}"),
-                None => eprintln!("JavaScript exception"),
-            }
+            report_exception(format_pending_exception(&runtime, &mut context));
             ExitCode::from(1)
         }
         Err(EvaluationError::Runtime(error)) => {
@@ -435,139 +423,24 @@ fn completion_text(value: Value) -> String {
     }
 }
 
-fn format_pending_exception(runtime: &Runtime, context: &mut Context) -> Option<String> {
+fn format_pending_exception(runtime: &Runtime, context: &mut Context) -> Option<Vec<u8>> {
     let exception = context.take_exception().ok().flatten()?;
     format_exception(runtime, &exception)
 }
 
-fn format_exception(runtime: &Runtime, exception: &Value) -> Option<String> {
-    if let Value::Object(object) = &exception {
-        if runtime.is_error_object(object).ok()? {
-            let name = runtime.intern_property_key("name").ok()?;
-            let message = runtime.intern_property_key("message").ok()?;
-            let name = runtime
-                .raw_string_property_for_diagnostics(object, &name)
-                .ok()?
-                .map_or_else(|| "Error".to_owned(), |name| diagnostic_c_string(&name));
-            let message = runtime
-                .raw_string_property_for_diagnostics(object, &message)
-                .ok()?
-                .map(|message| diagnostic_c_string(&message));
-            let header = match message {
-                Some(message) if !message.is_empty() => format!("{name}: {message}"),
-                Some(_) | None => name,
-            };
-            let stack = runtime.intern_property_key("stack").ok()?;
-            if let Some(stack) = runtime
-                .raw_string_property_for_diagnostics(object, &stack)
-                .ok()?
-            {
-                let stack = diagnostic_c_string(&stack);
-                return Some(format!(
-                    "{header}\n{}",
-                    stack.strip_suffix('\n').unwrap_or(&stack)
-                ));
-            }
-            return Some(header);
-        }
-    }
-    format_thrown_value(runtime, exception)
+fn format_exception(runtime: &Runtime, exception: &Value) -> Option<Vec<u8>> {
+    runtime.qjs_print_value_bytes(exception).ok()
 }
 
-fn format_thrown_value(runtime: &Runtime, value: &Value) -> Option<String> {
-    Some(match value {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) if *value == 0.0 && value.is_sign_negative() => "-0".to_owned(),
-        Value::Float(value) => number_to_string(*value),
-        Value::BigInt(value) => format!("{value}n"),
-        Value::String(value) => quote_js_string(value, Some(QUICKJS_PRINT_MAX_STRING_LENGTH)),
-        Value::Symbol(symbol) => {
-            let key = PropertyKey::from(symbol);
-            let description = runtime.property_key_to_js_string(&key).ok()?;
-            let description = if is_ascii_identifier(&description) {
-                description.to_utf8_lossy()
-            } else {
-                quote_js_string(&description, None)
-            };
-            format!("Symbol({description})")
-        }
-        // Full side-effect-free object traversal and class-specific rendering
-        // will move behind a runtime diagnostic API as more object classes are
-        // implemented. Error objects use the exact QuickJS path above.
-        Value::Object(_) => "[object Object]".to_owned(),
-    })
-}
-
-fn diagnostic_c_string(value: &JsString) -> String {
-    char::decode_utf16(value.utf16_units().take_while(|unit| *unit != 0))
-        .map(|result| result.unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect()
-}
-
-fn quote_js_string(value: &JsString, max_length: Option<usize>) -> String {
-    let units = value.utf16_units().collect::<Vec<_>>();
-    let limit = max_length.unwrap_or(units.len()).min(units.len());
-    let mut output = String::with_capacity(limit.saturating_add(2));
-    output.push('"');
-
-    let mut index = 0;
-    while index < limit {
-        let unit = units[index];
-        index += 1;
-        match unit {
-            0x0009 => output.push_str("\\t"),
-            0x000d => output.push_str("\\r"),
-            0x000a => output.push_str("\\n"),
-            0x0008 => output.push_str("\\b"),
-            0x000c => output.push_str("\\f"),
-            0x005c => output.push_str("\\\\"),
-            0x0022 => output.push_str("\\\""),
-            0x0020..=0x007e => {
-                output.push(char::from_u32(u32::from(unit)).expect("ASCII is valid"))
-            }
-            0x0000..=0x001f | 0x007f..=0x009f => push_unicode_escape(&mut output, unit),
-            0xd800..=0xdbff if index < limit && (0xdc00..=0xdfff).contains(&units[index]) => {
-                let low = units[index];
-                index += 1;
-                let scalar =
-                    0x1_0000 + ((u32::from(unit) - 0xd800) << 10) + (u32::from(low) - 0xdc00);
-                output.push(char::from_u32(scalar).expect("surrogate pair is a valid scalar"));
-            }
-            0xd800..=0xdfff => push_unicode_escape(&mut output, unit),
-            _ => output.push(
-                char::from_u32(u32::from(unit)).expect("non-surrogate UTF-16 unit is a scalar"),
-            ),
-        }
-    }
-
-    output.push('"');
-    if units.len() > limit {
-        let remaining = units.len() - limit;
-        let plural = if remaining > 1 { "s" } else { "" };
-        write!(output, "... {remaining} more character{plural}")
-            .expect("writing to a String cannot fail");
-    }
-    output
-}
-
-fn push_unicode_escape(output: &mut String, unit: u16) {
-    write!(output, "\\u{unit:04x}").expect("writing to a String cannot fail");
-}
-
-fn is_ascii_identifier(value: &JsString) -> bool {
-    let mut units = value.utf16_units();
-    let Some(first) = units.next() else {
-        return false;
+fn report_exception(exception: Option<Vec<u8>>) {
+    let Some(exception) = exception else {
+        eprintln!("JavaScript exception");
+        return;
     };
-    is_ascii_identifier_start(first)
-        && units.all(|unit| is_ascii_identifier_start(unit) || (0x0030..=0x0039).contains(&unit))
-}
-
-const fn is_ascii_identifier_start(unit: u16) -> bool {
-    matches!(unit, 0x0061..=0x007a | 0x0041..=0x005a | 0x005f | 0x0024)
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    let _ = stderr.write_all(&exception);
+    let _ = stderr.write_all(b"\n");
 }
 
 #[cfg(test)]
@@ -648,7 +521,7 @@ mod tests {
         assert!(!context.has_exception());
         assert_eq!(
             format_exception(&runtime, &Value::Object(error)),
-            Some("Error".to_owned())
+            Some(b"Error".to_vec())
         );
         assert!(!context.has_exception(), "diagnostic getter was executed");
     }
@@ -687,7 +560,7 @@ mod tests {
 
         assert_eq!(
             format_exception(&runtime, &Value::Object(error)),
-            Some("PrototypeName: PrototypeMessage\nprototype stack".to_owned())
+            Some(b"PrototypeName: PrototypeMessage\nprototype stack".to_vec())
         );
     }
 }
