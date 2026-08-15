@@ -600,9 +600,14 @@ impl FlattenFrame {
 pub enum RuntimeError {
     WrongRuntime(&'static str),
     WrongContext(&'static str),
-    /// A module handle escaped a resolution transaction which later rolled
-    /// back. Its append-only identity is stable but no longer executable.
+    /// A module identity escaped a construction or resolution transaction
+    /// which later rolled back. Its append-only identity is stable but no
+    /// longer executable.
     AbortedModule,
+    /// Resolution was observed through host re-entry before construction and
+    /// its request table completed, or a host callback failed after QuickJS's
+    /// one-shot latch was set. The graph cannot yet be linked safely.
+    IncompleteModuleResolution,
     Invariant(&'static str),
     Exception,
     Engine(Error),
@@ -617,7 +622,12 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::WrongRuntime(kind) => write!(formatter, "{kind} belongs to another runtime"),
             Self::WrongContext(kind) => write!(formatter, "{kind} belongs to another context"),
-            Self::AbortedModule => formatter.write_str("module resolution was rolled back"),
+            Self::AbortedModule => {
+                formatter.write_str("module construction or resolution was rolled back")
+            }
+            Self::IncompleteModuleResolution => {
+                formatter.write_str("module resolution is incomplete and cannot be linked safely")
+            }
             Self::Invariant(message) => write!(formatter, "runtime invariant failed: {message}"),
             Self::Exception => formatter.write_str("JavaScript exception"),
             Self::Engine(error) => error.fmt(formatter),

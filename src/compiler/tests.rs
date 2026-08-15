@@ -2161,6 +2161,7 @@ fn async_generator_return_hand_lowers_active_iterator_close() {
 use crate::lexer::{LexError, LexErrorKind, Lexer, Position, Span};
 use crate::module::{
     ModuleExportTarget, ModuleImportAttributes, ModuleImportCollisionDeclaration, ModuleImportName,
+    ModuleRequest,
 };
 use crate::object::{
     AccessorValue, CompleteOrdinaryPropertyDescriptor, DescriptorField, OrdinaryPropertyDescriptor,
@@ -2596,6 +2597,190 @@ fn module_import_attribute_checker_is_synchronous_and_skips_empty_clauses() {
     assert_eq!(
         throwing.calls,
         [vec![("type".to_owned(), "json".to_owned())]]
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RecordedRequestAttributes {
+    Absent,
+    Present(Vec<(String, String)>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ModuleRequestLifecycleEvent {
+    Published {
+        specifier: String,
+        attributes: RecordedRequestAttributes,
+    },
+    Checked(Vec<(String, String)>),
+}
+
+#[derive(Default)]
+struct RecordingModuleRequestLifecycle {
+    events: Vec<ModuleRequestLifecycleEvent>,
+    fail_publish_at: Option<usize>,
+    fail_check_at: Option<usize>,
+    published: usize,
+    checked: usize,
+}
+
+fn recorded_attributes(
+    attributes: &[crate::module::ModuleImportAttribute],
+) -> Vec<(String, String)> {
+    attributes
+        .iter()
+        .map(|attribute| {
+            (
+                attribute.key.to_utf8_lossy(),
+                attribute.value.to_utf8_lossy(),
+            )
+        })
+        .collect()
+}
+
+impl ModuleImportAttributeChecker for RecordingModuleRequestLifecycle {
+    fn publish_request(&mut self, request: &ModuleRequest) -> Result<(), ModuleCompileFailure> {
+        self.published += 1;
+        self.events.push(ModuleRequestLifecycleEvent::Published {
+            specifier: request.specifier.to_utf8_lossy(),
+            attributes: match &request.attributes {
+                ModuleImportAttributes::Absent => RecordedRequestAttributes::Absent,
+                ModuleImportAttributes::Present(attributes) => {
+                    RecordedRequestAttributes::Present(recorded_attributes(attributes))
+                }
+            },
+        });
+        if self.fail_publish_at == Some(self.published) {
+            return Err(ModuleCompileFailure::Throw(Value::Int(17)));
+        }
+        Ok(())
+    }
+
+    fn check(
+        &mut self,
+        attributes: &[crate::module::ModuleImportAttribute],
+    ) -> Result<(), ModuleCompileFailure> {
+        self.checked += 1;
+        self.events
+            .push(ModuleRequestLifecycleEvent::Checked(recorded_attributes(
+                attributes,
+            )));
+        if self.fail_check_at == Some(self.checked) {
+            return Err(ModuleCompileFailure::Throw(Value::Int(23)));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn module_requests_publish_in_source_order_before_attribute_checks() {
+    let mut lifecycle = RecordingModuleRequestLifecycle::default();
+    let module = compile_unlinked_module_with_name_and_attribute_checker(
+        r#"
+        import "bare";
+        import "empty" with {};
+        export { value } from "checked" with { type: "json", flavor: "test" };
+        export * from "tail";
+        "#,
+        JsString::from_static("request-lifecycle.mjs"),
+        DebugInfoMode::StripDebug,
+        Some(&mut lifecycle),
+    )
+    .unwrap();
+
+    assert_eq!(module.requested_modules().len(), 4);
+    assert_eq!(
+        lifecycle.events,
+        [
+            ModuleRequestLifecycleEvent::Published {
+                specifier: "bare".to_owned(),
+                attributes: RecordedRequestAttributes::Absent,
+            },
+            ModuleRequestLifecycleEvent::Published {
+                specifier: "empty".to_owned(),
+                attributes: RecordedRequestAttributes::Present(vec![]),
+            },
+            ModuleRequestLifecycleEvent::Published {
+                specifier: "checked".to_owned(),
+                attributes: RecordedRequestAttributes::Present(vec![
+                    ("type".to_owned(), "json".to_owned()),
+                    ("flavor".to_owned(), "test".to_owned()),
+                ]),
+            },
+            ModuleRequestLifecycleEvent::Checked(vec![
+                ("type".to_owned(), "json".to_owned()),
+                ("flavor".to_owned(), "test".to_owned()),
+            ]),
+            ModuleRequestLifecycleEvent::Published {
+                specifier: "tail".to_owned(),
+                attributes: RecordedRequestAttributes::Absent,
+            },
+        ]
+    );
+}
+
+#[test]
+fn module_request_publication_and_checker_failures_stop_without_repetition() {
+    let mut publish_failure = RecordingModuleRequestLifecycle {
+        fail_publish_at: Some(2),
+        ..RecordingModuleRequestLifecycle::default()
+    };
+    let failure = compile_unlinked_module_with_name_and_attribute_checker(
+        r#"
+        import "prefix";
+        import "rejected" with { type: "json" };
+        import "unreached";
+        "#,
+        JsString::from_static("request-publish-failure.mjs"),
+        DebugInfoMode::StripDebug,
+        Some(&mut publish_failure),
+    )
+    .unwrap_err();
+    assert_eq!(failure, ModuleCompileFailure::Throw(Value::Int(17)));
+    assert_eq!(
+        publish_failure.events,
+        [
+            ModuleRequestLifecycleEvent::Published {
+                specifier: "prefix".to_owned(),
+                attributes: RecordedRequestAttributes::Absent,
+            },
+            ModuleRequestLifecycleEvent::Published {
+                specifier: "rejected".to_owned(),
+                attributes: RecordedRequestAttributes::Present(vec![(
+                    "type".to_owned(),
+                    "json".to_owned(),
+                )]),
+            },
+        ]
+    );
+
+    let mut check_failure = RecordingModuleRequestLifecycle {
+        fail_check_at: Some(1),
+        ..RecordingModuleRequestLifecycle::default()
+    };
+    let failure = compile_unlinked_module_with_name_and_attribute_checker(
+        r#"
+        import "rejected" with { type: "json" ;
+        import "unreached";
+        "#,
+        JsString::from_static("request-check-failure.mjs"),
+        DebugInfoMode::StripDebug,
+        Some(&mut check_failure),
+    )
+    .unwrap_err();
+    assert_eq!(failure, ModuleCompileFailure::Throw(Value::Int(23)));
+    assert_eq!(
+        check_failure.events,
+        [
+            ModuleRequestLifecycleEvent::Published {
+                specifier: "rejected".to_owned(),
+                attributes: RecordedRequestAttributes::Present(vec![(
+                    "type".to_owned(),
+                    "json".to_owned(),
+                )]),
+            },
+            ModuleRequestLifecycleEvent::Checked(vec![("type".to_owned(), "json".to_owned(),)]),
+        ]
     );
 }
 

@@ -12,8 +12,10 @@ canonical, host-populated `import.meta` object. JavaScript-valued module-host
 errors retain their exact values and object/Symbol identity. Context-aware
 module-host callbacks can synchronously compile and return same-Context
 modules, including nested loader re-entry protected by a finite host-stack
-budget. JSON5/byte-oriented loading and the remaining conformance gaps are
-still parity work.
+budget. Parse-in-progress module identities and source-order request prefixes
+are visible to those callbacks in QuickJS order, with unsafe failed identities
+represented deterministically. JSON5/byte-oriented loading and the remaining
+conformance gaps are still parity work.
 
 <!-- current-test262-metrics:start -->
 The authoritative R3et Test262 baseline records **79,475 full-corpus passes

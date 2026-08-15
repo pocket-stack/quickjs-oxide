@@ -47,6 +47,11 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 - initiating-Context access for module-host callbacks, same-Context compiled
   module results, synchronous nested loader compilation with QuickJS-matched
   callback depth and evaluation order, and catchable native-stack exhaustion
+- QuickJS-ordered parse-time module publication: the construction identity is
+  cache-visible before the first token, each request prefix is visible before
+  its attribute callback, successful completion preserves the same identity,
+  and failed/referenced identities remain deterministic without unsafe raw
+  pointer reuse
 - native command-line execution, including file-module goal detection,
   filesystem dependencies, top-level-await settlement, and `import.meta`
   `url`/`main`; plus a Rust/WASM browser playground
@@ -59,15 +64,17 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include JSON5/byte-oriented host loading, the remaining
-parse-time module-cache publication details observable during callback
-re-entry, and the unsupported/failed leaves recorded by the current Test262
-vector.
-Failed acyclic source graphs retry like QuickJS. For a failed cycle, Rust
-safely unpublishes every record that still points into the failed transaction;
-it does not reproduce pinned QuickJS's dangling dependency pointer. Reclaiming
-the resulting vacant module-cache slots remains architecture work. A Feature
-Parity claim additionally requires the acceptance contract in
+Major open frontiers include JSON5/byte-oriented host loading, remaining
+module-host lifetime and allocation-failure edge matrices, and the
+unsupported/failed leaves recorded by the current Test262 vector. Failed
+acyclic source graphs retry like QuickJS. Parse-time resolution success and
+one-shot failure latches match the pinned callback order; an incomplete graph
+is non-executable and dynamic import rejects deterministically. Rust safely
+uses an `Aborted` identity where pinned QuickJS can retain a dangling pointer
+whose subsequent use enters native undefined behavior. Native crash and
+allocator-aliasing probes are deliberately not automated. Reclaiming the
+resulting vacant module-cache slots remains architecture work. A Feature Parity
+claim additionally requires the acceptance contract in
 [`parity.md`](parity.md), including QuickJS differential evidence and
 non-Test262 behavior.
 

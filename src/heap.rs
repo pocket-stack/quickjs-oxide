@@ -354,14 +354,34 @@ pub(crate) enum RawPublishedModuleExportTarget {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RawModuleRecordBody {
-    SourceText { function: FunctionBytecodeId },
-    Json { default_value: RawValue },
+    /// Source-text module definition published before parsing begins.
+    ///
+    /// The record may expose only its source-order requested-module prefix;
+    /// every heap-owning and executable field remains pristine until the
+    /// compiler atomically replaces this body with `SourceText`.
+    Parsing,
+    SourceText {
+        function: FunctionBytecodeId,
+    },
+    Json {
+        default_value: RawValue,
+    },
+    /// Stable append-only identity retained after construction rollback.
+    ///
+    /// This state is used only when another live module already names the
+    /// identity. It owns no heap edges and is excluded from name lookup.
+    Aborted,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RawModuleResolutionState {
     Unresolved,
     Resolving,
+    /// QuickJS latches `resolved` before invoking host callbacks and does not
+    /// retry after a callback failure which the host subsequently clears.
+    /// Rust keeps that state explicit instead of retaining unsafe partial raw
+    /// dependency pointers.
+    Failed,
     Resolved(Rc<[ModuleId]>),
 }
 
@@ -412,6 +432,7 @@ pub(crate) enum RawModuleLinkRealm {
 pub(crate) enum RawModuleTransition {
     BeginResolution,
     FinishResolution(Rc<[ModuleId]>),
+    FailResolution,
     ResetResolution,
     BeginLink,
     FinishLink,
@@ -455,7 +476,7 @@ pub(crate) struct RawModuleRecord {
     pub(crate) declaration_order: Rc<[u16]>,
     pub(crate) link_initializers: Rc<[ModuleLinkInitializer]>,
     pub(crate) import_collisions: Rc<[ModuleImportCollision]>,
-    pub(crate) requested_modules: Rc<[ModuleRequest]>,
+    pub(crate) requested_modules: Rc<Vec<ModuleRequest>>,
     pub(crate) imports: Rc<[ModuleImport]>,
     pub(crate) exports: Rc<[RawPublishedModuleExport]>,
     pub(crate) star_exports: Rc<[ModuleStarExport]>,
@@ -494,9 +515,126 @@ pub(crate) struct RawModuleRecord {
     pub(crate) compile_realm: ContextId,
 }
 
+fn module_record_has_pristine_construction_metadata(record: &RawModuleRecord) -> bool {
+    record.import_meta.is_none()
+        && record.declaration_order.is_empty()
+        && record.link_initializers.is_empty()
+        && record.import_collisions.is_empty()
+        && record.imports.is_empty()
+        && record.exports.is_empty()
+        && record.star_exports.is_empty()
+        && record.instance.is_none()
+        && matches!(record.namespace, RawModuleNamespaceState::Empty)
+        && matches!(record.link_status, RawModuleLinkStatus::Unlinked)
+        && matches!(record.evaluation, RawModuleEvaluationState::Unevaluated)
+        && !record.has_top_level_await
+        && record.evaluation_cycle_root.is_none()
+        && record.evaluation_promise.is_none()
+        && record.evaluation_resolve.is_none()
+        && record.evaluation_reject.is_none()
+        && record.pending_async_dependencies == 0
+        && record.async_parent_modules.is_empty()
+        && record.async_evaluation_order.is_none()
+        && record.link_realm.is_none()
+}
+
+fn module_record_references_identity(record: &RawModuleRecord, module: ModuleId) -> bool {
+    matches!(
+        &record.resolution,
+        RawModuleResolutionState::Resolved(dependencies)
+            if dependencies.contains(&module)
+    ) || record.async_parent_modules.contains(&module)
+        || record.evaluation_cycle_root == Some(module)
+}
+
+fn validate_module_body_replacement(
+    current: &RawModuleRecord,
+    replacement: &RawModuleRecord,
+) -> Result<(), HeapError> {
+    match (&current.body, &replacement.body) {
+        (RawModuleRecordBody::Parsing, RawModuleRecordBody::Parsing) => {
+            if replacement.requested_modules.len() < current.requested_modules.len()
+                || !replacement
+                    .requested_modules
+                    .starts_with(current.requested_modules.as_slice())
+            {
+                return Err(HeapError::Invariant(
+                    "parse-in-progress module replacement changed its request prefix",
+                ));
+            }
+            if replacement.resolution != current.resolution {
+                return Err(HeapError::Invariant(
+                    "parse-in-progress module replacement changed its resolution state",
+                ));
+            }
+        }
+        (RawModuleRecordBody::Parsing, RawModuleRecordBody::SourceText { .. }) => {
+            if replacement.requested_modules != current.requested_modules {
+                return Err(HeapError::Invariant(
+                    "completed module changed its published request prefix",
+                ));
+            }
+            if replacement.resolution != current.resolution {
+                return Err(HeapError::Invariant(
+                    "completed module changed its parse-time resolution state",
+                ));
+            }
+        }
+        (RawModuleRecordBody::Parsing, RawModuleRecordBody::Aborted) => {
+            return Err(HeapError::Invariant(
+                "module construction abort bypassed its ownership primitive",
+            ));
+        }
+        (RawModuleRecordBody::SourceText { .. }, RawModuleRecordBody::SourceText { .. })
+        | (RawModuleRecordBody::Json { .. }, RawModuleRecordBody::Json { .. }) => {}
+        (RawModuleRecordBody::Aborted, _) => {
+            return Err(HeapError::Invariant(
+                "aborted module identity cannot be replaced",
+            ));
+        }
+        _ => {
+            return Err(HeapError::Invariant(
+                "loaded-module replacement changed its body state illegally",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn aborted_module_record(record: &RawModuleRecord) -> RawModuleRecord {
+    RawModuleRecord {
+        name: record.name.clone(),
+        body: RawModuleRecordBody::Aborted,
+        import_meta: None,
+        declaration_order: Rc::from([]),
+        link_initializers: Rc::from([]),
+        import_collisions: Rc::from([]),
+        requested_modules: Rc::new(Vec::new()),
+        imports: Rc::from([]),
+        exports: Rc::from([]),
+        star_exports: Rc::from([]),
+        resolution: RawModuleResolutionState::Unresolved,
+        instance: None,
+        namespace: RawModuleNamespaceState::Empty,
+        link_status: RawModuleLinkStatus::Unlinked,
+        evaluation: RawModuleEvaluationState::Unevaluated,
+        has_top_level_await: false,
+        evaluation_cycle_root: None,
+        evaluation_promise: None,
+        evaluation_resolve: None,
+        evaluation_reject: None,
+        pending_async_dependencies: 0,
+        async_parent_modules: Vec::new(),
+        async_evaluation_order: None,
+        link_realm: None,
+        compile_realm: record.compile_realm,
+    }
+}
+
 /// Construction-ordered loaded modules for one Context. Slots are never
-/// compacted or reused: rollback changes a slot to `None`, while the name map
-/// continues to point at the oldest remaining live record.
+/// compacted or reused: rollback changes an unreferenced slot to `None` and a
+/// referenced slot to `Aborted`, while the name map continues to point at the
+/// oldest remaining live record.
 #[derive(Debug, PartialEq)]
 pub(crate) struct LoadedModuleCache {
     records: Vec<Option<RawModuleRecord>>,
@@ -509,6 +647,73 @@ impl LoadedModuleCache {
             records: Vec::new(),
             first_by_name: HashMap::new(),
         }
+    }
+
+    fn validate_first_by_name(&self) -> Result<(), HeapError> {
+        for record in self.records.iter().flatten() {
+            if matches!(&record.body, RawModuleRecordBody::Aborted) {
+                continue;
+            }
+            if !self.first_by_name.contains_key(&record.name) {
+                return Err(HeapError::Invariant(
+                    "loaded-module oldest-name index is incomplete",
+                ));
+            }
+        }
+        for (name, first) in &self.first_by_name {
+            let record =
+                self.records
+                    .get(first.0)
+                    .and_then(Option::as_ref)
+                    .ok_or(HeapError::Invariant(
+                        "loaded-module oldest-name index references a tombstone",
+                    ))?;
+            if matches!(&record.body, RawModuleRecordBody::Aborted) {
+                return Err(HeapError::Invariant(
+                    "loaded-module oldest-name index references an aborted record",
+                ));
+            }
+            if &record.name != name {
+                return Err(HeapError::Invariant(
+                    "loaded-module oldest-name index references another name",
+                ));
+            }
+            if self.records[..first.0].iter().flatten().any(|earlier| {
+                !matches!(&earlier.body, RawModuleRecordBody::Aborted) && &earlier.name == name
+            }) {
+                return Err(HeapError::Invariant(
+                    "loaded-module name index does not reference the oldest live record",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn rebuild_first_by_name_excluding(
+        &self,
+        mut excluded: impl FnMut(ModuleId) -> bool,
+    ) -> Result<HashMap<JsString, ModuleId>, HeapError> {
+        // `JsString` mutates only transparent rope caches; its UTF-16
+        // equality/hash identity is stable while used as a module-name key.
+        #[allow(clippy::mutable_key_type)]
+        let mut rebuilt = HashMap::new();
+        rebuilt
+            .try_reserve(self.first_by_name.len())
+            .map_err(|_| HeapError::Allocation {
+                operation: "rebuilding loaded-module oldest-name index",
+            })?;
+        for (index, record) in self.records.iter().enumerate() {
+            let id = ModuleId(index);
+            if excluded(id) {
+                continue;
+            }
+            if let Some(record) = record
+                && !matches!(&record.body, RawModuleRecordBody::Aborted)
+            {
+                rebuilt.entry(record.name.clone()).or_insert(id);
+            }
+        }
+        Ok(rebuilt)
     }
 }
 
@@ -12146,15 +12351,17 @@ impl Heap {
         let Some(module) = context.loaded_modules.first_by_name.get(name).copied() else {
             return Ok(None);
         };
-        if context
+        let record = context
             .loaded_modules
             .records
             .get(module.0)
             .and_then(Option::as_ref)
-            .is_none()
-        {
-            return Err(HeapError::Invariant(
+            .ok_or(HeapError::Invariant(
                 "loaded-module name index references a tombstone",
+            ))?;
+        if matches!(&record.body, RawModuleRecordBody::Aborted) {
+            return Err(HeapError::Invariant(
+                "loaded-module name index references an aborted record",
             ));
         }
         Ok(Some(RawModuleRef { cache, module }))
@@ -12175,8 +12382,9 @@ impl Heap {
     }
 
     /// Return whether an append-only module identity still names a live
-    /// record. A rollback tombstone is a stable non-live state; out-of-range
-    /// identities and stale Contexts remain checked heap errors.
+    /// record. A rollback tombstone or retained `Aborted` identity is a stable
+    /// non-live state; out-of-range identities and stale Contexts remain
+    /// checked heap errors.
     pub(crate) fn loaded_module_is_live(&self, module: RawModuleRef) -> Result<bool, HeapError> {
         let record = self
             .context(module.cache)?
@@ -12186,10 +12394,13 @@ impl Heap {
             .ok_or(HeapError::Invariant(
                 "loaded-module identity is out of bounds",
             ))?;
-        Ok(record.is_some())
+        Ok(record
+            .as_ref()
+            .is_some_and(|record| !matches!(&record.body, RawModuleRecordBody::Aborted)))
     }
 
     /// Borrowed snapshots of every live record in construction order.
+    /// Stable `Aborted` identities are deliberately omitted.
     pub(crate) fn loaded_modules(
         &self,
         cache: ContextId,
@@ -12201,10 +12412,10 @@ impl Heap {
             .iter()
             .enumerate()
             .filter_map(|(index, record)| {
-                record
-                    .as_ref()
-                    .cloned()
-                    .map(|record| (ModuleId(index), record))
+                record.as_ref().and_then(|record| {
+                    (!matches!(&record.body, RawModuleRecordBody::Aborted))
+                        .then(|| (ModuleId(index), record.clone()))
+                })
             })
             .collect())
     }
@@ -12221,6 +12432,37 @@ impl Heap {
         module: RawModuleRef,
         transition: RawModuleTransition,
     ) -> Result<(), HeapError> {
+        let current = self.loaded_module(module)?;
+        match &current.body {
+            RawModuleRecordBody::Aborted => {
+                return Err(HeapError::Invariant(
+                    "loaded-module transition targeted an aborted identity",
+                ));
+            }
+            RawModuleRecordBody::Parsing
+                if !matches!(
+                    &transition,
+                    RawModuleTransition::BeginResolution
+                        | RawModuleTransition::FinishResolution(_)
+                        | RawModuleTransition::FailResolution
+                        | RawModuleTransition::ResetResolution
+                ) =>
+            {
+                return Err(HeapError::Invariant(
+                    "parse-in-progress module received an executable-state transition",
+                ));
+            }
+            RawModuleRecordBody::Parsing
+            | RawModuleRecordBody::SourceText { .. }
+            | RawModuleRecordBody::Json { .. } => {}
+        }
+        if matches!(&transition, RawModuleTransition::FailResolution)
+            && !matches!(&current.body, RawModuleRecordBody::Parsing)
+        {
+            return Err(HeapError::Invariant(
+                "loaded-module resolution failure did not target Parsing state",
+            ));
+        }
         if let RawModuleTransition::FinishResolution(dependencies) = &transition {
             let context = self.context(module.cache)?;
             for dependency in dependencies.iter().copied() {
@@ -12235,6 +12477,13 @@ impl Heap {
                         "resolved loaded-module transition references a missing cache record",
                     ));
                 }
+            }
+            if matches!(&current.body, RawModuleRecordBody::Parsing)
+                && dependencies.len() > current.requested_modules.len()
+            {
+                return Err(HeapError::Invariant(
+                    "parse-in-progress module resolved beyond its request prefix",
+                ));
             }
         }
         if let RawModuleTransition::FinishNamespace(namespace) = &transition {
@@ -12263,7 +12512,7 @@ impl Heap {
             &transition,
             RawModuleTransition::BeginLink | RawModuleTransition::FinishLink
         ) {
-            let record = self.loaded_module(module)?;
+            let record = current;
             self.validate_loaded_module_record(module.cache, Some(module.module), &record)?;
             let instance = record.instance.as_ref().ok_or(HeapError::Invariant(
                 "loaded-module link transition has no instance",
@@ -12303,6 +12552,16 @@ impl Heap {
                 _ => {
                     return Err(HeapError::Invariant(
                         "loaded-module resolution did not finish from Resolving",
+                    ));
+                }
+            },
+            RawModuleTransition::FailResolution => match record.resolution {
+                RawModuleResolutionState::Resolving | RawModuleResolutionState::Resolved(_) => {
+                    record.resolution = RawModuleResolutionState::Failed;
+                }
+                _ => {
+                    return Err(HeapError::Invariant(
+                        "loaded-module resolution failure did not target an active latch",
                     ));
                 }
             },
@@ -12457,6 +12716,41 @@ impl Heap {
         Ok(())
     }
 
+    /// Append one parser-discovered request without cloning the complete
+    /// source-order prefix on every publication. Module requests own no arena
+    /// edges or atoms, so the only fallible step is reserving vector capacity
+    /// before the new request becomes visible.
+    pub(crate) fn append_parsing_module_request(
+        &mut self,
+        module: RawModuleRef,
+        request: ModuleRequest,
+    ) -> Result<(), HeapError> {
+        let record = self.loaded_module_record_mut(module)?;
+        if !matches!(&record.body, RawModuleRecordBody::Parsing) {
+            return Err(HeapError::Invariant(
+                "module request publication did not target Parsing state",
+            ));
+        }
+        if let Some(requests) = Rc::get_mut(&mut record.requested_modules) {
+            requests.try_reserve(1).map_err(|_| HeapError::Allocation {
+                operation: "growing a parse-in-progress module request prefix",
+            })?;
+            requests.push(request);
+            return Ok(());
+        }
+
+        let mut requests = Vec::new();
+        requests
+            .try_reserve(record.requested_modules.len() + 1)
+            .map_err(|_| HeapError::Allocation {
+                operation: "copying a shared parse-in-progress module request prefix",
+            })?;
+        requests.extend(record.requested_modules.iter().cloned());
+        requests.push(request);
+        record.requested_modules = Rc::new(requests);
+        Ok(())
+    }
+
     fn loaded_module_record_mut(
         &mut self,
         module: RawModuleRef,
@@ -12489,6 +12783,50 @@ impl Heap {
             return Err(HeapError::Invariant(
                 "loaded-module compilation realm disagrees with its Context cache",
             ));
+        }
+        match &record.body {
+            RawModuleRecordBody::Parsing => {
+                if !module_record_has_pristine_construction_metadata(record) {
+                    return Err(HeapError::Invariant(
+                        "parse-in-progress module retains completed metadata",
+                    ));
+                }
+                if let RawModuleResolutionState::Resolved(dependencies) = &record.resolution {
+                    if dependencies.len() > record.requested_modules.len() {
+                        return Err(HeapError::Invariant(
+                            "parse-in-progress module resolved beyond its request prefix",
+                        ));
+                    }
+                    let context = self.context(cache)?;
+                    for dependency in dependencies.iter().copied() {
+                        if context
+                            .loaded_modules
+                            .records
+                            .get(dependency.0)
+                            .and_then(Option::as_ref)
+                            .is_none()
+                        {
+                            return Err(HeapError::Invariant(
+                                "parse-in-progress module dependency references a missing identity",
+                            ));
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            RawModuleRecordBody::Aborted => {
+                if module.is_none()
+                    || !record.requested_modules.is_empty()
+                    || !matches!(record.resolution, RawModuleResolutionState::Unresolved)
+                    || !module_record_has_pristine_construction_metadata(record)
+                {
+                    return Err(HeapError::Invariant(
+                        "aborted module retained state beyond its name and realm",
+                    ));
+                }
+                return Ok(());
+            }
+            RawModuleRecordBody::SourceText { .. } | RawModuleRecordBody::Json { .. } => {}
         }
         if record.instance.is_some() != record.link_realm.is_some() {
             return Err(HeapError::Invariant(
@@ -12525,6 +12863,11 @@ impl Heap {
                 }
                 validate_module_storable_value(default_value)?;
                 None
+            }
+            RawModuleRecordBody::Parsing | RawModuleRecordBody::Aborted => {
+                return Err(HeapError::Invariant(
+                    "module construction state escaped ready-record validation",
+                ));
             }
         };
         if let Some(import_meta) = record.import_meta
@@ -12832,6 +13175,7 @@ impl Heap {
                 "loaded-module replacement changed its compilation cache",
             ));
         }
+        validate_module_body_replacement(&current, &replacement)?;
         let cache_index = self.live_index(RawId::Context(module.cache))?;
 
         let old_edges = raw_module_record_edges(&current);
@@ -12874,6 +13218,113 @@ impl Heap {
             .expect("authenticated loaded-module record disappeared before replacement");
         let previous = std::mem::replace(slot, replacement);
         drop(previous);
+        cleanup.merge(self.release_preflighted_module_edges(&removed_edges));
+        Ok(cleanup)
+    }
+
+    /// Atomically abort one parse-in-progress module definition.
+    ///
+    /// An unreferenced identity becomes an ordinary tombstone. If another live
+    /// record already refers to it, the slot instead retains an edge-free
+    /// `Aborted` sentinel so those append-only references remain structurally
+    /// valid while every public module operation observes a non-live handle.
+    /// In both cases the record is removed from oldest-name lookup.
+    pub(crate) fn abort_parsing_loaded_module(
+        &mut self,
+        module: RawModuleRef,
+    ) -> Result<HeapCleanup, HeapError> {
+        let current = self.loaded_module(module)?;
+        if !matches!(&current.body, RawModuleRecordBody::Parsing) {
+            return Err(HeapError::Invariant(
+                "module construction abort did not target Parsing state",
+            ));
+        }
+        let aborted = aborted_module_record(&current);
+        self.validate_loaded_module_record(module.cache, Some(module.module), &aborted)?;
+
+        let context = self.context(module.cache)?;
+        context.loaded_modules.validate_first_by_name()?;
+        let referenced =
+            context
+                .loaded_modules
+                .records
+                .iter()
+                .enumerate()
+                .any(|(index, record)| {
+                    index != module.module.0
+                        && record.as_ref().is_some_and(|record| {
+                            !matches!(&record.body, RawModuleRecordBody::Aborted)
+                                && module_record_references_identity(record, module.module)
+                        })
+                });
+        let indexed_first = context
+            .loaded_modules
+            .first_by_name
+            .get(&current.name)
+            .copied();
+        let fallback = (indexed_first == Some(module.module)).then(|| {
+            context
+                .loaded_modules
+                .records
+                .iter()
+                .enumerate()
+                .skip(module.module.0 + 1)
+                .find_map(|(index, record)| {
+                    record.as_ref().and_then(|record| {
+                        (record.name == current.name
+                            && !matches!(&record.body, RawModuleRecordBody::Aborted))
+                        .then_some(ModuleId(index))
+                    })
+                })
+        });
+
+        let removed_edges = raw_module_record_edges(&current);
+        let removed_atoms = raw_module_record_atoms(&current).collect::<Vec<_>>();
+        debug_assert!(removed_atoms.is_empty());
+        self.preflight_module_edge_releases(&removed_edges)?;
+        let cache_index = self.live_index(RawId::Context(module.cache))?;
+        let mut cleanup = HeapCleanup {
+            atoms: removed_atoms,
+            ..HeapCleanup::default()
+        };
+
+        let SlotState::Live(node) = &mut self.slots[cache_index].state else {
+            unreachable!("authenticated loaded-module cache disappeared before abort")
+        };
+        let NodeData::Context(context) = &mut node.data else {
+            unreachable!("authenticated loaded-module cache changed kind before abort")
+        };
+        let slot = context
+            .loaded_modules
+            .records
+            .get_mut(module.module.0)
+            .expect("authenticated parse-in-progress module disappeared before abort");
+        let previous = if referenced {
+            Some(std::mem::replace(
+                slot.as_mut()
+                    .expect("authenticated parse-in-progress module became a tombstone"),
+                aborted,
+            ))
+        } else {
+            slot.take()
+        };
+        drop(previous);
+        if indexed_first == Some(module.module) {
+            match fallback.flatten() {
+                Some(fallback) => {
+                    *context
+                        .loaded_modules
+                        .first_by_name
+                        .get_mut(&current.name)
+                        .expect("authenticated module name index disappeared before abort") =
+                        fallback;
+                }
+                None => {
+                    let removed = context.loaded_modules.first_by_name.remove(&current.name);
+                    debug_assert_eq!(removed, Some(module.module));
+                }
+            }
+        }
 
         cleanup.merge(self.release_preflighted_module_edges(&removed_edges));
         Ok(cleanup)
@@ -12905,50 +13356,23 @@ impl Heap {
                     "loaded-module removal batch contains a duplicate identity",
                 ));
             }
-            records.push((module, self.loaded_module(RawModuleRef { cache, module })?));
+            let record = self.loaded_module(RawModuleRef { cache, module })?;
+            if matches!(&record.body, RawModuleRecordBody::Aborted) {
+                return Err(HeapError::Invariant(
+                    "loaded-module removal batch contains an aborted identity",
+                ));
+            }
+            records.push((module, record));
         }
         let context = self.context(cache)?;
-        for record in context.loaded_modules.records.iter().flatten() {
-            if !context
-                .loaded_modules
-                .first_by_name
-                .contains_key(&record.name)
-            {
-                return Err(HeapError::Invariant(
-                    "loaded-module oldest-name index is incomplete",
-                ));
-            }
-        }
-        for (name, first) in &context.loaded_modules.first_by_name {
-            let record = context
-                .loaded_modules
-                .records
-                .get(first.0)
-                .and_then(Option::as_ref)
-                .ok_or(HeapError::Invariant(
-                    "loaded-module oldest-name index references a tombstone",
-                ))?;
-            if &record.name != name {
-                return Err(HeapError::Invariant(
-                    "loaded-module oldest-name index references another name",
-                ));
-            }
-            if context.loaded_modules.records[..first.0]
-                .iter()
-                .flatten()
-                .any(|earlier| &earlier.name == name)
-            {
-                return Err(HeapError::Invariant(
-                    "loaded-module name index does not reference the oldest live record",
-                ));
-            }
-        }
+        context.loaded_modules.validate_first_by_name()?;
 
         for (index, record) in context.loaded_modules.records.iter().enumerate() {
             if unique.contains(&ModuleId(index)) {
                 continue;
             }
             if let Some(record) = record
+                && !matches!(&record.body, RawModuleRecordBody::Aborted)
                 && let RawModuleResolutionState::Resolved(dependencies) = &record.resolution
                 && dependencies
                     .iter()
@@ -12959,6 +13383,7 @@ impl Heap {
                 ));
             }
             if let Some(record) = record
+                && !matches!(&record.body, RawModuleRecordBody::Aborted)
                 && record
                     .async_parent_modules
                     .iter()
@@ -12969,6 +13394,7 @@ impl Heap {
                 ));
             }
             if let Some(record) = record
+                && !matches!(&record.body, RawModuleRecordBody::Aborted)
                 && record
                     .evaluation_cycle_root
                     .is_some_and(|cycle_root| unique.contains(&cycle_root))
@@ -12979,25 +13405,10 @@ impl Heap {
             }
         }
 
-        // `JsString` mutates only transparent rope caches; its UTF-16
-        // equality/hash identity is stable while used as a module-name key.
         #[allow(clippy::mutable_key_type)]
-        let mut rebuilt_first_by_name = HashMap::new();
-        rebuilt_first_by_name
-            .try_reserve(context.loaded_modules.first_by_name.len())
-            .map_err(|_| HeapError::Allocation {
-                operation: "rebuilding loaded-module oldest-name index",
-            })?;
-        for (index, record) in context.loaded_modules.records.iter().enumerate() {
-            if unique.contains(&ModuleId(index)) {
-                continue;
-            }
-            if let Some(record) = record {
-                rebuilt_first_by_name
-                    .entry(record.name.clone())
-                    .or_insert(ModuleId(index));
-            }
-        }
+        let rebuilt_first_by_name = context
+            .loaded_modules
+            .rebuild_first_by_name_excluding(|candidate| unique.contains(&candidate))?;
 
         let mut removed_edges = Vec::new();
         let mut removed_atoms = Vec::new();
@@ -17642,15 +18053,22 @@ impl Heap {
                     let cache = self.context(module.cache)?;
                     let resolve_is_callable = object_data_is_callable(self.object(*resolve)?);
                     let reject_is_callable = object_data_is_callable(self.object(*reject)?);
+                    let module_is_ready = cache
+                        .loaded_modules
+                        .records
+                        .get(module.module.0)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|record| {
+                            matches!(
+                                &record.body,
+                                RawModuleRecordBody::SourceText { .. }
+                                    | RawModuleRecordBody::Json { .. }
+                            )
+                        });
                     if object.is_constructor
                         || !resolve_is_callable
                         || !reject_is_callable
-                        || cache
-                            .loaded_modules
-                            .records
-                            .get(module.module.0)
-                            .and_then(Option::as_ref)
-                            .is_none()
+                        || !module_is_ready
                     {
                         return Err(HeapError::Invariant(
                             "dynamic-import handler has invalid hidden state",
@@ -17808,14 +18226,19 @@ impl Heap {
                     ))?;
                     self.context(realm)?;
                     let cache = self.context(module.cache)?;
-                    if object.is_constructor
-                        || cache
-                            .loaded_modules
-                            .records
-                            .get(module.module.0)
-                            .and_then(Option::as_ref)
-                            .is_none()
-                    {
+                    let module_is_ready = cache
+                        .loaded_modules
+                        .records
+                        .get(module.module.0)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|record| {
+                            matches!(
+                                &record.body,
+                                RawModuleRecordBody::SourceText { .. }
+                                    | RawModuleRecordBody::Json { .. }
+                            )
+                        });
+                    if object.is_constructor || !module_is_ready {
                         return Err(HeapError::Invariant(
                             "module-evaluation callback has invalid hidden state",
                         ));
@@ -19377,6 +19800,7 @@ fn raw_module_record_edges(record: &RawModuleRecord) -> Vec<RawId> {
         edges.push(RawId::Context(realm));
     }
     match &record.body {
+        RawModuleRecordBody::Parsing | RawModuleRecordBody::Aborted => {}
         RawModuleRecordBody::SourceText { function } => {
             edges.push(RawId::FunctionBytecode(*function));
         }
@@ -20239,7 +20663,9 @@ fn context_atoms(context: &ContextData) -> impl Iterator<Item = Atom> + '_ {
 fn raw_module_record_atoms(record: &RawModuleRecord) -> impl Iterator<Item = Atom> + '_ {
     let body = match &record.body {
         RawModuleRecordBody::Json { default_value } => raw_value_atom(default_value),
-        RawModuleRecordBody::SourceText { .. } => None,
+        RawModuleRecordBody::Parsing
+        | RawModuleRecordBody::SourceText { .. }
+        | RawModuleRecordBody::Aborted => None,
     };
     let evaluation = match &record.evaluation {
         RawModuleEvaluationState::Errored(exception) => raw_value_atom(exception),
@@ -25741,6 +26167,335 @@ mod tests {
             prototype, prototype, prototype, prototype, prototype, prototype, prototype, prototype,
         ))
         .unwrap()
+    }
+
+    fn parsing_module_record(
+        realm: ContextId,
+        name: &'static str,
+        requests: &[&'static str],
+        resolution: RawModuleResolutionState,
+    ) -> RawModuleRecord {
+        RawModuleRecord {
+            name: JsString::from_static(name),
+            body: RawModuleRecordBody::Parsing,
+            import_meta: None,
+            declaration_order: Rc::from([]),
+            link_initializers: Rc::from([]),
+            import_collisions: Rc::from([]),
+            requested_modules: requests
+                .iter()
+                .map(|specifier| ModuleRequest {
+                    specifier: JsString::from_static(specifier),
+                    attributes: crate::module::ModuleImportAttributes::Absent,
+                })
+                .collect::<Vec<_>>()
+                .into(),
+            imports: Rc::from([]),
+            exports: Rc::from([]),
+            star_exports: Rc::from([]),
+            resolution,
+            instance: None,
+            namespace: RawModuleNamespaceState::Empty,
+            link_status: RawModuleLinkStatus::Unlinked,
+            evaluation: RawModuleEvaluationState::Unevaluated,
+            has_top_level_await: false,
+            evaluation_cycle_root: None,
+            evaluation_promise: None,
+            evaluation_resolve: None,
+            evaluation_reject: None,
+            pending_async_dependencies: 0,
+            async_parent_modules: Vec::new(),
+            async_evaluation_order: None,
+            link_realm: None,
+            compile_realm: realm,
+        }
+    }
+
+    #[test]
+    fn parse_in_progress_module_replacements_preserve_prefix_and_resolution() {
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+        let initial = parsing_module_record(
+            realm,
+            "same.js",
+            &["first.js"],
+            RawModuleResolutionState::Unresolved,
+        );
+        let module = heap.publish_loaded_module(realm, initial.clone()).unwrap();
+
+        let mut appended = initial.clone();
+        appended.requested_modules = Rc::new(vec![
+            ModuleRequest {
+                specifier: JsString::from_static("first.js"),
+                attributes: crate::module::ModuleImportAttributes::Absent,
+            },
+            ModuleRequest {
+                specifier: JsString::from_static("second.js"),
+                attributes: crate::module::ModuleImportAttributes::Absent,
+            },
+        ]);
+        assert_eq!(
+            heap.replace_loaded_module(module, appended.clone()),
+            Ok(HeapCleanup::default())
+        );
+        assert_eq!(
+            heap.transition_loaded_module(module, RawModuleTransition::BeginLink),
+            Err(HeapError::Invariant(
+                "parse-in-progress module received an executable-state transition"
+            ))
+        );
+
+        let mut shortened = appended.clone();
+        shortened.requested_modules = initial.requested_modules.clone();
+        assert_eq!(
+            heap.replace_loaded_module(module, shortened),
+            Err(HeapError::Invariant(
+                "parse-in-progress module replacement changed its request prefix"
+            ))
+        );
+
+        let code: Rc<[Instruction]> = Rc::from([Instruction::Undefined, Instruction::Return]);
+        let function = heap
+            .allocate_function_bytecode(bytecode(&code, realm, Vec::new(), Vec::new()))
+            .unwrap();
+        let mut completed = appended.clone();
+        completed.body = RawModuleRecordBody::SourceText { function };
+        let mut changed_resolution = completed.clone();
+        changed_resolution.resolution = RawModuleResolutionState::Resolving;
+        assert_eq!(
+            heap.replace_loaded_module(module, changed_resolution),
+            Err(HeapError::Invariant(
+                "completed module changed its parse-time resolution state"
+            ))
+        );
+        assert_eq!(
+            heap.replace_loaded_module(module, completed.clone()),
+            Ok(HeapCleanup::default())
+        );
+
+        let mut changed_ready_body = completed;
+        changed_ready_body.body = RawModuleRecordBody::Json {
+            default_value: RawValue::Undefined,
+        };
+        assert_eq!(
+            heap.replace_loaded_module(module, changed_ready_body),
+            Err(HeapError::Invariant(
+                "loaded-module replacement changed its body state illegally"
+            ))
+        );
+
+        assert_eq!(
+            heap.transition_loaded_module(module, RawModuleTransition::BeginResolution),
+            Ok(())
+        );
+        assert_eq!(
+            heap.transition_loaded_module(module, RawModuleTransition::FailResolution),
+            Err(HeapError::Invariant(
+                "loaded-module resolution failure did not target Parsing state"
+            ))
+        );
+    }
+
+    #[test]
+    fn parsing_request_append_is_amortized_snapshot_safe_and_failure_latched() {
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+        let module = heap
+            .publish_loaded_module(
+                realm,
+                parsing_module_record(
+                    realm,
+                    "many-requests.js",
+                    &[],
+                    RawModuleResolutionState::Unresolved,
+                ),
+            )
+            .unwrap();
+        let initial_requests = heap.loaded_module(module).unwrap().requested_modules;
+        let initial_owner = Rc::as_ptr(&initial_requests);
+        drop(initial_requests);
+
+        for index in 0..2_048 {
+            heap.append_parsing_module_request(
+                module,
+                ModuleRequest {
+                    specifier: JsString::try_from_utf8(&format!("dependency-{index}.js")).unwrap(),
+                    attributes: crate::module::ModuleImportAttributes::Absent,
+                },
+            )
+            .unwrap();
+        }
+        let shared_snapshot = heap.loaded_module(module).unwrap().requested_modules;
+        assert_eq!(shared_snapshot.len(), 2_048);
+        assert_eq!(Rc::as_ptr(&shared_snapshot), initial_owner);
+
+        heap.append_parsing_module_request(
+            module,
+            ModuleRequest {
+                specifier: JsString::from_static("last.js"),
+                attributes: crate::module::ModuleImportAttributes::Absent,
+            },
+        )
+        .unwrap();
+        let current = heap.loaded_module(module).unwrap();
+        assert_eq!(shared_snapshot.len(), 2_048);
+        assert_eq!(current.requested_modules.len(), 2_049);
+        assert_ne!(Rc::as_ptr(&current.requested_modules), initial_owner);
+        assert_eq!(
+            current.requested_modules.last().unwrap().specifier,
+            JsString::from_static("last.js")
+        );
+        drop(current);
+        drop(shared_snapshot);
+
+        assert_eq!(
+            heap.transition_loaded_module(module, RawModuleTransition::BeginResolution),
+            Ok(())
+        );
+        assert_eq!(
+            heap.transition_loaded_module(module, RawModuleTransition::FailResolution),
+            Ok(())
+        );
+        assert!(matches!(
+            heap.loaded_module(module).unwrap().resolution,
+            RawModuleResolutionState::Failed
+        ));
+        assert_eq!(
+            heap.transition_loaded_module(module, RawModuleTransition::BeginResolution),
+            Err(HeapError::Invariant(
+                "loaded-module resolution did not begin from Unresolved"
+            ))
+        );
+    }
+
+    #[test]
+    fn parsing_abort_tombstones_or_retains_a_hidden_stable_identity() {
+        let mut heap = Heap::new();
+        let realm = bytecode_test_realm(&mut heap);
+
+        let unreferenced = heap
+            .publish_loaded_module(
+                realm,
+                parsing_module_record(
+                    realm,
+                    "unreferenced.js",
+                    &[],
+                    RawModuleResolutionState::Unresolved,
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            heap.abort_parsing_loaded_module(unreferenced),
+            Ok(HeapCleanup::default())
+        );
+        assert_eq!(heap.loaded_module_is_live(unreferenced), Ok(false));
+        assert!(heap.loaded_module(unreferenced).is_err());
+        assert_eq!(
+            heap.first_loaded_module(realm, &JsString::from_static("unreferenced.js")),
+            Ok(None)
+        );
+
+        let direct_abort = heap
+            .publish_loaded_module(
+                realm,
+                parsing_module_record(
+                    realm,
+                    "direct-abort.js",
+                    &[],
+                    RawModuleResolutionState::Unresolved,
+                ),
+            )
+            .unwrap();
+        let direct_aborted = aborted_module_record(&heap.loaded_module(direct_abort).unwrap());
+        assert_eq!(
+            heap.replace_loaded_module(direct_abort, direct_aborted),
+            Err(HeapError::Invariant(
+                "module construction abort bypassed its ownership primitive"
+            ))
+        );
+        assert_eq!(heap.loaded_module_is_live(direct_abort), Ok(true));
+        assert_eq!(
+            heap.first_loaded_module(realm, &JsString::from_static("direct-abort.js")),
+            Ok(Some(direct_abort))
+        );
+        assert_eq!(
+            heap.abort_parsing_loaded_module(direct_abort),
+            Ok(HeapCleanup::default())
+        );
+        assert_eq!(heap.loaded_module_is_live(direct_abort), Ok(false));
+        assert_eq!(
+            heap.first_loaded_module(realm, &JsString::from_static("direct-abort.js")),
+            Ok(None)
+        );
+
+        let first = heap
+            .publish_loaded_module(
+                realm,
+                parsing_module_record(realm, "same.js", &[], RawModuleResolutionState::Unresolved),
+            )
+            .unwrap();
+        let second = heap
+            .publish_loaded_module(
+                realm,
+                parsing_module_record(realm, "same.js", &[], RawModuleResolutionState::Unresolved),
+            )
+            .unwrap();
+        let dependent = heap
+            .publish_loaded_module(
+                realm,
+                parsing_module_record(
+                    realm,
+                    "dependent.js",
+                    &["same.js"],
+                    RawModuleResolutionState::Resolved(Rc::from([first.module])),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            heap.abort_parsing_loaded_module(first),
+            Ok(HeapCleanup::default())
+        );
+        assert_eq!(heap.loaded_module_is_live(first), Ok(false));
+        assert!(matches!(
+            heap.loaded_module(first).unwrap().body,
+            RawModuleRecordBody::Aborted
+        ));
+        assert_eq!(
+            heap.first_loaded_module(realm, &JsString::from_static("same.js")),
+            Ok(Some(second))
+        );
+        assert_eq!(
+            heap.loaded_modules(realm)
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            vec![second.module, dependent.module]
+        );
+
+        let mut extended = heap.loaded_module(dependent).unwrap();
+        extended.requested_modules = Rc::new(vec![
+            ModuleRequest {
+                specifier: JsString::from_static("same.js"),
+                attributes: crate::module::ModuleImportAttributes::Absent,
+            },
+            ModuleRequest {
+                specifier: JsString::from_static("later.js"),
+                attributes: crate::module::ModuleImportAttributes::Absent,
+            },
+        ]);
+        assert_eq!(
+            heap.replace_loaded_module(dependent, extended),
+            Ok(HeapCleanup::default()),
+            "an Aborted dependency remains a valid append-only identity"
+        );
+        assert_eq!(
+            heap.transition_loaded_module(first, RawModuleTransition::BeginResolution),
+            Err(HeapError::Invariant(
+                "loaded-module transition targeted an aborted identity"
+            ))
+        );
     }
 
     fn allocate_private_callable_child(

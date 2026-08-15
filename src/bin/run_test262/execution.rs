@@ -977,6 +977,7 @@ fn engine_fault(
         RuntimeError::WrongRuntime(_) => "WrongRuntime",
         RuntimeError::WrongContext(_) => "WrongContext",
         RuntimeError::AbortedModule => "AbortedModule",
+        RuntimeError::IncompleteModuleResolution => "IncompleteModuleResolution",
         RuntimeError::Invariant(_) => "Invariant",
         RuntimeError::Exception => "MissingException",
         RuntimeError::Engine(_) => "EngineError",

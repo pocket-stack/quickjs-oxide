@@ -38,7 +38,7 @@ use crate::lexer::{
     NumberKind, NumericRadix, Punctuator, Span, TemplatePartKind, Token, TokenKind,
     quickjs_simple_lookahead_is_of,
 };
-use crate::module::{ModuleImportAttribute, UnlinkedModule};
+use crate::module::{ModuleImportAttribute, ModuleRequest, UnlinkedModule};
 use crate::source_text::SourceText;
 use crate::value::{JsString, JsStringError, Value};
 use num_bigint::BigUint;
@@ -289,6 +289,18 @@ pub(crate) fn compile_unlinked_module_with_name(
 /// clause's closing brace and before parsing any following source. Returning
 /// an error here therefore must stop parsing immediately.
 pub(crate) trait ModuleImportAttributeChecker {
+    /// Observe one source-order request after it has entered the parser-owned
+    /// requested-module table.
+    ///
+    /// The default keeps existing attribute-only hosts source compatible. A
+    /// host which needs QuickJS's parse-time module prefix can latch each
+    /// request here: for an authored `with` clause this runs after every
+    /// attribute has been decoded, before [`Self::check`], and while the
+    /// closing brace is still current.
+    fn publish_request(&mut self, _request: &ModuleRequest) -> Result<(), ModuleCompileFailure> {
+        Ok(())
+    }
+
     fn check(&mut self, attributes: &[ModuleImportAttribute]) -> Result<(), ModuleCompileFailure>;
 }
 

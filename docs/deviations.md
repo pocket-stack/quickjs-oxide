@@ -142,13 +142,21 @@ initial snapshot. Both paths are pinned in
 ## Open implementation frontiers
 
 - Dynamic import retries failed acyclic source graphs as pinned QuickJS does.
-  A failed cycle is intentionally safer while parity work remains open: Rust
-  rolls back every cached member whose dependency edge would point into the
-  failed transaction, whereas pinned QuickJS can retain a resolved member with
-  a dangling dependency pointer. Reproducing that unsafe lifetime is not an
-  approved target deviation. Vacant Rust module-cache slots are currently not
-  reused, so repeated failed publications also remain a resource-hygiene
-  frontier.
+  Parse-in-progress definitions and request prefixes are published in the same
+  callback order as pinned QuickJS, including its one-shot resolution latch.
+  Rust represents a swallowed resolution failure as an explicit incomplete
+  state with no partial raw dependency vector; direct link/execute returns a
+  typed error and dynamic import rejects with a deterministic `InternalError`.
+  If a resolved module still refers to a construction that later fails, Rust
+  keeps that append-only identity as an edge-free `Aborted` sentinel, excludes
+  it from name lookup, and gives a same-name retry a new identity. Pinned
+  QuickJS can instead retain a dangling `JSModuleDef *`; subsequent use enters
+  native undefined behavior and may manifest as a native crash or allocator
+  aliasing. Those unsafe operations are deliberately excluded from the
+  automated oracle suite. Reproducing those lifetimes is not an approved
+  parity target. Vacant Rust module-cache slots and orphaned sentinels are
+  currently not compacted, so repeated failed publications remain a
+  resource-hygiene frontier.
 - Admitted ordinary async-generator function, object-method, and public
   class-method direct-yield/await paths match the pinned driver, including
   poisoned Promise constructors, iterator-result resolution reentry, and

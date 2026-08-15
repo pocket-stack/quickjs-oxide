@@ -239,9 +239,7 @@ impl<'source> Parser<'source> {
         self.advance()?;
 
         if matches!(self.current().kind, TokenKind::String(_)) {
-            let mut request = self.parse_module_specifier()?;
-            request.attributes = self.parse_module_import_attributes(checker)?;
-            self.add_module_request(request)?;
+            self.parse_module_request(checker)?;
             return Ok(self.consume_statement_terminator()?);
         }
 
@@ -321,12 +319,24 @@ impl<'source> Parser<'source> {
     fn add_module_request(
         &mut self,
         request: ModuleRequest,
-    ) -> Result<crate::module::ModuleRequestIndex, Error> {
-        let module = self.module_ir_mut()?;
-        let index = u32::try_from(module.requested_modules.len())
-            .map_err(|_| Error::new(ErrorKind::JsInternal, "too many requested modules"))?;
-        module.requested_modules.push(request);
-        Ok(crate::module::ModuleRequestIndex(index))
+        checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
+    ) -> Result<crate::module::ModuleRequestIndex, ModuleCompileFailure> {
+        let index = {
+            let module = self.module_ir_mut()?;
+            let index = u32::try_from(module.requested_modules.len())
+                .map_err(|_| Error::new(ErrorKind::JsInternal, "too many requested modules"))?;
+            module.requested_modules.push(request);
+            crate::module::ModuleRequestIndex(index)
+        };
+        if let Some(checker) = checker.as_deref_mut() {
+            let request = self
+                .module
+                .as_ref()
+                .and_then(|module| module.requested_modules.get(index.0 as usize))
+                .ok_or_else(|| Error::internal("published module request moved"))?;
+            checker.publish_request(request)?;
+        }
+        Ok(index)
     }
 
     fn parse_module_from_clause(
@@ -337,9 +347,33 @@ impl<'source> Parser<'source> {
             return Err(self.syntax_here("from clause expected").into());
         }
         self.advance()?;
+        self.parse_module_request(checker)
+    }
+
+    fn parse_module_request(
+        &mut self,
+        checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
+    ) -> Result<crate::module::ModuleRequestIndex, ModuleCompileFailure> {
         let mut request = self.parse_module_specifier()?;
-        request.attributes = self.parse_module_import_attributes(checker)?;
-        Ok(self.add_module_request(request)?)
+        request.attributes = self.parse_module_import_attributes()?;
+        let has_closing_brace = matches!(request.attributes, ModuleImportAttributes::Present(_));
+        let request = self.add_module_request(request, checker)?;
+        if has_closing_brace {
+            let attributes = self
+                .module
+                .as_ref()
+                .and_then(|module| module.requested_modules.get(request.0 as usize))
+                .ok_or_else(|| Error::internal("published module request moved"))?
+                .attributes
+                .effective();
+            if let Some(attributes) = attributes
+                && let Some(checker) = checker.as_deref_mut()
+            {
+                checker.check(attributes)?;
+            }
+            self.expect_punctuator(Punctuator::RightBrace)?;
+        }
+        Ok(request)
     }
 
     fn parse_module_specifier(&mut self) -> Result<ModuleRequest, Error> {
@@ -357,7 +391,6 @@ impl<'source> Parser<'source> {
 
     fn parse_module_import_attributes(
         &mut self,
-        checker: &mut Option<&mut dyn ModuleImportAttributeChecker>,
     ) -> Result<ModuleImportAttributes, ModuleCompileFailure> {
         if !self.is_contextual_keyword("with")
             && !matches!(self.current().kind, TokenKind::Keyword(Keyword::With))
@@ -403,14 +436,9 @@ impl<'source> Parser<'source> {
             }
         }
 
-        let attributes = ModuleImportAttributes::Present(attributes.into_boxed_slice());
-        if let Some(effective) = attributes.effective()
-            && let Some(checker) = checker.as_deref_mut()
-        {
-            checker.check(effective)?;
-        }
-        self.expect_punctuator(Punctuator::RightBrace)?;
-        Ok(attributes)
+        Ok(ModuleImportAttributes::Present(
+            attributes.into_boxed_slice(),
+        ))
     }
 
     fn module_binding_identifier(&mut self) -> Result<(String, Span), Error> {
