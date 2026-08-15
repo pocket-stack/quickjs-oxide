@@ -1,0 +1,8 @@
+check[0] context=same attrs=object
+normalize[0] during-check=true context=same base=probe.js spec=./outer.js result=outer.js
+normalize[1] during-check=true context=same base=outer.js spec=./before.js result=before.js
+load[0] during-check=true context=same name=before.js
+checker compile=exception exception=ReferenceError: intentional parse-time prefix load failure has-exception-after-get=false gc=ok
+outer compile=module swallowed=true has-exception=false
+post-compile resolve outer=0 gc=ok
+summary checks=1 normalizes=2 loads=1 before-loads=1 after-loads=0

@@ -1,0 +1,8 @@
+check[0] context=same attrs=object
+normalize[0] during-check=true context=same base=probe.js spec=./outer.js result=outer.js
+normalize[1] during-check=true context=same base=outer.js spec=./before.js result=before.js
+load[0] during-check=true context=same name=before.js
+checker probe=module resolve=0 gc=ok
+outer compile=module distinct=true has-exception=false
+post-compile resolve outer=0 probe=0 gc=ok
+summary checks=1 normalizes=2 loads=1 outer-loads=0 before-loads=1 after-loads=0
