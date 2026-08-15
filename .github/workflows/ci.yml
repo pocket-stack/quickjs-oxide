@@ -70,6 +70,7 @@ jobs:
           node --check scripts/test-negative-diagnostic-generator.mjs
           node --check scripts/generate-test262-dynamic-import-a.mjs
           node --check scripts/generate-test262-tla-core-a.mjs
+          node --check scripts/generate-test262-module-var-lexical-shadow-a.mjs
           node --check scripts/generate-test262-module-import-attributes-a.mjs
           node --check scripts/test-generate-test262-module-import-attributes-a.mjs
           node --check scripts/generate-test262-module-json-a.mjs
@@ -156,6 +157,11 @@ jobs:
             --suite "$suite" --check-current
           node scripts/generate-test262-tla-core-a.mjs \
             --suite "$suite" --check-current
+          node scripts/generate-test262-module-var-lexical-shadow-a.mjs \
+            --suite "$suite" \
+            --quickjs-runner "$oracle_source/run-test262" \
+            --quickjs-config "$oracle_source/test262.conf" \
+            --check-current
           node scripts/audit-negative-diagnostics.mjs \
             --contracts dev-support/test262/negative-diagnostics.tsv \
             --rules dev-support/test262/negative-diagnostic-rules.tsv \
