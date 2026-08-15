@@ -233,6 +233,7 @@ fn main() -> ExitCode {
             "<cmdline>",
             source_goal,
             main_module_path,
+            &args[index..],
             debug_info,
             print_result,
         );
@@ -255,6 +256,7 @@ fn main() -> ExitCode {
                 file,
                 source_goal,
                 Some(file),
+                &args[index..],
                 debug_info,
                 print_result,
             )
@@ -277,6 +279,7 @@ fn evaluate(
     filename: &str,
     source_goal: SourceGoal,
     main_module_path: Option<&str>,
+    script_args: &[String],
     debug_info: DebugInfoMode,
     print_result: bool,
 ) -> ExitCode {
@@ -286,7 +289,18 @@ fn evaluate(
     // Script-goal `-e`, so dynamic import has the same host boundary everywhere.
     let _module_loader = runtime.set_module_loader(FileModuleLoader);
     let mut context = runtime.new_context();
-    if let Err(error) = context.install_qjs_helpers() {
+    let script_args = match script_args
+        .iter()
+        .map(|argument| JsString::try_from_utf8(argument).map_err(RuntimeError::from))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(script_args) => script_args,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(error) = context.install_qjs_helpers_with_script_args(&script_args) {
         eprintln!("{error}");
         return ExitCode::from(1);
     }
