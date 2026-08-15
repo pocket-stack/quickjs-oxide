@@ -15,9 +15,9 @@ modules, including nested loader re-entry protected by a finite host-stack
 budget. Parse-in-progress module identities and source-order request prefixes
 are visible to those callbacks in QuickJS order, with unsafe failed identities
 represented deterministically. QuickJS extended-JSON text modules are
-supported. Script embedding accepts byte-exact source buffers; byte-oriented
-module and CLI loading plus the remaining conformance gaps are still parity
-work.
+supported. Script and ECMAScript module embedding accept byte-exact source
+buffers, including module-loader payloads; byte-oriented JSON-module and CLI
+loading plus the remaining conformance gaps are still parity work.
 
 <!-- current-test262-metrics:start -->
 The authoritative R3ev Test262 baseline records **79,475 full-corpus passes

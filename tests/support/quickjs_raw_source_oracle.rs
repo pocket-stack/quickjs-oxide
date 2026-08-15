@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const NORMALIZED_FILENAME: &str = "<raw-script>";
+const NORMALIZED_SCRIPT_FILENAME: &str = "<raw-script>";
+const NORMALIZED_MODULE_FILENAME: &str = "<raw-module>";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,8 +22,14 @@ pub(crate) enum RawScriptObservation {
     EngineFailure(String),
 }
 
+pub(crate) type RawModuleObservation = RawScriptObservation;
+
 pub(crate) fn normalized_filename() -> &'static str {
-    NORMALIZED_FILENAME
+    NORMALIZED_SCRIPT_FILENAME
+}
+
+pub(crate) fn normalized_module_filename() -> &'static str {
+    NORMALIZED_MODULE_FILENAME
 }
 
 pub(crate) fn observe_raw_script(
@@ -30,29 +37,65 @@ pub(crate) fn observe_raw_script(
     source: &[u8],
     description: &str,
 ) -> RawScriptObservation {
-    let script = TempScript::new(source, description);
+    observe_raw_source(
+        oracle,
+        source,
+        description,
+        "script",
+        "--script",
+        "source.js",
+        NORMALIZED_SCRIPT_FILENAME,
+    )
+}
+
+pub(crate) fn observe_raw_module(
+    oracle: &OsStr,
+    source: &[u8],
+    description: &str,
+) -> RawModuleObservation {
+    observe_raw_source(
+        oracle,
+        source,
+        description,
+        "module",
+        "--module",
+        "source.mjs",
+        NORMALIZED_MODULE_FILENAME,
+    )
+}
+
+fn observe_raw_source(
+    oracle: &OsStr,
+    source: &[u8],
+    description: &str,
+    kind: &str,
+    mode: &str,
+    filename: &str,
+    normalized_filename: &str,
+) -> RawScriptObservation {
+    let script = TempSource::new(source, description, kind, filename);
     let output = Command::new(oracle)
-        .arg("--script")
+        .arg(mode)
         .arg(&script.path)
         .output()
         .unwrap_or_else(|error| {
-            panic!("could not run QuickJS raw script for {description}: {error}")
+            panic!("could not run QuickJS raw {kind} for {description}: {error}")
         });
 
     if output.status.success() {
         assert!(
             output.stderr.is_empty(),
-            "QuickJS raw script emitted stderr for {description}: {}",
+            "QuickJS raw {kind} emitted stderr for {description}: {}",
             String::from_utf8_lossy(&output.stderr),
         );
         let stdout = String::from_utf8(output.stdout).unwrap_or_else(|error| {
-            panic!("QuickJS raw script stdout was not UTF-8 for {description}: {error}")
+            panic!("QuickJS raw {kind} stdout was not UTF-8 for {description}: {error}")
         });
         let lines = stdout.lines().collect::<Vec<_>>();
         assert_eq!(
             lines.len(),
             1,
-            "QuickJS raw script must emit one observation for {description}; stdout was {stdout:?}",
+            "QuickJS raw {kind} must emit one observation for {description}; stdout was {stdout:?}",
         );
         assert!(
             lines[0].is_ascii(),
@@ -64,11 +107,11 @@ pub(crate) fn observe_raw_script(
 
     assert!(
         output.stdout.is_empty(),
-        "QuickJS rejected raw script but emitted stdout for {description}: {}",
+        "QuickJS rejected raw {kind} but emitted stdout for {description}: {}",
         String::from_utf8_lossy(&output.stdout),
     );
     let stderr = String::from_utf8(output.stderr).unwrap_or_else(|error| {
-        panic!("QuickJS raw script stderr was not UTF-8 for {description}: {error}")
+        panic!("QuickJS raw {kind} stderr was not UTF-8 for {description}: {error}")
     });
     let lines = stderr
         .lines()
@@ -77,7 +120,7 @@ pub(crate) fn observe_raw_script(
     assert_eq!(
         lines.len(),
         2,
-        "unexpected QuickJS raw diagnostic shape for {description}: {stderr:?}",
+        "unexpected QuickJS raw {kind} diagnostic shape for {description}: {stderr:?}",
     );
     let (name, message) = lines[0].split_once(": ").unwrap_or_else(|| {
         panic!(
@@ -100,13 +143,13 @@ pub(crate) fn observe_raw_script(
     assert_eq!(
         filename,
         script.path.to_string_lossy(),
-        "QuickJS changed the raw script filename for {description}",
+        "QuickJS changed the raw {kind} filename for {description}",
     );
 
     RawScriptObservation::Throw {
         name: name.to_owned(),
         message: message.to_owned(),
-        filename: NORMALIZED_FILENAME.to_owned(),
+        filename: normalized_filename.to_owned(),
         line,
         column,
     }
@@ -124,17 +167,17 @@ fn parse_location_part(part: Option<&str>, label: &str, description: &str, locat
     })
 }
 
-struct TempScript {
+struct TempSource {
     directory: PathBuf,
     path: PathBuf,
 }
 
-impl TempScript {
-    fn new(source: &[u8], description: &str) -> Self {
+impl TempSource {
+    fn new(source: &[u8], description: &str, kind: &str, filename: &str) -> Self {
         let directory = loop {
             let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
             let candidate = std::env::temp_dir().join(format!(
-                "quickjs-oxide-raw-script-{}-{id}",
+                "quickjs-oxide-raw-{kind}-{}-{id}",
                 std::process::id(),
             ));
             match create_dir(&candidate) {
@@ -142,32 +185,32 @@ impl TempScript {
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     panic!(
-                        "could not create QuickJS raw-script directory for {description}: {error}"
+                        "could not create QuickJS raw-{kind} directory for {description}: {error}"
                     )
                 }
             }
         };
-        let path = directory.join("source.js");
+        let path = directory.join(filename);
         let script = Self { directory, path };
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&script.path)
             .unwrap_or_else(|error| {
-                panic!("could not create QuickJS raw script for {description}: {error}")
+                panic!("could not create QuickJS raw {kind} for {description}: {error}")
             });
         file.write_all(source).unwrap_or_else(|error| {
-            panic!("could not write QuickJS raw script for {description}: {error}")
+            panic!("could not write QuickJS raw {kind} for {description}: {error}")
         });
         file.flush().unwrap_or_else(|error| {
-            panic!("could not flush QuickJS raw script for {description}: {error}")
+            panic!("could not flush QuickJS raw {kind} for {description}: {error}")
         });
         drop(file);
         script
     }
 }
 
-impl Drop for TempScript {
+impl Drop for TempSource {
     fn drop(&mut self) {
         let _ = remove_file(&self.path);
         let _ = remove_dir(&self.directory);

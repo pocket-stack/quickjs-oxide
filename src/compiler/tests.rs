@@ -2180,11 +2180,12 @@ use super::{
     MAX_LOCAL_VARIABLES, ModuleCompileFailure, ModuleDeclarationExport,
     ModuleImportAttributeChecker, NEW_TARGET_LOCAL_NAME, Parser, ScopeId, ScopeKind, SourceOffset,
     SuperCapabilities, THIS_LOCAL_NAME, WITH_OBJECT_LOCAL_NAME, build_scope_lifecycles,
-    compile_script, compile_unlinked_eval_with_filename, compile_unlinked_module_with_filename,
-    compile_unlinked_module_with_name_and_attribute_checker, compile_unlinked_script,
-    compile_unlinked_script_source_with_filename, compile_unlinked_script_with_filename,
-    ensure_closure_variable, lex_error, lower_unlinked_tree, resolve_identifiers,
-    validate_scope_graph, validate_source_length,
+    compile_script, compile_unlinked_eval_with_filename,
+    compile_unlinked_module_bytes_with_name_and_attribute_checker,
+    compile_unlinked_module_with_filename, compile_unlinked_module_with_name_and_attribute_checker,
+    compile_unlinked_script, compile_unlinked_script_source_with_filename,
+    compile_unlinked_script_with_filename, ensure_closure_variable, lex_error, lower_unlinked_tree,
+    resolve_identifiers, validate_scope_graph, validate_source_length,
 };
 
 #[test]
@@ -14110,7 +14111,9 @@ fn debug_metadata_tracks_operator_tail_call_and_root_call_sites() {
 }
 
 #[test]
-fn source_length_guard_matches_quickjs_signed_debug_limit() {
+fn raw_module_and_script_source_length_guard_matches_quickjs_signed_debug_limit() {
+    // Both explicitly sized compiler entry points call this shared guard before
+    // constructing a SourceText carrier.
     assert_eq!(validate_source_length(i32::MAX as usize), Ok(()));
 
     let error = validate_source_length(i32::MAX as usize + 1).unwrap_err();
@@ -14119,6 +14122,78 @@ fn source_length_guard_matches_quickjs_signed_debug_limit() {
         error.message(),
         "source is too large for QuickJS debug metadata"
     );
+}
+
+#[test]
+fn raw_module_wtf8_surrogate_preserves_debug_source_and_definition_column() {
+    let raw = b"/*\xed\xa0\x80*/export function f(){return '\xed\xa0\x80';}";
+    let module = compile_unlinked_module_bytes_with_name_and_attribute_checker(
+        raw,
+        JsString::from_static("raw-module.mjs"),
+        DebugInfoMode::Full,
+        None,
+    )
+    .unwrap();
+    let child = module
+        .function()
+        .constants()
+        .iter()
+        .find_map(|constant| constant.as_child())
+        .expect("exported function declaration child");
+
+    assert_eq!(
+        child.debug().unwrap().pc2line.as_ref().unwrap().definition,
+        crate::LineColumn::new(0, 12)
+    );
+    assert_eq!(
+        child.debug().unwrap().source.as_deref(),
+        Some(b"function f(){return '\xed\xa0\x80';}".as_slice())
+    );
+}
+
+#[test]
+fn raw_module_accepts_malformed_bytes_inside_comments() {
+    let module = compile_unlinked_module_bytes_with_name_and_attribute_checker(
+        b"/*\x80X*/export const answer = 42;",
+        JsString::from_static("raw-comment.mjs"),
+        DebugInfoMode::StripDebug,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(module.exports().len(), 1);
+    assert_eq!(module.exports()[0].export_name.to_utf8_lossy(), "answer");
+    assert!(
+        module
+            .function()
+            .code()
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::PushI32(42)))
+    );
+}
+
+#[test]
+fn raw_module_malformed_token_reports_authored_byte_span() {
+    let raw = b"export const bad = \x80;";
+    let ModuleCompileFailure::Engine(error) =
+        compile_unlinked_module_bytes_with_name_and_attribute_checker(
+            raw,
+            JsString::from_static("raw-token.mjs"),
+            DebugInfoMode::Full,
+            None,
+        )
+        .unwrap_err()
+    else {
+        panic!("malformed raw Module token did not produce an engine diagnostic");
+    };
+    let span = error.span().expect("malformed token source span");
+    let raw_offset = raw.iter().position(|byte| *byte == 0x80).unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::Syntax);
+    assert_eq!(error.message(), "unexpected character");
+    assert_eq!(span.start.byte_offset, raw_offset);
+    assert_eq!(span.end.byte_offset, raw_offset + 1);
+    assert_eq!((span.start.line, span.start.column), (1, 20));
 }
 
 #[test]

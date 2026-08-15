@@ -28,8 +28,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
 ## Implemented architecture
 
 - Rust compiler, verified bytecode, runtime, jobs, modules, and embedding API
-- byte-exact Script embedding APIs with QuickJS-compatible malformed UTF-8,
-  WTF-8, source retention, and diagnostic locations
+- byte-exact Script and ECMAScript Module embedding APIs, including raw module
+  loader payloads, with QuickJS-compatible malformed UTF-8, WTF-8, source
+  retention, and diagnostic locations
 - binary data, typed arrays, shared memory, and Atomics slices
 - collections, weak references, finalization, Promises, and iterator slices
 - Unicode 17 case, identifier, normalization, and property data
@@ -66,11 +67,10 @@ host is isolated behind a non-default feature.
 
 ## Remaining parity work
 
-Major open frontiers include raw-byte module payloads such as malformed UTF-8
-and WTF-8, remaining module-host lifetime and allocation-failure edge matrices,
-and the unsupported/failed leaves recorded by the current Test262 vector.
-Failed
-acyclic source graphs retry like QuickJS. Parse-time resolution success and
+Major open frontiers include byte-exact JSON-module and CLI source loading,
+remaining module-host lifetime and allocation-failure edge matrices, and the
+unsupported/failed leaves recorded by the current Test262 vector.
+Failed acyclic source graphs retry like QuickJS. Parse-time resolution success and
 one-shot failure latches match the pinned callback order; an incomplete graph
 is non-executable and dynamic import rejects deterministically. Rust safely
 uses an `Aborted` identity where pinned QuickJS can retain a dangling pointer

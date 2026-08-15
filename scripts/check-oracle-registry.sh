@@ -122,8 +122,8 @@ check_harness() {
             rg -o --no-filename '^[[:space:]]*#\[test\]' tests/oracle -g '*.rs'
         } | wc -l | tr -d '[:space:]'
     )
-    [[ "$test_count" == 907 ]] \
-        || die "oracle test count drifted: expected 907, found $test_count"
+    [[ "$test_count" == 908 ]] \
+        || die "oracle test count drifted: expected 908, found $test_count"
     host_test_count=0
     while IFS=$'\t' read -r host_wrapper expected_count; do
         local_count=$(
@@ -141,8 +141,8 @@ EOF
     [[ "$host_test_count" == 5 ]] \
         || die "host oracle test count drifted: expected 5, found $host_test_count"
     default_test_count=$((test_count - host_test_count))
-    [[ "$default_test_count" == 902 ]] \
-        || die "default oracle test count drifted: expected 902, found $default_test_count"
+    [[ "$default_test_count" == 903 ]] \
+        || die "default oracle test count drifted: expected 903, found $default_test_count"
 
     printf 'Oracle harness covers %s wrappers / %s default + %s host tests.\n' \
         "$wrapper_count" "$default_test_count" "$host_test_count"
@@ -161,15 +161,15 @@ check_compiled_harness() {
         cargo test --locked --test oracle -- --list \
             | count_listed_tests
     )
-    [[ "$default_count" == 902 ]] \
-        || die "compiled default oracle list drifted: expected 902, found $default_count"
+    [[ "$default_count" == 903 ]] \
+        || die "compiled default oracle list drifted: expected 903, found $default_count"
 
     host_count=$(
         cargo test --locked --features test262-host --test oracle -- --list \
             | count_listed_tests
     )
-    [[ "$host_count" == 907 ]] \
-        || die "compiled host oracle list drifted: expected 907, found $host_count"
+    [[ "$host_count" == 908 ]] \
+        || die "compiled host oracle list drifted: expected 908, found $host_count"
 
     host_filter_count=$(
         cargo test --locked --features test262-host \

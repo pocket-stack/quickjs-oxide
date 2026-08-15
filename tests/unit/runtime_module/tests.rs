@@ -4,6 +4,9 @@ use crate::heap::{PromiseData, PromiseState};
 #[path = "construction_tests.rs"]
 mod construction_tests;
 
+#[path = "raw_source_tests.rs"]
+mod raw_source_tests;
+
 fn assert_eq_implemented<T: Eq>() {}
 
 #[test]

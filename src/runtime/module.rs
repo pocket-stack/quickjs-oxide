@@ -10,6 +10,7 @@
 use super::*;
 use crate::compiler::{
     CompileOptions, ModuleCompileFailure, ModuleImportAttributeChecker,
+    compile_unlinked_module_bytes_with_name_and_attribute_checker,
     compile_unlinked_module_with_name_and_attribute_checker,
 };
 use crate::heap::PromiseState;
@@ -128,7 +129,13 @@ impl From<String> for ModuleLoaderError {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ModuleLoadResult {
+    /// Ordinary well-formed UTF-8 ECMAScript module source.
     SourceText(String),
+    /// One explicitly sized ECMAScript module source buffer.
+    ///
+    /// Unlike [`Self::SourceText`], this preserves QuickJS-compatible WTF-8,
+    /// CESU-8, malformed bytes in comments, and byte-exact diagnostics.
+    SourceBytes(Vec<u8>),
     /// A module compiled by the callback's initiating [`Context`].
     ///
     /// This is the safe Rust equivalent of QuickJS's loader returning the
@@ -146,6 +153,12 @@ pub enum ModuleLoadResult {
     /// `JS_GetImportMeta`.
     SourceTextWithImportMeta {
         source: String,
+        properties: Vec<ModuleImportMetaProperty>,
+    },
+    /// Byte-exact ECMAScript module source plus host-defined properties for
+    /// that module's canonical `import.meta` object.
+    SourceBytesWithImportMeta {
+        source: Vec<u8>,
         properties: Vec<ModuleImportMetaProperty>,
     },
     /// Strict JSON source used to create a synthetic module with one
@@ -557,6 +570,43 @@ enum ModuleEvaluationVisit {
     Evaluated,
     Errored(Value),
     Poisoned,
+}
+
+#[derive(Clone, Copy)]
+enum ModuleSourceInput<'source> {
+    Utf8(&'source str),
+    Bytes(&'source [u8]),
+}
+
+impl<'source> ModuleSourceInput<'source> {
+    fn locator(self) -> QuickJsSourceLocator<'source> {
+        match self {
+            Self::Utf8(source) => QuickJsSourceLocator::new(source),
+            Self::Bytes(source) => QuickJsSourceLocator::from_bytes(source),
+        }
+    }
+
+    fn compile(
+        self,
+        name: JsString,
+        debug_info: DebugInfoMode,
+        checker: &mut dyn ModuleImportAttributeChecker,
+    ) -> Result<UnlinkedModule, ModuleCompileFailure> {
+        match self {
+            Self::Utf8(source) => compile_unlinked_module_with_name_and_attribute_checker(
+                source,
+                name,
+                debug_info,
+                Some(checker),
+            ),
+            Self::Bytes(source) => compile_unlinked_module_bytes_with_name_and_attribute_checker(
+                source,
+                name,
+                debug_info,
+                Some(checker),
+            ),
+        }
+    }
 }
 
 struct ModuleLoaderAttributeChecker<'a> {
@@ -1142,6 +1192,36 @@ impl Runtime {
         name: &JsString,
         import_meta_properties: Option<Vec<ModuleImportMetaProperty>>,
     ) -> Result<ModuleCompilation, RuntimeError> {
+        self.compile_module_source_record_in_realm(
+            realm,
+            ModuleSourceInput::Utf8(source),
+            name,
+            import_meta_properties,
+        )
+    }
+
+    fn compile_module_bytes_record_in_realm(
+        &self,
+        realm: ContextId,
+        source: &[u8],
+        name: &JsString,
+        import_meta_properties: Option<Vec<ModuleImportMetaProperty>>,
+    ) -> Result<ModuleCompilation, RuntimeError> {
+        self.compile_module_source_record_in_realm(
+            realm,
+            ModuleSourceInput::Bytes(source),
+            name,
+            import_meta_properties,
+        )
+    }
+
+    fn compile_module_source_record_in_realm(
+        &self,
+        realm: ContextId,
+        source: ModuleSourceInput<'_>,
+        name: &JsString,
+        import_meta_properties: Option<Vec<ModuleImportMetaProperty>>,
+    ) -> Result<ModuleCompilation, RuntimeError> {
         self.0.state.borrow().heap.context(realm)?;
         let parsing_module = self.publish_parsing_module_record(realm, name.clone())?;
         let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -1181,7 +1261,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         parsing_module: RawModuleRef,
-        source: &str,
+        source: ModuleSourceInput<'_>,
         name: &JsString,
         import_meta_properties: Option<Vec<ModuleImportMetaProperty>>,
     ) -> Result<ModuleCompilation, RuntimeError> {
@@ -1195,12 +1275,7 @@ impl Runtime {
             parsing_module,
             runtime_failure: None,
         };
-        let compilation = compile_unlinked_module_with_name_and_attribute_checker(
-            source,
-            name.clone(),
-            debug_info,
-            Some(&mut checker),
-        );
+        let compilation = source.compile(name.clone(), debug_info, &mut checker);
         if let Some(error) = checker.runtime_failure.take() {
             return Err(error);
         }
@@ -1216,7 +1291,8 @@ impl Runtime {
                 };
                 let explicit_location = if error.kind() == ErrorKind::Syntax {
                     if let Some(span) = error.span() {
-                        let position = QuickJsSourceLocator::new(source)
+                        let position = source
+                            .locator()
                             .locate_byte_offset(span.start.byte_offset)
                             .map_err(|_| {
                                 RuntimeError::Invariant(
@@ -1299,6 +1375,9 @@ impl Runtime {
             ModuleLoadResult::SourceText(source) => {
                 self.compile_module_record_in_realm(realm, &source, normalized_name, None)
             }
+            ModuleLoadResult::SourceBytes(source) => {
+                self.compile_module_bytes_record_in_realm(realm, &source, normalized_name, None)
+            }
             ModuleLoadResult::Compiled(module) => {
                 if !module.belongs_to(self) {
                     return Err(RuntimeError::WrongRuntime("compiled module"));
@@ -1311,6 +1390,13 @@ impl Runtime {
             }
             ModuleLoadResult::SourceTextWithImportMeta { source, properties } => self
                 .compile_module_record_in_realm(realm, &source, normalized_name, Some(properties)),
+            ModuleLoadResult::SourceBytesWithImportMeta { source, properties } => self
+                .compile_module_bytes_record_in_realm(
+                    realm,
+                    &source,
+                    normalized_name,
+                    Some(properties),
+                ),
             ModuleLoadResult::JsonText(source) => {
                 self.compile_json_module_record_in_realm(realm, &source, normalized_name)
             }
@@ -1326,8 +1412,26 @@ impl Runtime {
         source: &str,
         filename: &str,
     ) -> Result<ModuleCompilation, RuntimeError> {
+        self.compile_module_source_in_realm(realm, ModuleSourceInput::Utf8(source), filename)
+    }
+
+    fn compile_module_bytes_in_realm(
+        &self,
+        realm: ContextId,
+        source: &[u8],
+        filename: &str,
+    ) -> Result<ModuleCompilation, RuntimeError> {
+        self.compile_module_source_in_realm(realm, ModuleSourceInput::Bytes(source), filename)
+    }
+
+    fn compile_module_source_in_realm(
+        &self,
+        realm: ContextId,
+        source: ModuleSourceInput<'_>,
+        filename: &str,
+    ) -> Result<ModuleCompilation, RuntimeError> {
         let name = module_c_string_view(&JsString::try_from_utf8(filename)?)?;
-        let compilation = self.compile_module_record_in_realm(realm, source, &name, None)?;
+        let compilation = self.compile_module_source_record_in_realm(realm, source, &name, None)?;
         let ModuleCompilation::Published(module) = compilation else {
             return Ok(compilation);
         };
@@ -4334,6 +4438,15 @@ impl Context {
         self.compile_module_with_options(source, &CompileOptions::default())
     }
 
+    /// Compile one explicitly sized static ECMAScript module buffer without
+    /// linking or evaluating its published module record.
+    pub fn compile_module_bytes(
+        &mut self,
+        source: &[u8],
+    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+        self.compile_module_bytes_with_options(source, &CompileOptions::default())
+    }
+
     /// Compile one static module with an explicit debug/source filename.
     pub fn compile_module_with_filename(
         &mut self,
@@ -4341,6 +4454,16 @@ impl Context {
         filename: &str,
     ) -> Result<ModuleBytecodeRef, RuntimeError> {
         self.compile_module_with_options(source, &CompileOptions::new(filename))
+    }
+
+    /// Compile one explicitly sized static module buffer with an explicit
+    /// debug/source filename.
+    pub fn compile_module_bytes_with_filename(
+        &mut self,
+        source: &[u8],
+        filename: &str,
+    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+        self.compile_module_bytes_with_options(source, &CompileOptions::new(filename))
     }
 
     /// Compile one static module with named compilation options.
@@ -4354,10 +4477,34 @@ impl Context {
         source: &str,
         options: &CompileOptions,
     ) -> Result<ModuleBytecodeRef, RuntimeError> {
-        match self
-            .runtime
-            .compile_module_in_realm(self.realm, source, &options.filename)?
-        {
+        let compilation =
+            self.runtime
+                .compile_module_in_realm(self.realm, source, &options.filename)?;
+        self.finish_module_compilation(compilation)
+    }
+
+    /// Compile one explicitly sized static module buffer with named
+    /// compilation options.
+    ///
+    /// Source bytes are parsed with QuickJS-compatible UTF-8/WTF-8 handling;
+    /// malformed bytes remain observable in permitted source regions and
+    /// produce byte-exact syntax locations elsewhere.
+    pub fn compile_module_bytes_with_options(
+        &mut self,
+        source: &[u8],
+        options: &CompileOptions,
+    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+        let compilation =
+            self.runtime
+                .compile_module_bytes_in_realm(self.realm, source, &options.filename)?;
+        self.finish_module_compilation(compilation)
+    }
+
+    fn finish_module_compilation(
+        &mut self,
+        compilation: ModuleCompilation,
+    ) -> Result<ModuleBytecodeRef, RuntimeError> {
+        match compilation {
             ModuleCompilation::Published(module) => self.runtime.root_module(module),
             ModuleCompilation::Throw(exception) => {
                 self.runtime.set_pending_exception(exception)?;

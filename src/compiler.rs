@@ -384,7 +384,28 @@ pub(crate) fn compile_unlinked_module_with_name_and_attribute_checker(
     debug_info: DebugInfoMode,
     checker: Option<&mut dyn ModuleImportAttributeChecker>,
 ) -> Result<UnlinkedModule, ModuleCompileFailure> {
-    let mut tree = Parser::parse_module(source, name, checker)?;
+    let tree = Parser::parse_module(source, name, checker)?;
+    finish_unlinked_module_tree(tree, debug_info)
+}
+
+/// Compile one explicitly sized Module buffer after applying QuickJS's signed
+/// source-length guard, before allocating its byte-exact carrier.
+pub(crate) fn compile_unlinked_module_bytes_with_name_and_attribute_checker(
+    source: &[u8],
+    name: JsString,
+    debug_info: DebugInfoMode,
+    checker: Option<&mut dyn ModuleImportAttributeChecker>,
+) -> Result<UnlinkedModule, ModuleCompileFailure> {
+    validate_source_length(source.len())?;
+    let source = SourceText::try_from_raw_bytes(source)?;
+    let tree = Parser::parse_module_source(&source, name, checker)?;
+    finish_unlinked_module_tree(tree, debug_info)
+}
+
+fn finish_unlinked_module_tree(
+    mut tree: FunctionTree,
+    debug_info: DebugInfoMode,
+) -> Result<UnlinkedModule, ModuleCompileFailure> {
     resolve_identifiers(&mut tree)?;
     if let Some(error) = tree.pending_unsupported.take() {
         return Err(error.into());
@@ -2009,6 +2030,20 @@ impl<'source> Parser<'source> {
         checker: Option<&mut dyn ModuleImportAttributeChecker>,
     ) -> Result<FunctionTree, ModuleCompileFailure> {
         Self::parse_root(source, None, filename, RootCompileContext::Module, checker)
+    }
+
+    fn parse_module_source(
+        source: &'source SourceText,
+        filename: JsString,
+        checker: Option<&mut dyn ModuleImportAttributeChecker>,
+    ) -> Result<FunctionTree, ModuleCompileFailure> {
+        Self::parse_root(
+            source.carrier(),
+            Some(source),
+            filename,
+            RootCompileContext::Module,
+            checker,
+        )
     }
 
     fn parse_script_source(
