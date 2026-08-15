@@ -144,9 +144,27 @@ impl Runtime {
         };
         match parser.parse_document() {
             Ok(value) => Ok(NativeConversion::Value(value)),
-            Err(JsonParseFailure::Syntax(failure)) => Ok(NativeConversion::Throw(
-                self.new_native_error(realm, NativeErrorKind::Syntax, &failure.message)?,
-            )),
+            Err(JsonParseFailure::Syntax(failure)) => {
+                // `js_json_parse` passes the synthetic filename `<input>` to
+                // `JS_ParseJSON3`.  Its `js_parse_error_v` path constructs the
+                // SyntaxError without a backtrace, then prepends that exact
+                // token location before the active native/bytecode frames.
+                let position = parser.source_location(failure.offset)?;
+                let exception = self.new_native_error_without_backtrace_from_error(
+                    realm,
+                    NativeErrorKind::Syntax,
+                    &Error::new(ErrorKind::Syntax, failure.message),
+                )?;
+                self.ensure_error_backtrace(
+                    &exception,
+                    false,
+                    Some(ExplicitBacktraceLocation {
+                        filename: JsString::from_static("<input>"),
+                        position,
+                    }),
+                )?;
+                Ok(NativeConversion::Throw(exception))
+            }
             Err(JsonParseFailure::Runtime(error)) => Err(error),
         }
     }

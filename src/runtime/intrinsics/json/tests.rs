@@ -235,6 +235,64 @@ fn json_module_parser_reports_pinned_quickjs_token_locations() {
 }
 
 #[test]
+fn json_parse_prepends_pinned_input_location_to_the_active_backtrace() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let result = context
+        .eval_with_filename(
+            r#"
+                (function authored() {
+                    try {
+                        JSON.parse('\n"  \\x"');
+                    } catch (error) {
+                        return [
+                            error.name,
+                            error.message,
+                            error.fileName,
+                            error.lineNumber,
+                            error.columnNumber,
+                            error.stack
+                        ];
+                    }
+                })()
+            "#,
+            "json-callsite.js",
+        )
+        .unwrap();
+    let Value::Object(result) = result else {
+        panic!("JSON.parse diagnostic probe did not return its result array");
+    };
+
+    for (index, expected) in [
+        Value::String(JsString::from_static("SyntaxError")),
+        Value::String(JsString::from_static("Bad escaped character")),
+        Value::String(JsString::from_static("<input>")),
+        Value::Int(2),
+        Value::Int(5),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = runtime.intern_property_key(&index.to_string()).unwrap();
+        assert_eq!(context.get_property(&result, &key).unwrap(), expected);
+    }
+
+    let stack_key = runtime.intern_property_key("5").unwrap();
+    let Value::String(stack) = context.get_property(&result, &stack_key).unwrap() else {
+        panic!("JSON.parse SyntaxError stack was not a string");
+    };
+    let stack = stack.to_string();
+    assert!(
+        stack.starts_with("    at <input>:2:5\n    at parse (native)\n"),
+        "JSON.parse stack lost its pinned synthetic source frame: {stack:?}",
+    );
+    assert!(
+        stack.contains("    at authored (json-callsite.js:"),
+        "JSON.parse stack lost its authored caller: {stack:?}",
+    );
+}
+
+#[test]
 fn quickjs_extended_json_module_parser_reports_pinned_negative_boundaries() {
     let cases = [
         ("{é: 1}", "unexpected character", 1, 2),
