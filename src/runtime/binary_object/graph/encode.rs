@@ -14,6 +14,7 @@ use super::model::{
     WireValue, canonical_bigint_length, numeric_atom_index, semantic_atom_eq, semantic_atom_hash,
     validate_array_buffer_layout, validate_typed_array_write_layout,
 };
+use super::write_state::{DataNodeWrite, DataPlanNodeWrite, DataWriteState, DataWriteStateError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime) struct GraphEncodeOptions {
@@ -138,6 +139,16 @@ impl From<WireError> for GraphEncodeError {
     }
 }
 
+impl From<DataWriteStateError> for GraphEncodeError {
+    fn from(error: DataWriteStateError) -> Self {
+        match error {
+            DataWriteStateError::Graph(error) => Self::Graph(error),
+            DataWriteStateError::CircularReference { node } => Self::CircularReference { node },
+            DataWriteStateError::AllocationFailed => Self::AllocationFailed,
+        }
+    }
+}
+
 enum EncodeValue<'a> {
     Borrowed(&'a WireValue),
     Node(NodeId),
@@ -200,13 +211,7 @@ pub(in crate::runtime) fn encode_graph(
         writer.write_string(atom)?;
     }
 
-    let mut object_indices = HashMap::new();
-    let mut active_nodes = HashSet::new();
-
-    let mut next_object_index = 0_u32;
-    let mut total_container_entries = 0_usize;
-    let mut total_bigint_bytes = 0_usize;
-    let mut total_array_buffer_bytes = 0_usize;
+    let mut state = DataWriteState::for_emission(options.limits, options.allow_object_references);
     let mut tasks = Vec::new();
     tasks
         .try_reserve(1)
@@ -216,10 +221,7 @@ pub(in crate::runtime) fn encode_graph(
     while let Some(task) = tasks.pop() {
         match task {
             EncodeTask::Key(key) => write_key(&mut writer, &plan, atom_space, key)?,
-            EncodeTask::LeaveNode(node) => {
-                let was_active = active_nodes.remove(&node);
-                debug_assert!(was_active);
-            }
+            EncodeTask::LeaveNode(node) => state.leave_node(node),
             EncodeTask::Value(value, parent_depth) => match value {
                 EncodeValue::Borrowed(WireValue::Undefined) => {
                     writer.write_tag(BcTag::Undefined)?;
@@ -244,14 +246,7 @@ pub(in crate::runtime) fn encode_graph(
                     writer.write_string(value)?;
                 }
                 EncodeValue::Borrowed(WireValue::BigInt(payload)) => {
-                    total_bigint_bytes = total_bigint_bytes.checked_add(payload.len()).ok_or(
-                        GraphError::CountOverflow {
-                            kind: GraphResourceKind::TotalBigIntBytes,
-                        },
-                    )?;
-                    options
-                        .limits
-                        .check(GraphResourceKind::TotalBigIntBytes, total_bigint_bytes)?;
+                    state.charge_bigint_bytes(payload.len())?;
                     writer.write_tag(BcTag::BigInt)?;
                     let length =
                         u32::try_from(payload.len()).map_err(|_| GraphError::CountOverflow {
@@ -271,61 +266,20 @@ pub(in crate::runtime) fn encode_graph(
                                 node_count: graph.nodes.len(),
                             })?;
 
-                    if options.allow_object_references {
-                        if let Some(index) = object_indices.get(node).copied() {
+                    match state.enter_node(*node)? {
+                        DataNodeWrite::Reference(index) => {
                             writer.write_tag(BcTag::ObjectReference)?;
                             writer.write_uleb128(index)?;
                             continue;
                         }
-                        let requested_references = usize::try_from(next_object_index)
-                            .ok()
-                            .and_then(|count| count.checked_add(1))
-                            .ok_or(GraphError::CountOverflow {
-                                kind: GraphResourceKind::ObjectReferences,
-                            })?;
-                        options
-                            .limits
-                            .check(GraphResourceKind::ObjectReferences, requested_references)?;
-                        object_indices
-                            .try_reserve(1)
-                            .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                        object_indices.insert(*node, next_object_index);
-                        next_object_index =
-                            next_object_index
-                                .checked_add(1)
-                                .ok_or(GraphError::CountOverflow {
-                                    kind: GraphResourceKind::ObjectReferences,
-                                })?;
-                    } else {
-                        if active_nodes.contains(node) {
-                            return Err(GraphEncodeError::CircularReference { node: *node });
-                        }
-                        active_nodes
-                            .try_reserve(1)
-                            .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                        active_nodes.insert(*node);
+                        DataNodeWrite::Traverse => {}
                     }
 
-                    let depth = parent_depth
-                        .checked_add(1)
-                        .ok_or(GraphError::CountOverflow {
-                            kind: GraphResourceKind::NestingDepth,
-                        })?;
-                    options
-                        .limits
-                        .check(GraphResourceKind::NestingDepth, depth)?;
+                    let depth = state.child_depth(parent_depth)?;
 
                     match node_data {
                         WireNode::Ordinary { properties } => {
-                            total_container_entries = total_container_entries
-                                .checked_add(properties.len())
-                                .ok_or(GraphError::CountOverflow {
-                                    kind: GraphResourceKind::TotalContainerEntries,
-                                })?;
-                            options.limits.check(
-                                GraphResourceKind::TotalContainerEntries,
-                                total_container_entries,
-                            )?;
+                            state.charge_container_entries(properties.len())?;
                             writer.write_tag(BcTag::Object)?;
                             writer.write_uleb128(u32::try_from(properties.len()).map_err(
                                 |_| GraphError::CountOverflow {
@@ -333,14 +287,14 @@ pub(in crate::runtime) fn encode_graph(
                                 },
                             )?)?;
                             let extra = properties.len().checked_mul(2).and_then(|count| {
-                                count.checked_add(usize::from(!options.allow_object_references))
+                                count.checked_add(usize::from(!state.allows_object_references()))
                             });
                             tasks
                                 .try_reserve(extra.ok_or(GraphError::CountOverflow {
                                     kind: GraphResourceKind::TotalContainerEntries,
                                 })?)
                                 .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                            if !options.allow_object_references {
+                            if !state.allows_object_references() {
                                 tasks.push(EncodeTask::LeaveNode(*node));
                             }
                             for property in properties.iter().rev() {
@@ -352,15 +306,7 @@ pub(in crate::runtime) fn encode_graph(
                             }
                         }
                         WireNode::Array { elements } => {
-                            total_container_entries = total_container_entries
-                                .checked_add(elements.len())
-                                .ok_or(GraphError::CountOverflow {
-                                    kind: GraphResourceKind::TotalContainerEntries,
-                                })?;
-                            options.limits.check(
-                                GraphResourceKind::TotalContainerEntries,
-                                total_container_entries,
-                            )?;
+                            state.charge_container_entries(elements.len())?;
                             writer.write_tag(BcTag::Array)?;
                             writer.write_uleb128(u32::try_from(elements.len()).map_err(
                                 |_| GraphError::CountOverflow {
@@ -369,13 +315,13 @@ pub(in crate::runtime) fn encode_graph(
                             )?)?;
                             let extra = elements
                                 .len()
-                                .checked_add(usize::from(!options.allow_object_references));
+                                .checked_add(usize::from(!state.allows_object_references()));
                             tasks
                                 .try_reserve(extra.ok_or(GraphError::CountOverflow {
                                     kind: GraphResourceKind::TotalContainerEntries,
                                 })?)
                                 .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                            if !options.allow_object_references {
+                            if !state.allows_object_references() {
                                 tasks.push(EncodeTask::LeaveNode(*node));
                             }
                             for element in elements.iter().rev() {
@@ -384,15 +330,7 @@ pub(in crate::runtime) fn encode_graph(
                             }
                         }
                         WireNode::TemplateObject { elements, raw } => {
-                            total_container_entries = total_container_entries
-                                .checked_add(elements.len())
-                                .ok_or(GraphError::CountOverflow {
-                                    kind: GraphResourceKind::TotalContainerEntries,
-                                })?;
-                            options.limits.check(
-                                GraphResourceKind::TotalContainerEntries,
-                                total_container_entries,
-                            )?;
+                            state.charge_container_entries(elements.len())?;
                             writer.write_tag(BcTag::TemplateObject)?;
                             writer.write_uleb128(u32::try_from(elements.len()).map_err(
                                 |_| GraphError::CountOverflow {
@@ -400,14 +338,14 @@ pub(in crate::runtime) fn encode_graph(
                                 },
                             )?)?;
                             let extra = elements.len().checked_add(1).and_then(|count| {
-                                count.checked_add(usize::from(!options.allow_object_references))
+                                count.checked_add(usize::from(!state.allows_object_references()))
                             });
                             tasks
                                 .try_reserve(extra.ok_or(GraphError::CountOverflow {
                                     kind: GraphResourceKind::TotalContainerEntries,
                                 })?)
                                 .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                            if !options.allow_object_references {
+                            if !state.allows_object_references() {
                                 tasks.push(EncodeTask::LeaveNode(*node));
                             }
                             // Tasks are LIFO: `raw` follows every indexed element on wire.
@@ -423,25 +361,13 @@ pub(in crate::runtime) fn encode_graph(
                         } => {
                             let byte_length =
                                 validate_array_buffer_node(*node, bytes.len(), *max_byte_length)?;
-                            options
-                                .limits
-                                .check(GraphResourceKind::ArrayBufferBytes, bytes.len())?;
-                            total_array_buffer_bytes = total_array_buffer_bytes
-                                .checked_add(bytes.len())
-                                .ok_or(GraphError::CountOverflow {
-                                    kind: GraphResourceKind::TotalArrayBufferBytes,
-                                })?;
-                            options.limits.check(
-                                GraphResourceKind::TotalArrayBufferBytes,
-                                total_array_buffer_bytes,
-                            )?;
+                            state.charge_array_buffer_bytes(bytes.len())?;
                             writer.write_tag(BcTag::ArrayBuffer)?;
                             writer.write_uleb128(byte_length)?;
                             writer.write_uleb128(max_byte_length.unwrap_or(u32::MAX))?;
                             writer.write_bytes(bytes)?;
-                            if !options.allow_object_references {
-                                let was_active = active_nodes.remove(node);
-                                debug_assert!(was_active);
+                            if !state.allows_object_references() {
+                                state.leave_node(*node);
                             }
                         }
                         WireNode::TypedArray {
@@ -463,9 +389,9 @@ pub(in crate::runtime) fn encode_graph(
                             writer.write_uleb128(*length)?;
                             writer.write_uleb128(*byte_offset)?;
                             tasks
-                                .try_reserve(1 + usize::from(!options.allow_object_references))
+                                .try_reserve(1 + usize::from(!state.allows_object_references()))
                                 .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                            if !options.allow_object_references {
+                            if !state.allows_object_references() {
                                 tasks.push(EncodeTask::LeaveNode(*node));
                             }
                             tasks.push(EncodeTask::Value(EncodeValue::Node(*buffer), depth));
@@ -473,9 +399,9 @@ pub(in crate::runtime) fn encode_graph(
                         WireNode::ObjectValue { primitive } => {
                             writer.write_tag(BcTag::ObjectValue)?;
                             tasks
-                                .try_reserve(1 + usize::from(!options.allow_object_references))
+                                .try_reserve(1 + usize::from(!state.allows_object_references()))
                                 .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                            if !options.allow_object_references {
+                            if !state.allows_object_references() {
                                 tasks.push(EncodeTask::LeaveNode(*node));
                             }
                             tasks.push(EncodeTask::Value(
@@ -486,9 +412,9 @@ pub(in crate::runtime) fn encode_graph(
                         WireNode::Date { time_value } => {
                             writer.write_tag(BcTag::Date)?;
                             tasks
-                                .try_reserve(1 + usize::from(!options.allow_object_references))
+                                .try_reserve(1 + usize::from(!state.allows_object_references()))
                                 .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                            if !options.allow_object_references {
+                            if !state.allows_object_references() {
                                 tasks.push(EncodeTask::LeaveNode(*node));
                             }
                             tasks.push(EncodeTask::Value(
@@ -517,13 +443,7 @@ fn build_encode_plan<'a>(
 
     // Scratch state is sparse and reachable-only: an unreferenced arena tail
     // must not consume writer memory or semantic node budget.
-    let mut visited_nodes = HashSet::new();
-    let mut active_nodes = HashSet::new();
-
-    let mut emitted_references = 0_usize;
-    let mut total_container_entries = 0_usize;
-    let mut total_bigint_bytes = 0_usize;
-    let mut total_array_buffer_bytes = 0_usize;
+    let mut state = DataWriteState::for_plan(options.limits, options.allow_object_references);
     let mut tasks = Vec::new();
     tasks
         .try_reserve(1)
@@ -535,26 +455,14 @@ fn build_encode_plan<'a>(
             EncodeTask::Key(key) => {
                 plan.encounter_key(graph, key, &mut canonical_atoms)?;
             }
-            EncodeTask::LeaveNode(node) => {
-                let was_active = active_nodes.remove(&node);
-                debug_assert!(was_active);
-            }
+            EncodeTask::LeaveNode(node) => state.leave_node(node),
             EncodeTask::Value(value, parent_depth) => match value {
                 EncodeValue::Borrowed(WireValue::BigInt(payload)) => {
-                    options
-                        .limits
-                        .check(GraphResourceKind::BigIntBytes, payload.len())?;
+                    state.check_bigint_bytes(payload.len())?;
                     if canonical_bigint_length(payload) != payload.len() {
                         return Err(GraphEncodeError::NonCanonicalBigInt);
                     }
-                    total_bigint_bytes = total_bigint_bytes.checked_add(payload.len()).ok_or(
-                        GraphError::CountOverflow {
-                            kind: GraphResourceKind::TotalBigIntBytes,
-                        },
-                    )?;
-                    options
-                        .limits
-                        .check(GraphResourceKind::TotalBigIntBytes, total_bigint_bytes)?;
+                    state.charge_bigint_bytes(payload.len())?;
                 }
                 EncodeValue::Borrowed(&WireValue::Node(ref node)) | EncodeValue::Node(ref node) => {
                     let node_data =
@@ -565,38 +473,14 @@ fn build_encode_plan<'a>(
                                 index: node.zero_based(),
                                 node_count: graph.nodes.len(),
                             })?;
-                    let first_visit = !visited_nodes.contains(node);
-                    if options.allow_object_references {
-                        if !first_visit {
+                    match state.enter_plan_node(*node)? {
+                        DataPlanNodeWrite::Reference => {
                             continue;
                         }
-                        emitted_references =
-                            emitted_references
-                                .checked_add(1)
-                                .ok_or(GraphError::CountOverflow {
-                                    kind: GraphResourceKind::ObjectReferences,
-                                })?;
-                        options
-                            .limits
-                            .check(GraphResourceKind::ObjectReferences, emitted_references)?;
-                    } else {
-                        if active_nodes.contains(node) {
-                            return Err(GraphEncodeError::CircularReference { node: *node });
-                        }
-                        active_nodes
-                            .try_reserve(1)
-                            .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                        active_nodes.insert(*node);
+                        DataPlanNodeWrite::Traverse => {}
                     }
 
-                    let depth = parent_depth
-                        .checked_add(1)
-                        .ok_or(GraphError::CountOverflow {
-                            kind: GraphResourceKind::NestingDepth,
-                        })?;
-                    options
-                        .limits
-                        .check(GraphResourceKind::NestingDepth, depth)?;
+                    let depth = state.child_depth(parent_depth)?;
 
                     if let Some(entry_count) = match node_data {
                         WireNode::Ordinary { properties } => Some(properties.len()),
@@ -607,49 +491,17 @@ fn build_encode_plan<'a>(
                         | WireNode::ObjectValue { .. }
                         | WireNode::Date { .. } => None,
                     } {
-                        options
-                            .limits
-                            .check(GraphResourceKind::ContainerEntries, entry_count)?;
-                        total_container_entries = total_container_entries
-                            .checked_add(entry_count)
-                            .ok_or(GraphError::CountOverflow {
-                                kind: GraphResourceKind::TotalContainerEntries,
-                            })?;
-                        options.limits.check(
-                            GraphResourceKind::TotalContainerEntries,
-                            total_container_entries,
-                        )?;
+                        state.check_container_entries(entry_count)?;
+                        state.charge_container_entries(entry_count)?;
                     }
 
                     if let WireNode::ArrayBuffer { bytes, .. } = node_data {
-                        options
-                            .limits
-                            .check(GraphResourceKind::ArrayBufferBytes, bytes.len())?;
-                        total_array_buffer_bytes = total_array_buffer_bytes
-                            .checked_add(bytes.len())
-                            .ok_or(GraphError::CountOverflow {
-                                kind: GraphResourceKind::TotalArrayBufferBytes,
-                            })?;
-                        options.limits.check(
-                            GraphResourceKind::TotalArrayBufferBytes,
-                            total_array_buffer_bytes,
-                        )?;
+                        state.charge_array_buffer_bytes(bytes.len())?;
                     }
 
-                    if first_visit {
-                        let requested_nodes = visited_nodes.len().checked_add(1).ok_or(
-                            GraphError::CountOverflow {
-                                kind: GraphResourceKind::Nodes,
-                            },
-                        )?;
-                        options
-                            .limits
-                            .check(GraphResourceKind::Nodes, requested_nodes)?;
-                        visited_nodes
-                            .try_reserve(1)
-                            .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                    if let Some(reservation) = state.reserve_unique_node(*node)? {
                         validate_node(graph, *node, node_data)?;
-                        visited_nodes.insert(*node);
+                        reservation.commit();
                     }
 
                     let task_count = match node_data {
@@ -662,7 +514,7 @@ fn build_encode_plan<'a>(
                         WireNode::Date { .. } => Some(1),
                     }
                     .and_then(|count| {
-                        count.checked_add(usize::from(!options.allow_object_references))
+                        count.checked_add(usize::from(!state.allows_object_references()))
                     })
                     .ok_or(GraphError::CountOverflow {
                         kind: GraphResourceKind::TotalContainerEntries,
@@ -670,7 +522,7 @@ fn build_encode_plan<'a>(
                     tasks
                         .try_reserve(task_count)
                         .map_err(|_| GraphEncodeError::AllocationFailed)?;
-                    if !options.allow_object_references {
+                    if !state.allows_object_references() {
                         tasks.push(EncodeTask::LeaveNode(*node));
                     }
                     match node_data {
