@@ -1,9 +1,9 @@
 //! Bounded, heap-independent decoder for the first BC5 data-object slice.
 //!
 //! Containers are assembled through an explicit frame stack. Object and Array
-//! nodes enter the reference table before any child is read, which preserves
-//! QuickJS's preorder reference numbering while keeping cycles out of the Rust
-//! type recursion.
+//! identities enter the reference table before any child is read, which
+//! preserves QuickJS's preorder reference numbering and cycles. Their values
+//! reach the parent or root only after the complete subtree has been consumed.
 
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
@@ -43,6 +43,7 @@ pub(in crate::runtime) enum DecodeError {
         offset: usize,
         reason: ArrayBufferLayoutError,
     },
+    InvalidCompletionTarget,
 }
 
 impl fmt::Display for DecodeError {
@@ -73,6 +74,9 @@ impl fmt::Display for DecodeError {
             }
             Self::InvalidArrayBuffer { offset, reason } => {
                 write!(formatter, "invalid ArrayBuffer at byte {offset}: {reason}")
+            }
+            Self::InvalidCompletionTarget => {
+                formatter.write_str("invalid wire graph completion target")
             }
         }
     }
@@ -142,33 +146,41 @@ pub(in crate::runtime) fn decode_graph(
             break;
         }
 
-        let key = match state.frames.last() {
-            Some(Frame::Ordinary { .. }) => Some(read_key(&mut cursor, &header_atoms)?),
-            Some(Frame::Array { .. }) | None => None,
+        let return_to = match state.frames.last() {
+            Some(active) => {
+                let key = active
+                    .frame
+                    .expects_property_key()
+                    .then(|| read_key(&mut cursor, &header_atoms))
+                    .transpose()?;
+                CompletionTarget::Parent { key }
+            }
+            None => CompletionTarget::Root,
         };
-        let parsed = state.read_value(&mut cursor)?;
-
-        if let Some(parent) = state.frames.last_mut() {
-            parent.attach(key, parsed.value)?;
-        } else {
-            debug_assert!(root.is_none());
-            root = Some(parsed.value);
+        match state.read_value(&mut cursor)? {
+            ReadStep::Complete(value) => {
+                state.deliver_completed(return_to, value, &mut root)?;
+            }
+            ReadStep::Pending(frame) => {
+                state
+                    .frames
+                    .try_reserve(1)
+                    .map_err(|_| GraphError::AllocationFailed)?;
+                state.frames.push(ActiveFrame { frame, return_to });
+            }
         }
 
-        if let Some(frame) = parsed.frame {
-            state
-                .frames
-                .try_reserve(1)
-                .map_err(|_| GraphError::AllocationFailed)?;
-            state.frames.push(frame);
-        }
-
-        while state.frames.last().is_some_and(Frame::is_complete) {
-            let frame = state
+        while state
+            .frames
+            .last()
+            .is_some_and(|active| active.frame.is_complete())
+        {
+            let active = state
                 .frames
                 .pop()
-                .expect("a completed frame was observed before pop");
-            frame.finish(&mut state.nodes)?;
+                .ok_or(DecodeError::InvalidCompletionTarget)?;
+            let value = state.finish_frame(active.frame)?;
+            state.deliver_completed(active.return_to, value, &mut root)?;
         }
     }
 
@@ -176,11 +188,12 @@ pub(in crate::runtime) fn decode_graph(
     // trailing bytes, rather than the graph layer bypassing finalization.
     cursor.finish()?;
 
+    let root = root.ok_or(DecodeError::InvalidCompletionTarget)?;
     Ok(WireGraph {
         atoms: atoms.into_boxed_slice(),
         nodes: state.nodes.into_boxed_slice(),
         ref_table: state.ref_table.into_boxed_slice(),
-        root: root.expect("one value is required after a valid BC5 header"),
+        root,
     })
 }
 
@@ -189,28 +202,28 @@ struct DecodeState {
     allow_object_references: bool,
     nodes: Vec<WireNode>,
     ref_table: Vec<NodeId>,
-    frames: Vec<Frame>,
+    frames: Vec<ActiveFrame>,
     total_container_entries: usize,
     total_bigint_bytes: usize,
     total_array_buffer_bytes: usize,
 }
 
 impl DecodeState {
-    fn read_value(&mut self, cursor: &mut WireCursor<'_>) -> Result<ParsedValue, DecodeError> {
+    fn read_value(&mut self, cursor: &mut WireCursor<'_>) -> Result<ReadStep, DecodeError> {
         let tag_offset = cursor.position();
         let tag = cursor.read_tag()?;
-        let primitive = match tag {
-            BcTag::Null => Some(WireValue::Null),
-            BcTag::Undefined => Some(WireValue::Undefined),
-            BcTag::BoolFalse => Some(WireValue::Bool(false)),
-            BcTag::BoolTrue => Some(WireValue::Bool(true)),
-            BcTag::Int32 => Some(WireValue::Int32(cursor.read_i32()?)),
-            BcTag::Float64 => Some(WireValue::Float64Bits(cursor.read_f64()?.to_bits())),
-            BcTag::String => Some(WireValue::String(cursor.read_string()?)),
-            BcTag::BigInt => Some(self.read_bigint(cursor)?),
+        let value = match tag {
+            BcTag::Null => WireValue::Null,
+            BcTag::Undefined => WireValue::Undefined,
+            BcTag::BoolFalse => WireValue::Bool(false),
+            BcTag::BoolTrue => WireValue::Bool(true),
+            BcTag::Int32 => WireValue::Int32(cursor.read_i32()?),
+            BcTag::Float64 => WireValue::Float64Bits(cursor.read_f64()?.to_bits()),
+            BcTag::String => WireValue::String(cursor.read_string()?),
+            BcTag::BigInt => self.read_bigint(cursor)?,
             BcTag::Object => return self.begin_container(cursor, ContainerKind::Ordinary),
             BcTag::Array => return self.begin_container(cursor, ContainerKind::Array),
-            BcTag::ArrayBuffer => Some(self.read_array_buffer(cursor)?),
+            BcTag::ArrayBuffer => self.read_array_buffer(cursor)?,
             BcTag::ObjectReference => {
                 if !self.allow_object_references {
                     return Err(DecodeError::ObjectReferencesNotAllowed { offset: tag_offset });
@@ -222,7 +235,7 @@ impl DecodeState {
                         reference_count: self.ref_table.len(),
                     },
                 )?;
-                Some(WireValue::Node(node))
+                WireValue::Node(node)
             }
             BcTag::TemplateObject
             | BcTag::FunctionBytecode
@@ -238,10 +251,7 @@ impl DecodeState {
             }
         };
 
-        Ok(ParsedValue {
-            value: primitive.expect("every non-container admitted tag produced a value"),
-            frame: None,
-        })
+        Ok(ReadStep::Complete(value))
     }
 
     fn read_bigint(&mut self, cursor: &mut WireCursor<'_>) -> Result<WireValue, DecodeError> {
@@ -346,7 +356,7 @@ impl DecodeState {
         &mut self,
         cursor: &mut WireCursor<'_>,
         kind: ContainerKind,
-    ) -> Result<ParsedValue, DecodeError> {
+    ) -> Result<ReadStep, DecodeError> {
         let entry_count = cursor.read_uleb128()? as usize;
         self.limits
             .check(GraphResourceKind::ContainerEntries, entry_count)?;
@@ -372,10 +382,59 @@ impl DecodeState {
         };
         let node_id = self.allocate_node(placeholder)?;
         let frame = Frame::new(kind, node_id, entry_count)?;
-        Ok(ParsedValue {
-            value: WireValue::Node(node_id),
-            frame: Some(frame),
-        })
+        Ok(ReadStep::Pending(frame))
+    }
+
+    fn deliver_completed(
+        &mut self,
+        target: CompletionTarget,
+        value: WireValue,
+        root: &mut Option<WireValue>,
+    ) -> Result<(), DecodeError> {
+        match target {
+            CompletionTarget::Root => {
+                if root.replace(value).is_some() {
+                    return Err(DecodeError::InvalidCompletionTarget);
+                }
+            }
+            CompletionTarget::Parent { key } => {
+                let parent = self
+                    .frames
+                    .last_mut()
+                    .ok_or(DecodeError::InvalidCompletionTarget)?;
+                parent.frame.attach(key, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_frame(&mut self, frame: Frame) -> Result<WireValue, DecodeError> {
+        let (node, replacement) = match frame {
+            Frame::Ordinary {
+                node, properties, ..
+            } => (
+                node,
+                WireNode::Ordinary {
+                    properties: properties.into_boxed_slice(),
+                },
+            ),
+            Frame::Array { node, elements, .. } => (
+                node,
+                WireNode::Array {
+                    elements: elements.into_boxed_slice(),
+                },
+            ),
+        };
+        let node_count = self.nodes.len();
+        let slot = self
+            .nodes
+            .get_mut(node.as_usize())
+            .ok_or(GraphError::InvalidNodeIndex {
+                index: node.zero_based(),
+                node_count,
+            })?;
+        *slot = replacement;
+        Ok(WireValue::Node(node))
     }
 
     fn check_next_node_depth(&self) -> Result<(), GraphError> {
@@ -449,9 +508,20 @@ enum ContainerKind {
     Array,
 }
 
-struct ParsedValue {
-    value: WireValue,
-    frame: Option<Frame>,
+enum ReadStep {
+    Complete(WireValue),
+    Pending(Frame),
+}
+
+#[derive(Clone, Copy)]
+enum CompletionTarget {
+    Root,
+    Parent { key: Option<DecodedPropertyKey> },
+}
+
+struct ActiveFrame {
+    frame: Frame,
+    return_to: CompletionTarget,
 }
 
 enum Frame {
@@ -549,6 +619,10 @@ impl Frame {
         Ok(())
     }
 
+    fn expects_property_key(&self) -> bool {
+        matches!(self, Self::Ordinary { .. })
+    }
+
     fn is_complete(&self) -> bool {
         match self {
             Self::Ordinary {
@@ -558,34 +632,6 @@ impl Frame {
                 expected, elements, ..
             } => elements.len() == *expected,
         }
-    }
-
-    fn finish(self, nodes: &mut [WireNode]) -> Result<(), GraphError> {
-        let (node, replacement) = match self {
-            Self::Ordinary {
-                node, properties, ..
-            } => (
-                node,
-                WireNode::Ordinary {
-                    properties: properties.into_boxed_slice(),
-                },
-            ),
-            Self::Array { node, elements, .. } => (
-                node,
-                WireNode::Array {
-                    elements: elements.into_boxed_slice(),
-                },
-            ),
-        };
-        let node_count = nodes.len();
-        let slot = nodes
-            .get_mut(node.as_usize())
-            .ok_or(GraphError::InvalidNodeIndex {
-                index: node.zero_based(),
-                node_count,
-            })?;
-        *slot = replacement;
-        Ok(())
     }
 }
 
@@ -824,6 +870,129 @@ mod tests {
                     elements: Box::default(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn nested_container_values_keep_ignored_and_duplicate_property_routing() {
+        // The ignored array is fully decoded, then x receives the following
+        // primitive. This freezes the routing needed by deferred completion.
+        let ignored = [5, 1, 2, b'x', 8, 2, 0, 9, 1, 5, 0x54, 2, 5, 0x0e];
+        let graph = decode(&ignored, ReaderMode::QuickJsCompatible, false).unwrap();
+        assert_eq!(
+            graph.nodes.as_ref(),
+            &[
+                WireNode::Ordinary {
+                    properties: Box::from([WireProperty {
+                        key: WireKey::Atom(AtomId::from_zero_based(0)),
+                        value: WireValue::Int32(7),
+                    }]),
+                },
+                WireNode::Array {
+                    elements: Box::from([WireValue::Int32(42)]),
+                },
+            ]
+        );
+
+        // Duplicate x retains its first property slot but the second completed
+        // container supplies the value.
+        let duplicate = [5, 1, 2, b'x', 8, 2, 2, 9, 1, 5, 2, 2, 8, 0];
+        let graph = decode(&duplicate, ReaderMode::Strict, false).unwrap();
+        assert_eq!(
+            graph.nodes.as_ref(),
+            &[
+                WireNode::Ordinary {
+                    properties: Box::from([WireProperty {
+                        key: WireKey::Atom(AtomId::from_zero_based(0)),
+                        value: WireValue::Node(NodeId::from_zero_based(2)),
+                    }]),
+                },
+                WireNode::Array {
+                    elements: Box::from([WireValue::Int32(1)]),
+                },
+                WireNode::Ordinary {
+                    properties: Box::default(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_cycles_and_ignored_buffers_keep_preorder_reference_identity() {
+        // Pinned QuickJS graph: o.a = [o].
+        let cycle = [5, 1, 2, b'a', 8, 1, 2, 9, 1, 19, 0];
+        let graph = decode(&cycle, ReaderMode::Strict, true).unwrap();
+        let root = NodeId::from_zero_based(0);
+        let array = NodeId::from_zero_based(1);
+        assert_eq!(graph.ref_table.as_ref(), &[root, array]);
+        assert_eq!(
+            graph.nodes.as_ref(),
+            &[
+                WireNode::Ordinary {
+                    properties: Box::from([WireProperty {
+                        key: WireKey::Atom(AtomId::from_zero_based(0)),
+                        value: WireValue::Node(array),
+                    }]),
+                },
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(root)]),
+                },
+            ]
+        );
+
+        // A compatible null key discards the first attachment, but its buffer
+        // remains ref 1 and a later property can reach it through that history.
+        let recovered = [
+            5, 1, 2, b'x', 8, 2, 0, 15, 1, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xaa, 2, 19, 1,
+        ];
+        let graph = decode(&recovered, ReaderMode::QuickJsCompatible, true).unwrap();
+        let buffer = NodeId::from_zero_based(1);
+        assert_eq!(graph.ref_table.as_ref(), &[root, buffer]);
+        assert_eq!(
+            graph.nodes.as_ref(),
+            &[
+                WireNode::Ordinary {
+                    properties: Box::from([WireProperty {
+                        key: WireKey::Atom(AtomId::from_zero_based(0)),
+                        value: WireValue::Node(buffer),
+                    }]),
+                },
+                WireNode::ArrayBuffer {
+                    bytes: Box::from([0xaa]),
+                    max_byte_length: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_frames_drain_in_order_and_nested_key_truncation_still_wins() {
+        let graph = decode(&[5, 0, 9, 2, 9, 0, 8, 0], ReaderMode::Strict, true).unwrap();
+        assert_eq!(
+            graph.nodes.as_ref(),
+            &[
+                WireNode::Array {
+                    elements: Box::from([
+                        WireValue::Node(NodeId::from_zero_based(1)),
+                        WireValue::Node(NodeId::from_zero_based(2)),
+                    ]),
+                },
+                WireNode::Array {
+                    elements: Box::default(),
+                },
+                WireNode::Ordinary {
+                    properties: Box::default(),
+                },
+            ]
+        );
+
+        assert_eq!(
+            decode(&[5, 0, 9, 1, 8, 1], ReaderMode::Strict, false),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 6,
+                needed: 1,
+                remaining: 0,
+            }))
         );
     }
 
