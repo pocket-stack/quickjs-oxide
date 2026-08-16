@@ -161,8 +161,12 @@ An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
 the Rust prefix codec against the exact bytes. A second authenticated 110-byte
 vector pins a root-to-outer-to-inner constant-pool chain, the captured closure
-descriptor, and fresh-runtime evaluation to 42; it does not yet claim an object
-reference crossing a function boundary. The data decoder separates
+descriptor, and fresh-runtime evaluation to 42. A third authenticated 75-byte
+reference vector proves that neither the outer nor nested FunctionBytecode
+record consumes an object-reference ID: a cpool TemplateObject is ID 1, its
+raw object is ID 2, and the enclosing root later refers back to ID 1. A fresh
+runtime also observes the cpool result and root property as the same object.
+The data decoder separates
 preorder identity registration from value completion: every parent/root
 attachment now uses one completed-subtree
 delivery path owned by the decode state. Its private arena represents

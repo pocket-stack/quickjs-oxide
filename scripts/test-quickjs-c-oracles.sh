@@ -104,7 +104,8 @@ while IFS=$'\t' read -r id family source source_hash expected expected_hash desc
 done < <(tail -n +2 "$manifest")
 
 for required_id in callback-contracts function-bytecode-nested-closure \
-    function-bytecode-wire import-attributes import-meta json; do
+    function-bytecode-reference-boundary function-bytecode-wire \
+    import-attributes import-meta json; do
     found=false
     for id in "${ids[@]}"; do
         [[ "$id" != "$required_id" ]] || found=true
