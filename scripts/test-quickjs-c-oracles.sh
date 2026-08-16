@@ -105,6 +105,7 @@ done < <(tail -n +2 "$manifest")
 
 for required_id in callback-contracts function-bytecode-ancestor-reference \
     function-bytecode-invalid-data-parent function-bytecode-nested-closure \
+    function-bytecode-non-string-properties \
     function-bytecode-reference-boundary function-bytecode-wire \
     function-bytecode-writer-flags \
     import-attributes import-meta json; do
