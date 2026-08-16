@@ -147,16 +147,33 @@ impl AtomIndexSpace {
         atom: BinaryAtom,
     ) -> Result<(), WireError> {
         let offset = writer.as_bytes().len();
-        let encoded = match atom {
+        let encoded = self.metadata_atom_encoding(atom, offset)?;
+        writer.write_uleb128(encoded)
+    }
+
+    /// Check that one semantic metadata atom belongs to this namespace.
+    ///
+    /// This performs no allocation and writes no bytes, so compound encoders
+    /// can reject an inconsistent internal model before mutating their output.
+    pub(in crate::runtime) fn validate_metadata_atom(
+        self,
+        atom: BinaryAtom,
+        diagnostic_offset: usize,
+    ) -> Result<(), WireError> {
+        self.metadata_atom_encoding(atom, diagnostic_offset)
+            .map(|_| ())
+    }
+
+    fn metadata_atom_encoding(self, atom: BinaryAtom, offset: usize) -> Result<u32, WireError> {
+        match atom {
             BinaryAtom::Index(index) => {
                 if index > ATOM_MAX_INT {
                     return Err(self.invalid_index(offset, index));
                 }
-                (index << 1) | 1
+                Ok((index << 1) | 1)
             }
-            atom => self.encode_table_atom(atom, offset)? << 1,
-        };
-        writer.write_uleb128(encoded)
+            atom => Ok(self.encode_table_atom(atom, offset)? << 1),
+        }
     }
 
     /// Resolve a fixed-width raw atom operand embedded in function bytecode.

@@ -133,20 +133,32 @@ are rejected before either frozen digest is accepted.
 It records structural instruction spans, resolves all 21 fixed-width atom
 operands into typed bytecode-namespace identities, preserves QuickJS's
 end-of-payload invalid-atom diagnostic position, and can canonically re-encode
-in the same namespace. This image is deliberately non-executable: it does not
-admit FunctionBytecode tag 12, validate stack or control-flow semantics, create
-runtime atoms, or bypass the existing verified-bytecode publication path. The
-complete function envelope and its constant-pool object graph remain the next
-admission layer. The decoder separates preorder identity registration from
-value completion: every parent/root attachment now uses one completed-subtree
+in the same namespace. The scanned `CodeImage` remains deliberately
+non-executable: it does not validate stack or control-flow semantics, create
+runtime atoms, or bypass the existing verified-bytecode publication path. A
+bounded `FunctionRecordPrefix` layer now reads and canonically writes the fixed
+FunctionBytecode body after tag 12: flags, frame metadata, locals, closures,
+scanned code, and optional debug bytes. It stops immediately before the first
+of `pending_constant_pool_count` recursively encoded values and never admits
+the record to execution. This prefix is deliberately not a `FunctionImage`;
+the constant pool and nested functions remain pending until a whole-image
+decoder and encoder can share one object-reference arena across the complete
+image. Strict mode rejects aliased narrow fields and reserved flag bits;
+compatible mode preserves QuickJS's `u32`-to-`u16` truncation, while signed
+negative-size and decrement-overflow spellings remain hard safety rejections.
+An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
+BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
+the Rust prefix codec against the exact bytes. The data decoder separates
+preorder identity registration from value completion: every parent/root
+attachment now uses one completed-subtree
 delivery path owned by the decode state. Its private arena represents
 incomplete identities with kind-checked pending/ready slots; linear
 node/reference reservations reject stale commits, and independently bounded
 reference entries can alias pending or ready identities without consuming
 another node. Malicious TypedArray placeholder paths are rejected
 deterministically instead of reproducing pinned QuickJS's native crashes.
-SharedArrayBuffer, FunctionBytecode, and Module remain rejected. It is not a
-public binary-object API yet:
+The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
+Module. It is not a public binary-object API yet:
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.

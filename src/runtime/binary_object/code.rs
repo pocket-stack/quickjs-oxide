@@ -398,6 +398,12 @@ impl CodeImage {
         &self.atom_relocations
     }
 
+    /// Return the exact bytecode atom namespace used to scan the payload.
+    #[must_use]
+    pub(in crate::runtime) const fn atom_space(&self) -> AtomIndexSpace {
+        self.atom_space
+    }
+
     /// Re-encode in the exact atom namespace used during scanning.
     ///
     /// Opcode bytes and atom operands are regenerated from typed sidecars. The

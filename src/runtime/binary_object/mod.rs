@@ -14,6 +14,9 @@ pub(in crate::runtime) mod atoms;
 pub(in crate::runtime) mod code;
 
 #[allow(dead_code)]
+pub(in crate::runtime) mod function_envelope;
+
+#[allow(dead_code)]
 pub(in crate::runtime) mod graph;
 
 #[allow(dead_code)]

@@ -341,6 +341,14 @@ impl<'a> WireCursor<'a> {
         Ok(self.take(1)?[0])
     }
 
+    pub(in crate::runtime) fn read_u16_le(&mut self) -> Result<u16, WireError> {
+        let bytes: [u8; 2] = self
+            .take(2)?
+            .try_into()
+            .expect("a two-byte checked slice must convert to an array");
+        Ok(u16::from_le_bytes(bytes))
+    }
+
     pub(in crate::runtime) fn read_bytes(&mut self, length: usize) -> Result<&'a [u8], WireError> {
         self.take(length)
     }
@@ -536,6 +544,10 @@ impl WireWriter {
         Ok(())
     }
 
+    pub(in crate::runtime) fn write_u16_le(&mut self, value: u16) -> Result<(), WireError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+
     pub(in crate::runtime) fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), WireError> {
         self.reserve(bytes.len())?;
         self.output.extend_from_slice(bytes);
@@ -722,6 +734,30 @@ mod tests {
             assert_eq!(cursor.read_uleb128(), Ok(value));
             cursor.finish().unwrap();
         }
+    }
+
+    #[test]
+    fn little_endian_u16_primitives_match_bc5_and_keep_exact_offsets() {
+        let mut writer = WireWriter::new(4);
+        writer.write_u16_le(0x1234).unwrap();
+        writer.write_u16_le(u16::MAX).unwrap();
+        assert_eq!(writer.as_bytes(), [0x34, 0x12, 0xff, 0xff]);
+
+        let mut cursor = strict_cursor(writer.as_bytes());
+        assert_eq!(cursor.read_u16_le(), Ok(0x1234));
+        assert_eq!(cursor.position(), 2);
+        assert_eq!(cursor.read_u16_le(), Ok(u16::MAX));
+        cursor.finish().unwrap();
+
+        let mut truncated = strict_cursor(&[0x34]);
+        assert_eq!(
+            truncated.read_u16_le(),
+            Err(WireError::Truncated {
+                offset: 0,
+                needed: 2,
+                remaining: 1,
+            })
+        );
     }
 
     #[test]
