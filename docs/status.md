@@ -204,6 +204,13 @@ share a circular object; bytecode writing without the reference flag still
 succeeds, emits only `keep: 42`, and fresh-runtime inspection observes no
 symbol or private properties. Rust tests reproduce that exact 13-byte
 canonical output and verify that the skipped values are never traversed.
+A Module-specific public-C-API oracle now pins a 109-byte stripped BC5 Module
+through fresh-runtime read, byte-exact reserialization, resolve, evaluation,
+and a global `42` receipt. Its `JS_WRITE_OBJ_BSWAP` bytes are identical. A
+second 283-byte vector records the complete request/attribute, local and
+indirect export, star export, default/named/namespace import, top-level-await,
+and FunctionBytecode-body topology without pretending that the Rust archival
+reader can link or execute it yet.
 The data decoder separates preorder identity registration from value
 completion: every parent/root attachment now uses one completed-subtree
 delivery path owned by the decode state. Its reference state is now an

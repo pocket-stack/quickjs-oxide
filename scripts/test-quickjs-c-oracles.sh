@@ -108,7 +108,7 @@ for required_id in callback-contracts function-bytecode-ancestor-reference \
     function-bytecode-non-string-properties \
     function-bytecode-reference-boundary function-bytecode-wire \
     function-bytecode-writer-flags \
-    import-attributes import-meta json; do
+    import-attributes import-meta json module-bytecode-wire; do
     found=false
     for id in "${ids[@]}"; do
         [[ "$id" != "$required_id" ]] || found=true
