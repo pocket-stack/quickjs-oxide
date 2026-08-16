@@ -8,4 +8,7 @@
 // The wire layer is intentionally staged before its runtime consumer. Keep the
 // allowance local so the rest of `runtime` still receives dead-code warnings.
 #[allow(dead_code)]
+pub(in crate::runtime) mod graph;
+
+#[allow(dead_code)]
 pub(in crate::runtime) mod wire;

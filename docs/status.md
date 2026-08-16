@@ -76,9 +76,15 @@ allocation-failure edge matrices and the unsupported/failed leaves recorded by
 the current Test262 vector.
 The private BC_VERSION 5 foundation now has bounded wire primitives and the
 pinned BigInt payload codec, including QuickJS's asymmetric 16,385-limb writer
-edge. It is not a public binary-object API yet: `num-bigint` lacks fallible
-construction, so decoder OOM mapping and allocator fault-injection remain a
-hardening gate before untrusted input admission.
+edge. A heap-independent WireGraph slice now validates and canonically rewrites
+primitives, ordinary objects, arrays, shared identity, and cycles with explicit
+decode and emitted-traversal budgets. Its data-object semantics include header
+atom interning, tagged decimal keys, first-slot/last-value duplicate properties,
+compatible null-atom consumption, and depth-first output atom rebuilding. All
+other object tags remain rejected. It is not a public binary-object API yet:
+`num-bigint` lacks fallible construction, so heap materialization, decoder OOM
+mapping, and allocator fault-injection remain hardening gates before untrusted
+input admission.
 Failed acyclic source graphs retry like QuickJS. Parse-time resolution success and
 one-shot failure latches match the pinned callback order; an incomplete graph
 is non-executable and dynamic import rejects deterministically. Rust safely

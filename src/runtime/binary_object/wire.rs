@@ -282,6 +282,11 @@ impl<'a> WireCursor<'a> {
     }
 
     #[must_use]
+    pub(in crate::runtime) const fn mode(&self) -> ReaderMode {
+        self.mode
+    }
+
+    #[must_use]
     pub(in crate::runtime) fn remaining(&self) -> usize {
         self.input.len() - self.offset
     }
@@ -306,6 +311,10 @@ impl<'a> WireCursor<'a> {
 
     pub(in crate::runtime) fn read_u8(&mut self) -> Result<u8, WireError> {
         Ok(self.take(1)?[0])
+    }
+
+    pub(in crate::runtime) fn read_bytes(&mut self, length: usize) -> Result<&'a [u8], WireError> {
+        self.take(length)
     }
 
     pub(in crate::runtime) fn read_tag(&mut self) -> Result<BcTag, WireError> {
@@ -485,14 +494,23 @@ impl WireWriter {
                 limit: self.max_output_bytes,
             });
         }
+        // Keep the logical byte limit exact, but let `Vec` grow geometrically.
+        // Reserving the exact delta for every tag/ULEB append turns large
+        // containers into a realloc-and-copy amplification path.
         self.output
-            .try_reserve_exact(additional)
+            .try_reserve(additional)
             .map_err(|_| WireError::AllocationFailed)
     }
 
     pub(in crate::runtime) fn write_u8(&mut self, value: u8) -> Result<(), WireError> {
         self.reserve(1)?;
         self.output.push(value);
+        Ok(())
+    }
+
+    pub(in crate::runtime) fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), WireError> {
+        self.reserve(bytes.len())?;
+        self.output.extend_from_slice(bytes);
         Ok(())
     }
 
