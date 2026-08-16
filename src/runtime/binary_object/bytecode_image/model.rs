@@ -4,6 +4,8 @@
 //! the raw header-slot namespace. The model deliberately has no verifier,
 //! materializer, runtime-heap handle, or execution entry point.
 
+use std::num::NonZeroU8;
+
 use super::super::function_envelope::{
     ClosureVariableFlags, FunctionFlags, JsMode, LocalVariableFlags, ScopeLink,
 };
@@ -11,7 +13,7 @@ use super::super::graph::decode::MachineSource;
 use super::super::graph::model::{NodeId, WireNodeCarrier, WireValue};
 use super::super::pinned_opcodes::PinnedOpcode;
 use super::super::wire::WireString;
-use super::decode::AuthenticatedFunction;
+use super::decode::{AuthenticatedFunction, AuthenticatedModule};
 use super::{ImageAtom, ImageKey};
 
 /// Zero-based identity of one [`FunctionRecord`] in a complete image.
@@ -42,12 +44,61 @@ impl FunctionId {
     }
 }
 
-/// A data value or an opaque function identity in one whole-image traversal.
+/// Zero-based identity of one [`ModuleRecord`] in a complete image.
+///
+/// Construction consumes a decoder-private [`AuthenticatedModule`] proof
+/// produced only after its same-source module slot is complete. As with
+/// [`FunctionId`], the raw index cannot be forged by sibling binary-object
+/// layers.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(in crate::runtime) struct ModuleId {
+    source: MachineSource,
+    index: u32,
+}
+
+impl ModuleId {
+    pub(in crate::runtime::binary_object) const fn source(self) -> MachineSource {
+        self.source
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn zero_based(self) -> u32 {
+        self.index
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn as_usize(self) -> usize {
+        self.index as usize
+    }
+}
+
+/// Opaque non-data identity admitted by the shared graph traversal.
+///
+/// Both variants retain the same unforgeable [`MachineSource`] issued to the
+/// traversal that authenticated their table slot.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(in crate::runtime::binary_object) enum ImageOpaque {
+    Function(FunctionId),
+    Module(ModuleId),
+}
+
+impl ImageOpaque {
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn source(self) -> MachineSource {
+        match self {
+            Self::Function(function) => function.source(),
+            Self::Module(module) => module.source(),
+        }
+    }
+}
+
+/// A data value, function identity, or module identity in one whole-image
+/// traversal.
 ///
 /// The representation is intentionally private. In particular, callers cannot
-/// pattern-match a function into a raw integer or reconstruct a data value
-/// around a foreign [`NodeId`]. The shared data machine receives only the
-/// narrow classifier/conversion methods below.
+/// reconstruct an opaque identity from a raw integer or reconstruct a data
+/// value around a foreign [`NodeId`]. The shared data machine receives only
+/// the narrow classifier/conversion methods below.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) struct ImageValue {
     kind: ImageValueKind,
@@ -57,6 +108,7 @@ pub(in crate::runtime) struct ImageValue {
 enum ImageValueKind {
     Data(WireValue),
     Function(FunctionId),
+    Module(ModuleId),
 }
 
 impl ImageValue {
@@ -68,17 +120,19 @@ impl ImageValue {
 
     pub(in crate::runtime::binary_object) const fn as_wire(
         &self,
-    ) -> Result<&WireValue, FunctionId> {
+    ) -> Result<&WireValue, ImageOpaque> {
         match &self.kind {
             ImageValueKind::Data(value) => Ok(value),
-            ImageValueKind::Function(function) => Err(*function),
+            ImageValueKind::Function(function) => Err(ImageOpaque::Function(*function)),
+            ImageValueKind::Module(module) => Err(ImageOpaque::Module(*module)),
         }
     }
 
-    pub(in crate::runtime::binary_object) fn into_wire(self) -> Result<WireValue, FunctionId> {
+    pub(in crate::runtime::binary_object) fn into_wire(self) -> Result<WireValue, ImageOpaque> {
         match self.kind {
             ImageValueKind::Data(value) => Ok(value),
-            ImageValueKind::Function(function) => Err(function),
+            ImageValueKind::Function(function) => Err(ImageOpaque::Function(function)),
+            ImageValueKind::Module(module) => Err(ImageOpaque::Module(module)),
         }
     }
 
@@ -91,11 +145,37 @@ impl ImageValue {
         }
     }
 
+    pub(super) fn from_module(module: AuthenticatedModule) -> Self {
+        Self {
+            kind: ImageValueKind::Module(ModuleId {
+                source: module.source(),
+                index: module.index(),
+            }),
+        }
+    }
+
     #[must_use]
     pub(in crate::runtime::binary_object) const fn function_id(&self) -> Option<FunctionId> {
         match self.kind {
-            ImageValueKind::Data(_) => None,
             ImageValueKind::Function(function) => Some(function),
+            ImageValueKind::Data(_) | ImageValueKind::Module(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn module_id(&self) -> Option<ModuleId> {
+        match self.kind {
+            ImageValueKind::Module(module) => Some(module),
+            ImageValueKind::Data(_) | ImageValueKind::Function(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn opaque(&self) -> Option<ImageOpaque> {
+        match self.kind {
+            ImageValueKind::Data(_) => None,
+            ImageValueKind::Function(function) => Some(ImageOpaque::Function(function)),
+            ImageValueKind::Module(module) => Some(ImageOpaque::Module(module)),
         }
     }
 }
@@ -444,6 +524,235 @@ impl FunctionRecord {
     }
 }
 
+/// One module request in wire order.
+///
+/// QuickJS stores the request attributes through the generic object codec, so
+/// the heap-independent image deliberately retains an arbitrary [`ImageValue`]
+/// instead of narrowing it to an ordinary object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct ModuleRequest {
+    name: ImageAtom,
+    attributes: ImageValue,
+}
+
+impl ModuleRequest {
+    pub(super) const fn new(name: ImageAtom, attributes: ImageValue) -> Self {
+        Self { name, attributes }
+    }
+
+    #[must_use]
+    pub(super) const fn name(&self) -> ImageAtom {
+        self.name
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn attributes(&self) -> &ImageValue {
+        &self.attributes
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ModuleExportBinding {
+    Local {
+        variable_index: u32,
+    },
+    NonLocal {
+        export_type: NonZeroU8,
+        request_index: u32,
+        local_name: ImageAtom,
+    },
+}
+
+/// One module export in wire order.
+///
+/// Wire type zero names a local-variable index. Every non-zero wire type is
+/// preserved exactly rather than being collapsed into the currently known
+/// indirect-export category.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct ModuleExport {
+    binding: ModuleExportBinding,
+    export_name: ImageAtom,
+}
+
+impl ModuleExport {
+    pub(super) const fn new_local(variable_index: u32, export_name: ImageAtom) -> Self {
+        Self {
+            binding: ModuleExportBinding::Local { variable_index },
+            export_name,
+        }
+    }
+
+    pub(super) const fn new_non_local(
+        export_type: NonZeroU8,
+        request_index: u32,
+        local_name: ImageAtom,
+        export_name: ImageAtom,
+    ) -> Self {
+        Self {
+            binding: ModuleExportBinding::NonLocal {
+                export_type,
+                request_index,
+                local_name,
+            },
+            export_name,
+        }
+    }
+
+    /// Return the exact BC5 export type. Zero denotes a local export.
+    #[must_use]
+    pub(in crate::runtime) const fn export_type(&self) -> u8 {
+        match self.binding {
+            ModuleExportBinding::Local { .. } => 0,
+            ModuleExportBinding::NonLocal { export_type, .. } => export_type.get(),
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn local_variable_index(&self) -> Option<u32> {
+        match self.binding {
+            ModuleExportBinding::Local { variable_index } => Some(variable_index),
+            ModuleExportBinding::NonLocal { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn request_index(&self) -> Option<u32> {
+        match self.binding {
+            ModuleExportBinding::Local { .. } => None,
+            ModuleExportBinding::NonLocal { request_index, .. } => Some(request_index),
+        }
+    }
+
+    #[must_use]
+    pub(super) const fn local_name(&self) -> Option<ImageAtom> {
+        match self.binding {
+            ModuleExportBinding::Local { .. } => None,
+            ModuleExportBinding::NonLocal { local_name, .. } => Some(local_name),
+        }
+    }
+
+    #[must_use]
+    pub(super) const fn export_name(&self) -> ImageAtom {
+        self.export_name
+    }
+}
+
+/// One module import in wire order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct ModuleImport {
+    variable_index: u32,
+    is_star: bool,
+    import_name: ImageAtom,
+    request_index: u32,
+}
+
+impl ModuleImport {
+    pub(super) const fn new(
+        variable_index: u32,
+        is_star: bool,
+        import_name: ImageAtom,
+        request_index: u32,
+    ) -> Self {
+        Self {
+            variable_index,
+            is_star,
+            import_name,
+            request_index,
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn variable_index(&self) -> u32 {
+        self.variable_index
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn is_star(&self) -> bool {
+        self.is_star
+    }
+
+    #[must_use]
+    pub(super) const fn import_name(&self) -> ImageAtom {
+        self.import_name
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn request_index(&self) -> u32 {
+        self.request_index
+    }
+}
+
+/// One complete QuickJS Module record with its nested values retained by
+/// identity in the same whole-image traversal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct ModuleRecord {
+    name: ImageAtom,
+    requests: Box<[ModuleRequest]>,
+    exports: Box<[ModuleExport]>,
+    star_export_request_indices: Box<[u32]>,
+    imports: Box<[ModuleImport]>,
+    has_tla: bool,
+    func_obj: ImageValue,
+}
+
+impl ModuleRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) const fn new(
+        name: ImageAtom,
+        requests: Box<[ModuleRequest]>,
+        exports: Box<[ModuleExport]>,
+        star_export_request_indices: Box<[u32]>,
+        imports: Box<[ModuleImport]>,
+        has_tla: bool,
+        func_obj: ImageValue,
+    ) -> Self {
+        Self {
+            name,
+            requests,
+            exports,
+            star_export_request_indices,
+            imports,
+            has_tla,
+            func_obj,
+        }
+    }
+
+    #[must_use]
+    pub(super) const fn name(&self) -> ImageAtom {
+        self.name
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn requests(&self) -> &[ModuleRequest] {
+        &self.requests
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn exports(&self) -> &[ModuleExport] {
+        &self.exports
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn star_export_request_indices(&self) -> &[u32] {
+        &self.star_export_request_indices
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn imports(&self) -> &[ModuleImport] {
+        &self.imports
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn has_tla(&self) -> bool {
+        self.has_tla
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn func_obj(&self) -> &ImageValue {
+        &self.func_obj
+    }
+}
+
 /// Complete, heap-independent, and deliberately non-executable BC5 image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) struct BytecodeImage {
@@ -452,6 +761,7 @@ pub(in crate::runtime) struct BytecodeImage {
     nodes: Box<[ImageNode]>,
     ref_table: Box<[NodeId]>,
     functions: Box<[FunctionRecord]>,
+    modules: Box<[ModuleRecord]>,
     root: ImageValue,
 }
 
@@ -462,6 +772,7 @@ impl BytecodeImage {
         nodes: Box<[ImageNode]>,
         ref_table: Box<[NodeId]>,
         functions: Box<[FunctionRecord]>,
+        modules: Box<[ModuleRecord]>,
         root: ImageValue,
     ) -> Self {
         Self {
@@ -470,6 +781,7 @@ impl BytecodeImage {
             nodes,
             ref_table,
             functions,
+            modules,
             root,
         }
     }
@@ -499,6 +811,18 @@ impl BytecodeImage {
     pub(in crate::runtime) fn function(&self, id: FunctionId) -> Option<&FunctionRecord> {
         (id.source() == self.source)
             .then(|| self.functions.get(id.as_usize()))
+            .flatten()
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn modules(&self) -> &[ModuleRecord] {
+        &self.modules
+    }
+
+    #[must_use]
+    pub(in crate::runtime) fn module(&self, id: ModuleId) -> Option<&ModuleRecord> {
+        (id.source() == self.source)
+            .then(|| self.modules.get(id.as_usize()))
             .flatten()
     }
 

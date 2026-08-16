@@ -13,13 +13,121 @@ use super::super::function_envelope::{
 };
 use super::super::graph::model::GraphLimits;
 
+/// Per-module limits for each variable-length BC5 Module table.
+///
+/// There is intentionally no `Default`: every bytecode-image admission policy
+/// must choose these four caps explicitly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct ModuleLimits {
+    max_requests: usize,
+    max_exports: usize,
+    max_star_exports: usize,
+    max_imports: usize,
+}
+
+impl ModuleLimits {
+    #[must_use]
+    pub(in crate::runtime) const fn new(
+        max_requests: usize,
+        max_exports: usize,
+        max_star_exports: usize,
+        max_imports: usize,
+    ) -> Self {
+        Self {
+            max_requests,
+            max_exports,
+            max_star_exports,
+            max_imports,
+        }
+    }
+
+    /// Intersect one record's limits with the remaining aggregate image
+    /// budget. The returned limits can be shared by decoder and encoder.
+    #[must_use]
+    pub(super) const fn intersect(
+        self,
+        max_requests: usize,
+        max_exports: usize,
+        max_star_exports: usize,
+        max_imports: usize,
+    ) -> Self {
+        Self {
+            max_requests: minimum(self.max_requests, max_requests),
+            max_exports: minimum(self.max_exports, max_exports),
+            max_star_exports: minimum(self.max_star_exports, max_star_exports),
+            max_imports: minimum(self.max_imports, max_imports),
+        }
+    }
+
+    pub(super) const fn limit(self, kind: ModuleResourceKind) -> usize {
+        match kind {
+            ModuleResourceKind::Requests => self.max_requests,
+            ModuleResourceKind::Exports => self.max_exports,
+            ModuleResourceKind::StarExports => self.max_star_exports,
+            ModuleResourceKind::Imports => self.max_imports,
+        }
+    }
+
+    pub(super) fn check(
+        self,
+        kind: ModuleResourceKind,
+        requested: usize,
+    ) -> Result<(), ModuleBudgetError> {
+        let limit = self.limit(kind);
+        if requested > limit {
+            return Err(ModuleBudgetError::ResourceLimit {
+                kind,
+                requested,
+                limit,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum ModuleResourceKind {
+    Requests,
+    Exports,
+    StarExports,
+    Imports,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum ModuleBudgetError {
+    ResourceLimit {
+        kind: ModuleResourceKind,
+        requested: usize,
+        limit: usize,
+    },
+}
+
+impl fmt::Display for ModuleBudgetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ResourceLimit {
+                kind,
+                requested,
+                limit,
+            } => write!(
+                formatter,
+                "{kind:?} per-module resource limit exceeded: requested {requested}, limit {limit}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ModuleBudgetError {}
+
 /// Aggregate whole-image limits in addition to the per-value graph and
-/// per-function envelope limits.
+/// per-record function and module limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime) struct BytecodeImageLimits {
     graph: GraphLimits,
     envelope: FunctionEnvelopeLimits,
+    module: ModuleLimits,
     max_functions: usize,
+    max_modules: usize,
     max_whole_depth: usize,
     max_total_constant_pool_entries: usize,
     max_total_local_variables: usize,
@@ -28,6 +136,10 @@ pub(in crate::runtime) struct BytecodeImageLimits {
     max_total_instructions: usize,
     max_total_atom_relocations: usize,
     max_total_debug_bytes: usize,
+    max_total_module_requests: usize,
+    max_total_module_exports: usize,
+    max_total_module_star_exports: usize,
+    max_total_module_imports: usize,
 }
 
 impl BytecodeImageLimits {
@@ -36,7 +148,9 @@ impl BytecodeImageLimits {
     pub(in crate::runtime) const fn new(
         graph: GraphLimits,
         envelope: FunctionEnvelopeLimits,
+        module: ModuleLimits,
         max_functions: usize,
+        max_modules: usize,
         max_whole_depth: usize,
         max_total_constant_pool_entries: usize,
         max_total_local_variables: usize,
@@ -45,11 +159,17 @@ impl BytecodeImageLimits {
         max_total_instructions: usize,
         max_total_atom_relocations: usize,
         max_total_debug_bytes: usize,
+        max_total_module_requests: usize,
+        max_total_module_exports: usize,
+        max_total_module_star_exports: usize,
+        max_total_module_imports: usize,
     ) -> Self {
         Self {
             graph,
             envelope,
+            module,
             max_functions,
+            max_modules,
             max_whole_depth,
             max_total_constant_pool_entries,
             max_total_local_variables,
@@ -58,12 +178,17 @@ impl BytecodeImageLimits {
             max_total_instructions,
             max_total_atom_relocations,
             max_total_debug_bytes,
+            max_total_module_requests,
+            max_total_module_exports,
+            max_total_module_star_exports,
+            max_total_module_imports,
         }
     }
 
     pub(super) const fn limit(self, kind: BytecodeImageResourceKind) -> usize {
         match kind {
             BytecodeImageResourceKind::Functions => self.max_functions,
+            BytecodeImageResourceKind::Modules => self.max_modules,
             BytecodeImageResourceKind::WholeDepth => self.max_whole_depth,
             BytecodeImageResourceKind::TotalConstantPoolEntries => {
                 self.max_total_constant_pool_entries
@@ -74,6 +199,10 @@ impl BytecodeImageLimits {
             BytecodeImageResourceKind::TotalInstructions => self.max_total_instructions,
             BytecodeImageResourceKind::TotalAtomRelocations => self.max_total_atom_relocations,
             BytecodeImageResourceKind::TotalDebugBytes => self.max_total_debug_bytes,
+            BytecodeImageResourceKind::TotalModuleRequests => self.max_total_module_requests,
+            BytecodeImageResourceKind::TotalModuleExports => self.max_total_module_exports,
+            BytecodeImageResourceKind::TotalModuleStarExports => self.max_total_module_star_exports,
+            BytecodeImageResourceKind::TotalModuleImports => self.max_total_module_imports,
         }
     }
 
@@ -102,11 +231,17 @@ impl BytecodeImageLimits {
     pub(super) const fn envelope(self) -> FunctionEnvelopeLimits {
         self.envelope
     }
+
+    #[must_use]
+    pub(super) const fn module(self) -> ModuleLimits {
+        self.module
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum BytecodeImageResourceKind {
     Functions,
+    Modules,
     WholeDepth,
     TotalConstantPoolEntries,
     TotalLocalVariables,
@@ -115,6 +250,10 @@ pub(in crate::runtime) enum BytecodeImageResourceKind {
     TotalInstructions,
     TotalAtomRelocations,
     TotalDebugBytes,
+    TotalModuleRequests,
+    TotalModuleExports,
+    TotalModuleStarExports,
+    TotalModuleImports,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -148,6 +287,193 @@ impl fmt::Display for BytecodeImageBudgetError {
 }
 
 impl std::error::Error for BytecodeImageBudgetError {}
+
+/// Aggregate module-table usage already committed to one image.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct ModuleTotals {
+    requests: usize,
+    exports: usize,
+    star_exports: usize,
+    imports: usize,
+}
+
+/// A staged contribution from one or more tables in a module record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ModuleUsage {
+    requests: usize,
+    exports: usize,
+    star_exports: usize,
+    imports: usize,
+}
+
+impl ModuleUsage {
+    #[must_use]
+    pub(super) const fn new(
+        requests: usize,
+        exports: usize,
+        star_exports: usize,
+        imports: usize,
+    ) -> Self {
+        Self {
+            requests,
+            exports,
+            star_exports,
+            imports,
+        }
+    }
+}
+
+/// Remaining aggregate room projected into one record's four table counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RemainingModuleBudget {
+    requests: usize,
+    exports: usize,
+    star_exports: usize,
+    imports: usize,
+}
+
+impl RemainingModuleBudget {
+    #[must_use]
+    pub(super) const fn intersect(self, limits: ModuleLimits) -> ModuleLimits {
+        limits.intersect(self.requests, self.exports, self.star_exports, self.imports)
+    }
+}
+
+impl ModuleTotals {
+    /// Compute the aggregate room available before the next table is inspected.
+    ///
+    /// A subtraction failure means an earlier accounting invariant was
+    /// violated; it is reported instead of wrapping `usize`.
+    pub(super) fn remaining(
+        self,
+        limits: BytecodeImageLimits,
+    ) -> Result<RemainingModuleBudget, BytecodeImageBudgetError> {
+        Ok(RemainingModuleBudget {
+            requests: checked_remaining(
+                self.requests,
+                BytecodeImageResourceKind::TotalModuleRequests,
+                limits,
+            )?,
+            exports: checked_remaining(
+                self.exports,
+                BytecodeImageResourceKind::TotalModuleExports,
+                limits,
+            )?,
+            star_exports: checked_remaining(
+                self.star_exports,
+                BytecodeImageResourceKind::TotalModuleStarExports,
+                limits,
+            )?,
+            imports: checked_remaining(
+                self.imports,
+                BytecodeImageResourceKind::TotalModuleImports,
+                limits,
+            )?,
+        })
+    }
+
+    /// Commit one staged table contribution with checked aggregate arithmetic.
+    pub(super) fn checked_add(
+        self,
+        usage: ModuleUsage,
+        limits: BytecodeImageLimits,
+    ) -> Result<Self, BytecodeImageBudgetError> {
+        Ok(Self {
+            requests: checked_total(
+                self.requests,
+                usage.requests,
+                BytecodeImageResourceKind::TotalModuleRequests,
+                limits,
+            )?,
+            exports: checked_total(
+                self.exports,
+                usage.exports,
+                BytecodeImageResourceKind::TotalModuleExports,
+                limits,
+            )?,
+            star_exports: checked_total(
+                self.star_exports,
+                usage.star_exports,
+                BytecodeImageResourceKind::TotalModuleStarExports,
+                limits,
+            )?,
+            imports: checked_total(
+                self.imports,
+                usage.imports,
+                BytecodeImageResourceKind::TotalModuleImports,
+                limits,
+            )?,
+        })
+    }
+
+    /// Reattribute an effective per-record failure to the aggregate whose
+    /// remaining budget caused it. This exactly mirrors function accounting:
+    /// a genuine narrower per-module cap remains a [`ModuleBudgetError`].
+    pub(super) fn aggregate_error_for_module(
+        self,
+        error: &ModuleBudgetError,
+        remaining: RemainingModuleBudget,
+        limits: BytecodeImageLimits,
+    ) -> Option<BytecodeImageBudgetError> {
+        let (total, requested, kind) = match error {
+            ModuleBudgetError::ResourceLimit {
+                kind: ModuleResourceKind::Requests,
+                requested,
+                ..
+            } if remaining.requests < limits.module().limit(ModuleResourceKind::Requests)
+                && *requested > remaining.requests =>
+            {
+                (
+                    self.requests,
+                    *requested,
+                    BytecodeImageResourceKind::TotalModuleRequests,
+                )
+            }
+            ModuleBudgetError::ResourceLimit {
+                kind: ModuleResourceKind::Exports,
+                requested,
+                ..
+            } if remaining.exports < limits.module().limit(ModuleResourceKind::Exports)
+                && *requested > remaining.exports =>
+            {
+                (
+                    self.exports,
+                    *requested,
+                    BytecodeImageResourceKind::TotalModuleExports,
+                )
+            }
+            ModuleBudgetError::ResourceLimit {
+                kind: ModuleResourceKind::StarExports,
+                requested,
+                ..
+            } if remaining.star_exports
+                < limits.module().limit(ModuleResourceKind::StarExports)
+                && *requested > remaining.star_exports =>
+            {
+                (
+                    self.star_exports,
+                    *requested,
+                    BytecodeImageResourceKind::TotalModuleStarExports,
+                )
+            }
+            ModuleBudgetError::ResourceLimit {
+                kind: ModuleResourceKind::Imports,
+                requested,
+                ..
+            } if remaining.imports < limits.module().limit(ModuleResourceKind::Imports)
+                && *requested > remaining.imports =>
+            {
+                (
+                    self.imports,
+                    *requested,
+                    BytecodeImageResourceKind::TotalModuleImports,
+                )
+            }
+            _ => return None,
+        };
+        Some(aggregate_limit_error(total, requested, kind, limits))
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct FunctionTotals {
@@ -473,4 +799,8 @@ fn aggregate_limit_error(
         },
         None => BytecodeImageBudgetError::CountOverflow { kind },
     }
+}
+
+const fn minimum(left: usize, right: usize) -> usize {
+    if left < right { left } else { right }
 }

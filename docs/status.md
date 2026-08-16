@@ -151,27 +151,33 @@ QuickJS's `u32`-to-`u16` truncation, while signed negative-size and
 decrement-overflow spellings remain hard safety rejections.
 
 The whole-image reader uses one heterogeneous frame stack, one `DataMachine`,
-one `ObjectArena`, and one preorder function table across the root and every
-constant pool. FunctionBytecode records never consume object-reference IDs.
-Function frames retain linear, source-bound data completions until a consuming
-whole-image finalizer unwraps the root and every constant by move. Function IDs
-carry the same non-wrapping machine-source token, are checked against reserved
-function slots before publication, and cannot be used to index a different
-image. Aggregate limits independently bound function count, mixed traversal
-depth, constant-pool entries, locals, closures, code bytes, instruction spans,
-atom relocations, and debug bytes in addition to the existing per-function,
-wire, and graph limits. Each function prefix receives the intersection of its
-per-function cap and the remaining whole-image budget before table allocation
-or code copying/scanning. The completed `BytecodeImage` is deliberately
+one `ObjectArena`, and preorder function and module tables across the root,
+every constant pool, every request-attributes value, and every module function
+object. FunctionBytecode and Module records never consume object-reference IDs.
+Their frames retain linear, source-bound data completions until a consuming
+whole-image finalizer unwraps every nested value by move. Function and Module
+IDs carry the same non-wrapping machine-source token, are checked against
+reserved slots before publication, and cannot index a different image.
+Aggregate limits independently bound function and module counts, mixed
+traversal depth, constant-pool entries, locals, closures, code bytes,
+instruction spans, atom relocations, debug bytes, and all four module metadata
+tables in addition to the per-record, wire, and graph limits. Each function
+prefix and each staged module table receives the intersection of its
+per-record cap and the remaining whole-image budget before table allocation or
+payload copying/scanning. The completed `BytecodeImage` is deliberately
 non-executable: it has no heap materializer, verifier bypass, or evaluation
 entry point.
 The matching canonical writer consumes that immutable image through a
 source-bound authentication plan before exposing any bytes. Decode and encode
 share the same whole-image totals, remaining-budget intersection, and
 per-function-versus-aggregate error attribution. The plan rebuilds dynamic
-atoms in QuickJS first-use order, regenerates opcode atom operands from typed
-relocations, assigns object-reference IDs in one preorder spanning every
-constant pool, and never assigns those IDs to FunctionBytecode records.
+atoms in QuickJS first-use order, including the request-name/attributes
+continuation, regenerates opcode atom operands from typed relocations, assigns
+object-reference IDs in one preorder spanning every nested value, and never
+assigns those IDs to FunctionBytecode or Module records. Module writes preserve
+unknown non-zero export types, normalize boolean bytes, and retain arbitrary
+request attributes and function-object values without imposing linker-only
+relationships on the archival codec.
 Ordinary-object writes match `JS_WriteObjectTag` by omitting enumerable symbol
 and private-name properties before their values can affect atoms, traversal,
 references, or resource accounting. A complete encoded-size proof precedes
@@ -209,24 +215,26 @@ through fresh-runtime read, byte-exact reserialization, resolve, evaluation,
 and a global `42` receipt. Its `JS_WRITE_OBJ_BSWAP` bytes are identical. A
 second 283-byte vector records the complete request/attribute, local and
 indirect export, star export, default/named/namespace import, top-level-await,
-and FunctionBytecode-body topology without pretending that the Rust archival
-reader can link or execute it yet.
+and FunctionBytecode-body topology. The Rust whole-image reader and canonical
+writer now preserve both vectors byte exactly without pretending that the
+archival image can link or execute them yet.
 The data decoder separates preorder identity registration from value
 completion: every parent/root attachment now uses one completed-subtree
-delivery path owned by the decode state. Its reference state is now an
-independent generic `ObjectArena`, ready for a whole-image decoder to carry one
-instance through every recursive constant pool without registering
-FunctionBytecode records themselves. The data-value and container state machine
+delivery path owned by the decode state. Its reference state is an independent
+generic `ObjectArena`; the whole-image decoder carries one instance through
+constant pools and module children without registering FunctionBytecode or
+Module records themselves. The data-value and container state machine
 is now independently generic over value and property-key carriers as
 `DataMachine`/`DataFrame`. The data-only facade still owns its own header
 interning, key timing, frame stack, root delivery, and unconditional cursor
-finalization, and still rejects FunctionBytecode without consuming its payload.
-The separate whole-image driver carries authenticated function identities
-through ordinary properties, Arrays, and TemplateObjects while reusing the
-same budgets and arena; TypedArray, ObjectValue, and Date expose typed failures
-when such an identity is invalid in their child position. The arena represents
-incomplete identities with kind-checked pending/ready slots. Source-bound linear node
-reservations, opaque data frames, and linear completed values prevent stale or
+finalization, and still rejects FunctionBytecode and Module without consuming
+their payloads. The separate whole-image driver carries authenticated function
+and module identities through ordinary properties, Arrays, and TemplateObjects
+while reusing the same budgets and arena; TypedArray, ObjectValue, and Date
+expose typed failures when such an identity is invalid in their child position.
+The arena represents incomplete identities with kind-checked pending/ready
+slots. Source-bound linear node reservations, opaque data frames, and linear
+completed values prevent stale or
 cross-machine commits; machine identities never wrap, and raw node values
 cannot be rebranded as caller-produced opaque values. The value adapter is
 sealed inside the graph reader, so sibling modules cannot substitute a
@@ -237,12 +245,11 @@ another node.
 Malicious TypedArray placeholder paths are rejected deterministically instead
 of reproducing pinned QuickJS's native crashes.
 The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
-Module. The BytecodeImage reader admits FunctionBytecode but still rejects
-Module and SharedArrayBuffer, and neither reader is a public binary-object API
-yet. A module-image model, heap materializer, native-code semantic
-verifier/translator, public read/write flags, and a public authenticated
-whole-image facade remain future
-milestones. In addition,
+Module. The BytecodeImage reader admits FunctionBytecode and Module but still
+rejects SharedArrayBuffer, and neither reader is a public binary-object API yet.
+A heap materializer, native-code semantic verifier/translator, public read/write
+flags, and a public authenticated whole-image facade remain future milestones.
+In addition,
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.

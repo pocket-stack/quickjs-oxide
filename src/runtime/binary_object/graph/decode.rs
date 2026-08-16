@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
-use super::super::bytecode_image::{FunctionId, ImageValue};
+use super::super::bytecode_image::{ImageOpaque, ImageValue};
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::arena::{ArenaError, NodeState, ObjectArena, PendingNodeKind};
 use super::model::{
@@ -279,7 +279,7 @@ impl DataValue for WireValue {
 impl sealed::Sealed for ImageValue {}
 
 impl DataValue for ImageValue {
-    type Opaque = FunctionId;
+    type Opaque = ImageOpaque;
 
     fn from_wire(value: WireValue) -> Self {
         Self::from_wire(value)
@@ -294,7 +294,7 @@ impl DataValue for ImageValue {
     }
 
     fn opaque_source(&self) -> Option<MachineSource> {
-        self.function_id().map(FunctionId::source)
+        self.opaque().map(ImageOpaque::source)
     }
 }
 
@@ -432,12 +432,12 @@ where
         MachineSource(self.id)
     }
 
-    /// Bind a caller-produced opaque value, such as a completed function
-    /// record, to this machine. For a lawful [`DataValue`] adapter, concrete
+    /// Bind a caller-produced opaque value, such as a completed function or
+    /// module record, to this machine. For a lawful [`DataValue`] adapter, concrete
     /// wire values are rejected; in particular, a raw NodeId cannot be
     /// rebranded into another arena. Opaque values must also carry this exact
-    /// machine's source token. The whole-image function table separately proves
-    /// that a same-source FunctionId names one of its reserved slots.
+    /// machine's source token. The whole-image record tables separately prove
+    /// that a same-source opaque identity names one of their reserved slots.
     pub(in crate::runtime::binary_object) fn wrap_opaque_value(
         &self,
         value: V,
@@ -919,7 +919,8 @@ where
 ///
 /// The source machine no longer exists, so values unwrapped here cannot be
 /// attached back into it. The capability retains the source identity long
-/// enough to unwrap every root and function constant exactly once by move.
+/// enough to unwrap every root and whole-image nested value exactly once by
+/// move.
 pub(in crate::runtime::binary_object) struct DataMachineOutput<V, K> {
     owner: MachineId,
     parts: super::arena::ObjectArenaParts<V, K>,

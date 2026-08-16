@@ -18,7 +18,7 @@ use super::super::graph::model::{
 };
 use super::super::graph::write_state::DataWriteStateError;
 use super::super::wire::WireError;
-use super::budget::{BytecodeImageBudgetError, BytecodeImageLimits};
+use super::budget::{BytecodeImageBudgetError, BytecodeImageLimits, ModuleBudgetError};
 use super::model::BytecodeImage;
 
 /// Explicit policy for one canonical whole-image write.
@@ -44,11 +44,26 @@ impl BytecodeImageEncodeOptions {
     }
 }
 
+/// The positive QuickJS `int` slot occupied by one Module field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum ModuleIntegerField {
+    RequestCount,
+    ExportCount,
+    ExportVariableIndex,
+    ExportRequestIndex,
+    StarExportCount,
+    StarExportRequestIndex,
+    ImportCount,
+    ImportVariableIndex,
+    ImportRequestIndex,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum BytecodeImageEncodeError {
     Wire(WireError),
     Graph(GraphError),
     Budget(BytecodeImageBudgetError),
+    Module(ModuleBudgetError),
     Envelope(FunctionEnvelopeError),
     Code(CodeError),
     DynamicAtomOutOfRange {
@@ -61,13 +76,24 @@ pub(in crate::runtime) enum BytecodeImageEncodeError {
     ForeignFunction {
         function_index: u32,
     },
+    ForeignModule {
+        module_index: u32,
+    },
     FunctionPreorder {
+        expected: u32,
+        found: u32,
+    },
+    ModulePreorder {
         expected: u32,
         found: u32,
     },
     MissingFunctions {
         reachable: usize,
         function_count: usize,
+    },
+    MissingModules {
+        reachable: usize,
+        module_count: usize,
     },
     DuplicatePropertyKey {
         node: NodeId,
@@ -78,6 +104,18 @@ pub(in crate::runtime) enum BytecodeImageEncodeError {
     },
     CircularFunction {
         function_index: u32,
+    },
+    CircularModule {
+        module_index: u32,
+    },
+    ModuleIntegerOutOfRange {
+        module_index: u32,
+        field: ModuleIntegerField,
+        value: u64,
+    },
+    InvalidModuleExport {
+        module_index: u32,
+        export_index: usize,
     },
     InvalidArrayBuffer {
         node: NodeId,
@@ -109,6 +147,7 @@ impl fmt::Display for BytecodeImageEncodeError {
             Self::Wire(error) => fmt::Display::fmt(error, formatter),
             Self::Graph(error) => fmt::Display::fmt(error, formatter),
             Self::Budget(error) => fmt::Display::fmt(error, formatter),
+            Self::Module(error) => fmt::Display::fmt(error, formatter),
             Self::Envelope(error) => fmt::Display::fmt(error, formatter),
             Self::Code(error) => fmt::Display::fmt(error, formatter),
             Self::DynamicAtomOutOfRange { index, atom_count } => write!(
@@ -123,9 +162,17 @@ impl fmt::Display for BytecodeImageEncodeError {
                 formatter,
                 "function {function_index} does not belong to this authenticated image"
             ),
+            Self::ForeignModule { module_index } => write!(
+                formatter,
+                "module {module_index} does not belong to this authenticated image"
+            ),
             Self::FunctionPreorder { expected, found } => write!(
                 formatter,
                 "function preorder expected first occurrence {expected}, found {found}"
+            ),
+            Self::ModulePreorder { expected, found } => write!(
+                formatter,
+                "module preorder expected first occurrence {expected}, found {found}"
             ),
             Self::MissingFunctions {
                 reachable,
@@ -133,6 +180,13 @@ impl fmt::Display for BytecodeImageEncodeError {
             } => write!(
                 formatter,
                 "bytecode image exposes {reachable} reachable records out of {function_count}"
+            ),
+            Self::MissingModules {
+                reachable,
+                module_count,
+            } => write!(
+                formatter,
+                "bytecode image exposes {reachable} reachable modules out of {module_count}"
             ),
             Self::DuplicatePropertyKey { node } => write!(
                 formatter,
@@ -150,6 +204,25 @@ impl fmt::Display for BytecodeImageEncodeError {
             Self::CircularFunction { function_index } => write!(
                 formatter,
                 "bytecode image contains a recursive record cycle through function {function_index}"
+            ),
+            Self::CircularModule { module_index } => write!(
+                formatter,
+                "bytecode image contains a recursive record cycle through module {module_index}"
+            ),
+            Self::ModuleIntegerOutOfRange {
+                module_index,
+                field,
+                value,
+            } => write!(
+                formatter,
+                "module {module_index} {field:?} value {value} exceeds QuickJS's positive int range"
+            ),
+            Self::InvalidModuleExport {
+                module_index,
+                export_index,
+            } => write!(
+                formatter,
+                "module {module_index} export {export_index} has an inconsistent binding"
             ),
             Self::InvalidArrayBuffer { node, reason } => write!(
                 formatter,
@@ -214,6 +287,12 @@ impl From<DataWriteStateError> for BytecodeImageEncodeError {
 impl From<BytecodeImageBudgetError> for BytecodeImageEncodeError {
     fn from(error: BytecodeImageBudgetError) -> Self {
         Self::Budget(error)
+    }
+}
+
+impl From<ModuleBudgetError> for BytecodeImageEncodeError {
+    fn from(error: ModuleBudgetError) -> Self {
+        Self::Module(error)
     }
 }
 
