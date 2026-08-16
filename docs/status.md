@@ -77,25 +77,31 @@ the current Test262 vector.
 The private BC_VERSION 5 foundation now has bounded wire primitives and the
 pinned BigInt payload codec, including QuickJS's asymmetric 16,385-limb writer
 edge. A heap-independent WireGraph slice now validates and canonically rewrites
-primitives, ordinary objects, arrays, ArrayBuffers, TypedArrays, shared
-identity, and cycles with explicit decode and emitted-traversal budgets. Its
-data-object semantics include header atom interning, tagged decimal keys,
-first-slot/last-value duplicate properties, compatible null-atom consumption,
-depth-first output atom rebuilding, fixed-versus-resizable ArrayBuffer state,
-and per-buffer plus aggregate current-backing-store byte limits. All 12 pinned
-TypedArray kinds preserve view/backing identity, byte offsets, element counts,
-alignment, and current-byte-length bounds. The writer also preserves QuickJS's
-observable RAB-shrink asymmetry: it can emit a zero-length out-of-bounds view
-that the reader itself rejects. The decoder separates preorder identity
-registration from value completion: every parent/root attachment now uses one
-completed-subtree delivery path owned by the decode state. Its private arena
-represents incomplete identities with kind-checked pending/ready slots; linear
+primitives, ordinary objects, arrays, ArrayBuffers, TypedArrays, primitive
+wrapper ObjectValues, shared identity, and cycles with explicit decode and
+emitted-traversal budgets. Its data-object semantics include header atom
+interning, tagged decimal keys, first-slot/last-value duplicate properties,
+compatible null-atom consumption, depth-first output atom rebuilding,
+fixed-versus-resizable ArrayBuffer state, and per-buffer plus aggregate
+current-backing-store byte limits. All 12 pinned TypedArray kinds preserve
+view/backing identity, byte offsets, element counts, alignment, and
+current-byte-length bounds. The writer also preserves QuickJS's observable
+RAB-shrink asymmetry: it can emit a zero-length out-of-bounds view that the
+reader itself rejects. ObjectValue preserves Boolean, Int32/Float64 bit-level
+Number, narrow/wide String, and canonical BigInt wrapper payloads. Its reader
+also matches QuickJS's asymmetric `JS_ToObject` path: object children reuse the
+existing NodeId and append another reference-table entry, including pending
+Ordinary/Array ancestors, while the canonical writer rebuilds identity without
+the redundant tag. The decoder separates preorder identity registration from
+value completion: every parent/root attachment now uses one completed-subtree
+delivery path owned by the decode state. Its private arena represents
+incomplete identities with kind-checked pending/ready slots; linear
 node/reference reservations reject stale commits, and independently bounded
 reference entries can alias pending or ready identities without consuming
-another node. A malicious TypedArray self-backing placeholder is rejected
-deterministically instead of reproducing pinned QuickJS's native crash.
-SharedArrayBuffer, Date, ObjectValue, and the bytecode-only object tags remain
-rejected. It is not a public binary-object API yet:
+another node. Malicious TypedArray placeholder paths are rejected
+deterministically instead of reproducing pinned QuickJS's native crashes.
+SharedArrayBuffer, Date, and the bytecode-only object tags remain rejected. It
+is not a public binary-object API yet:
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.

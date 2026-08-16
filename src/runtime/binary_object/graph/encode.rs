@@ -439,6 +439,19 @@ pub(in crate::runtime) fn encode_graph(
                             }
                             tasks.push(EncodeTask::Value(EncodeValue::Node(*buffer), depth));
                         }
+                        WireNode::ObjectValue { primitive } => {
+                            writer.write_tag(BcTag::ObjectValue)?;
+                            tasks
+                                .try_reserve(1 + usize::from(!options.allow_object_references))
+                                .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                            if !options.allow_object_references {
+                                tasks.push(EncodeTask::LeaveNode(*node));
+                            }
+                            tasks.push(EncodeTask::Value(
+                                EncodeValue::Borrowed(primitive.as_wire_value()),
+                                depth,
+                            ));
+                        }
                     }
                 }
             },
@@ -544,7 +557,9 @@ fn build_encode_plan<'a>(
                     if let Some(entry_count) = match node_data {
                         WireNode::Ordinary { properties } => Some(properties.len()),
                         WireNode::Array { elements } => Some(elements.len()),
-                        WireNode::ArrayBuffer { .. } | WireNode::TypedArray { .. } => None,
+                        WireNode::ArrayBuffer { .. }
+                        | WireNode::TypedArray { .. }
+                        | WireNode::ObjectValue { .. } => None,
                     } {
                         options
                             .limits
@@ -596,6 +611,7 @@ fn build_encode_plan<'a>(
                         WireNode::Array { elements } => Some(elements.len()),
                         WireNode::ArrayBuffer { .. } => Some(0),
                         WireNode::TypedArray { .. } => Some(1),
+                        WireNode::ObjectValue { .. } => Some(1),
                     }
                     .and_then(|count| {
                         count.checked_add(usize::from(!options.allow_object_references))
@@ -628,6 +644,12 @@ fn build_encode_plan<'a>(
                         WireNode::ArrayBuffer { .. } => {}
                         WireNode::TypedArray { buffer, .. } => {
                             tasks.push(EncodeTask::Value(EncodeValue::Node(*buffer), depth));
+                        }
+                        WireNode::ObjectValue { primitive } => {
+                            tasks.push(EncodeTask::Value(
+                                EncodeValue::Borrowed(primitive.as_wire_value()),
+                                depth,
+                            ));
                         }
                     }
                 }
@@ -775,6 +797,7 @@ fn validate_node(
         } => {
             validate_typed_array_node(graph, node, *kind, *length, *byte_offset, *buffer)?;
         }
+        WireNode::ObjectValue { .. } => {}
     }
     Ok(())
 }
@@ -847,7 +870,8 @@ fn semantic_property_key(
 mod tests {
     use super::super::super::wire::WireString;
     use super::super::model::{
-        ArrayBufferLayoutError, AtomId, MAX_ARRAY_BUFFER_BYTE_LENGTH, WireProperty, WireValue,
+        ArrayBufferLayoutError, AtomId, BoxedPrimitive, MAX_ARRAY_BUFFER_BYTE_LENGTH, WireProperty,
+        WireValue,
     };
     use super::*;
 
@@ -897,6 +921,17 @@ mod tests {
                     max_byte_length,
                 },
             ]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        }
+    }
+
+    fn object_value_graph(value: WireValue) -> WireGraph {
+        WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([WireNode::ObjectValue {
+                primitive: BoxedPrimitive::try_from_wire_value(value).unwrap(),
+            }]),
             ref_table: Box::from([]),
             root: WireValue::Node(NodeId::from_zero_based(0)),
         }
@@ -1221,6 +1256,121 @@ mod tests {
                     kind: GraphResourceKind::NestingDepth,
                     requested: 2,
                     limit: 1,
+                },
+            ),
+        ] {
+            assert_eq!(
+                encode_graph(&graph, options_with_limits(allow_references, limits)),
+                Err(GraphEncodeError::Graph(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn object_value_kind_vectors_match_pinned_quickjs() {
+        for (value, expected) in [
+            (WireValue::Bool(false), vec![5, 0, 18, 3]),
+            (WireValue::Bool(true), vec![5, 0, 18, 4]),
+            (WireValue::Int32(42), vec![5, 0, 18, 5, 84]),
+            (
+                WireValue::Float64Bits((-0.0_f64).to_bits()),
+                vec![5, 0, 18, 6, 0, 0, 0, 0, 0, 0, 0, 128],
+            ),
+            (
+                WireValue::Float64Bits(f64::NAN.to_bits()),
+                vec![5, 0, 18, 6, 0, 0, 0, 0, 0, 0, 248, 127],
+            ),
+            (
+                WireValue::Float64Bits(0x7ff8_0000_0000_0042),
+                vec![5, 0, 18, 6, 66, 0, 0, 0, 0, 0, 248, 127],
+            ),
+            (
+                WireValue::String(WireString::Narrow(Box::from(*b"abc"))),
+                vec![5, 0, 18, 7, 6, b'a', b'b', b'c'],
+            ),
+            (
+                WireValue::String(WireString::Wide(Box::from([0xd800]))),
+                vec![5, 0, 18, 7, 3, 0, 0xd8],
+            ),
+            (WireValue::BigInt(Box::from([1])), vec![5, 0, 18, 10, 1, 1]),
+        ] {
+            let graph = object_value_graph(value);
+            assert_eq!(encode_graph(&graph, options(false)).unwrap(), expected);
+            assert_eq!(encode_graph(&graph, options(true)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn object_value_identity_and_payload_work_follow_the_reference_flag() {
+        let root = NodeId::from_zero_based(0);
+        let wrapper = NodeId::from_zero_based(1);
+        let graph = WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(wrapper), WireValue::Node(wrapper)]),
+                },
+                WireNode::ObjectValue {
+                    primitive: BoxedPrimitive::try_from_wire_value(WireValue::BigInt(Box::from([
+                        1,
+                    ])))
+                    .unwrap(),
+                },
+            ]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(root),
+        };
+
+        assert_eq!(
+            encode_graph(&graph, options(true)).unwrap(),
+            [5, 0, 9, 2, 18, 10, 1, 1, 19, 1]
+        );
+        assert_eq!(
+            encode_graph(&graph, options(false)).unwrap(),
+            [5, 0, 9, 2, 18, 10, 1, 1, 18, 10, 1, 1]
+        );
+
+        let one_payload = GraphLimits::new(2, 2, 2, 2, 2, 1, 1, 0, 0);
+        assert!(encode_graph(&graph, options_with_limits(true, one_payload)).is_ok());
+        assert_eq!(
+            encode_graph(&graph, options_with_limits(false, one_payload)),
+            Err(GraphEncodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::TotalBigIntBytes,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+    }
+
+    #[test]
+    fn object_value_encoder_bounds_wrapper_identity_and_depth() {
+        let graph = object_value_graph(WireValue::Int32(1));
+        for (allow_references, limits, expected) in [
+            (
+                false,
+                GraphLimits::new(0, 8, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::Nodes,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                true,
+                GraphLimits::new(8, 0, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::ObjectReferences,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                false,
+                GraphLimits::new(8, 8, 0, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::NestingDepth,
+                    requested: 1,
+                    limit: 0,
                 },
             ),
         ] {

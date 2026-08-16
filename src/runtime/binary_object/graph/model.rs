@@ -146,6 +146,56 @@ pub(in crate::runtime) enum WireValue {
     Node(NodeId),
 }
 
+/// One primitive payload that pinned QuickJS can store in `JS_CLASS_NUMBER`,
+/// `JS_CLASS_STRING`, `JS_CLASS_BOOLEAN`, or `JS_CLASS_BIG_INT`.
+///
+/// The private field makes null, undefined, symbols, and object identities
+/// unrepresentable as a boxed node. In particular, the BC5 reader treats an
+/// `OBJECT_VALUE` whose child is already an object as a reference-table alias,
+/// not as a second wrapper identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct BoxedPrimitive(WireValue);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum BoxedPrimitiveError {
+    NullOrUndefined,
+    Object,
+}
+
+impl fmt::Display for BoxedPrimitiveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NullOrUndefined => {
+                formatter.write_str("null or undefined cannot be converted to an object")
+            }
+            Self::Object => formatter.write_str(
+                "an object payload aliases its existing identity instead of creating a wrapper",
+            ),
+        }
+    }
+}
+
+impl BoxedPrimitive {
+    pub(in crate::runtime) fn try_from_wire_value(
+        value: WireValue,
+    ) -> Result<Self, BoxedPrimitiveError> {
+        match value {
+            value @ (WireValue::Bool(_)
+            | WireValue::Int32(_)
+            | WireValue::Float64Bits(_)
+            | WireValue::String(_)
+            | WireValue::BigInt(_)) => Ok(Self(value)),
+            WireValue::Null | WireValue::Undefined => Err(BoxedPrimitiveError::NullOrUndefined),
+            WireValue::Node(_) => Err(BoxedPrimitiveError::Object),
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn as_wire_value(&self) -> &WireValue {
+        &self.0
+    }
+}
+
 /// Exact `class_id - JS_CLASS_UINT8C_ARRAY` order used by BC5.
 ///
 /// This deliberately remains a wire type rather than depending on the runtime
@@ -249,6 +299,12 @@ pub(in crate::runtime) enum WireNode {
         byte_offset: u32,
         buffer: NodeId,
     },
+    /// One genuine primitive wrapper identity.
+    ///
+    /// Reader-only `OBJECT_VALUE(object)` inputs canonicalize to the existing
+    /// object node and append a reference-table alias instead of constructing
+    /// this variant.
+    ObjectValue { primitive: BoxedPrimitive },
 }
 
 /// Pinned QuickJS currently rejects ArrayBuffer lengths above 2 GiB - 1.
@@ -726,6 +782,32 @@ mod tests {
                 element_byte_length: 2,
                 backing_byte_length: 2,
             })
+        );
+    }
+
+    #[test]
+    fn boxed_primitive_excludes_values_that_do_not_create_wrapper_identity() {
+        for value in [
+            WireValue::Bool(true),
+            WireValue::Int32(42),
+            WireValue::Float64Bits((-0.0_f64).to_bits()),
+            WireValue::String(WireString::Narrow(Box::from(*b"value"))),
+            WireValue::BigInt(Box::from([1])),
+        ] {
+            let expected = value.clone();
+            let primitive = BoxedPrimitive::try_from_wire_value(value).unwrap();
+            assert_eq!(primitive.as_wire_value(), &expected);
+        }
+
+        for value in [WireValue::Null, WireValue::Undefined] {
+            assert_eq!(
+                BoxedPrimitive::try_from_wire_value(value),
+                Err(BoxedPrimitiveError::NullOrUndefined)
+            );
+        }
+        assert_eq!(
+            BoxedPrimitive::try_from_wire_value(WireValue::Node(NodeId::from_zero_based(0))),
+            Err(BoxedPrimitiveError::Object)
         );
     }
 }

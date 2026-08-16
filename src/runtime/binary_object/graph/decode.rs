@@ -14,10 +14,11 @@ use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::model::{
-    ArrayBufferLayoutError, AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId,
-    TypedArrayBackingError, TypedArrayKind, TypedArrayLayoutError, WireGraph, WireKey, WireNode,
-    WireProperty, WireValue, canonical_bigint_length, numeric_atom_index, semantic_atom_eq,
-    semantic_atom_hash, validate_array_buffer_layout, validate_typed_array_layout,
+    ArrayBufferLayoutError, AtomId, BoxedPrimitive, BoxedPrimitiveError, GraphError, GraphLimits,
+    GraphResourceKind, NodeId, TypedArrayBackingError, TypedArrayKind, TypedArrayLayoutError,
+    WireGraph, WireKey, WireNode, WireProperty, WireValue, canonical_bigint_length,
+    numeric_atom_index, semantic_atom_eq, semantic_atom_hash, validate_array_buffer_layout,
+    validate_typed_array_layout,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +56,14 @@ pub(in crate::runtime) enum DecodeError {
     InvalidTypedArray {
         offset: usize,
         reason: TypedArrayLayoutError,
+    },
+    InvalidObjectValue {
+        offset: usize,
+        reason: BoxedPrimitiveError,
+    },
+    InvalidObjectValueAlias {
+        offset: usize,
+        node: NodeId,
     },
     InvalidCompletionTarget,
     InvalidNodeState {
@@ -103,6 +112,14 @@ impl fmt::Display for DecodeError {
             Self::InvalidTypedArray { offset, reason } => {
                 write!(formatter, "invalid TypedArray at byte {offset}: {reason}")
             }
+            Self::InvalidObjectValue { offset, reason } => {
+                write!(formatter, "invalid ObjectValue at byte {offset}: {reason}")
+            }
+            Self::InvalidObjectValueAlias { offset, node } => write!(
+                formatter,
+                "invalid ObjectValue alias at byte {offset}: TypedArray node {} is not complete",
+                node.zero_based()
+            ),
             Self::InvalidCompletionTarget => {
                 formatter.write_str("invalid wire graph completion target")
             }
@@ -297,6 +314,7 @@ impl DecodeState {
             BcTag::Object => return self.begin_container(cursor, ContainerKind::Ordinary),
             BcTag::Array => return self.begin_container(cursor, ContainerKind::Array),
             BcTag::TypedArray => return self.begin_typed_array(cursor, tag_offset),
+            BcTag::ObjectValue => return self.begin_object_value(tag_offset),
             BcTag::ArrayBuffer => self.read_array_buffer(cursor)?,
             BcTag::ObjectReference => {
                 if !self.allow_object_references {
@@ -315,8 +333,7 @@ impl DecodeState {
             | BcTag::FunctionBytecode
             | BcTag::Module
             | BcTag::SharedArrayBuffer
-            | BcTag::Date
-            | BcTag::ObjectValue => {
+            | BcTag::Date => {
                 return Err(DecodeError::UnsupportedTag {
                     tag,
                     offset: tag_offset,
@@ -454,6 +471,14 @@ impl DecodeState {
         }))
     }
 
+    fn begin_object_value(&self, tag_offset: usize) -> Result<ReadStep, DecodeError> {
+        self.check_next_node_depth()?;
+        Ok(ReadStep::Pending(Frame::ObjectValue {
+            offset: tag_offset,
+            value: None,
+        }))
+    }
+
     fn begin_container(
         &mut self,
         cursor: &mut WireCursor<'_>,
@@ -506,6 +531,9 @@ impl DecodeState {
     fn finish_frame(&mut self, frame: Frame) -> Result<WireValue, DecodeError> {
         let (node, replacement) =
             match frame {
+                Frame::ObjectValue { offset, value } => {
+                    return self.finish_object_value(offset, value);
+                }
                 Frame::Ordinary {
                     node, properties, ..
                 } => (
@@ -578,6 +606,35 @@ impl DecodeState {
                 }
             };
         self.complete_node(node, replacement)?;
+        Ok(WireValue::Node(node))
+    }
+
+    fn finish_object_value(
+        &mut self,
+        offset: usize,
+        value: Option<WireValue>,
+    ) -> Result<WireValue, DecodeError> {
+        let value = value.ok_or(DecodeError::InvalidCompletionTarget)?;
+        if let WireValue::Node(node) = value {
+            let node_count = self.nodes.len();
+            let slot = self
+                .nodes
+                .get(node.as_usize())
+                .ok_or(GraphError::InvalidNodeIndex {
+                    index: node.zero_based(),
+                    node_count,
+                })?;
+            if matches!(slot, NodeSlot::Pending(PendingNodeKind::TypedArray)) {
+                return Err(DecodeError::InvalidObjectValueAlias { offset, node });
+            }
+            self.append_reference_alias(node)?;
+            return Ok(WireValue::Node(node));
+        }
+
+        let primitive = BoxedPrimitive::try_from_wire_value(value)
+            .map_err(|reason| DecodeError::InvalidObjectValue { offset, reason })?;
+        let reservation = self.reserve_node()?;
+        let node = self.install_ready_node(reservation, WireNode::ObjectValue { primitive })?;
         Ok(WireValue::Node(node))
     }
 
@@ -685,10 +742,8 @@ impl DecodeState {
         Ok(())
     }
 
-    // The first production caller will be ObjectValue. Keeping this as one
-    // operation prevents a valid alias from becoming stale between reserve
-    // and commit when that tag is admitted.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // ObjectValue uses one bounded operation so a valid alias cannot become
+    // stale between its reference reservation and commit.
     fn append_reference_alias(&mut self, node: NodeId) -> Result<(), DecodeError> {
         self.validate_node_index(node)?;
         let reservation = self.reserve_reference_entry()?;
@@ -820,6 +875,10 @@ enum Frame {
         byte_offset: u32,
         backing: Option<WireValue>,
     },
+    ObjectValue {
+        offset: usize,
+        value: Option<WireValue>,
+    },
 }
 
 impl Frame {
@@ -906,6 +965,16 @@ impl Frame {
                 }
                 *backing = Some(value);
             }
+            Self::ObjectValue {
+                value: boxed_value, ..
+            } => {
+                if key.is_some() || boxed_value.is_some() {
+                    return Err(GraphError::CountOverflow {
+                        kind: GraphResourceKind::ContainerEntries,
+                    });
+                }
+                *boxed_value = Some(value);
+            }
         }
         Ok(())
     }
@@ -923,6 +992,7 @@ impl Frame {
                 expected, elements, ..
             } => elements.len() == *expected,
             Self::TypedArray { backing, .. } => backing.is_some(),
+            Self::ObjectValue { value, .. } => value.is_some(),
         }
     }
 }
@@ -2135,6 +2205,352 @@ mod tests {
     }
 
     #[test]
+    fn object_value_primitives_match_pinned_quickjs_vectors() {
+        let vectors = [
+            (vec![5, 0, 18, 3], WireValue::Bool(false)),
+            (vec![5, 0, 18, 4], WireValue::Bool(true)),
+            (vec![5, 0, 18, 5, 84], WireValue::Int32(42)),
+            (
+                vec![5, 0, 18, 6, 0, 0, 0, 0, 0, 0, 0, 128],
+                WireValue::Float64Bits((-0.0_f64).to_bits()),
+            ),
+            (
+                vec![5, 0, 18, 6, 0, 0, 0, 0, 0, 0, 248, 127],
+                WireValue::Float64Bits(f64::NAN.to_bits()),
+            ),
+            (
+                vec![5, 0, 18, 6, 66, 0, 0, 0, 0, 0, 248, 127],
+                WireValue::Float64Bits(0x7ff8_0000_0000_0042),
+            ),
+            (
+                vec![5, 0, 18, 7, 6, b'a', b'b', b'c'],
+                WireValue::String(WireString::Narrow(Box::from(*b"abc"))),
+            ),
+            (
+                vec![5, 0, 18, 7, 3, 0, 0xd8],
+                WireValue::String(WireString::Wide(Box::from([0xd800]))),
+            ),
+            (vec![5, 0, 18, 10, 1, 1], WireValue::BigInt(Box::from([1]))),
+        ];
+
+        let wrapper = NodeId::from_zero_based(0);
+        for (bytes, value) in vectors {
+            let primitive = BoxedPrimitive::try_from_wire_value(value).unwrap();
+            let graph = decode(&bytes, ReaderMode::Strict, true).unwrap();
+            assert_eq!(graph.root, WireValue::Node(wrapper));
+            assert_eq!(graph.ref_table.as_ref(), &[wrapper]);
+            assert_eq!(
+                graph.nodes.as_ref(),
+                &[WireNode::ObjectValue {
+                    primitive: primitive.clone(),
+                }]
+            );
+
+            let without_references = decode(&bytes, ReaderMode::Strict, false).unwrap();
+            assert!(without_references.ref_table.is_empty());
+            assert_eq!(without_references.nodes, graph.nodes);
+        }
+    }
+
+    #[test]
+    fn object_value_reference_aliases_follow_reader_completion_order() {
+        let root = NodeId::from_zero_based(0);
+        let wrapper = NodeId::from_zero_based(1);
+
+        // Pinned qjs bjson.write([wrapper, wrapper], true).
+        let repeated = decode(&[5, 0, 9, 2, 18, 5, 84, 19, 1], ReaderMode::Strict, true).unwrap();
+        assert_eq!(repeated.ref_table.as_ref(), &[root, wrapper]);
+        assert_eq!(
+            repeated.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(wrapper), WireValue::Node(wrapper)]),
+            }
+        );
+
+        // Without references, the writer expands the wrapper twice and the
+        // reader therefore creates two distinct identities.
+        let copied = decode(
+            &[5, 0, 9, 2, 18, 5, 84, 18, 5, 84],
+            ReaderMode::Strict,
+            false,
+        )
+        .unwrap();
+        let second_wrapper = NodeId::from_zero_based(2);
+        assert!(copied.ref_table.is_empty());
+        assert_eq!(
+            copied.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(wrapper), WireValue::Node(second_wrapper),]),
+            }
+        );
+
+        // Reader-only ObjectValue(object) inputs return the child object and
+        // append another reference-table entry for the same NodeId.
+        let fresh_alias = decode(&[5, 0, 18, 8, 0], ReaderMode::Strict, true).unwrap();
+        assert_eq!(fresh_alias.root, WireValue::Node(root));
+        assert_eq!(fresh_alias.ref_table.as_ref(), &[root, root]);
+        assert_eq!(fresh_alias.nodes.len(), 1);
+
+        let fresh_without_references =
+            decode(&[5, 0, 18, 8, 0], ReaderMode::Strict, false).unwrap();
+        assert_eq!(fresh_without_references.root, WireValue::Node(root));
+        assert!(fresh_without_references.ref_table.is_empty());
+        assert_eq!(fresh_without_references.nodes.len(), 1);
+
+        let object = NodeId::from_zero_based(1);
+        let array_alias = decode(&[5, 0, 9, 2, 18, 8, 0, 19, 2], ReaderMode::Strict, true).unwrap();
+        assert_eq!(array_alias.ref_table.as_ref(), &[root, object, object]);
+        assert_eq!(
+            array_alias.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(object), WireValue::Node(object)]),
+            }
+        );
+
+        let buffer = NodeId::from_zero_based(1);
+        let buffer_alias = decode(
+            &[5, 0, 9, 2, 18, 15, 0, 255, 255, 255, 255, 15, 19, 2],
+            ReaderMode::Strict,
+            true,
+        )
+        .unwrap();
+        assert_eq!(buffer_alias.ref_table.as_ref(), &[root, buffer, buffer]);
+        assert_eq!(
+            buffer_alias.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(buffer), WireValue::Node(buffer)]),
+            }
+        );
+        assert_eq!(
+            buffer_alias.nodes[buffer.as_usize()],
+            WireNode::ArrayBuffer {
+                bytes: Box::default(),
+                max_byte_length: None,
+            }
+        );
+
+        // The inner ObjectValue creates the wrapper after its primitive; the
+        // outer ObjectValue then aliases that completed wrapper as ref 2.
+        let nested = decode(&[5, 0, 9, 2, 18, 18, 5, 2, 19, 2], ReaderMode::Strict, true).unwrap();
+        assert_eq!(nested.ref_table.as_ref(), &[root, wrapper, wrapper]);
+        assert_eq!(
+            nested.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(wrapper), WireValue::Node(wrapper)]),
+            }
+        );
+
+        // Ordinary and Array identities are real before their children, so an
+        // ObjectValue reference can alias a still-open ancestor and form a cycle.
+        let pending = decode(&[5, 0, 9, 2, 18, 19, 0, 19, 1], ReaderMode::Strict, true).unwrap();
+        assert_eq!(pending.ref_table.as_ref(), &[root, root]);
+        assert_eq!(
+            pending.nodes.as_ref(),
+            &[WireNode::Array {
+                elements: Box::from([WireValue::Node(root), WireValue::Node(root)]),
+            }]
+        );
+
+        let pending_object = decode(
+            &[5, 1, 2, b'x', 8, 1, 2, 18, 19, 0],
+            ReaderMode::Strict,
+            true,
+        )
+        .unwrap();
+        assert_eq!(pending_object.ref_table.as_ref(), &[root, root]);
+        assert_eq!(
+            pending_object.nodes.as_ref(),
+            &[WireNode::Ordinary {
+                properties: Box::from([WireProperty {
+                    key: WireKey::Atom(AtomId::from_zero_based(0)),
+                    value: WireValue::Node(root),
+                }]),
+            }]
+        );
+    }
+
+    #[test]
+    fn object_value_errors_follow_child_read_and_to_object_order() {
+        assert_eq!(
+            decode(&[5, 0, 18], ReaderMode::Strict, true),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 3,
+                needed: 1,
+                remaining: 0,
+            }))
+        );
+        for tag in [BcTag::Null, BcTag::Undefined] {
+            assert_eq!(
+                decode(&[5, 0, 18, tag.to_byte()], ReaderMode::Strict, true),
+                Err(DecodeError::InvalidObjectValue {
+                    offset: 2,
+                    reason: BoxedPrimitiveError::NullOrUndefined,
+                })
+            );
+        }
+        assert_eq!(
+            decode(&[5, 0, 18, 19, 0], ReaderMode::Strict, false),
+            Err(DecodeError::ObjectReferencesNotAllowed { offset: 3 })
+        );
+        assert_eq!(
+            decode(&[5, 0, 18, 19, 0], ReaderMode::Strict, true),
+            Err(DecodeError::Graph(GraphError::InvalidReferenceIndex {
+                index: 0,
+                reference_count: 0,
+            }))
+        );
+        assert_eq!(
+            decode(&[5, 0, 18, 16], ReaderMode::Strict, true),
+            Err(DecodeError::UnsupportedTag {
+                tag: BcTag::SharedArrayBuffer,
+                offset: 3,
+            })
+        );
+
+        // Wrapper node/reference reservations happen only after the child is
+        // complete, so child wire/reference failures win even with no identity
+        // budget available.
+        let no_identity = GraphLimits::new(0, 0, 8, 8, 8, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 18],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_identity,
+                true,
+            ),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 3,
+                needed: 1,
+                remaining: 0,
+            }))
+        );
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 18, 19, 0],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_identity,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::InvalidReferenceIndex {
+                index: 0,
+                reference_count: 0,
+            }))
+        );
+
+        // A pending TypedArray reference denotes QuickJS's temporary NULL
+        // placeholder, not a real object identity. Reject it without following
+        // the pinned native crash path.
+        let typed_array = NodeId::from_zero_based(0);
+        assert_eq!(
+            decode(&[5, 0, 14, 2, 0, 0, 18, 19, 0], ReaderMode::Strict, true,),
+            Err(DecodeError::InvalidObjectValueAlias {
+                offset: 6,
+                node: typed_array,
+            })
+        );
+    }
+
+    #[test]
+    fn object_value_identity_alias_and_depth_budgets_are_independent() {
+        let primitive = [5, 0, 18, 5, 2];
+        for (allow_references, limits, expected) in [
+            (
+                false,
+                GraphLimits::new(0, 8, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::Nodes,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                true,
+                GraphLimits::new(8, 0, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::ObjectReferences,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                false,
+                GraphLimits::new(8, 8, 0, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::NestingDepth,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+        ] {
+            assert_eq!(
+                decode_graph(
+                    &primitive,
+                    ReaderMode::Strict,
+                    WIRE_LIMITS,
+                    limits,
+                    allow_references,
+                ),
+                Err(DecodeError::Graph(expected))
+            );
+        }
+
+        let one_level = GraphLimits::new(8, 8, 1, 8, 8, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 18, 18, 5, 2],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                one_level,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::NestingDepth,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+
+        // The root Array already consumed the only node and reference slot.
+        // Its ObjectValue child aliases that node, so only the reference budget
+        // grows after the child reference has been read.
+        let one_alias = GraphLimits::new(1, 1, 2, 1, 1, 0, 0, 0, 0);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 9, 1, 18, 19, 0],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                one_alias,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ObjectReferences,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+
+        // A ready ArrayBuffer child consumes its own identity before
+        // ObjectValue appends the alias entry.
+        let ready_leaf_alias = GraphLimits::new(2, 2, 3, 1, 1, 0, 0, 0, 0);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 9, 1, 18, 15, 0, 255, 255, 255, 255, 15],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                ready_leaf_alias,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ObjectReferences,
+                requested: 3,
+                limit: 2,
+            }))
+        );
+    }
+
+    #[test]
     fn unsupported_data_tags_are_rejected_before_their_payloads() {
         for tag in [
             BcTag::TemplateObject,
@@ -2142,7 +2558,6 @@ mod tests {
             BcTag::Module,
             BcTag::SharedArrayBuffer,
             BcTag::Date,
-            BcTag::ObjectValue,
         ] {
             assert_eq!(
                 decode(&[0x05, 0x00, tag.to_byte()], ReaderMode::Strict, false),

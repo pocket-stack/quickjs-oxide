@@ -118,6 +118,70 @@ mod tests {
     }
 
     #[test]
+    fn exact_quickjs_object_value_vectors_cross_the_pure_graph() {
+        for (bytes, references) in [
+            (&[5, 0, 18, 3][..], false),
+            (&[5, 0, 18, 5, 84][..], true),
+            (&[5, 0, 18, 6, 0, 0, 0, 0, 0, 0, 0, 128][..], false),
+            (&[5, 0, 18, 6, 66, 0, 0, 0, 0, 0, 248, 127][..], true),
+            (&[5, 0, 18, 7, 6, b'a', b'b', b'c'][..], true),
+            (&[5, 0, 18, 10, 1, 1][..], false),
+            (&[5, 0, 9, 2, 18, 5, 84, 19, 1][..], true),
+        ] {
+            assert_eq!(rewrite(bytes, references, ReaderMode::Strict), bytes);
+        }
+    }
+
+    #[test]
+    fn object_value_reader_aliases_rewrite_to_canonical_object_identity() {
+        for (input, expected) in [
+            (&[5, 0, 18, 8, 0][..], &[5, 0, 8, 0][..]),
+            (
+                &[5, 0, 9, 2, 18, 8, 0, 19, 2][..],
+                &[5, 0, 9, 2, 8, 0, 19, 1][..],
+            ),
+            (
+                &[5, 0, 9, 2, 18, 15, 0, 255, 255, 255, 255, 15, 19, 2][..],
+                &[5, 0, 9, 2, 15, 0, 255, 255, 255, 255, 15, 19, 1][..],
+            ),
+            (
+                &[5, 0, 9, 2, 18, 19, 0, 19, 1][..],
+                &[5, 0, 9, 2, 19, 0, 19, 0][..],
+            ),
+            (
+                &[5, 1, 2, b'x', 8, 1, 2, 18, 19, 0][..],
+                &[5, 1, 2, b'x', 8, 1, 2, 19, 0][..],
+            ),
+            (
+                &[5, 0, 9, 2, 18, 18, 5, 2, 19, 2][..],
+                &[5, 0, 9, 2, 18, 5, 2, 19, 1][..],
+            ),
+        ] {
+            assert_eq!(rewrite(input, true, ReaderMode::Strict), expected);
+        }
+        assert_eq!(
+            rewrite(&[5, 0, 18, 8, 0], false, ReaderMode::Strict),
+            [5, 0, 8, 0]
+        );
+    }
+
+    #[test]
+    fn compatible_object_value_payload_lengths_rewrite_canonically() {
+        for (input, expected) in [
+            (
+                &[5, 0, 18, 7, 0x86, 0, b'a', b'b', b'c'][..],
+                &[5, 0, 18, 7, 6, b'a', b'b', b'c'][..],
+            ),
+            (&[5, 0, 18, 10, 0x81, 0, 1][..], &[5, 0, 18, 10, 1, 1][..]),
+        ] {
+            assert_eq!(
+                rewrite(input, false, ReaderMode::QuickJsCompatible),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn compatible_array_buffer_lengths_rewrite_canonically() {
         assert_eq!(
             rewrite(
