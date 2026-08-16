@@ -166,20 +166,34 @@ reference vector proves that neither the outer nor nested FunctionBytecode
 record consumes an object-reference ID: a cpool TemplateObject is ID 1, its
 raw object is ID 2, and the enclosing root later refers back to ID 1. A fresh
 runtime also observes the cpool result and root property as the same object.
-The data decoder separates
-preorder identity registration from value completion: every parent/root
-attachment now uses one completed-subtree
+The data decoder separates preorder identity registration from value
+completion: every parent/root attachment now uses one completed-subtree
 delivery path owned by the decode state. Its reference state is now an
 independent generic `ObjectArena`, ready for a whole-image decoder to carry one
 instance through every recursive constant pool without registering
-FunctionBytecode records themselves. The data decoder remains its only
-consumer in this milestone. The arena represents incomplete identities with
-kind-checked pending/ready slots; source-bound linear node reservations and
-atomic reference reservations prevent stale or cross-arena commits, and
-independently bounded reference entries can alias pending or ready identities
-without consuming another node. Malicious TypedArray placeholder paths are
-rejected
-deterministically instead of reproducing pinned QuickJS's native crashes.
+FunctionBytecode records themselves. The data-value and container state machine
+is now independently generic over value and property-key carriers as
+`DataMachine`/`DataFrame`. The data-only facade remains the sole driver in this
+milestone: it still owns header interning, key timing, the outer frame stack,
+root delivery, and unconditional cursor finalization, and it still rejects
+FunctionBytecode without consuming its payload. A wider whole-image driver can
+therefore carry function identities through ordinary properties, Arrays, and
+TemplateObjects while reusing the same aggregate budgets and single object
+arena; TypedArray, ObjectValue, and Date expose typed failures when such an
+identity is invalid in their child position. The arena represents incomplete
+identities with kind-checked pending/ready slots. Source-bound linear node
+reservations, opaque data frames, and linear completed values prevent stale or
+cross-machine commits; machine identities never wrap, and raw node values
+cannot be rebranded as caller-produced opaque values. The value adapter is
+sealed inside the graph reader, so sibling modules cannot substitute a
+classifier which hides raw node identities. Atomic reference reservations keep
+alias publication indivisible, while independently bounded
+reference entries can alias pending or ready identities without consuming
+another node. This prerequisite does not yet define function identity: the
+whole-image owner must source-authenticate opaque function IDs and retain
+completed-value provenance across function frames until finalization.
+Malicious TypedArray placeholder paths are rejected deterministically instead
+of reproducing pinned QuickJS's native crashes.
 The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
 Module. It is not a public binary-object API yet:
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM

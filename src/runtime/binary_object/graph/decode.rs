@@ -8,8 +8,10 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
+use std::convert::Infallible;
 use std::fmt;
 use std::hash::{BuildHasher, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
@@ -19,13 +21,15 @@ use super::arena::{ArenaError, NodeState, ObjectArena, PendingNodeKind};
 use super::model::{
     ArrayBufferLayoutError, AtomId, BoxedPrimitive, BoxedPrimitiveError, DateNumber,
     DateNumberError, GraphError, GraphLimits, GraphResourceKind, NodeId, TypedArrayBackingError,
-    TypedArrayKind, TypedArrayLayoutError, WireGraph, WireKey, WireNode, WireProperty, WireValue,
-    canonical_bigint_length, numeric_atom_index, semantic_atom_eq, semantic_atom_hash,
-    validate_array_buffer_layout, validate_typed_array_layout,
+    TypedArrayKind, TypedArrayLayoutError, WireGraph, WireKey, WireNodeCarrier,
+    WirePropertyCarrier, WireValue, canonical_bigint_length, numeric_atom_index, semantic_atom_eq,
+    semantic_atom_hash, validate_array_buffer_layout, validate_typed_array_layout,
 };
+#[cfg(test)]
+use super::model::{WireNode, WireProperty};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum DecodeError {
+pub(in crate::runtime) enum DecodeError<Opaque = Infallible> {
     Wire(WireError),
     Graph(GraphError),
     AtomCountOverflow {
@@ -60,9 +64,17 @@ pub(in crate::runtime) enum DecodeError {
         offset: usize,
         reason: TypedArrayLayoutError,
     },
+    OpaqueTypedArrayBacking {
+        offset: usize,
+        value: Opaque,
+    },
     InvalidObjectValue {
         offset: usize,
         reason: BoxedPrimitiveError,
+    },
+    OpaqueObjectValue {
+        offset: usize,
+        value: Opaque,
     },
     InvalidObjectValueAlias {
         offset: usize,
@@ -72,13 +84,18 @@ pub(in crate::runtime) enum DecodeError {
         offset: usize,
         reason: DateNumberError,
     },
+    OpaqueDateValue {
+        offset: usize,
+        value: Opaque,
+    },
+    MachineIdExhausted,
     InvalidCompletionTarget,
     InvalidNodeState {
         node: NodeId,
     },
 }
 
-impl fmt::Display for DecodeError {
+impl<Opaque: fmt::Debug> fmt::Display for DecodeError<Opaque> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wire(error) => fmt::Display::fmt(error, formatter),
@@ -119,9 +136,17 @@ impl fmt::Display for DecodeError {
             Self::InvalidTypedArray { offset, reason } => {
                 write!(formatter, "invalid TypedArray at byte {offset}: {reason}")
             }
+            Self::OpaqueTypedArrayBacking { offset, value } => write!(
+                formatter,
+                "invalid TypedArray backing at byte {offset}: opaque value {value:?} is not an object"
+            ),
             Self::InvalidObjectValue { offset, reason } => {
                 write!(formatter, "invalid ObjectValue at byte {offset}: {reason}")
             }
+            Self::OpaqueObjectValue { offset, value } => write!(
+                formatter,
+                "invalid ObjectValue at byte {offset}: opaque value {value:?} cannot be converted to an object"
+            ),
             Self::InvalidObjectValueAlias { offset, node } => write!(
                 formatter,
                 "invalid ObjectValue alias at byte {offset}: TypedArray node {} is not complete",
@@ -129,6 +154,13 @@ impl fmt::Display for DecodeError {
             ),
             Self::InvalidDate { offset, reason } => {
                 write!(formatter, "invalid Date at byte {offset}: {reason}")
+            }
+            Self::OpaqueDateValue { offset, value } => write!(
+                formatter,
+                "invalid Date at byte {offset}: opaque value {value:?} is not a number"
+            ),
+            Self::MachineIdExhausted => {
+                formatter.write_str("data-machine identity space is exhausted")
             }
             Self::InvalidCompletionTarget => {
                 formatter.write_str("invalid wire graph completion target")
@@ -142,27 +174,102 @@ impl fmt::Display for DecodeError {
     }
 }
 
-impl std::error::Error for DecodeError {}
+impl<Opaque: fmt::Debug> std::error::Error for DecodeError<Opaque> {}
 
-impl From<WireError> for DecodeError {
+impl<Opaque> From<WireError> for DecodeError<Opaque> {
     fn from(error: WireError) -> Self {
         Self::Wire(error)
     }
 }
 
-impl From<GraphError> for DecodeError {
+impl<Opaque> From<GraphError> for DecodeError<Opaque> {
     fn from(error: GraphError) -> Self {
         Self::Graph(error)
     }
 }
 
-impl From<ArenaError> for DecodeError {
+impl<Opaque> From<ArenaError> for DecodeError<Opaque> {
     fn from(error: ArenaError) -> Self {
         match error {
             ArenaError::Graph(error) => Self::Graph(error),
             ArenaError::InvalidNodeState { node } => Self::InvalidNodeState { node },
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MachineId(u64);
+
+static NEXT_MACHINE_ID: AtomicU64 = AtomicU64::new(1);
+
+impl MachineId {
+    fn allocate<Opaque>() -> Result<Self, DecodeError<Opaque>> {
+        NEXT_MACHINE_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .map(Self)
+            .map_err(|_| DecodeError::MachineIdExhausted)
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Adapter between the concrete BC5 data values assembled here and a caller's
+/// wider whole-image value type.
+///
+/// A plain data graph uses [`WireValue`] directly and therefore has no opaque
+/// values. A bytecode-image reader can wrap those same values while retaining
+/// a separate function identity variant. The opaque discriminator is returned
+/// only when a data-only tag (TypedArray, ObjectValue, or Date) needs to inspect
+/// such a wider value.
+///
+/// This is a sealed, trusted internal adapter contract. Every value returned by
+/// `from_wire(wire)` must return `Ok` from both `as_wire` and `into_wire`, with
+/// the same `WireValue`. Conversely, `as_wire` and `into_wire` must agree on
+/// which variants are opaque, and neither an opaque variant nor its discriminator
+/// may contain or re-encode a raw `WireValue` or `NodeId`. A future FunctionImage
+/// adapter must separately authenticate that an opaque FunctionId belongs to the
+/// same image before asking this machine to wrap it. Violating these laws can
+/// defeat the arena-provenance checks and is an internal implementation bug.
+#[allow(private_bounds)]
+pub(in crate::runtime::binary_object) trait DataValue:
+    sealed::Sealed + Sized
+{
+    type Opaque: Copy + fmt::Debug;
+
+    fn from_wire(value: WireValue) -> Self;
+    fn as_wire(&self) -> Result<&WireValue, Self::Opaque>;
+    fn into_wire(self) -> Result<WireValue, Self::Opaque>;
+}
+
+impl sealed::Sealed for WireValue {}
+
+impl DataValue for WireValue {
+    type Opaque = Infallible;
+
+    fn from_wire(value: WireValue) -> Self {
+        value
+    }
+
+    fn as_wire(&self) -> Result<&WireValue, Self::Opaque> {
+        Ok(self)
+    }
+
+    fn into_wire(self) -> Result<WireValue, Self::Opaque> {
+        Ok(self)
+    }
+}
+
+/// One completed value tied linearly to the machine whose arena gave meaning
+/// to any contained [`NodeId`]. For lawful [`DataValue`] adapters, private
+/// fields prevent sibling drivers from rebranding values or splicing identities
+/// across whole-image decoders.
+pub(in crate::runtime::binary_object) struct DataCompletion<V> {
+    owner: MachineId,
+    value: V,
 }
 
 /// Decode one complete BC5 data object into a pure graph.
@@ -199,22 +306,16 @@ pub(in crate::runtime) fn decode_graph(
         header_atoms.push(key);
     }
 
-    let mut state = DecodeState {
-        limits: graph_limits,
-        arena: ObjectArena::new(graph_limits, allow_object_references),
-        frames: Vec::new(),
-        total_container_entries: 0,
-        total_bigint_bytes: 0,
-        total_array_buffer_bytes: 0,
-    };
+    let mut state = DataMachine::new(graph_limits, allow_object_references)?;
+    let mut frames: Vec<ActiveFrame> = Vec::new();
     let mut root = None;
 
     loop {
-        if root.is_some() && state.frames.is_empty() {
+        if root.is_some() && frames.is_empty() {
             break;
         }
 
-        let return_to = match state.frames.last() {
+        let return_to = match frames.last() {
             Some(active) => {
                 let key = active
                     .frame
@@ -225,30 +326,27 @@ pub(in crate::runtime) fn decode_graph(
             }
             None => CompletionTarget::Root,
         };
-        match state.read_value(&mut cursor)? {
-            ReadStep::Complete(value) => {
-                state.deliver_completed(return_to, value, &mut root)?;
+        let tag_offset = cursor.position();
+        let tag = cursor.read_tag()?;
+        match state.read_value_after_tag(&mut cursor, tag, tag_offset, frames.len())? {
+            DataReadStep::Complete(value) => {
+                deliver_completed(&state, &mut frames, return_to, value, &mut root)?;
             }
-            ReadStep::Pending(frame) => {
-                state
-                    .frames
+            DataReadStep::Pending(frame) => {
+                frames
                     .try_reserve(1)
                     .map_err(|_| GraphError::AllocationFailed)?;
-                state.frames.push(ActiveFrame { frame, return_to });
+                frames.push(ActiveFrame { frame, return_to });
             }
         }
 
-        while state
-            .frames
+        while frames
             .last()
             .is_some_and(|active| active.frame.is_complete())
         {
-            let active = state
-                .frames
-                .pop()
-                .ok_or(DecodeError::InvalidCompletionTarget)?;
+            let active = frames.pop().ok_or(DecodeError::InvalidCompletionTarget)?;
             let value = state.finish_frame(active.frame)?;
-            state.deliver_completed(active.return_to, value, &mut root)?;
+            deliver_completed(&state, &mut frames, active.return_to, value, &mut root)?;
         }
     }
 
@@ -256,8 +354,8 @@ pub(in crate::runtime) fn decode_graph(
     // trailing bytes, rather than the graph layer bypassing finalization.
     cursor.finish()?;
 
-    let root = root.ok_or(DecodeError::InvalidCompletionTarget)?;
-    let parts = state.arena.finish()?;
+    let root = state.unwrap_completion(root.ok_or(DecodeError::InvalidCompletionTarget)?)?;
+    let parts = state.finish()?;
     Ok(WireGraph {
         atoms: atoms.into_boxed_slice(),
         nodes: parts.nodes,
@@ -266,19 +364,103 @@ pub(in crate::runtime) fn decode_graph(
     })
 }
 
-struct DecodeState {
+pub(in crate::runtime::binary_object) struct DataMachine<V, K> {
+    id: MachineId,
     limits: GraphLimits,
-    arena: ObjectArena<WireValue, WireKey>,
-    frames: Vec<ActiveFrame>,
+    arena: ObjectArena<V, K>,
     total_container_entries: usize,
     total_bigint_bytes: usize,
     total_array_buffer_bytes: usize,
 }
 
-impl DecodeState {
-    fn read_value(&mut self, cursor: &mut WireCursor<'_>) -> Result<ReadStep, DecodeError> {
-        let tag_offset = cursor.position();
-        let tag = cursor.read_tag()?;
+impl<V, K> DataMachine<V, K>
+where
+    V: DataValue,
+    K: Copy + Eq + std::hash::Hash,
+{
+    pub(in crate::runtime::binary_object) fn new(
+        limits: GraphLimits,
+        allow_object_references: bool,
+    ) -> Result<Self, DecodeError<V::Opaque>> {
+        Ok(Self {
+            id: MachineId::allocate()?,
+            limits,
+            arena: ObjectArena::new(limits, allow_object_references),
+            total_container_entries: 0,
+            total_bigint_bytes: 0,
+            total_array_buffer_bytes: 0,
+        })
+    }
+
+    /// Bind a caller-produced opaque value, such as a completed function
+    /// record, to this machine. For a lawful [`DataValue`] adapter, concrete
+    /// wire values are rejected; in particular, a raw NodeId cannot be
+    /// rebranded into another arena. This does not authenticate higher-level
+    /// opaque identities: a future FunctionImage driver must prove that a
+    /// FunctionId belongs to its image before calling this method.
+    pub(in crate::runtime::binary_object) fn wrap_opaque_value(
+        &self,
+        value: V,
+    ) -> Result<DataCompletion<V>, DecodeError<V::Opaque>> {
+        if value.as_wire().is_ok() {
+            return Err(DecodeError::InvalidCompletionTarget);
+        }
+        Ok(self.complete(value))
+    }
+
+    /// Remove provenance only after proving that the completed value belongs
+    /// to this machine. This remains private to the data decoder: its facade
+    /// unwraps the final data root here, while a future sibling FunctionImage
+    /// driver must preserve [`DataCompletion`] across data/function boundaries
+    /// until a consuming whole-image finalizer is introduced.
+    fn unwrap_completion(
+        &self,
+        completion: DataCompletion<V>,
+    ) -> Result<V, DecodeError<V::Opaque>> {
+        self.validate_completion(&completion)?;
+        Ok(completion.value)
+    }
+
+    fn complete(&self, value: V) -> DataCompletion<V> {
+        DataCompletion {
+            owner: self.id,
+            value,
+        }
+    }
+
+    fn validate_completion(
+        &self,
+        completion: &DataCompletion<V>,
+    ) -> Result<(), DecodeError<V::Opaque>> {
+        if completion.owner != self.id {
+            return Err(DecodeError::InvalidCompletionTarget);
+        }
+        Ok(())
+    }
+
+    /// Attach a completed child only when the value and destination frame were
+    /// both issued by this machine. Both owner checks precede frame mutation.
+    pub(in crate::runtime::binary_object) fn attach_to_frame(
+        &self,
+        frame: &mut DataFrame<V, K>,
+        key: Option<PropertyDisposition<K>>,
+        completion: DataCompletion<V>,
+    ) -> Result<(), DecodeError<V::Opaque>> {
+        if frame.owner != self.id {
+            return Err(DecodeError::InvalidCompletionTarget);
+        }
+        self.validate_completion(&completion)?;
+        frame.attach_raw(key, completion.value)?;
+        Ok(())
+    }
+
+    pub(in crate::runtime::binary_object) fn read_value_after_tag(
+        &mut self,
+        cursor: &mut WireCursor<'_>,
+        tag: BcTag,
+        tag_offset: usize,
+        active_depth: usize,
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
         let value = match tag {
             BcTag::Null => WireValue::Null,
             BcTag::Undefined => WireValue::Undefined,
@@ -288,15 +470,21 @@ impl DecodeState {
             BcTag::Float64 => WireValue::Float64Bits(cursor.read_f64()?.to_bits()),
             BcTag::String => WireValue::String(cursor.read_string()?),
             BcTag::BigInt => self.read_bigint(cursor)?,
-            BcTag::Object => return self.begin_container(cursor, ContainerKind::Ordinary),
-            BcTag::Array => return self.begin_container(cursor, ContainerKind::Array),
-            BcTag::TemplateObject => {
-                return self.begin_container(cursor, ContainerKind::TemplateObject);
+            BcTag::Object => {
+                return self.begin_container(cursor, ContainerKind::Ordinary, active_depth);
             }
-            BcTag::TypedArray => return self.begin_typed_array(cursor, tag_offset),
-            BcTag::ObjectValue => return self.begin_object_value(tag_offset),
-            BcTag::Date => return self.begin_date(tag_offset),
-            BcTag::ArrayBuffer => self.read_array_buffer(cursor)?,
+            BcTag::Array => {
+                return self.begin_container(cursor, ContainerKind::Array, active_depth);
+            }
+            BcTag::TemplateObject => {
+                return self.begin_container(cursor, ContainerKind::TemplateObject, active_depth);
+            }
+            BcTag::TypedArray => {
+                return self.begin_typed_array(cursor, tag_offset, active_depth);
+            }
+            BcTag::ObjectValue => return self.begin_object_value(tag_offset, active_depth),
+            BcTag::Date => return self.begin_date(tag_offset, active_depth),
+            BcTag::ArrayBuffer => return self.read_array_buffer(cursor, active_depth),
             BcTag::ObjectReference => {
                 if !self.arena.allows_references() {
                     return Err(DecodeError::ObjectReferencesNotAllowed { offset: tag_offset });
@@ -313,10 +501,13 @@ impl DecodeState {
             }
         };
 
-        Ok(ReadStep::Complete(value))
+        Ok(DataReadStep::Complete(self.complete(V::from_wire(value))))
     }
 
-    fn read_bigint(&mut self, cursor: &mut WireCursor<'_>) -> Result<WireValue, DecodeError> {
+    fn read_bigint(
+        &mut self,
+        cursor: &mut WireCursor<'_>,
+    ) -> Result<WireValue, DecodeError<V::Opaque>> {
         let length_offset = cursor.position();
         let byte_length = cursor.read_uleb128()? as usize;
         self.limits
@@ -355,7 +546,11 @@ impl DecodeState {
         Ok(WireValue::BigInt(canonical.into_boxed_slice()))
     }
 
-    fn read_array_buffer(&mut self, cursor: &mut WireCursor<'_>) -> Result<WireValue, DecodeError> {
+    fn read_array_buffer(
+        &mut self,
+        cursor: &mut WireCursor<'_>,
+        active_depth: usize,
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
         let layout_offset = cursor.position();
         let byte_length = cursor.read_uleb128()?;
         let encoded_maximum = cursor.read_uleb128()?;
@@ -386,7 +581,7 @@ impl DecodeState {
             GraphResourceKind::TotalArrayBufferBytes,
             self.total_array_buffer_bytes,
         )?;
-        self.check_next_node_depth()?;
+        self.check_next_node_depth(active_depth)?;
         // Preflight the arena/reference work before copying a potentially
         // large payload. The node is installed only after the leaf is complete,
         // matching QuickJS's ArrayBuffer reference-registration point.
@@ -404,18 +599,21 @@ impl DecodeState {
             .try_reserve_exact(byte_length)
             .map_err(|_| GraphError::AllocationFailed)?;
         bytes.extend_from_slice(payload);
-        let node = reservation.install_ready_node(WireNode::ArrayBuffer {
+        let node = reservation.install_ready_node(WireNodeCarrier::ArrayBuffer {
             bytes: bytes.into_boxed_slice(),
             max_byte_length,
         })?;
-        Ok(WireValue::Node(node))
+        Ok(DataReadStep::Complete(
+            self.complete(V::from_wire(WireValue::Node(node))),
+        ))
     }
 
     fn begin_typed_array(
         &mut self,
         cursor: &mut WireCursor<'_>,
         tag_offset: usize,
-    ) -> Result<ReadStep, DecodeError> {
+        active_depth: usize,
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
         let kind_offset = cursor.position();
         let kind_byte = cursor.read_u8()?;
         let kind = TypedArrayKind::from_wire_byte(kind_byte).ok_or(
@@ -427,32 +625,49 @@ impl DecodeState {
         let length = cursor.read_uleb128()?;
         let byte_offset = cursor.read_uleb128()?;
 
-        self.check_next_node_depth()?;
+        self.check_next_node_depth(active_depth)?;
         let reservation = self.arena.reserve_node()?;
         let node = reservation.install_pending_node(PendingNodeKind::TypedArray)?;
-        Ok(ReadStep::Pending(Frame::TypedArray {
-            node,
-            offset: tag_offset,
-            kind,
-            length,
-            byte_offset,
-            backing: None,
+        Ok(DataReadStep::Pending(DataFrame {
+            owner: self.id,
+            kind: DataFrameKind::TypedArray {
+                node,
+                offset: tag_offset,
+                kind,
+                length,
+                byte_offset,
+                backing: None,
+            },
         }))
     }
 
-    fn begin_object_value(&self, tag_offset: usize) -> Result<ReadStep, DecodeError> {
-        self.check_next_node_depth()?;
-        Ok(ReadStep::Pending(Frame::ObjectValue {
-            offset: tag_offset,
-            value: None,
+    fn begin_object_value(
+        &self,
+        tag_offset: usize,
+        active_depth: usize,
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
+        self.check_next_node_depth(active_depth)?;
+        Ok(DataReadStep::Pending(DataFrame {
+            owner: self.id,
+            kind: DataFrameKind::ObjectValue {
+                offset: tag_offset,
+                value: None,
+            },
         }))
     }
 
-    fn begin_date(&self, tag_offset: usize) -> Result<ReadStep, DecodeError> {
-        self.check_next_node_depth()?;
-        Ok(ReadStep::Pending(Frame::Date {
-            offset: tag_offset,
-            value: None,
+    fn begin_date(
+        &self,
+        tag_offset: usize,
+        active_depth: usize,
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
+        self.check_next_node_depth(active_depth)?;
+        Ok(DataReadStep::Pending(DataFrame {
+            owner: self.id,
+            kind: DataFrameKind::Date {
+                offset: tag_offset,
+                value: None,
+            },
         }))
     }
 
@@ -460,7 +675,8 @@ impl DecodeState {
         &mut self,
         cursor: &mut WireCursor<'_>,
         kind: ContainerKind,
-    ) -> Result<ReadStep, DecodeError> {
+        active_depth: usize,
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
         let entry_count = cursor.read_uleb128()? as usize;
         self.limits
             .check(GraphResourceKind::ContainerEntries, entry_count)?;
@@ -474,72 +690,58 @@ impl DecodeState {
             self.total_container_entries,
         )?;
 
-        self.check_next_node_depth()?;
+        self.check_next_node_depth(active_depth)?;
 
         let reservation = self.arena.reserve_node()?;
         let node_id = reservation.install_pending_node(kind.pending_node_kind())?;
-        let frame = Frame::new(kind, node_id, entry_count)?;
-        Ok(ReadStep::Pending(frame))
+        let frame = DataFrame::new(self.id, kind, node_id, entry_count)?;
+        Ok(DataReadStep::Pending(frame))
     }
 
-    fn deliver_completed(
+    pub(in crate::runtime::binary_object) fn finish_frame(
         &mut self,
-        target: CompletionTarget,
-        value: WireValue,
-        root: &mut Option<WireValue>,
-    ) -> Result<(), DecodeError> {
-        match target {
-            CompletionTarget::Root => {
-                if root.replace(value).is_some() {
-                    return Err(DecodeError::InvalidCompletionTarget);
-                }
-            }
-            CompletionTarget::Parent { key } => {
-                let parent = self
-                    .frames
-                    .last_mut()
-                    .ok_or(DecodeError::InvalidCompletionTarget)?;
-                parent.frame.attach(key, value)?;
-            }
+        frame: DataFrame<V, K>,
+    ) -> Result<DataCompletion<V>, DecodeError<V::Opaque>> {
+        if frame.owner != self.id {
+            return Err(DecodeError::InvalidCompletionTarget);
         }
-        Ok(())
-    }
-
-    fn finish_frame(&mut self, frame: Frame) -> Result<WireValue, DecodeError> {
-        let (node, replacement) = match frame {
-            Frame::ObjectValue { offset, value } => {
+        if !frame.is_complete() {
+            return Err(DecodeError::InvalidCompletionTarget);
+        }
+        let (node, replacement) = match frame.kind {
+            DataFrameKind::ObjectValue { offset, value } => {
                 return self.finish_object_value(offset, value);
             }
-            Frame::Date { offset, value } => {
+            DataFrameKind::Date { offset, value } => {
                 return self.finish_date(offset, value);
             }
-            Frame::Ordinary {
+            DataFrameKind::Ordinary {
                 node, properties, ..
             } => (
                 node,
-                WireNode::Ordinary {
+                WireNodeCarrier::Ordinary {
                     properties: properties.into_boxed_slice(),
                 },
             ),
-            Frame::Array { node, elements, .. } => (
+            DataFrameKind::Array { node, elements, .. } => (
                 node,
-                WireNode::Array {
+                WireNodeCarrier::Array {
                     elements: elements.into_boxed_slice(),
                 },
             ),
-            Frame::TemplateObject {
+            DataFrameKind::TemplateObject {
                 node,
                 elements,
                 raw,
                 ..
             } => (
                 node,
-                WireNode::TemplateObject {
+                WireNodeCarrier::TemplateObject {
                     elements: elements.into_boxed_slice(),
                     raw: raw.ok_or(DecodeError::InvalidCompletionTarget)?,
                 },
             ),
-            Frame::TypedArray {
+            DataFrameKind::TypedArray {
                 node,
                 offset,
                 kind,
@@ -547,17 +749,21 @@ impl DecodeState {
                 byte_offset,
                 backing,
             } => {
-                let buffer = match backing.ok_or(DecodeError::InvalidCompletionTarget)? {
-                    WireValue::Node(buffer) => buffer,
-                    _ => {
+                let backing = backing.ok_or(DecodeError::InvalidCompletionTarget)?;
+                let buffer = match backing.as_wire() {
+                    Ok(WireValue::Node(buffer)) => *buffer,
+                    Ok(_) => {
                         return Err(DecodeError::InvalidTypedArrayBacking {
                             offset,
                             reason: TypedArrayBackingError::NotObject,
                         });
                     }
+                    Err(value) => {
+                        return Err(DecodeError::OpaqueTypedArrayBacking { offset, value });
+                    }
                 };
                 let backing_byte_length = match self.arena.node_state(buffer)? {
-                    NodeState::Ready(WireNode::ArrayBuffer { bytes, .. }) => bytes.len(),
+                    NodeState::Ready(WireNodeCarrier::ArrayBuffer { bytes, .. }) => bytes.len(),
                     NodeState::Ready(_) => {
                         return Err(DecodeError::InvalidTypedArrayBacking {
                             offset,
@@ -585,7 +791,7 @@ impl DecodeState {
                     .map_err(|reason| DecodeError::InvalidTypedArray { offset, reason })?;
                 (
                     node,
-                    WireNode::TypedArray {
+                    WireNodeCarrier::TypedArray {
                         kind,
                         length,
                         byte_offset,
@@ -595,16 +801,17 @@ impl DecodeState {
             }
         };
         self.arena.complete_node(node, replacement)?;
-        Ok(WireValue::Node(node))
+        Ok(self.complete(V::from_wire(WireValue::Node(node))))
     }
 
     fn finish_object_value(
         &mut self,
         offset: usize,
-        value: Option<WireValue>,
-    ) -> Result<WireValue, DecodeError> {
+        value: Option<V>,
+    ) -> Result<DataCompletion<V>, DecodeError<V::Opaque>> {
         let value = value.ok_or(DecodeError::InvalidCompletionTarget)?;
-        if let WireValue::Node(node) = value {
+        if let Ok(WireValue::Node(node)) = value.as_wire() {
+            let node = *node;
             if matches!(
                 self.arena.node_state(node)?,
                 NodeState::Pending(PendingNodeKind::TypedArray)
@@ -612,35 +819,45 @@ impl DecodeState {
                 return Err(DecodeError::InvalidObjectValueAlias { offset, node });
             }
             self.arena.append_reference_alias(node)?;
-            return Ok(WireValue::Node(node));
+            return Ok(self.complete(V::from_wire(WireValue::Node(node))));
         }
 
+        let value = value
+            .into_wire()
+            .map_err(|value| DecodeError::OpaqueObjectValue { offset, value })?;
         let primitive = BoxedPrimitive::try_from_wire_value(value)
             .map_err(|reason| DecodeError::InvalidObjectValue { offset, reason })?;
         let reservation = self.arena.reserve_node()?;
-        let node = reservation.install_ready_node(WireNode::ObjectValue { primitive })?;
-        Ok(WireValue::Node(node))
+        let node = reservation.install_ready_node(WireNodeCarrier::ObjectValue { primitive })?;
+        Ok(self.complete(V::from_wire(WireValue::Node(node))))
     }
 
     fn finish_date(
         &mut self,
         offset: usize,
-        value: Option<WireValue>,
-    ) -> Result<WireValue, DecodeError> {
+        value: Option<V>,
+    ) -> Result<DataCompletion<V>, DecodeError<V::Opaque>> {
         let value = value.ok_or(DecodeError::InvalidCompletionTarget)?;
+        let value = value
+            .into_wire()
+            .map_err(|value| DecodeError::OpaqueDateValue { offset, value })?;
         let time_value = DateNumber::try_from_wire_value(value)
             .map_err(|reason| DecodeError::InvalidDate { offset, reason })?;
         // Pinned QuickJS creates and registers the Date identity only after its
         // complete child has been read and proved numeric.
         let reservation = self.arena.reserve_node()?;
-        let node = reservation.install_ready_node(WireNode::Date { time_value })?;
-        Ok(WireValue::Node(node))
+        let node = reservation.install_ready_node(WireNodeCarrier::Date { time_value })?;
+        Ok(self.complete(V::from_wire(WireValue::Node(node))))
     }
 
-    fn check_next_node_depth(&self) -> Result<(), GraphError> {
-        let depth = self
-            .frames
-            .len()
+    pub(in crate::runtime::binary_object) fn finish(
+        self,
+    ) -> Result<super::arena::ObjectArenaParts<V, K>, DecodeError<V::Opaque>> {
+        self.arena.finish().map_err(Into::into)
+    }
+
+    fn check_next_node_depth(&self, active_depth: usize) -> Result<(), GraphError> {
+        let depth = active_depth
             .checked_add(1)
             .ok_or(GraphError::CountOverflow {
                 kind: GraphResourceKind::NestingDepth,
@@ -666,40 +883,74 @@ impl ContainerKind {
     }
 }
 
-enum ReadStep {
-    Complete(WireValue),
-    Pending(Frame),
+pub(in crate::runtime::binary_object) enum DataReadStep<V, K> {
+    Complete(DataCompletion<V>),
+    Pending(DataFrame<V, K>),
 }
 
 #[derive(Clone, Copy)]
 enum CompletionTarget {
     Root,
-    Parent { key: Option<DecodedPropertyKey> },
+    Parent {
+        key: Option<PropertyDisposition<WireKey>>,
+    },
 }
 
 struct ActiveFrame {
-    frame: Frame,
+    frame: DataFrame<WireValue, WireKey>,
     return_to: CompletionTarget,
 }
 
-enum Frame {
+fn deliver_completed(
+    state: &DataMachine<WireValue, WireKey>,
+    frames: &mut [ActiveFrame],
+    target: CompletionTarget,
+    value: DataCompletion<WireValue>,
+    root: &mut Option<DataCompletion<WireValue>>,
+) -> Result<(), DecodeError> {
+    match target {
+        CompletionTarget::Root => {
+            state.validate_completion(&value)?;
+            if root.replace(value).is_some() {
+                return Err(DecodeError::InvalidCompletionTarget);
+            }
+        }
+        CompletionTarget::Parent { key } => {
+            let parent = frames
+                .last_mut()
+                .ok_or(DecodeError::InvalidCompletionTarget)?;
+            state.attach_to_frame(&mut parent.frame, key, value)?;
+        }
+    }
+    Ok(())
+}
+
+/// One in-progress data container tied to the machine which reserved its node
+/// identities. The private representation prevents sibling drivers from
+/// destructuring and recombining provenance with another frame's contents.
+pub(in crate::runtime::binary_object) struct DataFrame<V, K> {
+    owner: MachineId,
+    kind: DataFrameKind<V, K>,
+}
+
+enum DataFrameKind<V, K> {
     Ordinary {
         node: NodeId,
         expected: usize,
         consumed: usize,
-        properties: Vec<WireProperty>,
-        property_indices: HashMap<WireKey, usize>,
+        properties: Vec<WirePropertyCarrier<V, K>>,
+        property_indices: HashMap<K, usize>,
     },
     Array {
         node: NodeId,
         expected: usize,
-        elements: Vec<WireValue>,
+        elements: Vec<V>,
     },
     TemplateObject {
         node: NodeId,
         expected: usize,
-        elements: Vec<WireValue>,
-        raw: Option<WireValue>,
+        elements: Vec<V>,
+        raw: Option<V>,
     },
     TypedArray {
         node: NodeId,
@@ -707,19 +958,55 @@ enum Frame {
         kind: TypedArrayKind,
         length: u32,
         byte_offset: u32,
-        backing: Option<WireValue>,
+        backing: Option<V>,
     },
     ObjectValue {
         offset: usize,
-        value: Option<WireValue>,
+        value: Option<V>,
     },
     Date {
         offset: usize,
-        value: Option<WireValue>,
+        value: Option<V>,
     },
 }
 
-impl Frame {
+impl<V, K> DataFrame<V, K>
+where
+    K: Copy + Eq + std::hash::Hash,
+{
+    fn new(
+        owner: MachineId,
+        kind: ContainerKind,
+        node: NodeId,
+        expected: usize,
+    ) -> Result<Self, GraphError> {
+        Ok(Self {
+            owner,
+            kind: DataFrameKind::new(kind, node, expected)?,
+        })
+    }
+
+    fn attach_raw(
+        &mut self,
+        key: Option<PropertyDisposition<K>>,
+        value: V,
+    ) -> Result<(), GraphError> {
+        self.kind.attach(key, value)
+    }
+
+    pub(in crate::runtime::binary_object) fn expects_property_key(&self) -> bool {
+        self.kind.expects_property_key()
+    }
+
+    pub(in crate::runtime::binary_object) fn is_complete(&self) -> bool {
+        self.kind.is_complete()
+    }
+}
+
+impl<V, K> DataFrameKind<V, K>
+where
+    K: Copy + Eq + std::hash::Hash,
+{
     fn new(kind: ContainerKind, node: NodeId, expected: usize) -> Result<Self, GraphError> {
         match kind {
             ContainerKind::Ordinary => {
@@ -765,11 +1052,7 @@ impl Frame {
         }
     }
 
-    fn attach(
-        &mut self,
-        key: Option<DecodedPropertyKey>,
-        value: WireValue,
-    ) -> Result<(), GraphError> {
+    fn attach(&mut self, key: Option<PropertyDisposition<K>>, value: V) -> Result<(), GraphError> {
         match self {
             Self::Ordinary {
                 expected,
@@ -787,12 +1070,12 @@ impl Frame {
                     });
                 }
                 *consumed += 1;
-                if let DecodedPropertyKey::Define(key) = key {
+                if let PropertyDisposition::Define(key) = key {
                     if let Some(index) = property_indices.get(&key).copied() {
                         properties[index].value = value;
                     } else {
                         let index = properties.len();
-                        properties.push(WireProperty { key, value });
+                        properties.push(WirePropertyCarrier { key, value });
                         property_indices.insert(key, index);
                     }
                 }
@@ -886,8 +1169,8 @@ impl Frame {
 }
 
 #[derive(Clone, Copy)]
-enum DecodedPropertyKey {
-    Define(WireKey),
+pub(in crate::runtime::binary_object) enum PropertyDisposition<K> {
+    Define(K),
     Ignore,
 }
 
@@ -895,14 +1178,14 @@ fn read_key(
     cursor: &mut WireCursor<'_>,
     atom_space: AtomIndexSpace,
     header_atoms: &[WireKey],
-) -> Result<DecodedPropertyKey, DecodeError> {
+) -> Result<PropertyDisposition<WireKey>, DecodeError> {
     let offset = cursor.position();
     match atom_space.decode_metadata_atom(cursor)? {
         BinaryAtom::Null => match cursor.mode() {
             ReaderMode::Strict => Err(DecodeError::NullPropertyKey { offset }),
-            ReaderMode::QuickJsCompatible => Ok(DecodedPropertyKey::Ignore),
+            ReaderMode::QuickJsCompatible => Ok(PropertyDisposition::Ignore),
         },
-        BinaryAtom::Index(index) => Ok(DecodedPropertyKey::Define(WireKey::Index(index))),
+        BinaryAtom::Index(index) => Ok(PropertyDisposition::Define(WireKey::Index(index))),
         BinaryAtom::Header(slot) => {
             let key = header_atoms.get(slot.index() as usize).copied().ok_or(
                 GraphError::InvalidAtomIndex {
@@ -910,7 +1193,7 @@ fn read_key(
                     atom_count: header_atoms.len(),
                 },
             )?;
-            Ok(DecodedPropertyKey::Define(key))
+            Ok(PropertyDisposition::Define(key))
         }
         BinaryAtom::Predefined(atom) => Err(WireError::InvalidAtomIndex {
             offset: cursor.position(),
@@ -985,6 +1268,393 @@ mod tests {
 
     fn decode(input: &[u8], mode: ReaderMode, references: bool) -> Result<WireGraph, DecodeError> {
         decode_graph(input, mode, WIRE_LIMITS, GRAPH_LIMITS, references)
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum WiderValue {
+        Data(WireValue),
+        Function(u32),
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum WiderOpaque {
+        Function(u32),
+    }
+
+    impl sealed::Sealed for WiderValue {}
+
+    impl DataValue for WiderValue {
+        type Opaque = WiderOpaque;
+
+        fn from_wire(value: WireValue) -> Self {
+            Self::Data(value)
+        }
+
+        fn as_wire(&self) -> Result<&WireValue, Self::Opaque> {
+            match self {
+                Self::Data(value) => Ok(value),
+                Self::Function(function) => Err(WiderOpaque::Function(*function)),
+            }
+        }
+
+        fn into_wire(self) -> Result<WireValue, Self::Opaque> {
+            match self {
+                Self::Data(value) => Ok(value),
+                Self::Function(function) => Err(WiderOpaque::Function(function)),
+            }
+        }
+    }
+
+    fn pending_wire_frame(
+        machine: &mut DataMachine<WireValue, WireKey>,
+        tag: BcTag,
+        body: &[u8],
+        tag_offset: usize,
+    ) -> DataFrame<WireValue, WireKey> {
+        let mut cursor = WireCursor::new(body, ReaderMode::Strict, WIRE_LIMITS).unwrap();
+        let step = machine
+            .read_value_after_tag(&mut cursor, tag, tag_offset, 0)
+            .unwrap();
+        cursor.finish().unwrap();
+        let DataReadStep::Pending(frame) = step else {
+            panic!("test tag must produce a pending data frame");
+        };
+        frame
+    }
+
+    fn pending_wider_frame(
+        machine: &mut DataMachine<WiderValue, WireKey>,
+        tag: BcTag,
+        body: &[u8],
+        tag_offset: usize,
+    ) -> DataFrame<WiderValue, WireKey> {
+        let mut cursor = WireCursor::new(body, ReaderMode::Strict, WIRE_LIMITS).unwrap();
+        let step = machine
+            .read_value_after_tag(&mut cursor, tag, tag_offset, 0)
+            .unwrap();
+        cursor.finish().unwrap();
+        let DataReadStep::Pending(frame) = step else {
+            panic!("test tag must produce a pending wider-value frame");
+        };
+        frame
+    }
+
+    #[test]
+    fn incomplete_container_frames_cannot_publish_pending_nodes() {
+        for (tag, key) in [
+            (
+                BcTag::Object,
+                Some(PropertyDisposition::Define(WireKey::Index(0))),
+            ),
+            (BcTag::Array, None),
+        ] {
+            let mut early = DataMachine::<WireValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+            let early_frame = pending_wire_frame(&mut early, tag, &[1], 5);
+            assert!(!early_frame.is_complete());
+            assert!(matches!(
+                early.finish_frame(early_frame),
+                Err(DecodeError::InvalidCompletionTarget)
+            ));
+            assert!(matches!(
+                early.finish(),
+                Err(DecodeError::InvalidNodeState { node })
+                    if node == NodeId::from_zero_based(0)
+            ));
+
+            // The same incomplete shape remains lawful when its child is
+            // attached before finish. This second frame avoids consuming the
+            // one used to exercise the public early-finish rejection above.
+            let mut lawful = DataMachine::<WireValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+            let mut lawful_frame = pending_wire_frame(&mut lawful, tag, &[1], 6);
+            let mut value_cursor =
+                WireCursor::new(&[0x54], ReaderMode::Strict, WIRE_LIMITS).unwrap();
+            let DataReadStep::Complete(value) = lawful
+                .read_value_after_tag(&mut value_cursor, BcTag::Int32, 7, 1)
+                .unwrap()
+            else {
+                panic!("Int32 must complete immediately");
+            };
+            value_cursor.finish().unwrap();
+            lawful
+                .attach_to_frame(&mut lawful_frame, key, value)
+                .unwrap();
+            assert!(lawful_frame.is_complete());
+            let root = lawful.finish_frame(lawful_frame).unwrap();
+            assert_eq!(
+                lawful.unwrap_completion(root).unwrap(),
+                WireValue::Node(NodeId::from_zero_based(0))
+            );
+            let parts = lawful.finish().unwrap();
+            match tag {
+                BcTag::Object => assert_eq!(
+                    parts.nodes.as_ref(),
+                    &[WireNode::Ordinary {
+                        properties: Box::from([WireProperty {
+                            key: WireKey::Index(0),
+                            value: WireValue::Int32(42),
+                        }]),
+                    }]
+                ),
+                BcTag::Array => assert_eq!(
+                    parts.nodes.as_ref(),
+                    &[WireNode::Array {
+                        elements: Box::from([WireValue::Int32(42)]),
+                    }]
+                ),
+                _ => unreachable!("test table contains only container tags"),
+            }
+        }
+    }
+
+    #[test]
+    fn data_machine_provenance_rejects_foreign_frames_and_completions() {
+        let mut machine_a = DataMachine::<WireValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut machine_b = DataMachine::<WireValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        // Both frames are the first Array in their arena, hence both carry the
+        // same kind and NodeId(0). Provenance, not shape or index, rejects the
+        // swap before machine A's pending slot can be completed.
+        let frame_a = pending_wire_frame(&mut machine_a, BcTag::Array, &[0], 10);
+        let frame_b = pending_wire_frame(&mut machine_b, BcTag::Array, &[0], 20);
+        assert!(matches!(
+            machine_a.finish_frame(frame_b),
+            Err(DecodeError::InvalidCompletionTarget)
+        ));
+        let completion_a = machine_a.finish_frame(frame_a).unwrap();
+        assert_eq!(
+            machine_a.unwrap_completion(completion_a).unwrap(),
+            WireValue::Node(NodeId::from_zero_based(0))
+        );
+        let parts_a = machine_a.finish().unwrap();
+        assert_eq!(
+            parts_a.nodes.as_ref(),
+            &[WireNode::Array {
+                elements: Box::new([]),
+            }]
+        );
+        assert!(matches!(
+            machine_b.finish(),
+            Err(DecodeError::InvalidNodeState { node })
+                if node == NodeId::from_zero_based(0)
+        ));
+
+        let mut source = DataMachine::<WireValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut source_cursor = WireCursor::new(&[0x54], ReaderMode::Strict, WIRE_LIMITS).unwrap();
+        let DataReadStep::Complete(foreign_value) = source
+            .read_value_after_tag(&mut source_cursor, BcTag::Int32, 30, 0)
+            .unwrap()
+        else {
+            panic!("Int32 must complete immediately");
+        };
+        source_cursor.finish().unwrap();
+
+        let mut target = DataMachine::<WireValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut target_frame = pending_wire_frame(&mut target, BcTag::Array, &[1], 40);
+        assert!(matches!(
+            target.attach_to_frame(&mut target_frame, None, foreign_value),
+            Err(DecodeError::InvalidCompletionTarget)
+        ));
+        assert!(!target_frame.is_complete());
+
+        let mut target_cursor = WireCursor::new(&[0x54], ReaderMode::Strict, WIRE_LIMITS).unwrap();
+        let DataReadStep::Complete(local_value) = target
+            .read_value_after_tag(&mut target_cursor, BcTag::Int32, 41, 1)
+            .unwrap()
+        else {
+            panic!("Int32 must complete immediately");
+        };
+        target_cursor.finish().unwrap();
+        target
+            .attach_to_frame(&mut target_frame, None, local_value)
+            .unwrap();
+        let target_root = target.finish_frame(target_frame).unwrap();
+        assert_eq!(
+            target.unwrap_completion(target_root).unwrap(),
+            WireValue::Node(NodeId::from_zero_based(0))
+        );
+        let target_parts = target.finish().unwrap();
+        assert_eq!(
+            target_parts.nodes.as_ref(),
+            &[WireNode::Array {
+                elements: Box::from([WireValue::Int32(42)]),
+            }]
+        );
+    }
+
+    #[test]
+    fn opaque_function_values_store_safely_but_wire_nodes_cannot_be_rebranded() {
+        let mut ordinary = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut ordinary_frame = pending_wider_frame(&mut ordinary, BcTag::Object, &[1], 50);
+        let function = ordinary.wrap_opaque_value(WiderValue::Function(1)).unwrap();
+        ordinary
+            .attach_to_frame(
+                &mut ordinary_frame,
+                Some(PropertyDisposition::Define(WireKey::Index(7))),
+                function,
+            )
+            .unwrap();
+        let ordinary_root = ordinary.finish_frame(ordinary_frame).unwrap();
+        assert_eq!(
+            ordinary.unwrap_completion(ordinary_root).unwrap(),
+            WiderValue::Data(WireValue::Node(NodeId::from_zero_based(0)))
+        );
+        let ordinary_parts = ordinary.finish().unwrap();
+        assert_eq!(
+            ordinary_parts.nodes.as_ref(),
+            &[WireNodeCarrier::Ordinary {
+                properties: Box::from([WirePropertyCarrier {
+                    key: WireKey::Index(7),
+                    value: WiderValue::Function(1),
+                }]),
+            }]
+        );
+
+        let mut array = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut array_frame = pending_wider_frame(&mut array, BcTag::Array, &[1], 60);
+        let function = array.wrap_opaque_value(WiderValue::Function(2)).unwrap();
+        array
+            .attach_to_frame(&mut array_frame, None, function)
+            .unwrap();
+        let array_root = array.finish_frame(array_frame).unwrap();
+        assert_eq!(
+            array.unwrap_completion(array_root).unwrap(),
+            WiderValue::Data(WireValue::Node(NodeId::from_zero_based(0)))
+        );
+        let array_parts = array.finish().unwrap();
+        assert_eq!(
+            array_parts.nodes.as_ref(),
+            &[WireNodeCarrier::Array {
+                elements: Box::from([WiderValue::Function(2)]),
+            }]
+        );
+
+        let mut template = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut template_frame =
+            pending_wider_frame(&mut template, BcTag::TemplateObject, &[0], 70);
+        let function = template.wrap_opaque_value(WiderValue::Function(3)).unwrap();
+        template
+            .attach_to_frame(&mut template_frame, None, function)
+            .unwrap();
+        let template_root = template.finish_frame(template_frame).unwrap();
+        assert_eq!(
+            template.unwrap_completion(template_root).unwrap(),
+            WiderValue::Data(WireValue::Node(NodeId::from_zero_based(0)))
+        );
+        let template_parts = template.finish().unwrap();
+        assert_eq!(
+            template_parts.nodes.as_ref(),
+            &[WireNodeCarrier::TemplateObject {
+                elements: Box::new([]),
+                raw: WiderValue::Function(3),
+            }]
+        );
+
+        let mut node_machine = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let node_frame = pending_wider_frame(&mut node_machine, BcTag::Array, &[0], 80);
+        let node = node_machine.finish_frame(node_frame).unwrap();
+        let node = node_machine.unwrap_completion(node).unwrap();
+        assert!(matches!(
+            node_machine.wrap_opaque_value(node),
+            Err(DecodeError::InvalidCompletionTarget)
+        ));
+        let node_parts = node_machine.finish().unwrap();
+        assert_eq!(
+            node_parts.nodes.as_ref(),
+            &[WireNodeCarrier::Array {
+                elements: Box::new([]),
+            }]
+        );
+    }
+
+    #[test]
+    fn shared_data_machine_accepts_wider_values_and_types_opaque_child_errors() {
+        let mut primitive_machine =
+            DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut primitive_cursor =
+            WireCursor::new(&[0x54], ReaderMode::Strict, WIRE_LIMITS).unwrap();
+        let primitive = primitive_machine
+            .read_value_after_tag(&mut primitive_cursor, BcTag::Int32, 12, 0)
+            .unwrap();
+        let DataReadStep::Complete(primitive) = primitive else {
+            panic!("an Int32 must complete without a frame");
+        };
+        let primitive = primitive_machine.unwrap_completion(primitive).unwrap();
+        assert_eq!(primitive, WiderValue::Data(WireValue::Int32(42)));
+        primitive_cursor.finish().unwrap();
+        let primitive_parts = primitive_machine.finish().unwrap();
+        assert!(primitive_parts.nodes.is_empty());
+        assert!(primitive_parts.ref_table.is_empty());
+
+        let mut object_machine =
+            DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let mut empty_cursor = WireCursor::new(&[], ReaderMode::Strict, WIRE_LIMITS).unwrap();
+        let object_step = object_machine
+            .read_value_after_tag(&mut empty_cursor, BcTag::ObjectValue, 21, 0)
+            .unwrap();
+        let DataReadStep::Pending(mut object_frame) = object_step else {
+            panic!("ObjectValue must wait for its child");
+        };
+        let function = object_machine
+            .wrap_opaque_value(WiderValue::Function(1))
+            .unwrap();
+        object_machine
+            .attach_to_frame(&mut object_frame, None, function)
+            .unwrap();
+        assert!(object_frame.is_complete());
+        assert!(matches!(
+            object_machine.finish_frame(object_frame),
+            Err(DecodeError::OpaqueObjectValue {
+                offset: 21,
+                value: WiderOpaque::Function(1),
+            })
+        ));
+
+        let mut date_machine = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let date_step = date_machine
+            .read_value_after_tag(&mut empty_cursor, BcTag::Date, 34, 0)
+            .unwrap();
+        let DataReadStep::Pending(mut date_frame) = date_step else {
+            panic!("Date must wait for its child");
+        };
+        let function = date_machine
+            .wrap_opaque_value(WiderValue::Function(2))
+            .unwrap();
+        date_machine
+            .attach_to_frame(&mut date_frame, None, function)
+            .unwrap();
+        assert!(matches!(
+            date_machine.finish_frame(date_frame),
+            Err(DecodeError::OpaqueDateValue {
+                offset: 34,
+                value: WiderOpaque::Function(2),
+            })
+        ));
+        empty_cursor.finish().unwrap();
+
+        let typed_body = [TypedArrayKind::Uint8.to_wire_byte(), 1, 0];
+        let mut typed_cursor =
+            WireCursor::new(&typed_body, ReaderMode::Strict, WIRE_LIMITS).unwrap();
+        let mut typed_machine =
+            DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let typed_step = typed_machine
+            .read_value_after_tag(&mut typed_cursor, BcTag::TypedArray, 55, 0)
+            .unwrap();
+        let DataReadStep::Pending(mut typed_frame) = typed_step else {
+            panic!("TypedArray must wait for its backing value");
+        };
+        let function = typed_machine
+            .wrap_opaque_value(WiderValue::Function(3))
+            .unwrap();
+        typed_machine
+            .attach_to_frame(&mut typed_frame, None, function)
+            .unwrap();
+        assert!(matches!(
+            typed_machine.finish_frame(typed_frame),
+            Err(DecodeError::OpaqueTypedArrayBacking {
+                offset: 55,
+                value: WiderOpaque::Function(3),
+            })
+        ));
+        typed_cursor.finish().unwrap();
     }
 
     #[test]
