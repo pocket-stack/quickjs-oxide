@@ -84,11 +84,13 @@ duplicate properties, compatible null-atom consumption, depth-first output
 atom rebuilding, fixed-versus-resizable ArrayBuffer state, and per-buffer plus
 aggregate current-backing-store byte limits. The decoder separates preorder
 identity registration from value completion: every parent/root attachment now
-uses one completed-subtree delivery path owned by the decode state. TypedArray,
-SharedArrayBuffer, Date, ObjectValue, and the bytecode-only object tags remain
-rejected. Before TypedArray admission, the private arena still needs explicit
-pending/ready node slots and a separately bounded reference-alias operation.
-It is not a public binary-object API yet:
+uses one completed-subtree delivery path owned by the decode state. Its private
+arena represents incomplete identities with explicit pending/ready slots;
+linear node/reference reservations reject stale commits, and independently
+bounded reference entries can alias pending or ready identities without
+consuming another node. TypedArray, SharedArrayBuffer, Date, ObjectValue, and
+the bytecode-only object tags remain rejected. It is not a public binary-object
+API yet:
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.

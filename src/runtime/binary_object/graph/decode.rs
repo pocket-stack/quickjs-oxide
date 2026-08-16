@@ -44,6 +44,9 @@ pub(in crate::runtime) enum DecodeError {
         reason: ArrayBufferLayoutError,
     },
     InvalidCompletionTarget,
+    InvalidNodeState {
+        node: NodeId,
+    },
 }
 
 impl fmt::Display for DecodeError {
@@ -78,6 +81,11 @@ impl fmt::Display for DecodeError {
             Self::InvalidCompletionTarget => {
                 formatter.write_str("invalid wire graph completion target")
             }
+            Self::InvalidNodeState { node } => write!(
+                formatter,
+                "wire graph node {} has an invalid decoder state",
+                node.zero_based()
+            ),
         }
     }
 }
@@ -189,18 +197,40 @@ pub(in crate::runtime) fn decode_graph(
     cursor.finish()?;
 
     let root = root.ok_or(DecodeError::InvalidCompletionTarget)?;
+    let parts = state.into_graph_parts()?;
     Ok(WireGraph {
         atoms: atoms.into_boxed_slice(),
-        nodes: state.nodes.into_boxed_slice(),
-        ref_table: state.ref_table.into_boxed_slice(),
+        nodes: parts.nodes,
+        ref_table: parts.ref_table,
         root,
     })
+}
+
+enum NodeSlot {
+    Pending,
+    Ready(WireNode),
+}
+
+#[must_use = "a reserved reference entry must be committed exactly once"]
+struct ReferenceReservation {
+    expected_count: Option<usize>,
+}
+
+#[must_use = "a reserved node must be installed exactly once"]
+struct NodeReservation {
+    node: NodeId,
+    reference: ReferenceReservation,
+}
+
+struct DecodedGraphParts {
+    nodes: Box<[WireNode]>,
+    ref_table: Box<[NodeId]>,
 }
 
 struct DecodeState {
     limits: GraphLimits,
     allow_object_references: bool,
-    nodes: Vec<WireNode>,
+    nodes: Vec<NodeSlot>,
     ref_table: Vec<NodeId>,
     frames: Vec<ActiveFrame>,
     total_container_entries: usize,
@@ -328,7 +358,7 @@ impl DecodeState {
         // Preflight the arena/reference work before copying a potentially
         // large payload. The node is installed only after the leaf is complete,
         // matching QuickJS's ArrayBuffer reference-registration point.
-        let node = self.reserve_node()?;
+        let reservation = self.reserve_node()?;
 
         let payload = cursor.read_bytes(byte_length)?;
         validate_array_buffer_layout(byte_length, max_byte_length).map_err(|reason| {
@@ -342,13 +372,13 @@ impl DecodeState {
             .try_reserve_exact(byte_length)
             .map_err(|_| GraphError::AllocationFailed)?;
         bytes.extend_from_slice(payload);
-        self.install_node(
-            node,
+        let node = self.install_ready_node(
+            reservation,
             WireNode::ArrayBuffer {
                 bytes: bytes.into_boxed_slice(),
                 max_byte_length,
             },
-        );
+        )?;
         Ok(WireValue::Node(node))
     }
 
@@ -372,15 +402,8 @@ impl DecodeState {
 
         self.check_next_node_depth()?;
 
-        let placeholder = match kind {
-            ContainerKind::Ordinary => WireNode::Ordinary {
-                properties: Box::default(),
-            },
-            ContainerKind::Array => WireNode::Array {
-                elements: Box::default(),
-            },
-        };
-        let node_id = self.allocate_node(placeholder)?;
+        let reservation = self.reserve_node()?;
+        let node_id = self.install_pending_node(reservation)?;
         let frame = Frame::new(kind, node_id, entry_count)?;
         Ok(ReadStep::Pending(frame))
     }
@@ -425,15 +448,7 @@ impl DecodeState {
                 },
             ),
         };
-        let node_count = self.nodes.len();
-        let slot = self
-            .nodes
-            .get_mut(node.as_usize())
-            .ok_or(GraphError::InvalidNodeIndex {
-                index: node.zero_based(),
-                node_count,
-            })?;
-        *slot = replacement;
+        self.complete_node(node, replacement)?;
         Ok(WireValue::Node(node))
     }
 
@@ -448,13 +463,7 @@ impl DecodeState {
         self.limits.check(GraphResourceKind::NestingDepth, depth)
     }
 
-    fn allocate_node(&mut self, node: WireNode) -> Result<NodeId, DecodeError> {
-        let node_id = self.reserve_node()?;
-        self.install_node(node_id, node);
-        Ok(node_id)
-    }
-
-    fn reserve_node(&mut self) -> Result<NodeId, DecodeError> {
+    fn reserve_node(&mut self) -> Result<NodeReservation, DecodeError> {
         let raw_index = u32::try_from(self.nodes.len()).map_err(|_| GraphError::CountOverflow {
             kind: GraphResourceKind::Nodes,
         })?;
@@ -471,34 +480,158 @@ impl DecodeState {
             .try_reserve(1)
             .map_err(|_| GraphError::AllocationFailed)?;
 
-        let node_id = NodeId::from_zero_based(raw_index);
-        if self.allow_object_references {
-            let requested_references =
-                self.ref_table
-                    .len()
-                    .checked_add(1)
-                    .ok_or(GraphError::CountOverflow {
-                        kind: GraphResourceKind::ObjectReferences,
-                    })?;
-            self.limits
-                .check(GraphResourceKind::ObjectReferences, requested_references)?;
-            self.ref_table
-                .try_reserve(1)
-                .map_err(|_| GraphError::AllocationFailed)?;
-        }
-
-        Ok(node_id)
+        let reference = self.reserve_reference_entry()?;
+        Ok(NodeReservation {
+            node: NodeId::from_zero_based(raw_index),
+            reference,
+        })
     }
 
-    fn install_node(&mut self, node_id: NodeId, node: WireNode) {
-        debug_assert_eq!(node_id.as_usize(), self.nodes.len());
-        self.nodes.push(node);
-        // Every admitted node is ready when it enters this table. Containers
-        // install an empty placeholder before their first child; ArrayBuffer
-        // installs its completed leaf after its payload has been copied.
-        if self.allow_object_references {
-            self.ref_table.push(node_id);
+    fn reserve_reference_entry(&mut self) -> Result<ReferenceReservation, GraphError> {
+        if !self.allow_object_references {
+            return Ok(ReferenceReservation {
+                expected_count: None,
+            });
         }
+
+        let expected_count = self.ref_table.len();
+        let requested_references =
+            expected_count
+                .checked_add(1)
+                .ok_or(GraphError::CountOverflow {
+                    kind: GraphResourceKind::ObjectReferences,
+                })?;
+        self.limits
+            .check(GraphResourceKind::ObjectReferences, requested_references)?;
+        self.ref_table
+            .try_reserve(1)
+            .map_err(|_| GraphError::AllocationFailed)?;
+        Ok(ReferenceReservation {
+            expected_count: Some(expected_count),
+        })
+    }
+
+    fn install_pending_node(
+        &mut self,
+        reservation: NodeReservation,
+    ) -> Result<NodeId, DecodeError> {
+        self.install_node(reservation, NodeSlot::Pending)
+    }
+
+    fn install_ready_node(
+        &mut self,
+        reservation: NodeReservation,
+        node: WireNode,
+    ) -> Result<NodeId, DecodeError> {
+        self.install_node(reservation, NodeSlot::Ready(node))
+    }
+
+    fn install_node(
+        &mut self,
+        reservation: NodeReservation,
+        slot: NodeSlot,
+    ) -> Result<NodeId, DecodeError> {
+        let node = reservation.node;
+        if node.as_usize() != self.nodes.len() {
+            return Err(DecodeError::InvalidNodeState { node });
+        }
+        self.validate_reference_reservation(node, &reservation.reference)?;
+
+        self.nodes.push(slot);
+        self.append_reference_entry(node, reservation.reference)?;
+        Ok(node)
+    }
+
+    fn append_reference_entry(
+        &mut self,
+        node: NodeId,
+        reservation: ReferenceReservation,
+    ) -> Result<(), DecodeError> {
+        self.validate_node_index(node)?;
+        self.validate_reference_reservation(node, &reservation)?;
+        if reservation.expected_count.is_some() {
+            self.ref_table.push(node);
+        }
+        Ok(())
+    }
+
+    // The first production caller will be ObjectValue. Keeping this as one
+    // operation prevents a valid alias from becoming stale between reserve
+    // and commit when that tag is admitted.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn append_reference_alias(&mut self, node: NodeId) -> Result<(), DecodeError> {
+        self.validate_node_index(node)?;
+        let reservation = self.reserve_reference_entry()?;
+        self.append_reference_entry(node, reservation)
+    }
+
+    fn validate_node_index(&self, node: NodeId) -> Result<(), DecodeError> {
+        let node_count = self.nodes.len();
+        if node.as_usize() >= node_count {
+            return Err(GraphError::InvalidNodeIndex {
+                index: node.zero_based(),
+                node_count,
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    fn validate_reference_reservation(
+        &self,
+        node: NodeId,
+        reservation: &ReferenceReservation,
+    ) -> Result<(), DecodeError> {
+        let valid = match reservation.expected_count {
+            Some(expected_count) => {
+                self.allow_object_references && expected_count == self.ref_table.len()
+            }
+            None => !self.allow_object_references,
+        };
+        if !valid {
+            return Err(DecodeError::InvalidNodeState { node });
+        }
+        Ok(())
+    }
+
+    fn complete_node(&mut self, node: NodeId, value: WireNode) -> Result<(), DecodeError> {
+        let node_count = self.nodes.len();
+        let slot = self
+            .nodes
+            .get_mut(node.as_usize())
+            .ok_or(GraphError::InvalidNodeIndex {
+                index: node.zero_based(),
+                node_count,
+            })?;
+        if !matches!(slot, NodeSlot::Pending) {
+            return Err(DecodeError::InvalidNodeState { node });
+        }
+        *slot = NodeSlot::Ready(value);
+        Ok(())
+    }
+
+    fn into_graph_parts(self) -> Result<DecodedGraphParts, DecodeError> {
+        let mut ready_nodes = Vec::new();
+        ready_nodes
+            .try_reserve_exact(self.nodes.len())
+            .map_err(|_| GraphError::AllocationFailed)?;
+        for (index, slot) in self.nodes.into_iter().enumerate() {
+            match slot {
+                NodeSlot::Ready(node) => ready_nodes.push(node),
+                NodeSlot::Pending => {
+                    let index = u32::try_from(index).map_err(|_| GraphError::CountOverflow {
+                        kind: GraphResourceKind::Nodes,
+                    })?;
+                    return Err(DecodeError::InvalidNodeState {
+                        node: NodeId::from_zero_based(index),
+                    });
+                }
+            }
+        }
+        Ok(DecodedGraphParts {
+            nodes: ready_nodes.into_boxed_slice(),
+            ref_table: self.ref_table.into_boxed_slice(),
+        })
     }
 }
 
@@ -733,6 +866,210 @@ mod tests {
 
     fn decode(input: &[u8], mode: ReaderMode, references: bool) -> Result<WireGraph, DecodeError> {
         decode_graph(input, mode, WIRE_LIMITS, GRAPH_LIMITS, references)
+    }
+
+    fn empty_state(limits: GraphLimits, references: bool) -> DecodeState {
+        DecodeState {
+            limits,
+            allow_object_references: references,
+            nodes: Vec::new(),
+            ref_table: Vec::new(),
+            frames: Vec::new(),
+            total_container_entries: 0,
+            total_bigint_bytes: 0,
+            total_array_buffer_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn pending_nodes_are_referenceable_and_complete_exactly_once() {
+        let mut state = empty_state(GRAPH_LIMITS, true);
+        let reservation = state.reserve_node().unwrap();
+        assert!(state.nodes.is_empty());
+        assert!(state.ref_table.is_empty());
+
+        let node = state.install_pending_node(reservation).unwrap();
+        assert!(matches!(state.nodes.as_slice(), [NodeSlot::Pending]));
+        assert_eq!(state.ref_table.as_slice(), &[node]);
+
+        // ObjectValue will use the same bounded operation to append an alias
+        // even when the referenced identity has not completed yet.
+        state.append_reference_alias(node).unwrap();
+        assert_eq!(state.ref_table.as_slice(), &[node, node]);
+        assert_eq!(state.nodes.len(), 1);
+
+        let completed = WireNode::Array {
+            elements: Box::from([WireValue::Node(node)]),
+        };
+        state.complete_node(node, completed.clone()).unwrap();
+        assert!(matches!(
+            state.nodes.as_slice(),
+            [NodeSlot::Ready(WireNode::Array { .. })]
+        ));
+        assert_eq!(
+            state.complete_node(
+                node,
+                WireNode::Array {
+                    elements: Box::default()
+                }
+            ),
+            Err(DecodeError::InvalidNodeState { node })
+        );
+
+        let parts = state.into_graph_parts().unwrap();
+        assert_eq!(parts.nodes.as_ref(), &[completed]);
+        assert_eq!(parts.ref_table.as_ref(), &[node, node]);
+    }
+
+    #[test]
+    fn pending_nodes_cannot_escape_decoder_finalization() {
+        let mut state = empty_state(GRAPH_LIMITS, false);
+        let reservation = state.reserve_node().unwrap();
+        let node = state.install_pending_node(reservation).unwrap();
+        assert!(matches!(
+            state.into_graph_parts(),
+            Err(DecodeError::InvalidNodeState { node: failed }) if failed == node
+        ));
+    }
+
+    #[test]
+    fn node_and_reference_reservations_reject_stale_or_over_budget_commits() {
+        let mut state = empty_state(GRAPH_LIMITS, true);
+        let first = state.reserve_node().unwrap();
+        let stale_node = state.reserve_node().unwrap();
+        let node = state
+            .install_ready_node(
+                first,
+                WireNode::Array {
+                    elements: Box::default(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state.install_ready_node(
+                stale_node,
+                WireNode::Array {
+                    elements: Box::default(),
+                }
+            ),
+            Err(DecodeError::InvalidNodeState { node })
+        );
+
+        let first_alias = state.reserve_reference_entry().unwrap();
+        let stale_alias = state.reserve_reference_entry().unwrap();
+        state.append_reference_entry(node, first_alias).unwrap();
+        assert_eq!(
+            state.append_reference_entry(node, stale_alias),
+            Err(DecodeError::InvalidNodeState { node })
+        );
+
+        let mut crossed = empty_state(GRAPH_LIMITS, true);
+        let existing = crossed.reserve_node().unwrap();
+        let existing = crossed
+            .install_ready_node(
+                existing,
+                WireNode::Array {
+                    elements: Box::default(),
+                },
+            )
+            .unwrap();
+        let stale_after_alias = crossed.reserve_node().unwrap();
+        crossed.append_reference_alias(existing).unwrap();
+        let pending = NodeId::from_zero_based(1);
+        assert_eq!(
+            crossed.install_pending_node(stale_after_alias),
+            Err(DecodeError::InvalidNodeState { node: pending })
+        );
+
+        let one_reference = GraphLimits::new(4, 1, 4, 4, 4, 4, 4, 4, 4);
+        let mut bounded = empty_state(one_reference, true);
+        let reservation = bounded.reserve_node().unwrap();
+        let bounded_node = bounded.install_pending_node(reservation).unwrap();
+        assert!(matches!(
+            bounded.reserve_reference_entry(),
+            Err(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ObjectReferences,
+                requested: 2,
+                limit: 1,
+            })
+        ));
+        assert_eq!(bounded.ref_table.as_slice(), &[bounded_node]);
+
+        let no_references = GraphLimits::new(4, 0, 4, 4, 4, 4, 4, 4, 4);
+        let mut disabled = empty_state(no_references, false);
+        let reservation = disabled.reserve_node().unwrap();
+        let ready = disabled
+            .install_ready_node(
+                reservation,
+                WireNode::Array {
+                    elements: Box::default(),
+                },
+            )
+            .unwrap();
+        disabled.append_reference_alias(ready).unwrap();
+        assert!(disabled.ref_table.is_empty());
+
+        let invalid = NodeId::from_zero_based(1);
+        assert_eq!(
+            disabled.append_reference_alias(invalid),
+            Err(DecodeError::Graph(GraphError::InvalidNodeIndex {
+                index: 1,
+                node_count: 1,
+            }))
+        );
+    }
+
+    #[test]
+    fn pending_array_identities_support_self_and_descendant_cycles() {
+        let self_cycle = decode(&[5, 0, 9, 1, 19, 0], ReaderMode::Strict, true).unwrap();
+        let root = NodeId::from_zero_based(0);
+        assert_eq!(self_cycle.ref_table.as_ref(), &[root]);
+        assert_eq!(
+            self_cycle.nodes.as_ref(),
+            &[WireNode::Array {
+                elements: Box::from([WireValue::Node(root)]),
+            }]
+        );
+
+        let descendant_cycle =
+            decode(&[5, 0, 9, 1, 9, 1, 19, 0], ReaderMode::Strict, true).unwrap();
+        let child = NodeId::from_zero_based(1);
+        assert_eq!(descendant_cycle.ref_table.as_ref(), &[root, child]);
+        assert_eq!(
+            descendant_cycle.nodes.as_ref(),
+            &[
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(child)]),
+                },
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(root)]),
+                },
+            ]
+        );
+
+        // A compatible ignored property still completes its Pending child;
+        // the next property recovers that identity through ref 1.
+        let recovered = decode(
+            &[5, 1, 2, b'x', 8, 2, 0, 9, 1, 5, 0x54, 2, 19, 1],
+            ReaderMode::QuickJsCompatible,
+            true,
+        )
+        .unwrap();
+        assert_eq!(recovered.ref_table.as_ref(), &[root, child]);
+        assert_eq!(
+            recovered.nodes.as_ref(),
+            &[
+                WireNode::Ordinary {
+                    properties: Box::from([WireProperty {
+                        key: WireKey::Atom(AtomId::from_zero_based(0)),
+                        value: WireValue::Node(child),
+                    }]),
+                },
+                WireNode::Array {
+                    elements: Box::from([WireValue::Int32(42)]),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1083,6 +1420,16 @@ mod tests {
             Err(DecodeError::Graph(GraphError::InvalidReferenceIndex {
                 index: 0,
                 reference_count: 0,
+            }))
+        );
+
+        // The root Array is already ref 0 while Pending, but ref 1 remains a
+        // forward reference and must report the live table boundary.
+        assert_eq!(
+            decode(&[5, 0, 9, 1, 19, 1], ReaderMode::Strict, true),
+            Err(DecodeError::Graph(GraphError::InvalidReferenceIndex {
+                index: 1,
+                reference_count: 1,
             }))
         );
     }
