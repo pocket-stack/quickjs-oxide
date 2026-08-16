@@ -143,12 +143,19 @@ of `pending_constant_pool_count` recursively encoded values and never admits
 the record to execution. This prefix is deliberately not a `FunctionImage`;
 the constant pool and nested functions remain pending until a whole-image
 decoder and encoder can share one object-reference arena across the complete
-image. Strict mode rejects aliased narrow fields and reserved flag bits;
+image. The property and node carriers are now generic over their key and value
+types, while the concrete data-only `WireGraph` remains fixed to `WireKey` and
+`WireValue` and still rejects tag 12. That type boundary prepares bytecode-mode
+predefined property keys and function values without widening the admitted data
+graph. Strict mode rejects aliased narrow fields and reserved flag bits;
 compatible mode preserves QuickJS's `u32`-to-`u16` truncation, while signed
 negative-size and decrement-overflow spellings remain hard safety rejections.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
-the Rust prefix codec against the exact bytes. The data decoder separates
+the Rust prefix codec against the exact bytes. A second authenticated 110-byte
+vector pins a root-to-outer-to-inner constant-pool chain, the captured closure
+descriptor, and fresh-runtime evaluation to 42; it does not yet claim an object
+reference crossing a function boundary. The data decoder separates
 preorder identity registration from value completion: every parent/root
 attachment now uses one completed-subtree
 delivery path owned by the decode state. Its private arena represents

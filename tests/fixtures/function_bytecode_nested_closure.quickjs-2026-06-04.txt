@@ -1,0 +1,14 @@
+quickjs=2026-06-04
+source-hex=2866756e6374696f6e206f75746572287365656429207b206c6574206361707475726564203d20736565643b2072657475726e2066756e6374696f6e20696e6e65722864656c746129207b206361707475726564202b3d2064656c74613b2072657475726e2063617074757265643b207d3b207d29283430292832293b
+strip-flags=2
+bytecode-version=5
+bytecode-size=110
+bytecode-hex=05020a6f757465720a696e6e65720c000200a80100010002000001090100000000be00bb28edb5edcb280c430200e60301010101010001080200010000000000e05e0000cfc7be00280c430200e803010001020001000e010001000000001000640000cf9b116500000e64000028
+atom-count=2
+function-count=3
+function-0=offset:14,cpool-offset:42,flags:0200,mode:0,args:0,vars:1,defined-args:0,stack:2,var-refs:0,closures:0,cpool:1,bytecode:9,locals:1
+function-1=offset:42,cpool-offset:73,flags:0243,mode:0,args:1,vars:1,defined-args:1,stack:1,var-refs:1,closures:0,cpool:1,bytecode:8,locals:2
+function-2=offset:73,cpool-offset:110,flags:0243,mode:0,args:1,vars:0,defined-args:1,stack:2,var-refs:0,closures:1,cpool:0,bytecode:14,locals:1
+nested-function-path=0.cpool[0].cpool[0]
+inner-captured-closure-count=1
+fresh-eval=42

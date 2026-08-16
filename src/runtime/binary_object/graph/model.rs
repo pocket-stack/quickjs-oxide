@@ -122,10 +122,13 @@ fn atom_code_unit(value: &WireString, index: usize) -> u16 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) struct WireProperty {
-    pub(in crate::runtime) key: WireKey,
-    pub(in crate::runtime) value: WireValue,
+pub(in crate::runtime) struct WirePropertyCarrier<V, K> {
+    pub(in crate::runtime) key: K,
+    pub(in crate::runtime) value: V,
 }
+
+/// One property in the concrete data-object graph.
+pub(in crate::runtime) type WireProperty = WirePropertyCarrier<WireValue, WireKey>;
 
 /// A heap-independent JavaScript value held by a wire graph.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -314,13 +317,15 @@ impl TypedArrayKind {
 
 /// The first admitted BC5 object kinds.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum WireNode {
+pub(in crate::runtime) enum WireNodeCarrier<V, K> {
     /// Enumerable data properties in insertion-slot order. Semantic keys are
     /// unique; decoding a later duplicate replaces the first slot's value.
-    Ordinary { properties: Box<[WireProperty]> },
+    Ordinary {
+        properties: Box<[WirePropertyCarrier<V, K>]>,
+    },
     /// Arrays are dense in the semantic graph: the writer normalizes each
     /// source hole to `undefined`, and the reader creates an own property for it.
-    Array { elements: Box<[WireValue]> },
+    Array { elements: Box<[V]> },
     /// A BC5 `TEMPLATE_OBJECT` identity.
     ///
     /// Like ordinary arrays, the indexed elements are dense after wire
@@ -331,10 +336,7 @@ pub(in crate::runtime) enum WireNode {
     /// materializer: the BC5 reader leaves the Array's `length` writable.
     /// Either child position may refer back to this node because the identity is
     /// registered before its children are traversed.
-    TemplateObject {
-        elements: Box<[WireValue]>,
-        raw: WireValue,
-    },
+    TemplateObject { elements: Box<[V]>, raw: V },
     /// An owned ArrayBuffer backing store.
     ///
     /// `None` is the fixed-length `UINT32_MAX` wire sentinel. `Some(max)` is a
@@ -365,6 +367,9 @@ pub(in crate::runtime) enum WireNode {
     /// BC5 reader. Enumerable own properties are not part of this wire class.
     Date { time_value: DateNumber },
 }
+
+/// One node in the concrete data-object graph.
+pub(in crate::runtime) type WireNode = WireNodeCarrier<WireValue, WireKey>;
 
 /// Pinned QuickJS currently rejects ArrayBuffer lengths above 2 GiB - 1.
 pub(in crate::runtime) const MAX_ARRAY_BUFFER_BYTE_LENGTH: u32 = i32::MAX as u32;
@@ -761,6 +766,68 @@ pub(in crate::runtime) fn canonical_bigint_length(payload: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_carriers_are_generic_while_concrete_names_remain_inference_safe() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum TestKey {
+            Pinned(u32),
+        }
+
+        fn accepts_default_property(_: WireProperty) {}
+        fn accepts_default_node(_: WireNode) {}
+        fn accepts_concrete_graph(_: WireGraph) {}
+        fn accepts_generic_node(_: WireNodeCarrier<u8, TestKey>) {}
+
+        accepts_default_property(WireProperty {
+            key: WireKey::Index(0),
+            value: WireValue::Int32(42),
+        });
+        let inferred_array = WireNode::Array {
+            elements: Box::from([WireValue::Int32(42)]),
+        };
+        let inferred_array_buffer = WireNode::ArrayBuffer {
+            bytes: Box::default(),
+            max_byte_length: None,
+        };
+        assert!(matches!(
+            inferred_array,
+            WireNode::Array { elements } if elements.as_ref() == [WireValue::Int32(42)]
+        ));
+        assert!(matches!(
+            inferred_array_buffer,
+            WireNode::ArrayBuffer { bytes, max_byte_length: None } if bytes.is_empty()
+        ));
+        accepts_default_node(WireNode::Date {
+            time_value: DateNumber::try_from_wire_value(WireValue::Int32(42)).unwrap(),
+        });
+        accepts_concrete_graph(WireGraph {
+            atoms: Box::default(),
+            nodes: Box::from([WireNode::Array {
+                elements: Box::from([WireValue::Int32(42)]),
+            }]),
+            ref_table: Box::default(),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        });
+
+        accepts_generic_node(WireNodeCarrier::Ordinary {
+            properties: Box::from([WirePropertyCarrier {
+                key: TestKey::Pinned(4),
+                value: 40,
+            }]),
+        });
+        accepts_generic_node(WireNodeCarrier::Array {
+            elements: Box::from([41]),
+        });
+        accepts_generic_node(WireNodeCarrier::TemplateObject {
+            elements: Box::from([42]),
+            raw: 43,
+        });
+        accepts_generic_node(WireNodeCarrier::ArrayBuffer {
+            bytes: Box::default(),
+            max_byte_length: None,
+        });
+    }
 
     #[test]
     fn array_buffer_layout_validation_tracks_quickjs_constructor_bounds() {
