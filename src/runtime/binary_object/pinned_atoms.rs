@@ -17,7 +17,13 @@ const LAST_STRING_ATOM: u32 = 228;
 const PRIVATE_ATOM: u32 = 229;
 
 /// QuickJS's three predefined-atom identity classes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(
+    ::core::clone::Clone,
+    ::core::marker::Copy,
+    ::core::fmt::Debug,
+    ::core::cmp::Eq,
+    ::core::cmp::PartialEq,
+)]
 pub(in crate::runtime) enum PinnedAtomKind {
     String,
     Private,
@@ -25,7 +31,16 @@ pub(in crate::runtime) enum PinnedAtomKind {
 }
 
 /// A validated nonzero ID into the release-pinned atom manifest.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    ::core::clone::Clone,
+    ::core::marker::Copy,
+    ::core::fmt::Debug,
+    ::core::cmp::Eq,
+    ::core::hash::Hash,
+    ::core::cmp::Ord,
+    ::core::cmp::PartialEq,
+    ::core::cmp::PartialOrd,
+)]
 pub(in crate::runtime) struct PinnedAtomId(u32);
 
 impl PinnedAtomId {

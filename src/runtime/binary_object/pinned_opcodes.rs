@@ -9,7 +9,14 @@
 pub(in crate::runtime) const PINNED_OPCODE_COUNT: usize = 244;
 
 /// Exact operand layouts declared by the pinned `quickjs-opcode.h`.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(
+    ::core::clone::Clone,
+    ::core::marker::Copy,
+    ::core::fmt::Debug,
+    ::core::cmp::Eq,
+    ::core::hash::Hash,
+    ::core::cmp::PartialEq,
+)]
 pub(in crate::runtime) enum OpcodeFormat {
     None,
     NoneInt,
@@ -62,7 +69,16 @@ impl OpcodeFormat {
 }
 
 /// One validated opcode byte in the pinned final-bytecode namespace.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    ::core::clone::Clone,
+    ::core::marker::Copy,
+    ::core::fmt::Debug,
+    ::core::cmp::Eq,
+    ::core::hash::Hash,
+    ::core::cmp::Ord,
+    ::core::cmp::PartialEq,
+    ::core::cmp::PartialOrd,
+)]
 pub(in crate::runtime) struct PinnedOpcode(u8);
 
 impl PinnedOpcode {
@@ -129,7 +145,13 @@ impl PinnedOpcode {
 }
 
 /// Immutable descriptor for one pinned final-bytecode opcode.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(
+    ::core::clone::Clone,
+    ::core::marker::Copy,
+    ::core::fmt::Debug,
+    ::core::cmp::Eq,
+    ::core::cmp::PartialEq,
+)]
 pub(in crate::runtime) struct PinnedOpcodeInfo {
     name: &'static str,
     size: u8,

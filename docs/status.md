@@ -126,6 +126,10 @@ QuickJS's 19 temporary compiler descriptors. A bounded, heap-independent
 scanner safely rejects the reserved `invalid` opcode, unknown opcodes,
 truncated instructions, offset overflow, and independent
 byte/instruction/relocation budget excesses.
+Both authenticated catalogs share one fail-closed C/Rust source inspector;
+production manifest attributes and imports are exact allowlists, while
+conditional compilation, external crates, macros, and all exclamation tokens
+are rejected before either frozen digest is accepted.
 It records structural instruction spans, resolves all 21 fixed-width atom
 operands into typed bytecode-namespace identities, preserves QuickJS's
 end-of-payload invalid-atom diagnostic position, and can canonically re-encode

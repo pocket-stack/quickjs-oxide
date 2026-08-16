@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  GateError,
+  decodeQuotedString,
+  fail,
+  findMatchingArrayEnd,
+  findTopLevelConst,
+  inspectCSource,
+  inspectRustManifest,
+  readRegularFile,
+} from "./lib/bc5-gate-primitives.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDirectory, "..");
@@ -13,14 +23,15 @@ const manifestPath = resolve(
 );
 const frozenManifestSha256 =
   "22fa629fc3204d3cb4d6cce5b73d3a3c813f46d5be32d64f92c348a9dfca1f20";
-
-class GateError extends Error {
-  constructor(message, status = 1) {
-    super(message);
-    this.name = "GateError";
-    this.status = status;
-  }
-}
+const allowedRustManifestAttributes = [
+  "#[derive(::core::clone::Clone, ::core::marker::Copy, " +
+    "::core::fmt::Debug, ::core::cmp::Eq, ::core::cmp::PartialEq,)]",
+  "#[derive(::core::clone::Clone, ::core::marker::Copy, " +
+    "::core::fmt::Debug, ::core::cmp::Eq, ::core::hash::Hash, " +
+    "::core::cmp::Ord, ::core::cmp::PartialEq, ::core::cmp::PartialOrd,)]",
+  "#[must_use]",
+];
+const allowedRustManifestUses = ["use super::wire::WireString;"];
 
 try {
   main(process.argv.slice(2));
@@ -83,47 +94,70 @@ function parseArguments(arguments_) {
   return resolve(arguments_[1]);
 }
 
-function readRegularFile(path, label) {
-  let metadata;
-  try {
-    metadata = lstatSync(path);
-  } catch (error) {
-    fail(`${label} is unavailable at ${path}: ${error.message}`);
-  }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    fail(`${label} must be a regular non-symlink file: ${path}`);
-  }
-  return readFileSync(path, "utf8");
-}
-
 function parseQuickJsAtoms(source, path) {
-  const entries = [];
-  const lines = source.split(/\r?\n/u);
-  const definition =
-    /^\s*DEF\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*("(?:\\.|[^"\\])*")\s*\)\s*(?:\/\*.*\*\/)?\s*$/u;
+  const inspected = inspectCSource(source, path);
+  const uncommentedLines = inspected.uncommented.split(/\r?\n/u);
+  const structuralLines = inspected.structural.split(/\r?\n/u);
+  if (uncommentedLines.length !== structuralLines.length) {
+    fail(`${path}: internal C-source inspection line mismatch`);
+  }
 
-  for (const [index, line] of lines.entries()) {
-    if (!line.includes("DEF(")) {
+  const entries = [];
+  const definition =
+    /^\s*DEF\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*("(?:\\.|[^"\\])*")\s*\)\s*$/u;
+  let state = "before";
+
+  for (let index = 0; index < uncommentedLines.length; index += 1) {
+    const line = uncommentedLines[index];
+    const structural = structuralLines[index].trim();
+    if (structural.length === 0 && line.trim().length === 0) {
       continue;
     }
+
+    if (structural.startsWith("#")) {
+      if (state === "before" && /^#\s*ifdef\s+DEF\s*$/u.test(structural)) {
+        state = "entries";
+        continue;
+      }
+      if (state === "entries" && /^#\s*endif\s*$/u.test(structural)) {
+        state = "done";
+        continue;
+      }
+      fail(
+        `${path}:${index + 1}: unexpected preprocessor directive in ${state} section`,
+      );
+    }
+
     const match = definition.exec(line);
-    if (match === null) {
+    if (match !== null) {
+      if (state !== "entries") {
+        fail(`${path}:${index + 1}: QuickJS DEF entry is outside the DEF section`);
+      }
+      const name = match[1];
+      const kind =
+        name === "Private_brand"
+          ? "Private"
+          : name.startsWith("Symbol_")
+            ? "Symbol"
+            : "String";
+      entries.push({
+        id: entries.length + 1,
+        kind,
+        line: index + 1,
+        name,
+        spelling: decodeQuotedString(match[2], `${path}:${index + 1}`),
+      });
+      continue;
+    }
+
+    if (/\bDEF\s*\(/u.test(line)) {
       fail(`${path}:${index + 1}: malformed QuickJS DEF entry`);
     }
-    const name = match[1];
-    const kind =
-      name === "Private_brand"
-        ? "Private"
-        : name.startsWith("Symbol_")
-          ? "Symbol"
-          : "String";
-    entries.push({
-      id: entries.length + 1,
-      kind,
-      line: index + 1,
-      name,
-      spelling: decodeQuotedString(match[2], `${path}:${index + 1}`),
-    });
+    fail(`${path}:${index + 1}: unexpected content in ${state} section`);
+  }
+
+  if (state !== "done") {
+    fail(`${path}: incomplete QuickJS DEF section (ended in ${state})`);
   }
 
   if (entries.length === 0) {
@@ -156,157 +190,27 @@ function validateQuickJsKinds(entries, path) {
   }
 }
 
-function lexRust(source, path) {
-  const uncommented = source.split("");
-  const structural = source.split("");
-  let index = 0;
-
-  while (index < source.length) {
-    if (source.startsWith("//", index)) {
-      const end = source.indexOf("\n", index + 2);
-      const stop = end === -1 ? source.length : end;
-      blankRange(uncommented, index, stop);
-      blankRange(structural, index, stop);
-      index = stop;
-      continue;
-    }
-    if (source.startsWith("/*", index)) {
-      let depth = 1;
-      let cursor = index + 2;
-      while (cursor < source.length && depth !== 0) {
-        if (source.startsWith("/*", cursor)) {
-          depth += 1;
-          cursor += 2;
-        } else if (source.startsWith("*/", cursor)) {
-          depth -= 1;
-          cursor += 2;
-        } else {
-          cursor += 1;
-        }
-      }
-      if (depth !== 0) {
-        fail(`${path}: unterminated Rust block comment`);
-      }
-      blankRange(uncommented, index, cursor);
-      blankRange(structural, index, cursor);
-      index = cursor;
-      continue;
-    }
-
-    const raw = /^(?:br|r)(#{0,255})"/u.exec(source.slice(index));
-    if (raw !== null) {
-      const terminator = `"${raw[1]}`;
-      const contentStart = index + raw[0].length;
-      const closing = source.indexOf(terminator, contentStart);
-      if (closing === -1) {
-        fail(`${path}: unterminated Rust raw string`);
-      }
-      const stop = closing + terminator.length;
-      blankRange(structural, index, stop);
-      index = stop;
-      continue;
-    }
-
-    if (source[index] === '"') {
-      let cursor = index + 1;
-      let escaped = false;
-      while (cursor < source.length) {
-        const character = source[cursor];
-        if (!escaped && character === '"') {
-          cursor += 1;
-          break;
-        }
-        if (!escaped && (character === "\n" || character === "\r")) {
-          fail(`${path}: newline in ordinary Rust string`);
-        }
-        escaped = !escaped && character === "\\";
-        if (character !== "\\") {
-          escaped = false;
-        }
-        cursor += 1;
-      }
-      if (cursor > source.length || source[cursor - 1] !== '"') {
-        fail(`${path}: unterminated ordinary Rust string`);
-      }
-      blankRange(structural, index, cursor);
-      index = cursor;
-      continue;
-    }
-
-    const characterLiteral = /^'(?:\\.|[^'\\\r\n])'/u.exec(
-      source.slice(index),
-    );
-    if (characterLiteral !== null) {
-      const stop = index + characterLiteral[0].length;
-      blankRange(structural, index, stop);
-      index = stop;
-      continue;
-    }
-
-    index += 1;
-  }
-
-  return {
-    uncommented: uncommented.join(""),
-    structural: structural.join(""),
-  };
-}
-
-function blankRange(characters, start, end) {
-  for (let index = start; index < end; index += 1) {
-    if (characters[index] !== "\n" && characters[index] !== "\r") {
-      characters[index] = " ";
-    }
-  }
-}
-
 function parseRustManifest(source, path) {
-  const lexed = lexRust(source, path);
-  const testModule = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+tests\b/u.exec(
-    lexed.structural,
+  const manifest = inspectRustManifest(
+    source,
+    path,
+    "atom",
+    allowedRustManifestAttributes,
+    allowedRustManifestUses,
   );
-  const productionEnd = testModule?.index ?? source.length;
-  const uncommented = lexed.uncommented.slice(0, productionEnd);
-  const structural = lexed.structural.slice(0, productionEnd);
-  rejectManifestIndirection(structural, path);
-  const braceDepth = computeBraceDepth(structural, path);
+  const { uncommented, structural } = manifest;
 
-  const count = parseRustU32Constant(
-    structural,
-    braceDepth,
-    path,
-    "PINNED_ATOM_COUNT",
-  );
-  const lastString = parseRustU32Constant(
-    structural,
-    braceDepth,
-    path,
-    "LAST_STRING_ATOM",
-  );
-  const privateAtom = parseRustU32Constant(
-    structural,
-    braceDepth,
-    path,
-    "PRIVATE_ATOM",
-  );
-  const dynamicIndex = uniqueTopLevelConst(
-    structural,
-    braceDepth,
-    path,
-    "FIRST_DYNAMIC_ATOM",
-  );
+  const count = parseRustU32Constant(manifest, "PINNED_ATOM_COUNT");
+  const lastString = parseRustU32Constant(manifest, "LAST_STRING_ATOM");
+  const privateAtom = parseRustU32Constant(manifest, "PRIVATE_ATOM");
+  const dynamicIndex = findTopLevelConst(manifest, "FIRST_DYNAMIC_ATOM");
   const dynamicExpression =
     /^const\s+FIRST_DYNAMIC_ATOM\s*:\s*u32\s*=\s*PINNED_ATOM_COUNT\s*\+\s*1\s*;/u;
   if (!dynamicExpression.test(structural.slice(dynamicIndex))) {
     fail(`${path}: FIRST_DYNAMIC_ATOM must equal PINNED_ATOM_COUNT + 1`);
   }
 
-  const arrayIndex = uniqueTopLevelConst(
-    structural,
-    braceDepth,
-    path,
-    "PINNED_ATOM_SPELLINGS",
-  );
+  const arrayIndex = findTopLevelConst(manifest, "PINNED_ATOM_SPELLINGS");
   const arrayStart =
     /^const\s+PINNED_ATOM_SPELLINGS\s*:\s*\[\s*&str\s*;\s*PINNED_ATOM_COUNT\s+as\s+usize\s*\]\s*=\s*\[/u;
   const startMatch = arrayStart.exec(structural.slice(arrayIndex));
@@ -314,7 +218,7 @@ function parseRustManifest(source, path) {
     fail(`${path}: PINNED_ATOM_SPELLINGS must be a direct fixed array`);
   }
   const open = arrayIndex + startMatch[0].lastIndexOf("[");
-  const end = findMatchingArrayEnd(structural, open, path);
+  const end = findMatchingArrayEnd(manifest, open, "PINNED_ATOM_SPELLINGS");
   const afterArray = structural.slice(end + 1).match(/^\s*/u)?.[0].length ?? 0;
   if (structural[end + 1 + afterArray] !== ";") {
     fail(`${path}: PINNED_ATOM_SPELLINGS array must end with a semicolon`);
@@ -337,8 +241,9 @@ function parseRustManifest(source, path) {
   return { count, entries, lastString, privateAtom };
 }
 
-function parseRustU32Constant(structural, braceDepth, path, name) {
-  const index = uniqueTopLevelConst(structural, braceDepth, path, name);
+function parseRustU32Constant(manifest, name) {
+  const { path, structural } = manifest;
+  const index = findTopLevelConst(manifest, name);
   const expression = new RegExp(
     `^const\\s+${name}\\s*:\\s*u32\\s*=\\s*([0-9][0-9_]*)\\s*;`,
     "u",
@@ -352,69 +257,6 @@ function parseRustU32Constant(structural, braceDepth, path, name) {
     fail(`${path}: ${name} is outside JavaScript's safe integer range`);
   }
   return value;
-}
-
-function uniqueTopLevelConst(structural, braceDepth, path, name) {
-  const expression = new RegExp(`\\bconst\\s+${name}\\b`, "gu");
-  const matches = [...structural.matchAll(expression)];
-  if (matches.length !== 1) {
-    fail(`${path}: expected exactly one ${name} const, found ${matches.length}`);
-  }
-  const index = matches[0].index;
-  if (braceDepth[index] !== 0) {
-    fail(`${path}: ${name} must be defined at module top level`);
-  }
-  return index;
-}
-
-function rejectManifestIndirection(structural, path) {
-  const forbidden = [
-    [/#\s*\[\s*cfg(?:_attr)?\b/u, "conditional compilation"],
-    [/\bcfg\s*!/u, "cfg!"],
-    [/\b(?:include|include_str|include_bytes)\s*!/u, "include macro"],
-    [/\bmacro_rules\s*!/u, "macro definition"],
-  ];
-  for (const [pattern, label] of forbidden) {
-    if (pattern.test(structural)) {
-      fail(`${path}: ${label} is not allowed in the production atom manifest`);
-    }
-  }
-}
-
-function computeBraceDepth(structural, path) {
-  const depthAt = new Uint32Array(structural.length + 1);
-  let depth = 0;
-  for (let index = 0; index < structural.length; index += 1) {
-    depthAt[index] = depth;
-    if (structural[index] === "{") {
-      depth += 1;
-    } else if (structural[index] === "}") {
-      if (depth === 0) {
-        fail(`${path}: unmatched closing brace in atom manifest`);
-      }
-      depth -= 1;
-    }
-  }
-  depthAt[structural.length] = depth;
-  if (depth !== 0) {
-    fail(`${path}: unmatched opening brace in atom manifest`);
-  }
-  return depthAt;
-}
-
-function findMatchingArrayEnd(structural, open, path) {
-  let depth = 0;
-  for (let index = open; index < structural.length; index += 1) {
-    if (structural[index] === "[") {
-      depth += 1;
-    } else if (structural[index] === "]") {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-  }
-  fail(`${path}: unterminated PINNED_ATOM_SPELLINGS array`);
 }
 
 function parseRustStringArray(body, path) {
@@ -439,14 +281,6 @@ function parseRustStringArray(body, path) {
     offset += literal[0].length;
   }
   return spellings;
-}
-
-function decodeQuotedString(literal, location) {
-  try {
-    return JSON.parse(literal);
-  } catch (error) {
-    fail(`${location}: unsupported string literal ${literal}: ${error.message}`);
-  }
 }
 
 function compareManifests(expected, actual) {
@@ -529,16 +363,121 @@ function assertFrozenManifest(entries, path) {
 }
 
 function runSelfTests() {
-  const expected = [
+  runQuickJsParserSelfTests();
+  runRustParserSelfTests();
+}
+
+function selfTestAtoms() {
+  return [
     { id: 1, kind: "String", name: "alpha", spelling: "alpha" },
     { id: 2, kind: "Private", name: "Private_brand", spelling: "private" },
     { id: 3, kind: "Symbol", name: "Symbol_probe", spelling: "symbol" },
   ];
+}
+
+function runQuickJsParserSelfTests() {
+  const expected = selfTestAtoms();
+  const valid = selfTestQuickJsSource(["alpha", "private", "symbol"]);
+  const wrong = selfTestQuickJsSource(["wrong", "private", "symbol"]);
+  const parsed = parseQuickJsAtoms(valid, "self-test valid QuickJS source");
+  if (manifestSha256(parsed) !== manifestSha256(expected)) {
+    fail("self-test valid QuickJS atom source did not round-trip");
+  }
+
+  const commentDecoy = parseQuickJsAtoms(
+    `/* ${valid.replace("#endif /* DEF */", "#endif")} */\n${wrong}`,
+    "self-test QuickJS comment decoy",
+  );
+  if (manifestSha256(commentDecoy) === manifestSha256(expected)) {
+    fail("self-test QuickJS comment decoy hid the active wrong source");
+  }
+
+  const malformedCases = [
+    ["C line continuation", `// hidden \\\n${valid}`],
+    ["C bare-CR continuation", `// hidden \\\r${valid}`],
+    ["C trigraph", `// hidden ??/\n${valid}`],
+    ["inactive DEF section", valid.replace("#ifdef DEF", "#if 0")],
+    [
+      "wrong DEF guard",
+      valid.replace("#ifdef DEF", "#ifdef NEVER_DEFINED"),
+    ],
+    [
+      "early DEF undef",
+      valid.replace(
+        'DEF(Private_brand, "private")',
+        '#undef DEF\nDEF(Private_brand, "private")',
+      ),
+    ],
+    [
+      "empty DEF definition",
+      valid.replace(
+        'DEF(Private_brand, "private")',
+        '#define DEF(name, value)\nDEF(Private_brand, "private")',
+      ),
+    ],
+    ["alternate DEF branch", valid.replace("#endif /* DEF */", "#else\n#endif")],
+    ["missing DEF tail", valid.replace("#endif /* DEF */\n", "")],
+    ["entry before DEF section", `DEF(decoy, "decoy")\n${valid}`],
+    ["entry after DEF section", `${valid}DEF(decoy, "decoy")\n`],
+    ["include before DEF section", `#include "decoy.h"\n${valid}`],
+    ["active token before DEF section", `int decoy;\n${valid}`],
+    ["string decoy before DEF section", `"${escapeForCString(valid)}"\n${wrong}`],
+    [
+      "malformed DEF entry",
+      valid.replace('DEF(alpha, "alpha")', "DEF(alpha, nope)"),
+    ],
+  ];
+  for (const [label, source] of malformedCases) {
+    expectGateFailure(`QuickJS ${label}`, () =>
+      parseQuickJsAtoms(source, `self-test QuickJS ${label}`),
+    );
+  }
+}
+
+function selfTestQuickJsSource(spellings) {
+  return `
+// self-test atom header
+#ifdef DEF
+DEF(alpha, ${JSON.stringify(spellings[0])})
+DEF(Private_brand, ${JSON.stringify(spellings[1])})
+DEF(Symbol_probe, ${JSON.stringify(spellings[2])})
+#endif /* DEF */
+`;
+}
+
+function escapeForCString(value) {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\n");
+}
+
+function runRustParserSelfTests() {
+  const expected = selfTestAtoms();
   const valid = selfTestManifest(["alpha", "private", "symbol"]);
   const wrong = selfTestManifest(["wrong", "private", "symbol"]);
   const parsed = parseRustManifest(valid, "self-test valid manifest");
   if (compareManifests(expected, parsed).length !== 0) {
     fail("self-test valid manifest did not round-trip");
+  }
+
+  const withTests = parseRustManifest(
+    `${valid}\n#[cfg(test)]\nmod tests { const DECOY: &str = "ignored"; }\n`,
+    "self-test valid tests tail",
+  );
+  if (compareManifests(expected, withTests).length !== 0) {
+    fail("self-test valid top-level tests tail changed the active manifest");
+  }
+
+  const multilineVisibility = parseRustManifest(
+    valid.replace(
+      "const PINNED_ATOM_COUNT",
+      "pub(crate)\nconst PINNED_ATOM_COUNT",
+    ),
+    "self-test multiline visibility",
+  );
+  if (compareManifests(expected, multilineVisibility).length !== 0) {
+    fail("self-test multiline visibility changed the active manifest");
   }
 
   const commentDecoy = parseRustManifest(
@@ -547,6 +486,31 @@ function runSelfTests() {
   );
   if (compareManifests(expected, commentDecoy).length === 0) {
     fail("self-test comment decoy hid the active wrong manifest");
+  }
+
+  for (const [label, prefix] of [
+    ["raw string decoy", `const DECOY: &str = r###"${valid}"###;\n`],
+    ["raw byte string decoy", `const DECOY: &[u8] = br###"${valid}"###;\n`],
+    [
+      "ordinary byte string decoy",
+      'const DECOY: &[u8] = b"const PINNED_ATOM_COUNT: u32 = 3;";\n',
+    ],
+    [
+      "character literal decoy",
+      "const LEFT: char = '['; const RIGHT: u8 = b'}';\n",
+    ],
+    [
+      "tests marker string decoy",
+      `const DECOY: &str = r###"#[cfg(test)] mod tests {} ${valid}"###;\n`,
+    ],
+  ]) {
+    const active = parseRustManifest(
+      `${prefix}${wrong}`,
+      `self-test ${label}`,
+    );
+    if (compareManifests(expected, active).length === 0) {
+      fail(`self-test ${label} hid the active wrong manifest`);
+    }
   }
 
   expectGateFailure("conditional decoy", () =>
@@ -564,6 +528,109 @@ function runSelfTests() {
       "self-test nested decoy",
     ),
   );
+  expectGateFailure("inner attribute decoy", () =>
+    parseRustManifest(
+      `#![cfg(any())]\n${valid}`,
+      "self-test inner attribute decoy",
+    ),
+  );
+  expectGateFailure("attribute before multiline visibility", () =>
+    parseRustManifest(
+      valid.replace(
+        "const PINNED_ATOM_COUNT",
+        "#[evil]\npub(crate)\nconst PINNED_ATOM_COUNT",
+      ),
+      "self-test attribute before multiline visibility",
+    ),
+  );
+  expectGateFailure("unrelated production attribute", () =>
+    parseRustManifest(
+      `#[evil]\nstruct Decoy;\n${valid}`,
+      "self-test unrelated production attribute",
+    ),
+  );
+  expectGateFailure("derive-shadowing import", () =>
+    parseRustManifest(
+      `use evil::Clone;\n${valid}`,
+      "self-test derive-shadowing import",
+    ),
+  );
+  expectGateFailure("extern crate macro import", () =>
+    parseRustManifest(
+      `extern crate evil;\n${valid}`,
+      "self-test extern crate macro import",
+    ),
+  );
+  expectGateFailure("qualified function-like macro", () =>
+    parseRustManifest(
+      `evil::replace_manifest!();\n${valid}`,
+      "self-test qualified function-like macro",
+    ),
+  );
+  expectGateFailure("Unicode function-like macro", () =>
+    parseRustManifest(
+      `evil::\u6076\u610f!();\n${valid}`,
+      "self-test Unicode function-like macro",
+    ),
+  );
+  expectGateFailure("production unary exclamation", () =>
+    parseRustManifest(
+      `const DECOY: bool = !(false);\n${valid}`,
+      "self-test production unary exclamation",
+    ),
+  );
+  expectGateFailure("parenthesized macro wrapper", () =>
+    parseRustManifest(
+      `passthrough!(\n${valid}\n);`,
+      "self-test parenthesized macro wrapper",
+    ),
+  );
+  expectGateFailure("bracket macro wrapper", () =>
+    parseRustManifest(
+      `passthrough![\n${valid}\n];`,
+      "self-test bracket macro wrapper",
+    ),
+  );
+  expectGateFailure("include decoy", () =>
+    parseRustManifest(
+      `const DECOY: &[u8] = include_bytes!("decoy");\n${wrong}`,
+      "self-test include decoy",
+    ),
+  );
+  expectGateFailure("macro definition decoy", () =>
+    parseRustManifest(
+      `macro_rules! decoy { () => { ${valid} } }\n${wrong}`,
+      "self-test macro definition decoy",
+    ),
+  );
+  expectGateFailure("tests cutoff macro bypass", () =>
+    parseRustManifest(
+      `discard!(\n${valid}\n);\n` +
+        `cutoff!(#[cfg(test)] mod tests {});\n${wrong}`,
+      "self-test tests cutoff macro bypass",
+    ),
+  );
+  expectGateFailure("production after tests tail", () =>
+    parseRustManifest(
+      `${valid}\n#[cfg(test)]\nmod tests {}\nconst TAIL: u8 = 1;\n`,
+      "self-test production after tests tail",
+    ),
+  );
+
+  for (const name of [
+    "PINNED_ATOM_COUNT",
+    "FIRST_DYNAMIC_ATOM",
+    "LAST_STRING_ATOM",
+    "PRIVATE_ATOM",
+    "PINNED_ATOM_SPELLINGS",
+  ]) {
+    expectGateFailure(`${name} attribute decoy`, () =>
+      parseRustManifest(
+        valid.replace(`const ${name}`, `#[evil]\nconst ${name}`),
+        `self-test ${name} attribute decoy`,
+      ),
+    );
+  }
 
   const wrongActive = parseRustManifest(wrong, "self-test wrong active");
   if (compareManifests(expected, wrongActive).length === 0) {
@@ -573,6 +640,8 @@ function runSelfTests() {
 
 function selfTestManifest(spellings) {
   return `
+use super::wire::WireString;
+
 const PINNED_ATOM_COUNT: u32 = 3;
 const FIRST_DYNAMIC_ATOM: u32 = PINNED_ATOM_COUNT + 1;
 const LAST_STRING_ATOM: u32 = 1;
@@ -593,8 +662,4 @@ function expectGateFailure(label, operation) {
     throw error;
   }
   fail(`self-test ${label} unexpectedly passed`);
-}
-
-function fail(message, status = 1) {
-  throw new GateError(message, status);
 }

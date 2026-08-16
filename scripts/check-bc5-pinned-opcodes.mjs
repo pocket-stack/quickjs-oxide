@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  GateError,
+  decodeQuotedString,
+  fail,
+  findMatchingArrayEnd,
+  findTopLevelConst,
+  inspectCSource,
+  inspectRustManifest,
+  readRegularFile,
+} from "./lib/bc5-gate-primitives.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDirectory, "..");
@@ -13,6 +23,18 @@ const manifestPath = resolve(
 );
 const frozenManifestSha256 =
   "e2fba2aea6f6e898d21a164d9917858c7aa95537f9d36d47aadb93399614af14";
+const allowedRustManifestAttributes = [
+  "#[derive(::core::clone::Clone, ::core::marker::Copy, " +
+    "::core::fmt::Debug, ::core::cmp::Eq, ::core::hash::Hash, " +
+    "::core::cmp::PartialEq,)]",
+  "#[derive(::core::clone::Clone, ::core::marker::Copy, " +
+    "::core::fmt::Debug, ::core::cmp::Eq, ::core::hash::Hash, " +
+    "::core::cmp::Ord, ::core::cmp::PartialEq, ::core::cmp::PartialOrd,)]",
+  "#[derive(::core::clone::Clone, ::core::marker::Copy, " +
+    "::core::fmt::Debug, ::core::cmp::Eq, ::core::cmp::PartialEq,)]",
+  "#[must_use]",
+  "#[rustfmt::skip]",
+];
 
 const quickJsFormats = [
   ["none", "None"],
@@ -82,14 +104,6 @@ const expectedTemporaryDescriptors = [
   size,
 }));
 
-class GateError extends Error {
-  constructor(message, status = 1) {
-    super(message);
-    this.name = "GateError";
-    this.status = status;
-  }
-}
-
 try {
   main(process.argv.slice(2));
 } catch (error) {
@@ -153,21 +167,8 @@ function parseArguments(arguments_) {
   return resolve(arguments_[1]);
 }
 
-function readRegularFile(path, label) {
-  let metadata;
-  try {
-    metadata = lstatSync(path);
-  } catch (error) {
-    fail(`${label} is unavailable at ${path}: ${error.message}`);
-  }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    fail(`${label} must be a regular non-symlink file: ${path}`);
-  }
-  return readFileSync(path, "utf8");
-}
-
 function parseQuickJsOpcodes(source, path) {
-  const structural = lexC(source, path);
+  const structural = inspectCSource(source, path).structural;
   const formats = [];
   const entries = [];
   const temporaryEntries = [];
@@ -473,192 +474,18 @@ function assertUniqueNames(entries, path, label) {
   }
 }
 
-function lexC(source, path) {
-  const output = source.split("");
-  let index = 0;
-
-  while (index < source.length) {
-    if (source.startsWith("//", index)) {
-      const end = source.indexOf("\n", index + 2);
-      const stop = end === -1 ? source.length : end;
-      blankRange(output, index, stop);
-      index = stop;
-      continue;
-    }
-    if (source.startsWith("/*", index)) {
-      const end = source.indexOf("*/", index + 2);
-      if (end === -1) {
-        fail(`${path}: unterminated C block comment`);
-      }
-      const stop = end + 2;
-      blankRange(output, index, stop);
-      index = stop;
-      continue;
-    }
-    if (source[index] === '"' || source[index] === "'") {
-      const quote = source[index];
-      let cursor = index + 1;
-      let escaped = false;
-      while (cursor < source.length) {
-        const character = source[cursor];
-        if (!escaped && character === quote) {
-          cursor += 1;
-          break;
-        }
-        if (!escaped && (character === "\n" || character === "\r")) {
-          fail(`${path}: newline in C literal`);
-        }
-        escaped = !escaped && character === "\\";
-        if (character !== "\\") {
-          escaped = false;
-        }
-        cursor += 1;
-      }
-      if (cursor > source.length || source[cursor - 1] !== quote) {
-        fail(`${path}: unterminated C literal`);
-      }
-      blankRange(output, index, cursor);
-      index = cursor;
-      continue;
-    }
-    index += 1;
-  }
-
-  return output.join("");
-}
-
-function lexRust(source, path) {
-  const uncommented = source.split("");
-  const structural = source.split("");
-  let index = 0;
-
-  while (index < source.length) {
-    if (source.startsWith("//", index)) {
-      const end = source.indexOf("\n", index + 2);
-      const stop = end === -1 ? source.length : end;
-      blankRange(uncommented, index, stop);
-      blankRange(structural, index, stop);
-      index = stop;
-      continue;
-    }
-    if (source.startsWith("/*", index)) {
-      let depth = 1;
-      let cursor = index + 2;
-      while (cursor < source.length && depth !== 0) {
-        if (source.startsWith("/*", cursor)) {
-          depth += 1;
-          cursor += 2;
-        } else if (source.startsWith("*/", cursor)) {
-          depth -= 1;
-          cursor += 2;
-        } else {
-          cursor += 1;
-        }
-      }
-      if (depth !== 0) {
-        fail(`${path}: unterminated Rust block comment`);
-      }
-      blankRange(uncommented, index, cursor);
-      blankRange(structural, index, cursor);
-      index = cursor;
-      continue;
-    }
-
-    const raw = /^(?:br|r)(#{0,255})"/u.exec(source.slice(index));
-    if (raw !== null) {
-      const terminator = `"${raw[1]}`;
-      const contentStart = index + raw[0].length;
-      const closing = source.indexOf(terminator, contentStart);
-      if (closing === -1) {
-        fail(`${path}: unterminated Rust raw string`);
-      }
-      const stop = closing + terminator.length;
-      blankRange(structural, index, stop);
-      index = stop;
-      continue;
-    }
-
-    const ordinaryPrefix =
-      source[index] === '"'
-        ? 0
-        : source[index] === "b" && source[index + 1] === '"'
-          ? 1
-          : null;
-    if (ordinaryPrefix !== null) {
-      let cursor = index + ordinaryPrefix + 1;
-      let escaped = false;
-      while (cursor < source.length) {
-        const character = source[cursor];
-        if (!escaped && character === '"') {
-          cursor += 1;
-          break;
-        }
-        if (!escaped && (character === "\n" || character === "\r")) {
-          fail(`${path}: newline in ordinary Rust string`);
-        }
-        escaped = !escaped && character === "\\";
-        if (character !== "\\") {
-          escaped = false;
-        }
-        cursor += 1;
-      }
-      if (cursor > source.length || source[cursor - 1] !== '"') {
-        fail(`${path}: unterminated ordinary Rust string`);
-      }
-      blankRange(structural, index, cursor);
-      index = cursor;
-      continue;
-    }
-
-    const characterLiteral = /^(?:b)?'(?:\\.|[^'\\\r\n])'/u.exec(
-      source.slice(index),
-    );
-    if (characterLiteral !== null) {
-      const stop = index + characterLiteral[0].length;
-      blankRange(structural, index, stop);
-      index = stop;
-      continue;
-    }
-
-    index += 1;
-  }
-
-  return {
-    uncommented: uncommented.join(""),
-    structural: structural.join(""),
-  };
-}
-
-function blankRange(characters, start, end) {
-  for (let index = start; index < end; index += 1) {
-    if (characters[index] !== "\n" && characters[index] !== "\r") {
-      characters[index] = " ";
-    }
-  }
-}
-
 function parseRustManifest(source, path) {
-  const lexed = lexRust(source, path);
-  const testModule = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+tests\b/u.exec(
-    lexed.structural,
+  const manifest = inspectRustManifest(
+    source,
+    path,
+    "opcode",
+    allowedRustManifestAttributes,
   );
-  const productionEnd = testModule?.index ?? source.length;
-  const uncommented = lexed.uncommented.slice(0, productionEnd);
-  const structural = lexed.structural.slice(0, productionEnd);
-  rejectManifestIndirection(structural, path);
-  const delimiterDepth = computeDelimiterDepth(structural, path);
+  const { uncommented, structural } = manifest;
 
-  const count = parseRustCount(structural, delimiterDepth, path);
-  const arrayIndex = uniqueTopLevelConst(
-    structural,
-    delimiterDepth,
-    path,
-    "PINNED_OPCODE_INFO",
-  );
-  assertRustItemAttributes(
-    structural,
-    arrayIndex,
-    path,
+  const count = parseRustCount(manifest);
+  const arrayIndex = findTopLevelConst(
+    manifest,
     "PINNED_OPCODE_INFO",
     ["#[rustfmt::skip]"],
   );
@@ -669,7 +496,7 @@ function parseRustManifest(source, path) {
     fail(`${path}: PINNED_OPCODE_INFO must be one direct fixed array`);
   }
   const open = arrayIndex + startMatch[0].lastIndexOf("[");
-  const end = findMatchingArrayEnd(structural, open, path);
+  const end = findMatchingArrayEnd(manifest, open, "PINNED_OPCODE_INFO");
   const afterArray = structural.slice(end + 1).match(/^\s*/u)?.[0].length ?? 0;
   if (structural[end + 1 + afterArray] !== ";") {
     fail(`${path}: PINNED_OPCODE_INFO array must end with a semicolon`);
@@ -681,17 +508,10 @@ function parseRustManifest(source, path) {
   return { count, entries };
 }
 
-function parseRustCount(structural, delimiterDepth, path) {
-  const index = uniqueTopLevelConst(
-    structural,
-    delimiterDepth,
-    path,
-    "PINNED_OPCODE_COUNT",
-  );
-  assertRustItemAttributes(
-    structural,
-    index,
-    path,
+function parseRustCount(manifest) {
+  const { path, structural } = manifest;
+  const index = findTopLevelConst(
+    manifest,
     "PINNED_OPCODE_COUNT",
     [],
   );
@@ -702,143 +522,6 @@ function parseRustCount(structural, delimiterDepth, path) {
     fail(`${path}: PINNED_OPCODE_COUNT must be one direct numeric usize constant`);
   }
   return parseRustInteger(match[1], `${path}:PINNED_OPCODE_COUNT`);
-}
-
-function assertRustItemAttributes(
-  structural,
-  constIndex,
-  path,
-  name,
-  expectedAttributes,
-) {
-  const lineStart = structural.lastIndexOf("\n", constIndex - 1) + 1;
-  const sameLinePrefix = structural.slice(lineStart, constIndex).trim();
-  if (
-    sameLinePrefix.length !== 0 &&
-    !/^pub(?:\s*\([^()]*\))?$/u.test(sameLinePrefix)
-  ) {
-    fail(`${path}: unsupported token before ${name} const`);
-  }
-
-  const attributes = [];
-  let cursor = lineStart;
-  while (true) {
-    cursor = skipWhitespaceBackward(structural, cursor);
-    if (structural[cursor - 1] !== "]") {
-      break;
-    }
-    const close = cursor - 1;
-    const open = findOpeningBracketBackward(structural, close, path);
-    const hash = skipWhitespaceBackward(structural, open);
-    if (structural[hash - 1] !== "#") {
-      break;
-    }
-    const start = hash - 1;
-    attributes.unshift(
-      structural.slice(start, close + 1).replaceAll(/\s/gu, ""),
-    );
-    cursor = start;
-  }
-
-  if (!arraysEqual(attributes, expectedAttributes)) {
-    fail(
-      `${path}: ${name} attributes are ${JSON.stringify(attributes)}, ` +
-        `expected ${JSON.stringify(expectedAttributes)}`,
-    );
-  }
-}
-
-function skipWhitespaceBackward(source, end) {
-  let cursor = end;
-  while (cursor > 0 && /\s/u.test(source[cursor - 1])) {
-    cursor -= 1;
-  }
-  return cursor;
-}
-
-function findOpeningBracketBackward(source, close, path) {
-  let depth = 1;
-  for (let index = close - 1; index >= 0; index -= 1) {
-    if (source[index] === "]") {
-      depth += 1;
-    } else if (source[index] === "[") {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-  }
-  fail(`${path}: unmatched ] before pinned opcode const`);
-}
-
-function uniqueTopLevelConst(structural, delimiterDepth, path, name) {
-  const expression = new RegExp(`\\bconst\\s+${name}\\b`, "gu");
-  const matches = [...structural.matchAll(expression)];
-  if (matches.length !== 1) {
-    fail(`${path}: expected exactly one ${name} const, found ${matches.length}`);
-  }
-  const index = matches[0].index;
-  if (delimiterDepth[index] !== 0) {
-    fail(`${path}: ${name} must be defined at module top level`);
-  }
-  return index;
-}
-
-function rejectManifestIndirection(structural, path) {
-  const forbidden = [
-    [/#\s*\[\s*cfg(?:_attr)?\b/u, "conditional compilation"],
-    [/\bcfg\s*!/u, "cfg!"],
-    [/\b(?:include|include_str|include_bytes)\s*!/u, "include macro"],
-    [/\bmacro_rules\s*!/u, "macro definition"],
-  ];
-  for (const [pattern, label] of forbidden) {
-    if (pattern.test(structural)) {
-      fail(`${path}: ${label} is not allowed in the production opcode manifest`);
-    }
-  }
-}
-
-function computeDelimiterDepth(structural, path) {
-  const depthAt = new Uint32Array(structural.length + 1);
-  const stack = [];
-  const closing = new Map([
-    ["}", "{"],
-    [")", "("],
-    ["]", "["],
-  ]);
-  for (let index = 0; index < structural.length; index += 1) {
-    depthAt[index] = stack.length;
-    const token = structural[index];
-    if (token === "{" || token === "(" || token === "[") {
-      stack.push(token);
-    } else if (closing.has(token)) {
-      const expected = closing.get(token);
-      const found = stack.pop();
-      if (found !== expected) {
-        fail(`${path}: unmatched or misnested ${token} in opcode manifest`);
-      }
-    }
-  }
-  depthAt[structural.length] = stack.length;
-  if (stack.length !== 0) {
-    fail(`${path}: unmatched ${stack.at(-1)} in opcode manifest`);
-  }
-  return depthAt;
-}
-
-function findMatchingArrayEnd(structural, open, path) {
-  let depth = 0;
-  for (let index = open; index < structural.length; index += 1) {
-    if (structural[index] === "[") {
-      depth += 1;
-    } else if (structural[index] === "]") {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-  }
-  fail(`${path}: unterminated PINNED_OPCODE_INFO array`);
 }
 
 function parseRustOpcodeArray(body, path) {
@@ -883,14 +566,6 @@ function parseRustInteger(text, location) {
     fail(`${location}: integer is outside u8 range`);
   }
   return value;
-}
-
-function decodeQuotedString(literal, location) {
-  try {
-    return JSON.parse(literal);
-  } catch (error) {
-    fail(`${location}: unsupported string literal ${literal}: ${error.message}`);
-  }
 }
 
 function compareCatalogs(expected, actual) {
@@ -987,6 +662,24 @@ function runQuickJsParserSelfTests() {
     parseQuickJsOpcodes(
       valid.replace("#if SHORT_OPCODES", "#if 0"),
       "self-test inactive QuickJS short branch",
+    ),
+  );
+  expectGateFailure("QuickJS C line continuation", () =>
+    parseQuickJsOpcodes(
+      `// hidden \\\n${valid}`,
+      "self-test QuickJS C line continuation",
+    ),
+  );
+  expectGateFailure("QuickJS C bare-CR continuation", () =>
+    parseQuickJsOpcodes(
+      `// hidden \\\r${valid}`,
+      "self-test QuickJS C bare-CR continuation",
+    ),
+  );
+  expectGateFailure("QuickJS C trigraph", () =>
+    parseQuickJsOpcodes(
+      `// hidden ??/\n${valid}`,
+      "self-test QuickJS C trigraph",
     ),
   );
   expectGateFailure("disabled QuickJS final descriptors", () =>
@@ -1174,6 +867,43 @@ function runRustParserSelfTests() {
       "self-test Rust macro decoy",
     ),
   );
+  expectGateFailure("Rust production tail after tests", () =>
+    parseRustManifest(
+      `${valid}\n#[cfg(test)]\nmod tests {}\n` +
+        `const ACTIVE_PRODUCTION_TAIL: usize = 1;\n`,
+      "self-test Rust production tail after tests",
+    ),
+  );
+  expectGateFailure("Rust unrelated production attribute", () =>
+    parseRustManifest(
+      `#[evil]\nstruct Decoy;\n${valid}`,
+      "self-test Rust unrelated production attribute",
+    ),
+  );
+  expectGateFailure("Rust derive-shadowing import", () =>
+    parseRustManifest(
+      `use evil::Clone;\n${valid}`,
+      "self-test Rust derive-shadowing import",
+    ),
+  );
+  expectGateFailure("Rust qualified function-like macro", () =>
+    parseRustManifest(
+      `evil::replace_manifest!();\n${valid}`,
+      "self-test Rust qualified function-like macro",
+    ),
+  );
+  expectGateFailure("Rust Unicode function-like macro", () =>
+    parseRustManifest(
+      `evil::\u6076\u610f!();\n${valid}`,
+      "self-test Rust Unicode function-like macro",
+    ),
+  );
+  expectGateFailure("Rust production unary exclamation", () =>
+    parseRustManifest(
+      `const DECOY: bool = !(false);\n${valid}`,
+      "self-test Rust production unary exclamation",
+    ),
+  );
   expectGateFailure("Rust unsupported manifest token", () =>
     parseRustManifest(
       valid.replace("PinnedOpcodeInfo::new", "make_opcode"),
@@ -1222,8 +952,4 @@ function expectGateFailure(label, operation) {
 
 function arraysEqual(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function fail(message, status = 1) {
-  throw new GateError(message, status);
 }
