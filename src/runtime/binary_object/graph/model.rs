@@ -31,7 +31,10 @@ impl NodeId {
     }
 }
 
-/// Zero-based index into [`WireGraph::atoms`].
+/// Zero-based index into a validated semantic string-atom arena.
+///
+/// Data graphs use this for [`WireGraph::atoms`]; a whole bytecode image uses
+/// the same strong index type for its image-local dynamic atom arena.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(in crate::runtime) struct AtomId(pub(in crate::runtime) u32);
 

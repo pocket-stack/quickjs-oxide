@@ -150,6 +150,13 @@ predefined property keys and function values without widening the admitted data
 graph. Strict mode rejects aliased narrow fields and reserved flag bits;
 compatible mode preserves QuickJS's `u32`-to-`u16` truncation, while signed
 negative-size and decrement-overflow spellings remain hard safety rejections.
+An internal, non-executable FunctionImage atom table now reads the bytecode
+header once and normalizes numeric, predefined-string, narrow/wide, and
+duplicate slots into one semantic namespace shared by future nested function
+records. It preserves private and symbol identities, and retains QuickJS's
+strict-reject versus compatible-omit disposition for null property keys; the
+required value consumption, tag 12 decoding, and execution remain outside this
+milestone.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
 the Rust prefix codec against the exact bytes. A second authenticated 110-byte
