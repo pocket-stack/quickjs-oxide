@@ -267,6 +267,17 @@ impl LocalVariableImage {
     pub(in crate::runtime) const fn flags(&self) -> LocalVariableFlags {
         self.flags
     }
+
+    pub(in crate::runtime::binary_object) fn into_parts(
+        self,
+    ) -> (BinaryAtom, ScopeLink, u16, LocalVariableFlags) {
+        (
+            self.name,
+            self.scope_next,
+            self.variable_reference_index,
+            self.flags,
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -290,6 +301,12 @@ impl ClosureVariableImage {
     #[must_use]
     pub(in crate::runtime) const fn flags(&self) -> ClosureVariableFlags {
         self.flags
+    }
+
+    pub(in crate::runtime::binary_object) fn into_parts(
+        self,
+    ) -> (BinaryAtom, u16, ClosureVariableFlags) {
+        (self.name, self.variable_index, self.flags)
     }
 }
 
@@ -315,6 +332,12 @@ impl FunctionDebugImage {
     pub(in crate::runtime) const fn source(&self) -> &[u8] {
         &self.source
     }
+
+    pub(in crate::runtime::binary_object) fn into_parts(
+        self,
+    ) -> (BinaryAtom, Box<[u8]>, Box<[u8]>) {
+        (self.filename, self.pc2line, self.source)
+    }
 }
 
 /// The complete fixed metadata of one FunctionBytecode occurrence.
@@ -333,6 +356,24 @@ pub(in crate::runtime) struct FunctionEnvelope {
     pub(super) closures: Box<[ClosureVariableImage]>,
     pub(super) code: CodeImage,
     pub(super) debug: Option<FunctionDebugImage>,
+}
+
+/// Linear handoff from the raw function-prefix model to semantic image
+/// relocation.
+pub(in crate::runtime::binary_object) struct FunctionEnvelopeParts {
+    pub(in crate::runtime::binary_object) atom_space: AtomIndexSpace,
+    pub(in crate::runtime::binary_object) flags: FunctionFlags,
+    pub(in crate::runtime::binary_object) js_mode: JsMode,
+    pub(in crate::runtime::binary_object) name: BinaryAtom,
+    pub(in crate::runtime::binary_object) argument_count: u16,
+    pub(in crate::runtime::binary_object) variable_count: u16,
+    pub(in crate::runtime::binary_object) defined_argument_count: u16,
+    pub(in crate::runtime::binary_object) stack_size: u16,
+    pub(in crate::runtime::binary_object) variable_reference_count: u16,
+    pub(in crate::runtime::binary_object) locals: Box<[LocalVariableImage]>,
+    pub(in crate::runtime::binary_object) closures: Box<[ClosureVariableImage]>,
+    pub(in crate::runtime::binary_object) code: CodeImage,
+    pub(in crate::runtime::binary_object) debug: Option<FunctionDebugImage>,
 }
 
 impl FunctionEnvelope {
@@ -395,6 +436,24 @@ impl FunctionEnvelope {
     pub(in crate::runtime) const fn debug(&self) -> Option<&FunctionDebugImage> {
         self.debug.as_ref()
     }
+
+    pub(in crate::runtime::binary_object) fn into_parts(self) -> FunctionEnvelopeParts {
+        FunctionEnvelopeParts {
+            atom_space: self.atom_space,
+            flags: self.flags,
+            js_mode: self.js_mode,
+            name: self.name,
+            argument_count: self.argument_count,
+            variable_count: self.variable_count,
+            defined_argument_count: self.defined_argument_count,
+            stack_size: self.stack_size,
+            variable_reference_count: self.variable_reference_count,
+            locals: self.locals,
+            closures: self.closures,
+            code: self.code,
+            debug: self.debug,
+        }
+    }
 }
 
 /// A parsed fixed envelope plus the number of constant-pool values still
@@ -417,5 +476,9 @@ impl FunctionRecordPrefix {
     #[must_use]
     pub(in crate::runtime) const fn pending_constant_pool_count(&self) -> u32 {
         self.pending_constant_pool_count
+    }
+
+    pub(in crate::runtime::binary_object) fn into_parts(self) -> (FunctionEnvelope, u32) {
+        (self.envelope, self.pending_constant_pool_count)
     }
 }

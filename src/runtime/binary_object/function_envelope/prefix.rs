@@ -3,7 +3,7 @@
 use std::fmt;
 
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
-use super::super::code::{CodeError, CodeImage, CodeLimits};
+use super::super::code::{CodeError, CodeImage, CodeLimits, CodeResourceKind};
 use super::super::wire::{ReaderMode, WireCursor, WireError, WireWriter};
 use super::model::*;
 
@@ -45,7 +45,54 @@ impl FunctionEnvelopeLimits {
         }
     }
 
-    const fn limit(self, kind: FunctionResourceKind) -> usize {
+    /// Intersect one envelope's limits with the remaining whole-image budget.
+    ///
+    /// The individual pc2line/source caps remain per-function. Their combined
+    /// cap is intersected because the prefix checks it before copying either
+    /// debug payload.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn intersect_counts(
+        self,
+        max_local_variables: usize,
+        max_closure_variables: usize,
+        max_constant_pool_entries: usize,
+        max_total_debug_bytes: usize,
+    ) -> Self {
+        Self {
+            max_local_variables: minimum(self.max_local_variables, max_local_variables),
+            max_closure_variables: minimum(self.max_closure_variables, max_closure_variables),
+            max_constant_pool_entries: minimum(
+                self.max_constant_pool_entries,
+                max_constant_pool_entries,
+            ),
+            max_pc2line_bytes: self.max_pc2line_bytes,
+            max_source_bytes: self.max_source_bytes,
+            max_total_debug_bytes: minimum(self.max_total_debug_bytes, max_total_debug_bytes),
+            code_limits: self.code_limits,
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn intersect_code(
+        self,
+        max_bytes: usize,
+        max_instructions: usize,
+        max_atom_relocations: usize,
+    ) -> Self {
+        Self {
+            code_limits: self.code_limits.intersect(
+                max_bytes,
+                max_instructions,
+                max_atom_relocations,
+            ),
+            ..self
+        }
+    }
+
+    pub(in crate::runtime::binary_object) const fn limit(
+        self,
+        kind: FunctionResourceKind,
+    ) -> usize {
         match kind {
             FunctionResourceKind::LocalVariables => self.max_local_variables,
             FunctionResourceKind::ClosureVariables => self.max_closure_variables,
@@ -54,6 +101,13 @@ impl FunctionEnvelopeLimits {
             FunctionResourceKind::SourceBytes => self.max_source_bytes,
             FunctionResourceKind::TotalDebugBytes => self.max_total_debug_bytes,
         }
+    }
+
+    pub(in crate::runtime::binary_object) const fn code_limit(
+        self,
+        kind: super::super::code::CodeResourceKind,
+    ) -> usize {
+        self.code_limits.limit(kind)
     }
 
     fn check(
@@ -71,6 +125,10 @@ impl FunctionEnvelopeLimits {
         }
         Ok(())
     }
+}
+
+const fn minimum(left: usize, right: usize) -> usize {
+    if left < right { left } else { right }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,6 +340,12 @@ pub(in crate::runtime) fn read_function_record_prefix_after_tag(
         FunctionResourceKind::ConstantPoolEntries,
         constant_pool_count,
     )?;
+    // The byte length is already known from the prefix. Enforce it before
+    // reading local/closure tables or slicing/copying the code payload so a
+    // whole-image remaining budget is a rejection-time work boundary.
+    limits
+        .code_limits
+        .check(CodeResourceKind::Bytes, byte_code_length)?;
 
     let mut locals = Vec::new();
     locals

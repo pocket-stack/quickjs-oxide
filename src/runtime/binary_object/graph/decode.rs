@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
+use super::super::function_image::{FunctionId, ImageValue};
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::arena::{ArenaError, NodeState, ObjectArena, PendingNodeKind};
 use super::model::{
@@ -197,8 +198,15 @@ impl<Opaque> From<ArenaError> for DecodeError<Opaque> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct MachineId(u64);
+
+/// Opaque identity of one data-machine traversal.
+///
+/// The raw counter is never exposed. Whole-image opaque identities retain this
+/// token so a value originating in one decoder cannot be rebranded by another.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(in crate::runtime::binary_object) struct MachineSource(MachineId);
 
 static NEXT_MACHINE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -230,10 +238,10 @@ mod sealed {
 /// `from_wire(wire)` must return `Ok` from both `as_wire` and `into_wire`, with
 /// the same `WireValue`. Conversely, `as_wire` and `into_wire` must agree on
 /// which variants are opaque, and neither an opaque variant nor its discriminator
-/// may contain or re-encode a raw `WireValue` or `NodeId`. A future FunctionImage
-/// adapter must separately authenticate that an opaque FunctionId belongs to the
-/// same image before asking this machine to wrap it. Violating these laws can
-/// defeat the arena-provenance checks and is an internal implementation bug.
+/// may contain or re-encode a raw `WireValue` or `NodeId`. Every opaque variant
+/// must return the machine source retained by its identity; `wrap_opaque_value`
+/// rejects a missing or foreign source. Violating these laws can defeat the
+/// arena-provenance checks and is an internal implementation bug.
 #[allow(private_bounds)]
 pub(in crate::runtime::binary_object) trait DataValue:
     sealed::Sealed + Sized
@@ -243,6 +251,7 @@ pub(in crate::runtime::binary_object) trait DataValue:
     fn from_wire(value: WireValue) -> Self;
     fn as_wire(&self) -> Result<&WireValue, Self::Opaque>;
     fn into_wire(self) -> Result<WireValue, Self::Opaque>;
+    fn opaque_source(&self) -> Option<MachineSource>;
 }
 
 impl sealed::Sealed for WireValue {}
@@ -260,6 +269,32 @@ impl DataValue for WireValue {
 
     fn into_wire(self) -> Result<WireValue, Self::Opaque> {
         Ok(self)
+    }
+
+    fn opaque_source(&self) -> Option<MachineSource> {
+        None
+    }
+}
+
+impl sealed::Sealed for ImageValue {}
+
+impl DataValue for ImageValue {
+    type Opaque = FunctionId;
+
+    fn from_wire(value: WireValue) -> Self {
+        Self::from_wire(value)
+    }
+
+    fn as_wire(&self) -> Result<&WireValue, Self::Opaque> {
+        self.as_wire()
+    }
+
+    fn into_wire(self) -> Result<WireValue, Self::Opaque> {
+        self.into_wire()
+    }
+
+    fn opaque_source(&self) -> Option<MachineSource> {
+        self.function_id().map(FunctionId::source)
     }
 }
 
@@ -392,12 +427,17 @@ where
         })
     }
 
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn source(&self) -> MachineSource {
+        MachineSource(self.id)
+    }
+
     /// Bind a caller-produced opaque value, such as a completed function
     /// record, to this machine. For a lawful [`DataValue`] adapter, concrete
     /// wire values are rejected; in particular, a raw NodeId cannot be
-    /// rebranded into another arena. This does not authenticate higher-level
-    /// opaque identities: a future FunctionImage driver must prove that a
-    /// FunctionId belongs to its image before calling this method.
+    /// rebranded into another arena. Opaque values must also carry this exact
+    /// machine's source token. The whole-image function table separately proves
+    /// that a same-source FunctionId names one of its reserved slots.
     pub(in crate::runtime::binary_object) fn wrap_opaque_value(
         &self,
         value: V,
@@ -405,14 +445,14 @@ where
         if value.as_wire().is_ok() {
             return Err(DecodeError::InvalidCompletionTarget);
         }
+        if value.opaque_source() != Some(self.source()) {
+            return Err(DecodeError::InvalidCompletionTarget);
+        }
         Ok(self.complete(value))
     }
 
-    /// Remove provenance only after proving that the completed value belongs
-    /// to this machine. This remains private to the data decoder: its facade
-    /// unwraps the final data root here, while a future sibling FunctionImage
-    /// driver must preserve [`DataCompletion`] across data/function boundaries
-    /// until a consuming whole-image finalizer is introduced.
+    /// Remove provenance inside the data decoder only. Whole-image siblings
+    /// must instead consume the machine through [`Self::finish_output`].
     fn unwrap_completion(
         &self,
         completion: DataCompletion<V>,
@@ -856,6 +896,15 @@ where
         self.arena.finish().map_err(Into::into)
     }
 
+    pub(in crate::runtime::binary_object) fn finish_output(
+        self,
+    ) -> Result<DataMachineOutput<V, K>, DecodeError<V::Opaque>> {
+        Ok(DataMachineOutput {
+            owner: self.id,
+            parts: self.arena.finish()?,
+        })
+    }
+
     fn check_next_node_depth(&self, active_depth: usize) -> Result<(), GraphError> {
         let depth = active_depth
             .checked_add(1)
@@ -863,6 +912,37 @@ where
                 kind: GraphResourceKind::NestingDepth,
             })?;
         self.limits.check(GraphResourceKind::NestingDepth, depth)
+    }
+}
+
+/// Consuming finalization capability for one completed data machine.
+///
+/// The source machine no longer exists, so values unwrapped here cannot be
+/// attached back into it. The capability retains the source identity long
+/// enough to unwrap every root and function constant exactly once by move.
+pub(in crate::runtime::binary_object) struct DataMachineOutput<V, K> {
+    owner: MachineId,
+    parts: super::arena::ObjectArenaParts<V, K>,
+}
+
+impl<V, K> DataMachineOutput<V, K>
+where
+    V: DataValue,
+{
+    pub(in crate::runtime::binary_object) fn unwrap_completion(
+        &self,
+        completion: DataCompletion<V>,
+    ) -> Result<V, DecodeError<V::Opaque>> {
+        if completion.owner != self.owner {
+            return Err(DecodeError::InvalidCompletionTarget);
+        }
+        Ok(completion.value)
+    }
+
+    pub(in crate::runtime::binary_object) fn into_parts(
+        self,
+    ) -> super::arena::ObjectArenaParts<V, K> {
+        self.parts
     }
 }
 
@@ -1273,7 +1353,7 @@ mod tests {
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum WiderValue {
         Data(WireValue),
-        Function(u32),
+        Function(MachineSource, u32),
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1293,14 +1373,21 @@ mod tests {
         fn as_wire(&self) -> Result<&WireValue, Self::Opaque> {
             match self {
                 Self::Data(value) => Ok(value),
-                Self::Function(function) => Err(WiderOpaque::Function(*function)),
+                Self::Function(_, function) => Err(WiderOpaque::Function(*function)),
             }
         }
 
         fn into_wire(self) -> Result<WireValue, Self::Opaque> {
             match self {
                 Self::Data(value) => Ok(value),
-                Self::Function(function) => Err(WiderOpaque::Function(function)),
+                Self::Function(_, function) => Err(WiderOpaque::Function(function)),
+            }
+        }
+
+        fn opaque_source(&self) -> Option<MachineSource> {
+            match self {
+                Self::Data(_) => None,
+                Self::Function(source, _) => Some(*source),
             }
         }
     }
@@ -1483,8 +1570,11 @@ mod tests {
     #[test]
     fn opaque_function_values_store_safely_but_wire_nodes_cannot_be_rebranded() {
         let mut ordinary = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let ordinary_source = ordinary.source();
         let mut ordinary_frame = pending_wider_frame(&mut ordinary, BcTag::Object, &[1], 50);
-        let function = ordinary.wrap_opaque_value(WiderValue::Function(1)).unwrap();
+        let function = ordinary
+            .wrap_opaque_value(WiderValue::Function(ordinary_source, 1))
+            .unwrap();
         ordinary
             .attach_to_frame(
                 &mut ordinary_frame,
@@ -1503,14 +1593,17 @@ mod tests {
             &[WireNodeCarrier::Ordinary {
                 properties: Box::from([WirePropertyCarrier {
                     key: WireKey::Index(7),
-                    value: WiderValue::Function(1),
+                    value: WiderValue::Function(ordinary_source, 1),
                 }]),
             }]
         );
 
         let mut array = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let array_source = array.source();
         let mut array_frame = pending_wider_frame(&mut array, BcTag::Array, &[1], 60);
-        let function = array.wrap_opaque_value(WiderValue::Function(2)).unwrap();
+        let function = array
+            .wrap_opaque_value(WiderValue::Function(array_source, 2))
+            .unwrap();
         array
             .attach_to_frame(&mut array_frame, None, function)
             .unwrap();
@@ -1523,14 +1616,17 @@ mod tests {
         assert_eq!(
             array_parts.nodes.as_ref(),
             &[WireNodeCarrier::Array {
-                elements: Box::from([WiderValue::Function(2)]),
+                elements: Box::from([WiderValue::Function(array_source, 2)]),
             }]
         );
 
         let mut template = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let template_source = template.source();
         let mut template_frame =
             pending_wider_frame(&mut template, BcTag::TemplateObject, &[0], 70);
-        let function = template.wrap_opaque_value(WiderValue::Function(3)).unwrap();
+        let function = template
+            .wrap_opaque_value(WiderValue::Function(template_source, 3))
+            .unwrap();
         template
             .attach_to_frame(&mut template_frame, None, function)
             .unwrap();
@@ -1544,7 +1640,7 @@ mod tests {
             template_parts.nodes.as_ref(),
             &[WireNodeCarrier::TemplateObject {
                 elements: Box::new([]),
-                raw: WiderValue::Function(3),
+                raw: WiderValue::Function(template_source, 3),
             }]
         );
 
@@ -1586,6 +1682,7 @@ mod tests {
 
         let mut object_machine =
             DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let object_source = object_machine.source();
         let mut empty_cursor = WireCursor::new(&[], ReaderMode::Strict, WIRE_LIMITS).unwrap();
         let object_step = object_machine
             .read_value_after_tag(&mut empty_cursor, BcTag::ObjectValue, 21, 0)
@@ -1594,7 +1691,7 @@ mod tests {
             panic!("ObjectValue must wait for its child");
         };
         let function = object_machine
-            .wrap_opaque_value(WiderValue::Function(1))
+            .wrap_opaque_value(WiderValue::Function(object_source, 1))
             .unwrap();
         object_machine
             .attach_to_frame(&mut object_frame, None, function)
@@ -1609,6 +1706,7 @@ mod tests {
         ));
 
         let mut date_machine = DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let date_source = date_machine.source();
         let date_step = date_machine
             .read_value_after_tag(&mut empty_cursor, BcTag::Date, 34, 0)
             .unwrap();
@@ -1616,7 +1714,7 @@ mod tests {
             panic!("Date must wait for its child");
         };
         let function = date_machine
-            .wrap_opaque_value(WiderValue::Function(2))
+            .wrap_opaque_value(WiderValue::Function(date_source, 2))
             .unwrap();
         date_machine
             .attach_to_frame(&mut date_frame, None, function)
@@ -1635,6 +1733,7 @@ mod tests {
             WireCursor::new(&typed_body, ReaderMode::Strict, WIRE_LIMITS).unwrap();
         let mut typed_machine =
             DataMachine::<WiderValue, WireKey>::new(GRAPH_LIMITS, true).unwrap();
+        let typed_source = typed_machine.source();
         let typed_step = typed_machine
             .read_value_after_tag(&mut typed_cursor, BcTag::TypedArray, 55, 0)
             .unwrap();
@@ -1642,7 +1741,7 @@ mod tests {
             panic!("TypedArray must wait for its backing value");
         };
         let function = typed_machine
-            .wrap_opaque_value(WiderValue::Function(3))
+            .wrap_opaque_value(WiderValue::Function(typed_source, 3))
             .unwrap();
         typed_machine
             .attach_to_frame(&mut typed_frame, None, function)

@@ -140,23 +140,31 @@ bounded `FunctionRecordPrefix` layer now reads and canonically writes the fixed
 FunctionBytecode body after tag 12: flags, frame metadata, locals, closures,
 scanned code, and optional debug bytes. It stops immediately before the first
 of `pending_constant_pool_count` recursively encoded values and never admits
-the record to execution. This prefix is deliberately not a `FunctionImage`;
-the constant pool and nested functions remain pending until a whole-image
-decoder and encoder can share one object-reference arena across the complete
-image. The property and node carriers are now generic over their key and value
-types, while the concrete data-only `WireGraph` remains fixed to `WireKey` and
-`WireValue` and still rejects tag 12. That type boundary prepares bytecode-mode
-predefined property keys and function values without widening the admitted data
-graph. Strict mode rejects aliased narrow fields and reserved flag bits;
-compatible mode preserves QuickJS's `u32`-to-`u16` truncation, while signed
-negative-size and decrement-overflow spellings remain hard safety rejections.
-An internal, non-executable FunctionImage atom table now reads the bytecode
-header once and normalizes numeric, predefined-string, narrow/wide, and
-duplicate slots into one semantic namespace shared by future nested function
-records. It preserves private and symbol identities, and retains QuickJS's
-strict-reject versus compatible-omit disposition for null property keys; the
-required value consumption, tag 12 decoding, and execution remain outside this
-milestone.
+the record to execution. A complete, bounded `FunctionImage` reader now owns
+the remaining traversal. It reads the bytecode header once, normalizes numeric,
+predefined-string, narrow/wide, and duplicate slots into one semantic atom
+namespace, and immediately relocates every function metadata and opcode atom.
+It preserves private and symbol identities and QuickJS's strict-reject versus
+compatible-omit disposition for null property keys. Strict mode rejects
+aliased narrow fields and reserved flag bits; compatible mode preserves
+QuickJS's `u32`-to-`u16` truncation, while signed negative-size and
+decrement-overflow spellings remain hard safety rejections.
+
+The whole-image reader uses one heterogeneous frame stack, one `DataMachine`,
+one `ObjectArena`, and one preorder function table across the root and every
+constant pool. FunctionBytecode records never consume object-reference IDs.
+Function frames retain linear, source-bound data completions until a consuming
+whole-image finalizer unwraps the root and every constant by move. Function IDs
+carry the same non-wrapping machine-source token, are checked against reserved
+function slots before publication, and cannot be used to index a different
+image. Aggregate limits independently bound function count, mixed traversal
+depth, constant-pool entries, locals, closures, code bytes, instruction spans,
+atom relocations, and debug bytes in addition to the existing per-function,
+wire, and graph limits. Each function prefix receives the intersection of its
+per-function cap and the remaining whole-image budget before table allocation
+or code copying/scanning. The completed `FunctionImage` is deliberately
+non-executable: it has no heap materializer, verifier bypass, or evaluation
+entry point.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
 the Rust prefix codec against the exact bytes. A second authenticated 110-byte
@@ -166,6 +174,14 @@ reference vector proves that neither the outer nor nested FunctionBytecode
 record consumes an object-reference ID: a cpool TemplateObject is ID 1, its
 raw object is ID 2, and the enclosing root later refers back to ID 1. A fresh
 runtime also observes the cpool result and root property as the same object.
+An authenticated 33-byte ancestor-reference vector adds the inverse topology:
+an enclosing Ordinary object is reference ID 0, its FunctionBytecode property
+has no reference ID, and that function's constant pool resolves
+ObjectReference(0); fresh QuickJS execution proves `root.f()` is the identical
+root object. Authenticated negative vectors also pin QuickJS's three diagnostic
+classes when FunctionBytecode appears as the child of ObjectValue, Date, or
+TypedArray; a truncated-record probe proves that all three parents first decode
+the complete function child before applying their typed rejection.
 The data decoder separates preorder identity registration from value
 completion: every parent/root attachment now uses one completed-subtree
 delivery path owned by the decode state. Its reference state is now an
@@ -173,15 +189,14 @@ independent generic `ObjectArena`, ready for a whole-image decoder to carry one
 instance through every recursive constant pool without registering
 FunctionBytecode records themselves. The data-value and container state machine
 is now independently generic over value and property-key carriers as
-`DataMachine`/`DataFrame`. The data-only facade remains the sole driver in this
-milestone: it still owns header interning, key timing, the outer frame stack,
-root delivery, and unconditional cursor finalization, and it still rejects
-FunctionBytecode without consuming its payload. A wider whole-image driver can
-therefore carry function identities through ordinary properties, Arrays, and
-TemplateObjects while reusing the same aggregate budgets and single object
-arena; TypedArray, ObjectValue, and Date expose typed failures when such an
-identity is invalid in their child position. The arena represents incomplete
-identities with kind-checked pending/ready slots. Source-bound linear node
+`DataMachine`/`DataFrame`. The data-only facade still owns its own header
+interning, key timing, frame stack, root delivery, and unconditional cursor
+finalization, and still rejects FunctionBytecode without consuming its payload.
+The separate whole-image driver carries authenticated function identities
+through ordinary properties, Arrays, and TemplateObjects while reusing the
+same budgets and arena; TypedArray, ObjectValue, and Date expose typed failures
+when such an identity is invalid in their child position. The arena represents
+incomplete identities with kind-checked pending/ready slots. Source-bound linear node
 reservations, opaque data frames, and linear completed values prevent stale or
 cross-machine commits; machine identities never wrap, and raw node values
 cannot be rebranded as caller-produced opaque values. The value adapter is
@@ -189,13 +204,15 @@ sealed inside the graph reader, so sibling modules cannot substitute a
 classifier which hides raw node identities. Atomic reference reservations keep
 alias publication indivisible, while independently bounded
 reference entries can alias pending or ready identities without consuming
-another node. This prerequisite does not yet define function identity: the
-whole-image owner must source-authenticate opaque function IDs and retain
-completed-value provenance across function frames until finalization.
+another node.
 Malicious TypedArray placeholder paths are rejected deterministically instead
 of reproducing pinned QuickJS's native crashes.
 The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
-Module. It is not a public binary-object API yet:
+Module. The FunctionImage reader admits FunctionBytecode but still rejects
+Module and SharedArrayBuffer, and neither reader is a public binary-object API
+yet. A whole-image writer, module-image model, heap materializer, native-code
+semantic verifier/translator, and public read/write flags remain future
+milestones. In addition,
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.
@@ -235,6 +252,7 @@ Fast CI rejects any new unreferenced Test262 bookkeeping file.
 ```sh
 cargo test --locked --workspace --all-targets
 cargo test --locked --features test262-host --lib --bins
+./scripts/test-quickjs-c-oracles.sh --check
 ./scripts/test-test262.sh --check
 ./scripts/test-test262.sh --focused
 TEST262_WORKERS=2 ./scripts/test-test262.sh --full

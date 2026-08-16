@@ -38,6 +38,50 @@ impl CodeLimits {
             max_atom_relocations,
         }
     }
+
+    /// Intersect one function's scanner limits with the remaining whole-image
+    /// budget before any native-code bytes or sidecars are allocated.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn intersect(
+        self,
+        max_bytes: usize,
+        max_instructions: usize,
+        max_atom_relocations: usize,
+    ) -> Self {
+        Self {
+            max_bytes: minimum(self.max_bytes, max_bytes),
+            max_instructions: minimum(self.max_instructions, max_instructions),
+            max_atom_relocations: minimum(self.max_atom_relocations, max_atom_relocations),
+        }
+    }
+
+    pub(in crate::runtime::binary_object) const fn limit(self, kind: CodeResourceKind) -> usize {
+        match kind {
+            CodeResourceKind::Bytes => self.max_bytes,
+            CodeResourceKind::Instructions => self.max_instructions,
+            CodeResourceKind::AtomRelocations => self.max_atom_relocations,
+        }
+    }
+
+    pub(in crate::runtime::binary_object) fn check(
+        self,
+        kind: CodeResourceKind,
+        requested: usize,
+    ) -> Result<(), CodeError> {
+        let limit = self.limit(kind);
+        if requested > limit {
+            return Err(CodeError::ResourceLimit {
+                kind,
+                requested,
+                limit,
+            });
+        }
+        Ok(())
+    }
+}
+
+const fn minimum(left: usize, right: usize) -> usize {
+    if left < right { left } else { right }
 }
 
 /// Independently budgeted resources consumed by the code scanner.
@@ -225,6 +269,19 @@ pub(in crate::runtime) struct CodeImage {
     payload_offset: usize,
 }
 
+/// Owned scanner output consumed by the whole-image relocation layer.
+///
+/// This is an internal linear handoff, not a second code representation. It
+/// exists so relocation can retain the owned byte payload and sidecars without
+/// cloning them before discarding the raw atom namespace.
+pub(in crate::runtime::binary_object) struct CodeImageParts {
+    pub(in crate::runtime::binary_object) bytes: Vec<u8>,
+    pub(in crate::runtime::binary_object) instructions: Vec<InstructionSpan>,
+    pub(in crate::runtime::binary_object) atom_relocations: Vec<AtomRelocation>,
+    pub(in crate::runtime::binary_object) atom_space: AtomIndexSpace,
+    pub(in crate::runtime::binary_object) payload_offset: usize,
+}
+
 impl CodeImage {
     /// Copy and structurally scan a complete native-code payload.
     ///
@@ -245,13 +302,7 @@ impl CodeImage {
                 found: atom_space.mode(),
             });
         }
-        if payload.len() > limits.max_bytes {
-            return Err(CodeError::ResourceLimit {
-                kind: CodeResourceKind::Bytes,
-                requested: payload.len(),
-                limit: limits.max_bytes,
-            });
-        }
+        limits.check(CodeResourceKind::Bytes, payload.len())?;
         if payload.len() > u32::MAX as usize {
             return Err(CodeError::RelativeOffsetOverflow {
                 offset: payload.len(),
@@ -402,6 +453,17 @@ impl CodeImage {
     #[must_use]
     pub(in crate::runtime) const fn atom_space(&self) -> AtomIndexSpace {
         self.atom_space
+    }
+
+    /// Consume this scanner image for semantic whole-image relocation.
+    pub(in crate::runtime::binary_object) fn into_parts(self) -> CodeImageParts {
+        CodeImageParts {
+            bytes: self.bytes,
+            instructions: self.instructions,
+            atom_relocations: self.atom_relocations,
+            atom_space: self.atom_space,
+            payload_offset: self.payload_offset,
+        }
     }
 
     /// Re-encode in the exact atom namespace used during scanning.

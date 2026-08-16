@@ -103,7 +103,8 @@ while IFS=$'\t' read -r id family source source_hash expected expected_hash desc
     descriptions+=("$description")
 done < <(tail -n +2 "$manifest")
 
-for required_id in callback-contracts function-bytecode-nested-closure \
+for required_id in callback-contracts function-bytecode-ancestor-reference \
+    function-bytecode-invalid-data-parent function-bytecode-nested-closure \
     function-bytecode-reference-boundary function-bytecode-wire \
     import-attributes import-meta json; do
     found=false

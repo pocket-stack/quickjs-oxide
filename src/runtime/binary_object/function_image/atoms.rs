@@ -166,6 +166,11 @@ impl ImageAtomTable {
         &self.dynamic_atoms
     }
 
+    /// Consume the remap table after every raw atom has been relocated.
+    pub(super) fn into_dynamic_atoms(self) -> Box<[WireString]> {
+        self.dynamic_atoms.into_boxed_slice()
+    }
+
     /// Relocate one raw scanner atom into the whole-image semantic namespace.
     ///
     /// `source_space` must have the mode and header count obtained from
