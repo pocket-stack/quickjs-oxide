@@ -120,8 +120,20 @@ and raw `u32` opcode operands.
 The data graph uses that shared namespace without auto-detection or local
 `first_atom` arithmetic, while an authenticated differential gate checks every
 catalog ID, kind, spelling, and ordering against the pinned `quickjs-atom.h`.
-Function bytecode still requires its own validated image and relocation layer
-before admission. The decoder separates preorder identity registration from
+The final function-code ABI now has a separately authenticated 244-entry
+opcode catalog, including 66 short opcodes whose first 19 wire IDs overlap
+QuickJS's 19 temporary compiler descriptors. A bounded, heap-independent
+scanner safely rejects the reserved `invalid` opcode, unknown opcodes,
+truncated instructions, offset overflow, and independent
+byte/instruction/relocation budget excesses.
+It records structural instruction spans, resolves all 21 fixed-width atom
+operands into typed bytecode-namespace identities, preserves QuickJS's
+end-of-payload invalid-atom diagnostic position, and can canonically re-encode
+in the same namespace. This image is deliberately non-executable: it does not
+admit FunctionBytecode tag 12, validate stack or control-flow semantics, create
+runtime atoms, or bypass the existing verified-bytecode publication path. The
+complete function envelope and its constant-pool object graph remain the next
+admission layer. The decoder separates preorder identity registration from
 value completion: every parent/root attachment now uses one completed-subtree
 delivery path owned by the decode state. Its private arena represents
 incomplete identities with kind-checked pending/ready slots; linear

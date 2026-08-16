@@ -11,10 +11,16 @@
 pub(in crate::runtime) mod atoms;
 
 #[allow(dead_code)]
+pub(in crate::runtime) mod code;
+
+#[allow(dead_code)]
 pub(in crate::runtime) mod graph;
 
 #[allow(dead_code)]
 pub(in crate::runtime) mod pinned_atoms;
+
+#[allow(dead_code)]
+pub(in crate::runtime) mod pinned_opcodes;
 
 #[allow(dead_code)]
 pub(in crate::runtime) mod wire;
