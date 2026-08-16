@@ -67,6 +67,57 @@ mod tests {
     }
 
     #[test]
+    fn exact_quickjs_typed_array_vectors_cross_the_pure_graph() {
+        for (bytes, references) in [
+            (
+                &[
+                    5, 0, 14, 4, 2, 2, 15, 8, 0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0,
+                ][..],
+                true,
+            ),
+            (
+                &[
+                    5, 0, 9, 2, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x11, 0x22, 14, 2, 1, 1, 19, 1,
+                ][..],
+                true,
+            ),
+            (
+                &[
+                    5, 0, 9, 2, 14, 2, 1, 1, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x11, 0x22, 19, 1,
+                ][..],
+                true,
+            ),
+            (
+                &[
+                    5, 0, 9, 2, 14, 2, 2, 0, 15, 8, 0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0, 0,
+                    0, 0, 14, 3, 2, 2, 19, 2,
+                ][..],
+                true,
+            ),
+            (
+                &[5, 0, 14, 4, 2, 4, 15, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0][..],
+                false,
+            ),
+        ] {
+            assert_eq!(rewrite(bytes, references, ReaderMode::Strict), bytes);
+        }
+    }
+
+    #[test]
+    fn compatible_typed_array_lengths_rewrite_canonically() {
+        assert_eq!(
+            rewrite(
+                &[
+                    5, 0, 14, 2, 0x80, 0, 0x80, 0, 15, 0x80, 0, 0xff, 0xff, 0xff, 0xff, 0x0f,
+                ],
+                false,
+                ReaderMode::QuickJsCompatible,
+            ),
+            [5, 0, 14, 2, 0, 0, 15, 0, 0xff, 0xff, 0xff, 0xff, 0x0f]
+        );
+    }
+
+    #[test]
     fn compatible_array_buffer_lengths_rewrite_canonically() {
         assert_eq!(
             rewrite(

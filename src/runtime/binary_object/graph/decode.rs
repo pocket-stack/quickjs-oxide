@@ -14,9 +14,10 @@ use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::model::{
-    ArrayBufferLayoutError, AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId, WireGraph,
-    WireKey, WireNode, WireProperty, WireValue, canonical_bigint_length, numeric_atom_index,
-    semantic_atom_eq, semantic_atom_hash, validate_array_buffer_layout,
+    ArrayBufferLayoutError, AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId,
+    TypedArrayBackingError, TypedArrayKind, TypedArrayLayoutError, WireGraph, WireKey, WireNode,
+    WireProperty, WireValue, canonical_bigint_length, numeric_atom_index, semantic_atom_eq,
+    semantic_atom_hash, validate_array_buffer_layout, validate_typed_array_layout,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,6 +43,18 @@ pub(in crate::runtime) enum DecodeError {
     InvalidArrayBuffer {
         offset: usize,
         reason: ArrayBufferLayoutError,
+    },
+    InvalidTypedArrayKind {
+        offset: usize,
+        kind: u8,
+    },
+    InvalidTypedArrayBacking {
+        offset: usize,
+        reason: TypedArrayBackingError,
+    },
+    InvalidTypedArray {
+        offset: usize,
+        reason: TypedArrayLayoutError,
     },
     InvalidCompletionTarget,
     InvalidNodeState {
@@ -77,6 +90,18 @@ impl fmt::Display for DecodeError {
             }
             Self::InvalidArrayBuffer { offset, reason } => {
                 write!(formatter, "invalid ArrayBuffer at byte {offset}: {reason}")
+            }
+            Self::InvalidTypedArrayKind { offset, kind } => {
+                write!(formatter, "invalid TypedArray kind {kind} at byte {offset}")
+            }
+            Self::InvalidTypedArrayBacking { offset, reason } => {
+                write!(
+                    formatter,
+                    "invalid TypedArray backing at byte {offset}: {reason}"
+                )
+            }
+            Self::InvalidTypedArray { offset, reason } => {
+                write!(formatter, "invalid TypedArray at byte {offset}: {reason}")
             }
             Self::InvalidCompletionTarget => {
                 formatter.write_str("invalid wire graph completion target")
@@ -207,8 +232,26 @@ pub(in crate::runtime) fn decode_graph(
 }
 
 enum NodeSlot {
-    Pending,
+    Pending(PendingNodeKind),
     Ready(WireNode),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingNodeKind {
+    Ordinary,
+    Array,
+    TypedArray,
+}
+
+impl PendingNodeKind {
+    fn accepts(self, node: &WireNode) -> bool {
+        matches!(
+            (self, node),
+            (Self::Ordinary, WireNode::Ordinary { .. })
+                | (Self::Array, WireNode::Array { .. })
+                | (Self::TypedArray, WireNode::TypedArray { .. })
+        )
+    }
 }
 
 #[must_use = "a reserved reference entry must be committed exactly once"]
@@ -253,6 +296,7 @@ impl DecodeState {
             BcTag::BigInt => self.read_bigint(cursor)?,
             BcTag::Object => return self.begin_container(cursor, ContainerKind::Ordinary),
             BcTag::Array => return self.begin_container(cursor, ContainerKind::Array),
+            BcTag::TypedArray => return self.begin_typed_array(cursor, tag_offset),
             BcTag::ArrayBuffer => self.read_array_buffer(cursor)?,
             BcTag::ObjectReference => {
                 if !self.allow_object_references {
@@ -270,7 +314,6 @@ impl DecodeState {
             BcTag::TemplateObject
             | BcTag::FunctionBytecode
             | BcTag::Module
-            | BcTag::TypedArray
             | BcTag::SharedArrayBuffer
             | BcTag::Date
             | BcTag::ObjectValue => {
@@ -382,6 +425,35 @@ impl DecodeState {
         Ok(WireValue::Node(node))
     }
 
+    fn begin_typed_array(
+        &mut self,
+        cursor: &mut WireCursor<'_>,
+        tag_offset: usize,
+    ) -> Result<ReadStep, DecodeError> {
+        let kind_offset = cursor.position();
+        let kind_byte = cursor.read_u8()?;
+        let kind = TypedArrayKind::from_wire_byte(kind_byte).ok_or(
+            DecodeError::InvalidTypedArrayKind {
+                offset: kind_offset,
+                kind: kind_byte,
+            },
+        )?;
+        let length = cursor.read_uleb128()?;
+        let byte_offset = cursor.read_uleb128()?;
+
+        self.check_next_node_depth()?;
+        let reservation = self.reserve_node()?;
+        let node = self.install_pending_node(reservation, PendingNodeKind::TypedArray)?;
+        Ok(ReadStep::Pending(Frame::TypedArray {
+            node,
+            offset: tag_offset,
+            kind,
+            length,
+            byte_offset,
+            backing: None,
+        }))
+    }
+
     fn begin_container(
         &mut self,
         cursor: &mut WireCursor<'_>,
@@ -403,7 +475,7 @@ impl DecodeState {
         self.check_next_node_depth()?;
 
         let reservation = self.reserve_node()?;
-        let node_id = self.install_pending_node(reservation)?;
+        let node_id = self.install_pending_node(reservation, kind.pending_node_kind())?;
         let frame = Frame::new(kind, node_id, entry_count)?;
         Ok(ReadStep::Pending(frame))
     }
@@ -432,22 +504,79 @@ impl DecodeState {
     }
 
     fn finish_frame(&mut self, frame: Frame) -> Result<WireValue, DecodeError> {
-        let (node, replacement) = match frame {
-            Frame::Ordinary {
-                node, properties, ..
-            } => (
-                node,
-                WireNode::Ordinary {
-                    properties: properties.into_boxed_slice(),
-                },
-            ),
-            Frame::Array { node, elements, .. } => (
-                node,
-                WireNode::Array {
-                    elements: elements.into_boxed_slice(),
-                },
-            ),
-        };
+        let (node, replacement) =
+            match frame {
+                Frame::Ordinary {
+                    node, properties, ..
+                } => (
+                    node,
+                    WireNode::Ordinary {
+                        properties: properties.into_boxed_slice(),
+                    },
+                ),
+                Frame::Array { node, elements, .. } => (
+                    node,
+                    WireNode::Array {
+                        elements: elements.into_boxed_slice(),
+                    },
+                ),
+                Frame::TypedArray {
+                    node,
+                    offset,
+                    kind,
+                    length,
+                    byte_offset,
+                    backing,
+                } => {
+                    let buffer = match backing.ok_or(DecodeError::InvalidCompletionTarget)? {
+                        WireValue::Node(buffer) => buffer,
+                        _ => {
+                            return Err(DecodeError::InvalidTypedArrayBacking {
+                                offset,
+                                reason: TypedArrayBackingError::NotObject,
+                            });
+                        }
+                    };
+                    let node_count = self.nodes.len();
+                    let backing_byte_length = match self.nodes.get(buffer.as_usize()).ok_or(
+                        GraphError::InvalidNodeIndex {
+                            index: buffer.zero_based(),
+                            node_count,
+                        },
+                    )? {
+                        NodeSlot::Ready(WireNode::ArrayBuffer { bytes, .. }) => bytes.len(),
+                        NodeSlot::Ready(_) => {
+                            return Err(DecodeError::InvalidTypedArrayBacking {
+                                offset,
+                                reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
+                            });
+                        }
+                        NodeSlot::Pending(PendingNodeKind::TypedArray) => {
+                            return Err(DecodeError::InvalidTypedArrayBacking {
+                                offset,
+                                reason: TypedArrayBackingError::Pending { node: buffer },
+                            });
+                        }
+                        NodeSlot::Pending(PendingNodeKind::Ordinary | PendingNodeKind::Array) => {
+                            return Err(DecodeError::InvalidTypedArrayBacking {
+                                offset,
+                                reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
+                            });
+                        }
+                    };
+                    validate_typed_array_layout(kind, length, byte_offset, backing_byte_length)
+                        .map_err(|reason| DecodeError::InvalidTypedArray { offset, reason })?;
+                    (
+                        node,
+                        WireNode::TypedArray {
+                            kind,
+                            length,
+                            byte_offset,
+                            buffer,
+                        },
+                    )
+                }
+            };
         self.complete_node(node, replacement)?;
         Ok(WireValue::Node(node))
     }
@@ -514,8 +643,9 @@ impl DecodeState {
     fn install_pending_node(
         &mut self,
         reservation: NodeReservation,
+        kind: PendingNodeKind,
     ) -> Result<NodeId, DecodeError> {
-        self.install_node(reservation, NodeSlot::Pending)
+        self.install_node(reservation, NodeSlot::Pending(kind))
     }
 
     fn install_ready_node(
@@ -603,7 +733,10 @@ impl DecodeState {
                 index: node.zero_based(),
                 node_count,
             })?;
-        if !matches!(slot, NodeSlot::Pending) {
+        let NodeSlot::Pending(expected) = slot else {
+            return Err(DecodeError::InvalidNodeState { node });
+        };
+        if !expected.accepts(&value) {
             return Err(DecodeError::InvalidNodeState { node });
         }
         *slot = NodeSlot::Ready(value);
@@ -618,7 +751,7 @@ impl DecodeState {
         for (index, slot) in self.nodes.into_iter().enumerate() {
             match slot {
                 NodeSlot::Ready(node) => ready_nodes.push(node),
-                NodeSlot::Pending => {
+                NodeSlot::Pending(_) => {
                     let index = u32::try_from(index).map_err(|_| GraphError::CountOverflow {
                         kind: GraphResourceKind::Nodes,
                     })?;
@@ -639,6 +772,15 @@ impl DecodeState {
 enum ContainerKind {
     Ordinary,
     Array,
+}
+
+impl ContainerKind {
+    const fn pending_node_kind(self) -> PendingNodeKind {
+        match self {
+            Self::Ordinary => PendingNodeKind::Ordinary,
+            Self::Array => PendingNodeKind::Array,
+        }
+    }
 }
 
 enum ReadStep {
@@ -669,6 +811,14 @@ enum Frame {
         node: NodeId,
         expected: usize,
         elements: Vec<WireValue>,
+    },
+    TypedArray {
+        node: NodeId,
+        offset: usize,
+        kind: TypedArrayKind,
+        length: u32,
+        byte_offset: u32,
+        backing: Option<WireValue>,
     },
 }
 
@@ -748,6 +898,14 @@ impl Frame {
                 }
                 elements.push(value);
             }
+            Self::TypedArray { backing, .. } => {
+                if key.is_some() || backing.is_some() {
+                    return Err(GraphError::CountOverflow {
+                        kind: GraphResourceKind::ContainerEntries,
+                    });
+                }
+                *backing = Some(value);
+            }
         }
         Ok(())
     }
@@ -764,6 +922,7 @@ impl Frame {
             Self::Array {
                 expected, elements, ..
             } => elements.len() == *expected,
+            Self::TypedArray { backing, .. } => backing.is_some(),
         }
     }
 }
@@ -888,8 +1047,13 @@ mod tests {
         assert!(state.nodes.is_empty());
         assert!(state.ref_table.is_empty());
 
-        let node = state.install_pending_node(reservation).unwrap();
-        assert!(matches!(state.nodes.as_slice(), [NodeSlot::Pending]));
+        let node = state
+            .install_pending_node(reservation, PendingNodeKind::Array)
+            .unwrap();
+        assert!(matches!(
+            state.nodes.as_slice(),
+            [NodeSlot::Pending(PendingNodeKind::Array)]
+        ));
         assert_eq!(state.ref_table.as_slice(), &[node]);
 
         // ObjectValue will use the same bounded operation to append an alias
@@ -925,11 +1089,43 @@ mod tests {
     fn pending_nodes_cannot_escape_decoder_finalization() {
         let mut state = empty_state(GRAPH_LIMITS, false);
         let reservation = state.reserve_node().unwrap();
-        let node = state.install_pending_node(reservation).unwrap();
+        let node = state
+            .install_pending_node(reservation, PendingNodeKind::Array)
+            .unwrap();
         assert!(matches!(
             state.into_graph_parts(),
             Err(DecodeError::InvalidNodeState { node: failed }) if failed == node
         ));
+    }
+
+    #[test]
+    fn pending_node_kinds_reject_cross_kind_completion_without_mutation() {
+        let mut state = empty_state(GRAPH_LIMITS, false);
+        let reservation = state.reserve_node().unwrap();
+        let node = state
+            .install_pending_node(reservation, PendingNodeKind::Ordinary)
+            .unwrap();
+        assert_eq!(
+            state.complete_node(
+                node,
+                WireNode::Array {
+                    elements: Box::default(),
+                },
+            ),
+            Err(DecodeError::InvalidNodeState { node })
+        );
+        assert!(matches!(
+            state.nodes.as_slice(),
+            [NodeSlot::Pending(PendingNodeKind::Ordinary)]
+        ));
+        state
+            .complete_node(
+                node,
+                WireNode::Ordinary {
+                    properties: Box::default(),
+                },
+            )
+            .unwrap();
     }
 
     #[test]
@@ -977,14 +1173,16 @@ mod tests {
         crossed.append_reference_alias(existing).unwrap();
         let pending = NodeId::from_zero_based(1);
         assert_eq!(
-            crossed.install_pending_node(stale_after_alias),
+            crossed.install_pending_node(stale_after_alias, PendingNodeKind::Array),
             Err(DecodeError::InvalidNodeState { node: pending })
         );
 
         let one_reference = GraphLimits::new(4, 1, 4, 4, 4, 4, 4, 4, 4);
         let mut bounded = empty_state(one_reference, true);
         let reservation = bounded.reserve_node().unwrap();
-        let bounded_node = bounded.install_pending_node(reservation).unwrap();
+        let bounded_node = bounded
+            .install_pending_node(reservation, PendingNodeKind::Array)
+            .unwrap();
         assert!(matches!(
             bounded.reserve_reference_entry(),
             Err(GraphError::ResourceLimit {
@@ -1679,13 +1877,269 @@ mod tests {
         );
     }
 
+    fn typed_array_vector(kind: TypedArrayKind) -> Vec<u8> {
+        let byte_length = kind.element_byte_length();
+        let mut bytes = vec![
+            5,
+            0,
+            BcTag::TypedArray.to_byte(),
+            kind.to_wire_byte(),
+            1,
+            0,
+            BcTag::ArrayBuffer.to_byte(),
+            byte_length,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0x0f,
+        ];
+        bytes.resize(bytes.len() + usize::from(byte_length), 0);
+        bytes
+    }
+
+    #[test]
+    fn typed_array_kinds_and_fresh_backings_match_pinned_quickjs() {
+        for kind in TypedArrayKind::ALL {
+            let bytes = typed_array_vector(kind);
+            let graph = decode(&bytes, ReaderMode::Strict, true).unwrap();
+            let typed_array = NodeId::from_zero_based(0);
+            let buffer = NodeId::from_zero_based(1);
+            assert_eq!(graph.root, WireValue::Node(typed_array));
+            assert_eq!(graph.ref_table.as_ref(), &[typed_array, buffer]);
+            assert_eq!(
+                graph.nodes.as_ref(),
+                &[
+                    WireNode::TypedArray {
+                        kind,
+                        length: 1,
+                        byte_offset: 0,
+                        buffer,
+                    },
+                    WireNode::ArrayBuffer {
+                        bytes: vec![0; usize::from(kind.element_byte_length())].into_boxed_slice(),
+                        max_byte_length: None,
+                    },
+                ]
+            );
+
+            let without_references = decode(&bytes, ReaderMode::Strict, false).unwrap();
+            assert!(without_references.ref_table.is_empty());
+            assert_eq!(without_references.nodes, graph.nodes);
+        }
+    }
+
+    #[test]
+    fn typed_array_reference_order_preserves_view_and_buffer_identity() {
+        // Pinned qjs bjson.write([buffer, new Uint8Array(buffer, 1, 1)], true).
+        let earlier_buffer = [
+            5, 0, 9, 2, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x11, 0x22, 14, 2, 1, 1, 19, 1,
+        ];
+        let graph = decode(&earlier_buffer, ReaderMode::Strict, true).unwrap();
+        let root = NodeId::from_zero_based(0);
+        let buffer = NodeId::from_zero_based(1);
+        let view = NodeId::from_zero_based(2);
+        assert_eq!(graph.ref_table.as_ref(), &[root, buffer, view]);
+        assert_eq!(
+            graph.nodes[view.as_usize()],
+            WireNode::TypedArray {
+                kind: TypedArrayKind::Uint8,
+                length: 1,
+                byte_offset: 1,
+                buffer,
+            }
+        );
+
+        // Pinned qjs bjson.write([view, view], true): view is ref 1 and its
+        // freshly nested backing buffer is ref 2.
+        let repeated_view = [
+            5, 0, 9, 2, 14, 2, 1, 1, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x11, 0x22, 19, 1,
+        ];
+        let graph = decode(&repeated_view, ReaderMode::Strict, true).unwrap();
+        let view = NodeId::from_zero_based(1);
+        let buffer = NodeId::from_zero_based(2);
+        assert_eq!(graph.ref_table.as_ref(), &[root, view, buffer]);
+        assert_eq!(
+            graph.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(view), WireValue::Node(view)]),
+            }
+        );
+    }
+
+    #[test]
+    fn typed_array_errors_follow_quickjs_read_and_constructor_order() {
+        assert_eq!(
+            decode(&[5, 0, 14, 12], ReaderMode::Strict, true),
+            Err(DecodeError::InvalidTypedArrayKind {
+                offset: 3,
+                kind: 12,
+            })
+        );
+        for (bytes, offset) in [
+            (&[5, 0, 14][..], 3),
+            (&[5, 0, 14, 2][..], 4),
+            (&[5, 0, 14, 2, 1][..], 5),
+            // Even an unaligned view does not reach constructor validation
+            // until its recursively encoded backing value is complete.
+            (&[5, 0, 14, 3, 1, 1][..], 6),
+        ] {
+            assert_eq!(
+                decode(bytes, ReaderMode::Strict, true),
+                Err(DecodeError::Wire(WireError::Truncated {
+                    offset,
+                    needed: 1,
+                    remaining: 0,
+                }))
+            );
+        }
+
+        // Backing class validation happens before alignment.
+        assert_eq!(
+            decode(&[5, 0, 14, 3, 1, 1, 1], ReaderMode::Strict, true),
+            Err(DecodeError::InvalidTypedArrayBacking {
+                offset: 2,
+                reason: TypedArrayBackingError::NotObject,
+            })
+        );
+        assert_eq!(
+            decode(
+                &[5, 0, 14, 3, 1, 1, 15, 0, 0xff, 0xff, 0xff, 0xff, 0x0f],
+                ReaderMode::Strict,
+                true,
+            ),
+            Err(DecodeError::InvalidTypedArray {
+                offset: 2,
+                reason: TypedArrayLayoutError::UnalignedByteOffset {
+                    byte_offset: 1,
+                    element_byte_length: 2,
+                },
+            })
+        );
+        assert_eq!(
+            decode(
+                &[5, 0, 14, 3, 1, 0, 15, 1, 0xff, 0xff, 0xff, 0xff, 0x0f, 0,],
+                ReaderMode::Strict,
+                true,
+            ),
+            Err(DecodeError::InvalidTypedArray {
+                offset: 2,
+                reason: TypedArrayLayoutError::ViewOutOfBounds {
+                    byte_offset: 0,
+                    length: 1,
+                    element_byte_length: 2,
+                    backing_byte_length: 1,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn typed_array_pending_and_wrong_backings_are_safely_rejected() {
+        let root = NodeId::from_zero_based(0);
+        // Pinned QuickJS 2026-06-04 exits 139 on this malicious self-backing
+        // placeholder. Rust preserves registration order but rejects it safely.
+        assert_eq!(
+            decode(&[5, 0, 14, 2, 1, 0, 19, 0], ReaderMode::Strict, true),
+            Err(DecodeError::InvalidTypedArrayBacking {
+                offset: 2,
+                reason: TypedArrayBackingError::Pending { node: root },
+            })
+        );
+
+        // Pinned qjs reports `TypeError: ArrayBuffer object expected` when a
+        // view points at a still-open Array or Ordinary ancestor. Those
+        // containers already have their real class; only a TypedArray's
+        // temporary NULL identity needs the safe Pending diagnostic above.
+        for (bytes, offset) in [
+            (&[5, 0, 9, 1, 14, 2, 0, 0, 19, 0][..], 4),
+            (&[5, 0, 8, 1, 1, 14, 2, 0, 0, 19, 0][..], 5),
+        ] {
+            assert_eq!(
+                decode(bytes, ReaderMode::Strict, true),
+                Err(DecodeError::InvalidTypedArrayBacking {
+                    offset,
+                    reason: TypedArrayBackingError::NotArrayBuffer { node: root },
+                })
+            );
+        }
+
+        let ordinary = NodeId::from_zero_based(1);
+        assert_eq!(
+            decode(
+                &[5, 0, 9, 2, 8, 0, 14, 2, 0, 0, 19, 1],
+                ReaderMode::Strict,
+                true,
+            ),
+            Err(DecodeError::InvalidTypedArrayBacking {
+                offset: 6,
+                reason: TypedArrayBackingError::NotArrayBuffer { node: ordinary },
+            })
+        );
+
+        assert_eq!(
+            decode(&[5, 0, 14, 2, 0, 0, 19], ReaderMode::Strict, false),
+            Err(DecodeError::ObjectReferencesNotAllowed { offset: 6 })
+        );
+        assert_eq!(
+            decode(&[5, 0, 14, 2, 0, 0, 19, 1], ReaderMode::Strict, true),
+            Err(DecodeError::Graph(GraphError::InvalidReferenceIndex {
+                index: 1,
+                reference_count: 1,
+            }))
+        );
+
+        assert_eq!(
+            decode(&[5, 0, 14, 2, 0, 0, 16], ReaderMode::Strict, true),
+            Err(DecodeError::UnsupportedTag {
+                tag: BcTag::SharedArrayBuffer,
+                offset: 6,
+            })
+        );
+    }
+
+    #[test]
+    fn typed_array_identity_and_backing_depth_are_bounded_independently() {
+        let bytes = typed_array_vector(TypedArrayKind::Uint8);
+        for (limits, expected) in [
+            (
+                GraphLimits::new(1, 8, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::Nodes,
+                    requested: 2,
+                    limit: 1,
+                },
+            ),
+            (
+                GraphLimits::new(8, 1, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::ObjectReferences,
+                    requested: 2,
+                    limit: 1,
+                },
+            ),
+            (
+                GraphLimits::new(8, 8, 1, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::NestingDepth,
+                    requested: 2,
+                    limit: 1,
+                },
+            ),
+        ] {
+            assert_eq!(
+                decode_graph(&bytes, ReaderMode::Strict, WIRE_LIMITS, limits, true),
+                Err(DecodeError::Graph(expected))
+            );
+        }
+    }
+
     #[test]
     fn unsupported_data_tags_are_rejected_before_their_payloads() {
         for tag in [
             BcTag::TemplateObject,
             BcTag::FunctionBytecode,
             BcTag::Module,
-            BcTag::TypedArray,
             BcTag::SharedArrayBuffer,
             BcTag::Date,
             BcTag::ObjectValue,

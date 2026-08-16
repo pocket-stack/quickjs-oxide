@@ -146,6 +146,80 @@ pub(in crate::runtime) enum WireValue {
     Node(NodeId),
 }
 
+/// Exact `class_id - JS_CLASS_UINT8C_ARRAY` order used by BC5.
+///
+/// This deliberately remains a wire type rather than depending on the runtime
+/// heap's TypedArray enum. The eventual materializer must convert between the
+/// two with an exhaustive match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(in crate::runtime) enum TypedArrayKind {
+    Uint8Clamped = 0,
+    Int8 = 1,
+    Uint8 = 2,
+    Int16 = 3,
+    Uint16 = 4,
+    Int32 = 5,
+    Uint32 = 6,
+    BigInt64 = 7,
+    BigUint64 = 8,
+    Float16 = 9,
+    Float32 = 10,
+    Float64 = 11,
+}
+
+impl TypedArrayKind {
+    pub(in crate::runtime) const COUNT: usize = 12;
+    pub(in crate::runtime) const ALL: [Self; Self::COUNT] = [
+        Self::Uint8Clamped,
+        Self::Int8,
+        Self::Uint8,
+        Self::Int16,
+        Self::Uint16,
+        Self::Int32,
+        Self::Uint32,
+        Self::BigInt64,
+        Self::BigUint64,
+        Self::Float16,
+        Self::Float32,
+        Self::Float64,
+    ];
+
+    #[must_use]
+    pub(in crate::runtime) const fn from_wire_byte(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Uint8Clamped),
+            1 => Some(Self::Int8),
+            2 => Some(Self::Uint8),
+            3 => Some(Self::Int16),
+            4 => Some(Self::Uint16),
+            5 => Some(Self::Int32),
+            6 => Some(Self::Uint32),
+            7 => Some(Self::BigInt64),
+            8 => Some(Self::BigUint64),
+            9 => Some(Self::Float16),
+            10 => Some(Self::Float32),
+            11 => Some(Self::Float64),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn to_wire_byte(self) -> u8 {
+        self as u8
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn element_byte_length(self) -> u8 {
+        match self {
+            Self::Uint8Clamped | Self::Int8 | Self::Uint8 => 1,
+            Self::Int16 | Self::Uint16 | Self::Float16 => 2,
+            Self::Int32 | Self::Uint32 | Self::Float32 => 4,
+            Self::BigInt64 | Self::BigUint64 | Self::Float64 => 8,
+        }
+    }
+}
+
 /// The first admitted data-only BC5 object kinds.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum WireNode {
@@ -163,6 +237,17 @@ pub(in crate::runtime) enum WireNode {
     ArrayBuffer {
         bytes: Box<[u8]>,
         max_byte_length: Option<u32>,
+    },
+    /// A fixed-length view over one graph-owned backing buffer identity.
+    ///
+    /// BC5 does not preserve the length-tracking bit of a view over a resizable
+    /// buffer: the writer emits the current element count and the reader always
+    /// supplies that count explicitly to the constructor.
+    TypedArray {
+        kind: TypedArrayKind,
+        length: u32,
+        byte_offset: u32,
+        buffer: NodeId,
     },
 }
 
@@ -247,6 +332,119 @@ pub(in crate::runtime) fn validate_array_buffer_layout(
         }
     }
     Ok(byte_length)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum TypedArrayLayoutError {
+    UnalignedByteOffset {
+        byte_offset: u32,
+        element_byte_length: u8,
+    },
+    ViewOutOfBounds {
+        byte_offset: u32,
+        length: u32,
+        element_byte_length: u8,
+        backing_byte_length: usize,
+    },
+}
+
+impl fmt::Display for TypedArrayLayoutError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnalignedByteOffset {
+                byte_offset,
+                element_byte_length,
+            } => write!(
+                formatter,
+                "byte offset {byte_offset} is not aligned to {element_byte_length}-byte elements"
+            ),
+            Self::ViewOutOfBounds {
+                byte_offset,
+                length,
+                element_byte_length,
+                backing_byte_length,
+            } => write!(
+                formatter,
+                "view at byte offset {byte_offset} with {length} {element_byte_length}-byte elements exceeds backing byte length {backing_byte_length}"
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum TypedArrayBackingError {
+    NotObject,
+    Pending { node: NodeId },
+    NotArrayBuffer { node: NodeId },
+}
+
+impl fmt::Display for TypedArrayBackingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotObject => formatter.write_str("backing value is not an object"),
+            Self::Pending { node } => write!(
+                formatter,
+                "backing node {} is not complete",
+                node.zero_based()
+            ),
+            Self::NotArrayBuffer { node } => write!(
+                formatter,
+                "backing node {} is not an ArrayBuffer",
+                node.zero_based()
+            ),
+        }
+    }
+}
+
+/// Validate the constructor checks performed by the pinned BC5 reader.
+pub(in crate::runtime) fn validate_typed_array_layout(
+    kind: TypedArrayKind,
+    length: u32,
+    byte_offset: u32,
+    backing_byte_length: usize,
+) -> Result<(), TypedArrayLayoutError> {
+    let element_byte_length = kind.element_byte_length();
+    if byte_offset % u32::from(element_byte_length) != 0 {
+        return Err(TypedArrayLayoutError::UnalignedByteOffset {
+            byte_offset,
+            element_byte_length,
+        });
+    }
+
+    let view_end = u128::from(byte_offset) + u128::from(length) * u128::from(element_byte_length);
+    if view_end > backing_byte_length as u128 {
+        return Err(TypedArrayLayoutError::ViewOutOfBounds {
+            byte_offset,
+            length,
+            element_byte_length,
+            backing_byte_length,
+        });
+    }
+    Ok(())
+}
+
+/// Validate a graph state that the pinned writer can observe.
+///
+/// Shrinking a resizable ArrayBuffer can leave a TypedArray out of bounds.
+/// QuickJS then writes a zero element count plus the original offset, even
+/// though its own reader rejects the result. Preserve that writer asymmetry;
+/// all other impossible graph layouts remain rejected.
+pub(in crate::runtime) fn validate_typed_array_write_layout(
+    kind: TypedArrayKind,
+    length: u32,
+    byte_offset: u32,
+    backing_byte_length: usize,
+    max_byte_length: Option<u32>,
+) -> Result<(), TypedArrayLayoutError> {
+    match validate_typed_array_layout(kind, length, byte_offset, backing_byte_length) {
+        Ok(()) => Ok(()),
+        Err(TypedArrayLayoutError::ViewOutOfBounds { .. })
+            if length == 0 && max_byte_length.is_some_and(|maximum| byte_offset <= maximum) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// One complete, validated, heap-independent object graph.
@@ -472,6 +670,61 @@ mod tests {
             Err(ArrayBufferLayoutError::ByteLengthTooLarge {
                 byte_length: 0x8000_0000,
                 maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+            })
+        );
+    }
+
+    #[test]
+    fn typed_array_kind_mapping_matches_the_pinned_class_range() {
+        let widths = [1, 1, 1, 2, 2, 4, 4, 8, 8, 2, 4, 8];
+        for (index, (kind, width)) in TypedArrayKind::ALL.into_iter().zip(widths).enumerate() {
+            let wire_byte = u8::try_from(index).unwrap();
+            assert_eq!(TypedArrayKind::from_wire_byte(wire_byte), Some(kind));
+            assert_eq!(kind.to_wire_byte(), wire_byte);
+            assert_eq!(kind.element_byte_length(), width);
+        }
+        assert_eq!(TypedArrayKind::from_wire_byte(12), None);
+        assert_eq!(TypedArrayKind::from_wire_byte(u8::MAX), None);
+    }
+
+    #[test]
+    fn typed_array_layout_validation_tracks_reader_and_writer_asymmetry() {
+        assert_eq!(
+            validate_typed_array_layout(TypedArrayKind::Uint16, 2, 4, 8),
+            Ok(())
+        );
+        assert_eq!(
+            validate_typed_array_layout(TypedArrayKind::Uint16, 1, 1, 8),
+            Err(TypedArrayLayoutError::UnalignedByteOffset {
+                byte_offset: 1,
+                element_byte_length: 2,
+            })
+        );
+        let out_of_bounds = TypedArrayLayoutError::ViewOutOfBounds {
+            byte_offset: 4,
+            length: 0,
+            element_byte_length: 2,
+            backing_byte_length: 2,
+        };
+        assert_eq!(
+            validate_typed_array_layout(TypedArrayKind::Uint16, 0, 4, 2),
+            Err(out_of_bounds)
+        );
+        assert_eq!(
+            validate_typed_array_write_layout(TypedArrayKind::Uint16, 0, 4, 2, Some(16)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_typed_array_write_layout(TypedArrayKind::Uint16, 0, 4, 2, None),
+            Err(out_of_bounds)
+        );
+        assert_eq!(
+            validate_typed_array_write_layout(TypedArrayKind::Uint16, 1, 4, 2, Some(16)),
+            Err(TypedArrayLayoutError::ViewOutOfBounds {
+                byte_offset: 4,
+                length: 1,
+                element_byte_length: 2,
+                backing_byte_length: 2,
             })
         );
     }
