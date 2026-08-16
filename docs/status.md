@@ -140,7 +140,7 @@ bounded `FunctionRecordPrefix` layer now reads and canonically writes the fixed
 FunctionBytecode body after tag 12: flags, frame metadata, locals, closures,
 scanned code, and optional debug bytes. It stops immediately before the first
 of `pending_constant_pool_count` recursively encoded values and never admits
-the record to execution. A complete, bounded `FunctionImage` reader now owns
+the record to execution. A complete, bounded `BytecodeImage` reader now owns
 the remaining traversal. It reads the bytecode header once, normalizes numeric,
 predefined-string, narrow/wide, and duplicate slots into one semantic atom
 namespace, and immediately relocates every function metadata and opcode atom.
@@ -162,7 +162,7 @@ depth, constant-pool entries, locals, closures, code bytes, instruction spans,
 atom relocations, and debug bytes in addition to the existing per-function,
 wire, and graph limits. Each function prefix receives the intersection of its
 per-function cap and the remaining whole-image budget before table allocation
-or code copying/scanning. The completed `FunctionImage` is deliberately
+or code copying/scanning. The completed `BytecodeImage` is deliberately
 non-executable: it has no heap materializer, verifier bypass, or evaluation
 entry point.
 The matching canonical writer consumes that immutable image through a
@@ -237,7 +237,7 @@ another node.
 Malicious TypedArray placeholder paths are rejected deterministically instead
 of reproducing pinned QuickJS's native crashes.
 The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
-Module. The FunctionImage reader admits FunctionBytecode but still rejects
+Module. The BytecodeImage reader admits FunctionBytecode but still rejects
 Module and SharedArrayBuffer, and neither reader is a public binary-object API
 yet. A module-image model, heap materializer, native-code semantic
 verifier/translator, public read/write flags, and a public authenticated

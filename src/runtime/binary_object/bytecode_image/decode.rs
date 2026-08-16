@@ -19,27 +19,27 @@ use super::super::graph::decode::{
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::atoms::{ImageAtomError, ImageAtomTable, ImageKey};
 use super::budget::{
-    FunctionImageBudgetError, FunctionImageLimits, FunctionImageResourceKind, FunctionTotals,
+    BytecodeImageBudgetError, BytecodeImageLimits, BytecodeImageResourceKind, FunctionTotals,
     FunctionUsage, RemainingFunctionBudget,
 };
 use super::model::{
-    FunctionId, FunctionImage, FunctionRecord, ImageClosureVariable, ImageCode, ImageFunctionDebug,
+    BytecodeImage, FunctionId, FunctionRecord, ImageClosureVariable, ImageCode, ImageFunctionDebug,
     ImageFunctionEnvelope, ImageInstructionSpan, ImageLocalVariable, ImageRelocation, ImageValue,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum FunctionImageError {
+pub(in crate::runtime) enum BytecodeImageError {
     Wire(WireError),
     Atom(ImageAtomError),
     Data(DecodeError<FunctionId>),
     Envelope(FunctionEnvelopeError),
     ResourceLimit {
-        kind: FunctionImageResourceKind,
+        kind: BytecodeImageResourceKind,
         requested: usize,
         limit: usize,
     },
     CountOverflow {
-        kind: FunctionImageResourceKind,
+        kind: BytecodeImageResourceKind,
     },
     OffsetOverflow {
         offset: usize,
@@ -52,7 +52,7 @@ pub(in crate::runtime) enum FunctionImageError {
     AllocationFailed,
 }
 
-impl fmt::Display for FunctionImageError {
+impl fmt::Display for BytecodeImageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wire(error) => fmt::Display::fmt(error, formatter),
@@ -86,36 +86,36 @@ impl fmt::Display for FunctionImageError {
     }
 }
 
-impl std::error::Error for FunctionImageError {}
+impl std::error::Error for BytecodeImageError {}
 
-impl From<WireError> for FunctionImageError {
+impl From<WireError> for BytecodeImageError {
     fn from(error: WireError) -> Self {
         Self::Wire(error)
     }
 }
 
-impl From<ImageAtomError> for FunctionImageError {
+impl From<ImageAtomError> for BytecodeImageError {
     fn from(error: ImageAtomError) -> Self {
         Self::Atom(error)
     }
 }
 
-impl From<DecodeError<FunctionId>> for FunctionImageError {
+impl From<DecodeError<FunctionId>> for BytecodeImageError {
     fn from(error: DecodeError<FunctionId>) -> Self {
         Self::Data(error)
     }
 }
 
-impl From<FunctionEnvelopeError> for FunctionImageError {
+impl From<FunctionEnvelopeError> for BytecodeImageError {
     fn from(error: FunctionEnvelopeError) -> Self {
         Self::Envelope(error)
     }
 }
 
-impl From<FunctionImageBudgetError> for FunctionImageError {
-    fn from(error: FunctionImageBudgetError) -> Self {
+impl From<BytecodeImageBudgetError> for BytecodeImageError {
+    fn from(error: BytecodeImageBudgetError) -> Self {
         match error {
-            FunctionImageBudgetError::ResourceLimit {
+            BytecodeImageBudgetError::ResourceLimit {
                 kind,
                 requested,
                 limit,
@@ -124,19 +124,19 @@ impl From<FunctionImageBudgetError> for FunctionImageError {
                 requested,
                 limit,
             },
-            FunctionImageBudgetError::CountOverflow { kind } => Self::CountOverflow { kind },
+            BytecodeImageBudgetError::CountOverflow { kind } => Self::CountOverflow { kind },
         }
     }
 }
 
 /// Decode one complete bytecode-mode BC5 image without making it executable.
-pub(in crate::runtime) fn decode_function_image(
+pub(in crate::runtime) fn decode_bytecode_image(
     input: &[u8],
     mode: ReaderMode,
     wire_limits: WireLimits,
-    limits: FunctionImageLimits,
+    limits: BytecodeImageLimits,
     allow_object_references: bool,
-) -> Result<FunctionImage, FunctionImageError> {
+) -> Result<BytecodeImage, BytecodeImageError> {
     let mut cursor = WireCursor::new(input, mode, wire_limits)?;
     let atoms = ImageAtomTable::read(&mut cursor)?;
     let mut machine =
@@ -159,10 +159,10 @@ pub(in crate::runtime) fn decode_function_image(
         let depth = frames
             .len()
             .checked_add(1)
-            .ok_or(FunctionImageError::CountOverflow {
-                kind: FunctionImageResourceKind::WholeDepth,
+            .ok_or(BytecodeImageError::CountOverflow {
+                kind: BytecodeImageResourceKind::WholeDepth,
             })?;
-        limits.check(FunctionImageResourceKind::WholeDepth, depth)?;
+        limits.check(BytecodeImageResourceKind::WholeDepth, depth)?;
 
         let tag_offset = cursor.position();
         let tag = cursor.read_tag()?;
@@ -170,7 +170,7 @@ pub(in crate::runtime) fn decode_function_image(
             let frame = functions.begin_function(&mut cursor, &atoms, tag_offset)?;
             frames
                 .try_reserve(1)
-                .map_err(|_| FunctionImageError::AllocationFailed)?;
+                .map_err(|_| BytecodeImageError::AllocationFailed)?;
             frames.push(ActiveFrame::Function { frame, return_to });
         } else {
             match machine.read_value_after_tag(&mut cursor, tag, tag_offset, data_depth)? {
@@ -180,13 +180,13 @@ pub(in crate::runtime) fn decode_function_image(
                 DataReadStep::Pending(frame) => {
                     frames
                         .try_reserve(1)
-                        .map_err(|_| FunctionImageError::AllocationFailed)?;
+                        .map_err(|_| BytecodeImageError::AllocationFailed)?;
                     frames.push(ActiveFrame::Data { frame, return_to });
                     data_depth =
                         data_depth
                             .checked_add(1)
-                            .ok_or(FunctionImageError::CountOverflow {
-                                kind: FunctionImageResourceKind::WholeDepth,
+                            .ok_or(BytecodeImageError::CountOverflow {
+                                kind: BytecodeImageResourceKind::WholeDepth,
                             })?;
                 }
             }
@@ -205,12 +205,12 @@ pub(in crate::runtime) fn decode_function_image(
     // same cursor that read every prefix and constant-pool value.
     cursor.finish()?;
 
-    let root = root.ok_or(FunctionImageError::InvalidCompletionTarget)?;
+    let root = root.ok_or(BytecodeImageError::InvalidCompletionTarget)?;
     let output = machine.finish_output()?;
     let root = output.unwrap_completion(root)?;
     let records = functions.finish(&output)?;
     let parts = output.into_parts();
-    Ok(FunctionImage::new(
+    Ok(BytecodeImage::new(
         source,
         atoms.into_dynamic_atoms(),
         parts.nodes,
@@ -244,7 +244,7 @@ fn next_target(
     cursor: &mut WireCursor<'_>,
     atoms: &ImageAtomTable,
     frames: &[ActiveFrame],
-) -> Result<CompletionTarget, FunctionImageError> {
+) -> Result<CompletionTarget, BytecodeImageError> {
     match frames.last() {
         None => Ok(CompletionTarget::Root),
         Some(ActiveFrame::Function { .. }) => Ok(CompletionTarget::FunctionConstant),
@@ -261,7 +261,7 @@ fn next_target(
 fn read_key(
     cursor: &mut WireCursor<'_>,
     atoms: &ImageAtomTable,
-) -> Result<PropertyDisposition<ImageKey>, FunctionImageError> {
+) -> Result<PropertyDisposition<ImageKey>, BytecodeImageError> {
     let offset = cursor.position();
     let raw = atoms.raw_space().decode_metadata_atom(cursor)?;
     Ok(
@@ -278,7 +278,7 @@ fn drain_completed(
     frames: &mut Vec<ActiveFrame>,
     data_depth: &mut usize,
     root: &mut Option<DataCompletion<ImageValue>>,
-) -> Result<(), FunctionImageError> {
+) -> Result<(), BytecodeImageError> {
     loop {
         let complete = match frames.last() {
             Some(ActiveFrame::Data { frame, .. }) => frame.is_complete(),
@@ -291,12 +291,12 @@ fn drain_completed(
 
         let active = frames
             .pop()
-            .ok_or(FunctionImageError::InvalidCompletionTarget)?;
+            .ok_or(BytecodeImageError::InvalidCompletionTarget)?;
         let (return_to, value) = match active {
             ActiveFrame::Data { frame, return_to } => {
                 *data_depth = data_depth
                     .checked_sub(1)
-                    .ok_or(FunctionImageError::InvalidCompletionTarget)?;
+                    .ok_or(BytecodeImageError::InvalidCompletionTarget)?;
                 (return_to, machine.finish_frame(frame)?)
             }
             ActiveFrame::Function { frame, return_to } => {
@@ -315,22 +315,22 @@ fn deliver_completed(
     target: CompletionTarget,
     value: DataCompletion<ImageValue>,
     root: &mut Option<DataCompletion<ImageValue>>,
-) -> Result<(), FunctionImageError> {
+) -> Result<(), BytecodeImageError> {
     match target {
         CompletionTarget::Root => {
             if root.replace(value).is_some() {
-                return Err(FunctionImageError::InvalidCompletionTarget);
+                return Err(BytecodeImageError::InvalidCompletionTarget);
             }
         }
         CompletionTarget::DataParent { key } => {
             let Some(ActiveFrame::Data { frame, .. }) = frames.last_mut() else {
-                return Err(FunctionImageError::InvalidCompletionTarget);
+                return Err(BytecodeImageError::InvalidCompletionTarget);
             };
             machine.attach_to_frame(frame, key, value)?;
         }
         CompletionTarget::FunctionConstant => {
             let Some(ActiveFrame::Function { frame, .. }) = frames.last_mut() else {
-                return Err(FunctionImageError::InvalidCompletionTarget);
+                return Err(BytecodeImageError::InvalidCompletionTarget);
             };
             frame.push_constant(value)?;
         }
@@ -349,9 +349,9 @@ impl FunctionFrame {
     fn push_constant(
         &mut self,
         value: DataCompletion<ImageValue>,
-    ) -> Result<(), FunctionImageError> {
+    ) -> Result<(), BytecodeImageError> {
         if self.constants.len() >= self.expected_constants {
-            return Err(FunctionImageError::InvalidCompletionTarget);
+            return Err(BytecodeImageError::InvalidCompletionTarget);
         }
         self.constants.push(value);
         Ok(())
@@ -399,13 +399,13 @@ impl AuthenticatedFunction {
 
 struct FunctionTable {
     source: MachineSource,
-    limits: FunctionImageLimits,
+    limits: BytecodeImageLimits,
     slots: Vec<Option<PendingFunctionRecord>>,
     totals: FunctionTotals,
 }
 
 impl FunctionTable {
-    fn new(source: MachineSource, limits: FunctionImageLimits) -> Self {
+    fn new(source: MachineSource, limits: BytecodeImageLimits) -> Self {
         Self {
             source,
             limits,
@@ -419,23 +419,23 @@ impl FunctionTable {
         cursor: &mut WireCursor<'_>,
         atoms: &ImageAtomTable,
         tag_offset: usize,
-    ) -> Result<FunctionFrame, FunctionImageError> {
+    ) -> Result<FunctionFrame, BytecodeImageError> {
         let requested =
             self.slots
                 .len()
                 .checked_add(1)
-                .ok_or(FunctionImageError::CountOverflow {
-                    kind: FunctionImageResourceKind::Functions,
+                .ok_or(BytecodeImageError::CountOverflow {
+                    kind: BytecodeImageResourceKind::Functions,
                 })?;
         self.limits
-            .check(FunctionImageResourceKind::Functions, requested)?;
+            .check(BytecodeImageResourceKind::Functions, requested)?;
         let index =
-            u32::try_from(self.slots.len()).map_err(|_| FunctionImageError::CountOverflow {
-                kind: FunctionImageResourceKind::Functions,
+            u32::try_from(self.slots.len()).map_err(|_| BytecodeImageError::CountOverflow {
+                kind: BytecodeImageResourceKind::Functions,
             })?;
         self.slots
             .try_reserve(1)
-            .map_err(|_| FunctionImageError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageError::AllocationFailed)?;
         self.slots.push(None);
         let function = FunctionSlot {
             source: self.source,
@@ -456,7 +456,7 @@ impl FunctionTable {
         let mut constants = Vec::new();
         constants
             .try_reserve_exact(expected_constants)
-            .map_err(|_| FunctionImageError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageError::AllocationFailed)?;
         Ok(FunctionFrame {
             function,
             envelope,
@@ -468,19 +468,19 @@ impl FunctionTable {
     fn finish_frame(
         &mut self,
         frame: FunctionFrame,
-    ) -> Result<AuthenticatedFunction, FunctionImageError> {
+    ) -> Result<AuthenticatedFunction, BytecodeImageError> {
         if frame.function.source != self.source || !frame.is_complete() {
-            return Err(FunctionImageError::InvalidFunctionState {
+            return Err(BytecodeImageError::InvalidFunctionState {
                 function_index: frame.function.index,
             });
         }
         let Some(slot) = self.slots.get_mut(frame.function.index as usize) else {
-            return Err(FunctionImageError::InvalidFunctionState {
+            return Err(BytecodeImageError::InvalidFunctionState {
                 function_index: frame.function.index,
             });
         };
         if slot.is_some() {
-            return Err(FunctionImageError::InvalidFunctionState {
+            return Err(BytecodeImageError::InvalidFunctionState {
                 function_index: frame.function.index,
             });
         }
@@ -497,22 +497,22 @@ impl FunctionTable {
     fn finish(
         self,
         output: &DataMachineOutput<ImageValue, ImageKey>,
-    ) -> Result<Box<[FunctionRecord]>, FunctionImageError> {
+    ) -> Result<Box<[FunctionRecord]>, BytecodeImageError> {
         let mut records = Vec::new();
         records
             .try_reserve_exact(self.slots.len())
-            .map_err(|_| FunctionImageError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageError::AllocationFailed)?;
         for (index, slot) in self.slots.into_iter().enumerate() {
-            let index = u32::try_from(index).map_err(|_| FunctionImageError::CountOverflow {
-                kind: FunctionImageResourceKind::Functions,
+            let index = u32::try_from(index).map_err(|_| BytecodeImageError::CountOverflow {
+                kind: BytecodeImageResourceKind::Functions,
             })?;
-            let pending = slot.ok_or(FunctionImageError::InvalidFunctionState {
+            let pending = slot.ok_or(BytecodeImageError::InvalidFunctionState {
                 function_index: index,
             })?;
             let mut constants = Vec::new();
             constants
                 .try_reserve_exact(pending.constants.len())
-                .map_err(|_| FunctionImageError::AllocationFailed)?;
+                .map_err(|_| BytecodeImageError::AllocationFailed)?;
             for completion in pending.constants {
                 constants.push(output.unwrap_completion(completion)?);
             }
@@ -529,7 +529,7 @@ impl FunctionTable {
         atoms: &ImageAtomTable,
         envelope: FunctionEnvelope,
         diagnostic_offset: usize,
-    ) -> Result<ImageFunctionEnvelope, FunctionImageError> {
+    ) -> Result<ImageFunctionEnvelope, BytecodeImageError> {
         let FunctionEnvelopeParts {
             atom_space,
             flags,
@@ -550,7 +550,7 @@ impl FunctionTable {
         let mut image_locals = Vec::new();
         image_locals
             .try_reserve_exact(locals.len())
-            .map_err(|_| FunctionImageError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageError::AllocationFailed)?;
         for local in locals {
             let (name, scope_next, variable_reference_index, flags) = local.into_parts();
             image_locals.push(ImageLocalVariable::new(
@@ -564,7 +564,7 @@ impl FunctionTable {
         let mut image_closures = Vec::new();
         image_closures
             .try_reserve_exact(closures.len())
-            .map_err(|_| FunctionImageError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageError::AllocationFailed)?;
         for closure in closures {
             let (name, variable_index, flags) = closure.into_parts();
             image_closures.push(ImageClosureVariable::new(
@@ -607,14 +607,14 @@ impl FunctionTable {
         &self,
         envelope: &FunctionEnvelope,
         constant_count: usize,
-    ) -> Result<FunctionTotals, FunctionImageError> {
+    ) -> Result<FunctionTotals, BytecodeImageError> {
         let additional_debug_bytes = match envelope.debug() {
             Some(debug) => debug
                 .pc2line()
                 .len()
                 .checked_add(debug.source().len())
-                .ok_or(FunctionImageBudgetError::CountOverflow {
-                    kind: FunctionImageResourceKind::TotalDebugBytes,
+                .ok_or(BytecodeImageBudgetError::CountOverflow {
+                    kind: BytecodeImageResourceKind::TotalDebugBytes,
                 })?,
             None => 0,
         };
@@ -638,13 +638,13 @@ impl FunctionTable {
         &self,
         error: FunctionEnvelopeError,
         remaining: RemainingFunctionBudget,
-    ) -> FunctionImageError {
+    ) -> BytecodeImageError {
         match self
             .totals
             .aggregate_error_for_envelope(&error, remaining, self.limits)
         {
             Some(error) => error.into(),
-            None => FunctionImageError::Envelope(error),
+            None => BytecodeImageError::Envelope(error),
         }
     }
 }
@@ -652,11 +652,11 @@ impl FunctionTable {
 fn relocate_code(
     atoms: &ImageAtomTable,
     parts: CodeImageParts,
-) -> Result<ImageCode, FunctionImageError> {
+) -> Result<ImageCode, BytecodeImageError> {
     let mut instructions = Vec::new();
     instructions
         .try_reserve_exact(parts.instructions.len())
-        .map_err(|_| FunctionImageError::AllocationFailed)?;
+        .map_err(|_| BytecodeImageError::AllocationFailed)?;
     for instruction in parts.instructions {
         instructions.push(ImageInstructionSpan::new(
             instruction.offset(),
@@ -667,12 +667,12 @@ fn relocate_code(
     let mut relocations = Vec::new();
     relocations
         .try_reserve_exact(parts.atom_relocations.len())
-        .map_err(|_| FunctionImageError::AllocationFailed)?;
+        .map_err(|_| BytecodeImageError::AllocationFailed)?;
     for relocation in parts.atom_relocations {
         let offset = parts
             .payload_offset
             .checked_add(relocation.operand_offset() as usize)
-            .ok_or(FunctionImageError::OffsetOverflow {
+            .ok_or(BytecodeImageError::OffsetOverflow {
                 offset: parts.payload_offset,
                 addend: relocation.operand_offset() as usize,
             })?;

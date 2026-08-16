@@ -1,4 +1,4 @@
-//! Non-executable, heap-independent state shared by a complete BC5 function image.
+//! Non-executable, heap-independent state shared by a complete BC5 bytecode image.
 //!
 //! This module owns the bytecode header's semantic atom remap, the bounded
 //! whole-image `FunctionBytecode` decoder, and the final immutable image model.

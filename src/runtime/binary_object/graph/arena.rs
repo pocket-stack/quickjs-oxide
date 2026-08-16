@@ -3,7 +3,7 @@
 //! QuickJS carries one `BCReaderState.objects` table through every recursive
 //! constant-pool value. Object-producing tags reserve entries here; function
 //! records deliberately do not. Keeping this layer independent from the data
-//! decoder lets a future whole-function image use the same registration order
+//! decoder lets a future whole-bytecode image use the same registration order
 //! without inheriting data-only error or frame types.
 
 use std::fmt;

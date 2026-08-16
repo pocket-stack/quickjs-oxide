@@ -1,4 +1,4 @@
-//! Shared bounded accounting for whole BC5 function images.
+//! Shared bounded accounting for whole BC5 bytecode images.
 //!
 //! Decode and encode deliberately use the same totals, remaining-budget
 //! intersection, and error-attribution rules. This keeps a stricter write
@@ -16,7 +16,7 @@ use super::super::graph::model::GraphLimits;
 /// Aggregate whole-image limits in addition to the per-value graph and
 /// per-function envelope limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::runtime) struct FunctionImageLimits {
+pub(in crate::runtime) struct BytecodeImageLimits {
     graph: GraphLimits,
     envelope: FunctionEnvelopeLimits,
     max_functions: usize,
@@ -30,7 +30,7 @@ pub(in crate::runtime) struct FunctionImageLimits {
     max_total_debug_bytes: usize,
 }
 
-impl FunctionImageLimits {
+impl BytecodeImageLimits {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(in crate::runtime) const fn new(
@@ -61,30 +61,30 @@ impl FunctionImageLimits {
         }
     }
 
-    pub(super) const fn limit(self, kind: FunctionImageResourceKind) -> usize {
+    pub(super) const fn limit(self, kind: BytecodeImageResourceKind) -> usize {
         match kind {
-            FunctionImageResourceKind::Functions => self.max_functions,
-            FunctionImageResourceKind::WholeDepth => self.max_whole_depth,
-            FunctionImageResourceKind::TotalConstantPoolEntries => {
+            BytecodeImageResourceKind::Functions => self.max_functions,
+            BytecodeImageResourceKind::WholeDepth => self.max_whole_depth,
+            BytecodeImageResourceKind::TotalConstantPoolEntries => {
                 self.max_total_constant_pool_entries
             }
-            FunctionImageResourceKind::TotalLocalVariables => self.max_total_local_variables,
-            FunctionImageResourceKind::TotalClosureVariables => self.max_total_closure_variables,
-            FunctionImageResourceKind::TotalCodeBytes => self.max_total_code_bytes,
-            FunctionImageResourceKind::TotalInstructions => self.max_total_instructions,
-            FunctionImageResourceKind::TotalAtomRelocations => self.max_total_atom_relocations,
-            FunctionImageResourceKind::TotalDebugBytes => self.max_total_debug_bytes,
+            BytecodeImageResourceKind::TotalLocalVariables => self.max_total_local_variables,
+            BytecodeImageResourceKind::TotalClosureVariables => self.max_total_closure_variables,
+            BytecodeImageResourceKind::TotalCodeBytes => self.max_total_code_bytes,
+            BytecodeImageResourceKind::TotalInstructions => self.max_total_instructions,
+            BytecodeImageResourceKind::TotalAtomRelocations => self.max_total_atom_relocations,
+            BytecodeImageResourceKind::TotalDebugBytes => self.max_total_debug_bytes,
         }
     }
 
     pub(super) fn check(
         self,
-        kind: FunctionImageResourceKind,
+        kind: BytecodeImageResourceKind,
         requested: usize,
-    ) -> Result<(), FunctionImageBudgetError> {
+    ) -> Result<(), BytecodeImageBudgetError> {
         let limit = self.limit(kind);
         if requested > limit {
-            return Err(FunctionImageBudgetError::ResourceLimit {
+            return Err(BytecodeImageBudgetError::ResourceLimit {
                 kind,
                 requested,
                 limit,
@@ -105,7 +105,7 @@ impl FunctionImageLimits {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum FunctionImageResourceKind {
+pub(in crate::runtime) enum BytecodeImageResourceKind {
     Functions,
     WholeDepth,
     TotalConstantPoolEntries,
@@ -118,18 +118,18 @@ pub(in crate::runtime) enum FunctionImageResourceKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum FunctionImageBudgetError {
+pub(in crate::runtime) enum BytecodeImageBudgetError {
     ResourceLimit {
-        kind: FunctionImageResourceKind,
+        kind: BytecodeImageResourceKind,
         requested: usize,
         limit: usize,
     },
     CountOverflow {
-        kind: FunctionImageResourceKind,
+        kind: BytecodeImageResourceKind,
     },
 }
 
-impl fmt::Display for FunctionImageBudgetError {
+impl fmt::Display for BytecodeImageBudgetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ResourceLimit {
@@ -147,7 +147,7 @@ impl fmt::Display for FunctionImageBudgetError {
     }
 }
 
-impl std::error::Error for FunctionImageBudgetError {}
+impl std::error::Error for BytecodeImageBudgetError {}
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct FunctionTotals {
@@ -223,42 +223,42 @@ impl RemainingFunctionBudget {
 impl FunctionTotals {
     pub(super) fn remaining(
         self,
-        limits: FunctionImageLimits,
-    ) -> Result<RemainingFunctionBudget, FunctionImageBudgetError> {
+        limits: BytecodeImageLimits,
+    ) -> Result<RemainingFunctionBudget, BytecodeImageBudgetError> {
         Ok(RemainingFunctionBudget {
             constant_pool_entries: checked_remaining(
                 self.constant_pool_entries,
-                FunctionImageResourceKind::TotalConstantPoolEntries,
+                BytecodeImageResourceKind::TotalConstantPoolEntries,
                 limits,
             )?,
             local_variables: checked_remaining(
                 self.local_variables,
-                FunctionImageResourceKind::TotalLocalVariables,
+                BytecodeImageResourceKind::TotalLocalVariables,
                 limits,
             )?,
             closure_variables: checked_remaining(
                 self.closure_variables,
-                FunctionImageResourceKind::TotalClosureVariables,
+                BytecodeImageResourceKind::TotalClosureVariables,
                 limits,
             )?,
             code_bytes: checked_remaining(
                 self.code_bytes,
-                FunctionImageResourceKind::TotalCodeBytes,
+                BytecodeImageResourceKind::TotalCodeBytes,
                 limits,
             )?,
             instructions: checked_remaining(
                 self.instructions,
-                FunctionImageResourceKind::TotalInstructions,
+                BytecodeImageResourceKind::TotalInstructions,
                 limits,
             )?,
             atom_relocations: checked_remaining(
                 self.atom_relocations,
-                FunctionImageResourceKind::TotalAtomRelocations,
+                BytecodeImageResourceKind::TotalAtomRelocations,
                 limits,
             )?,
             debug_bytes: checked_remaining(
                 self.debug_bytes,
-                FunctionImageResourceKind::TotalDebugBytes,
+                BytecodeImageResourceKind::TotalDebugBytes,
                 limits,
             )?,
         })
@@ -267,49 +267,49 @@ impl FunctionTotals {
     pub(super) fn checked_add(
         self,
         usage: FunctionUsage,
-        limits: FunctionImageLimits,
-    ) -> Result<Self, FunctionImageBudgetError> {
+        limits: BytecodeImageLimits,
+    ) -> Result<Self, BytecodeImageBudgetError> {
         Ok(Self {
             constant_pool_entries: checked_total(
                 self.constant_pool_entries,
                 usage.constant_pool_entries,
-                FunctionImageResourceKind::TotalConstantPoolEntries,
+                BytecodeImageResourceKind::TotalConstantPoolEntries,
                 limits,
             )?,
             local_variables: checked_total(
                 self.local_variables,
                 usage.local_variables,
-                FunctionImageResourceKind::TotalLocalVariables,
+                BytecodeImageResourceKind::TotalLocalVariables,
                 limits,
             )?,
             closure_variables: checked_total(
                 self.closure_variables,
                 usage.closure_variables,
-                FunctionImageResourceKind::TotalClosureVariables,
+                BytecodeImageResourceKind::TotalClosureVariables,
                 limits,
             )?,
             code_bytes: checked_total(
                 self.code_bytes,
                 usage.code_bytes,
-                FunctionImageResourceKind::TotalCodeBytes,
+                BytecodeImageResourceKind::TotalCodeBytes,
                 limits,
             )?,
             instructions: checked_total(
                 self.instructions,
                 usage.instructions,
-                FunctionImageResourceKind::TotalInstructions,
+                BytecodeImageResourceKind::TotalInstructions,
                 limits,
             )?,
             atom_relocations: checked_total(
                 self.atom_relocations,
                 usage.atom_relocations,
-                FunctionImageResourceKind::TotalAtomRelocations,
+                BytecodeImageResourceKind::TotalAtomRelocations,
                 limits,
             )?,
             debug_bytes: checked_total(
                 self.debug_bytes,
                 usage.debug_bytes,
-                FunctionImageResourceKind::TotalDebugBytes,
+                BytecodeImageResourceKind::TotalDebugBytes,
                 limits,
             )?,
         })
@@ -319,8 +319,8 @@ impl FunctionTotals {
         self,
         error: &FunctionEnvelopeError,
         remaining: RemainingFunctionBudget,
-        limits: FunctionImageLimits,
-    ) -> Option<FunctionImageBudgetError> {
+        limits: BytecodeImageLimits,
+    ) -> Option<BytecodeImageBudgetError> {
         let (total, requested, kind) = match error {
             FunctionEnvelopeError::ResourceLimit {
                 kind: FunctionResourceKind::LocalVariables,
@@ -335,7 +335,7 @@ impl FunctionTotals {
                 (
                     self.local_variables,
                     *requested,
-                    FunctionImageResourceKind::TotalLocalVariables,
+                    BytecodeImageResourceKind::TotalLocalVariables,
                 )
             }
             FunctionEnvelopeError::ResourceLimit {
@@ -351,7 +351,7 @@ impl FunctionTotals {
                 (
                     self.closure_variables,
                     *requested,
-                    FunctionImageResourceKind::TotalClosureVariables,
+                    BytecodeImageResourceKind::TotalClosureVariables,
                 )
             }
             FunctionEnvelopeError::ResourceLimit {
@@ -367,7 +367,7 @@ impl FunctionTotals {
                 (
                     self.constant_pool_entries,
                     *requested,
-                    FunctionImageResourceKind::TotalConstantPoolEntries,
+                    BytecodeImageResourceKind::TotalConstantPoolEntries,
                 )
             }
             FunctionEnvelopeError::ResourceLimit {
@@ -383,7 +383,7 @@ impl FunctionTotals {
                 (
                     self.debug_bytes,
                     *requested,
-                    FunctionImageResourceKind::TotalDebugBytes,
+                    BytecodeImageResourceKind::TotalDebugBytes,
                 )
             }
             FunctionEnvelopeError::Code(CodeError::ResourceLimit {
@@ -396,7 +396,7 @@ impl FunctionTotals {
                 (
                     self.code_bytes,
                     *requested,
-                    FunctionImageResourceKind::TotalCodeBytes,
+                    BytecodeImageResourceKind::TotalCodeBytes,
                 )
             }
             FunctionEnvelopeError::Code(CodeError::ResourceLimit {
@@ -410,7 +410,7 @@ impl FunctionTotals {
                 (
                     self.instructions,
                     *requested,
-                    FunctionImageResourceKind::TotalInstructions,
+                    BytecodeImageResourceKind::TotalInstructions,
                 )
             }
             FunctionEnvelopeError::Code(CodeError::ResourceLimit {
@@ -426,7 +426,7 @@ impl FunctionTotals {
                 (
                     self.atom_relocations,
                     *requested,
-                    FunctionImageResourceKind::TotalAtomRelocations,
+                    BytecodeImageResourceKind::TotalAtomRelocations,
                 )
             }
             _ => return None,
@@ -438,39 +438,39 @@ impl FunctionTotals {
 fn checked_total(
     total: usize,
     additional: usize,
-    kind: FunctionImageResourceKind,
-    limits: FunctionImageLimits,
-) -> Result<usize, FunctionImageBudgetError> {
+    kind: BytecodeImageResourceKind,
+    limits: BytecodeImageLimits,
+) -> Result<usize, BytecodeImageBudgetError> {
     let requested = total
         .checked_add(additional)
-        .ok_or(FunctionImageBudgetError::CountOverflow { kind })?;
+        .ok_or(BytecodeImageBudgetError::CountOverflow { kind })?;
     limits.check(kind, requested)?;
     Ok(requested)
 }
 
 fn checked_remaining(
     total: usize,
-    kind: FunctionImageResourceKind,
-    limits: FunctionImageLimits,
-) -> Result<usize, FunctionImageBudgetError> {
+    kind: BytecodeImageResourceKind,
+    limits: BytecodeImageLimits,
+) -> Result<usize, BytecodeImageBudgetError> {
     limits
         .limit(kind)
         .checked_sub(total)
-        .ok_or(FunctionImageBudgetError::CountOverflow { kind })
+        .ok_or(BytecodeImageBudgetError::CountOverflow { kind })
 }
 
 fn aggregate_limit_error(
     total: usize,
     additional: usize,
-    kind: FunctionImageResourceKind,
-    limits: FunctionImageLimits,
-) -> FunctionImageBudgetError {
+    kind: BytecodeImageResourceKind,
+    limits: BytecodeImageLimits,
+) -> BytecodeImageBudgetError {
     match total.checked_add(additional) {
-        Some(requested) => FunctionImageBudgetError::ResourceLimit {
+        Some(requested) => BytecodeImageBudgetError::ResourceLimit {
             kind,
             requested,
             limit: limits.limit(kind),
         },
-        None => FunctionImageBudgetError::CountOverflow { kind },
+        None => BytecodeImageBudgetError::CountOverflow { kind },
     }
 }

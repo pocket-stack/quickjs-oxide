@@ -1,4 +1,4 @@
-//! Length calculation and final emission for an authenticated function-image plan.
+//! Length calculation and final emission for an authenticated bytecode-image plan.
 
 use std::collections::HashMap;
 
@@ -10,13 +10,13 @@ use super::super::super::pinned_atoms::FIRST_DYNAMIC_ATOM;
 use super::super::super::wire::{WireString, WireWriter};
 use super::super::atoms::ImageAtom;
 use super::super::model::{FunctionId, ImageCode};
-use super::FunctionImageEncodeError;
-use super::plan::{AuthenticatedFunctionImage, PlannedToken};
+use super::BytecodeImageEncodeError;
+use super::plan::{AuthenticatedBytecodeImage, PlannedToken};
 
 pub(super) fn encode_authenticated(
-    proof: AuthenticatedFunctionImage<'_>,
-) -> Result<Vec<u8>, FunctionImageEncodeError> {
-    let AuthenticatedFunctionImage {
+    proof: AuthenticatedBytecodeImage<'_>,
+) -> Result<Vec<u8>, BytecodeImageEncodeError> {
+    let AuthenticatedBytecodeImage {
         image: _,
         options: _,
         atoms,
@@ -51,7 +51,7 @@ pub(super) fn encode_authenticated(
     }
     let actual = writer.as_bytes().len();
     if actual != encoded_length {
-        return Err(FunctionImageEncodeError::EncodedLengthMismatch {
+        return Err(BytecodeImageEncodeError::EncodedLengthMismatch {
             planned: encoded_length,
             actual,
         });
@@ -64,15 +64,15 @@ fn canonical_code_bytes(
     code: &ImageCode,
     dynamic_slots: &HashMap<AtomId, u32>,
     atom_space: AtomIndexSpace,
-) -> Result<Vec<u8>, FunctionImageEncodeError> {
+) -> Result<Vec<u8>, BytecodeImageEncodeError> {
     let mut output = Vec::new();
     output
         .try_reserve_exact(code.as_bytes().len())
-        .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+        .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
     output.extend_from_slice(code.as_bytes());
     for instruction in code.instructions() {
         let Some(raw) = output.get_mut(instruction.offset() as usize) else {
-            return Err(FunctionImageEncodeError::InvalidCodeSidecar {
+            return Err(BytecodeImageEncodeError::InvalidCodeSidecar {
                 function_index: function.zero_based(),
                 offset: instruction.offset(),
             });
@@ -82,13 +82,13 @@ fn canonical_code_bytes(
     for relocation in code.atom_relocations() {
         let offset = relocation.operand_offset() as usize;
         let end = offset.checked_add(size_of::<u32>()).ok_or(
-            FunctionImageEncodeError::InvalidCodeSidecar {
+            BytecodeImageEncodeError::InvalidCodeSidecar {
                 function_index: function.zero_based(),
                 offset: relocation.operand_offset(),
             },
         )?;
         let Some(destination) = output.get_mut(offset..end) else {
-            return Err(FunctionImageEncodeError::InvalidCodeSidecar {
+            return Err(BytecodeImageEncodeError::InvalidCodeSidecar {
                 function_index: function.zero_based(),
                 offset: relocation.operand_offset(),
             });
@@ -105,7 +105,7 @@ pub(super) fn encoded_plan_length(
     dynamic_slots: &HashMap<AtomId, u32>,
     atom_space: AtomIndexSpace,
     tokens: &[PlannedToken<'_>],
-) -> Result<usize, FunctionImageEncodeError> {
+) -> Result<usize, BytecodeImageEncodeError> {
     let mut length = 1usize;
     add_length(&mut length, uleb_length(atom_space.header_count()))?;
     for atom in atoms {
@@ -136,21 +136,21 @@ fn planned_binary_atom(
     atom: ImageAtom,
     dynamic_slots: &HashMap<AtomId, u32>,
     atom_space: AtomIndexSpace,
-) -> Result<BinaryAtom, FunctionImageEncodeError> {
+) -> Result<BinaryAtom, BytecodeImageEncodeError> {
     match atom {
         ImageAtom::Null => Ok(BinaryAtom::Null),
         ImageAtom::Index(index) if index <= ATOM_MAX_INT => Ok(BinaryAtom::Index(index)),
-        ImageAtom::Index(index) => Err(FunctionImageEncodeError::IntegerAtomOutOfRange { index }),
+        ImageAtom::Index(index) => Err(BytecodeImageEncodeError::IntegerAtomOutOfRange { index }),
         ImageAtom::Predefined(atom) => Ok(BinaryAtom::Predefined(atom)),
         ImageAtom::Dynamic(atom) => {
             let index = dynamic_slots.get(&atom).copied().ok_or(
-                FunctionImageEncodeError::DynamicAtomOutOfRange {
+                BytecodeImageEncodeError::DynamicAtomOutOfRange {
                     index: atom.zero_based(),
                     atom_count: dynamic_slots.len(),
                 },
             )?;
             atom_space.header_slot(index).map(BinaryAtom::Header).ok_or(
-                FunctionImageEncodeError::DynamicAtomOutOfRange {
+                BytecodeImageEncodeError::DynamicAtomOutOfRange {
                     index: atom.zero_based(),
                     atom_count: dynamic_slots.len(),
                 },
@@ -159,46 +159,46 @@ fn planned_binary_atom(
     }
 }
 
-fn metadata_atom_encoding(atom: BinaryAtom) -> Result<u32, FunctionImageEncodeError> {
+fn metadata_atom_encoding(atom: BinaryAtom) -> Result<u32, BytecodeImageEncodeError> {
     match atom {
         BinaryAtom::Null => Ok(0),
         BinaryAtom::Index(index) if index <= ATOM_MAX_INT => Ok((index << 1) | 1),
-        BinaryAtom::Index(index) => Err(FunctionImageEncodeError::IntegerAtomOutOfRange { index }),
+        BinaryAtom::Index(index) => Err(BytecodeImageEncodeError::IntegerAtomOutOfRange { index }),
         BinaryAtom::Predefined(atom) => Ok(atom.raw() << 1),
         BinaryAtom::Header(slot) => header_atom_encoding(slot),
     }
 }
 
-fn header_atom_encoding(slot: HeaderAtomSlot) -> Result<u32, FunctionImageEncodeError> {
+fn header_atom_encoding(slot: HeaderAtomSlot) -> Result<u32, BytecodeImageEncodeError> {
     // AtomIndexSpace construction separately proves the complete header range.
     FIRST_DYNAMIC_ATOM
         .checked_add(slot.index())
         .and_then(|raw| raw.checked_shl(1))
-        .ok_or(FunctionImageEncodeError::EncodedLengthOverflow)
+        .ok_or(BytecodeImageEncodeError::EncodedLengthOverflow)
 }
 
-fn wire_string_length(value: &WireString) -> Result<usize, FunctionImageEncodeError> {
+fn wire_string_length(value: &WireString) -> Result<usize, BytecodeImageEncodeError> {
     let units = value.len();
     let bytes = match value {
         WireString::Narrow(_) => units,
         WireString::Wide(_) => units
             .checked_mul(2)
-            .ok_or(FunctionImageEncodeError::EncodedLengthOverflow)?,
+            .ok_or(BytecodeImageEncodeError::EncodedLengthOverflow)?,
     };
     let encoded_units = u32::try_from(units)
         .ok()
         .and_then(|units| units.checked_shl(1))
         .map(|units| units | u32::from(value.is_wide()))
-        .ok_or(FunctionImageEncodeError::EncodedLengthOverflow)?;
+        .ok_or(BytecodeImageEncodeError::EncodedLengthOverflow)?;
     uleb_length(encoded_units)
         .checked_add(bytes)
-        .ok_or(FunctionImageEncodeError::EncodedLengthOverflow)
+        .ok_or(BytecodeImageEncodeError::EncodedLengthOverflow)
 }
 
-fn add_length(total: &mut usize, addend: usize) -> Result<(), FunctionImageEncodeError> {
+fn add_length(total: &mut usize, addend: usize) -> Result<(), BytecodeImageEncodeError> {
     *total = total
         .checked_add(addend)
-        .ok_or(FunctionImageEncodeError::EncodedLengthOverflow)?;
+        .ok_or(BytecodeImageEncodeError::EncodedLengthOverflow)?;
     Ok(())
 }
 

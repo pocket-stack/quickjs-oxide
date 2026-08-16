@@ -19,7 +19,7 @@ use super::super::graph::model::{
 use super::super::pinned_atoms::{self, PinnedAtomId};
 use super::super::wire::{ReaderMode, WireCursor, WireError, WireString};
 
-/// One semantic atom identity shared by the entire function image.
+/// One semantic atom identity shared by the entire bytecode image.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum ImageAtom {
     /// QuickJS's reserved atom-zero sentinel.
@@ -40,7 +40,7 @@ pub(super) enum ImageKey {
     Dynamic(AtomId),
 }
 
-/// Failures while reading or relocating the function image's atom namespace.
+/// Failures while reading or relocating the bytecode image's atom namespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ImageAtomError {
     Wire(WireError),
@@ -66,7 +66,7 @@ impl fmt::Display for ImageAtomError {
             Self::Wire(error) => fmt::Display::fmt(error, formatter),
             Self::AtomIndexSpaceMismatch { expected, actual } => write!(
                 formatter,
-                "function image atom index-space shape mismatch: expected {expected:?}, got {actual:?}"
+                "bytecode image atom index-space shape mismatch: expected {expected:?}, got {actual:?}"
             ),
             Self::ForeignHeaderSlot { slot, header_count } => write!(
                 formatter,
@@ -74,7 +74,7 @@ impl fmt::Display for ImageAtomError {
             ),
             Self::DynamicAtomCountOverflow { atom_count } => write!(
                 formatter,
-                "function image dynamic atom count {atom_count} exceeds u32"
+                "bytecode image dynamic atom count {atom_count} exceeds u32"
             ),
             Self::NullPropertyKey { offset } => {
                 write!(formatter, "null property atom at byte {offset}")

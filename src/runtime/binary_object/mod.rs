@@ -17,7 +17,7 @@ pub(in crate::runtime) mod code;
 pub(in crate::runtime) mod function_envelope;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod function_image;
+pub(in crate::runtime) mod bytecode_image;
 
 #[allow(dead_code)]
 pub(in crate::runtime) mod graph;

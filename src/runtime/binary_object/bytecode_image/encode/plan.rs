@@ -1,4 +1,4 @@
-//! Authentication and traversal planning for the canonical function-image writer.
+//! Authentication and traversal planning for the canonical bytecode-image writer.
 //!
 //! The writer first builds a source-bound plan which validates traversal,
 //! resource, atom, and code-sidecar invariants without exposing output. Only a
@@ -25,13 +25,13 @@ use super::super::super::pinned_atoms::PinnedAtomKind;
 use super::super::super::wire::{BcTag, ResourceKind, WireError, WireString};
 use super::super::atoms::{ImageAtom, ImageKey};
 use super::super::budget::{
-    FunctionImageBudgetError, FunctionImageResourceKind, FunctionTotals, FunctionUsage,
+    BytecodeImageBudgetError, BytecodeImageResourceKind, FunctionTotals, FunctionUsage,
 };
 use super::super::model::{
-    FunctionId, FunctionImage, FunctionRecord, ImageCode, ImageFunctionEnvelope, ImageValue,
+    BytecodeImage, FunctionId, FunctionRecord, ImageCode, ImageFunctionEnvelope, ImageValue,
 };
 use super::emit::encoded_plan_length;
-use super::{FunctionImageEncodeError, FunctionImageEncodeOptions};
+use super::{BytecodeImageEncodeError, BytecodeImageEncodeOptions};
 
 const FUNCTION_FLAGS_MASK: u16 = 0x0fff;
 const FUNCTION_HAS_DEBUG: u16 = 1 << 10;
@@ -74,9 +74,9 @@ enum PlanTask<'a> {
 
 /// Move-only proof that every byte-affecting invariant was checked against one
 /// borrowed image. The proof is private and consumed by final emission.
-pub(super) struct AuthenticatedFunctionImage<'a> {
-    pub(super) image: &'a FunctionImage,
-    pub(super) options: FunctionImageEncodeOptions,
+pub(super) struct AuthenticatedBytecodeImage<'a> {
+    pub(super) image: &'a BytecodeImage,
+    pub(super) options: BytecodeImageEncodeOptions,
     pub(super) atoms: Vec<&'a WireString>,
     pub(super) dynamic_slots: HashMap<AtomId, u32>,
     pub(super) atom_space: AtomIndexSpace,
@@ -85,8 +85,8 @@ pub(super) struct AuthenticatedFunctionImage<'a> {
 }
 
 struct PlanBuilder<'a> {
-    image: &'a FunctionImage,
-    options: FunctionImageEncodeOptions,
+    image: &'a BytecodeImage,
+    options: BytecodeImageEncodeOptions,
     atoms: Vec<&'a WireString>,
     dynamic_slots: HashMap<AtomId, u32>,
     tokens: Vec<PlannedToken<'a>>,
@@ -99,21 +99,21 @@ struct PlanBuilder<'a> {
 }
 
 pub(super) fn authenticate_for_write<'a>(
-    image: &'a FunctionImage,
-    options: FunctionImageEncodeOptions,
-) -> Result<AuthenticatedFunctionImage<'a>, FunctionImageEncodeError> {
+    image: &'a BytecodeImage,
+    options: BytecodeImageEncodeOptions,
+) -> Result<AuthenticatedBytecodeImage<'a>, BytecodeImageEncodeError> {
     PlanBuilder::new(image, options)?.authenticate()
 }
 
 impl<'a> PlanBuilder<'a> {
     fn new(
-        image: &'a FunctionImage,
-        options: FunctionImageEncodeOptions,
-    ) -> Result<Self, FunctionImageEncodeError> {
+        image: &'a BytecodeImage,
+        options: BytecodeImageEncodeOptions,
+    ) -> Result<Self, BytecodeImageEncodeError> {
         let mut tasks = Vec::new();
         tasks
             .try_reserve(1)
-            .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
         tasks.push(PlanTask::Value {
             value: ValueRef::Image(image.root()),
             whole_parent_depth: 0,
@@ -137,7 +137,7 @@ impl<'a> PlanBuilder<'a> {
         })
     }
 
-    fn authenticate(mut self) -> Result<AuthenticatedFunctionImage<'a>, FunctionImageEncodeError> {
+    fn authenticate(mut self) -> Result<AuthenticatedBytecodeImage<'a>, BytecodeImageEncodeError> {
         while let Some(task) = self.tasks.pop() {
             match task {
                 PlanTask::Value {
@@ -149,7 +149,7 @@ impl<'a> PlanBuilder<'a> {
                 PlanTask::LeaveNode(node) => self.data_state.leave_node(node),
                 PlanTask::LeaveFunction(function) => {
                     if !self.active_functions.remove(&function) {
-                        return Err(FunctionImageEncodeError::CircularFunction {
+                        return Err(BytecodeImageEncodeError::CircularFunction {
                             function_index: function.zero_based(),
                         });
                     }
@@ -158,14 +158,14 @@ impl<'a> PlanBuilder<'a> {
         }
 
         if self.seen_functions.len() != self.image.functions().len() {
-            return Err(FunctionImageEncodeError::MissingFunctions {
+            return Err(BytecodeImageEncodeError::MissingFunctions {
                 reachable: self.seen_functions.len(),
                 function_count: self.image.functions().len(),
             });
         }
 
         let atom_count = u32::try_from(self.atoms.len()).map_err(|_| {
-            FunctionImageEncodeError::DynamicAtomOutOfRange {
+            BytecodeImageEncodeError::DynamicAtomOutOfRange {
                 index: u32::MAX,
                 atom_count: self.atoms.len(),
             }
@@ -182,7 +182,7 @@ impl<'a> PlanBuilder<'a> {
             .into());
         }
 
-        Ok(AuthenticatedFunctionImage {
+        Ok(AuthenticatedBytecodeImage {
             image: self.image,
             options: self.options,
             atoms: self.atoms,
@@ -198,16 +198,16 @@ impl<'a> PlanBuilder<'a> {
         value: ValueRef<'a>,
         whole_parent_depth: usize,
         graph_parent_depth: usize,
-    ) -> Result<(), FunctionImageEncodeError> {
+    ) -> Result<(), BytecodeImageEncodeError> {
         let whole_depth =
             whole_parent_depth
                 .checked_add(1)
-                .ok_or(FunctionImageBudgetError::CountOverflow {
-                    kind: FunctionImageResourceKind::WholeDepth,
+                .ok_or(BytecodeImageBudgetError::CountOverflow {
+                    kind: BytecodeImageResourceKind::WholeDepth,
                 })?;
         self.options
             .limits
-            .check(FunctionImageResourceKind::WholeDepth, whole_depth)?;
+            .check(BytecodeImageResourceKind::WholeDepth, whole_depth)?;
 
         match value {
             ValueRef::Image(value) => match value.as_wire() {
@@ -224,7 +224,7 @@ impl<'a> PlanBuilder<'a> {
         value: &'a WireValue,
         whole_depth: usize,
         graph_parent_depth: usize,
-    ) -> Result<(), FunctionImageEncodeError> {
+    ) -> Result<(), BytecodeImageEncodeError> {
         match value {
             WireValue::Undefined => self.push_u8(BcTag::Undefined.to_byte()),
             WireValue::Null => self.push_u8(BcTag::Null.to_byte()),
@@ -261,7 +261,7 @@ impl<'a> PlanBuilder<'a> {
         node: NodeId,
         whole_depth: usize,
         graph_parent_depth: usize,
-    ) -> Result<(), FunctionImageEncodeError> {
+    ) -> Result<(), BytecodeImageEncodeError> {
         let nodes = self.image.nodes();
         let node_data = nodes
             .get(node.as_usize())
@@ -317,7 +317,7 @@ impl<'a> PlanBuilder<'a> {
                     max_byte_length,
                 } => {
                     validate_array_buffer_layout(bytes.len(), *max_byte_length).map_err(
-                        |reason| FunctionImageEncodeError::InvalidArrayBuffer { node, reason },
+                        |reason| BytecodeImageEncodeError::InvalidArrayBuffer { node, reason },
                     )?;
                 }
                 WireNodeCarrier::TypedArray {
@@ -341,7 +341,7 @@ impl<'a> PlanBuilder<'a> {
         match node_data {
             WireNodeCarrier::Ordinary { properties } => {
                 let property_count = ordinary_property_count
-                    .ok_or(FunctionImageEncodeError::EncodedLengthOverflow)?;
+                    .ok_or(BytecodeImageEncodeError::EncodedLengthOverflow)?;
                 self.push_u8(BcTag::Object.to_byte())?;
                 self.push_uleb(container_count(property_count)?)?;
                 self.reserve_tasks(property_count.checked_mul(2))?;
@@ -393,7 +393,7 @@ impl<'a> PlanBuilder<'a> {
             } => {
                 let byte_length =
                     validate_array_buffer_layout(bytes.len(), *max_byte_length).map_err(
-                        |reason| FunctionImageEncodeError::InvalidArrayBuffer { node, reason },
+                        |reason| BytecodeImageEncodeError::InvalidArrayBuffer { node, reason },
                     )?;
                 self.push_u8(BcTag::ArrayBuffer.to_byte())?;
                 self.push_uleb(byte_length)?;
@@ -441,27 +441,27 @@ impl<'a> PlanBuilder<'a> {
         function: FunctionId,
         whole_depth: usize,
         graph_parent_depth: usize,
-    ) -> Result<(), FunctionImageEncodeError> {
+    ) -> Result<(), BytecodeImageEncodeError> {
         let record =
             self.image
                 .function(function)
-                .ok_or(FunctionImageEncodeError::ForeignFunction {
+                .ok_or(BytecodeImageEncodeError::ForeignFunction {
                     function_index: function.zero_based(),
                 })?;
         if self.active_functions.contains(&function) {
-            return Err(FunctionImageEncodeError::CircularFunction {
+            return Err(BytecodeImageEncodeError::CircularFunction {
                 function_index: function.zero_based(),
             });
         }
         self.charge_function_occurrence()?;
         if !self.seen_functions.contains(&function) {
             let expected = u32::try_from(self.seen_functions.len()).map_err(|_| {
-                FunctionImageBudgetError::CountOverflow {
-                    kind: FunctionImageResourceKind::Functions,
+                BytecodeImageBudgetError::CountOverflow {
+                    kind: BytecodeImageResourceKind::Functions,
                 }
             })?;
             if function.zero_based() != expected {
-                return Err(FunctionImageEncodeError::FunctionPreorder {
+                return Err(BytecodeImageEncodeError::FunctionPreorder {
                     expected,
                     found: function.zero_based(),
                 });
@@ -471,12 +471,12 @@ impl<'a> PlanBuilder<'a> {
         if !self.seen_functions.contains(&function) {
             self.seen_functions
                 .try_reserve(1)
-                .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+                .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
             self.seen_functions.insert(function);
         }
         self.active_functions
             .try_reserve(1)
-            .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
         self.active_functions.insert(function);
 
         self.plan_function_prefix(function, record)?;
@@ -497,7 +497,7 @@ impl<'a> PlanBuilder<'a> {
         &mut self,
         function: FunctionId,
         record: &'a FunctionRecord,
-    ) -> Result<(), FunctionImageEncodeError> {
+    ) -> Result<(), BytecodeImageEncodeError> {
         let envelope = record.envelope();
 
         self.push_u8(BcTag::FunctionBytecode.to_byte())?;
@@ -571,35 +571,35 @@ impl<'a> PlanBuilder<'a> {
         Ok(())
     }
 
-    fn plan_atom(&mut self, atom: ImageAtom) -> Result<(), FunctionImageEncodeError> {
+    fn plan_atom(&mut self, atom: ImageAtom) -> Result<(), BytecodeImageEncodeError> {
         self.encounter_atom(atom)?;
         self.push_token(PlannedToken::Atom(atom))
     }
 
-    fn encounter_atom(&mut self, atom: ImageAtom) -> Result<(), FunctionImageEncodeError> {
+    fn encounter_atom(&mut self, atom: ImageAtom) -> Result<(), BytecodeImageEncodeError> {
         match atom {
             ImageAtom::Index(index) if index > ATOM_MAX_INT => {
-                Err(FunctionImageEncodeError::IntegerAtomOutOfRange { index })
+                Err(BytecodeImageEncodeError::IntegerAtomOutOfRange { index })
             }
             ImageAtom::Dynamic(atom) if !self.dynamic_slots.contains_key(&atom) => {
                 let string = self.image.atoms().get(atom.as_usize()).ok_or(
-                    FunctionImageEncodeError::DynamicAtomOutOfRange {
+                    BytecodeImageEncodeError::DynamicAtomOutOfRange {
                         index: atom.zero_based(),
                         atom_count: self.image.atoms().len(),
                     },
                 )?;
                 let slot = u32::try_from(self.atoms.len()).map_err(|_| {
-                    FunctionImageEncodeError::DynamicAtomOutOfRange {
+                    BytecodeImageEncodeError::DynamicAtomOutOfRange {
                         index: atom.zero_based(),
                         atom_count: self.image.atoms().len(),
                     }
                 })?;
                 self.atoms
                     .try_reserve(1)
-                    .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+                    .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
                 self.dynamic_slots
                     .try_reserve(1)
-                    .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+                    .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
                 self.atoms.push(string);
                 self.dynamic_slots.insert(atom, slot);
                 Ok(())
@@ -608,15 +608,15 @@ impl<'a> PlanBuilder<'a> {
         }
     }
 
-    fn charge_function_occurrence(&mut self) -> Result<(), FunctionImageEncodeError> {
+    fn charge_function_occurrence(&mut self) -> Result<(), BytecodeImageEncodeError> {
         let requested = self.emitted_functions.checked_add(1).ok_or(
-            FunctionImageBudgetError::CountOverflow {
-                kind: FunctionImageResourceKind::Functions,
+            BytecodeImageBudgetError::CountOverflow {
+                kind: BytecodeImageResourceKind::Functions,
             },
         )?;
         self.options
             .limits
-            .check(FunctionImageResourceKind::Functions, requested)?;
+            .check(BytecodeImageResourceKind::Functions, requested)?;
         self.emitted_functions = requested;
         Ok(())
     }
@@ -625,7 +625,7 @@ impl<'a> PlanBuilder<'a> {
         &mut self,
         function: FunctionId,
         record: &FunctionRecord,
-    ) -> Result<(), FunctionImageEncodeError> {
+    ) -> Result<(), BytecodeImageEncodeError> {
         let envelope = record.envelope();
         let remaining = self.function_totals.remaining(self.options.limits)?;
         let envelope_limits = remaining.intersect(self.options.limits.envelope());
@@ -646,8 +646,8 @@ impl<'a> PlanBuilder<'a> {
                 .pc2line()
                 .len()
                 .checked_add(debug.source().len())
-                .ok_or(FunctionImageBudgetError::CountOverflow {
-                    kind: FunctionImageResourceKind::TotalDebugBytes,
+                .ok_or(BytecodeImageBudgetError::CountOverflow {
+                    kind: BytecodeImageResourceKind::TotalDebugBytes,
                 })
         })?;
         let usage = FunctionUsage::new(
@@ -665,75 +665,75 @@ impl<'a> PlanBuilder<'a> {
         Ok(())
     }
 
-    fn charge_container(&mut self, entries: usize) -> Result<(), FunctionImageEncodeError> {
+    fn charge_container(&mut self, entries: usize) -> Result<(), BytecodeImageEncodeError> {
         self.data_state.check_container_entries(entries)?;
         self.data_state.charge_container_entries(entries)?;
         Ok(())
     }
 
-    fn charge_bigint(&mut self, payload: &[u8]) -> Result<(), FunctionImageEncodeError> {
+    fn charge_bigint(&mut self, payload: &[u8]) -> Result<(), BytecodeImageEncodeError> {
         self.data_state.check_bigint_bytes(payload.len())?;
         if canonical_bigint_length(payload) != payload.len() {
-            return Err(FunctionImageEncodeError::NonCanonicalBigInt);
+            return Err(BytecodeImageEncodeError::NonCanonicalBigInt);
         }
         self.data_state.charge_bigint_bytes(payload.len())?;
         Ok(())
     }
 
-    fn charge_array_buffer(&mut self, bytes: usize) -> Result<(), FunctionImageEncodeError> {
+    fn charge_array_buffer(&mut self, bytes: usize) -> Result<(), BytecodeImageEncodeError> {
         self.data_state.charge_array_buffer_bytes(bytes)?;
         Ok(())
     }
 
-    fn push_u8(&mut self, value: u8) -> Result<(), FunctionImageEncodeError> {
+    fn push_u8(&mut self, value: u8) -> Result<(), BytecodeImageEncodeError> {
         self.push_token(PlannedToken::U8(value))
     }
 
-    fn push_uleb(&mut self, value: u32) -> Result<(), FunctionImageEncodeError> {
+    fn push_uleb(&mut self, value: u32) -> Result<(), BytecodeImageEncodeError> {
         self.push_token(PlannedToken::Uleb(value))
     }
 
-    fn push_token(&mut self, token: PlannedToken<'a>) -> Result<(), FunctionImageEncodeError> {
+    fn push_token(&mut self, token: PlannedToken<'a>) -> Result<(), BytecodeImageEncodeError> {
         self.tokens
             .try_reserve(1)
-            .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
         self.tokens.push(token);
         Ok(())
     }
 
-    fn push_task(&mut self, task: PlanTask<'a>) -> Result<(), FunctionImageEncodeError> {
+    fn push_task(&mut self, task: PlanTask<'a>) -> Result<(), BytecodeImageEncodeError> {
         self.tasks
             .try_reserve(1)
-            .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+            .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
         self.tasks.push(task);
         Ok(())
     }
 
-    fn reserve_tasks(&mut self, count: Option<usize>) -> Result<(), FunctionImageEncodeError> {
-        let count = count.ok_or(FunctionImageEncodeError::EncodedLengthOverflow)?;
+    fn reserve_tasks(&mut self, count: Option<usize>) -> Result<(), BytecodeImageEncodeError> {
+        let count = count.ok_or(BytecodeImageEncodeError::EncodedLengthOverflow)?;
         self.tasks
             .try_reserve(count)
-            .map_err(|_| FunctionImageEncodeError::AllocationFailed)
+            .map_err(|_| BytecodeImageEncodeError::AllocationFailed)
     }
 }
 
 fn validate_properties(
     node: NodeId,
     properties: &[WirePropertyCarrier<ImageValue, ImageKey>],
-) -> Result<(), FunctionImageEncodeError> {
+) -> Result<(), BytecodeImageEncodeError> {
     let mut keys = HashSet::new();
     let string_property_count = properties
         .iter()
         .filter(|property| is_string_property_key(property.key))
         .count();
     keys.try_reserve(string_property_count)
-        .map_err(|_| FunctionImageEncodeError::AllocationFailed)?;
+        .map_err(|_| BytecodeImageEncodeError::AllocationFailed)?;
     for property in properties {
         if !is_string_property_key(property.key) {
             continue;
         }
         if !keys.insert(property.key) {
-            return Err(FunctionImageEncodeError::DuplicatePropertyKey { node });
+            return Err(BytecodeImageEncodeError::DuplicatePropertyKey { node });
         }
     }
     Ok(())
@@ -753,7 +753,7 @@ fn validate_typed_array(
     length: u32,
     byte_offset: u32,
     buffer: NodeId,
-) -> Result<(), FunctionImageEncodeError> {
+) -> Result<(), BytecodeImageEncodeError> {
     let backing = nodes
         .get(buffer.as_usize())
         .ok_or(GraphError::InvalidNodeIndex {
@@ -765,19 +765,19 @@ fn validate_typed_array(
         max_byte_length,
     } = backing
     else {
-        return Err(FunctionImageEncodeError::InvalidTypedArrayBacking {
+        return Err(BytecodeImageEncodeError::InvalidTypedArrayBacking {
             node,
             reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
         });
     };
     validate_array_buffer_layout(bytes.len(), *max_byte_length).map_err(|reason| {
-        FunctionImageEncodeError::InvalidArrayBuffer {
+        BytecodeImageEncodeError::InvalidArrayBuffer {
             node: buffer,
             reason,
         }
     })?;
     validate_typed_array_write_layout(kind, length, byte_offset, bytes.len(), *max_byte_length)
-        .map_err(|reason| FunctionImageEncodeError::InvalidTypedArray { node, reason })
+        .map_err(|reason| BytecodeImageEncodeError::InvalidTypedArray { node, reason })
 }
 
 fn validate_envelope(
@@ -892,13 +892,13 @@ fn validate_envelope(
     Ok(())
 }
 
-fn validate_code(function: FunctionId, code: &ImageCode) -> Result<(), FunctionImageEncodeError> {
+fn validate_code(function: FunctionId, code: &ImageCode) -> Result<(), BytecodeImageEncodeError> {
     let mut expected_offset = 0usize;
     let mut relocation_index = 0usize;
     for instruction in code.instructions() {
         let offset = instruction.offset() as usize;
         if offset != expected_offset || instruction.opcode().raw() == 0 {
-            return Err(FunctionImageEncodeError::InvalidCodeSidecar {
+            return Err(BytecodeImageEncodeError::InvalidCodeSidecar {
                 function_index: function.zero_based(),
                 offset: instruction.offset(),
             });
@@ -906,31 +906,31 @@ fn validate_code(function: FunctionId, code: &ImageCode) -> Result<(), FunctionI
         let size = usize::from(instruction.opcode().size());
         let end = offset
             .checked_add(size)
-            .ok_or(FunctionImageEncodeError::InvalidCodeSidecar {
+            .ok_or(BytecodeImageEncodeError::InvalidCodeSidecar {
                 function_index: function.zero_based(),
                 offset: instruction.offset(),
             })?;
         if size == 0 || end > code.as_bytes().len() {
-            return Err(FunctionImageEncodeError::InvalidCodeSidecar {
+            return Err(BytecodeImageEncodeError::InvalidCodeSidecar {
                 function_index: function.zero_based(),
                 offset: instruction.offset(),
             });
         }
         if let Some(delta) = instruction.opcode().atom_operand_offset() {
             let operand = offset.checked_add(usize::from(delta)).ok_or(
-                FunctionImageEncodeError::InvalidCodeSidecar {
+                BytecodeImageEncodeError::InvalidCodeSidecar {
                     function_index: function.zero_based(),
                     offset: instruction.offset(),
                 },
             )?;
             let relocation = code.atom_relocations().get(relocation_index).ok_or(
-                FunctionImageEncodeError::InvalidCodeSidecar {
+                BytecodeImageEncodeError::InvalidCodeSidecar {
                     function_index: function.zero_based(),
                     offset: u32::try_from(operand).unwrap_or(u32::MAX),
                 },
             )?;
             if relocation.operand_offset() as usize != operand {
-                return Err(FunctionImageEncodeError::InvalidCodeSidecar {
+                return Err(BytecodeImageEncodeError::InvalidCodeSidecar {
                     function_index: function.zero_based(),
                     offset: relocation.operand_offset(),
                 });
@@ -941,7 +941,7 @@ fn validate_code(function: FunctionId, code: &ImageCode) -> Result<(), FunctionI
     }
     if expected_offset != code.as_bytes().len() || relocation_index != code.atom_relocations().len()
     {
-        return Err(FunctionImageEncodeError::InvalidCodeSidecar {
+        return Err(BytecodeImageEncodeError::InvalidCodeSidecar {
             function_index: function.zero_based(),
             offset: u32::try_from(expected_offset).unwrap_or(u32::MAX),
         });
@@ -957,7 +957,7 @@ fn key_atom(key: ImageKey) -> ImageAtom {
     }
 }
 
-fn container_count(value: usize) -> Result<u32, FunctionImageEncodeError> {
+fn container_count(value: usize) -> Result<u32, BytecodeImageEncodeError> {
     u32::try_from(value).map_err(|_| {
         GraphError::CountOverflow {
             kind: GraphResourceKind::ContainerEntries,

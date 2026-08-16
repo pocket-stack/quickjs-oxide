@@ -460,7 +460,7 @@ impl FunctionEnvelope {
 /// pending on the shared whole-image cursor.
 ///
 /// Keeping this count outside FunctionEnvelope makes an incomplete record
-/// impossible to confuse with the future fully decoded FunctionImage.
+/// impossible to confuse with the future fully decoded BytecodeImage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) struct FunctionRecordPrefix {
     pub(super) envelope: FunctionEnvelope,

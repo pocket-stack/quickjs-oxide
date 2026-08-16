@@ -1,4 +1,4 @@
-//! Canonical writer for an authenticated, non-executable [`FunctionImage`].
+//! Canonical writer for an authenticated, non-executable [`BytecodeImage`].
 //!
 //! The writer first builds a source-bound plan which validates traversal,
 //! resource, atom, and code-sidecar invariants without exposing output. Only a
@@ -18,23 +18,23 @@ use super::super::graph::model::{
 };
 use super::super::graph::write_state::DataWriteStateError;
 use super::super::wire::WireError;
-use super::budget::{FunctionImageBudgetError, FunctionImageLimits};
-use super::model::FunctionImage;
+use super::budget::{BytecodeImageBudgetError, BytecodeImageLimits};
+use super::model::BytecodeImage;
 
 /// Explicit policy for one canonical whole-image write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::runtime) struct FunctionImageEncodeOptions {
+pub(in crate::runtime) struct BytecodeImageEncodeOptions {
     allow_object_references: bool,
     max_output_bytes: usize,
-    limits: FunctionImageLimits,
+    limits: BytecodeImageLimits,
 }
 
-impl FunctionImageEncodeOptions {
+impl BytecodeImageEncodeOptions {
     #[must_use]
     pub(in crate::runtime) const fn new(
         allow_object_references: bool,
         max_output_bytes: usize,
-        limits: FunctionImageLimits,
+        limits: BytecodeImageLimits,
     ) -> Self {
         Self {
             allow_object_references,
@@ -45,10 +45,10 @@ impl FunctionImageEncodeOptions {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum FunctionImageEncodeError {
+pub(in crate::runtime) enum BytecodeImageEncodeError {
     Wire(WireError),
     Graph(GraphError),
-    Budget(FunctionImageBudgetError),
+    Budget(BytecodeImageBudgetError),
     Envelope(FunctionEnvelopeError),
     Code(CodeError),
     DynamicAtomOutOfRange {
@@ -103,7 +103,7 @@ pub(in crate::runtime) enum FunctionImageEncodeError {
     AllocationFailed,
 }
 
-impl fmt::Display for FunctionImageEncodeError {
+impl fmt::Display for BytecodeImageEncodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wire(error) => fmt::Display::fmt(error, formatter),
@@ -132,7 +132,7 @@ impl fmt::Display for FunctionImageEncodeError {
                 function_count,
             } => write!(
                 formatter,
-                "function image exposes {reachable} reachable records out of {function_count}"
+                "bytecode image exposes {reachable} reachable records out of {function_count}"
             ),
             Self::DuplicatePropertyKey { node } => write!(
                 formatter,
@@ -140,16 +140,16 @@ impl fmt::Display for FunctionImageEncodeError {
                 node.zero_based()
             ),
             Self::NonCanonicalBigInt => {
-                formatter.write_str("function image contains a non-canonical BigInt payload")
+                formatter.write_str("bytecode image contains a non-canonical BigInt payload")
             }
             Self::CircularReference { node } => write!(
                 formatter,
-                "function image contains a circular reference through node {}",
+                "bytecode image contains a circular reference through node {}",
                 node.zero_based()
             ),
             Self::CircularFunction { function_index } => write!(
                 formatter,
-                "function image contains a recursive record cycle through function {function_index}"
+                "bytecode image contains a recursive record cycle through function {function_index}"
             ),
             Self::InvalidArrayBuffer { node, reason } => write!(
                 formatter,
@@ -175,33 +175,33 @@ impl fmt::Display for FunctionImageEncodeError {
             ),
             Self::EncodedLengthMismatch { planned, actual } => write!(
                 formatter,
-                "canonical function-image plan promised {planned} bytes but emitted {actual}"
+                "canonical bytecode-image plan promised {planned} bytes but emitted {actual}"
             ),
             Self::EncodedLengthOverflow => {
-                formatter.write_str("canonical function-image length overflowed")
+                formatter.write_str("canonical bytecode-image length overflowed")
             }
             Self::AllocationFailed => {
-                formatter.write_str("canonical function-image writer allocation failed")
+                formatter.write_str("canonical bytecode-image writer allocation failed")
             }
         }
     }
 }
 
-impl std::error::Error for FunctionImageEncodeError {}
+impl std::error::Error for BytecodeImageEncodeError {}
 
-impl From<WireError> for FunctionImageEncodeError {
+impl From<WireError> for BytecodeImageEncodeError {
     fn from(error: WireError) -> Self {
         Self::Wire(error)
     }
 }
 
-impl From<GraphError> for FunctionImageEncodeError {
+impl From<GraphError> for BytecodeImageEncodeError {
     fn from(error: GraphError) -> Self {
         Self::Graph(error)
     }
 }
 
-impl From<DataWriteStateError> for FunctionImageEncodeError {
+impl From<DataWriteStateError> for BytecodeImageEncodeError {
     fn from(error: DataWriteStateError) -> Self {
         match error {
             DataWriteStateError::Graph(error) => Self::Graph(error),
@@ -211,28 +211,28 @@ impl From<DataWriteStateError> for FunctionImageEncodeError {
     }
 }
 
-impl From<FunctionImageBudgetError> for FunctionImageEncodeError {
-    fn from(error: FunctionImageBudgetError) -> Self {
+impl From<BytecodeImageBudgetError> for BytecodeImageEncodeError {
+    fn from(error: BytecodeImageBudgetError) -> Self {
         Self::Budget(error)
     }
 }
 
-impl From<FunctionEnvelopeError> for FunctionImageEncodeError {
+impl From<FunctionEnvelopeError> for BytecodeImageEncodeError {
     fn from(error: FunctionEnvelopeError) -> Self {
         Self::Envelope(error)
     }
 }
 
-impl From<CodeError> for FunctionImageEncodeError {
+impl From<CodeError> for BytecodeImageEncodeError {
     fn from(error: CodeError) -> Self {
         Self::Code(error)
     }
 }
 
 /// Canonically encode one complete, authenticated bytecode image.
-pub(in crate::runtime) fn encode_function_image(
-    image: &FunctionImage,
-    options: FunctionImageEncodeOptions,
-) -> Result<Vec<u8>, FunctionImageEncodeError> {
+pub(in crate::runtime) fn encode_bytecode_image(
+    image: &BytecodeImage,
+    options: BytecodeImageEncodeOptions,
+) -> Result<Vec<u8>, BytecodeImageEncodeError> {
     emit::encode_authenticated(plan::authenticate_for_write(image, options)?)
 }

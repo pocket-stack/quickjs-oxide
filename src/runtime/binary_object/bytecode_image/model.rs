@@ -1,4 +1,4 @@
-//! Non-executable semantic model for one complete BC5 function image.
+//! Non-executable semantic model for one complete BC5 bytecode image.
 //!
 //! Every atom-bearing field in this module has already been relocated out of
 //! the raw header-slot namespace. The model deliberately has no verifier,
@@ -446,7 +446,7 @@ impl FunctionRecord {
 
 /// Complete, heap-independent, and deliberately non-executable BC5 image.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) struct FunctionImage {
+pub(in crate::runtime) struct BytecodeImage {
     source: MachineSource,
     atoms: Box<[WireString]>,
     nodes: Box<[ImageNode]>,
@@ -455,7 +455,7 @@ pub(in crate::runtime) struct FunctionImage {
     root: ImageValue,
 }
 
-impl FunctionImage {
+impl BytecodeImage {
     pub(super) const fn new(
         source: MachineSource,
         atoms: Box<[WireString]>,

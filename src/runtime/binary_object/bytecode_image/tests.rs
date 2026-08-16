@@ -8,9 +8,10 @@ use super::super::wire::{
     BcTag, ReaderMode, ResourceKind, WireCursor, WireError, WireLimits, WireString, WireWriter,
 };
 use super::{
-    FunctionId, FunctionImageBudgetError, FunctionImageEncodeError, FunctionImageEncodeOptions,
-    FunctionImageError, FunctionImageLimits, FunctionImageResourceKind, ImageAtom, ImageAtomError,
-    ImageAtomTable, ImageKey, ImageValue, decode_function_image, encode_function_image,
+    BytecodeImageBudgetError, BytecodeImageEncodeError, BytecodeImageEncodeOptions,
+    BytecodeImageError, BytecodeImageLimits, BytecodeImageResourceKind, FunctionId, ImageAtom,
+    ImageAtomError, ImageAtomTable, ImageKey, ImageValue, decode_bytecode_image,
+    encode_bytecode_image,
 };
 
 const TEST_LIMITS: WireLimits = WireLimits::new(4096, 32, 128, 512);
@@ -24,7 +25,7 @@ const ENVELOPE_LIMITS: FunctionEnvelopeLimits = FunctionEnvelopeLimits::new(
     8192,
     CodeLimits::new(4096, 4096, 4096),
 );
-const IMAGE_LIMITS: FunctionImageLimits = FunctionImageLimits::new(
+const IMAGE_LIMITS: BytecodeImageLimits = BytecodeImageLimits::new(
     GRAPH_LIMITS,
     ENVELOPE_LIMITS,
     256,
@@ -54,24 +55,24 @@ fn bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn decode_image(input: &[u8]) -> Result<super::FunctionImage, FunctionImageError> {
+fn decode_image(input: &[u8]) -> Result<super::BytecodeImage, BytecodeImageError> {
     decode_image_with(input, ReaderMode::Strict, IMAGE_LIMITS, true)
 }
 
-fn encode_image(image: &super::FunctionImage) -> Result<Vec<u8>, FunctionImageEncodeError> {
-    encode_function_image(
+fn encode_image(image: &super::BytecodeImage) -> Result<Vec<u8>, BytecodeImageEncodeError> {
+    encode_bytecode_image(
         image,
-        FunctionImageEncodeOptions::new(true, 65536, IMAGE_LIMITS),
+        BytecodeImageEncodeOptions::new(true, 65536, IMAGE_LIMITS),
     )
 }
 
 fn decode_image_with(
     input: &[u8],
     mode: ReaderMode,
-    limits: FunctionImageLimits,
+    limits: BytecodeImageLimits,
     references: bool,
-) -> Result<super::FunctionImage, FunctionImageError> {
-    decode_function_image(input, mode, TEST_LIMITS, limits, references)
+) -> Result<super::BytecodeImage, BytecodeImageError> {
+    decode_bytecode_image(input, mode, TEST_LIMITS, limits, references)
 }
 
 fn bounded_image_limits(
@@ -79,8 +80,8 @@ fn bounded_image_limits(
     whole_depth: usize,
     constant_pool_entries: usize,
     code_bytes: usize,
-) -> FunctionImageLimits {
-    FunctionImageLimits::new(
+) -> BytecodeImageLimits {
+    BytecodeImageLimits::new(
         GRAPH_LIMITS,
         ENVELOPE_LIMITS,
         functions,
@@ -97,55 +98,55 @@ fn bounded_image_limits(
 
 fn one_aggregate_limit(
     envelope: FunctionEnvelopeLimits,
-    kind: FunctionImageResourceKind,
+    kind: BytecodeImageResourceKind,
     limit: usize,
-) -> FunctionImageLimits {
+) -> BytecodeImageLimits {
     assert!(matches!(
         kind,
-        FunctionImageResourceKind::TotalConstantPoolEntries
-            | FunctionImageResourceKind::TotalLocalVariables
-            | FunctionImageResourceKind::TotalClosureVariables
-            | FunctionImageResourceKind::TotalCodeBytes
-            | FunctionImageResourceKind::TotalInstructions
-            | FunctionImageResourceKind::TotalAtomRelocations
-            | FunctionImageResourceKind::TotalDebugBytes
+        BytecodeImageResourceKind::TotalConstantPoolEntries
+            | BytecodeImageResourceKind::TotalLocalVariables
+            | BytecodeImageResourceKind::TotalClosureVariables
+            | BytecodeImageResourceKind::TotalCodeBytes
+            | BytecodeImageResourceKind::TotalInstructions
+            | BytecodeImageResourceKind::TotalAtomRelocations
+            | BytecodeImageResourceKind::TotalDebugBytes
     ));
-    FunctionImageLimits::new(
+    BytecodeImageLimits::new(
         GRAPH_LIMITS,
         envelope,
         256,
         256,
-        if kind == FunctionImageResourceKind::TotalConstantPoolEntries {
+        if kind == BytecodeImageResourceKind::TotalConstantPoolEntries {
             limit
         } else {
             4096
         },
-        if kind == FunctionImageResourceKind::TotalLocalVariables {
+        if kind == BytecodeImageResourceKind::TotalLocalVariables {
             limit
         } else {
             4096
         },
-        if kind == FunctionImageResourceKind::TotalClosureVariables {
+        if kind == BytecodeImageResourceKind::TotalClosureVariables {
             limit
         } else {
             4096
         },
-        if kind == FunctionImageResourceKind::TotalCodeBytes {
+        if kind == BytecodeImageResourceKind::TotalCodeBytes {
             limit
         } else {
             16384
         },
-        if kind == FunctionImageResourceKind::TotalInstructions {
+        if kind == BytecodeImageResourceKind::TotalInstructions {
             limit
         } else {
             16384
         },
-        if kind == FunctionImageResourceKind::TotalAtomRelocations {
+        if kind == BytecodeImageResourceKind::TotalAtomRelocations {
             limit
         } else {
             16384
         },
-        if kind == FunctionImageResourceKind::TotalDebugBytes {
+        if kind == BytecodeImageResourceKind::TotalDebugBytes {
             limit
         } else {
             16384
@@ -647,7 +648,7 @@ fn data_only_coercion_tags_reject_function_children_with_typed_errors() {
     object_value.extend_from_slice(&record);
     assert!(matches!(
         decode_image(&object_value),
-        Err(FunctionImageError::Data(DecodeError::OpaqueObjectValue {
+        Err(BytecodeImageError::Data(DecodeError::OpaqueObjectValue {
             offset: 2,
             value,
         })) if value.zero_based() == 0
@@ -657,7 +658,7 @@ fn data_only_coercion_tags_reject_function_children_with_typed_errors() {
     date.extend_from_slice(&record);
     assert!(matches!(
         decode_image(&date),
-        Err(FunctionImageError::Data(DecodeError::OpaqueDateValue {
+        Err(BytecodeImageError::Data(DecodeError::OpaqueDateValue {
             offset: 2,
             value,
         })) if value.zero_based() == 0
@@ -667,7 +668,7 @@ fn data_only_coercion_tags_reject_function_children_with_typed_errors() {
     typed_array.extend_from_slice(&record);
     assert!(matches!(
         decode_image(&typed_array),
-        Err(FunctionImageError::Data(
+        Err(BytecodeImageError::Data(
             DecodeError::OpaqueTypedArrayBacking {
                 offset: 2,
                 value,
@@ -705,8 +706,8 @@ fn whole_image_limits_bound_functions_depth_and_aggregate_payloads() {
             bounded_image_limits(0, 256, 4096, 16384),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::Functions,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::Functions,
             requested: 1,
             limit: 0,
         })
@@ -718,8 +719,8 @@ fn whole_image_limits_bound_functions_depth_and_aggregate_payloads() {
             bounded_image_limits(256, 256, 4096, 3),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::TotalCodeBytes,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::TotalCodeBytes,
             requested: 4,
             limit: 3,
         })
@@ -735,8 +736,8 @@ fn whole_image_limits_bound_functions_depth_and_aggregate_payloads() {
             bounded_image_limits(256, 1, 4096, 16384),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::WholeDepth,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::WholeDepth,
             requested: 2,
             limit: 1,
         })
@@ -750,8 +751,8 @@ fn whole_image_limits_bound_functions_depth_and_aggregate_payloads() {
             bounded_image_limits(256, 256, 0, 16384),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::TotalConstantPoolEntries,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::TotalConstantPoolEntries,
             requested: 1,
             limit: 0,
         })
@@ -768,13 +769,13 @@ fn aggregate_limits_reject_before_avoidable_prefix_work() {
             ReaderMode::Strict,
             one_aggregate_limit(
                 ENVELOPE_LIMITS,
-                FunctionImageResourceKind::TotalCodeBytes,
+                BytecodeImageResourceKind::TotalCodeBytes,
                 0,
             ),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::TotalCodeBytes,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::TotalCodeBytes,
             requested: 4,
             limit: 0,
         })
@@ -785,13 +786,13 @@ fn aggregate_limits_reject_before_avoidable_prefix_work() {
             ReaderMode::Strict,
             one_aggregate_limit(
                 ENVELOPE_LIMITS,
-                FunctionImageResourceKind::TotalCodeBytes,
+                BytecodeImageResourceKind::TotalCodeBytes,
                 0,
             ),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::TotalCodeBytes,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::TotalCodeBytes,
             requested: 4,
             limit: 0,
         })
@@ -807,13 +808,13 @@ fn aggregate_limits_reject_before_avoidable_prefix_work() {
             ReaderMode::Strict,
             one_aggregate_limit(
                 ENVELOPE_LIMITS,
-                FunctionImageResourceKind::TotalLocalVariables,
+                BytecodeImageResourceKind::TotalLocalVariables,
                 0,
             ),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::TotalLocalVariables,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::TotalLocalVariables,
             requested: 1,
             limit: 0,
         })
@@ -830,13 +831,13 @@ fn aggregate_limits_reject_before_avoidable_prefix_work() {
             ReaderMode::Strict,
             one_aggregate_limit(
                 ENVELOPE_LIMITS,
-                FunctionImageResourceKind::TotalDebugBytes,
+                BytecodeImageResourceKind::TotalDebugBytes,
                 0,
             ),
             true,
         ),
-        Err(FunctionImageError::ResourceLimit {
-            kind: FunctionImageResourceKind::TotalDebugBytes,
+        Err(BytecodeImageError::ResourceLimit {
+            kind: BytecodeImageResourceKind::TotalDebugBytes,
             requested: 2,
             limit: 0,
         })
@@ -860,12 +861,12 @@ fn aggregate_limits_reject_before_avoidable_prefix_work() {
             ReaderMode::Strict,
             one_aggregate_limit(
                 envelope_zero_code,
-                FunctionImageResourceKind::TotalCodeBytes,
+                BytecodeImageResourceKind::TotalCodeBytes,
                 0,
             ),
             true,
         ),
-        Err(FunctionImageError::Envelope(FunctionEnvelopeError::Code(
+        Err(BytecodeImageError::Envelope(FunctionEnvelopeError::Code(
             CodeError::ResourceLimit {
                 kind: CodeResourceKind::Bytes,
                 requested: 4,
@@ -880,43 +881,43 @@ fn aggregate_remaining_budget_bounds_each_later_function_resource() {
     let cases = [
         (
             constant_record(),
-            FunctionImageResourceKind::TotalConstantPoolEntries,
+            BytecodeImageResourceKind::TotalConstantPoolEntries,
             1,
             2,
         ),
         (
             quickjs_42_record(),
-            FunctionImageResourceKind::TotalLocalVariables,
+            BytecodeImageResourceKind::TotalLocalVariables,
             1,
             2,
         ),
         (
             closure_record(),
-            FunctionImageResourceKind::TotalClosureVariables,
+            BytecodeImageResourceKind::TotalClosureVariables,
             1,
             2,
         ),
         (
             quickjs_42_record(),
-            FunctionImageResourceKind::TotalCodeBytes,
+            BytecodeImageResourceKind::TotalCodeBytes,
             4,
             8,
         ),
         (
             quickjs_42_record(),
-            FunctionImageResourceKind::TotalInstructions,
+            BytecodeImageResourceKind::TotalInstructions,
             3,
             4,
         ),
         (
             atom_relocation_record(),
-            FunctionImageResourceKind::TotalAtomRelocations,
+            BytecodeImageResourceKind::TotalAtomRelocations,
             1,
             2,
         ),
         (
             debug_record(),
-            FunctionImageResourceKind::TotalDebugBytes,
+            BytecodeImageResourceKind::TotalDebugBytes,
             2,
             4,
         ),
@@ -934,7 +935,7 @@ fn aggregate_remaining_budget_bounds_each_later_function_resource() {
                 one_aggregate_limit(ENVELOPE_LIMITS, kind, limit),
                 true,
             ),
-            Err(FunctionImageError::ResourceLimit {
+            Err(BytecodeImageError::ResourceLimit {
                 kind,
                 requested,
                 limit,
@@ -954,7 +955,7 @@ fn parent_property_key_errors_precede_recursive_whole_depth_limits() {
             shallow,
             true,
         ),
-        Err(FunctionImageError::Wire(WireError::Truncated {
+        Err(BytecodeImageError::Wire(WireError::Truncated {
             offset: 4,
             needed: 1,
             remaining: 0,
@@ -968,7 +969,7 @@ fn finalization_keeps_mode_reference_flags_and_unsupported_tags_observable() {
     trailing.push(0xff);
     assert_eq!(
         decode_image(&trailing),
-        Err(FunctionImageError::Wire(WireError::TrailingBytes {
+        Err(BytecodeImageError::Wire(WireError::TrailingBytes {
             offset: 25,
             remaining: 1,
         }))
@@ -980,7 +981,7 @@ fn finalization_keeps_mode_reference_flags_and_unsupported_tags_observable() {
     let ancestor = bytes("050102660801e6030c000200a80100010001000001040100000000bd00cb281300");
     assert_eq!(
         decode_image_with(&ancestor, ReaderMode::Strict, IMAGE_LIMITS, false),
-        Err(FunctionImageError::Data(
+        Err(BytecodeImageError::Data(
             DecodeError::ObjectReferencesNotAllowed { offset: 31 }
         ))
     );
@@ -988,7 +989,7 @@ fn finalization_keeps_mode_reference_flags_and_unsupported_tags_observable() {
     for tag in [BcTag::Module, BcTag::SharedArrayBuffer] {
         assert_eq!(
             decode_image(&[5, 0, tag.to_byte()]),
-            Err(FunctionImageError::Data(DecodeError::UnsupportedTag {
+            Err(BytecodeImageError::Data(DecodeError::UnsupportedTag {
                 tag,
                 offset: 2,
             }))
@@ -997,7 +998,7 @@ fn finalization_keeps_mode_reference_flags_and_unsupported_tags_observable() {
 }
 
 #[test]
-fn canonical_writer_round_trips_pinned_quickjs_function_images_byte_exactly() {
+fn canonical_writer_round_trips_pinned_quickjs_bytecode_images_byte_exactly() {
     let vectors = [
         bytes("05000c000200a80100010001000000040100000000bb2acb28"),
         bytes(
@@ -1042,22 +1043,22 @@ fn canonical_writer_rebuilds_reference_state_and_rejects_too_small_output() {
     assert_eq!(encode_image(&image), Ok(vector.clone()));
 
     assert_eq!(
-        encode_function_image(
+        encode_bytecode_image(
             &image,
-            FunctionImageEncodeOptions::new(true, vector.len() - 1, IMAGE_LIMITS),
+            BytecodeImageEncodeOptions::new(true, vector.len() - 1, IMAGE_LIMITS),
         ),
-        Err(FunctionImageEncodeError::Wire(WireError::ResourceLimit {
+        Err(BytecodeImageEncodeError::Wire(WireError::ResourceLimit {
             kind: ResourceKind::OutputBytes,
             requested: vector.len(),
             limit: vector.len() - 1,
         }))
     );
     assert_eq!(
-        encode_function_image(
+        encode_bytecode_image(
             &image,
-            FunctionImageEncodeOptions::new(false, 65536, IMAGE_LIMITS),
+            BytecodeImageEncodeOptions::new(false, 65536, IMAGE_LIMITS),
         ),
-        Err(FunctionImageEncodeError::CircularReference {
+        Err(BytecodeImageEncodeError::CircularReference {
             node: NodeId::from_zero_based(0),
         })
     );
@@ -1075,9 +1076,9 @@ fn canonical_writer_filters_non_string_properties_without_visiting_their_values(
 
     for references in [false, true] {
         assert_eq!(
-            encode_function_image(
+            encode_bytecode_image(
                 &image,
-                FunctionImageEncodeOptions::new(references, 65536, IMAGE_LIMITS),
+                BytecodeImageEncodeOptions::new(references, 65536, IMAGE_LIMITS),
             ),
             Ok(expected.clone()),
         );
@@ -1100,9 +1101,9 @@ fn canonical_writer_prunes_unused_atoms_and_expands_acyclic_aliases_without_refe
     let image = decode_image(&aliased).unwrap();
     assert_eq!(encode_image(&image), Ok(aliased));
     assert_eq!(
-        encode_function_image(
+        encode_bytecode_image(
             &image,
-            FunctionImageEncodeOptions::new(false, 65536, IMAGE_LIMITS),
+            BytecodeImageEncodeOptions::new(false, 65536, IMAGE_LIMITS),
         ),
         Ok(bytes("0500080201090105540309010554")),
     );
@@ -1113,43 +1114,43 @@ fn canonical_writer_shares_decoder_aggregate_error_attribution() {
     let cases = [
         (
             constant_record(),
-            FunctionImageResourceKind::TotalConstantPoolEntries,
+            BytecodeImageResourceKind::TotalConstantPoolEntries,
             1,
             2,
         ),
         (
             quickjs_42_record(),
-            FunctionImageResourceKind::TotalLocalVariables,
+            BytecodeImageResourceKind::TotalLocalVariables,
             1,
             2,
         ),
         (
             closure_record(),
-            FunctionImageResourceKind::TotalClosureVariables,
+            BytecodeImageResourceKind::TotalClosureVariables,
             1,
             2,
         ),
         (
             quickjs_42_record(),
-            FunctionImageResourceKind::TotalCodeBytes,
+            BytecodeImageResourceKind::TotalCodeBytes,
             4,
             8,
         ),
         (
             quickjs_42_record(),
-            FunctionImageResourceKind::TotalInstructions,
+            BytecodeImageResourceKind::TotalInstructions,
             3,
             4,
         ),
         (
             atom_relocation_record(),
-            FunctionImageResourceKind::TotalAtomRelocations,
+            BytecodeImageResourceKind::TotalAtomRelocations,
             1,
             2,
         ),
         (
             debug_record(),
-            FunctionImageResourceKind::TotalDebugBytes,
+            BytecodeImageResourceKind::TotalDebugBytes,
             2,
             4,
         ),
@@ -1158,16 +1159,16 @@ fn canonical_writer_shares_decoder_aggregate_error_attribution() {
     for (record, kind, limit, requested) in cases {
         let image = decode_image(&sibling_function_array(&record)).unwrap();
         assert_eq!(
-            encode_function_image(
+            encode_bytecode_image(
                 &image,
-                FunctionImageEncodeOptions::new(
+                BytecodeImageEncodeOptions::new(
                     true,
                     65536,
                     one_aggregate_limit(ENVELOPE_LIMITS, kind, limit),
                 ),
             ),
-            Err(FunctionImageEncodeError::Budget(
-                FunctionImageBudgetError::ResourceLimit {
+            Err(BytecodeImageEncodeError::Budget(
+                BytecodeImageBudgetError::ResourceLimit {
                     kind,
                     requested,
                     limit,
@@ -1192,19 +1193,19 @@ fn canonical_writer_shares_decoder_aggregate_error_attribution() {
     let answer =
         decode_image(&bytes("05000c000200a80100010001000000040100000000bb2acb28")).unwrap();
     assert_eq!(
-        encode_function_image(
+        encode_bytecode_image(
             &answer,
-            FunctionImageEncodeOptions::new(
+            BytecodeImageEncodeOptions::new(
                 true,
                 65536,
                 one_aggregate_limit(
                     envelope_zero_code,
-                    FunctionImageResourceKind::TotalCodeBytes,
+                    BytecodeImageResourceKind::TotalCodeBytes,
                     0,
                 ),
             ),
         ),
-        Err(FunctionImageEncodeError::Envelope(
+        Err(BytecodeImageEncodeError::Envelope(
             FunctionEnvelopeError::Code(CodeError::ResourceLimit {
                 kind: CodeResourceKind::Bytes,
                 requested: 4,

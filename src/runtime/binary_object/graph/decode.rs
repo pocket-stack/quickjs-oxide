@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
-use super::super::function_image::{FunctionId, ImageValue};
+use super::super::bytecode_image::{FunctionId, ImageValue};
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::arena::{ArenaError, NodeState, ObjectArena, PendingNodeKind};
 use super::model::{
