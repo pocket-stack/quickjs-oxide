@@ -165,6 +165,19 @@ per-function cap and the remaining whole-image budget before table allocation
 or code copying/scanning. The completed `FunctionImage` is deliberately
 non-executable: it has no heap materializer, verifier bypass, or evaluation
 entry point.
+The matching canonical writer consumes that immutable image through a
+source-bound authentication plan before exposing any bytes. Decode and encode
+share the same whole-image totals, remaining-budget intersection, and
+per-function-versus-aggregate error attribution. The plan rebuilds dynamic
+atoms in QuickJS first-use order, regenerates opcode atom operands from typed
+relocations, assigns object-reference IDs in one preorder spanning every
+constant pool, and never assigns those IDs to FunctionBytecode records.
+Ordinary-object writes match `JS_WriteObjectTag` by omitting enumerable symbol
+and private-name properties before their values can affect atoms, traversal,
+references, or resource accounting. A complete encoded-size proof precedes
+the final bounded little-endian emission; failed authentication never returns
+a partial buffer. This remains an internal archival codec, not an execution or
+public bytecode-loading path.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
 the Rust prefix codec against the exact bytes. A second authenticated 110-byte
@@ -182,6 +195,15 @@ root object. Authenticated negative vectors also pin QuickJS's three diagnostic
 classes when FunctionBytecode appears as the child of ObjectValue, Date, or
 TypedArray; a truncated-record probe proves that all three parents first decode
 the complete function child before applying their typed rejection.
+Writer-specific public-C-API vectors additionally pin nested keep-source,
+strip-source, and strip-debug shapes. For pinned 2026-06-04,
+`JS_WRITE_OBJ_BSWAP` does not change any of those output bytes, and both flag
+forms load in a fresh runtime and evaluate to 42. A separate oracle constructs
+enumerable string, symbol, and private properties whose two non-string values
+share a circular object; bytecode writing without the reference flag still
+succeeds, emits only `keep: 42`, and fresh-runtime inspection observes no
+symbol or private properties. Rust tests reproduce that exact 13-byte
+canonical output and verify that the skipped values are never traversed.
 The data decoder separates preorder identity registration from value
 completion: every parent/root attachment now uses one completed-subtree
 delivery path owned by the decode state. Its reference state is now an
@@ -210,8 +232,9 @@ of reproducing pinned QuickJS's native crashes.
 The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
 Module. The FunctionImage reader admits FunctionBytecode but still rejects
 Module and SharedArrayBuffer, and neither reader is a public binary-object API
-yet. A whole-image writer, module-image model, heap materializer, native-code
-semantic verifier/translator, and public read/write flags remain future
+yet. A module-image model, heap materializer, native-code semantic
+verifier/translator, public read/write flags, and a public authenticated
+whole-image facade remain future
 milestones. In addition,
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted

@@ -231,7 +231,7 @@ impl ScopeLink {
         self.0
     }
 
-    pub(super) const fn encode(self) -> Option<u32> {
+    pub(in crate::runtime::binary_object) const fn encode(self) -> Option<u32> {
         match self.0.checked_add(1) {
             Some(value) => Some(value as u32),
             None => None,

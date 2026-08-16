@@ -7,116 +7,25 @@
 
 use std::fmt;
 
-use super::super::code::{CodeError, CodeImageParts, CodeResourceKind};
+use super::super::code::CodeImageParts;
 use super::super::function_envelope::{
-    FunctionEnvelope, FunctionEnvelopeError, FunctionEnvelopeLimits, FunctionEnvelopeParts,
-    FunctionResourceKind, read_function_record_prefix_after_tag,
+    FunctionEnvelope, FunctionEnvelopeError, FunctionEnvelopeParts,
+    read_function_record_prefix_after_tag,
 };
 use super::super::graph::decode::{
     DataCompletion, DataFrame, DataMachine, DataMachineOutput, DataReadStep, DecodeError,
     MachineSource, PropertyDisposition,
 };
-use super::super::graph::model::GraphLimits;
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::atoms::{ImageAtomError, ImageAtomTable, ImageKey};
+use super::budget::{
+    FunctionImageBudgetError, FunctionImageLimits, FunctionImageResourceKind, FunctionTotals,
+    FunctionUsage, RemainingFunctionBudget,
+};
 use super::model::{
     FunctionId, FunctionImage, FunctionRecord, ImageClosureVariable, ImageCode, ImageFunctionDebug,
     ImageFunctionEnvelope, ImageInstructionSpan, ImageLocalVariable, ImageRelocation, ImageValue,
 };
-
-/// Aggregate whole-image limits in addition to the per-value graph and
-/// per-function envelope limits.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::runtime) struct FunctionImageLimits {
-    graph: GraphLimits,
-    envelope: FunctionEnvelopeLimits,
-    max_functions: usize,
-    max_whole_depth: usize,
-    max_total_constant_pool_entries: usize,
-    max_total_local_variables: usize,
-    max_total_closure_variables: usize,
-    max_total_code_bytes: usize,
-    max_total_instructions: usize,
-    max_total_atom_relocations: usize,
-    max_total_debug_bytes: usize,
-}
-
-impl FunctionImageLimits {
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub(in crate::runtime) const fn new(
-        graph: GraphLimits,
-        envelope: FunctionEnvelopeLimits,
-        max_functions: usize,
-        max_whole_depth: usize,
-        max_total_constant_pool_entries: usize,
-        max_total_local_variables: usize,
-        max_total_closure_variables: usize,
-        max_total_code_bytes: usize,
-        max_total_instructions: usize,
-        max_total_atom_relocations: usize,
-        max_total_debug_bytes: usize,
-    ) -> Self {
-        Self {
-            graph,
-            envelope,
-            max_functions,
-            max_whole_depth,
-            max_total_constant_pool_entries,
-            max_total_local_variables,
-            max_total_closure_variables,
-            max_total_code_bytes,
-            max_total_instructions,
-            max_total_atom_relocations,
-            max_total_debug_bytes,
-        }
-    }
-
-    const fn limit(self, kind: FunctionImageResourceKind) -> usize {
-        match kind {
-            FunctionImageResourceKind::Functions => self.max_functions,
-            FunctionImageResourceKind::WholeDepth => self.max_whole_depth,
-            FunctionImageResourceKind::TotalConstantPoolEntries => {
-                self.max_total_constant_pool_entries
-            }
-            FunctionImageResourceKind::TotalLocalVariables => self.max_total_local_variables,
-            FunctionImageResourceKind::TotalClosureVariables => self.max_total_closure_variables,
-            FunctionImageResourceKind::TotalCodeBytes => self.max_total_code_bytes,
-            FunctionImageResourceKind::TotalInstructions => self.max_total_instructions,
-            FunctionImageResourceKind::TotalAtomRelocations => self.max_total_atom_relocations,
-            FunctionImageResourceKind::TotalDebugBytes => self.max_total_debug_bytes,
-        }
-    }
-
-    fn check(
-        self,
-        kind: FunctionImageResourceKind,
-        requested: usize,
-    ) -> Result<(), FunctionImageError> {
-        let limit = self.limit(kind);
-        if requested > limit {
-            return Err(FunctionImageError::ResourceLimit {
-                kind,
-                requested,
-                limit,
-            });
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum FunctionImageResourceKind {
-    Functions,
-    WholeDepth,
-    TotalConstantPoolEntries,
-    TotalLocalVariables,
-    TotalClosureVariables,
-    TotalCodeBytes,
-    TotalInstructions,
-    TotalAtomRelocations,
-    TotalDebugBytes,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum FunctionImageError {
@@ -203,6 +112,23 @@ impl From<FunctionEnvelopeError> for FunctionImageError {
     }
 }
 
+impl From<FunctionImageBudgetError> for FunctionImageError {
+    fn from(error: FunctionImageBudgetError) -> Self {
+        match error {
+            FunctionImageBudgetError::ResourceLimit {
+                kind,
+                requested,
+                limit,
+            } => Self::ResourceLimit {
+                kind,
+                requested,
+                limit,
+            },
+            FunctionImageBudgetError::CountOverflow { kind } => Self::CountOverflow { kind },
+        }
+    }
+}
+
 /// Decode one complete bytecode-mode BC5 image without making it executable.
 pub(in crate::runtime) fn decode_function_image(
     input: &[u8],
@@ -214,7 +140,7 @@ pub(in crate::runtime) fn decode_function_image(
     let mut cursor = WireCursor::new(input, mode, wire_limits)?;
     let atoms = ImageAtomTable::read(&mut cursor)?;
     let mut machine =
-        DataMachine::<ImageValue, ImageKey>::new(limits.graph, allow_object_references)?;
+        DataMachine::<ImageValue, ImageKey>::new(limits.graph(), allow_object_references)?;
     let source = machine.source();
     let mut functions = FunctionTable::new(source, limits);
     let mut frames = Vec::new();
@@ -478,28 +404,6 @@ struct FunctionTable {
     totals: FunctionTotals,
 }
 
-#[derive(Default)]
-struct FunctionTotals {
-    constant_pool_entries: usize,
-    local_variables: usize,
-    closure_variables: usize,
-    code_bytes: usize,
-    instructions: usize,
-    atom_relocations: usize,
-    debug_bytes: usize,
-}
-
-#[derive(Clone, Copy)]
-struct RemainingFunctionBudget {
-    constant_pool_entries: usize,
-    local_variables: usize,
-    closure_variables: usize,
-    code_bytes: usize,
-    instructions: usize,
-    atom_relocations: usize,
-    debug_bytes: usize,
-}
-
 impl FunctionTable {
     fn new(source: MachineSource, limits: FunctionImageLimits) -> Self {
         Self {
@@ -538,21 +442,8 @@ impl FunctionTable {
             index,
         };
 
-        let remaining = self.remaining_budget()?;
-        let envelope_limits = self
-            .limits
-            .envelope
-            .intersect_counts(
-                remaining.local_variables,
-                remaining.closure_variables,
-                remaining.constant_pool_entries,
-                remaining.debug_bytes,
-            )
-            .intersect_code(
-                remaining.code_bytes,
-                remaining.instructions,
-                remaining.atom_relocations,
-            );
+        let remaining = self.totals.remaining(self.limits)?;
+        let envelope_limits = remaining.intersect(self.limits.envelope());
         let prefix =
             read_function_record_prefix_after_tag(cursor, atoms.raw_space(), envelope_limits)
                 .map_err(|error| self.map_prefix_error(error, remaining))?;
@@ -717,107 +608,30 @@ impl FunctionTable {
         envelope: &FunctionEnvelope,
         constant_count: usize,
     ) -> Result<FunctionTotals, FunctionImageError> {
-        let constant_pool_entries = checked_total(
-            self.totals.constant_pool_entries,
-            constant_count,
-            FunctionImageResourceKind::TotalConstantPoolEntries,
-            self.limits,
-        )?;
-        let local_variables = checked_total(
-            self.totals.local_variables,
-            envelope.locals().len(),
-            FunctionImageResourceKind::TotalLocalVariables,
-            self.limits,
-        )?;
-        let closure_variables = checked_total(
-            self.totals.closure_variables,
-            envelope.closures().len(),
-            FunctionImageResourceKind::TotalClosureVariables,
-            self.limits,
-        )?;
-        let code_bytes = checked_total(
-            self.totals.code_bytes,
-            envelope.code().as_bytes().len(),
-            FunctionImageResourceKind::TotalCodeBytes,
-            self.limits,
-        )?;
-        let instructions = checked_total(
-            self.totals.instructions,
-            envelope.code().instructions().len(),
-            FunctionImageResourceKind::TotalInstructions,
-            self.limits,
-        )?;
-        let atom_relocations = checked_total(
-            self.totals.atom_relocations,
-            envelope.code().atom_relocations().len(),
-            FunctionImageResourceKind::TotalAtomRelocations,
-            self.limits,
-        )?;
         let additional_debug_bytes = match envelope.debug() {
             Some(debug) => debug
                 .pc2line()
                 .len()
                 .checked_add(debug.source().len())
-                .ok_or(FunctionImageError::CountOverflow {
+                .ok_or(FunctionImageBudgetError::CountOverflow {
                     kind: FunctionImageResourceKind::TotalDebugBytes,
                 })?,
             None => 0,
         };
-        let debug_bytes = checked_total(
-            self.totals.debug_bytes,
-            additional_debug_bytes,
-            FunctionImageResourceKind::TotalDebugBytes,
-            self.limits,
-        )?;
-        Ok(FunctionTotals {
-            constant_pool_entries,
-            local_variables,
-            closure_variables,
-            code_bytes,
-            instructions,
-            atom_relocations,
-            debug_bytes,
-        })
-    }
-
-    fn remaining_budget(&self) -> Result<RemainingFunctionBudget, FunctionImageError> {
-        Ok(RemainingFunctionBudget {
-            constant_pool_entries: checked_remaining(
-                self.totals.constant_pool_entries,
-                FunctionImageResourceKind::TotalConstantPoolEntries,
+        self.totals
+            .checked_add(
+                FunctionUsage::new(
+                    constant_count,
+                    envelope.locals().len(),
+                    envelope.closures().len(),
+                    envelope.code().as_bytes().len(),
+                    envelope.code().instructions().len(),
+                    envelope.code().atom_relocations().len(),
+                    additional_debug_bytes,
+                ),
                 self.limits,
-            )?,
-            local_variables: checked_remaining(
-                self.totals.local_variables,
-                FunctionImageResourceKind::TotalLocalVariables,
-                self.limits,
-            )?,
-            closure_variables: checked_remaining(
-                self.totals.closure_variables,
-                FunctionImageResourceKind::TotalClosureVariables,
-                self.limits,
-            )?,
-            code_bytes: checked_remaining(
-                self.totals.code_bytes,
-                FunctionImageResourceKind::TotalCodeBytes,
-                self.limits,
-            )?,
-            instructions: checked_remaining(
-                self.totals.instructions,
-                FunctionImageResourceKind::TotalInstructions,
-                self.limits,
-            )?,
-            atom_relocations: checked_remaining(
-                self.totals.atom_relocations,
-                FunctionImageResourceKind::TotalAtomRelocations,
-                self.limits,
-            )?,
-            debug_bytes: checked_remaining(
-                self.totals.debug_bytes,
-                FunctionImageResourceKind::TotalDebugBytes,
-                self.limits,
-            )?,
-        })
+            )
+            .map_err(Into::into)
     }
 
     fn map_prefix_error(
@@ -825,130 +639,11 @@ impl FunctionTable {
         error: FunctionEnvelopeError,
         remaining: RemainingFunctionBudget,
     ) -> FunctionImageError {
-        let aggregate = match &error {
-            FunctionEnvelopeError::ResourceLimit {
-                kind: FunctionResourceKind::LocalVariables,
-                requested,
-                ..
-            } if remaining.local_variables
-                < self
-                    .limits
-                    .envelope
-                    .limit(FunctionResourceKind::LocalVariables)
-                && *requested > remaining.local_variables =>
-            {
-                Some((
-                    self.totals.local_variables,
-                    *requested,
-                    FunctionImageResourceKind::TotalLocalVariables,
-                ))
-            }
-            FunctionEnvelopeError::ResourceLimit {
-                kind: FunctionResourceKind::ClosureVariables,
-                requested,
-                ..
-            } if remaining.closure_variables
-                < self
-                    .limits
-                    .envelope
-                    .limit(FunctionResourceKind::ClosureVariables)
-                && *requested > remaining.closure_variables =>
-            {
-                Some((
-                    self.totals.closure_variables,
-                    *requested,
-                    FunctionImageResourceKind::TotalClosureVariables,
-                ))
-            }
-            FunctionEnvelopeError::ResourceLimit {
-                kind: FunctionResourceKind::ConstantPoolEntries,
-                requested,
-                ..
-            } if remaining.constant_pool_entries
-                < self
-                    .limits
-                    .envelope
-                    .limit(FunctionResourceKind::ConstantPoolEntries)
-                && *requested > remaining.constant_pool_entries =>
-            {
-                Some((
-                    self.totals.constant_pool_entries,
-                    *requested,
-                    FunctionImageResourceKind::TotalConstantPoolEntries,
-                ))
-            }
-            FunctionEnvelopeError::ResourceLimit {
-                kind: FunctionResourceKind::TotalDebugBytes,
-                requested,
-                ..
-            } if remaining.debug_bytes
-                < self
-                    .limits
-                    .envelope
-                    .limit(FunctionResourceKind::TotalDebugBytes)
-                && *requested > remaining.debug_bytes =>
-            {
-                Some((
-                    self.totals.debug_bytes,
-                    *requested,
-                    FunctionImageResourceKind::TotalDebugBytes,
-                ))
-            }
-            FunctionEnvelopeError::Code(CodeError::ResourceLimit {
-                kind: CodeResourceKind::Bytes,
-                requested,
-                ..
-            }) if remaining.code_bytes
-                < self.limits.envelope.code_limit(CodeResourceKind::Bytes)
-                && *requested > remaining.code_bytes =>
-            {
-                Some((
-                    self.totals.code_bytes,
-                    *requested,
-                    FunctionImageResourceKind::TotalCodeBytes,
-                ))
-            }
-            FunctionEnvelopeError::Code(CodeError::ResourceLimit {
-                kind: CodeResourceKind::Instructions,
-                requested,
-                ..
-            }) if remaining.instructions
-                < self
-                    .limits
-                    .envelope
-                    .code_limit(CodeResourceKind::Instructions)
-                && *requested > remaining.instructions =>
-            {
-                Some((
-                    self.totals.instructions,
-                    *requested,
-                    FunctionImageResourceKind::TotalInstructions,
-                ))
-            }
-            FunctionEnvelopeError::Code(CodeError::ResourceLimit {
-                kind: CodeResourceKind::AtomRelocations,
-                requested,
-                ..
-            }) if remaining.atom_relocations
-                < self
-                    .limits
-                    .envelope
-                    .code_limit(CodeResourceKind::AtomRelocations)
-                && *requested > remaining.atom_relocations =>
-            {
-                Some((
-                    self.totals.atom_relocations,
-                    *requested,
-                    FunctionImageResourceKind::TotalAtomRelocations,
-                ))
-            }
-            _ => None,
-        };
-
-        match aggregate {
-            Some((total, requested, kind)) => {
-                aggregate_limit_error(total, requested, kind, self.limits)
-            }
+        match self
+            .totals
+            .aggregate_error_for_envelope(&error, remaining, self.limits)
+        {
+            Some(error) => error.into(),
             None => FunctionImageError::Envelope(error),
         }
     }
@@ -992,44 +687,4 @@ fn relocate_code(
         instructions.into_boxed_slice(),
         relocations.into_boxed_slice(),
     ))
-}
-
-fn checked_total(
-    total: usize,
-    additional: usize,
-    kind: FunctionImageResourceKind,
-    limits: FunctionImageLimits,
-) -> Result<usize, FunctionImageError> {
-    let requested = total
-        .checked_add(additional)
-        .ok_or(FunctionImageError::CountOverflow { kind })?;
-    limits.check(kind, requested)?;
-    Ok(requested)
-}
-
-fn checked_remaining(
-    total: usize,
-    kind: FunctionImageResourceKind,
-    limits: FunctionImageLimits,
-) -> Result<usize, FunctionImageError> {
-    limits
-        .limit(kind)
-        .checked_sub(total)
-        .ok_or(FunctionImageError::CountOverflow { kind })
-}
-
-fn aggregate_limit_error(
-    total: usize,
-    additional: usize,
-    kind: FunctionImageResourceKind,
-    limits: FunctionImageLimits,
-) -> FunctionImageError {
-    match total.checked_add(additional) {
-        Some(requested) => FunctionImageError::ResourceLimit {
-            kind,
-            requested,
-            limit: limits.limit(kind),
-        },
-        None => FunctionImageError::CountOverflow { kind },
-    }
 }
