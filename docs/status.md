@@ -78,8 +78,8 @@ The private BC_VERSION 5 foundation now has bounded wire primitives and the
 pinned BigInt payload codec, including QuickJS's asymmetric 16,385-limb writer
 edge. A heap-independent WireGraph slice now validates and canonically rewrites
 primitives, ordinary objects, arrays, ArrayBuffers, TypedArrays, primitive
-wrapper ObjectValues, shared identity, and cycles with explicit decode and
-emitted-traversal budgets. Its data-object semantics include header atom
+wrapper ObjectValues, Dates, shared identity, and cycles with explicit decode
+and emitted-traversal budgets. Its data-object semantics include header atom
 interning, tagged decimal keys, first-slot/last-value duplicate properties,
 compatible null-atom consumption, depth-first output atom rebuilding,
 fixed-versus-resizable ArrayBuffer state, and per-buffer plus aggregate
@@ -92,7 +92,14 @@ Number, narrow/wide String, and canonical BigInt wrapper payloads. Its reader
 also matches QuickJS's asymmetric `JS_ToObject` path: object children reuse the
 existing NodeId and append another reference-table entry, including pending
 Ordinary/Array ancestors, while the canonical writer rebuilds identity without
-the redundant tag. The decoder separates preorder identity registration from
+the redundant tag. Date keeps its own identity and the exact Int32-versus-
+Float64 payload representation. Reader-only Float64 values retain `-0`,
+infinities, subnormals, and every NaN payload bit without applying the normal
+JavaScript constructor's `TimeClip`; non-number children are rejected only
+after their complete subtree has been read, matching QuickJS's allocation and
+diagnostic order. A later heap materializer must retain that numeric wire
+representation and install it without reusing the runtime's `TimeClip` Date
+constructor path. The decoder separates preorder identity registration from
 value completion: every parent/root attachment now uses one completed-subtree
 delivery path owned by the decode state. Its private arena represents
 incomplete identities with kind-checked pending/ready slots; linear
@@ -100,8 +107,8 @@ node/reference reservations reject stale commits, and independently bounded
 reference entries can alias pending or ready identities without consuming
 another node. Malicious TypedArray placeholder paths are rejected
 deterministically instead of reproducing pinned QuickJS's native crashes.
-SharedArrayBuffer, Date, and the bytecode-only object tags remain rejected. It
-is not a public binary-object API yet:
+SharedArrayBuffer and the bytecode-only object tags remain rejected. It is not
+a public binary-object API yet:
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.

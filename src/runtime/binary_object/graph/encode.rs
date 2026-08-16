@@ -452,6 +452,19 @@ pub(in crate::runtime) fn encode_graph(
                                 depth,
                             ));
                         }
+                        WireNode::Date { time_value } => {
+                            writer.write_tag(BcTag::Date)?;
+                            tasks
+                                .try_reserve(1 + usize::from(!options.allow_object_references))
+                                .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                            if !options.allow_object_references {
+                                tasks.push(EncodeTask::LeaveNode(*node));
+                            }
+                            tasks.push(EncodeTask::Value(
+                                EncodeValue::Borrowed(time_value.as_wire_value()),
+                                depth,
+                            ));
+                        }
                     }
                 }
             },
@@ -559,7 +572,8 @@ fn build_encode_plan<'a>(
                         WireNode::Array { elements } => Some(elements.len()),
                         WireNode::ArrayBuffer { .. }
                         | WireNode::TypedArray { .. }
-                        | WireNode::ObjectValue { .. } => None,
+                        | WireNode::ObjectValue { .. }
+                        | WireNode::Date { .. } => None,
                     } {
                         options
                             .limits
@@ -612,6 +626,7 @@ fn build_encode_plan<'a>(
                         WireNode::ArrayBuffer { .. } => Some(0),
                         WireNode::TypedArray { .. } => Some(1),
                         WireNode::ObjectValue { .. } => Some(1),
+                        WireNode::Date { .. } => Some(1),
                     }
                     .and_then(|count| {
                         count.checked_add(usize::from(!options.allow_object_references))
@@ -648,6 +663,12 @@ fn build_encode_plan<'a>(
                         WireNode::ObjectValue { primitive } => {
                             tasks.push(EncodeTask::Value(
                                 EncodeValue::Borrowed(primitive.as_wire_value()),
+                                depth,
+                            ));
+                        }
+                        WireNode::Date { time_value } => {
+                            tasks.push(EncodeTask::Value(
+                                EncodeValue::Borrowed(time_value.as_wire_value()),
                                 depth,
                             ));
                         }
@@ -798,6 +819,7 @@ fn validate_node(
             validate_typed_array_node(graph, node, *kind, *length, *byte_offset, *buffer)?;
         }
         WireNode::ObjectValue { .. } => {}
+        WireNode::Date { .. } => {}
     }
     Ok(())
 }
@@ -870,8 +892,8 @@ fn semantic_property_key(
 mod tests {
     use super::super::super::wire::WireString;
     use super::super::model::{
-        ArrayBufferLayoutError, AtomId, BoxedPrimitive, MAX_ARRAY_BUFFER_BYTE_LENGTH, WireProperty,
-        WireValue,
+        ArrayBufferLayoutError, AtomId, BoxedPrimitive, DateNumber, MAX_ARRAY_BUFFER_BYTE_LENGTH,
+        WireProperty, WireValue,
     };
     use super::*;
 
@@ -931,6 +953,17 @@ mod tests {
             atoms: Box::from([]),
             nodes: Box::from([WireNode::ObjectValue {
                 primitive: BoxedPrimitive::try_from_wire_value(value).unwrap(),
+            }]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        }
+    }
+
+    fn date_graph(value: WireValue) -> WireGraph {
+        WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([WireNode::Date {
+                time_value: DateNumber::try_from_wire_value(value).unwrap(),
             }]),
             ref_table: Box::from([]),
             root: WireValue::Node(NodeId::from_zero_based(0)),
@@ -1379,6 +1412,125 @@ mod tests {
                 Err(GraphEncodeError::Graph(expected))
             );
         }
+    }
+
+    #[test]
+    fn date_number_vectors_match_pinned_quickjs_and_preserve_reader_only_bits() {
+        for (value, expected) in [
+            (WireValue::Int32(0), vec![5, 0, 17, 5, 0]),
+            (WireValue::Int32(42), vec![5, 0, 17, 5, 84]),
+            (WireValue::Int32(-1), vec![5, 0, 17, 5, 1]),
+            (
+                WireValue::Float64Bits(42.0_f64.to_bits()),
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 69, 64],
+            ),
+            (
+                WireValue::Float64Bits((-0.0_f64).to_bits()),
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 0, 128],
+            ),
+            (
+                WireValue::Float64Bits(f64::INFINITY.to_bits()),
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 240, 127],
+            ),
+            (
+                WireValue::Float64Bits(f64::NEG_INFINITY.to_bits()),
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 240, 255],
+            ),
+            (
+                WireValue::Float64Bits(0x7ff8_0000_0000_0042),
+                vec![5, 0, 17, 6, 66, 0, 0, 0, 0, 0, 248, 127],
+            ),
+            (
+                WireValue::Float64Bits(0x7ff0_0000_0000_0001),
+                vec![5, 0, 17, 6, 1, 0, 0, 0, 0, 0, 240, 127],
+            ),
+            (
+                WireValue::Float64Bits(1),
+                vec![5, 0, 17, 6, 1, 0, 0, 0, 0, 0, 0, 0],
+            ),
+        ] {
+            let graph = date_graph(value);
+            assert_eq!(encode_graph(&graph, options(false)).unwrap(), expected);
+            assert_eq!(encode_graph(&graph, options(true)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn date_identity_follows_the_reference_flag() {
+        let date = NodeId::from_zero_based(1);
+        let graph = WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(date), WireValue::Node(date)]),
+                },
+                WireNode::Date {
+                    time_value: DateNumber::try_from_wire_value(WireValue::Int32(42)).unwrap(),
+                },
+            ]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        };
+
+        assert_eq!(
+            encode_graph(&graph, options(true)).unwrap(),
+            [5, 0, 9, 2, 17, 5, 84, 19, 1]
+        );
+        assert_eq!(
+            encode_graph(&graph, options(false)).unwrap(),
+            [5, 0, 9, 2, 17, 5, 84, 17, 5, 84]
+        );
+    }
+
+    #[test]
+    fn date_encoder_bounds_identity_and_depth_without_counting_unreachable_dates() {
+        let graph = date_graph(WireValue::Int32(1));
+        for (allow_references, limits, expected) in [
+            (
+                false,
+                GraphLimits::new(0, 8, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::Nodes,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                true,
+                GraphLimits::new(8, 0, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::ObjectReferences,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                false,
+                GraphLimits::new(8, 8, 0, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::NestingDepth,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+        ] {
+            assert_eq!(
+                encode_graph(&graph, options_with_limits(allow_references, limits)),
+                Err(GraphEncodeError::Graph(expected))
+            );
+        }
+
+        let unreachable = WireGraph {
+            atoms: Box::from([]),
+            nodes: graph.nodes,
+            ref_table: Box::from([]),
+            root: WireValue::Int32(7),
+        };
+        let no_nodes = GraphLimits::new(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        assert_eq!(
+            encode_graph(&unreachable, options_with_limits(true, no_nodes)).unwrap(),
+            [5, 0, 5, 14]
+        );
     }
 
     #[test]

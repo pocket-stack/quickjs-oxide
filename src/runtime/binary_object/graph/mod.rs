@@ -182,6 +182,52 @@ mod tests {
     }
 
     #[test]
+    fn exact_quickjs_date_vectors_cross_the_pure_graph_bit_for_bit() {
+        for (bytes, references) in [
+            (&[5, 0, 17, 5, 84][..], false),
+            (&[5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 69, 64][..], true),
+            (&[5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 0, 128][..], false),
+            (&[5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 240, 127][..], true),
+            (&[5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 240, 255][..], false),
+            (&[5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 248, 127][..], true),
+            (&[5, 0, 17, 6, 66, 0, 0, 0, 0, 0, 248, 127][..], true),
+            (&[5, 0, 17, 6, 1, 0, 0, 0, 0, 0, 240, 127][..], false),
+            (&[5, 0, 9, 2, 17, 5, 84, 19, 1][..], true),
+            (&[5, 0, 9, 2, 17, 5, 84, 17, 5, 84][..], false),
+        ] {
+            assert_eq!(rewrite(bytes, references, ReaderMode::Strict), bytes);
+        }
+    }
+
+    #[test]
+    fn date_aliases_and_compatible_ints_rewrite_canonically() {
+        assert_eq!(
+            rewrite(
+                &[5, 0, 9, 2, 18, 17, 5, 84, 19, 2],
+                true,
+                ReaderMode::Strict,
+            ),
+            [5, 0, 9, 2, 17, 5, 84, 19, 1]
+        );
+        assert_eq!(
+            rewrite(
+                &[5, 0, 17, 5, 0x80, 0],
+                false,
+                ReaderMode::QuickJsCompatible,
+            ),
+            [5, 0, 17, 5, 0]
+        );
+        assert_eq!(
+            rewrite(
+                &[5, 0, 17, 5, 84, 99, 98],
+                false,
+                ReaderMode::QuickJsCompatible,
+            ),
+            [5, 0, 17, 5, 84]
+        );
+    }
+
+    #[test]
     fn compatible_array_buffer_lengths_rewrite_canonically() {
         assert_eq!(
             rewrite(

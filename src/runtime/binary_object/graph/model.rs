@@ -196,6 +196,48 @@ impl BoxedPrimitive {
     }
 }
 
+/// One numeric payload stored in a pinned QuickJS `JS_CLASS_DATE` object.
+///
+/// The reader installs the decoded number without applying `TimeClip`, so the
+/// private field preserves both the Int32-versus-Float64 tag choice and every
+/// IEEE-754 bit (including `-0`, infinities, and NaN payloads).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct DateNumber(WireValue);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum DateNumberError {
+    NotNumber,
+}
+
+impl fmt::Display for DateNumberError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotNumber => formatter.write_str("Number tag expected for date"),
+        }
+    }
+}
+
+impl DateNumber {
+    pub(in crate::runtime) fn try_from_wire_value(
+        value: WireValue,
+    ) -> Result<Self, DateNumberError> {
+        match value {
+            value @ (WireValue::Int32(_) | WireValue::Float64Bits(_)) => Ok(Self(value)),
+            WireValue::Undefined
+            | WireValue::Null
+            | WireValue::Bool(_)
+            | WireValue::String(_)
+            | WireValue::BigInt(_)
+            | WireValue::Node(_) => Err(DateNumberError::NotNumber),
+        }
+    }
+
+    #[must_use]
+    pub(in crate::runtime) const fn as_wire_value(&self) -> &WireValue {
+        &self.0
+    }
+}
+
 /// Exact `class_id - JS_CLASS_UINT8C_ARRAY` order used by BC5.
 ///
 /// This deliberately remains a wire type rather than depending on the runtime
@@ -305,6 +347,9 @@ pub(in crate::runtime) enum WireNode {
     /// object node and append a reference-table alias instead of constructing
     /// this variant.
     ObjectValue { primitive: BoxedPrimitive },
+    /// A Date identity with the exact number representation accepted by the
+    /// BC5 reader. Enumerable own properties are not part of this wire class.
+    Date { time_value: DateNumber },
 }
 
 /// Pinned QuickJS currently rejects ArrayBuffer lengths above 2 GiB - 1.
@@ -809,5 +854,32 @@ mod tests {
             BoxedPrimitive::try_from_wire_value(WireValue::Node(NodeId::from_zero_based(0))),
             Err(BoxedPrimitiveError::Object)
         );
+    }
+
+    #[test]
+    fn date_number_preserves_only_exact_numeric_wire_representations() {
+        for value in [
+            WireValue::Int32(42),
+            WireValue::Float64Bits((-0.0_f64).to_bits()),
+            WireValue::Float64Bits(0x7ff8_0000_0000_0042),
+        ] {
+            let expected = value.clone();
+            let number = DateNumber::try_from_wire_value(value).unwrap();
+            assert_eq!(number.as_wire_value(), &expected);
+        }
+
+        for value in [
+            WireValue::Undefined,
+            WireValue::Null,
+            WireValue::Bool(true),
+            WireValue::String(WireString::Narrow(Box::from(*b"42"))),
+            WireValue::BigInt(Box::from([42])),
+            WireValue::Node(NodeId::from_zero_based(0)),
+        ] {
+            assert_eq!(
+                DateNumber::try_from_wire_value(value),
+                Err(DateNumberError::NotNumber)
+            );
+        }
     }
 }

@@ -14,11 +14,11 @@ use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::model::{
-    ArrayBufferLayoutError, AtomId, BoxedPrimitive, BoxedPrimitiveError, GraphError, GraphLimits,
-    GraphResourceKind, NodeId, TypedArrayBackingError, TypedArrayKind, TypedArrayLayoutError,
-    WireGraph, WireKey, WireNode, WireProperty, WireValue, canonical_bigint_length,
-    numeric_atom_index, semantic_atom_eq, semantic_atom_hash, validate_array_buffer_layout,
-    validate_typed_array_layout,
+    ArrayBufferLayoutError, AtomId, BoxedPrimitive, BoxedPrimitiveError, DateNumber,
+    DateNumberError, GraphError, GraphLimits, GraphResourceKind, NodeId, TypedArrayBackingError,
+    TypedArrayKind, TypedArrayLayoutError, WireGraph, WireKey, WireNode, WireProperty, WireValue,
+    canonical_bigint_length, numeric_atom_index, semantic_atom_eq, semantic_atom_hash,
+    validate_array_buffer_layout, validate_typed_array_layout,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +64,10 @@ pub(in crate::runtime) enum DecodeError {
     InvalidObjectValueAlias {
         offset: usize,
         node: NodeId,
+    },
+    InvalidDate {
+        offset: usize,
+        reason: DateNumberError,
     },
     InvalidCompletionTarget,
     InvalidNodeState {
@@ -120,6 +124,9 @@ impl fmt::Display for DecodeError {
                 "invalid ObjectValue alias at byte {offset}: TypedArray node {} is not complete",
                 node.zero_based()
             ),
+            Self::InvalidDate { offset, reason } => {
+                write!(formatter, "invalid Date at byte {offset}: {reason}")
+            }
             Self::InvalidCompletionTarget => {
                 formatter.write_str("invalid wire graph completion target")
             }
@@ -315,6 +322,7 @@ impl DecodeState {
             BcTag::Array => return self.begin_container(cursor, ContainerKind::Array),
             BcTag::TypedArray => return self.begin_typed_array(cursor, tag_offset),
             BcTag::ObjectValue => return self.begin_object_value(tag_offset),
+            BcTag::Date => return self.begin_date(tag_offset),
             BcTag::ArrayBuffer => self.read_array_buffer(cursor)?,
             BcTag::ObjectReference => {
                 if !self.allow_object_references {
@@ -332,8 +340,7 @@ impl DecodeState {
             BcTag::TemplateObject
             | BcTag::FunctionBytecode
             | BcTag::Module
-            | BcTag::SharedArrayBuffer
-            | BcTag::Date => {
+            | BcTag::SharedArrayBuffer => {
                 return Err(DecodeError::UnsupportedTag {
                     tag,
                     offset: tag_offset,
@@ -479,6 +486,14 @@ impl DecodeState {
         }))
     }
 
+    fn begin_date(&self, tag_offset: usize) -> Result<ReadStep, DecodeError> {
+        self.check_next_node_depth()?;
+        Ok(ReadStep::Pending(Frame::Date {
+            offset: tag_offset,
+            value: None,
+        }))
+    }
+
     fn begin_container(
         &mut self,
         cursor: &mut WireCursor<'_>,
@@ -533,6 +548,9 @@ impl DecodeState {
             match frame {
                 Frame::ObjectValue { offset, value } => {
                     return self.finish_object_value(offset, value);
+                }
+                Frame::Date { offset, value } => {
+                    return self.finish_date(offset, value);
                 }
                 Frame::Ordinary {
                     node, properties, ..
@@ -635,6 +653,21 @@ impl DecodeState {
             .map_err(|reason| DecodeError::InvalidObjectValue { offset, reason })?;
         let reservation = self.reserve_node()?;
         let node = self.install_ready_node(reservation, WireNode::ObjectValue { primitive })?;
+        Ok(WireValue::Node(node))
+    }
+
+    fn finish_date(
+        &mut self,
+        offset: usize,
+        value: Option<WireValue>,
+    ) -> Result<WireValue, DecodeError> {
+        let value = value.ok_or(DecodeError::InvalidCompletionTarget)?;
+        let time_value = DateNumber::try_from_wire_value(value)
+            .map_err(|reason| DecodeError::InvalidDate { offset, reason })?;
+        // Pinned QuickJS creates and registers the Date identity only after its
+        // complete child has been read and proved numeric.
+        let reservation = self.reserve_node()?;
+        let node = self.install_ready_node(reservation, WireNode::Date { time_value })?;
         Ok(WireValue::Node(node))
     }
 
@@ -879,6 +912,10 @@ enum Frame {
         offset: usize,
         value: Option<WireValue>,
     },
+    Date {
+        offset: usize,
+        value: Option<WireValue>,
+    },
 }
 
 impl Frame {
@@ -975,6 +1012,16 @@ impl Frame {
                 }
                 *boxed_value = Some(value);
             }
+            Self::Date {
+                value: time_value, ..
+            } => {
+                if key.is_some() || time_value.is_some() {
+                    return Err(GraphError::CountOverflow {
+                        kind: GraphResourceKind::ContainerEntries,
+                    });
+                }
+                *time_value = Some(value);
+            }
         }
         Ok(())
     }
@@ -993,6 +1040,7 @@ impl Frame {
             } => elements.len() == *expected,
             Self::TypedArray { backing, .. } => backing.is_some(),
             Self::ObjectValue { value, .. } => value.is_some(),
+            Self::Date { value, .. } => value.is_some(),
         }
     }
 }
@@ -2551,13 +2599,347 @@ mod tests {
     }
 
     #[test]
+    fn date_numbers_match_pinned_quickjs_and_preserve_reader_only_bits() {
+        let vectors = [
+            (vec![5, 0, 17, 5, 0], WireValue::Int32(0)),
+            (vec![5, 0, 17, 5, 84], WireValue::Int32(42)),
+            (vec![5, 0, 17, 5, 1], WireValue::Int32(-1)),
+            (
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 69, 64],
+                WireValue::Float64Bits(42.0_f64.to_bits()),
+            ),
+            (
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 0, 128],
+                WireValue::Float64Bits((-0.0_f64).to_bits()),
+            ),
+            (
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 240, 127],
+                WireValue::Float64Bits(f64::INFINITY.to_bits()),
+            ),
+            (
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 240, 255],
+                WireValue::Float64Bits(f64::NEG_INFINITY.to_bits()),
+            ),
+            (
+                vec![5, 0, 17, 6, 0, 0, 0, 0, 0, 0, 248, 127],
+                WireValue::Float64Bits(f64::NAN.to_bits()),
+            ),
+            (
+                vec![5, 0, 17, 6, 66, 0, 0, 0, 0, 0, 248, 127],
+                WireValue::Float64Bits(0x7ff8_0000_0000_0042),
+            ),
+            (
+                vec![5, 0, 17, 6, 1, 0, 0, 0, 0, 0, 240, 127],
+                WireValue::Float64Bits(0x7ff0_0000_0000_0001),
+            ),
+            (
+                vec![5, 0, 17, 6, 1, 0, 0, 0, 0, 0, 0, 0],
+                WireValue::Float64Bits(1),
+            ),
+        ];
+
+        let date = NodeId::from_zero_based(0);
+        for (bytes, value) in vectors {
+            let time_value = DateNumber::try_from_wire_value(value).unwrap();
+            let graph = decode(&bytes, ReaderMode::Strict, true).unwrap();
+            assert_eq!(graph.root, WireValue::Node(date));
+            assert_eq!(graph.ref_table.as_ref(), &[date]);
+            assert_eq!(
+                graph.nodes.as_ref(),
+                &[WireNode::Date {
+                    time_value: time_value.clone(),
+                }]
+            );
+
+            let without_references = decode(&bytes, ReaderMode::Strict, false).unwrap();
+            assert!(without_references.ref_table.is_empty());
+            assert_eq!(without_references.nodes, graph.nodes);
+        }
+    }
+
+    #[test]
+    fn date_identity_and_object_value_aliases_follow_completion_order() {
+        let root = NodeId::from_zero_based(0);
+        let date = NodeId::from_zero_based(1);
+        let repeated = decode(&[5, 0, 9, 2, 17, 5, 84, 19, 1], ReaderMode::Strict, true).unwrap();
+        assert_eq!(repeated.ref_table.as_ref(), &[root, date]);
+        assert_eq!(
+            repeated.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(date), WireValue::Node(date)]),
+            }
+        );
+
+        let copied = decode(
+            &[5, 0, 9, 2, 17, 5, 84, 17, 5, 84],
+            ReaderMode::Strict,
+            false,
+        )
+        .unwrap();
+        assert!(copied.ref_table.is_empty());
+        assert_eq!(
+            copied.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([
+                    WireValue::Node(date),
+                    WireValue::Node(NodeId::from_zero_based(2)),
+                ]),
+            }
+        );
+
+        let aliased = decode(
+            &[5, 0, 9, 2, 18, 17, 5, 84, 19, 2],
+            ReaderMode::Strict,
+            true,
+        )
+        .unwrap();
+        assert_eq!(aliased.ref_table.as_ref(), &[root, date, date]);
+        assert_eq!(
+            aliased.nodes[root.as_usize()],
+            WireNode::Array {
+                elements: Box::from([WireValue::Node(date), WireValue::Node(date)]),
+            }
+        );
+    }
+
+    #[test]
+    fn date_errors_follow_complete_child_then_number_validation_order() {
+        assert_eq!(
+            decode(&[5, 0, 17], ReaderMode::Strict, true),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 3,
+                needed: 1,
+                remaining: 0,
+            }))
+        );
+        assert_eq!(
+            decode(&[5, 0, 17, 6, 0, 0], ReaderMode::Strict, true),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 4,
+                needed: 8,
+                remaining: 2,
+            }))
+        );
+
+        let non_numbers: &[&[u8]] = &[
+            &[5, 0, 17, 1],
+            &[5, 0, 17, 2],
+            &[5, 0, 17, 3],
+            &[5, 0, 17, 7, 0],
+            &[5, 0, 17, 10, 0],
+            &[5, 0, 17, 8, 0],
+            &[5, 0, 17, 9, 0],
+            &[5, 0, 17, 15, 0, 255, 255, 255, 255, 15],
+            &[5, 0, 17, 17, 5, 0],
+            &[5, 0, 17, 18, 5, 0],
+        ];
+        for bytes in non_numbers {
+            assert_eq!(
+                decode(bytes, ReaderMode::Strict, true),
+                Err(DecodeError::InvalidDate {
+                    offset: 2,
+                    reason: DateNumberError::NotNumber,
+                })
+            );
+        }
+
+        assert_eq!(
+            decode(&[5, 0, 17, 19, 0], ReaderMode::Strict, false),
+            Err(DecodeError::ObjectReferencesNotAllowed { offset: 3 })
+        );
+        assert_eq!(
+            decode(&[5, 0, 17, 19, 0], ReaderMode::Strict, true),
+            Err(DecodeError::Graph(GraphError::InvalidReferenceIndex {
+                index: 0,
+                reference_count: 0,
+            }))
+        );
+        assert_eq!(
+            decode(&[5, 0, 17, 16], ReaderMode::Strict, true),
+            Err(DecodeError::UnsupportedTag {
+                tag: BcTag::SharedArrayBuffer,
+                offset: 3,
+            })
+        );
+
+        let no_bigint = GraphLimits::new(8, 8, 8, 8, 8, 0, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 17, 10, 1, 1],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_bigint,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::BigIntBytes,
+                requested: 1,
+                limit: 0,
+            }))
+        );
+
+        // The root Array is already reference 0, but a Date never aliases its
+        // object child: number validation still fails after resolving it.
+        assert_eq!(
+            decode(&[5, 0, 9, 1, 17, 19, 0], ReaderMode::Strict, true),
+            Err(DecodeError::InvalidDate {
+                offset: 4,
+                reason: DateNumberError::NotNumber,
+            })
+        );
+
+        // Pinned QuickJS represents a TypedArray under construction with a
+        // temporary NULL entry. Date performs only number validation, so Rust
+        // rejects the placeholder deterministically instead of entering the
+        // native crash path.
+        assert_eq!(
+            decode(&[5, 0, 14, 0, 0, 0, 17, 19, 0], ReaderMode::Strict, true),
+            Err(DecodeError::InvalidDate {
+                offset: 6,
+                reason: DateNumberError::NotNumber,
+            })
+        );
+
+        let no_identity = GraphLimits::new(0, 0, 8, 8, 8, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 17],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_identity,
+                true,
+            ),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 3,
+                needed: 1,
+                remaining: 0,
+            }))
+        );
+
+        let two_references = GraphLimits::new(2, 2, 3, 8, 8, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 9, 2, 18, 17, 5, 84, 19, 2],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                two_references,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ObjectReferences,
+                requested: 3,
+                limit: 2,
+            }))
+        );
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 17, 3],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_identity,
+                true,
+            ),
+            Err(DecodeError::InvalidDate {
+                offset: 2,
+                reason: DateNumberError::NotNumber,
+            })
+        );
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 17, 8, 0],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_identity,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::Nodes,
+                requested: 1,
+                limit: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn date_identity_and_depth_budgets_apply_after_numeric_validation() {
+        let number = [5, 0, 17, 5, 2];
+        for (allow_references, limits, expected) in [
+            (
+                false,
+                GraphLimits::new(0, 8, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::Nodes,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                true,
+                GraphLimits::new(8, 0, 8, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::ObjectReferences,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+            (
+                false,
+                GraphLimits::new(8, 8, 0, 8, 8, 8, 8, 8, 8),
+                GraphError::ResourceLimit {
+                    kind: GraphResourceKind::NestingDepth,
+                    requested: 1,
+                    limit: 0,
+                },
+            ),
+        ] {
+            assert_eq!(
+                decode_graph(
+                    &number,
+                    ReaderMode::Strict,
+                    WIRE_LIMITS,
+                    limits,
+                    allow_references,
+                ),
+                Err(DecodeError::Graph(expected))
+            );
+        }
+
+        let no_references = GraphLimits::new(1, 0, 1, 8, 8, 8, 8, 8, 8);
+        assert!(
+            decode_graph(
+                &number,
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_references,
+                false,
+            )
+            .is_ok()
+        );
+
+        let one_level = GraphLimits::new(8, 8, 1, 8, 8, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 17, 17, 5, 2],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                one_level,
+                true,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::NestingDepth,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+    }
+
+    #[test]
     fn unsupported_data_tags_are_rejected_before_their_payloads() {
         for tag in [
             BcTag::TemplateObject,
             BcTag::FunctionBytecode,
             BcTag::Module,
             BcTag::SharedArrayBuffer,
-            BcTag::Date,
         ] {
             assert_eq!(
                 decode(&[0x05, 0x00, tag.to_byte()], ReaderMode::Strict, false),
