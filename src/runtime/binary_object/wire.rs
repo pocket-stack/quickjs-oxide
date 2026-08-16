@@ -141,6 +141,17 @@ pub(in crate::runtime) enum WireError {
     NonCanonicalUleb128 {
         offset: usize,
     },
+    AtomIndexSpaceOverflow {
+        first_atom: u32,
+        atom_count: u32,
+        maximum: u32,
+    },
+    InvalidAtomIndex {
+        offset: usize,
+        index: u32,
+        first_atom: u32,
+        atom_count: u32,
+    },
     InvalidVersion {
         found: u8,
         expected: u8,
@@ -189,6 +200,23 @@ impl fmt::Display for WireError {
             Self::NonCanonicalUleb128 { offset } => {
                 write!(formatter, "non-canonical ULEB128 at byte {offset}")
             }
+            Self::AtomIndexSpaceOverflow {
+                first_atom,
+                atom_count,
+                maximum,
+            } => write!(
+                formatter,
+                "atom index space starting at {first_atom} with {atom_count} header atoms exceeds maximum table index {maximum}"
+            ),
+            Self::InvalidAtomIndex {
+                offset,
+                index,
+                first_atom,
+                atom_count,
+            } => write!(
+                formatter,
+                "invalid atom index {index} at byte {offset} (first atom {first_atom}, atom count {atom_count})"
+            ),
             Self::InvalidVersion { found, expected } => {
                 write!(formatter, "invalid version ({found} expected={expected})")
             }

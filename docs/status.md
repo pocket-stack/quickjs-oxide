@@ -99,7 +99,14 @@ JavaScript constructor's `TimeClip`; non-number children are rejected only
 after their complete subtree has been read, matching QuickJS's allocation and
 diagnostic order. A later heap materializer must retain that numeric wire
 representation and install it without reusing the runtime's `TimeClip` Date
-constructor path. The decoder separates preorder identity registration from
+constructor path. BC5 atom handling now has an explicit caller-selected data
+or bytecode namespace, a release-pinned 242-entry predefined-atom catalog, and
+separate checked codecs for metadata ULEB atoms and raw `u32` opcode operands.
+The data graph uses that shared namespace without auto-detection or local
+`first_atom` arithmetic, while an authenticated differential gate checks every
+catalog ID, kind, spelling, and ordering against the pinned `quickjs-atom.h`.
+Function bytecode still requires its own validated image and relocation layer
+before admission. The decoder separates preorder identity registration from
 value completion: every parent/root attachment now uses one completed-subtree
 delivery path owned by the decode state. Its private arena represents
 incomplete identities with kind-checked pending/ready slots; linear

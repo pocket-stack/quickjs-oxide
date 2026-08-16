@@ -12,6 +12,7 @@ use std::hash::{BuildHasher, Hasher};
 
 use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
+use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::model::{
     ArrayBufferLayoutError, AtomId, BoxedPrimitive, BoxedPrimitiveError, DateNumber,
@@ -166,6 +167,7 @@ pub(in crate::runtime) fn decode_graph(
 ) -> Result<WireGraph, DecodeError> {
     let mut cursor = WireCursor::new(input, mode, wire_limits)?;
     let header = cursor.read_header()?;
+    let atom_space = AtomIndexSpace::new(BinaryObjectMode::Data, header.atom_count)?;
     let atom_count = header.atom_count as usize;
     let mut atoms = Vec::new();
     atoms
@@ -208,7 +210,7 @@ pub(in crate::runtime) fn decode_graph(
                 let key = active
                     .frame
                     .expects_property_key()
-                    .then(|| read_key(&mut cursor, &header_atoms))
+                    .then(|| read_key(&mut cursor, atom_space, &header_atoms))
                     .transpose()?;
                 CompletionTarget::Parent { key }
             }
@@ -1053,32 +1055,33 @@ enum DecodedPropertyKey {
 
 fn read_key(
     cursor: &mut WireCursor<'_>,
+    atom_space: AtomIndexSpace,
     header_atoms: &[WireKey],
 ) -> Result<DecodedPropertyKey, DecodeError> {
     let offset = cursor.position();
-    let encoded = cursor.read_uleb128()?;
-    if encoded & 1 != 0 {
-        return Ok(DecodedPropertyKey::Define(WireKey::Index(encoded >> 1)));
-    }
-    if encoded == 0 {
-        return match cursor.mode() {
+    match atom_space.decode_metadata_atom(cursor)? {
+        BinaryAtom::Null => match cursor.mode() {
             ReaderMode::Strict => Err(DecodeError::NullPropertyKey { offset }),
             ReaderMode::QuickJsCompatible => Ok(DecodedPropertyKey::Ignore),
-        };
+        },
+        BinaryAtom::Index(index) => Ok(DecodedPropertyKey::Define(WireKey::Index(index))),
+        BinaryAtom::Header(slot) => {
+            let key = header_atoms.get(slot.index() as usize).copied().ok_or(
+                GraphError::InvalidAtomIndex {
+                    index: slot.index(),
+                    atom_count: header_atoms.len(),
+                },
+            )?;
+            Ok(DecodedPropertyKey::Define(key))
+        }
+        BinaryAtom::Predefined(atom) => Err(WireError::InvalidAtomIndex {
+            offset: cursor.position(),
+            index: atom.raw(),
+            first_atom: atom_space.first_atom(),
+            atom_count: atom_space.header_count(),
+        }
+        .into()),
     }
-
-    // Data-object mode uses first_atom == 1.
-    let table_index = encoded >> 1;
-    let zero_based = table_index - 1;
-    let key =
-        header_atoms
-            .get(zero_based as usize)
-            .copied()
-            .ok_or(GraphError::InvalidAtomIndex {
-                index: zero_based,
-                atom_count: header_atoms.len(),
-            })?;
-    Ok(DecodedPropertyKey::Define(key))
 }
 
 fn intern_header_atom(
@@ -1136,6 +1139,7 @@ mod tests {
     use super::super::super::wire::WireString;
     use super::super::model::MAX_ARRAY_BUFFER_BYTE_LENGTH;
     use super::*;
+    use crate::atom::ATOM_MAX_TABLE_INDEX;
 
     const WIRE_LIMITS: WireLimits = WireLimits::new(4096, 32, 1024, 2048);
     const GRAPH_LIMITS: GraphLimits =
@@ -1409,6 +1413,40 @@ mod tests {
                 }])
                 .into_boxed_slice(),
             }]
+        );
+    }
+
+    #[test]
+    fn data_atom_namespace_rejects_missing_header_slots_at_the_wire_offset() {
+        // The object key consumes ULEB(2), which denotes raw atom one. Data
+        // mode has no header atoms here, so the diagnostic position follows
+        // pinned QuickJS and points after the consumed atom value.
+        assert_eq!(
+            decode(&[5, 0, 8, 1, 2], ReaderMode::Strict, false),
+            Err(DecodeError::Wire(WireError::InvalidAtomIndex {
+                offset: 5,
+                index: 1,
+                first_atom: 1,
+                atom_count: 0,
+            }))
+        );
+
+        // Index-space validation happens after the header count but before
+        // atom-string allocation or payload reads.
+        let limits = WireLimits::new(64, u32::MAX, 16, 16);
+        assert_eq!(
+            decode_graph(
+                &[5, 0x80, 0x80, 0x80, 0x80, 0x04],
+                ReaderMode::Strict,
+                limits,
+                GRAPH_LIMITS,
+                false,
+            ),
+            Err(DecodeError::Wire(WireError::AtomIndexSpaceOverflow {
+                first_atom: 1,
+                atom_count: ATOM_MAX_TABLE_INDEX + 1,
+                maximum: ATOM_MAX_TABLE_INDEX,
+            }))
         );
     }
 

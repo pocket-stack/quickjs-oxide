@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use crate::atom::{ATOM_MAX_INT, ATOM_MAX_TABLE_INDEX};
+
+use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
 use super::super::wire::{BcTag, WireError, WireString, WireWriter};
 use super::model::{
     ArrayBufferLayoutError, AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId,
@@ -149,7 +152,7 @@ enum EncodeTask<'a> {
 #[derive(Clone, Copy)]
 enum CanonicalKey {
     Index(u32),
-    Atom(u32),
+    Header(u32),
 }
 
 struct EncodePlan<'a> {
@@ -189,13 +192,7 @@ pub(in crate::runtime) fn encode_graph(
         u32::try_from(plan.atoms.len()).map_err(|_| GraphEncodeError::AtomCountOverflow {
             atom_count: plan.atoms.len(),
         })?;
-    // Non-integer BC5 atoms occupy the 31-bit QuickJS atom index space after
-    // the data-mode `first_atom == 1` offset.
-    if atom_count > 0x7fff_ffff {
-        return Err(GraphEncodeError::AtomCountOverflow {
-            atom_count: plan.atoms.len(),
-        });
-    }
+    let atom_space = AtomIndexSpace::new(BinaryObjectMode::Data, atom_count)?;
 
     let mut writer = WireWriter::new(options.max_output_bytes);
     writer.write_header(atom_count)?;
@@ -218,7 +215,7 @@ pub(in crate::runtime) fn encode_graph(
 
     while let Some(task) = tasks.pop() {
         match task {
-            EncodeTask::Key(key) => write_key(&mut writer, &plan, key)?,
+            EncodeTask::Key(key) => write_key(&mut writer, &plan, atom_space, key)?,
             EncodeTask::LeaveNode(node) => {
                 let was_active = active_nodes.remove(&node);
                 debug_assert!(was_active);
@@ -698,7 +695,7 @@ impl<'a> EncodePlan<'a> {
     ) -> Result<(), GraphEncodeError> {
         let atom = match key {
             WireKey::Index(index) => {
-                if index > 0x7fff_ffff {
+                if index > ATOM_MAX_INT {
                     return Err(GraphEncodeError::IntegerAtomOutOfRange { index });
                 }
                 return Ok(());
@@ -722,7 +719,9 @@ impl<'a> EncodePlan<'a> {
             let atom_index = if let Some(index) = canonical_atoms.get(&semantic).copied() {
                 index
             } else {
-                if self.atoms.len() >= 0x7fff_ffff {
+                if u32::try_from(self.atoms.len())
+                    .map_or(true, |length| length >= ATOM_MAX_TABLE_INDEX)
+                {
                     return Err(GraphEncodeError::AtomCountOverflow {
                         atom_count: self.atoms.len().saturating_add(1),
                     });
@@ -742,7 +741,7 @@ impl<'a> EncodePlan<'a> {
                 canonical_atoms.insert(semantic, index);
                 index
             };
-            CanonicalKey::Atom(atom_index)
+            CanonicalKey::Header(atom_index)
         };
         self.source_atom_keys
             .try_reserve(1)
@@ -755,6 +754,7 @@ impl<'a> EncodePlan<'a> {
 fn write_key(
     writer: &mut WireWriter,
     plan: &EncodePlan<'_>,
+    atom_space: AtomIndexSpace,
     key: WireKey,
 ) -> Result<(), GraphEncodeError> {
     let canonical = match key {
@@ -765,24 +765,24 @@ fn write_key(
             .copied()
             .ok_or(GraphEncodeError::UnplannedAtom { atom })?,
     };
-    let encoded = match canonical {
+    let atom = match canonical {
         CanonicalKey::Index(index) => {
-            if index > 0x7fff_ffff {
+            if index > ATOM_MAX_INT {
                 return Err(GraphEncodeError::IntegerAtomOutOfRange { index });
             }
-            (index << 1) | 1
+            BinaryAtom::Index(index)
         }
-        CanonicalKey::Atom(index) => {
-            index
-                .checked_add(1)
-                .filter(|index| *index <= 0x7fff_ffff)
-                .ok_or(GraphEncodeError::AtomCountOverflow {
-                    atom_count: plan.atoms.len(),
-                })?
-                << 1
+        CanonicalKey::Header(index) => {
+            let slot =
+                atom_space
+                    .header_slot(index)
+                    .ok_or(GraphEncodeError::AtomCountOverflow {
+                        atom_count: plan.atoms.len(),
+                    })?;
+            BinaryAtom::Header(slot)
         }
     };
-    writer.write_uleb128(encoded)?;
+    atom_space.encode_metadata_atom(writer, atom)?;
     Ok(())
 }
 
@@ -868,7 +868,7 @@ fn semantic_property_key(
     key: WireKey,
 ) -> Result<SemanticPropertyKey<'_>, GraphEncodeError> {
     match key {
-        WireKey::Index(index) if index > 0x7fff_ffff => {
+        WireKey::Index(index) if index > ATOM_MAX_INT => {
             Err(GraphEncodeError::IntegerAtomOutOfRange { index })
         }
         WireKey::Index(index) => Ok(SemanticPropertyKey::Index(index)),

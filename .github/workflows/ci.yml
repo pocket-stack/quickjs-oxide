@@ -67,6 +67,7 @@ jobs:
           cargo fmt --all -- --check
           ./scripts/check-no-test262-special-casing.sh
           node scripts/check-test262-artifact-inventory.mjs
+          node scripts/check-bc5-pinned-atoms.mjs --self-test
           node --check scripts/test-negative-diagnostic-generator.mjs
           node --check scripts/generate-test262-dynamic-import-a.mjs
           node --check scripts/generate-test262-tla-core-a.mjs
@@ -149,6 +150,8 @@ jobs:
         run: |
           oracle_source=$(./scripts/build-quickjs-oracle.sh --test262-oracles)
           oracle="$oracle_source/qjs"
+          node scripts/check-bc5-pinned-atoms.mjs \
+            --source "$oracle_source/quickjs-atom.h"
           QJS_ORACLE_ARCHIVE_FIXTURE="$QJS_ORACLE_CACHE/quickjs-2026-06-04.tar.xz" \
             ./scripts/test-build-quickjs-oracle-cache.sh
           QJS_ORACLE_ARCHIVE="$QJS_ORACLE_CACHE/quickjs-2026-06-04.tar.xz" \

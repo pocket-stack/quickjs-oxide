@@ -31,6 +31,9 @@ mod tests {
     fn exact_quickjs_object_and_reference_vectors_cross_the_pure_graph() {
         for (bytes, references) in [
             (&[5, 1, 2, b'x', 8, 1, 2, 5, 2][..], false),
+            // Data mode keeps `if` in the header even though bytecode mode can
+            // refer to its pinned atom directly as raw index four.
+            (&[5, 1, 4, b'i', b'f', 8, 1, 2, 5, 84][..], false),
             (&[5, 0, 9, 2, 8, 0, 19, 1][..], true),
             (&[5, 1, 8, b's', b'e', b'l', b'f', 8, 1, 2, 19, 0][..], true),
         ] {
