@@ -1,9 +1,10 @@
 //! Bounded, heap-independent decoder for the first BC5 data-object slice.
 //!
-//! Containers are assembled through an explicit frame stack. Object and Array
-//! identities enter the reference table before any child is read, which
-//! preserves QuickJS's preorder reference numbering and cycles. Their values
-//! reach the parent or root only after the complete subtree has been consumed.
+//! Containers are assembled through an explicit frame stack. Object, Array,
+//! and TemplateObject identities enter the reference table before any child is
+//! read, which preserves QuickJS's preorder reference numbering and cycles.
+//! Their values reach the parent or root only after the complete subtree has
+//! been consumed.
 
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
@@ -266,6 +267,7 @@ enum NodeSlot {
 enum PendingNodeKind {
     Ordinary,
     Array,
+    TemplateObject,
     TypedArray,
 }
 
@@ -275,6 +277,7 @@ impl PendingNodeKind {
             (self, node),
             (Self::Ordinary, WireNode::Ordinary { .. })
                 | (Self::Array, WireNode::Array { .. })
+                | (Self::TemplateObject, WireNode::TemplateObject { .. })
                 | (Self::TypedArray, WireNode::TypedArray { .. })
         )
     }
@@ -322,6 +325,9 @@ impl DecodeState {
             BcTag::BigInt => self.read_bigint(cursor)?,
             BcTag::Object => return self.begin_container(cursor, ContainerKind::Ordinary),
             BcTag::Array => return self.begin_container(cursor, ContainerKind::Array),
+            BcTag::TemplateObject => {
+                return self.begin_container(cursor, ContainerKind::TemplateObject);
+            }
             BcTag::TypedArray => return self.begin_typed_array(cursor, tag_offset),
             BcTag::ObjectValue => return self.begin_object_value(tag_offset),
             BcTag::Date => return self.begin_date(tag_offset),
@@ -339,10 +345,7 @@ impl DecodeState {
                 )?;
                 WireValue::Node(node)
             }
-            BcTag::TemplateObject
-            | BcTag::FunctionBytecode
-            | BcTag::Module
-            | BcTag::SharedArrayBuffer => {
+            BcTag::FunctionBytecode | BcTag::Module | BcTag::SharedArrayBuffer => {
                 return Err(DecodeError::UnsupportedTag {
                     tag,
                     offset: tag_offset,
@@ -568,6 +571,18 @@ impl DecodeState {
                         elements: elements.into_boxed_slice(),
                     },
                 ),
+                Frame::TemplateObject {
+                    node,
+                    elements,
+                    raw,
+                    ..
+                } => (
+                    node,
+                    WireNode::TemplateObject {
+                        elements: elements.into_boxed_slice(),
+                        raw: raw.ok_or(DecodeError::InvalidCompletionTarget)?,
+                    },
+                ),
                 Frame::TypedArray {
                     node,
                     offset,
@@ -605,7 +620,11 @@ impl DecodeState {
                                 reason: TypedArrayBackingError::Pending { node: buffer },
                             });
                         }
-                        NodeSlot::Pending(PendingNodeKind::Ordinary | PendingNodeKind::Array) => {
+                        NodeSlot::Pending(
+                            PendingNodeKind::Ordinary
+                            | PendingNodeKind::Array
+                            | PendingNodeKind::TemplateObject,
+                        ) => {
                             return Err(DecodeError::InvalidTypedArrayBacking {
                                 offset,
                                 reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
@@ -862,6 +881,7 @@ impl DecodeState {
 enum ContainerKind {
     Ordinary,
     Array,
+    TemplateObject,
 }
 
 impl ContainerKind {
@@ -869,6 +889,7 @@ impl ContainerKind {
         match self {
             Self::Ordinary => PendingNodeKind::Ordinary,
             Self::Array => PendingNodeKind::Array,
+            Self::TemplateObject => PendingNodeKind::TemplateObject,
         }
     }
 }
@@ -901,6 +922,12 @@ enum Frame {
         node: NodeId,
         expected: usize,
         elements: Vec<WireValue>,
+    },
+    TemplateObject {
+        node: NodeId,
+        expected: usize,
+        elements: Vec<WireValue>,
+        raw: Option<WireValue>,
     },
     TypedArray {
         node: NodeId,
@@ -951,6 +978,18 @@ impl Frame {
                     elements,
                 })
             }
+            ContainerKind::TemplateObject => {
+                let mut elements = Vec::new();
+                elements
+                    .try_reserve_exact(expected)
+                    .map_err(|_| GraphError::AllocationFailed)?;
+                Ok(Self::TemplateObject {
+                    node,
+                    expected,
+                    elements,
+                    raw: None,
+                })
+            }
         }
     }
 
@@ -996,6 +1035,27 @@ impl Frame {
                 }
                 elements.push(value);
             }
+            Self::TemplateObject {
+                expected,
+                elements,
+                raw,
+                ..
+            } => {
+                if key.is_some() {
+                    return Err(GraphError::CountOverflow {
+                        kind: GraphResourceKind::ContainerEntries,
+                    });
+                }
+                if elements.len() < *expected {
+                    elements.push(value);
+                } else if raw.is_none() {
+                    *raw = Some(value);
+                } else {
+                    return Err(GraphError::CountOverflow {
+                        kind: GraphResourceKind::ContainerEntries,
+                    });
+                }
+            }
             Self::TypedArray { backing, .. } => {
                 if key.is_some() || backing.is_some() {
                     return Err(GraphError::CountOverflow {
@@ -1040,6 +1100,12 @@ impl Frame {
             Self::Array {
                 expected, elements, ..
             } => elements.len() == *expected,
+            Self::TemplateObject {
+                expected,
+                elements,
+                raw,
+                ..
+            } => elements.len() == *expected && raw.is_some(),
             Self::TypedArray { backing, .. } => backing.is_some(),
             Self::ObjectValue { value, .. } => value.is_some(),
             Self::Date { value, .. } => value.is_some(),
@@ -2972,9 +3038,176 @@ mod tests {
     }
 
     #[test]
+    fn template_objects_decode_pinned_quickjs_vectors_and_required_raw_child() {
+        // Pinned QuickJS accepts TEMPLATE_OBJECT in the reader even without
+        // the bytecode flag. The payload is a dense element sequence followed
+        // by exactly one raw child. Undefined is still consumed here even
+        // though QuickJS then omits the observable `.raw` property.
+        let empty = decode(&[5, 0, 11, 0, 2], ReaderMode::Strict, false).unwrap();
+        let root = NodeId::from_zero_based(0);
+        assert_eq!(empty.root, WireValue::Node(root));
+        assert_eq!(
+            empty.nodes.as_ref(),
+            &[WireNode::TemplateObject {
+                elements: Box::default(),
+                raw: WireValue::Undefined,
+            }]
+        );
+
+        let populated = decode(
+            &[5, 0, 11, 2, 5, 2, 7, 2, b'x', 2],
+            ReaderMode::Strict,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            populated.nodes.as_ref(),
+            &[WireNode::TemplateObject {
+                elements: Box::from([
+                    WireValue::Int32(1),
+                    WireValue::String(WireString::Narrow(Box::from(*b"x"))),
+                ]),
+                raw: WireValue::Undefined,
+            }]
+        );
+
+        // Element count zero does not complete the frame: raw remains a
+        // mandatory child on the wire.
+        assert_eq!(
+            decode(&[5, 0, 11, 0], ReaderMode::Strict, false),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 4,
+                needed: 1,
+                remaining: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn template_identity_is_registered_before_elements_and_raw() {
+        let root = NodeId::from_zero_based(0);
+        for (bytes, expected_elements, expected_raw) in [
+            (
+                &[5, 0, 11, 1, 19, 0, 2][..],
+                Box::from([WireValue::Node(root)]),
+                WireValue::Undefined,
+            ),
+            (
+                &[5, 0, 11, 0, 19, 0][..],
+                Box::default(),
+                WireValue::Node(root),
+            ),
+        ] {
+            let graph = decode(bytes, ReaderMode::Strict, true).unwrap();
+            assert_eq!(graph.ref_table.as_ref(), &[root]);
+            assert_eq!(
+                graph.nodes.as_ref(),
+                &[WireNode::TemplateObject {
+                    elements: expected_elements,
+                    raw: expected_raw,
+                }]
+            );
+        }
+
+        // A TypedArray sees the still-open template as an Array-class object,
+        // not the temporary NULL identity used for a pending TypedArray.
+        assert_eq!(
+            decode(
+                &[5, 0, 11, 1, 14, 2, 0, 0, 19, 0, 2],
+                ReaderMode::Strict,
+                true,
+            ),
+            Err(DecodeError::InvalidTypedArrayBacking {
+                offset: 4,
+                reason: TypedArrayBackingError::NotArrayBuffer { node: root },
+            })
+        );
+    }
+
+    #[test]
+    fn template_elements_use_container_budgets_but_raw_is_a_fixed_child() {
+        let two_elements = [5, 0, 11, 2, 2, 2, 2];
+        let per_container = GraphLimits::new(8, 8, 8, 1, 8, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &two_elements,
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                per_container,
+                false,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ContainerEntries,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+
+        let aggregate = GraphLimits::new(8, 8, 8, 8, 1, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &two_elements,
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                aggregate,
+                false,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::TotalContainerEntries,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+
+        let no_entries = GraphLimits::new(2, 0, 2, 0, 0, 8, 8, 8, 8);
+        assert!(
+            decode_graph(
+                &[5, 0, 11, 0, 2],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_entries,
+                false,
+            )
+            .is_ok()
+        );
+
+        // The fixed raw slot itself is not a container entry. A container
+        // stored in that slot still contributes its own element work.
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 11, 0, 9, 1, 2],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_entries,
+                false,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ContainerEntries,
+                requested: 1,
+                limit: 0,
+            }))
+        );
+
+        let one_level = GraphLimits::new(2, 0, 1, 8, 8, 8, 8, 8, 8);
+        assert_eq!(
+            decode_graph(
+                &[5, 0, 11, 0, 9, 0],
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                one_level,
+                false,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::NestingDepth,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+    }
+
+    #[test]
     fn unsupported_data_tags_are_rejected_before_their_payloads() {
         for tag in [
-            BcTag::TemplateObject,
             BcTag::FunctionBytecode,
             BcTag::Module,
             BcTag::SharedArrayBuffer,

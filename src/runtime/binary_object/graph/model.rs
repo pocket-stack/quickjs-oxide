@@ -312,7 +312,7 @@ impl TypedArrayKind {
     }
 }
 
-/// The first admitted data-only BC5 object kinds.
+/// The first admitted BC5 object kinds.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum WireNode {
     /// Enumerable data properties in insertion-slot order. Semantic keys are
@@ -321,6 +321,20 @@ pub(in crate::runtime) enum WireNode {
     /// Arrays are dense in the semantic graph: the writer normalizes each
     /// source hole to `undefined`, and the reader creates an own property for it.
     Array { elements: Box<[WireValue]> },
+    /// A BC5 `TEMPLATE_OBJECT` identity.
+    ///
+    /// Like ordinary arrays, the indexed elements are dense after wire
+    /// normalization. The `raw` child is always present in the wire payload.
+    /// Pinned QuickJS consumes `WireValue::Undefined` but then omits the own
+    /// `.raw` property; a later heap materializer must preserve that distinction.
+    /// The graph deliberately does not reuse the language-level template
+    /// materializer: the BC5 reader leaves the Array's `length` writable.
+    /// Either child position may refer back to this node because the identity is
+    /// registered before its children are traversed.
+    TemplateObject {
+        elements: Box<[WireValue]>,
+        raw: WireValue,
+    },
     /// An owned ArrayBuffer backing store.
     ///
     /// `None` is the fixed-length `UINT32_MAX` wire sentinel. `Some(max)` is a

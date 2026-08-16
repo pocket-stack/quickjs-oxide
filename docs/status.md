@@ -99,9 +99,24 @@ JavaScript constructor's `TimeClip`; non-number children are rejected only
 after their complete subtree has been read, matching QuickJS's allocation and
 diagnostic order. A later heap materializer must retain that numeric wire
 representation and install it without reusing the runtime's `TimeClip` Date
-constructor path. BC5 atom handling now has an explicit caller-selected data
-or bytecode namespace, a release-pinned 242-entry predefined-atom catalog, and
-separate checked codecs for metadata ULEB atoms and raw `u32` opcode operands.
+constructor path. TemplateObject now preserves the dense cooked-element
+sequence, its mandatory raw wire child, preorder identity, and cycles through
+either child. Elements consume the same per-container and aggregate budgets as
+Array elements; the fixed raw slot does not. Pinned QuickJS consumes an
+undefined raw child but omits the own `.raw` property, and prevents extensions
+on every decoded template Array. Its indexed properties are enumerable but
+non-writable and non-configurable; a defined `.raw` has all three flags clear.
+Unlike a language-level tagged-template object, its Array `length` remains
+writable. The later heap materializer must reproduce those descriptor
+decisions and must not reuse `template_object::seal_template_array`, which
+intentionally makes the language-level template length non-writable.
+QuickJS's writer selects this tag only for a non-extensible Array under the
+bytecode flag, so the eventual public writer must retain that flag-dependent
+selection even though the pure graph layer can canonically re-emit an
+explicitly represented tag. BC5 atom handling now has an explicit
+caller-selected data or bytecode namespace, a release-pinned 242-entry
+predefined-atom catalog, and separate checked codecs for metadata ULEB atoms
+and raw `u32` opcode operands.
 The data graph uses that shared namespace without auto-detection or local
 `first_atom` arithmetic, while an authenticated differential gate checks every
 catalog ID, kind, spelling, and ordering against the pinned `quickjs-atom.h`.
@@ -114,8 +129,8 @@ node/reference reservations reject stale commits, and independently bounded
 reference entries can alias pending or ready identities without consuming
 another node. Malicious TypedArray placeholder paths are rejected
 deterministically instead of reproducing pinned QuickJS's native crashes.
-SharedArrayBuffer and the bytecode-only object tags remain rejected. It is not
-a public binary-object API yet:
+SharedArrayBuffer, FunctionBytecode, and Module remain rejected. It is not a
+public binary-object API yet:
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.

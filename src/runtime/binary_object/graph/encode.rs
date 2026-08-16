@@ -383,6 +383,40 @@ pub(in crate::runtime) fn encode_graph(
                                     .push(EncodeTask::Value(EncodeValue::Borrowed(element), depth));
                             }
                         }
+                        WireNode::TemplateObject { elements, raw } => {
+                            total_container_entries = total_container_entries
+                                .checked_add(elements.len())
+                                .ok_or(GraphError::CountOverflow {
+                                    kind: GraphResourceKind::TotalContainerEntries,
+                                })?;
+                            options.limits.check(
+                                GraphResourceKind::TotalContainerEntries,
+                                total_container_entries,
+                            )?;
+                            writer.write_tag(BcTag::TemplateObject)?;
+                            writer.write_uleb128(u32::try_from(elements.len()).map_err(
+                                |_| GraphError::CountOverflow {
+                                    kind: GraphResourceKind::ContainerEntries,
+                                },
+                            )?)?;
+                            let extra = elements.len().checked_add(1).and_then(|count| {
+                                count.checked_add(usize::from(!options.allow_object_references))
+                            });
+                            tasks
+                                .try_reserve(extra.ok_or(GraphError::CountOverflow {
+                                    kind: GraphResourceKind::TotalContainerEntries,
+                                })?)
+                                .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                            if !options.allow_object_references {
+                                tasks.push(EncodeTask::LeaveNode(*node));
+                            }
+                            // Tasks are LIFO: `raw` follows every indexed element on wire.
+                            tasks.push(EncodeTask::Value(EncodeValue::Borrowed(raw), depth));
+                            for element in elements.iter().rev() {
+                                tasks
+                                    .push(EncodeTask::Value(EncodeValue::Borrowed(element), depth));
+                            }
+                        }
                         WireNode::ArrayBuffer {
                             bytes,
                             max_byte_length,
@@ -567,6 +601,7 @@ fn build_encode_plan<'a>(
                     if let Some(entry_count) = match node_data {
                         WireNode::Ordinary { properties } => Some(properties.len()),
                         WireNode::Array { elements } => Some(elements.len()),
+                        WireNode::TemplateObject { elements, .. } => Some(elements.len()),
                         WireNode::ArrayBuffer { .. }
                         | WireNode::TypedArray { .. }
                         | WireNode::ObjectValue { .. }
@@ -620,6 +655,7 @@ fn build_encode_plan<'a>(
                     let task_count = match node_data {
                         WireNode::Ordinary { properties } => properties.len().checked_mul(2),
                         WireNode::Array { elements } => Some(elements.len()),
+                        WireNode::TemplateObject { elements, .. } => elements.len().checked_add(1),
                         WireNode::ArrayBuffer { .. } => Some(0),
                         WireNode::TypedArray { .. } => Some(1),
                         WireNode::ObjectValue { .. } => Some(1),
@@ -648,6 +684,14 @@ fn build_encode_plan<'a>(
                             }
                         }
                         WireNode::Array { elements } => {
+                            for element in elements.iter().rev() {
+                                tasks
+                                    .push(EncodeTask::Value(EncodeValue::Borrowed(element), depth));
+                            }
+                        }
+                        WireNode::TemplateObject { elements, raw } => {
+                            // Tasks are LIFO: `raw` follows every indexed element on wire.
+                            tasks.push(EncodeTask::Value(EncodeValue::Borrowed(raw), depth));
                             for element in elements.iter().rev() {
                                 tasks
                                     .push(EncodeTask::Value(EncodeValue::Borrowed(element), depth));
@@ -803,7 +847,7 @@ fn validate_node(
                 }
             }
         }
-        WireNode::Array { .. } => {}
+        WireNode::Array { .. } | WireNode::TemplateObject { .. } => {}
         WireNode::ArrayBuffer {
             bytes,
             max_byte_length,
@@ -970,6 +1014,15 @@ mod tests {
         }
     }
 
+    fn template_object_graph(elements: Box<[WireValue]>, raw: WireValue) -> WireGraph {
+        WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([WireNode::TemplateObject { elements, raw }]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        }
+    }
+
     #[test]
     fn object_vector_matches_pinned_quickjs() {
         let graph = WireGraph {
@@ -986,6 +1039,74 @@ mod tests {
         assert_eq!(
             encode_graph(&graph, options(false)).unwrap(),
             [5, 1, 2, b'x', 8, 1, 2, 5, 2]
+        );
+    }
+
+    #[test]
+    fn template_object_vectors_match_pinned_quickjs() {
+        assert_eq!(
+            encode_graph(
+                &template_object_graph(Box::from([]), WireValue::Undefined),
+                options(false),
+            )
+            .unwrap(),
+            [5, 0, 11, 0, 2]
+        );
+        assert_eq!(
+            encode_graph(
+                &template_object_graph(
+                    Box::from([
+                        WireValue::Int32(1),
+                        WireValue::String(WireString::Narrow(Box::from(*b"x"))),
+                    ]),
+                    WireValue::Undefined,
+                ),
+                options(false),
+            )
+            .unwrap(),
+            [5, 0, 11, 2, 5, 2, 7, 2, b'x', 2]
+        );
+    }
+
+    #[test]
+    fn template_object_children_use_registered_identity() {
+        let node = NodeId::from_zero_based(0);
+        let raw_self = template_object_graph(Box::from([]), WireValue::Node(node));
+        assert_eq!(
+            encode_graph(&raw_self, options(false)),
+            Err(GraphEncodeError::CircularReference { node })
+        );
+        assert_eq!(
+            encode_graph(&raw_self, options(true)).unwrap(),
+            [5, 0, 11, 0, 19, 0]
+        );
+
+        let element_self =
+            template_object_graph(Box::from([WireValue::Node(node)]), WireValue::Undefined);
+        assert_eq!(
+            encode_graph(&element_self, options(true)).unwrap(),
+            [5, 0, 11, 1, 19, 0, 2]
+        );
+    }
+
+    #[test]
+    fn template_object_raw_is_not_a_container_entry() {
+        let graph = template_object_graph(Box::from([]), WireValue::Int32(42));
+        let no_entries = GraphLimits::new(1, 1, 1, 0, 0, 0, 0, 0, 0);
+        assert_eq!(
+            encode_graph(&graph, options_with_limits(true, no_entries)).unwrap(),
+            [5, 0, 11, 0, 5, 84]
+        );
+
+        let one_element =
+            template_object_graph(Box::from([WireValue::Undefined]), WireValue::Undefined);
+        assert_eq!(
+            encode_graph(&one_element, options_with_limits(true, no_entries)),
+            Err(GraphEncodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ContainerEntries,
+                requested: 1,
+                limit: 0,
+            }))
         );
     }
 

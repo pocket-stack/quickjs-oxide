@@ -203,6 +203,41 @@ mod tests {
     }
 
     #[test]
+    fn exact_quickjs_template_object_vectors_cross_the_pure_graph() {
+        for (bytes, references) in [
+            (&[5, 0, 11, 0, 2][..], false),
+            (&[5, 0, 11, 2, 5, 2, 7, 2, b'x', 2][..], false),
+            (
+                &[
+                    5, 0, 11, 2, 7, 2, b'a', 7, 2, b'b', 11, 2, 7, 2, b'a', 7, 2, b'b', 2,
+                ][..],
+                false,
+            ),
+            (&[5, 0, 11, 0, 19, 0][..], true),
+            (&[5, 0, 11, 1, 19, 0, 2][..], true),
+            // A data-mode header atom inside an indexed template element.
+            (
+                &[5, 1, 6, b'f', b'o', b'o', 11, 1, 8, 1, 2, 5, 84, 2][..],
+                false,
+            ),
+        ] {
+            assert_eq!(rewrite(bytes, references, ReaderMode::Strict), bytes);
+        }
+    }
+
+    #[test]
+    fn compatible_template_length_rewrites_canonically() {
+        assert_eq!(
+            rewrite(
+                &[5, 0, 11, 0x80, 0, 2],
+                false,
+                ReaderMode::QuickJsCompatible,
+            ),
+            [5, 0, 11, 0, 2]
+        );
+    }
+
+    #[test]
     fn date_aliases_and_compatible_ints_rewrite_canonically() {
         assert_eq!(
             rewrite(
