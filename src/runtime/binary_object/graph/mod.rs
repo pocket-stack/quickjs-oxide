@@ -3,6 +3,7 @@
 //! This staging layer proves framing, bounds, identity, and cycle semantics
 //! before a later milestone is allowed to allocate or publish runtime objects.
 
+pub(in crate::runtime) mod arena;
 pub(in crate::runtime) mod decode;
 pub(in crate::runtime) mod encode;
 pub(in crate::runtime) mod model;

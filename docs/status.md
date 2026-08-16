@@ -169,11 +169,16 @@ runtime also observes the cpool result and root property as the same object.
 The data decoder separates
 preorder identity registration from value completion: every parent/root
 attachment now uses one completed-subtree
-delivery path owned by the decode state. Its private arena represents
-incomplete identities with kind-checked pending/ready slots; linear
-node/reference reservations reject stale commits, and independently bounded
-reference entries can alias pending or ready identities without consuming
-another node. Malicious TypedArray placeholder paths are rejected
+delivery path owned by the decode state. Its reference state is now an
+independent generic `ObjectArena`, ready for a whole-image decoder to carry one
+instance through every recursive constant pool without registering
+FunctionBytecode records themselves. The data decoder remains its only
+consumer in this milestone. The arena represents incomplete identities with
+kind-checked pending/ready slots; source-bound linear node reservations and
+atomic reference reservations prevent stale or cross-arena commits, and
+independently bounded reference entries can alias pending or ready identities
+without consuming another node. Malicious TypedArray placeholder paths are
+rejected
 deterministically instead of reproducing pinned QuickJS's native crashes.
 The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
 Module. It is not a public binary-object API yet:
