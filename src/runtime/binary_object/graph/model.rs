@@ -155,6 +155,98 @@ pub(in crate::runtime) enum WireNode {
     /// Arrays are dense in the semantic graph: the writer normalizes each
     /// source hole to `undefined`, and the reader creates an own property for it.
     Array { elements: Box<[WireValue]> },
+    /// An owned ArrayBuffer backing store.
+    ///
+    /// `None` is the fixed-length `UINT32_MAX` wire sentinel. `Some(max)` is a
+    /// resizable buffer even when `max == bytes.len()`; the distinction is
+    /// observable through the JavaScript ArrayBuffer API.
+    ArrayBuffer {
+        bytes: Box<[u8]>,
+        max_byte_length: Option<u32>,
+    },
+}
+
+/// Pinned QuickJS currently rejects ArrayBuffer lengths above 2 GiB - 1.
+pub(in crate::runtime) const MAX_ARRAY_BUFFER_BYTE_LENGTH: u32 = i32::MAX as u32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum ArrayBufferLayoutError {
+    ByteLengthTooLarge {
+        byte_length: usize,
+        maximum: u32,
+    },
+    MaximumTooSmall {
+        byte_length: u32,
+        max_byte_length: u32,
+    },
+    MaximumTooLarge {
+        max_byte_length: u32,
+        maximum: u32,
+    },
+}
+
+impl fmt::Display for ArrayBufferLayoutError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ByteLengthTooLarge {
+                byte_length,
+                maximum,
+            } => write!(
+                formatter,
+                "byte length {byte_length} exceeds pinned QuickJS maximum {maximum}"
+            ),
+            Self::MaximumTooSmall {
+                byte_length,
+                max_byte_length,
+            } => write!(
+                formatter,
+                "max byte length {max_byte_length} is smaller than byte length {byte_length}"
+            ),
+            Self::MaximumTooLarge {
+                max_byte_length,
+                maximum,
+            } => write!(
+                formatter,
+                "max byte length {max_byte_length} exceeds pinned QuickJS maximum {maximum}"
+            ),
+        }
+    }
+}
+
+/// Validate and return an ArrayBuffer byte length accepted by pinned QuickJS.
+pub(in crate::runtime) fn validate_array_buffer_layout(
+    byte_length: usize,
+    max_byte_length: Option<u32>,
+) -> Result<u32, ArrayBufferLayoutError> {
+    let Ok(byte_length) = u32::try_from(byte_length) else {
+        return Err(ArrayBufferLayoutError::ByteLengthTooLarge {
+            byte_length,
+            maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+        });
+    };
+    if let Some(max_byte_length) = max_byte_length {
+        if max_byte_length < byte_length {
+            return Err(ArrayBufferLayoutError::MaximumTooSmall {
+                byte_length,
+                max_byte_length,
+            });
+        }
+    }
+    if byte_length > MAX_ARRAY_BUFFER_BYTE_LENGTH {
+        return Err(ArrayBufferLayoutError::ByteLengthTooLarge {
+            byte_length: byte_length as usize,
+            maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+        });
+    }
+    if let Some(max_byte_length) = max_byte_length {
+        if max_byte_length > MAX_ARRAY_BUFFER_BYTE_LENGTH {
+            return Err(ArrayBufferLayoutError::MaximumTooLarge {
+                max_byte_length,
+                maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+            });
+        }
+    }
+    Ok(byte_length)
 }
 
 /// One complete, validated, heap-independent object graph.
@@ -253,6 +345,7 @@ impl GraphLimits {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum GraphResourceKind {
+    /// Nodes allocated while decoding, or unique reachable nodes while writing.
     Nodes,
     ObjectReferences,
     NestingDepth,
@@ -260,10 +353,10 @@ pub(in crate::runtime) enum GraphResourceKind {
     TotalContainerEntries,
     BigIntBytes,
     TotalBigIntBytes,
-    /// Reserved now so admitting `ARRAY_BUFFER` does not weaken the limit API.
+    /// Bytes copied into one ArrayBuffer's current backing store.
     ArrayBufferBytes,
-    /// Reserved now so aggregate backing-store bytes remain independently
-    /// bounded when `ARRAY_BUFFER` is admitted.
+    /// Bytes copied into all emitted or decoded current ArrayBuffer backing
+    /// stores. A resizable buffer's unallocated maximum is not charged here.
     TotalArrayBufferBytes,
 }
 
@@ -349,5 +442,37 @@ pub(in crate::runtime) fn canonical_bigint_length(payload: &[u8]) -> usize {
         0
     } else {
         length
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_buffer_layout_validation_tracks_quickjs_constructor_bounds() {
+        assert_eq!(validate_array_buffer_layout(4, None), Ok(4));
+        assert_eq!(validate_array_buffer_layout(4, Some(4)), Ok(4));
+        assert_eq!(
+            validate_array_buffer_layout(4, Some(3)),
+            Err(ArrayBufferLayoutError::MaximumTooSmall {
+                byte_length: 4,
+                max_byte_length: 3,
+            })
+        );
+        assert_eq!(
+            validate_array_buffer_layout(0, Some(0x8000_0000)),
+            Err(ArrayBufferLayoutError::MaximumTooLarge {
+                max_byte_length: 0x8000_0000,
+                maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+            })
+        );
+        assert_eq!(
+            validate_array_buffer_layout(0x8000_0000, None),
+            Err(ArrayBufferLayoutError::ByteLengthTooLarge {
+                byte_length: 0x8000_0000,
+                maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+            })
+        );
     }
 }

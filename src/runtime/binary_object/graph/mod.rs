@@ -15,7 +15,8 @@ mod tests {
     use super::model::GraphLimits;
 
     const WIRE_LIMITS: WireLimits = WireLimits::new(4096, 32, 1024, 2048);
-    const GRAPH_LIMITS: GraphLimits = GraphLimits::new(64, 64, 32, 128, 256, 1024, 2048, 0, 0);
+    const GRAPH_LIMITS: GraphLimits =
+        GraphLimits::new(64, 64, 32, 128, 256, 1024, 2048, 1024, 2048);
 
     fn rewrite(bytes: &[u8], references: bool, mode: ReaderMode) -> Vec<u8> {
         let graph = decode_graph(bytes, mode, WIRE_LIMITS, GRAPH_LIMITS, references).unwrap();
@@ -42,6 +43,38 @@ mod tests {
         assert_eq!(
             rewrite(&[5, 0, 10, 1, 0], false, ReaderMode::QuickJsCompatible),
             [5, 0, 10, 0]
+        );
+    }
+
+    #[test]
+    fn exact_quickjs_array_buffer_vectors_cross_the_pure_graph() {
+        for (bytes, references) in [
+            (
+                &[5, 0, 15, 4, 0xff, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3, 4][..],
+                false,
+            ),
+            (&[5, 0, 15, 4, 4, 1, 2, 3, 4][..], false),
+            (&[5, 0, 15, 4, 8, 1, 2, 3, 4][..], false),
+            (
+                &[
+                    5, 0, 9, 2, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x12, 0x34, 19, 1,
+                ][..],
+                true,
+            ),
+        ] {
+            assert_eq!(rewrite(bytes, references, ReaderMode::Strict), bytes);
+        }
+    }
+
+    #[test]
+    fn compatible_array_buffer_lengths_rewrite_canonically() {
+        assert_eq!(
+            rewrite(
+                &[5, 0, 15, 0x80, 0x00, 0xff, 0xff, 0xff, 0xff, 0x0f],
+                false,
+                ReaderMode::QuickJsCompatible,
+            ),
+            [5, 0, 15, 0, 0xff, 0xff, 0xff, 0xff, 0x0f]
         );
     }
 

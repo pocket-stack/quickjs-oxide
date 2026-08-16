@@ -14,20 +14,35 @@ use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::model::{
-    AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId, WireGraph, WireKey, WireNode,
-    WireProperty, WireValue, canonical_bigint_length, numeric_atom_index, semantic_atom_eq,
-    semantic_atom_hash,
+    ArrayBufferLayoutError, AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId, WireGraph,
+    WireKey, WireNode, WireProperty, WireValue, canonical_bigint_length, numeric_atom_index,
+    semantic_atom_eq, semantic_atom_hash, validate_array_buffer_layout,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum DecodeError {
     Wire(WireError),
     Graph(GraphError),
-    AtomCountOverflow { atom_count: usize },
-    ObjectReferencesNotAllowed { offset: usize },
-    NullPropertyKey { offset: usize },
-    UnsupportedTag { tag: BcTag, offset: usize },
-    NonCanonicalBigInt { offset: usize },
+    AtomCountOverflow {
+        atom_count: usize,
+    },
+    ObjectReferencesNotAllowed {
+        offset: usize,
+    },
+    NullPropertyKey {
+        offset: usize,
+    },
+    UnsupportedTag {
+        tag: BcTag,
+        offset: usize,
+    },
+    NonCanonicalBigInt {
+        offset: usize,
+    },
+    InvalidArrayBuffer {
+        offset: usize,
+        reason: ArrayBufferLayoutError,
+    },
 }
 
 impl fmt::Display for DecodeError {
@@ -55,6 +70,9 @@ impl fmt::Display for DecodeError {
             }
             Self::NonCanonicalBigInt { offset } => {
                 write!(formatter, "non-canonical BigInt payload at byte {offset}")
+            }
+            Self::InvalidArrayBuffer { offset, reason } => {
+                write!(formatter, "invalid ArrayBuffer at byte {offset}: {reason}")
             }
         }
     }
@@ -115,6 +133,7 @@ pub(in crate::runtime) fn decode_graph(
         frames: Vec::new(),
         total_container_entries: 0,
         total_bigint_bytes: 0,
+        total_array_buffer_bytes: 0,
     };
     let mut root = None;
 
@@ -173,6 +192,7 @@ struct DecodeState {
     frames: Vec<Frame>,
     total_container_entries: usize,
     total_bigint_bytes: usize,
+    total_array_buffer_bytes: usize,
 }
 
 impl DecodeState {
@@ -190,6 +210,7 @@ impl DecodeState {
             BcTag::BigInt => Some(self.read_bigint(cursor)?),
             BcTag::Object => return self.begin_container(cursor, ContainerKind::Ordinary),
             BcTag::Array => return self.begin_container(cursor, ContainerKind::Array),
+            BcTag::ArrayBuffer => Some(self.read_array_buffer(cursor)?),
             BcTag::ObjectReference => {
                 if !self.allow_object_references {
                     return Err(DecodeError::ObjectReferencesNotAllowed { offset: tag_offset });
@@ -207,7 +228,6 @@ impl DecodeState {
             | BcTag::FunctionBytecode
             | BcTag::Module
             | BcTag::TypedArray
-            | BcTag::ArrayBuffer
             | BcTag::SharedArrayBuffer
             | BcTag::Date
             | BcTag::ObjectValue => {
@@ -263,6 +283,65 @@ impl DecodeState {
         Ok(WireValue::BigInt(canonical.into_boxed_slice()))
     }
 
+    fn read_array_buffer(&mut self, cursor: &mut WireCursor<'_>) -> Result<WireValue, DecodeError> {
+        let layout_offset = cursor.position();
+        let byte_length = cursor.read_uleb128()?;
+        let encoded_maximum = cursor.read_uleb128()?;
+        let max_byte_length = (encoded_maximum != u32::MAX).then_some(encoded_maximum);
+        // QuickJS diagnoses max < current immediately, but performs its 2 GiB
+        // constructor-bound checks only after proving the payload is present.
+        if let Some(max_byte_length) = max_byte_length {
+            if max_byte_length < byte_length {
+                return Err(DecodeError::InvalidArrayBuffer {
+                    offset: layout_offset,
+                    reason: ArrayBufferLayoutError::MaximumTooSmall {
+                        byte_length,
+                        max_byte_length,
+                    },
+                });
+            }
+        }
+
+        let byte_length = byte_length as usize;
+        self.limits
+            .check(GraphResourceKind::ArrayBufferBytes, byte_length)?;
+        self.total_array_buffer_bytes = checked_total(
+            self.total_array_buffer_bytes,
+            byte_length,
+            GraphResourceKind::TotalArrayBufferBytes,
+        )?;
+        self.limits.check(
+            GraphResourceKind::TotalArrayBufferBytes,
+            self.total_array_buffer_bytes,
+        )?;
+        self.check_next_node_depth()?;
+        // Preflight the arena/reference work before copying a potentially
+        // large payload. The node is installed only after the leaf is complete,
+        // matching QuickJS's ArrayBuffer reference-registration point.
+        let node = self.reserve_node()?;
+
+        let payload = cursor.read_bytes(byte_length)?;
+        validate_array_buffer_layout(byte_length, max_byte_length).map_err(|reason| {
+            DecodeError::InvalidArrayBuffer {
+                offset: layout_offset,
+                reason,
+            }
+        })?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(byte_length)
+            .map_err(|_| GraphError::AllocationFailed)?;
+        bytes.extend_from_slice(payload);
+        self.install_node(
+            node,
+            WireNode::ArrayBuffer {
+                bytes: bytes.into_boxed_slice(),
+                max_byte_length,
+            },
+        );
+        Ok(WireValue::Node(node))
+    }
+
     fn begin_container(
         &mut self,
         cursor: &mut WireCursor<'_>,
@@ -281,16 +360,17 @@ impl DecodeState {
             self.total_container_entries,
         )?;
 
-        let depth = self
-            .frames
-            .len()
-            .checked_add(1)
-            .ok_or(GraphError::CountOverflow {
-                kind: GraphResourceKind::NestingDepth,
-            })?;
-        self.limits.check(GraphResourceKind::NestingDepth, depth)?;
+        self.check_next_node_depth()?;
 
-        let node_id = self.allocate_node(kind)?;
+        let placeholder = match kind {
+            ContainerKind::Ordinary => WireNode::Ordinary {
+                properties: Box::default(),
+            },
+            ContainerKind::Array => WireNode::Array {
+                elements: Box::default(),
+            },
+        };
+        let node_id = self.allocate_node(placeholder)?;
         let frame = Frame::new(kind, node_id, entry_count)?;
         Ok(ParsedValue {
             value: WireValue::Node(node_id),
@@ -298,7 +378,24 @@ impl DecodeState {
         })
     }
 
-    fn allocate_node(&mut self, kind: ContainerKind) -> Result<NodeId, DecodeError> {
+    fn check_next_node_depth(&self) -> Result<(), GraphError> {
+        let depth = self
+            .frames
+            .len()
+            .checked_add(1)
+            .ok_or(GraphError::CountOverflow {
+                kind: GraphResourceKind::NestingDepth,
+            })?;
+        self.limits.check(GraphResourceKind::NestingDepth, depth)
+    }
+
+    fn allocate_node(&mut self, node: WireNode) -> Result<NodeId, DecodeError> {
+        let node_id = self.reserve_node()?;
+        self.install_node(node_id, node);
+        Ok(node_id)
+    }
+
+    fn reserve_node(&mut self) -> Result<NodeId, DecodeError> {
         let raw_index = u32::try_from(self.nodes.len()).map_err(|_| GraphError::CountOverflow {
             kind: GraphResourceKind::Nodes,
         })?;
@@ -331,21 +428,18 @@ impl DecodeState {
                 .map_err(|_| GraphError::AllocationFailed)?;
         }
 
-        let placeholder = match kind {
-            ContainerKind::Ordinary => WireNode::Ordinary {
-                properties: Box::default(),
-            },
-            ContainerKind::Array => WireNode::Array {
-                elements: Box::default(),
-            },
-        };
-        self.nodes.push(placeholder);
-        // Object and Array entries are ready before their first child. No
-        // pending slot is needed for this admitted subset.
+        Ok(node_id)
+    }
+
+    fn install_node(&mut self, node_id: NodeId, node: WireNode) {
+        debug_assert_eq!(node_id.as_usize(), self.nodes.len());
+        self.nodes.push(node);
+        // Every admitted node is ready when it enters this table. Containers
+        // install an empty placeholder before their first child; ArrayBuffer
+        // installs its completed leaf after its payload has been copied.
         if self.allow_object_references {
             self.ref_table.push(node_id);
         }
-        Ok(node_id)
     }
 }
 
@@ -584,10 +678,12 @@ fn checked_total(
 #[cfg(test)]
 mod tests {
     use super::super::super::wire::WireString;
+    use super::super::model::MAX_ARRAY_BUFFER_BYTE_LENGTH;
     use super::*;
 
     const WIRE_LIMITS: WireLimits = WireLimits::new(4096, 32, 1024, 2048);
-    const GRAPH_LIMITS: GraphLimits = GraphLimits::new(64, 64, 32, 128, 256, 1024, 2048, 0, 0);
+    const GRAPH_LIMITS: GraphLimits =
+        GraphLimits::new(64, 64, 32, 128, 256, 1024, 2048, 1024, 2048);
 
     fn decode(input: &[u8], mode: ReaderMode, references: bool) -> Result<WireGraph, DecodeError> {
         decode_graph(input, mode, WIRE_LIMITS, GRAPH_LIMITS, references)
@@ -864,13 +960,216 @@ mod tests {
     }
 
     #[test]
+    fn exact_quickjs_array_buffer_vectors_preserve_fixed_and_resizable_state() {
+        for (bytes, expected_maximum) in [
+            (
+                &[5, 0, 15, 4, 0xff, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3, 4][..],
+                None,
+            ),
+            (&[5, 0, 15, 4, 4, 1, 2, 3, 4][..], Some(4)),
+            (&[5, 0, 15, 4, 8, 1, 2, 3, 4][..], Some(8)),
+        ] {
+            let graph = decode(bytes, ReaderMode::Strict, true).unwrap();
+            let root = NodeId::from_zero_based(0);
+            assert_eq!(graph.root, WireValue::Node(root));
+            assert_eq!(graph.ref_table.as_ref(), &[root]);
+            assert_eq!(
+                graph.nodes.as_ref(),
+                &[WireNode::ArrayBuffer {
+                    bytes: Box::from([1, 2, 3, 4]),
+                    max_byte_length: expected_maximum,
+                }]
+            );
+        }
+
+        for (bytes, expected_maximum) in [
+            (&[5, 0, 15, 0, 0][..], 0),
+            (
+                &[5, 0, 15, 0, 0xff, 0xff, 0xff, 0xff, 0x07][..],
+                MAX_ARRAY_BUFFER_BYTE_LENGTH,
+            ),
+        ] {
+            let graph = decode(bytes, ReaderMode::Strict, false).unwrap();
+            assert_eq!(
+                graph.nodes.as_ref(),
+                &[WireNode::ArrayBuffer {
+                    bytes: Box::default(),
+                    max_byte_length: Some(expected_maximum),
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn array_buffer_reference_registration_matches_quickjs_preorder() {
+        // Pinned qjs bjson.write([buffer, buffer], true).
+        let bytes = [
+            5, 0, 9, 2, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x12, 0x34, 19, 1,
+        ];
+        let graph = decode(&bytes, ReaderMode::Strict, true).unwrap();
+        let root = NodeId::from_zero_based(0);
+        let buffer = NodeId::from_zero_based(1);
+
+        assert_eq!(graph.ref_table.as_ref(), &[root, buffer]);
+        assert_eq!(
+            graph.nodes.as_ref(),
+            &[
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(buffer), WireValue::Node(buffer)]),
+                },
+                WireNode::ArrayBuffer {
+                    bytes: Box::from([0x12, 0x34]),
+                    max_byte_length: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn array_buffer_layout_failures_keep_the_quickjs_reason() {
+        assert_eq!(
+            decode(&[5, 0, 15, 4, 3], ReaderMode::Strict, false,),
+            Err(DecodeError::InvalidArrayBuffer {
+                offset: 3,
+                reason: ArrayBufferLayoutError::MaximumTooSmall {
+                    byte_length: 4,
+                    max_byte_length: 3,
+                },
+            })
+        );
+
+        assert_eq!(
+            decode(
+                &[5, 0, 15, 0, 0x80, 0x80, 0x80, 0x80, 0x08],
+                ReaderMode::Strict,
+                false,
+            ),
+            Err(DecodeError::InvalidArrayBuffer {
+                offset: 3,
+                reason: ArrayBufferLayoutError::MaximumTooLarge {
+                    max_byte_length: 0x8000_0000,
+                    maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+                },
+            })
+        );
+
+        // Pinned QuickJS checks payload availability before the constructor's
+        // finite maximum and current-length upper bounds.
+        assert_eq!(
+            decode(
+                &[5, 0, 15, 1, 0x80, 0x80, 0x80, 0x80, 0x08],
+                ReaderMode::Strict,
+                false,
+            ),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 9,
+                needed: 1,
+                remaining: 0,
+            }))
+        );
+
+        let oversized_payload = [
+            5, 0, 15, 0x80, 0x80, 0x80, 0x80, 0x08, 0xff, 0xff, 0xff, 0xff, 0x0f,
+        ];
+        let oracle_order =
+            GraphLimits::new(8, 8, 8, 8, 8, 8, 8, u32::MAX as usize, u32::MAX as usize);
+        assert_eq!(
+            decode_graph(
+                &oversized_payload,
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                oracle_order,
+                false,
+            ),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 13,
+                needed: 0x8000_0000,
+                remaining: 0,
+            }))
+        );
+
+        assert_eq!(
+            decode(
+                &[5, 0, 15, 0x80, 0x00, 0xff, 0xff, 0xff, 0xff, 0x0f],
+                ReaderMode::Strict,
+                false,
+            ),
+            Err(DecodeError::Wire(WireError::NonCanonicalUleb128 {
+                offset: 3,
+            }))
+        );
+    }
+
+    #[test]
+    fn array_buffer_payload_depth_and_copy_work_are_bounded() {
+        let truncated = [5, 0, 15, 4, 0xff, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3];
+        assert_eq!(
+            decode(&truncated, ReaderMode::Strict, false),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 9,
+                needed: 4,
+                remaining: 3,
+            }))
+        );
+
+        let root_buffer = [5, 0, 15, 3, 3, 1, 2, 3];
+        let per_buffer = GraphLimits::new(8, 8, 8, 8, 8, 8, 8, 2, 8);
+        assert_eq!(
+            decode_graph(
+                &root_buffer,
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                per_buffer,
+                false,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ArrayBufferBytes,
+                requested: 3,
+                limit: 2,
+            }))
+        );
+
+        let no_depth = GraphLimits::new(8, 8, 0, 0, 0, 8, 8, 3, 3);
+        assert_eq!(
+            decode_graph(
+                &root_buffer,
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                no_depth,
+                false,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::NestingDepth,
+                requested: 1,
+                limit: 0,
+            }))
+        );
+
+        let two_buffers = [5, 0, 9, 2, 15, 2, 2, 1, 2, 15, 2, 2, 3, 4];
+        let aggregate = GraphLimits::new(8, 8, 8, 8, 8, 8, 8, 2, 3);
+        assert_eq!(
+            decode_graph(
+                &two_buffers,
+                ReaderMode::Strict,
+                WIRE_LIMITS,
+                aggregate,
+                false,
+            ),
+            Err(DecodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::TotalArrayBufferBytes,
+                requested: 4,
+                limit: 3,
+            }))
+        );
+    }
+
+    #[test]
     fn unsupported_data_tags_are_rejected_before_their_payloads() {
         for tag in [
             BcTag::TemplateObject,
             BcTag::FunctionBytecode,
             BcTag::Module,
             BcTag::TypedArray,
-            BcTag::ArrayBuffer,
             BcTag::SharedArrayBuffer,
             BcTag::Date,
             BcTag::ObjectValue,

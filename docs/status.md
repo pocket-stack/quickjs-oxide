@@ -77,11 +77,15 @@ the current Test262 vector.
 The private BC_VERSION 5 foundation now has bounded wire primitives and the
 pinned BigInt payload codec, including QuickJS's asymmetric 16,385-limb writer
 edge. A heap-independent WireGraph slice now validates and canonically rewrites
-primitives, ordinary objects, arrays, shared identity, and cycles with explicit
-decode and emitted-traversal budgets. Its data-object semantics include header
-atom interning, tagged decimal keys, first-slot/last-value duplicate properties,
-compatible null-atom consumption, and depth-first output atom rebuilding. All
-other object tags remain rejected. It is not a public binary-object API yet:
+primitives, ordinary objects, arrays, ArrayBuffers, shared identity, and cycles
+with explicit decode and emitted-traversal budgets. Its data-object semantics
+include header atom interning, tagged decimal keys, first-slot/last-value
+duplicate properties, compatible null-atom consumption, depth-first output
+atom rebuilding, fixed-versus-resizable ArrayBuffer state, and per-buffer plus
+aggregate current-backing-store byte limits. TypedArray, SharedArrayBuffer,
+Date, ObjectValue, and
+the bytecode-only object tags remain rejected. It is not a public binary-object
+API yet:
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted
 input admission.

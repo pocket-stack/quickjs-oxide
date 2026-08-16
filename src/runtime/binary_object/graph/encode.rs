@@ -6,8 +6,9 @@ use std::hash::{Hash, Hasher};
 
 use super::super::wire::{BcTag, WireError, WireString, WireWriter};
 use super::model::{
-    AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId, WireGraph, WireKey, WireNode,
-    WireValue, canonical_bigint_length, numeric_atom_index, semantic_atom_eq, semantic_atom_hash,
+    ArrayBufferLayoutError, AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId, WireGraph,
+    WireKey, WireNode, WireValue, canonical_bigint_length, numeric_atom_index, semantic_atom_eq,
+    semantic_atom_hash, validate_array_buffer_layout,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,12 +37,26 @@ impl GraphEncodeOptions {
 pub(in crate::runtime) enum GraphEncodeError {
     Graph(GraphError),
     Wire(WireError),
-    AtomCountOverflow { atom_count: usize },
-    IntegerAtomOutOfRange { index: u32 },
-    DuplicatePropertyKey { node: NodeId },
-    UnplannedAtom { atom: AtomId },
+    AtomCountOverflow {
+        atom_count: usize,
+    },
+    IntegerAtomOutOfRange {
+        index: u32,
+    },
+    DuplicatePropertyKey {
+        node: NodeId,
+    },
+    UnplannedAtom {
+        atom: AtomId,
+    },
     NonCanonicalBigInt,
-    CircularReference { node: NodeId },
+    InvalidArrayBuffer {
+        node: NodeId,
+        reason: ArrayBufferLayoutError,
+    },
+    CircularReference {
+        node: NodeId,
+    },
     AllocationFailed,
 }
 
@@ -72,6 +87,11 @@ impl fmt::Display for GraphEncodeError {
             Self::NonCanonicalBigInt => {
                 formatter.write_str("wire graph contains a non-canonical BigInt payload")
             }
+            Self::InvalidArrayBuffer { node, reason } => write!(
+                formatter,
+                "wire graph node {} contains an invalid ArrayBuffer layout: {reason}",
+                node.zero_based(),
+            ),
             Self::CircularReference { node } => write!(
                 formatter,
                 "wire graph contains a circular reference through node {}",
@@ -140,7 +160,6 @@ pub(in crate::runtime) fn encode_graph(
     graph: &WireGraph,
     options: GraphEncodeOptions,
 ) -> Result<Vec<u8>, GraphEncodeError> {
-    validate_graph(graph, options.limits)?;
     let plan = build_encode_plan(graph, options)?;
     let atom_count =
         u32::try_from(plan.atoms.len()).map_err(|_| GraphEncodeError::AtomCountOverflow {
@@ -160,21 +179,13 @@ pub(in crate::runtime) fn encode_graph(
         writer.write_string(atom)?;
     }
 
-    let mut object_indices = Vec::new();
-    object_indices
-        .try_reserve_exact(graph.nodes.len())
-        .map_err(|_| GraphEncodeError::AllocationFailed)?;
-    object_indices.resize(graph.nodes.len(), None::<u32>);
-
-    let mut active_nodes = Vec::new();
-    active_nodes
-        .try_reserve_exact(graph.nodes.len())
-        .map_err(|_| GraphEncodeError::AllocationFailed)?;
-    active_nodes.resize(graph.nodes.len(), false);
+    let mut object_indices = HashMap::new();
+    let mut active_nodes = HashSet::new();
 
     let mut next_object_index = 0_u32;
     let mut total_container_entries = 0_usize;
     let mut total_bigint_bytes = 0_usize;
+    let mut total_array_buffer_bytes = 0_usize;
     let mut tasks = Vec::new();
     tasks
         .try_reserve(1)
@@ -185,7 +196,8 @@ pub(in crate::runtime) fn encode_graph(
         match task {
             EncodeTask::Key(key) => write_key(&mut writer, &plan, key)?,
             EncodeTask::LeaveNode(node) => {
-                active_nodes[node.as_usize()] = false;
+                let was_active = active_nodes.remove(&node);
+                debug_assert!(was_active);
             }
             EncodeTask::Value(value, parent_depth) => match value {
                 WireValue::Undefined => writer.write_tag(BcTag::Undefined)?,
@@ -233,7 +245,7 @@ pub(in crate::runtime) fn encode_graph(
                             })?;
 
                     if options.allow_object_references {
-                        if let Some(index) = object_indices[node_index] {
+                        if let Some(index) = object_indices.get(node).copied() {
                             writer.write_tag(BcTag::ObjectReference)?;
                             writer.write_uleb128(index)?;
                             continue;
@@ -247,7 +259,10 @@ pub(in crate::runtime) fn encode_graph(
                         options
                             .limits
                             .check(GraphResourceKind::ObjectReferences, requested_references)?;
-                        object_indices[node_index] = Some(next_object_index);
+                        object_indices
+                            .try_reserve(1)
+                            .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                        object_indices.insert(*node, next_object_index);
                         next_object_index =
                             next_object_index
                                 .checked_add(1)
@@ -255,10 +270,13 @@ pub(in crate::runtime) fn encode_graph(
                                     kind: GraphResourceKind::ObjectReferences,
                                 })?;
                     } else {
-                        if active_nodes[node_index] {
+                        if active_nodes.contains(node) {
                             return Err(GraphEncodeError::CircularReference { node: *node });
                         }
-                        active_nodes[node_index] = true;
+                        active_nodes
+                            .try_reserve(1)
+                            .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                        active_nodes.insert(*node);
                     }
 
                     let depth = parent_depth
@@ -334,6 +352,33 @@ pub(in crate::runtime) fn encode_graph(
                                 tasks.push(EncodeTask::Value(element, depth));
                             }
                         }
+                        WireNode::ArrayBuffer {
+                            bytes,
+                            max_byte_length,
+                        } => {
+                            let byte_length =
+                                validate_array_buffer_node(*node, bytes.len(), *max_byte_length)?;
+                            options
+                                .limits
+                                .check(GraphResourceKind::ArrayBufferBytes, bytes.len())?;
+                            total_array_buffer_bytes = total_array_buffer_bytes
+                                .checked_add(bytes.len())
+                                .ok_or(GraphError::CountOverflow {
+                                    kind: GraphResourceKind::TotalArrayBufferBytes,
+                                })?;
+                            options.limits.check(
+                                GraphResourceKind::TotalArrayBufferBytes,
+                                total_array_buffer_bytes,
+                            )?;
+                            writer.write_tag(BcTag::ArrayBuffer)?;
+                            writer.write_uleb128(byte_length)?;
+                            writer.write_uleb128(max_byte_length.unwrap_or(u32::MAX))?;
+                            writer.write_bytes(bytes)?;
+                            if !options.allow_object_references {
+                                let was_active = active_nodes.remove(node);
+                                debug_assert!(was_active);
+                            }
+                        }
                     }
                 }
             },
@@ -353,27 +398,15 @@ fn build_encode_plan<'a>(
     };
     let mut canonical_atoms = HashMap::new();
 
-    let mut seen_nodes = Vec::new();
-    seen_nodes
-        .try_reserve_exact(graph.nodes.len())
-        .map_err(|_| GraphEncodeError::AllocationFailed)?;
-    seen_nodes.resize(graph.nodes.len(), false);
-
-    let mut active_nodes = Vec::new();
-    active_nodes
-        .try_reserve_exact(graph.nodes.len())
-        .map_err(|_| GraphEncodeError::AllocationFailed)?;
-    active_nodes.resize(graph.nodes.len(), false);
-
-    let mut validated_nodes = Vec::new();
-    validated_nodes
-        .try_reserve_exact(graph.nodes.len())
-        .map_err(|_| GraphEncodeError::AllocationFailed)?;
-    validated_nodes.resize(graph.nodes.len(), false);
+    // Scratch state is sparse and reachable-only: an unreferenced arena tail
+    // must not consume writer memory or semantic node budget.
+    let mut visited_nodes = HashSet::new();
+    let mut active_nodes = HashSet::new();
 
     let mut emitted_references = 0_usize;
     let mut total_container_entries = 0_usize;
     let mut total_bigint_bytes = 0_usize;
+    let mut total_array_buffer_bytes = 0_usize;
     let mut tasks = Vec::new();
     tasks
         .try_reserve(1)
@@ -385,7 +418,10 @@ fn build_encode_plan<'a>(
             EncodeTask::Key(key) => {
                 plan.encounter_key(graph, key, &mut canonical_atoms)?;
             }
-            EncodeTask::LeaveNode(node) => active_nodes[node.as_usize()] = false,
+            EncodeTask::LeaveNode(node) => {
+                let was_active = active_nodes.remove(&node);
+                debug_assert!(was_active);
+            }
             EncodeTask::Value(value, parent_depth) => {
                 match value {
                     WireValue::BigInt(payload) => {
@@ -411,8 +447,9 @@ fn build_encode_plan<'a>(
                                 node_count: graph.nodes.len(),
                             },
                         )?;
+                        let first_visit = !visited_nodes.contains(node);
                         if options.allow_object_references {
-                            if seen_nodes[node.as_usize()] {
+                            if !first_visit {
                                 continue;
                             }
                             emitted_references = emitted_references.checked_add(1).ok_or(
@@ -423,12 +460,14 @@ fn build_encode_plan<'a>(
                             options
                                 .limits
                                 .check(GraphResourceKind::ObjectReferences, emitted_references)?;
-                            seen_nodes[node.as_usize()] = true;
                         } else {
-                            if active_nodes[node.as_usize()] {
+                            if active_nodes.contains(node) {
                                 return Err(GraphEncodeError::CircularReference { node: *node });
                             }
-                            active_nodes[node.as_usize()] = true;
+                            active_nodes
+                                .try_reserve(1)
+                                .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                            active_nodes.insert(*node);
                         }
 
                         let depth =
@@ -441,31 +480,60 @@ fn build_encode_plan<'a>(
                             .limits
                             .check(GraphResourceKind::NestingDepth, depth)?;
 
-                        let entry_count = match node_data {
-                            WireNode::Ordinary { properties } => properties.len(),
-                            WireNode::Array { elements } => elements.len(),
-                        };
-                        options
-                            .limits
-                            .check(GraphResourceKind::ContainerEntries, entry_count)?;
-                        total_container_entries = total_container_entries
-                            .checked_add(entry_count)
-                            .ok_or(GraphError::CountOverflow {
-                                kind: GraphResourceKind::TotalContainerEntries,
-                            })?;
-                        options.limits.check(
-                            GraphResourceKind::TotalContainerEntries,
-                            total_container_entries,
-                        )?;
+                        if let Some(entry_count) = match node_data {
+                            WireNode::Ordinary { properties } => Some(properties.len()),
+                            WireNode::Array { elements } => Some(elements.len()),
+                            WireNode::ArrayBuffer { .. } => None,
+                        } {
+                            options
+                                .limits
+                                .check(GraphResourceKind::ContainerEntries, entry_count)?;
+                            total_container_entries = total_container_entries
+                                .checked_add(entry_count)
+                                .ok_or(GraphError::CountOverflow {
+                                    kind: GraphResourceKind::TotalContainerEntries,
+                                })?;
+                            options.limits.check(
+                                GraphResourceKind::TotalContainerEntries,
+                                total_container_entries,
+                            )?;
+                        }
 
-                        if !validated_nodes[node.as_usize()] {
-                            validate_node_properties(graph, *node, node_data)?;
-                            validated_nodes[node.as_usize()] = true;
+                        if let WireNode::ArrayBuffer { bytes, .. } = node_data {
+                            options
+                                .limits
+                                .check(GraphResourceKind::ArrayBufferBytes, bytes.len())?;
+                            total_array_buffer_bytes = total_array_buffer_bytes
+                                .checked_add(bytes.len())
+                                .ok_or(GraphError::CountOverflow {
+                                    kind: GraphResourceKind::TotalArrayBufferBytes,
+                                })?;
+                            options.limits.check(
+                                GraphResourceKind::TotalArrayBufferBytes,
+                                total_array_buffer_bytes,
+                            )?;
+                        }
+
+                        if first_visit {
+                            let requested_nodes = visited_nodes.len().checked_add(1).ok_or(
+                                GraphError::CountOverflow {
+                                    kind: GraphResourceKind::Nodes,
+                                },
+                            )?;
+                            options
+                                .limits
+                                .check(GraphResourceKind::Nodes, requested_nodes)?;
+                            visited_nodes
+                                .try_reserve(1)
+                                .map_err(|_| GraphEncodeError::AllocationFailed)?;
+                            validate_node(graph, *node, node_data)?;
+                            visited_nodes.insert(*node);
                         }
 
                         let task_count = match node_data {
                             WireNode::Ordinary { properties } => properties.len().checked_mul(2),
                             WireNode::Array { elements } => Some(elements.len()),
+                            WireNode::ArrayBuffer { .. } => Some(0),
                         }
                         .and_then(|count| {
                             count.checked_add(usize::from(!options.allow_object_references))
@@ -491,6 +559,7 @@ fn build_encode_plan<'a>(
                                     tasks.push(EncodeTask::Value(element, depth));
                                 }
                             }
+                            WireNode::ArrayBuffer { .. } => {}
                         }
                     }
                     WireValue::Undefined
@@ -604,29 +673,41 @@ fn write_key(
     Ok(())
 }
 
-fn validate_graph(graph: &WireGraph, limits: GraphLimits) -> Result<(), GraphEncodeError> {
-    limits.check(GraphResourceKind::Nodes, graph.nodes.len())?;
-    Ok(())
-}
-
-fn validate_node_properties(
+fn validate_node(
     graph: &WireGraph,
     node: NodeId,
     node_data: &WireNode,
 ) -> Result<(), GraphEncodeError> {
-    let WireNode::Ordinary { properties } = node_data else {
-        return Ok(());
-    };
-    let mut property_keys = HashSet::new();
-    property_keys
-        .try_reserve(properties.len())
-        .map_err(|_| GraphEncodeError::AllocationFailed)?;
-    for property in properties {
-        if !property_keys.insert(semantic_property_key(graph, property.key)?) {
-            return Err(GraphEncodeError::DuplicatePropertyKey { node });
+    match node_data {
+        WireNode::Ordinary { properties } => {
+            let mut property_keys = HashSet::new();
+            property_keys
+                .try_reserve(properties.len())
+                .map_err(|_| GraphEncodeError::AllocationFailed)?;
+            for property in properties {
+                if !property_keys.insert(semantic_property_key(graph, property.key)?) {
+                    return Err(GraphEncodeError::DuplicatePropertyKey { node });
+                }
+            }
+        }
+        WireNode::Array { .. } => {}
+        WireNode::ArrayBuffer {
+            bytes,
+            max_byte_length,
+        } => {
+            validate_array_buffer_node(node, bytes.len(), *max_byte_length)?;
         }
     }
     Ok(())
+}
+
+fn validate_array_buffer_node(
+    node: NodeId,
+    byte_length: usize,
+    max_byte_length: Option<u32>,
+) -> Result<u32, GraphEncodeError> {
+    validate_array_buffer_layout(byte_length, max_byte_length)
+        .map_err(|reason| GraphEncodeError::InvalidArrayBuffer { node, reason })
 }
 
 fn semantic_property_key(
@@ -657,10 +738,12 @@ fn semantic_property_key(
 #[cfg(test)]
 mod tests {
     use super::super::super::wire::WireString;
-    use super::super::model::{AtomId, WireProperty, WireValue};
+    use super::super::model::{
+        ArrayBufferLayoutError, AtomId, MAX_ARRAY_BUFFER_BYTE_LENGTH, WireProperty, WireValue,
+    };
     use super::*;
 
-    const LIMITS: GraphLimits = GraphLimits::new(32, 32, 16, 32, 64, 32, 64, 0, 0);
+    const LIMITS: GraphLimits = GraphLimits::new(32, 32, 16, 32, 64, 32, 64, 64, 128);
 
     fn options(allow_object_references: bool) -> GraphEncodeOptions {
         GraphEncodeOptions::new(allow_object_references, 1024, LIMITS)
@@ -671,6 +754,18 @@ mod tests {
         limits: GraphLimits,
     ) -> GraphEncodeOptions {
         GraphEncodeOptions::new(allow_object_references, 1024, limits)
+    }
+
+    fn array_buffer_graph(bytes: &[u8], max_byte_length: Option<u32>) -> WireGraph {
+        WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([WireNode::ArrayBuffer {
+                bytes: bytes.to_vec().into_boxed_slice(),
+                max_byte_length,
+            }]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        }
     }
 
     #[test]
@@ -717,6 +812,69 @@ mod tests {
         assert_eq!(
             encode_graph(&graph, options(true)).unwrap(),
             [5, 0, 9, 2, 8, 0, 19, 1]
+        );
+    }
+
+    #[test]
+    fn array_buffer_vectors_match_pinned_quickjs() {
+        for (maximum, expected) in [
+            (
+                None,
+                &[5, 0, 15, 3, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xa0, 0xa1, 0xa2][..],
+            ),
+            (Some(3), &[5, 0, 15, 3, 3, 0xa0, 0xa1, 0xa2][..]),
+            (Some(8), &[5, 0, 15, 3, 8, 0xa0, 0xa1, 0xa2][..]),
+        ] {
+            assert_eq!(
+                encode_graph(
+                    &array_buffer_graph(&[0xa0, 0xa1, 0xa2], maximum),
+                    options(false)
+                )
+                .unwrap(),
+                expected
+            );
+        }
+
+        assert_eq!(
+            encode_graph(&array_buffer_graph(&[], None), options(false)).unwrap(),
+            [5, 0, 15, 0, 0xff, 0xff, 0xff, 0xff, 0x0f]
+        );
+        assert_eq!(
+            encode_graph(&array_buffer_graph(&[], Some(0)), options(false)).unwrap(),
+            [5, 0, 15, 0, 0]
+        );
+    }
+
+    #[test]
+    fn repeated_array_buffer_nodes_follow_the_reference_flag() {
+        let buffer = NodeId::from_zero_based(1);
+        let graph = WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(buffer), WireValue::Node(buffer)]),
+                },
+                WireNode::ArrayBuffer {
+                    bytes: Box::from([0x12, 0x34]),
+                    max_byte_length: None,
+                },
+            ]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        };
+
+        assert_eq!(
+            encode_graph(&graph, options(false)).unwrap(),
+            [
+                5, 0, 9, 2, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x12, 0x34, 15, 2, 0xff, 0xff,
+                0xff, 0xff, 0x0f, 0x12, 0x34,
+            ]
+        );
+        assert_eq!(
+            encode_graph(&graph, options(true)).unwrap(),
+            [
+                5, 0, 9, 2, 15, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x12, 0x34, 19, 1,
+            ]
         );
     }
 
@@ -849,6 +1007,103 @@ mod tests {
     }
 
     #[test]
+    fn array_buffer_budgets_count_emitted_payloads_not_declared_capacity() {
+        let buffer = NodeId::from_zero_based(1);
+        let graph = WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([
+                WireNode::Array {
+                    elements: Box::from([WireValue::Node(buffer), WireValue::Node(buffer)]),
+                },
+                WireNode::ArrayBuffer {
+                    bytes: Box::from([1, 2]),
+                    max_byte_length: Some(8),
+                },
+            ]),
+            ref_table: Box::from([]),
+            root: WireValue::Node(NodeId::from_zero_based(0)),
+        };
+        // The shared leaf is expanded twice without references, but only two
+        // unique reachable nodes consume the node budget.
+        let one_emission = GraphLimits::new(2, 32, 16, 32, 64, 32, 64, 2, 2);
+
+        assert_eq!(
+            encode_graph(&graph, options_with_limits(false, one_emission)),
+            Err(GraphEncodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::TotalArrayBufferBytes,
+                requested: 4,
+                limit: 2,
+            }))
+        );
+        assert_eq!(
+            encode_graph(&graph, options_with_limits(true, one_emission)).unwrap(),
+            [5, 0, 9, 2, 15, 2, 8, 1, 2, 19, 1]
+        );
+
+        let too_small_per_buffer = GraphLimits::new(32, 32, 16, 32, 64, 32, 64, 1, 4);
+        assert_eq!(
+            encode_graph(
+                &array_buffer_graph(&[1, 2], None),
+                options_with_limits(false, too_small_per_buffer),
+            ),
+            Err(GraphEncodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ArrayBufferBytes,
+                requested: 2,
+                limit: 1,
+            }))
+        );
+
+        let zero_payload_only = GraphLimits::new(1, 0, 1, 0, 0, 0, 0, 0, 0);
+        assert_eq!(
+            encode_graph(
+                &array_buffer_graph(&[], Some(MAX_ARRAY_BUFFER_BYTE_LENGTH)),
+                options_with_limits(false, zero_payload_only),
+            )
+            .unwrap(),
+            [5, 0, 15, 0, 0xff, 0xff, 0xff, 0xff, 0x07]
+        );
+    }
+
+    #[test]
+    fn invalid_reachable_array_buffers_report_the_layout_rule() {
+        assert_eq!(
+            encode_graph(&array_buffer_graph(&[1, 2], Some(1)), options(false)),
+            Err(GraphEncodeError::InvalidArrayBuffer {
+                node: NodeId::from_zero_based(0),
+                reason: ArrayBufferLayoutError::MaximumTooSmall {
+                    byte_length: 2,
+                    max_byte_length: 1,
+                },
+            })
+        );
+        assert_eq!(
+            encode_graph(&array_buffer_graph(&[], Some(0x8000_0000)), options(false),),
+            Err(GraphEncodeError::InvalidArrayBuffer {
+                node: NodeId::from_zero_based(0),
+                reason: ArrayBufferLayoutError::MaximumTooLarge {
+                    max_byte_length: 0x8000_0000,
+                    maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+                },
+            })
+        );
+
+        let unreachable_invalid = WireGraph {
+            atoms: Box::from([]),
+            nodes: Box::from([WireNode::ArrayBuffer {
+                bytes: Box::from([1]),
+                max_byte_length: Some(0),
+            }]),
+            ref_table: Box::from([]),
+            root: WireValue::Null,
+        };
+        let root_only = GraphLimits::new(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        assert_eq!(
+            encode_graph(&unreachable_invalid, options_with_limits(false, root_only),).unwrap(),
+            [5, 0, 1]
+        );
+    }
+
+    #[test]
     fn unreachable_arena_nodes_do_not_consume_emitted_budgets() {
         let graph = WireGraph {
             atoms: Box::from([]),
@@ -858,7 +1113,7 @@ mod tests {
             ref_table: Box::from([]),
             root: WireValue::Null,
         };
-        let root_only = GraphLimits::new(1, 0, 0, 0, 0, 0, 0, 0, 0);
+        let root_only = GraphLimits::new(0, 0, 0, 0, 0, 0, 0, 0, 0);
         assert_eq!(
             encode_graph(&graph, options_with_limits(false, root_only)).unwrap(),
             [5, 0, 1]
@@ -918,6 +1173,15 @@ mod tests {
             ref_table: Box::from([]),
             root: WireValue::Node(NodeId::from_zero_based(0)),
         };
+        let one_entry = GraphLimits::new(1, 0, 1, 1, 1, 0, 0, 0, 0);
+        assert_eq!(
+            encode_graph(&graph, options_with_limits(false, one_entry)),
+            Err(GraphEncodeError::Graph(GraphError::ResourceLimit {
+                kind: GraphResourceKind::ContainerEntries,
+                requested: 2,
+                limit: 1,
+            }))
+        );
         assert_eq!(
             encode_graph(&graph, options(false)),
             Err(GraphEncodeError::DuplicatePropertyKey {
