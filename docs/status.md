@@ -8,7 +8,7 @@ Parity.
 ## Current baseline
 
 <!-- current-test262-metrics:start -->
-The authoritative R3fc Test262 vector has:
+The authoritative R3fd Test262 vector has:
 
 - 79,597 full-corpus passes out of 102,037 variants (78.008%)
 - 79,647 eligible variants out of 102,037 (78.057%)
