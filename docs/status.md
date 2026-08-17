@@ -63,9 +63,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   `print`/`console.log` output with byte-exact WTF-8 String transport; plus a
   Rust/WASM browser playground
 - a narrow trusted-bytecode Rust API for the pinned BC5 branch-free scalar
-  Script cohort; it completes the compatible whole-image read, translates an
-  inert DTO to typed Rust instructions, and enters the ordinary verifier and
-  transactional publication path before execution
+  Script cohort, including the complete direct Int32 opcode family; it
+  completes the compatible whole-image read, translates an inert DTO to typed
+  Rust instructions, and enters the ordinary verifier and transactional
+  publication path before execution
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -207,8 +208,9 @@ a partial buffer. The canonical writer and general whole-image model remain
 internal archival facilities rather than a general public bytecode surface.
 The one public read path is deliberately narrower: it accepts only a stripped
 Script root with one completion local and the release-pinned
-`push_i8; set_loc0; return` family, after the entire image has decoded in
-QuickJS-compatible mode.
+direct Int32 push family followed by `set_loc0; return`, after the entire image
+has decoded in QuickJS-compatible mode. It accepts QuickJS-reader-compatible
+wider i8/i16/i32 spellings as well as compiler-canonical short forms.
 The decoder and writer planner are physically split into shared-driver,
 Function, and Module files while retaining one frame/task stack and one set of
 atom, reference, preorder, and budget state. All binary-object submodules are
@@ -229,6 +231,10 @@ that changing the native token leaves the completed archive identical.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
 both the Rust codec and trusted scalar execution path against the exact bytes.
+The same table-driven oracle pins compiler-canonical `push_minus1`,
+`push_0..7`, `push_i8`, `push_i16`, and `push_i32` transition boundaries plus
+valid non-canonical i8/i16/i32 reader spellings; Rust admits their full signed
+Int32 value range without widening the DTO or publication bridge.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
@@ -265,7 +271,7 @@ whole-image vectors prove that two complete SAB records with the same token
 share one archive backing while distinct tokens retain two ordered backings.
 Rust does not execute the transport archive's embedded function; its return-42
 receipt remains the pinned QuickJS C-oracle result. The separate ordinary
-25-byte scalar image is now translated and executed by Rust through the full
+scalar integer images are translated and executed by Rust through the full
 verified publication path. Authenticated negative vectors also pin
 QuickJS's
 three diagnostic classes when FunctionBytecode appears as the

@@ -10,6 +10,84 @@ static const uint8_t expected_bytecode[] = {
     0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
 };
 
+static const uint8_t scalar_integer_prefix[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
+    0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+};
+
+static const uint8_t scalar_integer_local[] = {
+    0x01, 0x00, 0x00, 0x00, 0x00,
+};
+
+#define SCALAR_INTEGER_MAX_CODE_SIZE 7
+#define SCALAR_INTEGER_MAX_WIRE_SIZE \
+    (sizeof(scalar_integer_prefix) + 1 + sizeof(scalar_integer_local) + \
+     SCALAR_INTEGER_MAX_CODE_SIZE)
+
+typedef struct ScalarIntegerCase {
+    const char *label;
+    const char *source;
+    double expected;
+    size_t code_size;
+    uint8_t code[SCALAR_INTEGER_MAX_CODE_SIZE];
+} ScalarIntegerCase;
+
+static const ScalarIntegerCase canonical_scalar_integers[] = {
+    { "canonical-short-minus1", "-1;", -1, 3,
+      { 0xb2, 0xcb, 0x28 } },
+    { "canonical-short-0", "0;", 0, 3,
+      { 0xb3, 0xcb, 0x28 } },
+    { "canonical-short-1", "1;", 1, 3,
+      { 0xb4, 0xcb, 0x28 } },
+    { "canonical-short-2", "2;", 2, 3,
+      { 0xb5, 0xcb, 0x28 } },
+    { "canonical-short-3", "3;", 3, 3,
+      { 0xb6, 0xcb, 0x28 } },
+    { "canonical-short-4", "4;", 4, 3,
+      { 0xb7, 0xcb, 0x28 } },
+    { "canonical-short-5", "5;", 5, 3,
+      { 0xb8, 0xcb, 0x28 } },
+    { "canonical-short-6", "6;", 6, 3,
+      { 0xb9, 0xcb, 0x28 } },
+    { "canonical-short-7", "7;", 7, 3,
+      { 0xba, 0xcb, 0x28 } },
+    { "canonical-i8-min", "-128;", -128, 4,
+      { 0xbb, 0x80, 0xcb, 0x28 } },
+    { "canonical-i8-below-short", "-2;", -2, 4,
+      { 0xbb, 0xfe, 0xcb, 0x28 } },
+    { "canonical-i8-above-short", "8;", 8, 4,
+      { 0xbb, 0x08, 0xcb, 0x28 } },
+    { "canonical-i8-max", "127;", 127, 4,
+      { 0xbb, 0x7f, 0xcb, 0x28 } },
+    { "canonical-i16-min", "-32768;", -32768, 5,
+      { 0xbc, 0x00, 0x80, 0xcb, 0x28 } },
+    { "canonical-i16-below-i8", "-129;", -129, 5,
+      { 0xbc, 0x7f, 0xff, 0xcb, 0x28 } },
+    { "canonical-i16-above-i8", "128;", 128, 5,
+      { 0xbc, 0x80, 0x00, 0xcb, 0x28 } },
+    { "canonical-i16-max", "32767;", 32767, 5,
+      { 0xbc, 0xff, 0x7f, 0xcb, 0x28 } },
+    { "canonical-i32-lowest-emitted", "-2147483647;", -2147483647.0, 7,
+      { 0x01, 0x01, 0x00, 0x00, 0x80, 0xcb, 0x28 } },
+    { "canonical-i32-below-i16", "-32769;", -32769, 7,
+      { 0x01, 0xff, 0x7f, 0xff, 0xff, 0xcb, 0x28 } },
+    { "canonical-i32-above-i16", "32768;", 32768, 7,
+      { 0x01, 0x00, 0x80, 0x00, 0x00, 0xcb, 0x28 } },
+    { "canonical-i32-max", "2147483647;", 2147483647.0, 7,
+      { 0x01, 0xff, 0xff, 0xff, 0x7f, 0xcb, 0x28 } },
+};
+
+static const ScalarIntegerCase compatible_scalar_integers[] = {
+    { "compatible-i8-one", NULL, 1, 4,
+      { 0xbb, 0x01, 0xcb, 0x28 } },
+    { "compatible-i16-one", NULL, 1, 5,
+      { 0xbc, 0x01, 0x00, 0xcb, 0x28 } },
+    { "compatible-i32-one", NULL, 1, 7,
+      { 0x01, 0x01, 0x00, 0x00, 0x00, 0xcb, 0x28 } },
+    { "compatible-i32-min", NULL, -2147483648.0, 7,
+      { 0x01, 0x00, 0x00, 0x00, 0x80, 0xcb, 0x28 } },
+};
+
 static const uint8_t compatible_scope_next_wrap[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
     0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00,
@@ -215,6 +293,104 @@ cleanup:
     return status;
 }
 
+static int build_scalar_integer_wire(const ScalarIntegerCase *test,
+                                     uint8_t *output,
+                                     size_t output_capacity,
+                                     size_t *output_size) {
+    size_t offset = 0;
+    size_t expected_size;
+
+    if (test->code_size == 0 ||
+        test->code_size > SCALAR_INTEGER_MAX_CODE_SIZE)
+        return -1;
+    expected_size = sizeof(scalar_integer_prefix) + 1 +
+                    sizeof(scalar_integer_local) + test->code_size;
+    if (expected_size > output_capacity)
+        return -1;
+
+    memcpy(output + offset, scalar_integer_prefix,
+           sizeof(scalar_integer_prefix));
+    offset += sizeof(scalar_integer_prefix);
+    output[offset++] = (uint8_t)test->code_size;
+    memcpy(output + offset, scalar_integer_local,
+           sizeof(scalar_integer_local));
+    offset += sizeof(scalar_integer_local);
+    memcpy(output + offset, test->code, test->code_size);
+    offset += test->code_size;
+    *output_size = offset;
+    return 0;
+}
+
+static int expect_compiled_scalar_integer(JSContext *compile_context,
+                                          const ScalarIntegerCase *test) {
+    uint8_t expected_wire[SCALAR_INTEGER_MAX_WIRE_SIZE];
+    size_t expected_wire_size = 0;
+    JSValue compiled = JS_UNDEFINED;
+    uint8_t *bytecode = NULL;
+    size_t bytecode_size = 0;
+    int status = -1;
+
+    if (!test->source ||
+        build_scalar_integer_wire(test, expected_wire,
+                                  sizeof(expected_wire),
+                                  &expected_wire_size)) {
+        fprintf(stderr, "%s has an invalid oracle definition\n", test->label);
+        goto cleanup;
+    }
+
+    compiled = JS_Eval(compile_context, test->source, strlen(test->source),
+                       "scalar-integer.js",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(compile_context, "compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    bytecode = JS_WriteObject(compile_context, &bytecode_size, compiled,
+                              JS_WRITE_OBJ_BYTECODE);
+    if (!bytecode) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(compile_context, "bytecode serialization failed");
+        goto cleanup;
+    }
+    if (bytecode_size != expected_wire_size ||
+        memcmp(bytecode, expected_wire, expected_wire_size) != 0) {
+        fprintf(stderr,
+                "%s compiler wire did not match its pinned BC5 vector\n",
+                test->label);
+        goto cleanup;
+    }
+
+    printf("%s-source-hex=", test->label);
+    for (size_t index = 0; test->source[index] != '\0'; index++)
+        printf("%02x", (unsigned char)test->source[index]);
+    putchar('\n');
+    if (expect_read_number(test->label, bytecode, bytecode_size,
+                           test->expected))
+        goto cleanup;
+    status = 0;
+
+cleanup:
+    if (bytecode)
+        js_free(compile_context, bytecode);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
+static int expect_compatible_scalar_integer(const ScalarIntegerCase *test) {
+    uint8_t wire[SCALAR_INTEGER_MAX_WIRE_SIZE];
+    size_t wire_size = 0;
+
+    if (test->source ||
+        build_scalar_integer_wire(test, wire, sizeof(wire), &wire_size)) {
+        fprintf(stderr, "%s has an invalid oracle definition\n", test->label);
+        return -1;
+    }
+    return expect_read_number(test->label, wire, wire_size, test->expected);
+}
+
 int main(void) {
     static const char source[] = "42;";
     JSRuntime *compile_runtime = NULL;
@@ -306,6 +482,29 @@ int main(void) {
         printf("%02x", bytecode[index]);
     putchar('\n');
     printf("fresh-eval=%.17g\n", evaluated);
+
+    printf("canonical-scalar-integer-count=%zu\n",
+           sizeof(canonical_scalar_integers) /
+           sizeof(canonical_scalar_integers[0]));
+    for (size_t index = 0;
+         index < sizeof(canonical_scalar_integers) /
+                 sizeof(canonical_scalar_integers[0]);
+         index++) {
+        if (expect_compiled_scalar_integer(
+                compile_context, &canonical_scalar_integers[index]))
+            goto cleanup;
+    }
+    printf("compatible-scalar-integer-count=%zu\n",
+           sizeof(compatible_scalar_integers) /
+           sizeof(compatible_scalar_integers[0]));
+    for (size_t index = 0;
+         index < sizeof(compatible_scalar_integers) /
+                 sizeof(compatible_scalar_integers[0]);
+         index++) {
+        if (expect_compatible_scalar_integer(
+                &compatible_scalar_integers[index]))
+            goto cleanup;
+    }
 
     if (expect_read_number("scope-next-wrap", compatible_scope_next_wrap,
                            sizeof(compatible_scope_next_wrap), 42))

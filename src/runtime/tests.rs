@@ -75,6 +75,41 @@ fn trusted_quickjs_scalar_script_uses_verified_runtime_publication() {
 }
 
 #[test]
+fn trusted_quickjs_scalar_script_executes_the_full_direct_int32_family() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts().function_bytecode_nodes;
+    let mut functions = Vec::new();
+    let cases: &[(&[u8], i32)] = &[
+        (&[0xb2, 0xcb, 0x28], -1),
+        (&[0xb3, 0xcb, 0x28], 0),
+        (&[0xba, 0xcb, 0x28], 7),
+        (&[0xbb, 0x80, 0xcb, 0x28], -128),
+        (&[0xbb, 0x7f, 0xcb, 0x28], 127),
+        (&[0xbc, 0x7f, 0xff, 0xcb, 0x28], -129),
+        (&[0xbc, 0xff, 0x7f, 0xcb, 0x28], 32_767),
+        // Wider-than-canonical encodings remain valid QuickJS reader inputs.
+        (&[0xbc, 0x01, 0x00, 0xcb, 0x28], 1),
+        (&[0x01, 0xff, 0x7f, 0xff, 0xff, 0xcb, 0x28], -32_769),
+        (&[0x01, 0x00, 0x80, 0x00, 0x00, 0xcb, 0x28], 32_768),
+        (&[0x01, 0xff, 0xff, 0xff, 0x7f, 0xcb, 0x28], i32::MAX),
+        (&[0x01, 0x00, 0x00, 0x00, 0x80, 0xcb, 0x28], i32::MIN),
+        (&[0x01, 0x01, 0x00, 0x00, 0x00, 0xcb, 0x28], 1),
+    ];
+
+    for (code, expected) in cases {
+        let image = quickjs_scalar_with_code(code);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        assert_eq!(context.execute(&function).unwrap(), Value::Int(*expected));
+        functions.push(function);
+    }
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline + cases.len()
+    );
+}
+
+#[test]
 fn trusted_quickjs_scalar_script_accepts_compatible_wire_spellings() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -113,6 +148,16 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
         .unwrap_err()
     else {
         panic!("valid but unadmitted BC5 root did not return an engine error");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let RuntimeError::Engine(error) = context
+        .read_trusted_scalar_script(&quickjs_scalar_with_code(&[0x07, 0xcb, 0x28]))
+        .unwrap_err()
+    else {
+        panic!("valid null scalar Script did not preserve the admission frontier");
     };
     assert_eq!(error.kind(), ErrorKind::Unsupported);
     assert!(!context.has_exception());
@@ -359,6 +404,13 @@ fn trusted_quickjs_scalar_script_preserves_pinned_data_reader_errors() {
         );
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
     }
+}
+
+fn quickjs_scalar_with_code(code: &[u8]) -> Vec<u8> {
+    let mut object = QUICKJS_SCALAR_42_BC5.to_vec();
+    object[15] = u8::try_from(code.len()).expect("test code length fits one-byte ULEB");
+    object.splice(21.., code.iter().copied());
+    object
 }
 
 #[test]

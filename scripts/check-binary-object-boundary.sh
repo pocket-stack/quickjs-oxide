@@ -331,6 +331,30 @@ if len(scalar_decode_pattern.findall(scalar_script_code)) != 1:
         "decode_trusted_scalar_script must be the reviewed &[u8] to scalar draft facade",
     )
 
+scalar_opcode_constants = {
+    name: int(raw, 16)
+    for name, raw in re.findall(
+        r"(?m)^const[ \t]+(OP_[A-Z0-9_]+)[ \t]*:[ \t]*u8[ \t]*=[ \t]*(0x[0-9a-fA-F]+)[ \t]*;[ \t]*$",
+        scalar_script_code,
+    )
+}
+expected_scalar_opcode_constants = {
+    "OP_PUSH_I32": 0x01,
+    "OP_RETURN": 0x28,
+    "OP_PUSH_MINUS1": 0xB2,
+    "OP_PUSH_0": 0xB3,
+    "OP_PUSH_7": 0xBA,
+    "OP_PUSH_I8": 0xBB,
+    "OP_PUSH_I16": 0xBC,
+    "OP_SET_LOC0": 0xCB,
+}
+if scalar_opcode_constants != expected_scalar_opcode_constants:
+    fail(
+        "scalar-script-opcode-set",
+        "scalar-script admission must retain exactly the reviewed direct Int32, set_loc0, and return opcode identities; "
+        f"found {scalar_opcode_constants}",
+    )
+
 scalar_visible_item_pattern = re.compile(
     r"\b(?P<visibility>pub(?:[ \t\n]*\([^)]*\))?)[ \t\n]+"
     r"(?P<kind>enum|struct|union|trait|type|fn|const|static|use|mod)[ \t\n]+"
@@ -1857,6 +1881,14 @@ printf '%s\n' \
     'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 printf '%s\n' \
+    'const OP_PUSH_I32: u8 = 0x01;' \
+    'const OP_RETURN: u8 = 0x28;' \
+    'const OP_PUSH_MINUS1: u8 = 0xb2;' \
+    'const OP_PUSH_0: u8 = 0xb3;' \
+    'const OP_PUSH_7: u8 = 0xba;' \
+    'const OP_PUSH_I8: u8 = 0xbb;' \
+    'const OP_PUSH_I16: u8 = 0xbc;' \
+    'const OP_SET_LOC0: u8 = 0xcb;' \
     'pub(in crate::runtime) enum ScalarScriptDraft {' \
     '    Int(i32),' \
     '}' \
@@ -2376,6 +2408,9 @@ expect_rewrite_rejected scalar-draft-extra-variant scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
     '    Int(i32),' \
     '    Int(i32), Bool(bool),'
+expect_rejected scalar-opcode-set-widening scalar-script-opcode-set \
+    src/runtime/binary_object/scalar_script.rs \
+    'const OP_PUSH_NULL: u8 = 0x07;'
 expect_rewrite_rejected scalar-error-missing-unadmitted scalar-script-error-shape \
     src/runtime/binary_object/scalar_script.rs \
     '    Unadmitted(String),' \

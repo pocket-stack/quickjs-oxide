@@ -18,11 +18,16 @@ use super::wire::{ReaderMode, WireCursor, WireError, WireLimits};
 
 const MAX_INPUT_BYTES: usize = 4096;
 
+const OP_PUSH_I32: u8 = 0x01;
 const OP_RETURN: u8 = 0x28;
+const OP_PUSH_MINUS1: u8 = 0xb2;
+const OP_PUSH_0: u8 = 0xb3;
+const OP_PUSH_7: u8 = 0xba;
 const OP_PUSH_I8: u8 = 0xbb;
+const OP_PUSH_I16: u8 = 0xbc;
 const OP_SET_LOC0: u8 = 0xcb;
 
-/// Runtime-independent result of the first executable BC5 admission cohort.
+/// Runtime-independent result of the executable BC5 scalar admission cohort.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum ScalarScriptDraft {
     Int(i32),
@@ -75,8 +80,8 @@ impl fmt::Display for ScalarScriptReadError {
 
 impl std::error::Error for ScalarScriptReadError {}
 
-/// Decode one complete pinned-QuickJS object and admit the branch-free i8
-/// script shape. Compatibility mode is semantic: pinned QuickJS accepts
+/// Decode one complete pinned-QuickJS object and admit the branch-free direct
+/// Int32 script shape. Compatibility mode is semantic: pinned QuickJS accepts
 /// non-minimal ULEB values and trailing bytes, so this path must do the same.
 pub(in crate::runtime) fn decode_trusted_scalar_script(
     input: &[u8],
@@ -201,25 +206,49 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     let [push, set_completion, return_value] = native_payload.instructions() else {
         return unadmitted("native payload is not the three-instruction scalar shape");
     };
+    let Some((value, push_width)) = decode_direct_int32(native_payload.as_bytes()) else {
+        return unadmitted("native payload opcode sequence is outside the admitted shape");
+    };
     if push.offset() != 0
-        || push.opcode().raw() != OP_PUSH_I8
-        || set_completion.offset() != 2
+        || push.opcode().raw() != native_payload.as_bytes()[0]
+        || set_completion.offset() != push_width
         || set_completion.opcode().raw() != OP_SET_LOC0
-        || return_value.offset() != 3
+        || return_value.offset() != push_width + 1
         || return_value.opcode().raw() != OP_RETURN
     {
-        return unadmitted("native payload opcode sequence is outside the admitted shape");
-    }
-    let [push_opcode, immediate, set_opcode, return_opcode] = native_payload.as_bytes() else {
-        return unadmitted("native payload width is outside the admitted shape");
-    };
-    if (*push_opcode, *set_opcode, *return_opcode) != (OP_PUSH_I8, OP_SET_LOC0, OP_RETURN) {
         return Err(ScalarScriptReadError::Internal(
             "instruction sidecars disagree with their owned native bytes".into(),
         ));
     }
 
-    Ok(ScalarScriptDraft::Int(i32::from(*immediate as i8)))
+    Ok(ScalarScriptDraft::Int(value))
+}
+
+/// Decode the complete release-pinned direct Int32 opcode family.
+///
+/// QuickJS canonicalizes source literals to the shortest spelling, but its
+/// bytecode reader also accepts wider spellings for the same value. Admission
+/// therefore keys on semantic width, not compiler canonicality.
+fn decode_direct_int32(bytes: &[u8]) -> Option<(i32, u32)> {
+    match bytes {
+        [opcode, OP_SET_LOC0, OP_RETURN] if (OP_PUSH_MINUS1..=OP_PUSH_7).contains(opcode) => {
+            Some((i32::from(*opcode) - i32::from(OP_PUSH_0), 1))
+        }
+        [OP_PUSH_I8, immediate, OP_SET_LOC0, OP_RETURN] => Some((i32::from(*immediate as i8), 2)),
+        [OP_PUSH_I16, low, high, OP_SET_LOC0, OP_RETURN] => {
+            Some((i32::from(i16::from_le_bytes([*low, *high])), 3))
+        }
+        [
+            OP_PUSH_I32,
+            byte_0,
+            byte_1,
+            byte_2,
+            byte_3,
+            OP_SET_LOC0,
+            OP_RETURN,
+        ] => Some((i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3]), 5)),
+        _ => None,
+    }
 }
 
 fn unadmitted<T>(message: &str) -> Result<T, ScalarScriptReadError> {
@@ -406,13 +435,50 @@ mod tests {
     ];
 
     #[test]
-    fn admits_the_pinned_return_42_shape_without_special_casing_42() {
-        for (raw, expected) in [(0x2a, 42), (0x29, 41), (0xff, -1)] {
-            let mut object = RETURN_42;
-            object[22] = raw;
+    fn admits_the_complete_direct_int32_opcode_family_without_canonicality_checks() {
+        for opcode in OP_PUSH_MINUS1..=OP_PUSH_7 {
+            let object = scalar_with_code(&[opcode, OP_SET_LOC0, OP_RETURN]);
             assert_eq!(
                 decode_trusted_scalar_script(&object),
-                Ok(ScalarScriptDraft::Int(expected))
+                Ok(ScalarScriptDraft::Int(
+                    i32::from(opcode) - i32::from(OP_PUSH_0)
+                ))
+            );
+        }
+
+        let cases: &[(&[u8], i32)] = &[
+            (&[OP_PUSH_I8, 0x80, OP_SET_LOC0, OP_RETURN], -128),
+            (&[OP_PUSH_I8, 0x7f, OP_SET_LOC0, OP_RETURN], 127),
+            (&[OP_PUSH_I16, 0x7f, 0xff, OP_SET_LOC0, OP_RETURN], -129),
+            (&[OP_PUSH_I16, 0x00, 0x80, OP_SET_LOC0, OP_RETURN], -32_768),
+            (&[OP_PUSH_I16, 0xff, 0x7f, OP_SET_LOC0, OP_RETURN], 32_767),
+            // QuickJS's reader accepts non-canonical wider encodings.
+            (&[OP_PUSH_I16, 0x01, 0x00, OP_SET_LOC0, OP_RETURN], 1),
+            (
+                &[OP_PUSH_I32, 0xff, 0x7f, 0xff, 0xff, OP_SET_LOC0, OP_RETURN],
+                -32_769,
+            ),
+            (
+                &[OP_PUSH_I32, 0x00, 0x80, 0x00, 0x00, OP_SET_LOC0, OP_RETURN],
+                32_768,
+            ),
+            (
+                &[OP_PUSH_I32, 0xff, 0xff, 0xff, 0x7f, OP_SET_LOC0, OP_RETURN],
+                i32::MAX,
+            ),
+            (
+                &[OP_PUSH_I32, 0x00, 0x00, 0x00, 0x80, OP_SET_LOC0, OP_RETURN],
+                i32::MIN,
+            ),
+            (
+                &[OP_PUSH_I32, 0x01, 0x00, 0x00, 0x00, OP_SET_LOC0, OP_RETURN],
+                1,
+            ),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_code(code)),
+                Ok(ScalarScriptDraft::Int(*expected))
             );
         }
     }
@@ -446,6 +512,11 @@ mod tests {
         unsupported_opcode[21] = 0xbd;
         assert!(matches!(
             decode_trusted_scalar_script(&unsupported_opcode),
+            Err(ScalarScriptReadError::Unadmitted(_))
+        ));
+
+        assert!(matches!(
+            decode_trusted_scalar_script(&scalar_with_code(&[0x07, OP_SET_LOC0, OP_RETURN])),
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
 
@@ -637,5 +708,12 @@ mod tests {
             ScalarScriptReadError::Internal("invariant".into()).to_string(),
             "BC5 scalar-script internal failure: invariant"
         );
+    }
+
+    fn scalar_with_code(code: &[u8]) -> Vec<u8> {
+        let mut object = RETURN_42.to_vec();
+        object[15] = u8::try_from(code.len()).expect("test code length fits one-byte ULEB");
+        object.splice(21.., code.iter().copied());
+        object
     }
 }
