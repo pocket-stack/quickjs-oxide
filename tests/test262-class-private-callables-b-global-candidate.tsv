@@ -1,11 +1,11 @@
-# quickjs-oxide Test262 outcome vector v5 engine_semantics_sha256=3f7af2f006da4cd1922f42a6f05f92ea01ab496eb453a5f0aa317f3cb757142a
+# quickjs-oxide Test262 outcome vector v5 engine_semantics_sha256=dc96e17e183f707d7bc1a4840e9a2b1dd6c13111edd297c2ba64e50143ae5b28
 # quickjs=2026-06-04
 # test262=5c8206929d81b2d3d727ca6aac56c18358c8d790
 # test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3
 # test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b
 # test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a
-# oxide_profile_sha256=86bd42bca1d12b09431a59b61ef615455ba2092bb63c8a5057f8d6ee21c2dd05
-# negative_diagnostics_sha256=51c54f9e6b15d2595a2d6376f69c8f6fd03407ec181f7ee2760bf3186eefa16b
+# oxide_profile_sha256=aa9fa3581c86cf1f1ef786a54c2023107f3a99002129b726024ddd8ea0838d67
+# negative_diagnostics_sha256=0f20554444b18fe2a714732b392a72785d88e8b315620bd619b473c93b7f01bf
 # negative_diagnostic_exemptions_sha256=608dab98c8ffc394123c1737cf5706bcb449712ef7f7aae51cad143d2b4ede46
 # profile=test262-canonical-classified-v2
 # mode=both
@@ -3494,10 +3494,194 @@ test/language/module-code/import-attributes/import-attribute-trlng-comma.js	slop
 test/language/module-code/import-attributes/import-attribute-value-string-double.js	sloppy	module	import-attributes,globalThis	resolution	SyntaxError	pass	resolution	SyntaxError	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'	module.missing-export	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'			absent		
 test/language/module-code/import-attributes/import-attribute-value-string-single.js	sloppy	module	import-attributes,globalThis	resolution	SyntaxError	pass	resolution	SyntaxError	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'	module.missing-export	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'			absent		
 test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-awaits-thenable-not-callable.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-awaits-thenables-that-throw.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-awaits-thenables.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-expr-func-expression.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-expr-new-expr-reject.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-expr-new-expr.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-expr-regexp.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-expr-reject-throws.js	sloppy	async,module	top-level-await	normal		pass	normal									
 test/language/module-code/top-level-await/await-expr-resolution.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/await-void-expr.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/dfs-invariant.js	sloppy	module	top-level-await,globalThis	normal		pass	normal									
+test/language/module-code/top-level-await/if-await-expr.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/module-async-import-async-resolution-ticks.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/module-import-rejection-body.js	sloppy	module	top-level-await	runtime	TypeError	pass	runtime	TypeError	I reject this!	module.tla-dependency-rejection	I reject this!	8	45	exact	8	45
+test/language/module-code/top-level-await/module-import-rejection.js	sloppy	module	top-level-await	runtime	TypeError	pass	runtime	TypeError	error in the default export line	module.tla-dependency-rejection	error in the default export line	7	50	exact	7	50
 test/language/module-code/top-level-await/module-import-resolution.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/module-import-unwrapped.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/module-self-import-async-resolution-ticks.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/module-sync-import-async-resolution-ticks.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/new-await-parens.js	sloppy	async,module	top-level-await	normal		pass	normal									
 test/language/module-code/top-level-await/new-await-script-code.js	sloppy		top-level-await	normal		pass	normal									
 test/language/module-code/top-level-await/new-await-script-code.js	strict		top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/pending-async-dep-from-cycle.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/block-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/early-does-not-propagate-to-fn-declaration-body.js	sloppy	module	top-level-await	parse	SyntaxError	pass	parse	SyntaxError	unexpected 'await' keyword	module.top-level-await.function-context	unexpected 'await' keyword	38	17	exact	38	17
+test/language/module-code/top-level-await/syntax/early-does-not-propagate-to-fn-declaration-params.js	sloppy	module	top-level-await	parse	SyntaxError	pass	parse	SyntaxError	unexpected 'await' keyword	module.top-level-await.function-context	unexpected 'await' keyword	38	17	exact	38	17
+test/language/module-code/top-level-await/syntax/early-does-not-propagate-to-fn-expr-body.js	sloppy	module	top-level-await	parse	SyntaxError	pass	parse	SyntaxError	unexpected 'await' keyword	module.top-level-await.function-context	unexpected 'await' keyword	29	3	exact	29	3
+test/language/module-code/top-level-await/syntax/early-does-not-propagate-to-fn-expr-params.js	sloppy	module	top-level-await	parse	SyntaxError	pass	parse	SyntaxError	unexpected 'await' keyword	module.top-level-await.function-context	unexpected 'await' keyword	28	18	exact	28	18
+test/language/module-code/top-level-await/syntax/early-no-escaped-await.js	sloppy	module	top-level-await	parse	SyntaxError	pass	parse	SyntaxError	'await' is a reserved identifier	module.top-level-await.escaped-keyword	'await' is a reserved identifier	25	1	exact	25	1
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-array-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-func-expression.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-identifier.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-literal-number.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-literal-string.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-nested.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-new-expr.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-null.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-obj-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-regexp.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-template-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-class-decl-await-expr-this.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-array-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-func-expression.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-identifier.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-literal-number.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-literal-string.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-nested.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-new-expr.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-null.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-obj-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-regexp.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-template-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dflt-assign-expr-await-expr-this.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-array-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-func-expression.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-identifier.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-literal-number.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-literal-string.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-nested.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-new-expr.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-null.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-obj-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-regexp.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-template-literal.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-dft-class-decl-await-expr-this.js	sloppy	generated,module	top-level-await,class	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-lex-decl-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/export-var-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-block-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/if-expr-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/top-level-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/try-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/typeof-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/void-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-array-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-func-expression.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-identifier.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-literal-number.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-literal-string.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-nested.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-new-expr.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-null.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-obj-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-regexp.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-template-literal.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/syntax/while-await-expr-this.js	sloppy	generated,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/top-level-ticks-2.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/top-level-ticks.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/void-await-expr.js	sloppy	async,module	top-level-await	normal		pass	normal									
+test/language/module-code/top-level-await/while-dynamic-evaluation.js	sloppy	async,module	top-level-await	normal		pass	normal									
 test/language/statements/class/dstr/async-private-gen-meth-ary-init-iter-close.js	sloppy	async,generated	Symbol.iterator,class,class-methods-private,async-iteration	normal		pass	normal									
 test/language/statements/class/dstr/async-private-gen-meth-ary-init-iter-close.js	strict	async,generated	Symbol.iterator,class,class-methods-private,async-iteration	normal		pass	normal									
 test/language/statements/class/dstr/async-private-gen-meth-ary-init-iter-no-close.js	sloppy	async,generated	Symbol.iterator,class,class-methods-private,async-iteration	normal		pass	normal									
@@ -6632,4 +6816,4 @@ test/language/statements/class/private-static-getter-non-static-setter-early-err
 test/language/statements/class/private-static-getter-non-static-setter-early-error.js	strict		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	18	9	exact	18	9
 test/language/statements/class/private-static-setter-non-static-getter-early-error.js	sloppy		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	17	9	exact	17	9
 test/language/statements/class/private-static-setter-non-static-getter-early-error.js	strict		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	18	9	exact	18	9
-# summary pass=6622
+# summary pass=6806

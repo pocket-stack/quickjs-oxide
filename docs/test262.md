@@ -10,18 +10,18 @@ QuickJS 2026-06-04 patch and configuration recorded in
 <!-- current-test262-metrics:start -->
 Metrics are reported in this order:
 
-1. **Full pass:** 79,760 / 102,037 (78.168%). Every frozen Test262 variant is in
+1. **Full pass:** 79,944 / 102,037 (78.348%). Every frozen Test262 variant is in
    the denominator.
-2. **Eligible coverage:** 79,810 / 102,037 (78.217%). This measures how much of
+2. **Eligible coverage:** 79,994 / 102,037 (78.397%). This measures how much of
    the full vector the current profile admits to execution.
-3. **Runnable pass quality:** 79,760 / 79,810 (99.937%). This is useful for
+3. **Runnable pass quality:** 79,944 / 79,994 (99.937%). This is useful for
    diagnosing admitted behavior, but it must not replace either coverage
    metric above.
 
 The frozen outcome summary is:
 
 ```text
-fail-parse=7 fail-runtime=43 pass=79760 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=847 unsupported-module=343 unsupported-negative-provenance=2562
+fail-parse=7 fail-runtime=43 pass=79944 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=847 unsupported-module=159 unsupported-negative-provenance=2562
 ```
 <!-- current-test262-metrics:end -->
 
@@ -41,11 +41,12 @@ TEST262_WORKERS=2 ./scripts/test-test262.sh \
 contract and legacy exemption ledger, focused manifest, and frozen TSV/JSONL
 receipts. `--runner-provenance` builds the Rust runner with the current source
 fingerprint, verifies the embedded binding, and executes no Test262 cases.
-`--focused` replays the current 6,419-variant focused vector and
+`--focused` replays the current 6,806-variant focused vector and
 requires byte-identical output. It retains the dependency-closed
 private-callable, static import-attributes, and static JSON module coverage and
-adds the source-authenticated dynamic-import Script-goal cohort. `--full` runs
-every 102,037 variant and checks the complete summary and report hashes.
+adds source-authenticated dynamic-import and top-level-await syntax, runtime,
+graph, and rejection cohorts. `--full` runs every 102,037 variant and checks the
+complete summary and report hashes.
 
 Negative admissions remain fail-closed: an expected failure counts only when
 its exact path is present in the audited-negative data. Every admitted
