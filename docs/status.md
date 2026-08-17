@@ -8,11 +8,11 @@ Parity.
 ## Current baseline
 
 <!-- current-test262-metrics:start -->
-The authoritative R3ff Test262 vector has:
+The authoritative R3fg Test262 vector has:
 
-- 79,597 full-corpus passes out of 102,037 variants (78.008%)
-- 79,647 eligible variants out of 102,037 (78.057%)
-- 79,597 passes out of 79,647 runnable variants (99.937%, secondary quality
+- 79,760 full-corpus passes out of 102,037 variants (78.168%)
+- 79,810 eligible variants out of 102,037 (78.217%)
+- 79,760 passes out of 79,810 runnable variants (99.937%, secondary quality
   metric)
 - 50 classified failures and no timeouts among eligible variants
 <!-- current-test262-metrics:end -->
