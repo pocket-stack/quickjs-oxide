@@ -265,7 +265,7 @@ for match in sealed_cursor_alias.finditer(cursor_code):
 
 checked_impl_pattern = re.compile(
     r"\bimpl\b(?P<header>[^{};]*\bCheckedReadCursor\b"
-    r"[ \t\n]*(?:<[^{};>]*>)?[ \t\n]+for\b[^{};]*)\{",
+    r"[ \t\n]*(?:(?:::[ \t\n]*)?<[^{};>]*>)?[ \t\n]+for\b[^{};]*)\{",
     re.DOTALL,
 )
 checked_cursor_alias = re.compile(r"\bCheckedReadCursor[ \t\n]+as[ \t\n]+")
@@ -303,7 +303,8 @@ if sorted(checked_impl_headers) != sorted(expected_checked_impl_headers):
     )
 
 sealed_impl_pattern = re.compile(
-    r"\bimpl\b(?P<header>[^{};]*\bSealed\b[ \t\n]+for\b[^{};]*)\{",
+    r"\bimpl\b(?P<header>[^{};]*\bSealed\b"
+    r"[ \t\n]*(?:::[ \t\n]*<[^{};>]*>)?[ \t\n]+for\b[^{};]*)\{",
     re.DOTALL,
 )
 sealed_impl_headers = [
@@ -665,6 +666,9 @@ expect_rejected common-cursor-nongeneric-impl common-cursor-implementation-set \
 expect_rejected common-cursor-qualified-impl common-cursor-implementation-set \
     src/runtime/binary_object/read_cursor.rs \
     "impl<'input> CheckedReadCursor<'input> for crate::ThirdCursor<'input> {}"
+expect_rejected common-cursor-turbofish-impl common-cursor-implementation-set \
+    src/runtime/binary_object/read_cursor.rs \
+    "impl CheckedReadCursor::<'static> for ThirdCursor {}"
 expect_rejected common-cursor-aliased-impl common-cursor-trait-alias \
     src/runtime/binary_object/read_cursor.rs \
     "use self::CheckedReadCursor as Alias; impl Alias<'static> for ThirdCursor {}"
@@ -674,6 +678,9 @@ expect_rejected common-cursor-cross-file-alias common-cursor-trait-alias \
 expect_rejected common-cursor-extra-seal common-cursor-seal-implementation-set \
     src/runtime/binary_object/read_cursor.rs \
     "impl sealed::Sealed for ThirdCursor {}"
+expect_rejected common-cursor-turbofish-seal common-cursor-seal-implementation-set \
+    src/runtime/binary_object/read_cursor.rs \
+    "impl sealed::Sealed::<> for ThirdCursor {}"
 expect_rejected common-cursor-aliased-seal common-cursor-seal-alias \
     src/runtime/binary_object/read_cursor.rs \
     "use self::sealed::Sealed as Seal; impl Seal for ThirdCursor {}"
