@@ -1796,6 +1796,17 @@ test/language/module-code/import-attributes/import-attribute-newlines.js
 test/language/module-code/import-attributes/import-attribute-trlng-comma.js
 test/language/module-code/import-attributes/import-attribute-value-string-double.js
 test/language/module-code/import-attributes/import-attribute-value-string-single.js
+test/language/module-code/instn-local-bndng-cls.js
+test/language/module-code/instn-local-bndng-export-cls.js
+test/language/module-code/instn-local-bndng-export-const.js
+test/language/module-code/instn-local-bndng-export-fun.js
+test/language/module-code/instn-local-bndng-export-gen.js
+test/language/module-code/instn-local-bndng-export-let.js
+test/language/module-code/instn-local-bndng-export-var.js
+test/language/module-code/instn-local-bndng-for-dup.js
+test/language/module-code/instn-local-bndng-for.js
+test/language/module-code/instn-local-bndng-gen.js
+test/language/module-code/instn-local-bndng-var-dup.js
 test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js
 test/language/module-code/top-level-await/await-awaits-thenable-not-callable.js
 test/language/module-code/top-level-await/await-awaits-thenables-that-throw.js

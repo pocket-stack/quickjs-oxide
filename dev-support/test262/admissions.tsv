@@ -1004,6 +1004,17 @@ module	module-decl-position-a	test/language/module-code/parse-err-decl-pos-impor
 module	module-decl-position-a	test/language/module-code/parse-err-decl-pos-import-try-finally.js	f90bf492891ca47c40fb1948902522d152489716fdf0ef328f175f8f6e1dd363	-	module	-	parse	SyntaxError	-	-	-	-	-	-	-
 module	module-decl-position-a	test/language/module-code/parse-err-decl-pos-import-try-try.js	a5cd4624b3b2f5dd032a2f4f8a2aec43241bddc5739198a37878a393b446d055	-	module	-	parse	SyntaxError	-	-	-	-	-	-	-
 module	module-decl-position-a	test/language/module-code/parse-err-decl-pos-import-while.js	d06ef1fedc6b78317a7c0a2067b1e11096b3844ea6a12231a0c09de5aeede9c6	-	module	-	parse	SyntaxError	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-cls.js	a7d2043ff8c4464d3fca74d5b550cf7d5d6566267916a00a47e6f2e05ea0d4c4	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-export-cls.js	e1b4069a9e375d1041e590c36b305bb4055fe1c15eac11ad290910f2aabaa47b	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-export-const.js	7eab41ed25ab988db29d2802a93d8ddee9f88d56fd7b3ffc28edd2fc025f03b6	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-export-fun.js	be65219f980262e66b8dc796d9f86cb60700ec2ed2ad9082ca1b82cf30cdd9ee	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-export-gen.js	d450569ab7fff8376b2c4120d4aa9c3604e9488730d99b7dc49440c9d0880c99	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-export-let.js	0a72019dbf3314f5b8ddf754b560123316c091a42954a24d6a6e30178f764c07	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-export-var.js	0e7e8c7610356b7bf2f17b278c8a12d2214d13a0d09b17a5889d37d084a9df0e	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-for-dup.js	9b69d04056f1e59a69ac0bab31a78f9d5466ac127b7a3bd8cfbcc51d8f01681f	-	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-for.js	d3e400a17b750da8194f621e1b35e3c6a030ecb72802c763fb9349c02bf98d8a	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-gen.js	2624ba5b98e49b58d41fdb331eabdb1f8a7b77c9242b26a2163cf50d5f2ff66e	fnGlobalObject.js	module	-	-	-	-	-	-	-	-	-	-
+module	module-local-binding-a	test/language/module-code/instn-local-bndng-var-dup.js	d0132370059e3243be23fc14db7bc39cb197628b6c256f2db53b30305a158f5f	-	module	-	-	-	-	-	-	-	-	-	-
 module	module-static-negative-a	test/language/export/escaped-as-export-specifier.js	d49a0f074128a9ad3f84655b12d9332a8a3df9cf40bd53545b43330923c902b5	-	module	-	parse	SyntaxError	-	-	-	-	-	-	-
 module	module-static-negative-a	test/language/export/escaped-default.js	b8bb67c1db599f90eecf75542bccf4991e71aadcdd969a33d00ff166fbcc2b60	-	module	-	parse	SyntaxError	-	-	-	-	-	-	-
 module	module-static-negative-a	test/language/export/escaped-from.js	25aa13b6d9c98f872c1b90a92f1188dba7365a2ddef2cfb671a19bcd5e6d3079	-	module	-	parse	SyntaxError	-	-	-	-	-	-	-

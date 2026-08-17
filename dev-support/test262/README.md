@@ -11,8 +11,9 @@ by a shell.
 The focused manifest is a sorted set of source paths. Its receipt remains a
 full `(path, variant)` vector, so one path may produce multiple metadata-driven
 variants. The current vector includes source-authenticated static JSON and
-top-level-await module graphs plus the exact dynamic-import Script-goal cohort.
-Unauthenticated module graphs remain excluded by generator canaries.
+top-level-await module graphs, the exact dynamic-import Script-goal cohort, and
+the complete dependency-free module local-binding family. Unauthenticated
+module graphs remain excluded by generator canaries.
 
 `admissions.tsv` is the hash-pinned source of exact Module-goal graphs,
 dynamic-import Script-goal graphs, dependency-free module roots, `$262.agent`

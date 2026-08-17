@@ -3519,6 +3519,17 @@ test/language/module-code/import-attributes/import-attribute-newlines.js	sloppy	
 test/language/module-code/import-attributes/import-attribute-trlng-comma.js	sloppy	module	import-attributes,globalThis	resolution	SyntaxError	pass	resolution	SyntaxError	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'	module.missing-export	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'			absent		
 test/language/module-code/import-attributes/import-attribute-value-string-double.js	sloppy	module	import-attributes,globalThis	resolution	SyntaxError	pass	resolution	SyntaxError	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'	module.missing-export	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'			absent		
 test/language/module-code/import-attributes/import-attribute-value-string-single.js	sloppy	module	import-attributes,globalThis	resolution	SyntaxError	pass	resolution	SyntaxError	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'	module.missing-export	Could not find export 'nonExistent' in module 'test/language/module-code/import-attributes/ensure-linking-error_FIXTURE.js'			absent		
+test/language/module-code/instn-local-bndng-cls.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-export-cls.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-export-const.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-export-fun.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-export-gen.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-export-let.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-export-var.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-for-dup.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-for.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-gen.js	sloppy	module		normal		pass	normal									
+test/language/module-code/instn-local-bndng-var-dup.js	sloppy	module		normal		pass	normal									
 test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js	sloppy	async,module	top-level-await	normal		pass	normal									
 test/language/module-code/top-level-await/await-awaits-thenable-not-callable.js	sloppy	async,module	top-level-await	normal		pass	normal									
 test/language/module-code/top-level-await/await-awaits-thenables-that-throw.js	sloppy	async,module	top-level-await	normal		pass	normal									
@@ -6843,4 +6854,4 @@ test/language/statements/class/private-static-getter-non-static-setter-early-err
 test/language/statements/class/private-static-getter-non-static-setter-early-error.js	strict		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	18	9	exact	18	9
 test/language/statements/class/private-static-setter-non-static-getter-early-error.js	sloppy		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	17	9	exact	17	9
 test/language/statements/class/private-static-setter-non-static-getter-early-error.js	strict		class-static-methods-private,class-methods-private	parse	SyntaxError	pass	parse	SyntaxError	private class field is already defined	class-private-accessor.static-mismatch	private class field is already defined	18	9	exact	18	9
-# summary pass=6833
+# summary pass=6844
