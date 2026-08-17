@@ -8,25 +8,25 @@
 // The wire layer is intentionally staged before its runtime consumer. Keep the
 // allowance local so the rest of `runtime` still receives dead-code warnings.
 #[allow(dead_code)]
-pub(in crate::runtime) mod atoms;
+mod atoms;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod code;
+mod code;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod function_envelope;
+mod function_envelope;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod bytecode_image;
+mod bytecode_image;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod graph;
+mod graph;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod pinned_atoms;
+mod pinned_atoms;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod pinned_opcodes;
+mod pinned_opcodes;
 
 #[allow(dead_code)]
-pub(in crate::runtime) mod wire;
+mod wire;
