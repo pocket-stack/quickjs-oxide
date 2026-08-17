@@ -227,8 +227,16 @@ An authenticated 33-byte ancestor-reference vector adds the inverse topology:
 an enclosing Ordinary object is reference ID 0, its FunctionBytecode property
 has no reference ID, and that function's constant pool resolves
 ObjectReference(0); fresh QuickJS execution proves `root.f()` is the identical
-root object. Authenticated negative vectors also pin QuickJS's three diagnostic
-classes when FunctionBytecode appears as the child of ObjectValue, Date, or
+root object. A pinned-QuickJS C-oracle 50-byte whole-image vector combines the
+stripped return-42 FunctionBytecode with a Uint8Array and two aliases of its
+SharedArrayBuffer.
+The function consumes no object-reference ID, the view and backing receive IDs
+1 and 2, and both later aliases resolve `ObjectReference(2)`. Its sole native
+token is authenticated against the writer side table and zeroed before the
+wire is printed; a fresh runtime evaluates the function to 42 and preserves
+the view bytes and all backing aliases. Authenticated negative vectors also
+pin QuickJS's three diagnostic classes when FunctionBytecode appears as the
+child of ObjectValue, Date, or
 TypedArray; a truncated-record probe proves that all three parents first decode
 the complete function child before applying their typed rejection.
 Writer-specific public-C-API vectors additionally pin nested keep-source,

@@ -98,6 +98,22 @@ while IFS=$'\t' read -r id family source source_hash expected expected_hash desc
     done
     verify_hash "$root/$source" "$source_hash"
     verify_hash "$root/$expected" "$expected_hash"
+    if [[ "$id" == function-bytecode-sab-reference ]]; then
+        expected_schema=$'quickjs\nbytecode-version\npointer-output\nwrite-flags\nread-flags\nwire-size\nwire-redacted-hex\nroot\nfunction\ntyped-array\nshared-array-buffer\nobject-references\nsab-records\nside-order\nfresh-runtime\nmessage-retention\nmessage-release\nview-backing-identity\nduplicate-identity\nbytes\ncallbacks'
+        actual_schema=$(sed 's/=.*//' "$root/$expected")
+        [[ "$actual_schema" == "$expected_schema" ]] \
+            || die 'whole-image SAB transcript schema drifted or gained an unreviewed field'
+        redacted_hex=$(sed -n 's/^wire-redacted-hex=//p' "$root/$expected")
+        [[ $(grep -c '^pointer-output=redacted-zero-token$' "$root/$expected") == 1 \
+            && $(grep -c '^wire-size=50$' "$root/$expected") == 1 \
+            && "$redacted_hex" =~ ^[0-9a-f]{100}$ \
+            && "${redacted_hex:76:16}" == 0000000000000000 ]] \
+            || die 'whole-image SAB transcript lost its exact token redaction'
+        if grep -Eq '%p|PRI[diouxX]*PTR' "$root/$source" \
+            || grep -Eq 'print_hex[[:space:]]*\([[:space:]]*(wire|side_table)' "$root/$source"; then
+            die 'whole-image SAB source gained an address formatter or raw-wire printer'
+        fi
+    fi
     ids+=("$id")
     families+=("$family")
     source_paths+=("$source")
@@ -110,7 +126,8 @@ done < <(tail -n +2 "$manifest")
 for required_id in callback-contracts function-bytecode-ancestor-reference \
     function-bytecode-invalid-data-parent function-bytecode-nested-closure \
     function-bytecode-non-string-properties \
-    function-bytecode-reference-boundary function-bytecode-wire \
+    function-bytecode-reference-boundary function-bytecode-sab-reference \
+    function-bytecode-wire \
     function-bytecode-writer-flags \
     import-attributes import-meta json module-bytecode-wire \
     shared-array-buffer-transport; do
