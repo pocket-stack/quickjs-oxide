@@ -218,13 +218,14 @@ function assertShapeCounts(paths, expected, label) {
 }
 
 const shape = (flags, features) => JSON.stringify({ flags, features });
+const generatedDynamicImportShapes = new Map([
+  [shape(["generated"], ["dynamic-import"]), 18],
+  [shape(["generated"], ["dynamic-import", "async-iteration"]), 1],
+  [shape(["generated", "noStrict"], ["dynamic-import"]), 2],
+]);
 assertShapeCounts(
   newTargetRoots,
-  new Map([
-    [shape(["generated"], ["dynamic-import"]), 18],
-    [shape(["generated"], ["dynamic-import", "async-iteration"]), 1],
-    [shape(["generated", "noStrict"], ["dynamic-import"]), 2],
-  ]),
+  generatedDynamicImportShapes,
   "plain dynamic-import new-target",
 );
 assertShapeCounts(
@@ -253,14 +254,135 @@ assertShapeCounts(
   ]),
   "dynamic-import assignment-target negative",
 );
-const variantCount = (paths) =>
-  paths.reduce(
-    (count, relativePath) => count + (metadata(relativePath).flags.includes("noStrict") ? 1 : 2),
-    0,
+
+function variants(relativePath) {
+  const flags = metadata(relativePath).flags;
+  assert(
+    !(flags.includes("noStrict") && flags.includes("onlyStrict")),
+    `${relativePath}: mutually exclusive strictness flags`,
   );
+  if (flags.includes("noStrict")) return ["sloppy"];
+  if (flags.includes("onlyStrict")) return ["strict"];
+  return ["sloppy", "strict"];
+}
+
+const variantCount = (paths) =>
+  paths.reduce((count, relativePath) => count + variants(relativePath).length, 0);
 assert.equal(variantCount(newTargetRoots), 40, "plain new-target variant count changed");
 assert.equal(variantCount(sourcePhaseCanaries), 40, "import.source canary variant count changed");
 assert.equal(variantCount(importDeferCanaries), 40, "import.defer canary variant count changed");
+
+const parseNegativeFamilies = [
+  {
+    marker: "assignment-expr-not-optional.case",
+    label: "missing-specifier",
+    manifestSha256: "507096fea67dbbd387d5bdbe1621259cc0a335d185d457c00cc531cfe81fcf67",
+    rule: "dynamic-import.missing-specifier",
+    message: "unexpected token in expression: ')'",
+  },
+  {
+    marker: "no-rest-param.case",
+    label: "spread-argument",
+    manifestSha256: "605898c553a1bc4488167a924addc84b22458f66498a781344f50f123bbea11c",
+    rule: "dynamic-import.spread-argument",
+    message: "unexpected token in expression: '...'",
+  },
+  {
+    marker: "not-extensible-args.case",
+    label: "excess-argument",
+    manifestSha256: "656bb173d8aca2c7d6bea5e869f8324e7a7ef76da851dcb59cd07e59a34c3d58",
+    rule: "dynamic-import.excess-argument",
+    message: "expecting ')'",
+  },
+  {
+    marker: "typeof-import.case",
+    label: "typeof-keyword",
+    manifestSha256: "3c499a164b8963d74c3c10facbd675d2ba13780c24a0787674907e21a619b328",
+    rule: "dynamic-import.typeof-keyword",
+    message: "expecting '('",
+  },
+].map((family) => ({
+  ...family,
+  paths: invalidFiles.filter((relativePath) =>
+    source(relativePath).includes(`// - src/dynamic-import/${family.marker}\n`),
+  ),
+}));
+
+for (const family of parseNegativeFamilies) {
+  assert.equal(family.paths.length, 21, `${family.label} path count changed`);
+  assert.equal(
+    sha256(pathManifest(family.paths)),
+    family.manifestSha256,
+    `${family.label} path manifest changed`,
+  );
+  assertShapeCounts(family.paths, generatedDynamicImportShapes, family.label);
+  assert.equal(variantCount(family.paths), 40, `${family.label} variant count changed`);
+}
+
+const escapedKeywordPath = `${cohort}/escape-sequence-import.js`;
+const secondArgumentYieldPath =
+  `${cohort}/import-attributes/2nd-param-yield-ident-invalid.js`;
+assert.equal(
+  sha256(source(escapedKeywordPath)),
+  "144e19cd58f4843588295c4ba911a46cd3bce330f7c2204f5d27db6168a45b8c",
+  "escaped import keyword source changed",
+);
+assert.equal(
+  sha256(source(secondArgumentYieldPath)),
+  "9a59d601e13bcff394660be1e46bb9ff567780d6a3c404b837c43990a1f6e3c2",
+  "second-argument yield source changed",
+);
+assert.deepEqual(metadata(escapedKeywordPath), {
+  includes: [],
+  flags: [],
+  features: ["dynamic-import"],
+  negativePhase: "parse",
+  negativeType: "SyntaxError",
+});
+assert.deepEqual(metadata(secondArgumentYieldPath), {
+  includes: [],
+  flags: ["onlyStrict"],
+  features: ["dynamic-import", "import-attributes"],
+  negativePhase: "parse",
+  negativeType: "SyntaxError",
+});
+
+const parseNegativeRoots = [
+  ...parseNegativeFamilies.flatMap((family) => family.paths),
+  escapedKeywordPath,
+  secondArgumentYieldPath,
+].sort(bytewise);
+assert.equal(parseNegativeRoots.length, 86, "dynamic-import parse-negative path count changed");
+assert.equal(
+  new Set(parseNegativeRoots).size,
+  parseNegativeRoots.length,
+  "dynamic-import parse-negative paths overlap",
+);
+assert.equal(
+  sha256(pathManifest(parseNegativeRoots)),
+  "591730673c502fc1a3d23222a3479fe2c3edc8196cb40e0fe03f6f3bd3179359",
+  "dynamic-import parse-negative path manifest changed",
+);
+assert.equal(
+  variantCount(parseNegativeRoots),
+  163,
+  "dynamic-import parse-negative variant count changed",
+);
+
+const futureSyntaxCanaries = invalidFiles.filter((relativePath) => {
+  const features = metadata(relativePath).features;
+  return features.includes("source-phase-imports") || features.includes("import-defer");
+});
+assert.equal(futureSyntaxCanaries.length, 189, "future dynamic-import canary count changed");
+assert.equal(
+  sha256(pathManifest(futureSyntaxCanaries)),
+  "fb816445fc1057f7d8a2a2d4fc80f3ccb496d67efcfab66dad357d3cb44cdf73",
+  "future dynamic-import canary path manifest changed",
+);
+assert(
+  parseNegativeRoots.every((relativePath) => !futureSyntaxCanaries.includes(relativePath)),
+  "future dynamic-import syntax entered the parse-negative cohort",
+);
 
 function requestSpecifiers(relativePath) {
   const body = source(relativePath).replace(/\/\*---[\s\S]*?---\*\//, "");
@@ -406,20 +528,77 @@ const newTargetAdmissionRecords = parseRejectedAdmissionRecords(
   newTargetRoots,
   newTargetGroup,
 );
+const parseNegativeGroup = "dynamic-import-parse-negative-b";
+const parseNegativeAdmissionRecords = parseRejectedAdmissionRecords(
+  parseNegativeRoots,
+  parseNegativeGroup,
+);
 assert.equal(assignmentTargetAdmissionRecords.length, 34);
 assert.equal(newTargetAdmissionRecords.length, 42);
+assert.equal(parseNegativeAdmissionRecords.length, 172);
 
 const diagnosticRule = "dynamic-import.invalid-new-target";
 const diagnosticRuleLine =
   `${diagnosticRule}\tjs_parse_postfix_expr\tnew cannot directly target ImportCall`;
-const diagnosticCandidates = newTargetRoots.flatMap((relativePath) => {
-  const variants = metadata(relativePath).flags.includes("noStrict")
-    ? ["sloppy"]
-    : ["sloppy", "strict"];
-  return variants.map((variant) => `${relativePath}\t${variant}\t${diagnosticRule}`);
+const newTargetDiagnosticCandidates = newTargetRoots.flatMap((relativePath) =>
+  variants(relativePath).map((variant) => `${relativePath}\t${variant}\t${diagnosticRule}`),
+);
+newTargetDiagnosticCandidates.sort(bytewise);
+assert.equal(newTargetDiagnosticCandidates.length, 40);
+
+const parseNegativeSingletons = [
+  {
+    path: escapedKeywordPath,
+    rule: "dynamic-import.escaped-keyword",
+    message: "'import' is a reserved identifier",
+  },
+  {
+    path: secondArgumentYieldPath,
+    rule: "dynamic-import.second-argument-yield-context",
+    message: "unexpected 'yield' keyword",
+  },
+];
+const parseNegativeContractByPath = new Map([
+  ...parseNegativeFamilies.flatMap((family) =>
+    family.paths.map((relativePath) => [
+      relativePath,
+      { rule: family.rule, message: family.message },
+    ]),
+  ),
+  ...parseNegativeSingletons.map(({ path, rule, message }) => [path, { rule, message }]),
+]);
+assert.equal(parseNegativeContractByPath.size, 86);
+assert.deepEqual(
+  [...parseNegativeContractByPath.keys()].sort(bytewise),
+  parseNegativeRoots,
+  "dynamic-import parse-negative diagnostic ownership changed",
+);
+
+const parseNegativeDiagnosticRuleLines = [
+  "dynamic-import.missing-specifier\tjs_parse_postfix_expr\tImportCall requires a module specifier assignment expression",
+  "dynamic-import.spread-argument\tjs_parse_postfix_expr\tImportCall does not accept spread arguments",
+  "dynamic-import.excess-argument\tjs_parse_postfix_expr\tImportCall accepts at most a specifier and options argument",
+  "dynamic-import.typeof-keyword\tjs_parse_postfix_expr\tthe bare import keyword cannot be a unary typeof operand",
+  "dynamic-import.escaped-keyword\tjs_parse_error_reserved_identifier\tthe import terminal cannot contain Unicode escapes",
+  "dynamic-import.second-argument-yield-context\tjs_parse_assign_expr2\tImportCall options expressions preserve the surrounding Yield grammar parameter",
+];
+assert.equal(new Set(parseNegativeDiagnosticRuleLines).size, 6);
+const parseNegativeDiagnosticCandidates = parseNegativeRoots.flatMap((relativePath) => {
+  const contract = parseNegativeContractByPath.get(relativePath);
+  assert(contract, `${relativePath}: missing diagnostic ownership`);
+  return variants(relativePath).map(
+    (variant) => `${relativePath}\t${variant}\t${contract.rule}`,
+  );
 });
+parseNegativeDiagnosticCandidates.sort(bytewise);
+assert.equal(parseNegativeDiagnosticCandidates.length, 163);
+
+const diagnosticCandidates = [
+  ...newTargetDiagnosticCandidates,
+  ...parseNegativeDiagnosticCandidates,
+];
 diagnosticCandidates.sort(bytewise);
-assert.equal(diagnosticCandidates.length, 40);
+assert.equal(diagnosticCandidates.length, 203);
 
 function checkedLineSet(path) {
   return new Set(readFileSync(path, "utf8").split("\n"));
@@ -436,7 +615,7 @@ function profileSection(name) {
 function assertPromoted() {
   const profile = profileSection("audited-negative-tests");
   const focused = checkedLineSet(checkedFocused);
-  const canaryPaths = new Set([...sourcePhaseCanaries, ...importDeferCanaries]);
+  const canaryPaths = new Set(futureSyntaxCanaries);
   for (const relativePath of assignmentTargetRoots) {
     assert(profile.has(relativePath), `${relativePath}: assignment profile path not promoted`);
   }
@@ -444,7 +623,11 @@ function assertPromoted() {
     assert(profile.has(relativePath), `${relativePath}: profile path not promoted`);
     assert(focused.has(relativePath), `${relativePath}: focused path not promoted`);
   }
-  for (const relativePath of [...sourcePhaseCanaries, ...importDeferCanaries]) {
+  for (const relativePath of parseNegativeRoots) {
+    assert(profile.has(relativePath), `${relativePath}: parse-negative profile path not promoted`);
+    assert(focused.has(relativePath), `${relativePath}: parse-negative focused path not promoted`);
+  }
+  for (const relativePath of futureSyntaxCanaries) {
     assert(!profile.has(relativePath), `${relativePath}: canary escaped into the profile`);
     assert(!focused.has(relativePath), `${relativePath}: canary escaped into the focused manifest`);
   }
@@ -455,10 +638,13 @@ function assertPromoted() {
     .map((line) => line.split("\t")[2]);
   assert(
     admittedPaths.every((relativePath) => !canaryPaths.has(relativePath)),
-    "new-target surface canary escaped into admissions",
+    "future dynamic-import syntax canary escaped into admissions",
   );
   const rules = checkedLineSet(checkedRules);
   assert(rules.has(diagnosticRuleLine), `${diagnosticRule}: rule not promoted`);
+  for (const ruleLine of parseNegativeDiagnosticRuleLines) {
+    assert(rules.has(ruleLine), `${ruleLine.split("\t")[0]}: rule not promoted exactly`);
+  }
 
   const contractLines = readFileSync(checkedDiagnostics, "utf8")
     .trimEnd()
@@ -475,8 +661,7 @@ function assertPromoted() {
   );
   const expectedAssignmentKeys = assignmentTargetRoots
     .flatMap((relativePath) =>
-      (metadata(relativePath).flags.includes("noStrict") ? ["sloppy"] : ["sloppy", "strict"])
-        .map((variant) => `${relativePath}\t${variant}`),
+      variants(relativePath).map((variant) => `${relativePath}\t${variant}`),
     )
     .sort(bytewise);
   const actualAssignmentKeys = assignmentContracts
@@ -525,7 +710,55 @@ function assertPromoted() {
   const actualCandidates = ownedContracts
     .map((fields) => `${fields[0]}\t${fields[1]}\t${fields[5]}`)
     .sort(bytewise);
-  assert.deepEqual(actualCandidates, diagnosticCandidates, "new-target diagnostic contracts drifted");
+  assert.deepEqual(
+    actualCandidates,
+    newTargetDiagnosticCandidates,
+    "new-target diagnostic contracts drifted",
+  );
+
+  const parseNegativePaths = new Set(parseNegativeRoots);
+  const parseNegativeContracts = contractLines
+    .map((line) => line.split("\t"))
+    .filter((fields) => parseNegativePaths.has(fields[0]));
+  assert.equal(
+    parseNegativeContracts.length,
+    163,
+    "dynamic-import parse-negative diagnostic contract count drifted",
+  );
+  const expectedParseNegativeKeys = parseNegativeRoots
+    .flatMap((relativePath) =>
+      variants(relativePath).map((variant) => `${relativePath}\t${variant}`),
+    )
+    .sort(bytewise);
+  const actualParseNegativeKeys = parseNegativeContracts
+    .map((fields) => `${fields[0]}\t${fields[1]}`)
+    .sort(bytewise);
+  assert.deepEqual(
+    actualParseNegativeKeys,
+    expectedParseNegativeKeys,
+    "dynamic-import parse-negative diagnostic variants drifted",
+  );
+  for (const fields of parseNegativeContracts) {
+    const contract = parseNegativeContractByPath.get(fields[0]);
+    assert(contract, `${fields[0]}: diagnostic ownership disappeared`);
+    assert.equal(fields.length, 10, `${fields[0]} ${fields[1]}: diagnostic schema drifted`);
+    assert.equal(fields[2], sha256(source(fields[0])), `${fields[0]}: source hash drifted`);
+    assert.equal(fields[3], "parse", `${fields[0]}: diagnostic phase drifted`);
+    assert.equal(fields[4], "SyntaxError", `${fields[0]}: diagnostic type drifted`);
+    assert.equal(fields[5], contract.rule, `${fields[0]}: diagnostic rule drifted`);
+    assert.equal(fields[6], contract.message, `${fields[0]}: diagnostic message drifted`);
+    assert.match(fields[7], /^[1-9][0-9]*$/u, `${fields[0]}: diagnostic line drifted`);
+    assert.match(fields[8], /^[1-9][0-9]*$/u, `${fields[0]}: diagnostic column drifted`);
+    assert.equal(fields[9], "exact", `${fields[0]}: location policy drifted`);
+  }
+  const actualParseNegativeCandidates = parseNegativeContracts
+    .map((fields) => `${fields[0]}\t${fields[1]}\t${fields[5]}`)
+    .sort(bytewise);
+  assert.deepEqual(
+    actualParseNegativeCandidates,
+    parseNegativeDiagnosticCandidates,
+    "dynamic-import parse-negative diagnostic contracts drifted",
+  );
 
   const exemptions = readFileSync(checkedExemptions, "utf8")
     .trimEnd()
@@ -541,8 +774,12 @@ function assertPromoted() {
     "assignment-target diagnostics must not use exemptions",
   );
   assert(
+    exemptions.every((relativePath) => !parseNegativePaths.has(relativePath)),
+    "dynamic-import parse-negative diagnostics must not use exemptions",
+  );
+  assert(
     exemptions.every((relativePath) => !canaryPaths.has(relativePath)),
-    "new-target surface canary escaped into exemptions",
+    "future dynamic-import syntax canary escaped into exemptions",
   );
 }
 
@@ -552,6 +789,7 @@ if (mode === "--admissions") {
       ...admissionRecords,
       ...assignmentTargetAdmissionRecords,
       ...newTargetAdmissionRecords,
+      ...parseNegativeAdmissionRecords,
     ]),
   );
 } else if (mode === "--diagnostic-candidates") {
@@ -564,9 +802,15 @@ if (mode === "--admissions") {
     assignmentTargetAdmissionRecords,
   );
   assertAdmissionGroup(checkedAdmissions, newTargetGroup, newTargetAdmissionRecords);
+  assertAdmissionGroup(
+    checkedAdmissions,
+    parseNegativeGroup,
+    parseNegativeAdmissionRecords,
+  );
   assertPromoted();
   console.log(
     "dynamic-import admissions authenticated: runtime roots=4/variants=8; " +
-      "assignment negatives=17/34; new-target negatives=21/40; sources=44; edges=3",
+      "assignment negatives=17/34; new-target negatives=21/40; " +
+      "parse negatives=86/163; sources=130; edges=3",
   );
 }

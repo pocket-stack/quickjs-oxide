@@ -11352,6 +11352,46 @@ fn reserved_property_names_and_import_calls_remain_distinct() {
 }
 
 #[test]
+fn dynamic_import_keyword_edges_preserve_quickjs_diagnostics_and_spans() {
+    for (source, message, line, column) in [
+        (
+            r#"im\u0070ort("module")"#,
+            "'import' is a reserved identifier",
+            1,
+            1,
+        ),
+        ("typeof import;", "expecting '('", 1, 14),
+        (
+            "'use strict'; import(\"module\", yield);",
+            "unexpected 'yield' keyword",
+            1,
+            32,
+        ),
+    ] {
+        let error = compile_unlinked_script(source).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source:?}: {error}");
+        assert_eq!(error.message(), message, "{source:?}");
+        let span = error
+            .span()
+            .unwrap_or_else(|| panic!("missing syntax span for {source:?}"));
+        assert_eq!(
+            (span.start.line, span.start.column),
+            (line, column),
+            "{source:?}",
+        );
+    }
+
+    for source in [
+        "import(\"module\", yield);",
+        "function* load(){ import(\"module\", yield); }",
+    ] {
+        compile_unlinked_script(source).unwrap_or_else(|error| {
+            panic!("valid Yield-context ImportCall {source:?} failed: {error}")
+        });
+    }
+}
+
+#[test]
 fn dynamic_import_retains_quickjs_specifier_and_options_stack_shape() {
     for (source, expected_options) in [
         ("import(20)", None),

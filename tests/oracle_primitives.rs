@@ -706,6 +706,14 @@ const FUTURE_RESERVED_IMPORT_CALL_CASES: &[(&str, &str)] = &[
         "dynamic import as a constructor argument",
         "new C(import('fixture'))",
     ),
+    (
+        "sloppy dynamic import options yield identifier",
+        "import('module', yield)",
+    ),
+    (
+        "generator dynamic import options yield expression",
+        "function* load(){ import('module', yield); }",
+    ),
 ];
 
 const FUTURE_RESERVED_ERROR_CASES: &[(&str, &str)] = &[
@@ -799,6 +807,12 @@ const FUTURE_RESERVED_ERROR_CASES: &[(&str, &str)] = &[
     (
         "eval escaped always-reserved reference",
         r#"eval("imp\\u006frt;")"#,
+    ),
+    ("escaped dynamic import keyword", r"im\u0070ort('module')"),
+    ("typeof bare dynamic import keyword", "typeof import;"),
+    (
+        "strict dynamic import options yield identifier",
+        "'use strict'; import('module', yield);",
     ),
 ];
 
