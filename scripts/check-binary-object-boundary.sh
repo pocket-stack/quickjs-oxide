@@ -159,6 +159,7 @@ expected_root_modules = (
     "graph",
     "pinned_atoms",
     "pinned_opcodes",
+    "read_cursor",
     "wire",
 )
 for module in expected_root_modules:
@@ -218,6 +219,80 @@ if binary_root.is_symlink() or not binary_root.is_dir():
     binary_sources: list[Path] = []
 else:
     binary_sources = sorted(binary_root.rglob("*.rs"))
+
+cursor_relative = "src/runtime/binary_object/read_cursor.rs"
+cursor_source = read_source(cursor_relative)
+cursor_code = rust_code_only(cursor_source)
+sealed_modules = re.findall(r"(?m)^[ \t]*mod[ \t]+sealed[ \t]*\{", cursor_code)
+if len(sealed_modules) != 1 or re.search(
+    r"\bpub(?:[ \t\n]*\([^)]*\))?[ \t\n]+mod[ \t\n]+sealed\b",
+    cursor_code,
+):
+    fail(
+        "common-cursor-unsealed",
+        f"{cursor_relative} must contain exactly one private `mod sealed`",
+    )
+
+checked_trait_pattern = re.compile(
+    r"\bpub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
+    r"[ \t\n]*::[ \t\n]*binary_object[ \t\n]*\)[ \t\n]+trait[ \t\n]+"
+    r"CheckedReadCursor[ \t\n]*<[ \t\n]*'input[ \t\n]*>[ \t\n]*:"
+    r"[ \t\n]*sealed[ \t\n]*::[ \t\n]*Sealed\b"
+)
+if len(checked_trait_pattern.findall(cursor_code)) != 1:
+    fail(
+        "common-cursor-unsealed",
+        f"{cursor_relative} must declare one binary_object-private CheckedReadCursor sealed by sealed::Sealed",
+    )
+
+forbidden_cursor_capability = re.compile(
+    r"\bu64\b|\ballows_shared_array_buffers\b|\brecord_shared_array_buffer\b"
+)
+for match in forbidden_cursor_capability.finditer(cursor_code):
+    fail(
+        "forbidden-common-cursor-capability",
+        "CheckedReadCursor must not expose raw u64 or SAB capability hooks; found "
+        + location(cursor_relative, cursor_source, match.start()),
+    )
+
+checked_cursor_alias = re.compile(r"\bCheckedReadCursor[ \t\n]+as[ \t\n]+")
+for match in checked_cursor_alias.finditer(cursor_code):
+    fail(
+        "common-cursor-trait-alias",
+        "CheckedReadCursor must not be renamed before an implementation; found "
+        + location(cursor_relative, cursor_source, match.start()),
+    )
+
+checked_impl_pattern = re.compile(
+    r"\bimpl\b(?P<header>[^{};]*\bCheckedReadCursor\b[^{};]*)\{",
+    re.DOTALL,
+)
+checked_impl_headers: list[tuple[str, str]] = []
+for path in binary_sources:
+    if path.is_symlink() or not path.is_file():
+        continue
+    relative = path.relative_to(root).as_posix()
+    for match in checked_impl_pattern.finditer(
+        rust_code_only(path.read_text(encoding="utf-8"))
+    ):
+        header = " ".join(("impl" + match.group("header") + " {").split())
+        checked_impl_headers.append((relative, header))
+expected_checked_impl_headers = [
+    (
+        cursor_relative,
+        "impl<'input> CheckedReadCursor<'input> for SabTransportCursor<'input> {",
+    ),
+    (
+        cursor_relative,
+        "impl<'input> CheckedReadCursor<'input> for WireCursor<'input> {",
+    ),
+]
+if sorted(checked_impl_headers) != sorted(expected_checked_impl_headers):
+    fail(
+        "common-cursor-implementation-set",
+        "CheckedReadCursor must have only the two canonical implementations in read_cursor.rs; "
+        f"found {checked_impl_headers}",
+    )
 
 for path in binary_sources:
     relative = path.relative_to(root).as_posix()
@@ -417,6 +492,7 @@ printf '%s\n' \
     'mod graph;' \
     'mod pinned_atoms;' \
     'mod pinned_opcodes;' \
+    'mod read_cursor;' \
     'mod wire;' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 printf '%s\n' \
@@ -424,6 +500,14 @@ printf '%s\n' \
     '    let _ = PinnedAtomId::from_raw(raw);' \
     '}' \
     > "$fixture/src/runtime/binary_object/atoms.rs"
+printf '%s\n' \
+    'mod sealed {' \
+    '    pub trait Sealed {}' \
+    '}' \
+    "pub(in crate::runtime::binary_object) trait CheckedReadCursor<'input>: sealed::Sealed {}" \
+    "impl<'input> CheckedReadCursor<'input> for WireCursor<'input> {}" \
+    "impl<'input> CheckedReadCursor<'input> for SabTransportCursor<'input> {}" \
+    > "$fixture/src/runtime/binary_object/read_cursor.rs"
 printf '%s\n' \
     'mod atoms;' \
     'mod budget;' \
@@ -537,5 +621,23 @@ expect_rejected root-reexport root-reexport \
 expect_rejected image-public-module image-module-visibility \
     src/runtime/binary_object/bytecode_image/mod.rs \
     'pub(in crate::runtime) mod leaked;'
+expect_rejected common-cursor-u64 forbidden-common-cursor-capability \
+    src/runtime/binary_object/read_cursor.rs \
+    'fn read_u64_le(&mut self) -> u64 { 0 }'
+expect_rejected common-cursor-sab-hook forbidden-common-cursor-capability \
+    src/runtime/binary_object/read_cursor.rs \
+    'fn allows_shared_array_buffers(&self) -> bool { true }'
+expect_rejected common-cursor-extra-impl common-cursor-implementation-set \
+    src/runtime/binary_object/read_cursor.rs \
+    "impl<'input> CheckedReadCursor<'input> for ThirdCursor<'input> {}"
+expect_rejected common-cursor-nongeneric-impl common-cursor-implementation-set \
+    src/runtime/binary_object/read_cursor.rs \
+    "impl CheckedReadCursor<'static> for ThirdCursor {}"
+expect_rejected common-cursor-qualified-impl common-cursor-implementation-set \
+    src/runtime/binary_object/read_cursor.rs \
+    "impl<'input> CheckedReadCursor<'input> for crate::ThirdCursor<'input> {}"
+expect_rejected common-cursor-aliased-impl common-cursor-trait-alias \
+    src/runtime/binary_object/read_cursor.rs \
+    "use self::CheckedReadCursor as Alias; impl Alias<'static> for ThirdCursor {}"
 
 echo "binary-object production boundary passed; all isolation canaries were rejected"

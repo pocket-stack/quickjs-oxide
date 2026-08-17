@@ -4,7 +4,8 @@ use std::fmt;
 
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
 use super::super::code::{CodeError, CodeImage, CodeLimits, CodeResourceKind};
-use super::super::wire::{ReaderMode, WireCursor, WireError, WireWriter};
+use super::super::read_cursor::CheckedReadCursor;
+use super::super::wire::{ReaderMode, WireError, WireWriter};
 use super::model::*;
 
 const FUNCTION_FLAGS_MASK: u16 = 0x0fff;
@@ -297,11 +298,14 @@ impl From<CodeError> for FunctionEnvelopeError {
 /// must keep using the same whole-image decode state for those values; calling
 /// the data-only graph decoder per entry would corrupt object-reference
 /// numbering across nested functions.
-pub(in crate::runtime) fn read_function_record_prefix_after_tag(
-    cursor: &mut WireCursor<'_>,
+pub(in crate::runtime) fn read_function_record_prefix_after_tag<'input, C>(
+    cursor: &mut C,
     atom_space: AtomIndexSpace,
     limits: FunctionEnvelopeLimits,
-) -> Result<FunctionRecordPrefix, FunctionEnvelopeError> {
+) -> Result<FunctionRecordPrefix, FunctionEnvelopeError>
+where
+    C: CheckedReadCursor<'input>,
+{
     if atom_space.mode() != BinaryObjectMode::Bytecode {
         return Err(FunctionEnvelopeError::InvalidAtomMode {
             found: atom_space.mode(),
@@ -599,10 +603,13 @@ fn decode_scope_link(encoded: u32, offset: usize) -> Result<ScopeLink, FunctionE
     Ok(ScopeLink(scope_next))
 }
 
-fn read_truncating_u16(
-    cursor: &mut WireCursor<'_>,
+fn read_truncating_u16<'input, C>(
+    cursor: &mut C,
     field: FunctionField,
-) -> Result<u16, FunctionEnvelopeError> {
+) -> Result<u16, FunctionEnvelopeError>
+where
+    C: CheckedReadCursor<'input>,
+{
     let offset = cursor.position();
     let value = cursor.read_uleb128()?;
     if cursor.mode() == ReaderMode::Strict && value > u32::from(u16::MAX) {
@@ -617,10 +624,13 @@ fn read_truncating_u16(
     Ok(value as u16)
 }
 
-fn read_positive_int(
-    cursor: &mut WireCursor<'_>,
+fn read_positive_int<'input, C>(
+    cursor: &mut C,
     field: FunctionField,
-) -> Result<usize, FunctionEnvelopeError> {
+) -> Result<usize, FunctionEnvelopeError>
+where
+    C: CheckedReadCursor<'input>,
+{
     let offset = cursor.position();
     let value = cursor.read_uleb128()?;
     if value > MAX_QUICKJS_POSITIVE_INT {
@@ -634,11 +644,14 @@ fn read_positive_int(
     Ok(value as usize)
 }
 
-fn read_debug_image(
-    cursor: &mut WireCursor<'_>,
+fn read_debug_image<'input, C>(
+    cursor: &mut C,
     atom_space: AtomIndexSpace,
     limits: FunctionEnvelopeLimits,
-) -> Result<FunctionDebugImage, FunctionEnvelopeError> {
+) -> Result<FunctionDebugImage, FunctionEnvelopeError>
+where
+    C: CheckedReadCursor<'input>,
+{
     let filename = atom_space.decode_metadata_atom(cursor)?;
     let pc2line_length = read_positive_int(cursor, FunctionField::Pc2LineLength)?;
     limits.check(FunctionResourceKind::Pc2LineBytes, pc2line_length)?;

@@ -17,9 +17,8 @@ use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
 use super::super::bytecode_image::{ImageOpaque, ImageValue};
-use super::super::wire::{
-    BcTag, BinaryObjectHeader, ReaderMode, WireCursor, WireError, WireLimits, WireString,
-};
+use super::super::read_cursor::CheckedReadCursor;
+use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::arena::{ArenaError, NodeState, ObjectArena, PendingNodeKind};
 use super::model::{
     ArrayBufferLayoutError, AtomId, BoxedPrimitive, BoxedPrimitiveError, DateNumber,
@@ -373,19 +372,8 @@ mod data_cursor_seal {
 }
 
 pub(in crate::runtime::binary_object) trait DataCursor<'input>:
-    data_cursor_seal::Sealed
+    CheckedReadCursor<'input> + data_cursor_seal::Sealed
 {
-    fn position(&self) -> usize;
-    fn mode(&self) -> ReaderMode;
-    fn read_u8(&mut self) -> Result<u8, WireError>;
-    fn read_bytes(&mut self, length: usize) -> Result<&'input [u8], WireError>;
-    fn read_tag(&mut self) -> Result<BcTag, WireError>;
-    fn read_uleb128(&mut self) -> Result<u32, WireError>;
-    fn read_i32(&mut self) -> Result<i32, WireError>;
-    fn read_f64(&mut self) -> Result<f64, WireError>;
-    fn read_header(&mut self) -> Result<BinaryObjectHeader, WireError>;
-    fn read_string(&mut self) -> Result<WireString, WireError>;
-
     fn allows_shared_array_buffers(&self) -> bool {
         false
     }
@@ -399,89 +387,9 @@ pub(in crate::runtime::binary_object) trait DataCursor<'input>:
     }
 }
 
-impl<'input> DataCursor<'input> for WireCursor<'input> {
-    fn position(&self) -> usize {
-        WireCursor::position(self)
-    }
-
-    fn mode(&self) -> ReaderMode {
-        WireCursor::mode(self)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, WireError> {
-        WireCursor::read_u8(self)
-    }
-
-    fn read_bytes(&mut self, length: usize) -> Result<&'input [u8], WireError> {
-        WireCursor::read_bytes(self, length)
-    }
-
-    fn read_tag(&mut self) -> Result<BcTag, WireError> {
-        WireCursor::read_tag(self)
-    }
-
-    fn read_uleb128(&mut self) -> Result<u32, WireError> {
-        WireCursor::read_uleb128(self)
-    }
-
-    fn read_i32(&mut self) -> Result<i32, WireError> {
-        WireCursor::read_i32(self)
-    }
-
-    fn read_f64(&mut self) -> Result<f64, WireError> {
-        WireCursor::read_f64(self)
-    }
-
-    fn read_header(&mut self) -> Result<BinaryObjectHeader, WireError> {
-        WireCursor::read_header(self)
-    }
-
-    fn read_string(&mut self) -> Result<WireString, WireError> {
-        WireCursor::read_string(self)
-    }
-}
+impl<'input> DataCursor<'input> for WireCursor<'input> {}
 
 impl<'input> DataCursor<'input> for SabTransportCursor<'input> {
-    fn position(&self) -> usize {
-        SabTransportCursor::position(self)
-    }
-
-    fn mode(&self) -> ReaderMode {
-        SabTransportCursor::mode(self)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, WireError> {
-        SabTransportCursor::read_u8(self)
-    }
-
-    fn read_bytes(&mut self, length: usize) -> Result<&'input [u8], WireError> {
-        SabTransportCursor::read_bytes(self, length)
-    }
-
-    fn read_tag(&mut self) -> Result<BcTag, WireError> {
-        SabTransportCursor::read_tag(self)
-    }
-
-    fn read_uleb128(&mut self) -> Result<u32, WireError> {
-        SabTransportCursor::read_uleb128(self)
-    }
-
-    fn read_i32(&mut self) -> Result<i32, WireError> {
-        SabTransportCursor::read_i32(self)
-    }
-
-    fn read_f64(&mut self) -> Result<f64, WireError> {
-        SabTransportCursor::read_f64(self)
-    }
-
-    fn read_header(&mut self) -> Result<BinaryObjectHeader, WireError> {
-        SabTransportCursor::read_header(self)
-    }
-
-    fn read_string(&mut self) -> Result<WireString, WireError> {
-        SabTransportCursor::read_string(self)
-    }
-
     fn allows_shared_array_buffers(&self) -> bool {
         true
     }

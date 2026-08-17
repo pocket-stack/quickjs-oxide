@@ -14,7 +14,10 @@
 use crate::atom::{ATOM_MAX_INT, ATOM_MAX_TABLE_INDEX, ATOM_TAG_INT};
 
 use super::pinned_atoms::{FIRST_DYNAMIC_ATOM, PinnedAtomId};
-use super::wire::{WireCursor, WireError, WireWriter};
+use super::read_cursor::CheckedReadCursor;
+#[cfg(test)]
+use super::wire::WireCursor;
+use super::wire::{WireError, WireWriter};
 
 /// Caller-selected interpretation of a BC5 binary object's atom namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,10 +132,13 @@ impl AtomIndexSpace {
     ///
     /// ULEB errors (including strict-mode non-canonical encodings) are reported
     /// before atom-index validation, matching the wire reader's phase order.
-    pub(in crate::runtime) fn decode_metadata_atom(
+    pub(in crate::runtime) fn decode_metadata_atom<'input, C>(
         self,
-        cursor: &mut WireCursor<'_>,
-    ) -> Result<BinaryAtom, WireError> {
+        cursor: &mut C,
+    ) -> Result<BinaryAtom, WireError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let encoded = cursor.read_uleb128()?;
         self.resolve_metadata_atom(encoded, cursor.position())
     }

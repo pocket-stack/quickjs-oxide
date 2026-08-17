@@ -6,7 +6,7 @@ use super::super::super::function_envelope::{
     read_function_record_prefix_after_tag,
 };
 use super::super::super::graph::decode::{DataCompletion, DataMachineOutput, MachineSource};
-use super::super::super::wire::WireCursor;
+use super::super::super::read_cursor::CheckedReadCursor;
 use super::super::atoms::{ImageAtomTable, ImageKey};
 use super::super::budget::{
     BytecodeImageBudgetError, BytecodeImageLimits, BytecodeImageResourceKind, FunctionTotals,
@@ -70,12 +70,15 @@ impl FunctionTable {
         }
     }
 
-    pub(super) fn begin_function(
+    pub(super) fn begin_function<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         atoms: &ImageAtomTable,
         tag_offset: usize,
-    ) -> Result<FunctionFrame, BytecodeImageError> {
+    ) -> Result<FunctionFrame, BytecodeImageError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let requested =
             self.slots
                 .len()

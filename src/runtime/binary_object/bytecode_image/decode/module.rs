@@ -3,7 +3,7 @@
 use std::num::NonZeroU8;
 
 use super::super::super::graph::decode::{DataCompletion, DataMachineOutput, MachineSource};
-use super::super::super::wire::WireCursor;
+use super::super::super::read_cursor::CheckedReadCursor;
 use super::super::atoms::{ImageAtom, ImageAtomTable, ImageKey};
 use super::super::budget::{
     BytecodeImageLimits, BytecodeImageResourceKind, ModuleResourceKind, ModuleTotals, ModuleUsage,
@@ -38,12 +38,15 @@ pub(super) struct ModuleFrame {
 }
 
 impl ModuleFrame {
-    pub(super) fn next_target(
+    pub(super) fn next_target<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         atoms: &ImageAtomTable,
         modules: &mut ModuleTable,
-    ) -> Result<CompletionTarget, BytecodeImageError> {
+    ) -> Result<CompletionTarget, BytecodeImageError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         match self.phase {
             ModulePhase::Requests => {
                 if self.requests.len() < self.expected_requests {
@@ -135,11 +138,14 @@ impl ModuleTable {
         }
     }
 
-    pub(super) fn begin_module(
+    pub(super) fn begin_module<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         atoms: &ImageAtomTable,
-    ) -> Result<ModuleFrame, BytecodeImageError> {
+    ) -> Result<ModuleFrame, BytecodeImageError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let requested =
             self.slots
                 .len()
@@ -185,11 +191,14 @@ impl ModuleTable {
         })
     }
 
-    fn read_exports(
+    fn read_exports<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         atoms: &ImageAtomTable,
-    ) -> Result<Vec<ModuleExport>, BytecodeImageError> {
+    ) -> Result<Vec<ModuleExport>, BytecodeImageError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let count = self.read_count(cursor, ModuleResourceKind::Exports)?;
         let mut exports = Vec::new();
         exports
@@ -218,10 +227,13 @@ impl ModuleTable {
         Ok(exports)
     }
 
-    fn read_star_exports(
+    fn read_star_exports<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
-    ) -> Result<Vec<u32>, BytecodeImageError> {
+        cursor: &mut C,
+    ) -> Result<Vec<u32>, BytecodeImageError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let count = self.read_count(cursor, ModuleResourceKind::StarExports)?;
         let mut request_indices = Vec::new();
         request_indices
@@ -233,11 +245,14 @@ impl ModuleTable {
         Ok(request_indices)
     }
 
-    fn read_imports(
+    fn read_imports<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         atoms: &ImageAtomTable,
-    ) -> Result<Vec<ModuleImport>, BytecodeImageError> {
+    ) -> Result<Vec<ModuleImport>, BytecodeImageError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let count = self.read_count(cursor, ModuleResourceKind::Imports)?;
         let mut imports = Vec::new();
         imports
@@ -258,11 +273,14 @@ impl ModuleTable {
         Ok(imports)
     }
 
-    fn read_count(
+    fn read_count<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         kind: ModuleResourceKind,
-    ) -> Result<usize, BytecodeImageError> {
+    ) -> Result<usize, BytecodeImageError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let offset = cursor.position();
         let raw = cursor.read_uleb128()?;
         if raw > QUICKJS_POSITIVE_INT_MAX {
@@ -382,10 +400,13 @@ impl ModuleTable {
     }
 }
 
-fn read_module_field(
-    cursor: &mut WireCursor<'_>,
+fn read_module_field<'input, C>(
+    cursor: &mut C,
     field: ModuleField,
-) -> Result<u32, BytecodeImageError> {
+) -> Result<u32, BytecodeImageError>
+where
+    C: CheckedReadCursor<'input>,
+{
     let offset = cursor.position();
     let value = cursor.read_uleb128()?;
     if value > QUICKJS_POSITIVE_INT_MAX {

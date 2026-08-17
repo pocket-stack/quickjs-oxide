@@ -29,4 +29,7 @@ mod pinned_atoms;
 mod pinned_opcodes;
 
 #[allow(dead_code)]
+mod read_cursor;
+
+#[allow(dead_code)]
 mod wire;

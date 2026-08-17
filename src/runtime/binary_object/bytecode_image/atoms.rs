@@ -17,7 +17,8 @@ use super::super::graph::model::{
     AtomId, numeric_atom_index, semantic_atom_eq, semantic_atom_hash,
 };
 use super::super::pinned_atoms::{self, PinnedAtomId};
-use super::super::wire::{ReaderMode, WireCursor, WireError, WireString};
+use super::super::read_cursor::CheckedReadCursor;
+use super::super::wire::{ReaderMode, WireError, WireString};
 
 /// One semantic atom identity shared by the entire bytecode image.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -111,7 +112,10 @@ impl ImageAtomTable {
     /// first value tag, ready for a future whole-image reader. All wire limits,
     /// including atom count and aggregate string code units, remain enforced
     /// by this same cursor.
-    pub(super) fn read(cursor: &mut WireCursor<'_>) -> Result<Self, ImageAtomError> {
+    pub(super) fn read<'input, C>(cursor: &mut C) -> Result<Self, ImageAtomError>
+    where
+        C: CheckedReadCursor<'input>,
+    {
         let header = cursor.read_header()?;
         let raw_space = AtomIndexSpace::new(BinaryObjectMode::Bytecode, header.atom_count)?;
         let atom_count = header.atom_count as usize;

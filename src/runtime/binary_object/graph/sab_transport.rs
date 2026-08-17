@@ -143,10 +143,12 @@ impl<'a> SabTransportInput<'a> {
 /// Checked wire and side-table cursor for one SAB-aware decode.
 ///
 /// There is no `Debug`, side-table accessor, bare [`WireCursor`] accessor, or
-/// way to finish only one half. All ordinary reads delegate through this type;
-/// the fixed-width SAB token is readable only as part of the checked record
-/// operation below.
-pub(super) struct SabTransportCursor<'a> {
+/// consuming finalizer for only one half. A non-consuming wire-end check exists
+/// solely to preserve whole-image diagnostic order; it neither validates the
+/// occurrence-table cardinality nor publishes a result. All ordinary reads
+/// delegate through this type, while the fixed-width SAB token is interpreted
+/// only by the checked record operation below.
+pub(in crate::runtime::binary_object) struct SabTransportCursor<'a> {
     wire: WireCursor<'a>,
     writer_occurrences: &'a [NativeSabToken],
     next_occurrence: usize,
@@ -210,6 +212,10 @@ impl<'a> SabTransportCursor<'a> {
         &mut self,
     ) -> Result<WireString, WireError> {
         self.wire.read_string()
+    }
+
+    pub(in crate::runtime::binary_object) fn validate_wire_end(&self) -> Result<(), WireError> {
+        self.wire.validate_wire_end()
     }
 
     /// Consume and authenticate one complete SAB record's fixed-width token.

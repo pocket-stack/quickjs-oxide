@@ -502,7 +502,7 @@ impl<'a> WireCursor<'a> {
         }
     }
 
-    pub(in crate::runtime) fn finish(self) -> Result<(), WireError> {
+    pub(in crate::runtime::binary_object) fn validate_wire_end(&self) -> Result<(), WireError> {
         let remaining = self.remaining();
         if self.mode == ReaderMode::Strict && remaining != 0 {
             return Err(WireError::TrailingBytes {
@@ -511,6 +511,10 @@ impl<'a> WireCursor<'a> {
             });
         }
         Ok(())
+    }
+
+    pub(in crate::runtime) fn finish(self) -> Result<(), WireError> {
+        self.validate_wire_end()
     }
 }
 

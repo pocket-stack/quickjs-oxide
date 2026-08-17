@@ -8,9 +8,10 @@
 
 use super::super::function_envelope::FunctionEnvelopeError;
 use super::super::graph::decode::{
-    DataCompletion, DataFrame, DataMachine, DataReadStep, DecodeError, MachineSource,
+    DataCompletion, DataCursor, DataFrame, DataMachine, DataReadStep, DecodeError, MachineSource,
     PropertyDisposition,
 };
+use super::super::read_cursor::CheckedReadCursor;
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::atoms::{ImageAtom, ImageAtomError, ImageAtomTable, ImageKey};
 use super::budget::{
@@ -190,7 +191,22 @@ pub(in crate::runtime) fn decode_bytecode_image(
     limits: BytecodeImageLimits,
     allow_object_references: bool,
 ) -> Result<BytecodeImage, BytecodeImageError> {
-    let mut cursor = WireCursor::new(input, mode, wire_limits)?;
+    let cursor = WireCursor::new(input, mode, wire_limits)?;
+    let (cursor, image) = decode_bytecode_image_body(cursor, limits, allow_object_references)?;
+    // This call is unconditional: QuickJsCompatible itself decides to accept
+    // trailing bytes, rather than the image layer bypassing finalization.
+    cursor.finish()?;
+    Ok(image)
+}
+
+fn decode_bytecode_image_body<'input, C>(
+    mut cursor: C,
+    limits: BytecodeImageLimits,
+    allow_object_references: bool,
+) -> Result<(C, BytecodeImage), BytecodeImageError>
+where
+    C: DataCursor<'input>,
+{
     let atoms = ImageAtomTable::read(&mut cursor)?;
     let mut machine =
         DataMachine::<ImageValue, ImageKey>::new(limits.graph(), allow_object_references)?;
@@ -262,9 +278,13 @@ pub(in crate::runtime) fn decode_bytecode_image(
         )?;
     }
 
-    // Strict-vs-compatible trailing-input behavior remains centralized in the
-    // same cursor that read every prefix and constant-pool value.
-    cursor.finish()?;
+    // Preserve the ordinary reader's error order: strict trailing input is
+    // rejected after the complete recursive record is consumed, but before
+    // decoder-owned arenas and function/module tables are finalized. The
+    // consuming cursor finalizer runs again at the public boundary; a future
+    // SAB image entrypoint will consume the same cursor together with its
+    // authenticated occurrence table.
+    cursor.validate_wire_end()?;
 
     let root = root.ok_or(BytecodeImageError::InvalidCompletionTarget)?;
     let output = machine.finish_output()?;
@@ -272,7 +292,7 @@ pub(in crate::runtime) fn decode_bytecode_image(
     let function_records = functions.finish(&output)?;
     let module_records = modules.finish(&output)?;
     let parts = output.into_parts();
-    Ok(BytecodeImage::new(
+    let image = BytecodeImage::new(
         source,
         atoms.into_dynamic_atoms(),
         parts.nodes,
@@ -280,7 +300,8 @@ pub(in crate::runtime) fn decode_bytecode_image(
         function_records,
         module_records,
         root,
-    ))
+    );
+    Ok((cursor, image))
 }
 
 #[derive(Clone, Copy)]
@@ -311,12 +332,15 @@ enum ActiveFrame {
     },
 }
 
-fn next_target(
-    cursor: &mut WireCursor<'_>,
+fn next_target<'input, C>(
+    cursor: &mut C,
     atoms: &ImageAtomTable,
     frames: &mut [ActiveFrame],
     modules: &mut ModuleTable,
-) -> Result<CompletionTarget, BytecodeImageError> {
+) -> Result<CompletionTarget, BytecodeImageError>
+where
+    C: CheckedReadCursor<'input>,
+{
     match frames.last_mut() {
         None => Ok(CompletionTarget::Root),
         Some(ActiveFrame::Function { .. }) => Ok(CompletionTarget::FunctionConstant),
@@ -331,19 +355,25 @@ fn next_target(
     }
 }
 
-fn read_atom(
-    cursor: &mut WireCursor<'_>,
+fn read_atom<'input, C>(
+    cursor: &mut C,
     atoms: &ImageAtomTable,
-) -> Result<ImageAtom, BytecodeImageError> {
+) -> Result<ImageAtom, BytecodeImageError>
+where
+    C: CheckedReadCursor<'input>,
+{
     let offset = cursor.position();
     let raw = atoms.raw_space().decode_metadata_atom(cursor)?;
     Ok(atoms.remap_atom(atoms.raw_space(), raw, offset)?)
 }
 
-fn read_key(
-    cursor: &mut WireCursor<'_>,
+fn read_key<'input, C>(
+    cursor: &mut C,
     atoms: &ImageAtomTable,
-) -> Result<PropertyDisposition<ImageKey>, BytecodeImageError> {
+) -> Result<PropertyDisposition<ImageKey>, BytecodeImageError>
+where
+    C: CheckedReadCursor<'input>,
+{
     let offset = cursor.position();
     let raw = atoms.raw_space().decode_metadata_atom(cursor)?;
     Ok(
