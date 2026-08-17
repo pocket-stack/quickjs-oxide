@@ -2455,6 +2455,31 @@ fn module_function_redeclarations_follow_quickjs_source_order() {
 }
 
 #[test]
+fn module_function_redeclaration_diagnostics_match_quickjs_header_position() {
+    for (source, expected_column) in [
+        ("var value; function value(){}", 26),
+        ("var value; function* value(){}", 27),
+        ("var value; async function value(){}", 32),
+        ("var value; async function* value(){}", 33),
+    ] {
+        let error = compile_unlinked_module_with_filename(
+            source,
+            "function-redeclaration-diagnostic.mjs",
+            DebugInfoMode::StripDebug,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Syntax, "{source}");
+        assert_eq!(
+            error.message(),
+            "invalid redefinition of global identifier in module code",
+            "{source}"
+        );
+        let start = error.span().expect("syntax error lost its span").start;
+        assert_eq!((start.line, start.column), (1, expected_column), "{source}");
+    }
+}
+
+#[test]
 fn module_root_rejects_html_comments_and_strict_with_before_execution() {
     for source in ["<!-- hidden\nexport {};", "with ({}) {}"] {
         let error =

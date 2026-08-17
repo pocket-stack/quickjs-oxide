@@ -867,6 +867,7 @@ impl<'source> Parser<'source> {
         }
         let header =
             self.parse_function_definition_header(export != ModuleDeclarationExport::Default)?;
+        let redefinition_span = self.current().span;
         let source_name = header
             .name
             .as_ref()
@@ -902,7 +903,7 @@ impl<'source> Parser<'source> {
         {
             return Err(Error::syntax(
                 "invalid redefinition of global identifier in module code",
-                source_span(declaration_span),
+                source_span(redefinition_span),
             ));
         }
         let parsed = self.parse_function_definition_tail(header, false)?;

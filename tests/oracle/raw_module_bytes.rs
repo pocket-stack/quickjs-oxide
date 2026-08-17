@@ -27,6 +27,30 @@ const CASES: &[Case] = &[
         authored: b"export const answer = 42; globalThis.__qjoRawObservation = answer;",
     },
     Case {
+        group: "module function redeclaration",
+        description: "normal function conflict reports the parameter-list token",
+        api: Api::Compile,
+        authored: b"var value; function value(){}",
+    },
+    Case {
+        group: "module function redeclaration",
+        description: "generator function conflict reports the parameter-list token",
+        api: Api::CompileWithFilename,
+        authored: b"var value; function* value(){}",
+    },
+    Case {
+        group: "module function redeclaration",
+        description: "async function conflict reports the parameter-list token",
+        api: Api::CompileWithOptions,
+        authored: b"var value; async function value(){}",
+    },
+    Case {
+        group: "module function redeclaration",
+        description: "async generator conflict reports the parameter-list token",
+        api: Api::Compile,
+        authored: b"var value; async function* value(){}",
+    },
+    Case {
         group: "file prefix",
         description: "leading UTF-8 BOM is Module whitespace",
         api: Api::CompileWithFilename,
