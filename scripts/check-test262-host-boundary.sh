@@ -145,6 +145,11 @@ require_gated(
         "use crate::heap::Test262AgentKind;",
         "    fn call_test262_gc(&self, invocation: NativeInvocation) -> Result<Completion, RuntimeError> {",
         "    fn set_object_is_html_dda(&self, object: &ObjectRef) -> Result<(), RuntimeError> {",
+    ),
+)
+require_gated(
+    "src/runtime/context.rs",
+    (
         "    pub fn new_code_point_range_function(&mut self) -> Result<CallableRef, RuntimeError> {",
         "    pub fn new_test262_gc_function(&mut self) -> Result<CallableRef, RuntimeError> {",
     ),
