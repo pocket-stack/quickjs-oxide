@@ -7,6 +7,7 @@ pub(in crate::runtime) mod arena;
 pub(in crate::runtime) mod decode;
 pub(in crate::runtime) mod encode;
 pub(in crate::runtime) mod model;
+pub(in crate::runtime) mod sab_transport;
 pub(in crate::runtime::binary_object) mod write_state;
 
 #[cfg(test)]

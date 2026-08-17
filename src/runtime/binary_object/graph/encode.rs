@@ -55,6 +55,9 @@ pub(in crate::runtime) enum GraphEncodeError {
         atom: AtomId,
     },
     NonCanonicalBigInt,
+    ArchivedBackingContextRequired {
+        node: NodeId,
+    },
     InvalidArrayBuffer {
         node: NodeId,
         reason: ArrayBufferLayoutError,
@@ -100,6 +103,11 @@ impl fmt::Display for GraphEncodeError {
             Self::NonCanonicalBigInt => {
                 formatter.write_str("wire graph contains a non-canonical BigInt payload")
             }
+            Self::ArchivedBackingContextRequired { node } => write!(
+                formatter,
+                "wire graph node {} requires its inseparable archived SharedArrayBuffer backing context",
+                node.zero_based()
+            ),
             Self::InvalidArrayBuffer { node, reason } => write!(
                 formatter,
                 "wire graph node {} contains an invalid ArrayBuffer layout: {reason}",
@@ -370,6 +378,11 @@ pub(in crate::runtime) fn encode_graph(
                                 state.leave_node(*node);
                             }
                         }
+                        WireNode::SharedArrayBuffer { .. } => {
+                            return Err(GraphEncodeError::ArchivedBackingContextRequired {
+                                node: *node,
+                            });
+                        }
                         WireNode::TypedArray {
                             kind,
                             length,
@@ -487,6 +500,7 @@ fn build_encode_plan<'a>(
                         WireNode::Array { elements } => Some(elements.len()),
                         WireNode::TemplateObject { elements, .. } => Some(elements.len()),
                         WireNode::ArrayBuffer { .. }
+                        | WireNode::SharedArrayBuffer { .. }
                         | WireNode::TypedArray { .. }
                         | WireNode::ObjectValue { .. }
                         | WireNode::Date { .. } => None,
@@ -508,7 +522,9 @@ fn build_encode_plan<'a>(
                         WireNode::Ordinary { properties } => properties.len().checked_mul(2),
                         WireNode::Array { elements } => Some(elements.len()),
                         WireNode::TemplateObject { elements, .. } => elements.len().checked_add(1),
-                        WireNode::ArrayBuffer { .. } => Some(0),
+                        WireNode::ArrayBuffer { .. } | WireNode::SharedArrayBuffer { .. } => {
+                            Some(0)
+                        }
                         WireNode::TypedArray { .. } => Some(1),
                         WireNode::ObjectValue { .. } => Some(1),
                         WireNode::Date { .. } => Some(1),
@@ -550,6 +566,7 @@ fn build_encode_plan<'a>(
                             }
                         }
                         WireNode::ArrayBuffer { .. } => {}
+                        WireNode::SharedArrayBuffer { .. } => {}
                         WireNode::TypedArray { buffer, .. } => {
                             tasks.push(EncodeTask::Value(EncodeValue::Node(*buffer), depth));
                         }
@@ -706,6 +723,9 @@ fn validate_node(
         } => {
             validate_array_buffer_node(node, bytes.len(), *max_byte_length)?;
         }
+        WireNode::SharedArrayBuffer { .. } => {
+            return Err(GraphEncodeError::ArchivedBackingContextRequired { node });
+        }
         WireNode::TypedArray {
             kind,
             length,
@@ -744,19 +764,34 @@ fn validate_typed_array_node(
             index: buffer.zero_based(),
             node_count: graph.nodes.len(),
         })?;
-    let WireNode::ArrayBuffer {
-        bytes,
-        max_byte_length,
-    } = backing
-    else {
-        return Err(GraphEncodeError::InvalidTypedArrayBacking {
-            node,
-            reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
-        });
+    let (backing_byte_length, max_byte_length) = match backing {
+        WireNode::ArrayBuffer {
+            bytes,
+            max_byte_length,
+        } => {
+            validate_array_buffer_node(buffer, bytes.len(), *max_byte_length)?;
+            (bytes.len(), *max_byte_length)
+        }
+        WireNode::SharedArrayBuffer {
+            byte_length,
+            max_byte_length,
+            ..
+        } => (*byte_length as usize, *max_byte_length),
+        _ => {
+            return Err(GraphEncodeError::InvalidTypedArrayBacking {
+                node,
+                reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
+            });
+        }
     };
-    validate_array_buffer_node(buffer, bytes.len(), *max_byte_length)?;
-    validate_typed_array_write_layout(kind, length, byte_offset, bytes.len(), *max_byte_length)
-        .map_err(|reason| GraphEncodeError::InvalidTypedArray { node, reason })
+    validate_typed_array_write_layout(
+        kind,
+        length,
+        byte_offset,
+        backing_byte_length,
+        max_byte_length,
+    )
+    .map_err(|reason| GraphEncodeError::InvalidTypedArray { node, reason })
 }
 
 fn semantic_property_key(

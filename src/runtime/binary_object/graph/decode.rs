@@ -17,7 +17,9 @@ use crate::bigint::BC5_BIGINT_READ_MAX_BYTES;
 
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
 use super::super::bytecode_image::{ImageOpaque, ImageValue};
-use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
+use super::super::wire::{
+    BcTag, BinaryObjectHeader, ReaderMode, WireCursor, WireError, WireLimits, WireString,
+};
 use super::arena::{ArenaError, NodeState, ObjectArena, PendingNodeKind};
 use super::model::{
     ArrayBufferLayoutError, AtomId, BoxedPrimitive, BoxedPrimitiveError, DateNumber,
@@ -28,6 +30,18 @@ use super::model::{
 };
 #[cfg(test)]
 use super::model::{WireNode, WireProperty};
+#[cfg(test)]
+use super::sab_transport::NativeSabToken;
+use super::sab_transport::{
+    ArchiveBackingId, ArchivedWireGraph, SabArchiveError, SabTransportCursor, SabTransportInput,
+};
+
+/// Unforgeable permission for the SAB transport module to create its checked
+/// cursor. The type is visible to that sibling module, but its private field
+/// means only this decoder can construct a value in production code.
+pub(super) struct SabDecodePermit {
+    _sealed: (),
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum DecodeError<Opaque = Infallible> {
@@ -53,6 +67,14 @@ pub(in crate::runtime) enum DecodeError<Opaque = Infallible> {
         offset: usize,
         reason: ArrayBufferLayoutError,
     },
+    SharedArrayBuffersNotAllowed {
+        offset: usize,
+    },
+    InvalidSharedArrayBuffer {
+        offset: usize,
+        reason: ArrayBufferLayoutError,
+    },
+    SharedArrayBufferArchive(SabArchiveError),
     InvalidTypedArrayKind {
         offset: usize,
         kind: u8,
@@ -125,6 +147,15 @@ impl<Opaque: fmt::Debug> fmt::Display for DecodeError<Opaque> {
             Self::InvalidArrayBuffer { offset, reason } => {
                 write!(formatter, "invalid ArrayBuffer at byte {offset}: {reason}")
             }
+            Self::SharedArrayBuffersNotAllowed { offset } => write!(
+                formatter,
+                "SharedArrayBuffer transport is not allowed at byte {offset}"
+            ),
+            Self::InvalidSharedArrayBuffer { offset, reason } => write!(
+                formatter,
+                "invalid SharedArrayBuffer at byte {offset}: {reason}"
+            ),
+            Self::SharedArrayBufferArchive(error) => fmt::Display::fmt(error, formatter),
             Self::InvalidTypedArrayKind { offset, kind } => {
                 write!(formatter, "invalid TypedArray kind {kind} at byte {offset}")
             }
@@ -195,6 +226,27 @@ impl<Opaque> From<ArenaError> for DecodeError<Opaque> {
             ArenaError::Graph(error) => Self::Graph(error),
             ArenaError::InvalidNodeState { node } => Self::InvalidNodeState { node },
         }
+    }
+}
+
+fn map_sab_archive_error<Opaque>(error: SabArchiveError) -> DecodeError<Opaque> {
+    match error {
+        SabArchiveError::Wire(error) => DecodeError::Wire(error),
+        SabArchiveError::Graph(error) => DecodeError::Graph(error),
+        error => DecodeError::SharedArrayBufferArchive(error),
+    }
+}
+
+fn map_sab_record_error<Opaque>(
+    error: SabArchiveError,
+    layout_offset: usize,
+) -> DecodeError<Opaque> {
+    match error {
+        SabArchiveError::InvalidLayout(reason) => DecodeError::InvalidSharedArrayBuffer {
+            offset: layout_offset,
+            reason,
+        },
+        error => map_sab_archive_error(error),
     }
 }
 
@@ -307,10 +359,147 @@ pub(in crate::runtime::binary_object) struct DataCompletion<V> {
     value: V,
 }
 
-/// Decode one complete BC5 data object into a pure graph.
-///
-/// `WireCursor::finish` is always called. Its mode decides whether trailing
-/// bytes are rejected (strict) or accepted like pinned QuickJS (compatible).
+/// Ordinary data reads shared by the plain BC5 cursor and the inseparable SAB
+/// transport cursor. The trait deliberately omits a raw `u64` primitive: only
+/// the transport cursor can authenticate a complete SAB record against its
+/// writer occurrence table.
+mod data_cursor_seal {
+    use super::{SabTransportCursor, WireCursor};
+
+    pub trait Sealed {}
+
+    impl Sealed for WireCursor<'_> {}
+    impl Sealed for SabTransportCursor<'_> {}
+}
+
+pub(in crate::runtime::binary_object) trait DataCursor<'input>:
+    data_cursor_seal::Sealed
+{
+    fn position(&self) -> usize;
+    fn mode(&self) -> ReaderMode;
+    fn read_u8(&mut self) -> Result<u8, WireError>;
+    fn read_bytes(&mut self, length: usize) -> Result<&'input [u8], WireError>;
+    fn read_tag(&mut self) -> Result<BcTag, WireError>;
+    fn read_uleb128(&mut self) -> Result<u32, WireError>;
+    fn read_i32(&mut self) -> Result<i32, WireError>;
+    fn read_f64(&mut self) -> Result<f64, WireError>;
+    fn read_header(&mut self) -> Result<BinaryObjectHeader, WireError>;
+    fn read_string(&mut self) -> Result<WireString, WireError>;
+
+    fn allows_shared_array_buffers(&self) -> bool {
+        false
+    }
+
+    fn record_shared_array_buffer(
+        &mut self,
+        _byte_length: u32,
+        _max_byte_length: Option<u32>,
+    ) -> Option<Result<ArchiveBackingId, SabArchiveError>> {
+        None
+    }
+}
+
+impl<'input> DataCursor<'input> for WireCursor<'input> {
+    fn position(&self) -> usize {
+        WireCursor::position(self)
+    }
+
+    fn mode(&self) -> ReaderMode {
+        WireCursor::mode(self)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, WireError> {
+        WireCursor::read_u8(self)
+    }
+
+    fn read_bytes(&mut self, length: usize) -> Result<&'input [u8], WireError> {
+        WireCursor::read_bytes(self, length)
+    }
+
+    fn read_tag(&mut self) -> Result<BcTag, WireError> {
+        WireCursor::read_tag(self)
+    }
+
+    fn read_uleb128(&mut self) -> Result<u32, WireError> {
+        WireCursor::read_uleb128(self)
+    }
+
+    fn read_i32(&mut self) -> Result<i32, WireError> {
+        WireCursor::read_i32(self)
+    }
+
+    fn read_f64(&mut self) -> Result<f64, WireError> {
+        WireCursor::read_f64(self)
+    }
+
+    fn read_header(&mut self) -> Result<BinaryObjectHeader, WireError> {
+        WireCursor::read_header(self)
+    }
+
+    fn read_string(&mut self) -> Result<WireString, WireError> {
+        WireCursor::read_string(self)
+    }
+}
+
+impl<'input> DataCursor<'input> for SabTransportCursor<'input> {
+    fn position(&self) -> usize {
+        SabTransportCursor::position(self)
+    }
+
+    fn mode(&self) -> ReaderMode {
+        SabTransportCursor::mode(self)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, WireError> {
+        SabTransportCursor::read_u8(self)
+    }
+
+    fn read_bytes(&mut self, length: usize) -> Result<&'input [u8], WireError> {
+        SabTransportCursor::read_bytes(self, length)
+    }
+
+    fn read_tag(&mut self) -> Result<BcTag, WireError> {
+        SabTransportCursor::read_tag(self)
+    }
+
+    fn read_uleb128(&mut self) -> Result<u32, WireError> {
+        SabTransportCursor::read_uleb128(self)
+    }
+
+    fn read_i32(&mut self) -> Result<i32, WireError> {
+        SabTransportCursor::read_i32(self)
+    }
+
+    fn read_f64(&mut self) -> Result<f64, WireError> {
+        SabTransportCursor::read_f64(self)
+    }
+
+    fn read_header(&mut self) -> Result<BinaryObjectHeader, WireError> {
+        SabTransportCursor::read_header(self)
+    }
+
+    fn read_string(&mut self) -> Result<WireString, WireError> {
+        SabTransportCursor::read_string(self)
+    }
+
+    fn allows_shared_array_buffers(&self) -> bool {
+        true
+    }
+
+    fn record_shared_array_buffer(
+        &mut self,
+        byte_length: u32,
+        max_byte_length: Option<u32>,
+    ) -> Option<Result<ArchiveBackingId, SabArchiveError>> {
+        Some(SabTransportCursor::record_shared_array_buffer(
+            self,
+            byte_length,
+            max_byte_length,
+        ))
+    }
+}
+
+/// Decode one complete BC5 data object into a pure graph with SAB disabled.
 pub(in crate::runtime) fn decode_graph(
     input: &[u8],
     mode: ReaderMode,
@@ -318,7 +507,38 @@ pub(in crate::runtime) fn decode_graph(
     graph_limits: GraphLimits,
     allow_object_references: bool,
 ) -> Result<WireGraph, DecodeError> {
-    let mut cursor = WireCursor::new(input, mode, wire_limits)?;
+    let cursor = WireCursor::new(input, mode, wire_limits)?;
+    let (cursor, graph) = decode_graph_body(cursor, graph_limits, allow_object_references)?;
+    // This call is unconditional: QuickJsCompatible itself decides to accept
+    // trailing bytes, rather than the graph layer bypassing finalization.
+    cursor.finish()?;
+    Ok(graph)
+}
+
+/// Decode one inseparable QuickJS SAB transport into a pointer-free archive.
+pub(in crate::runtime) fn decode_graph_with_sab_transport(
+    input: SabTransportInput<'_>,
+    mode: ReaderMode,
+    wire_limits: WireLimits,
+    graph_limits: GraphLimits,
+    allow_object_references: bool,
+) -> Result<ArchivedWireGraph, DecodeError> {
+    let permit = SabDecodePermit { _sealed: () };
+    let cursor = input
+        .into_cursor(&permit, mode, wire_limits, graph_limits)
+        .map_err(map_sab_archive_error)?;
+    let (cursor, graph) = decode_graph_body(cursor, graph_limits, allow_object_references)?;
+    cursor.finish(graph).map_err(map_sab_archive_error)
+}
+
+fn decode_graph_body<'input, C>(
+    mut cursor: C,
+    graph_limits: GraphLimits,
+    allow_object_references: bool,
+) -> Result<(C, WireGraph), DecodeError>
+where
+    C: DataCursor<'input>,
+{
     let header = cursor.read_header()?;
     let atom_space = AtomIndexSpace::new(BinaryObjectMode::Data, header.atom_count)?;
     let atom_count = header.atom_count as usize;
@@ -385,18 +605,17 @@ pub(in crate::runtime) fn decode_graph(
         }
     }
 
-    // This call is unconditional: QuickJsCompatible itself decides to accept
-    // trailing bytes, rather than the graph layer bypassing finalization.
-    cursor.finish()?;
-
     let root = state.unwrap_completion(root.ok_or(DecodeError::InvalidCompletionTarget)?)?;
     let parts = state.finish()?;
-    Ok(WireGraph {
-        atoms: atoms.into_boxed_slice(),
-        nodes: parts.nodes,
-        ref_table: parts.ref_table,
-        root,
-    })
+    Ok((
+        cursor,
+        WireGraph {
+            atoms: atoms.into_boxed_slice(),
+            nodes: parts.nodes,
+            ref_table: parts.ref_table,
+            root,
+        },
+    ))
 }
 
 pub(in crate::runtime::binary_object) struct DataMachine<V, K> {
@@ -494,13 +713,16 @@ where
         Ok(())
     }
 
-    pub(in crate::runtime::binary_object) fn read_value_after_tag(
+    pub(in crate::runtime::binary_object) fn read_value_after_tag<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         tag: BcTag,
         tag_offset: usize,
         active_depth: usize,
-    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>>
+    where
+        C: DataCursor<'input>,
+    {
         let value = match tag {
             BcTag::Null => WireValue::Null,
             BcTag::Undefined => WireValue::Undefined,
@@ -525,6 +747,9 @@ where
             BcTag::ObjectValue => return self.begin_object_value(tag_offset, active_depth),
             BcTag::Date => return self.begin_date(tag_offset, active_depth),
             BcTag::ArrayBuffer => return self.read_array_buffer(cursor, active_depth),
+            BcTag::SharedArrayBuffer => {
+                return self.read_shared_array_buffer(cursor, tag_offset, active_depth);
+            }
             BcTag::ObjectReference => {
                 if !self.arena.allows_references() {
                     return Err(DecodeError::ObjectReferencesNotAllowed { offset: tag_offset });
@@ -533,7 +758,7 @@ where
                 let node = self.arena.resolve_reference(index)?;
                 WireValue::Node(node)
             }
-            BcTag::FunctionBytecode | BcTag::Module | BcTag::SharedArrayBuffer => {
+            BcTag::FunctionBytecode | BcTag::Module => {
                 return Err(DecodeError::UnsupportedTag {
                     tag,
                     offset: tag_offset,
@@ -544,10 +769,13 @@ where
         Ok(DataReadStep::Complete(self.complete(V::from_wire(value))))
     }
 
-    fn read_bigint(
+    fn read_bigint<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
-    ) -> Result<WireValue, DecodeError<V::Opaque>> {
+        cursor: &mut C,
+    ) -> Result<WireValue, DecodeError<V::Opaque>>
+    where
+        C: DataCursor<'input>,
+    {
         let length_offset = cursor.position();
         let byte_length = cursor.read_uleb128()? as usize;
         self.limits
@@ -586,11 +814,14 @@ where
         Ok(WireValue::BigInt(canonical.into_boxed_slice()))
     }
 
-    fn read_array_buffer(
+    fn read_array_buffer<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         active_depth: usize,
-    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>>
+    where
+        C: DataCursor<'input>,
+    {
         let layout_offset = cursor.position();
         let byte_length = cursor.read_uleb128()?;
         let encoded_maximum = cursor.read_uleb128()?;
@@ -648,12 +879,61 @@ where
         ))
     }
 
-    fn begin_typed_array(
+    fn read_shared_array_buffer<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         tag_offset: usize,
         active_depth: usize,
-    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>>
+    where
+        C: DataCursor<'input>,
+    {
+        if !cursor.allows_shared_array_buffers() {
+            return Err(DecodeError::SharedArrayBuffersNotAllowed { offset: tag_offset });
+        }
+
+        let layout_offset = cursor.position();
+        let byte_length = cursor.read_uleb128()?;
+        let encoded_maximum = cursor.read_uleb128()?;
+        let max_byte_length = (encoded_maximum != u32::MAX).then_some(encoded_maximum);
+        if let Some(max_byte_length) = max_byte_length {
+            if max_byte_length < byte_length {
+                return Err(DecodeError::InvalidSharedArrayBuffer {
+                    offset: layout_offset,
+                    reason: ArrayBufferLayoutError::MaximumTooSmall {
+                        byte_length,
+                        max_byte_length,
+                    },
+                });
+            }
+        }
+
+        let backing = cursor
+            .record_shared_array_buffer(byte_length, max_byte_length)
+            .ok_or(DecodeError::SharedArrayBuffersNotAllowed { offset: tag_offset })?
+            .map_err(|error| map_sab_record_error(error, layout_offset))?;
+
+        self.check_next_node_depth(active_depth)?;
+        let reservation = self.arena.reserve_node()?;
+        let node = reservation.install_ready_node(WireNodeCarrier::SharedArrayBuffer {
+            byte_length,
+            max_byte_length,
+            backing,
+        })?;
+        Ok(DataReadStep::Complete(
+            self.complete(V::from_wire(WireValue::Node(node))),
+        ))
+    }
+
+    fn begin_typed_array<'input, C>(
+        &mut self,
+        cursor: &mut C,
+        tag_offset: usize,
+        active_depth: usize,
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>>
+    where
+        C: DataCursor<'input>,
+    {
         let kind_offset = cursor.position();
         let kind_byte = cursor.read_u8()?;
         let kind = TypedArrayKind::from_wire_byte(kind_byte).ok_or(
@@ -711,12 +991,15 @@ where
         }))
     }
 
-    fn begin_container(
+    fn begin_container<'input, C>(
         &mut self,
-        cursor: &mut WireCursor<'_>,
+        cursor: &mut C,
         kind: ContainerKind,
         active_depth: usize,
-    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>> {
+    ) -> Result<DataReadStep<V, K>, DecodeError<V::Opaque>>
+    where
+        C: DataCursor<'input>,
+    {
         let entry_count = cursor.read_uleb128()? as usize;
         self.limits
             .check(GraphResourceKind::ContainerEntries, entry_count)?;
@@ -804,6 +1087,9 @@ where
                 };
                 let backing_byte_length = match self.arena.node_state(buffer)? {
                     NodeState::Ready(WireNodeCarrier::ArrayBuffer { bytes, .. }) => bytes.len(),
+                    NodeState::Ready(WireNodeCarrier::SharedArrayBuffer {
+                        byte_length, ..
+                    }) => *byte_length as usize,
                     NodeState::Ready(_) => {
                         return Err(DecodeError::InvalidTypedArrayBacking {
                             offset,
@@ -1255,13 +1541,17 @@ pub(in crate::runtime::binary_object) enum PropertyDisposition<K> {
     Ignore,
 }
 
-fn read_key(
-    cursor: &mut WireCursor<'_>,
+fn read_key<'input, C>(
+    cursor: &mut C,
     atom_space: AtomIndexSpace,
     header_atoms: &[WireKey],
-) -> Result<PropertyDisposition<WireKey>, DecodeError> {
+) -> Result<PropertyDisposition<WireKey>, DecodeError>
+where
+    C: DataCursor<'input>,
+{
     let offset = cursor.position();
-    match atom_space.decode_metadata_atom(cursor)? {
+    let encoded = cursor.read_uleb128()?;
+    match atom_space.resolve_metadata_atom(encoded, cursor.position())? {
         BinaryAtom::Null => match cursor.mode() {
             ReaderMode::Strict => Err(DecodeError::NullPropertyKey { offset }),
             ReaderMode::QuickJsCompatible => Ok(PropertyDisposition::Ignore),
@@ -1349,6 +1639,31 @@ mod tests {
 
     fn decode(input: &[u8], mode: ReaderMode, references: bool) -> Result<WireGraph, DecodeError> {
         decode_graph(input, mode, WIRE_LIMITS, GRAPH_LIMITS, references)
+    }
+
+    const SAB_GRAPH_LIMITS: GraphLimits = GRAPH_LIMITS.with_shared_array_buffers(8, 4, 64, 128);
+
+    fn decode_sab_transport(
+        input: &[u8],
+        writer_tokens: &[u64],
+        references: bool,
+    ) -> Result<ArchivedWireGraph, DecodeError> {
+        let writer_occurrences: Vec<_> = writer_tokens
+            .iter()
+            .copied()
+            .map(NativeSabToken::from_test_bits)
+            .collect();
+        decode_graph_with_sab_transport(
+            SabTransportInput::new(input, &writer_occurrences),
+            ReaderMode::Strict,
+            WIRE_LIMITS,
+            SAB_GRAPH_LIMITS,
+            references,
+        )
+    }
+
+    fn replace_native_token(bytes: &mut [u8], offset: usize, token: u64) {
+        bytes[offset..offset + 8].copy_from_slice(&token.to_le_bytes());
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2665,10 +2980,7 @@ mod tests {
 
         assert_eq!(
             decode(&[5, 0, 14, 2, 0, 0, 16], ReaderMode::Strict, true),
-            Err(DecodeError::UnsupportedTag {
-                tag: BcTag::SharedArrayBuffer,
-                offset: 6,
-            })
+            Err(DecodeError::SharedArrayBuffersNotAllowed { offset: 6 })
         );
     }
 
@@ -2905,10 +3217,7 @@ mod tests {
         );
         assert_eq!(
             decode(&[5, 0, 18, 16], ReaderMode::Strict, true),
-            Err(DecodeError::UnsupportedTag {
-                tag: BcTag::SharedArrayBuffer,
-                offset: 3,
-            })
+            Err(DecodeError::SharedArrayBuffersNotAllowed { offset: 3 })
         );
 
         // Wrapper node/reference reservations happen only after the child is
@@ -3212,10 +3521,7 @@ mod tests {
         );
         assert_eq!(
             decode(&[5, 0, 17, 16], ReaderMode::Strict, true),
-            Err(DecodeError::UnsupportedTag {
-                tag: BcTag::SharedArrayBuffer,
-                offset: 3,
-            })
+            Err(DecodeError::SharedArrayBuffersNotAllowed { offset: 3 })
         );
 
         let no_bigint = GraphLimits::new(8, 8, 8, 8, 8, 0, 8, 8, 8);
@@ -3558,17 +3864,207 @@ mod tests {
     }
 
     #[test]
+    fn shared_array_buffer_oracle_vectors_normalize_transport_identity() {
+        const FIRST_TOKEN: u64 = 0x0123_4567_89ab_cdef;
+        const SECOND_TOKEN: u64 = 0xfedc_ba98_7654_3210;
+
+        // Pinned QuickJS `REFERENCE` output for
+        // `[new Uint8Array(sab), sab, sab]`, with only the redacted pointer
+        // slot replaced by one native transport token.
+        let mut refs_on = vec![
+            5, 0, 9, 3, 14, 2, 4, 0, 16, 4, 0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0,
+            19, 2, 19, 2,
+        ];
+        replace_native_token(&mut refs_on, 15, FIRST_TOKEN);
+        let archive = decode_sab_transport(&refs_on, &[FIRST_TOKEN], true).unwrap();
+        assert_eq!(archive.shared_backing_count(), 1);
+        let graph = archive.test_graph();
+        assert_eq!(graph.root, WireValue::Node(NodeId::from_zero_based(0)));
+        assert_eq!(
+            graph.ref_table.as_ref(),
+            [
+                NodeId::from_zero_based(0),
+                NodeId::from_zero_based(1),
+                NodeId::from_zero_based(2),
+            ]
+        );
+        let WireNode::Array { elements } = &graph.nodes[0] else {
+            panic!("oracle root must be an Array")
+        };
+        assert_eq!(
+            elements.as_ref(),
+            [
+                WireValue::Node(NodeId::from_zero_based(1)),
+                WireValue::Node(NodeId::from_zero_based(2)),
+                WireValue::Node(NodeId::from_zero_based(2)),
+            ]
+        );
+        assert!(matches!(
+            graph.nodes[1],
+            WireNode::TypedArray {
+                kind: TypedArrayKind::Uint8,
+                length: 4,
+                byte_offset: 0,
+                buffer,
+            } if buffer == NodeId::from_zero_based(2)
+        ));
+        let WireNode::SharedArrayBuffer {
+            byte_length,
+            max_byte_length,
+            backing,
+        } = graph.nodes[2]
+        else {
+            panic!("TypedArray backing must be the decoded SAB")
+        };
+        assert_eq!(
+            (byte_length, max_byte_length, backing.zero_based()),
+            (4, None, 0)
+        );
+
+        // Without object references QuickJS emits two complete records and two
+        // side entries. The wrappers stay distinct while the raw token is
+        // alpha-renamed to one archive-local backing ID.
+        let mut refs_off = vec![
+            5, 0, 9, 2, 16, 2, 0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0, 16, 2, 0xff,
+            0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        replace_native_token(&mut refs_off, 11, FIRST_TOKEN);
+        replace_native_token(&mut refs_off, 26, FIRST_TOKEN);
+        let first_archive =
+            decode_sab_transport(&refs_off, &[FIRST_TOKEN, FIRST_TOKEN], false).unwrap();
+        let first_graph = first_archive.test_graph();
+        let (first_backing, second_backing) = match (&first_graph.nodes[1], &first_graph.nodes[2]) {
+            (
+                WireNode::SharedArrayBuffer { backing: first, .. },
+                WireNode::SharedArrayBuffer {
+                    backing: second, ..
+                },
+            ) => (*first, *second),
+            _ => panic!("both array elements must be distinct SAB wrappers"),
+        };
+        assert_eq!(first_backing, second_backing);
+        assert_eq!(first_graph.ref_table.as_ref(), []);
+
+        let mut renamed = refs_off.clone();
+        replace_native_token(&mut renamed, 11, SECOND_TOKEN);
+        replace_native_token(&mut renamed, 26, SECOND_TOKEN);
+        let renamed_archive =
+            decode_sab_transport(&renamed, &[SECOND_TOKEN, SECOND_TOKEN], false).unwrap();
+        assert_eq!(renamed_archive, first_archive);
+
+        // The archive preserves QuickJS's writable growable record even though
+        // the pinned native reader later rejects external resizable buffers.
+        let mut growable = vec![5, 0, 16, 2, 8, 0, 0, 0, 0, 0, 0, 0, 0];
+        replace_native_token(&mut growable, 5, FIRST_TOKEN);
+        let archive = decode_sab_transport(&growable, &[FIRST_TOKEN], true).unwrap();
+        assert!(matches!(
+            archive.test_graph().nodes[0],
+            WireNode::SharedArrayBuffer {
+                byte_length: 2,
+                max_byte_length: Some(8),
+                backing,
+            } if backing.zero_based() == 0
+        ));
+    }
+
+    #[test]
+    fn shared_array_buffer_transport_rejects_split_or_malformed_inputs() {
+        const TOKEN: u64 = 0x0123_4567_89ab_cdef;
+        let mut fixed = vec![
+            5, 0, 16, 4, 0xff, 0xff, 0xff, 0xff, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        replace_native_token(&mut fixed, 9, TOKEN);
+
+        assert_eq!(
+            decode_sab_transport(&fixed, &[], true),
+            Err(DecodeError::SharedArrayBufferArchive(
+                SabArchiveError::SideTableTooShort {
+                    offset: 9,
+                    ordinal: 0,
+                    entry_count: 0,
+                }
+            ))
+        );
+        assert_eq!(
+            decode_sab_transport(&fixed, &[TOKEN ^ 1], true),
+            Err(DecodeError::SharedArrayBufferArchive(
+                SabArchiveError::SideTableTokenMismatch {
+                    offset: 9,
+                    ordinal: 0,
+                }
+            ))
+        );
+        assert_eq!(
+            decode_sab_transport(&[5, 0, 5, 84], &[TOKEN], true),
+            Err(DecodeError::SharedArrayBufferArchive(
+                SabArchiveError::SideTableHasExtra {
+                    consumed: 0,
+                    entry_count: 1,
+                }
+            ))
+        );
+        assert_eq!(
+            decode_sab_transport(&fixed[..16], &[TOKEN], true),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 9,
+                needed: 8,
+                remaining: 7,
+            }))
+        );
+
+        // `max < current` is the one layout error QuickJS reports before it
+        // attempts to read the native token.
+        assert_eq!(
+            decode_sab_transport(&[5, 0, 16, 4, 2], &[], true),
+            Err(DecodeError::InvalidSharedArrayBuffer {
+                offset: 3,
+                reason: ArrayBufferLayoutError::MaximumTooSmall {
+                    byte_length: 4,
+                    max_byte_length: 2,
+                },
+            })
+        );
+
+        let mut oversized = vec![
+            5, 0, 16, 0, 0x80, 0x80, 0x80, 0x80, 0x08, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        replace_native_token(&mut oversized, 9, TOKEN);
+        assert_eq!(
+            decode_sab_transport(&oversized[..16], &[TOKEN], true),
+            Err(DecodeError::Wire(WireError::Truncated {
+                offset: 9,
+                needed: 8,
+                remaining: 7,
+            }))
+        );
+        assert_eq!(
+            decode_sab_transport(&oversized, &[TOKEN], true),
+            Err(DecodeError::InvalidSharedArrayBuffer {
+                offset: 3,
+                reason: ArrayBufferLayoutError::MaximumTooLarge {
+                    max_byte_length: 0x8000_0000,
+                    maximum: MAX_ARRAY_BUFFER_BYTE_LENGTH,
+                },
+            })
+        );
+    }
+
+    #[test]
     fn unsupported_data_tags_are_rejected_before_their_payloads() {
-        for tag in [
-            BcTag::FunctionBytecode,
-            BcTag::Module,
-            BcTag::SharedArrayBuffer,
-        ] {
+        for tag in [BcTag::FunctionBytecode, BcTag::Module] {
             assert_eq!(
                 decode(&[0x05, 0x00, tag.to_byte()], ReaderMode::Strict, false),
                 Err(DecodeError::UnsupportedTag { tag, offset: 2 })
             );
         }
+        assert_eq!(
+            decode(
+                &[0x05, 0x00, BcTag::SharedArrayBuffer.to_byte()],
+                ReaderMode::Strict,
+                false,
+            ),
+            Err(DecodeError::SharedArrayBuffersNotAllowed { offset: 2 })
+        );
     }
 
     #[test]

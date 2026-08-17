@@ -1,8 +1,11 @@
 use super::super::atoms::{AtomIndexSpace, BinaryAtom, BinaryObjectMode};
 use super::super::code::{CodeError, CodeLimits, CodeResourceKind};
 use super::super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits};
-use super::super::graph::decode::{DataMachine, DecodeError};
-use super::super::graph::model::{AtomId, GraphLimits, NodeId, WireNodeCarrier, WireValue};
+use super::super::graph::decode::{DataMachine, DecodeError, decode_graph_with_sab_transport};
+use super::super::graph::model::{
+    AtomId, GraphLimits, NodeId, TypedArrayKind, WireNodeCarrier, WireValue,
+};
+use super::super::graph::sab_transport::{NativeSabToken, SabTransportInput};
 use super::super::pinned_atoms::{PinnedAtomId, PinnedAtomKind};
 use super::super::wire::{
     BcTag, ReaderMode, ResourceKind, WireCursor, WireError, WireLimits, WireString, WireWriter,
@@ -1960,14 +1963,97 @@ fn finalization_keeps_mode_reference_flags_and_unsupported_tags_observable() {
         ))
     );
 
-    let tag = BcTag::SharedArrayBuffer;
     assert_eq!(
-        decode_image(&[5, 0, tag.to_byte()]),
-        Err(BytecodeImageError::Data(DecodeError::UnsupportedTag {
-            tag,
-            offset: 2,
-        }))
+        decode_image(&[5, 0, BcTag::SharedArrayBuffer.to_byte()]),
+        Err(BytecodeImageError::Data(
+            DecodeError::SharedArrayBuffersNotAllowed { offset: 2 }
+        ))
     );
+}
+
+#[test]
+fn image_writer_requires_archived_context_for_reachable_shared_backings_only() {
+    const TOKEN: u64 = 0xfeed_face_dead_beef;
+    let mut wire = vec![
+        5,
+        0,
+        BcTag::SharedArrayBuffer.to_byte(),
+        4,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0x0f,
+    ];
+    wire.extend_from_slice(&TOKEN.to_le_bytes());
+    let writer_occurrences = [NativeSabToken::from_test_bits(TOKEN)];
+    let archive = decode_graph_with_sab_transport(
+        SabTransportInput::new(&wire, &writer_occurrences),
+        ReaderMode::Strict,
+        TEST_LIMITS,
+        GRAPH_LIMITS.with_shared_array_buffers(1, 1, 4, 4),
+        true,
+    )
+    .unwrap();
+    let WireNodeCarrier::SharedArrayBuffer {
+        byte_length,
+        max_byte_length,
+        backing,
+    } = archive.test_graph().nodes[0]
+    else {
+        panic!("transport must archive one SharedArrayBuffer node");
+    };
+
+    let image_with_graph = |nodes: Vec<WireNodeCarrier<ImageValue, ImageKey>>, root: WireValue| {
+        let machine = DataMachine::<ImageValue, ImageKey>::new(GRAPH_LIMITS, true).unwrap();
+        super::BytecodeImage::new(
+            machine.source(),
+            Box::default(),
+            nodes.into_boxed_slice(),
+            Box::default(),
+            Box::default(),
+            Box::default(),
+            ImageValue::from_wire(root),
+        )
+    };
+    let shared_node = || WireNodeCarrier::SharedArrayBuffer {
+        byte_length,
+        max_byte_length,
+        backing,
+    };
+
+    let direct = image_with_graph(
+        vec![shared_node()],
+        WireValue::Node(NodeId::from_zero_based(0)),
+    );
+    assert_eq!(
+        encode_image(&direct),
+        Err(BytecodeImageEncodeError::ArchivedBackingContextRequired {
+            node: NodeId::from_zero_based(0),
+        })
+    );
+
+    let viewed = image_with_graph(
+        vec![
+            WireNodeCarrier::TypedArray {
+                kind: TypedArrayKind::Uint8,
+                length: 4,
+                byte_offset: 0,
+                buffer: NodeId::from_zero_based(1),
+            },
+            shared_node(),
+        ],
+        WireValue::Node(NodeId::from_zero_based(0)),
+    );
+    assert_eq!(
+        encode_image(&viewed),
+        Err(BytecodeImageEncodeError::ArchivedBackingContextRequired {
+            node: NodeId::from_zero_based(1),
+        })
+    );
+
+    let unreachable = image_with_graph(vec![shared_node()], WireValue::Int32(42));
+    assert_eq!(encode_image(&unreachable), Ok(vec![5, 0, 5, 84]));
 }
 
 #[test]

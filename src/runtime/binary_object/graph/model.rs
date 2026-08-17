@@ -9,6 +9,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use super::super::wire::WireString;
+pub(in crate::runtime) use super::sab_transport::ArchiveBackingId;
 
 /// Zero-based index into [`WireGraph::nodes`].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -349,6 +350,20 @@ pub(in crate::runtime) enum WireNodeCarrier<V, K> {
         bytes: Box<[u8]>,
         max_byte_length: Option<u32>,
     },
+    /// One SharedArrayBuffer wrapper whose live bytes remain outside the
+    /// archive model.
+    ///
+    /// The wrapper identity is this graph node. `backing` is a separate,
+    /// archive-local identity so distinct wrappers may retain shared-backing
+    /// aliasing without storing QuickJS's process-local pointer token. A bare
+    /// [`WireGraph`] containing this variant is intentionally incomplete;
+    /// only the transport-aware decoder may return it inside its inseparable
+    /// archived-graph aggregate.
+    SharedArrayBuffer {
+        byte_length: u32,
+        max_byte_length: Option<u32>,
+        backing: ArchiveBackingId,
+    },
     /// A fixed-length view over one graph-owned backing buffer identity.
     ///
     /// BC5 does not preserve the length-tracking bit of a view over a resizable
@@ -603,6 +618,10 @@ pub(in crate::runtime) struct GraphLimits {
     max_total_bigint_bytes: usize,
     max_array_buffer_bytes: usize,
     max_total_array_buffer_bytes: usize,
+    max_shared_array_buffer_occurrences: usize,
+    max_shared_array_buffer_backings: usize,
+    max_shared_array_buffer_capacity: usize,
+    max_total_shared_array_buffer_capacity: usize,
 }
 
 impl GraphLimits {
@@ -629,7 +648,33 @@ impl GraphLimits {
             max_total_bigint_bytes,
             max_array_buffer_bytes,
             max_total_array_buffer_bytes,
+            // SharedArrayBuffer admission is a separate capability. Existing
+            // policies keep it disabled until they opt into all four limits.
+            max_shared_array_buffer_occurrences: 0,
+            max_shared_array_buffer_backings: 0,
+            max_shared_array_buffer_capacity: 0,
+            max_total_shared_array_buffer_capacity: 0,
         }
+    }
+
+    /// Admit SharedArrayBuffer archive records under four independent bounds.
+    ///
+    /// Occurrences follow actual full SAB records and therefore include
+    /// duplicate records when object references are disabled. Backing counts
+    /// and aggregate capacity are charged once per archive-local backing.
+    #[must_use]
+    pub(in crate::runtime) const fn with_shared_array_buffers(
+        mut self,
+        max_occurrences: usize,
+        max_backings: usize,
+        max_backing_capacity: usize,
+        max_total_backing_capacity: usize,
+    ) -> Self {
+        self.max_shared_array_buffer_occurrences = max_occurrences;
+        self.max_shared_array_buffer_backings = max_backings;
+        self.max_shared_array_buffer_capacity = max_backing_capacity;
+        self.max_total_shared_array_buffer_capacity = max_total_backing_capacity;
+        self
     }
 
     #[must_use]
@@ -644,6 +689,14 @@ impl GraphLimits {
             GraphResourceKind::TotalBigIntBytes => self.max_total_bigint_bytes,
             GraphResourceKind::ArrayBufferBytes => self.max_array_buffer_bytes,
             GraphResourceKind::TotalArrayBufferBytes => self.max_total_array_buffer_bytes,
+            GraphResourceKind::SharedArrayBufferOccurrences => {
+                self.max_shared_array_buffer_occurrences
+            }
+            GraphResourceKind::SharedArrayBufferBackings => self.max_shared_array_buffer_backings,
+            GraphResourceKind::SharedArrayBufferCapacity => self.max_shared_array_buffer_capacity,
+            GraphResourceKind::TotalSharedArrayBufferCapacity => {
+                self.max_total_shared_array_buffer_capacity
+            }
         }
     }
 
@@ -679,6 +732,15 @@ pub(in crate::runtime) enum GraphResourceKind {
     /// Bytes copied into all emitted or decoded current ArrayBuffer backing
     /// stores. A resizable buffer's unallocated maximum is not charged here.
     TotalArrayBufferBytes,
+    /// Complete SharedArrayBuffer records encountered on wire. ObjectReference
+    /// tags do not count; repeated full records do.
+    SharedArrayBufferOccurrences,
+    /// Distinct archive-local shared backing identities.
+    SharedArrayBufferBackings,
+    /// Maximum capacity declared by one shared backing.
+    SharedArrayBufferCapacity,
+    /// Sum of capacities across distinct shared backing identities.
+    TotalSharedArrayBufferCapacity,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

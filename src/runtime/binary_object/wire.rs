@@ -349,6 +349,20 @@ impl<'a> WireCursor<'a> {
         Ok(u16::from_le_bytes(bytes))
     }
 
+    /// Read QuickJS's fixed-width little-endian `uint64_t` wire primitive.
+    ///
+    /// SharedArrayBuffer records use this slot for a process-local pointer in
+    /// native QuickJS. This primitive deliberately returns only integer bits;
+    /// interpreting, retaining, or dereferencing them belongs nowhere in the
+    /// wire layer.
+    pub(in crate::runtime) fn read_u64_le(&mut self) -> Result<u64, WireError> {
+        let bytes: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .expect("an eight-byte checked slice must convert to an array");
+        Ok(u64::from_le_bytes(bytes))
+    }
+
     pub(in crate::runtime) fn read_bytes(&mut self, length: usize) -> Result<&'a [u8], WireError> {
         self.take(length)
     }
@@ -545,6 +559,11 @@ impl WireWriter {
     }
 
     pub(in crate::runtime) fn write_u16_le(&mut self, value: u16) -> Result<(), WireError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+
+    /// Write one fixed-width little-endian `uint64_t` wire primitive.
+    pub(in crate::runtime) fn write_u64_le(&mut self, value: u64) -> Result<(), WireError> {
         self.write_bytes(&value.to_le_bytes())
     }
 
@@ -758,6 +777,45 @@ mod tests {
                 remaining: 1,
             })
         );
+    }
+
+    #[test]
+    fn little_endian_u64_primitives_match_bc5_and_fail_atomically() {
+        let value = 0x0123_4567_89ab_cdef_u64;
+        let mut writer = WireWriter::new(8);
+        writer.write_u64_le(value).unwrap();
+        assert_eq!(
+            writer.as_bytes(),
+            [0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01]
+        );
+
+        let mut cursor = strict_cursor(writer.as_bytes());
+        assert_eq!(cursor.read_u64_le(), Ok(value));
+        assert_eq!(cursor.position(), 8);
+        cursor.finish().unwrap();
+
+        let mut truncated = strict_cursor(&[0xef, 0xcd, 0xab]);
+        assert_eq!(
+            truncated.read_u64_le(),
+            Err(WireError::Truncated {
+                offset: 0,
+                needed: 8,
+                remaining: 3,
+            })
+        );
+        assert_eq!(truncated.position(), 0);
+
+        let mut bounded = WireWriter::new(8);
+        bounded.write_u8(0xaa).unwrap();
+        assert_eq!(
+            bounded.write_u64_le(value),
+            Err(WireError::ResourceLimit {
+                kind: ResourceKind::OutputBytes,
+                requested: 9,
+                limit: 8,
+            })
+        );
+        assert_eq!(bounded.as_bytes(), [0xaa]);
     }
 
     #[test]

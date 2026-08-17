@@ -238,11 +238,60 @@ for path in binary_sources:
             "crate::compiler",
         ),
         (
+            "forbidden-shared-memory-dependency",
+            re.compile(r"\bcrate[ \t\n]*::[ \t\n]*(?:r#)?shared_memory\b"),
+            "crate::shared_memory",
+        ),
+        (
             "forbidden-parent-dependency",
             re.compile(
                 r"\b(?:super[ \t\n]*::[ \t\n]*)+(?:r#)?(?:vm|compiler)\b"
             ),
             "a parent-relative VM/compiler path",
+        ),
+        (
+            "forbidden-shared-memory-dependency",
+            re.compile(
+                r"\b(?:super[ \t\n]*::[ \t\n]*)+(?:r#)?shared_memory\b"
+            ),
+            "a parent-relative shared_memory path",
+        ),
+        (
+            "forbidden-shared-memory-runtime-type",
+            re.compile(r"\b(?:SharedBufferHandle|SharedBackingStore)\b"),
+            "SharedBufferHandle or SharedBackingStore",
+        ),
+        (
+            "forbidden-unsafe-code",
+            re.compile(r"\bunsafe\b"),
+            "unsafe Rust",
+        ),
+        (
+            "forbidden-non-null-pointer",
+            re.compile(r"\bNonNull\b"),
+            "NonNull",
+        ),
+        (
+            "forbidden-raw-pointer-type",
+            re.compile(r"\*[ \t\n]*(?:const|mut)\b"),
+            "a raw pointer type",
+        ),
+        (
+            "forbidden-native-pointer-bridge",
+            re.compile(
+                r"\b(?:(?:[A-Za-z_][A-Za-z0-9_]*_)?from_raw_parts(?:_mut|_in)?"
+                r"|into_raw(?:_with_allocator|_parts(?:_with_alloc)?)?)\b"
+            ),
+            "a native pointer ownership or slice bridge",
+        ),
+        (
+            "forbidden-native-pointer-bridge",
+            re.compile(
+                r"\b(?:Box|Vec|Arc|Rc|CString|CStr)"
+                r"[ \t\n]*(?:::[ \t\n]*<[^>{};\n]+>)?"
+                r"[ \t\n]*::[ \t\n]*from_raw(?:_in)?\b"
+            ),
+            "a native pointer ownership bridge",
         ),
         (
             "forbidden-bytecode-function",
@@ -283,10 +332,29 @@ for path in binary_sources:
                 "binary_object production sources must not import crate::compiler through a grouped use; found "
                 + location(relative, source, grouped.start()),
             )
+        if re.search(r"(?:^|[,{}])[ \t\n]*(?:r#)?shared_memory\b", body):
+            fail(
+                "forbidden-shared-memory-dependency",
+                "binary_object production sources must not import crate::shared_memory through a grouped use; found "
+                + location(relative, source, grouped.start()),
+            )
         if re.search(r"\bself[ \t\n]+as\b", body):
             fail(
                 "forbidden-crate-alias",
                 "binary_object production sources must not alias the crate root through a grouped use; found "
+                + location(relative, source, grouped.start()),
+            )
+
+    parent_grouped_import_pattern = re.compile(
+        r"\buse[ \t\n]+(?:super[ \t\n]*::[ \t\n]*)+"
+        r"\{(?P<body>.*?)\}[ \t\n]*;",
+        re.DOTALL,
+    )
+    for grouped in parent_grouped_import_pattern.finditer(code):
+        if re.search(r"(?:^|[,{}])[ \t\n]*(?:r#)?shared_memory\b", grouped.group("body")):
+            fail(
+                "forbidden-shared-memory-dependency",
+                "binary_object production sources must not import shared_memory through a parent-relative grouped use; found "
                 + location(relative, source, grouped.start()),
             )
 
@@ -352,6 +420,11 @@ printf '%s\n' \
     'mod wire;' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 printf '%s\n' \
+    'fn retained_from_raw(raw: u32) {' \
+    '    let _ = PinnedAtomId::from_raw(raw);' \
+    '}' \
+    > "$fixture/src/runtime/binary_object/atoms.rs"
+printf '%s\n' \
     'mod atoms;' \
     'mod budget;' \
     'mod decode;' \
@@ -389,6 +462,57 @@ expect_rejected vm-dependency forbidden-vm-dependency \
 expect_rejected compiler-dependency forbidden-compiler-dependency \
     src/runtime/binary_object/atoms.rs \
     'use crate::{atom::Atom, compiler as parser};'
+expect_rejected shared-memory-dependency forbidden-shared-memory-dependency \
+    src/runtime/binary_object/atoms.rs \
+    'use crate::shared_memory as runtime_shared_memory;'
+expect_rejected parent-shared-memory-dependency forbidden-shared-memory-dependency \
+    src/runtime/binary_object/atoms.rs \
+    'use super::shared_memory as runtime_shared_memory;'
+expect_rejected grouped-shared-memory-dependency forbidden-shared-memory-dependency \
+    src/runtime/binary_object/atoms.rs \
+    'use crate::{atom::Atom, shared_memory as runtime_shared_memory};'
+expect_rejected parent-grouped-shared-memory-dependency forbidden-shared-memory-dependency \
+    src/runtime/binary_object/atoms.rs \
+    'use super::{atoms, shared_memory as runtime_shared_memory};'
+expect_rejected shared-buffer-handle forbidden-shared-memory-runtime-type \
+    src/runtime/binary_object/atoms.rs \
+    'type RuntimeBacking = SharedBufferHandle;'
+expect_rejected shared-backing-store forbidden-shared-memory-runtime-type \
+    src/runtime/binary_object/atoms.rs \
+    'type RuntimeBacking = SharedBackingStore;'
+expect_rejected unsafe-block forbidden-unsafe-code \
+    src/runtime/binary_object/atoms.rs \
+    'fn bridge() { unsafe { core::hint::unreachable_unchecked() } }'
+expect_rejected unsafe-function forbidden-unsafe-code \
+    src/runtime/binary_object/atoms.rs \
+    'unsafe fn bridge() {}'
+expect_rejected unsafe-impl forbidden-unsafe-code \
+    src/runtime/binary_object/atoms.rs \
+    'unsafe impl Send for Archive {}'
+expect_rejected unsafe-trait forbidden-unsafe-code \
+    src/runtime/binary_object/atoms.rs \
+    'unsafe trait NativeArchive {}'
+expect_rejected non-null-pointer forbidden-non-null-pointer \
+    src/runtime/binary_object/atoms.rs \
+    'type NativeAddress = core::ptr::NonNull<u8>;'
+expect_rejected raw-const-pointer forbidden-raw-pointer-type \
+    src/runtime/binary_object/atoms.rs \
+    'type NativeAddress = *const u8;'
+expect_rejected raw-mut-pointer forbidden-raw-pointer-type \
+    src/runtime/binary_object/atoms.rs \
+    'type NativeAddress = *mut u8;'
+expect_rejected from-raw-parts forbidden-native-pointer-bridge \
+    src/runtime/binary_object/atoms.rs \
+    'let bytes = core::slice::from_raw_parts(address, length);'
+expect_rejected from-raw-parts-mut forbidden-native-pointer-bridge \
+    src/runtime/binary_object/atoms.rs \
+    'let bytes = core::slice::from_raw_parts_mut(address, length);'
+expect_rejected into-raw forbidden-native-pointer-bridge \
+    src/runtime/binary_object/atoms.rs \
+    'let address = Box::into_raw(value);'
+expect_rejected qualified-from-raw forbidden-native-pointer-bridge \
+    src/runtime/binary_object/atoms.rs \
+    'let value = Box::from_raw(address);'
 expect_rejected bytecode-function forbidden-bytecode-function \
     src/runtime/binary_object/atoms.rs \
     'use crate::bytecode::BytecodeFunction;'

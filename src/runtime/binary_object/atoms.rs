@@ -134,10 +134,22 @@ impl AtomIndexSpace {
         cursor: &mut WireCursor<'_>,
     ) -> Result<BinaryAtom, WireError> {
         let encoded = cursor.read_uleb128()?;
+        self.resolve_metadata_atom(encoded, cursor.position())
+    }
+
+    /// Resolve an already-read low-bit-tagged metadata atom.
+    ///
+    /// Keeping the wire read separate lets checked compound cursors reuse the
+    /// exact atom namespace rules without exposing their underlying cursor.
+    pub(in crate::runtime) fn resolve_metadata_atom(
+        self,
+        encoded: u32,
+        diagnostic_offset: usize,
+    ) -> Result<BinaryAtom, WireError> {
         if encoded & 1 != 0 {
             return Ok(BinaryAtom::Index(encoded >> 1));
         }
-        self.resolve_table_atom(encoded >> 1, cursor.position())
+        self.resolve_table_atom(encoded >> 1, diagnostic_offset)
     }
 
     /// Canonically encode one metadata atom as a low-bit-tagged ULEB128 value.

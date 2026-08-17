@@ -342,7 +342,8 @@ impl<'a> PlanBuilder<'a> {
                 self.charge_array_buffer(bytes.len())?;
                 None
             }
-            WireNodeCarrier::TypedArray { .. }
+            WireNodeCarrier::SharedArrayBuffer { .. }
+            | WireNodeCarrier::TypedArray { .. }
             | WireNodeCarrier::ObjectValue { .. }
             | WireNodeCarrier::Date { .. } => None,
         };
@@ -359,6 +360,9 @@ impl<'a> PlanBuilder<'a> {
                     validate_array_buffer_layout(bytes.len(), *max_byte_length).map_err(
                         |reason| BytecodeImageEncodeError::InvalidArrayBuffer { node, reason },
                     )?;
+                }
+                WireNodeCarrier::SharedArrayBuffer { .. } => {
+                    return Err(BytecodeImageEncodeError::ArchivedBackingContextRequired { node });
                 }
                 WireNodeCarrier::TypedArray {
                     kind,
@@ -439,6 +443,9 @@ impl<'a> PlanBuilder<'a> {
                 self.push_uleb(byte_length)?;
                 self.push_uleb(max_byte_length.unwrap_or(u32::MAX))?;
                 self.push_token(PlannedToken::Bytes(bytes))?;
+            }
+            WireNodeCarrier::SharedArrayBuffer { .. } => {
+                return Err(BytecodeImageEncodeError::ArchivedBackingContextRequired { node });
             }
             WireNodeCarrier::TypedArray {
                 kind,
@@ -608,24 +615,39 @@ fn validate_typed_array(
             index: buffer.zero_based(),
             node_count: nodes.len(),
         })?;
-    let WireNodeCarrier::ArrayBuffer {
-        bytes,
-        max_byte_length,
-    } = backing
-    else {
-        return Err(BytecodeImageEncodeError::InvalidTypedArrayBacking {
-            node,
-            reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
-        });
-    };
-    validate_array_buffer_layout(bytes.len(), *max_byte_length).map_err(|reason| {
-        BytecodeImageEncodeError::InvalidArrayBuffer {
-            node: buffer,
-            reason,
+    let (backing_byte_length, max_byte_length) = match backing {
+        WireNodeCarrier::ArrayBuffer {
+            bytes,
+            max_byte_length,
+        } => {
+            validate_array_buffer_layout(bytes.len(), *max_byte_length).map_err(|reason| {
+                BytecodeImageEncodeError::InvalidArrayBuffer {
+                    node: buffer,
+                    reason,
+                }
+            })?;
+            (bytes.len(), *max_byte_length)
         }
-    })?;
-    validate_typed_array_write_layout(kind, length, byte_offset, bytes.len(), *max_byte_length)
-        .map_err(|reason| BytecodeImageEncodeError::InvalidTypedArray { node, reason })
+        WireNodeCarrier::SharedArrayBuffer {
+            byte_length,
+            max_byte_length,
+            ..
+        } => (*byte_length as usize, *max_byte_length),
+        _ => {
+            return Err(BytecodeImageEncodeError::InvalidTypedArrayBacking {
+                node,
+                reason: TypedArrayBackingError::NotArrayBuffer { node: buffer },
+            });
+        }
+    };
+    validate_typed_array_write_layout(
+        kind,
+        length,
+        byte_offset,
+        backing_byte_length,
+        max_byte_length,
+    )
+    .map_err(|reason| BytecodeImageEncodeError::InvalidTypedArray { node, reason })
 }
 
 fn key_atom(key: ImageKey) -> ImageAtom {

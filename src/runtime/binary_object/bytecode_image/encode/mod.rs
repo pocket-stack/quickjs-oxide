@@ -99,6 +99,9 @@ pub(in crate::runtime) enum BytecodeImageEncodeError {
         node: NodeId,
     },
     NonCanonicalBigInt,
+    ArchivedBackingContextRequired {
+        node: NodeId,
+    },
     CircularReference {
         node: NodeId,
     },
@@ -196,6 +199,11 @@ impl fmt::Display for BytecodeImageEncodeError {
             Self::NonCanonicalBigInt => {
                 formatter.write_str("bytecode image contains a non-canonical BigInt payload")
             }
+            Self::ArchivedBackingContextRequired { node } => write!(
+                formatter,
+                "node {} requires its inseparable archived SharedArrayBuffer backing context",
+                node.zero_based()
+            ),
             Self::CircularReference { node } => write!(
                 formatter,
                 "bytecode image contains a circular reference through node {}",

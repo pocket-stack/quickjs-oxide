@@ -117,6 +117,23 @@ explicitly represented tag. BC5 atom handling now has an explicit
 caller-selected data or bytecode namespace, a release-pinned 242-entry
 predefined-atom catalog, and separate checked codecs for metadata ULEB atoms
 and raw `u32` opcode operands.
+A separate inseparable transport input now admits pinned QuickJS
+SharedArrayBuffer records without persisting or interpreting their native
+pointer tokens. It binds wire bytes to the writer's per-record occurrence
+table, rejects missing, extra, reordered, or mismatched entries, and
+alpha-renames equal native tokens to archive-local backing IDs. Distinct SAB
+wrapper nodes can share one pointer-free backing descriptor, while
+ObjectReference preserves wrapper identity without consuming another side
+entry. Record occurrences, unique backings, per-backing capacity, and aggregate
+unique capacity are independently bounded. TypedArray may reference an
+archived SAB and uses its wrapper's current byte length for layout checks.
+Growable records remain archiveable even though pinned QuickJS's native reader
+later rejects an externally managed resizable buffer. The ordinary decoder
+keeps SAB disabled, and ordinary graph/bytecode-image writers return an
+explicit archived-backing-context error rather than emitting a stale or
+fabricated pointer token. No production constructor for native occurrence
+tokens exists in this archive-only milestone; a later dedicated host bridge
+must own that authority before runtime materialization is admitted.
 The data graph uses that shared namespace without auto-detection or local
 `first_atom` arithmetic, while an authenticated differential gate checks every
 catalog ID, kind, spelling, and ordering against the pinned `quickjs-atom.h`.
@@ -190,6 +207,13 @@ atom, reference, preorder, and budget state. All binary-object submodules are
 private. A self-testing architecture gate rejects VM/compiler and executable
 bytecode dependencies, runtime consumers, crate-surface exports, and widened
 module visibility before fast CI or the parity slice can proceed.
+The same gate rejects shared-memory runtime types, `unsafe`, raw pointers,
+`NonNull`, and native raw-ownership bridges anywhere in the archival codec.
+An authenticated SharedArrayBuffer C oracle pins writer side-table order,
+refs-on/off duplication and release counts, fresh-runtime aliasing, redacted
+wire shapes, and the growable writer/native-reader asymmetry. Rust transport
+tests consume those three exact shapes with non-zero typed tokens and prove
+that changing the native token leaves the completed archive identical.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
 the Rust prefix codec against the exact bytes. A second authenticated 110-byte
@@ -250,9 +274,11 @@ reference entries can alias pending or ready identities without consuming
 another node.
 Malicious TypedArray placeholder paths are rejected deterministically instead
 of reproducing pinned QuickJS's native crashes.
-The data-only graph still rejects SharedArrayBuffer, FunctionBytecode, and
-Module. The BytecodeImage reader admits FunctionBytecode and Module but still
-rejects SharedArrayBuffer, and neither reader is a public binary-object API yet.
+The ordinary data-only graph facade still rejects SharedArrayBuffer,
+FunctionBytecode, and Module before their payloads; only the inseparable
+transport-aware facade admits SAB into a non-executable pointer-free archive.
+The BytecodeImage reader admits FunctionBytecode and Module but still rejects
+SharedArrayBuffer, and neither reader is a public binary-object API yet.
 A heap materializer, native-code semantic verifier/translator, public read/write
 flags, and a public authenticated whole-image facade remain future milestones.
 In addition,
