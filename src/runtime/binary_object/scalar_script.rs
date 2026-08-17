@@ -35,6 +35,7 @@ const OP_PUSH_I8: u8 = 0xbb;
 const OP_PUSH_I16: u8 = 0xbc;
 const OP_PUSH_CONST8: u8 = 0xbd;
 const OP_PUSH_EMPTY_STRING: u8 = 0xbf;
+const OP_NEG: u8 = 0x8a;
 const OP_SET_LOC0: u8 = 0xcb;
 
 /// Runtime-independent result of the executable BC5 scalar admission cohort.
@@ -47,6 +48,8 @@ pub(in crate::runtime) enum ScalarScriptDraft {
     Float64Bits(u64),
     BigIntI32(i32),
     BigIntBytes(Box<[u8]>),
+    NegatedBigIntI32(i32),
+    NegatedBigIntBytes(Box<[u8]>),
     EmptyString,
 }
 
@@ -54,6 +57,18 @@ pub(in crate::runtime) enum ScalarScriptDraft {
 enum ScalarPush {
     Direct(ScalarScriptDraft),
     Constant(u32),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BigIntPush {
+    DirectI32(i32),
+    Constant(u32),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ScalarSequence {
+    Plain { push: ScalarPush, width: u32 },
+    NegatedBigInt { push: BigIntPush, width: u32 },
 }
 
 /// Failure classes preserved across the archive/runtime publication boundary.
@@ -226,30 +241,63 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     if !native_payload.atom_relocations().is_empty() {
         return unadmitted("native payload contains atom relocations");
     }
-    let [push, set_completion, return_value] = native_payload.instructions() else {
-        return unadmitted("native payload is not the three-instruction scalar shape");
-    };
-    let Some((scalar_push, push_width)) = decode_scalar_push(native_payload.as_bytes()) else {
+    let Some(sequence) = decode_scalar_sequence(native_payload.as_bytes()) else {
         return unadmitted("native payload opcode sequence is outside the admitted shape");
     };
-    if push.offset() != 0
-        || push.opcode().raw() != native_payload.as_bytes()[0]
-        || set_completion.offset() != push_width
-        || set_completion.opcode().raw() != OP_SET_LOC0
-        || return_value.offset() != push_width + 1
-        || return_value.opcode().raw() != OP_RETURN
-    {
+    let sidecars_match = match (&sequence, native_payload.instructions()) {
+        (ScalarSequence::Plain { width, .. }, [push, set_completion, return_value]) => {
+            push.offset() == 0
+                && push.opcode().raw() == native_payload.as_bytes()[0]
+                && set_completion.offset() == *width
+                && set_completion.opcode().raw() == OP_SET_LOC0
+                && return_value.offset() == *width + 1
+                && return_value.opcode().raw() == OP_RETURN
+        }
+        (
+            ScalarSequence::NegatedBigInt { width, .. },
+            [push, negate, set_completion, return_value],
+        ) => {
+            push.offset() == 0
+                && push.opcode().raw() == native_payload.as_bytes()[0]
+                && negate.offset() == *width
+                && negate.opcode().raw() == OP_NEG
+                && set_completion.offset() == *width + 1
+                && set_completion.opcode().raw() == OP_SET_LOC0
+                && return_value.offset() == *width + 2
+                && return_value.opcode().raw() == OP_RETURN
+        }
+        _ => false,
+    };
+    if !sidecars_match {
         return Err(ScalarScriptReadError::Internal(
             "instruction sidecars disagree with their owned native bytes".into(),
         ));
     }
 
-    let draft = match (scalar_push, function.constants()) {
-        (ScalarPush::Direct(draft), []) => draft,
-        (ScalarPush::Direct(_), _) => {
+    let draft = match (sequence, function.constants()) {
+        (
+            ScalarSequence::Plain {
+                push: ScalarPush::Direct(draft),
+                ..
+            },
+            [],
+        ) => draft,
+        (
+            ScalarSequence::Plain {
+                push: ScalarPush::Direct(_),
+                ..
+            },
+            _,
+        ) => {
             return unadmitted("direct scalar opcode carries a function constant");
         }
-        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
+        (
+            ScalarSequence::Plain {
+                push: ScalarPush::Constant(0),
+                ..
+            },
+            [constant],
+        ) => match constant.as_wire() {
             Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),
             Ok(WireValue::BigInt(bytes)) => {
                 ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
@@ -257,11 +305,66 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
             Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),
             Err(_) => return unadmitted("scalar constant is not a data value"),
         },
-        (ScalarPush::Constant(_), [_]) => {
+        (
+            ScalarSequence::Plain {
+                push: ScalarPush::Constant(_),
+                ..
+            },
+            [_],
+        ) => {
             return unadmitted("scalar constant opcode does not reference index zero");
         }
-        (ScalarPush::Constant(_), _) => {
+        (
+            ScalarSequence::Plain {
+                push: ScalarPush::Constant(_),
+                ..
+            },
+            _,
+        ) => {
             return unadmitted("scalar constant opcode requires exactly one function constant");
+        }
+        (
+            ScalarSequence::NegatedBigInt {
+                push: BigIntPush::DirectI32(value),
+                ..
+            },
+            [],
+        ) => ScalarScriptDraft::NegatedBigIntI32(value),
+        (
+            ScalarSequence::NegatedBigInt {
+                push: BigIntPush::DirectI32(_),
+                ..
+            },
+            _,
+        ) => return unadmitted("direct negated BigInt opcode carries a function constant"),
+        (
+            ScalarSequence::NegatedBigInt {
+                push: BigIntPush::Constant(0),
+                ..
+            },
+            [constant],
+        ) => match constant.as_wire() {
+            Ok(WireValue::BigInt(bytes)) => {
+                ScalarScriptDraft::NegatedBigIntBytes(copy_bigint_bytes(bytes)?)
+            }
+            Ok(_) => return unadmitted("negated scalar constant is not a BigInt value"),
+            Err(_) => return unadmitted("negated scalar constant is not a data value"),
+        },
+        (
+            ScalarSequence::NegatedBigInt {
+                push: BigIntPush::Constant(_),
+                ..
+            },
+            [_],
+        ) => return unadmitted("negated BigInt opcode does not reference index zero"),
+        (
+            ScalarSequence::NegatedBigInt {
+                push: BigIntPush::Constant(_),
+                ..
+            },
+            _,
+        ) => {
+            return unadmitted("negated BigInt opcode requires exactly one function constant");
         }
     };
 
@@ -281,8 +384,47 @@ fn copy_bigint_bytes(bytes: &[u8]) -> Result<Box<[u8]>, ScalarScriptReadError> {
     Ok(copy.into_boxed_slice())
 }
 
-/// Decode the release-pinned scalar push spelling without separating a
-/// constant-pool operand from the pool entry that admission authenticates.
+/// Decode the release-pinned scalar sequence without separating a constant-
+/// pool operand from the pool entry that admission authenticates.
+fn decode_scalar_sequence(bytes: &[u8]) -> Option<ScalarSequence> {
+    match bytes {
+        [OP_PUSH_CONST8, index, OP_NEG, OP_SET_LOC0, OP_RETURN] => {
+            Some(ScalarSequence::NegatedBigInt {
+                push: BigIntPush::Constant(u32::from(*index)),
+                width: 2,
+            })
+        }
+        [
+            OP_PUSH_CONST,
+            byte_0,
+            byte_1,
+            byte_2,
+            byte_3,
+            OP_NEG,
+            OP_SET_LOC0,
+            OP_RETURN,
+        ] => Some(ScalarSequence::NegatedBigInt {
+            push: BigIntPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
+            width: 5,
+        }),
+        [
+            OP_PUSH_BIGINT_I32,
+            byte_0,
+            byte_1,
+            byte_2,
+            byte_3,
+            OP_NEG,
+            OP_SET_LOC0,
+            OP_RETURN,
+        ] => Some(ScalarSequence::NegatedBigInt {
+            push: BigIntPush::DirectI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
+            width: 5,
+        }),
+        _ => decode_scalar_push(bytes).map(|(push, width)| ScalarSequence::Plain { push, width }),
+    }
+}
+
+/// Decode a release-pinned scalar push without a following unary operation.
 fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> {
     match bytes {
         [OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN] => {
@@ -820,12 +962,111 @@ mod tests {
                 &[&bigint_entry],
             ),
             scalar_with_constants(SHORT_INDEX_ZERO, &[&bigint_entry, &other_bigint_entry]),
+        ];
+        for object in invalid_pairs {
+            assert!(matches!(
+                decode_trusted_scalar_script(&object),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn admits_only_exactly_paired_single_negated_bigints() {
+        const SHORT_INDEX_ZERO_NEG: &[u8] = &[OP_PUSH_CONST8, 0, OP_NEG, OP_SET_LOC0, OP_RETURN];
+        const WIDE_INDEX_ZERO_NEG: &[u8] =
+            &[OP_PUSH_CONST, 0, 0, 0, 0, OP_NEG, OP_SET_LOC0, OP_RETURN];
+        let cases: &[(&[u8], &[u8])] = &[
+            (&[], &[]),
+            (&[0x01], &[0x01]),
+            (&[0xff], &[0xff]),
+            (
+                &[0x00, 0x00, 0x00, 0x80, 0x00],
+                &[0x00, 0x00, 0x00, 0x80, 0x00],
+            ),
+            (
+                &[0xff, 0xff, 0xff, 0x7f, 0xff],
+                &[0xff, 0xff, 0xff, 0x7f, 0xff],
+            ),
+            (
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x01,
+                ],
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x01,
+                ],
+            ),
+            // Compatible mode normalizes redundant sign extension before the
+            // draft crosses the archive/runtime boundary.
+            (&[0x00], &[]),
+            (&[0x01, 0x00], &[0x01]),
+            (&[0xff, 0xff], &[0xff]),
+        ];
+
+        for (payload, expected) in cases {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_bigint_constant(
+                    SHORT_INDEX_ZERO_NEG,
+                    payload,
+                )),
+                Ok(ScalarScriptDraft::NegatedBigIntBytes(Box::from(*expected)))
+            );
+        }
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_bigint_constant(
+                WIDE_INDEX_ZERO_NEG,
+                &[0x00, 0x00, 0x00, 0x80, 0x00],
+            )),
+            Ok(ScalarScriptDraft::NegatedBigIntBytes(Box::from([
+                0x00, 0x00, 0x00, 0x80, 0x00,
+            ])))
+        );
+
+        for value in [0_i32, 1, -1, i32::MAX, i32::MIN] {
+            let mut code = vec![OP_PUSH_BIGINT_I32];
+            code.extend_from_slice(&value.to_le_bytes());
+            code.extend_from_slice(&[OP_NEG, OP_SET_LOC0, OP_RETURN]);
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_code(&code)),
+                Ok(ScalarScriptDraft::NegatedBigIntI32(value))
+            );
+        }
+
+        let bigint_entry = bigint_constant_entry(&[0x00, 0x00, 0x00, 0x80, 0x00]);
+        let other_bigint_entry = bigint_constant_entry(&[0x01]);
+        let float_entry = float_constant_entry(0.5_f64.to_bits());
+        let invalid_shapes = [
+            scalar_with_code(SHORT_INDEX_ZERO_NEG),
             scalar_with_constants(
-                &[OP_PUSH_CONST8, 0, 0x8a, OP_SET_LOC0, OP_RETURN],
+                &[OP_PUSH_CONST8, 1, OP_NEG, OP_SET_LOC0, OP_RETURN],
+                &[&bigint_entry],
+            ),
+            scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&bigint_entry, &other_bigint_entry]),
+            scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&float_entry]),
+            scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&[0x05, 0x54]]),
+            scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&[0x07, 0x02, 0x78]]),
+            scalar_with_constants(
+                &[
+                    OP_PUSH_BIGINT_I32,
+                    1,
+                    0,
+                    0,
+                    0,
+                    OP_NEG,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ],
+                &[&bigint_entry],
+            ),
+            scalar_with_code(&[OP_PUSH_0, OP_NEG, OP_SET_LOC0, OP_RETURN]),
+            scalar_with_constants(
+                &[OP_PUSH_CONST8, 0, OP_NEG, OP_NEG, OP_SET_LOC0, OP_RETURN],
                 &[&bigint_entry],
             ),
         ];
-        for object in invalid_pairs {
+        for object in invalid_shapes {
             assert!(matches!(
                 decode_trusted_scalar_script(&object),
                 Err(ScalarScriptReadError::Unadmitted(_))
@@ -884,13 +1125,13 @@ mod tests {
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
 
-        let constant_pool_bigint_with_neg = [
+        let constant_pool_bigint_with_double_neg = [
             0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-            0x01, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0x8a, 0xcb, 0x28, 0x0a, 0x05,
-            0x00, 0x00, 0x00, 0x80, 0x00,
+            0x01, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0x8a, 0x8a, 0xcb, 0x28, 0x0a,
+            0x05, 0x00, 0x00, 0x00, 0x80, 0x00,
         ];
         assert!(matches!(
-            decode_trusted_scalar_script(&constant_pool_bigint_with_neg),
+            decode_trusted_scalar_script(&constant_pool_bigint_with_double_neg),
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
 

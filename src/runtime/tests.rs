@@ -286,6 +286,95 @@ fn trusted_quickjs_scalar_script_executes_exact_bigint_constant_pairs() {
 }
 
 #[test]
+fn trusted_quickjs_scalar_script_executes_single_bigint_neg_at_runtime() {
+    const SHORT_INDEX_ZERO_NEG: &[u8] = &[0xbd, 0x00, 0x8a, 0xcb, 0x28];
+    const WIDE_INDEX_ZERO_NEG: &[u8] = &[0x02, 0x00, 0x00, 0x00, 0x00, 0x8a, 0xcb, 0x28];
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    let constant_cases = vec![
+        (Vec::new(), JsBigInt::zero()),
+        (vec![0x01], JsBigInt::from(-1)),
+        (vec![0xff], JsBigInt::one()),
+        (
+            vec![0x00, 0x00, 0x00, 0x80, 0x00],
+            JsBigInt::from(-2_147_483_648_i64),
+        ),
+        (
+            vec![0xff, 0xff, 0xff, 0x7f, 0xff],
+            JsBigInt::from(2_147_483_649_i64),
+        ),
+        // Negating the largest-magnitude short BigInt must promote rather
+        // than overflow: i64::MIN becomes the positive heap value 2^63.
+        (
+            vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
+            JsBigInt::parse_js_string("9223372036854775808").unwrap(),
+        ),
+        (
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x01,
+            ],
+            JsBigInt::parse_js_string("-340282366920938463463374607431768211456").unwrap(),
+        ),
+        // Compatible redundant sign extension is normalized before the
+        // runtime receives the value, while negation still executes in the VM.
+        (vec![0x00], JsBigInt::zero()),
+        (vec![0x01, 0x00], JsBigInt::from(-1)),
+        (vec![0xff, 0xff], JsBigInt::one()),
+    ];
+    let direct_cases = [
+        (0_i32, JsBigInt::zero()),
+        (1, JsBigInt::from(-1)),
+        (-1, JsBigInt::one()),
+        (i32::MAX, JsBigInt::from(-i64::from(i32::MAX))),
+        (i32::MIN, JsBigInt::parse_js_string("2147483648").unwrap()),
+    ];
+    let mut functions = Vec::new();
+
+    for (payload, expected) in &constant_cases {
+        let image = quickjs_scalar_with_bigint_constant(SHORT_INDEX_ZERO_NEG, payload);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        assert_eq!(
+            context.execute(&function).unwrap(),
+            Value::BigInt(expected.clone())
+        );
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+        assert_eq!(runtime.heap_counts().object_nodes, baseline.object_nodes);
+        functions.push(function);
+    }
+
+    let image =
+        quickjs_scalar_with_bigint_constant(WIDE_INDEX_ZERO_NEG, &[0x00, 0x00, 0x00, 0x80, 0x00]);
+    let function = context.read_trusted_scalar_script(&image).unwrap();
+    assert_eq!(
+        context.execute(&function).unwrap(),
+        Value::BigInt(JsBigInt::from(-2_147_483_648_i64))
+    );
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    assert_eq!(runtime.heap_counts().object_nodes, baseline.object_nodes);
+    functions.push(function);
+
+    for (input, expected) in direct_cases {
+        let mut code = vec![0xb0];
+        code.extend_from_slice(&input.to_le_bytes());
+        code.extend_from_slice(&[0x8a, 0xcb, 0x28]);
+        let image = quickjs_scalar_with_code(&code);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        assert_eq!(context.execute(&function).unwrap(), Value::BigInt(expected));
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+        assert_eq!(runtime.heap_counts().object_nodes, baseline.object_nodes);
+        functions.push(function);
+    }
+
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline.function_bytecode_nodes + functions.len()
+    );
+}
+
+#[test]
 fn trusted_quickjs_scalar_script_accepts_compatible_wire_spellings() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -389,11 +478,43 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
             ),
         ),
         (
-            "BigInt constant scalar Script with unary neg",
+            "BigInt constant scalar Script with double unary neg",
             quickjs_scalar_with_constants(
-                &[0xbd, 0x00, 0x8a, 0xcb, 0x28],
+                &[0xbd, 0x00, 0x8a, 0x8a, 0xcb, 0x28],
                 &[bigint_entry.as_slice()],
             ),
+        ),
+        (
+            "negated BigInt constant scalar Script with a nonzero index",
+            quickjs_scalar_with_constants(
+                &[0xbd, 0x01, 0x8a, 0xcb, 0x28],
+                &[bigint_entry.as_slice()],
+            ),
+        ),
+        (
+            "negated BigInt constant scalar Script with an extra constant",
+            quickjs_scalar_with_constants(
+                &[0xbd, 0x00, 0x8a, 0xcb, 0x28],
+                &[bigint_entry.as_slice(), other_bigint_entry.as_slice()],
+            ),
+        ),
+        (
+            "negated direct BigInt scalar Script with a constant",
+            quickjs_scalar_with_constants(
+                &[0xb0, 0x01, 0x00, 0x00, 0x00, 0x8a, 0xcb, 0x28],
+                &[bigint_entry.as_slice()],
+            ),
+        ),
+        (
+            "Float64 constant scalar Script with unary neg",
+            quickjs_scalar_with_constants(
+                &[0xbd, 0x00, 0x8a, 0xcb, 0x28],
+                &[float_entry.as_slice()],
+            ),
+        ),
+        (
+            "Int32 direct scalar Script with unary neg",
+            quickjs_scalar_with_code(&[0xb3, 0x8a, 0xcb, 0x28]),
         ),
         (
             "push_const8 scalar Script with a String constant",

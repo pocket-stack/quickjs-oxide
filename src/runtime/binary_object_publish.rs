@@ -23,9 +23,31 @@ impl Runtime {
         bytes: &[u8],
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
         let draft = decode_trusted_scalar_script(bytes).map_err(map_read_error)?;
-        let (push, constants) = lower_scalar_draft(draft)?;
+        let (instructions, constants) = match lower_scalar_draft(draft)? {
+            LoweredScalar::Direct(push) => (
+                vec![push, Instruction::SetLocal(0), Instruction::Return],
+                Vec::new(),
+            ),
+            LoweredScalar::Constant(constant) => (
+                vec![
+                    Instruction::PushConst(0),
+                    Instruction::SetLocal(0),
+                    Instruction::Return,
+                ],
+                vec![constant],
+            ),
+            LoweredScalar::NegatedBigInt(constant) => (
+                vec![
+                    Instruction::PushConst(0),
+                    Instruction::Neg,
+                    Instruction::SetLocal(0),
+                    Instruction::Return,
+                ],
+                vec![constant],
+            ),
+        };
         let function = UnlinkedFunction::new(
-            vec![push, Instruction::SetLocal(0), Instruction::Return],
+            instructions,
             constants,
             FunctionMetadata {
                 local_count: 1,
@@ -41,31 +63,44 @@ impl Runtime {
     }
 }
 
-fn lower_scalar_draft(
-    draft: ScalarScriptDraft,
-) -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {
+enum LoweredScalar {
+    Direct(Instruction),
+    Constant(UnlinkedConstant),
+    NegatedBigInt(UnlinkedConstant),
+}
+
+fn lower_scalar_draft(draft: ScalarScriptDraft) -> Result<LoweredScalar, RuntimeError> {
     match draft {
-        ScalarScriptDraft::Undefined => Ok((Instruction::Undefined, Vec::new())),
-        ScalarScriptDraft::Null => Ok((Instruction::Null, Vec::new())),
-        ScalarScriptDraft::Bool(false) => Ok((Instruction::PushFalse, Vec::new())),
-        ScalarScriptDraft::Bool(true) => Ok((Instruction::PushTrue, Vec::new())),
-        ScalarScriptDraft::Int(value) => Ok((Instruction::PushI32(value), Vec::new())),
+        ScalarScriptDraft::Undefined => Ok(LoweredScalar::Direct(Instruction::Undefined)),
+        ScalarScriptDraft::Null => Ok(LoweredScalar::Direct(Instruction::Null)),
+        ScalarScriptDraft::Bool(false) => Ok(LoweredScalar::Direct(Instruction::PushFalse)),
+        ScalarScriptDraft::Bool(true) => Ok(LoweredScalar::Direct(Instruction::PushTrue)),
+        ScalarScriptDraft::Int(value) => Ok(LoweredScalar::Direct(Instruction::PushI32(value))),
         ScalarScriptDraft::Float64Bits(bits) => {
-            lower_scalar_constant(Value::Float(f64::from_bits(bits)))
+            lower_scalar_constant(Value::Float(f64::from_bits(bits))).map(LoweredScalar::Constant)
         }
         ScalarScriptDraft::BigIntI32(value) => {
-            lower_scalar_constant(Value::BigInt(JsBigInt::from(value)))
+            lower_scalar_constant(Value::BigInt(JsBigInt::from(value))).map(LoweredScalar::Constant)
         }
-        ScalarScriptDraft::BigIntBytes(bytes) => lower_bigint_constant(&bytes),
+        ScalarScriptDraft::BigIntBytes(bytes) => {
+            lower_bigint_constant(&bytes).map(LoweredScalar::Constant)
+        }
+        ScalarScriptDraft::NegatedBigIntI32(value) => lower_negated_bigint(JsBigInt::from(value)),
+        ScalarScriptDraft::NegatedBigIntBytes(bytes) => {
+            lower_negated_bigint(decode_bigint_constant(&bytes)?)
+        }
         ScalarScriptDraft::EmptyString => {
             lower_scalar_constant(Value::String(JsString::from_static("")))
+                .map(LoweredScalar::Constant)
         }
     }
 }
 
-fn lower_bigint_constant(
-    bytes: &[u8],
-) -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {
+fn lower_bigint_constant(bytes: &[u8]) -> Result<UnlinkedConstant, RuntimeError> {
+    lower_scalar_constant(Value::BigInt(decode_bigint_constant(bytes)?))
+}
+
+fn decode_bigint_constant(bytes: &[u8]) -> Result<JsBigInt, RuntimeError> {
     let (value, consumed) = JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), true)
         .map_err(|error| {
         RuntimeError::Engine(Error::internal(format!(
@@ -77,18 +112,19 @@ fn lower_bigint_constant(
             "trusted scalar BigInt draft was not consumed exactly",
         )));
     }
-    lower_scalar_constant(Value::BigInt(value))
+    Ok(value)
 }
 
-fn lower_scalar_constant(
-    value: Value,
-) -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {
-    let constant = UnlinkedConstant::primitive(value).map_err(|error| {
+fn lower_negated_bigint(value: JsBigInt) -> Result<LoweredScalar, RuntimeError> {
+    lower_scalar_constant(Value::BigInt(value)).map(LoweredScalar::NegatedBigInt)
+}
+
+fn lower_scalar_constant(value: Value) -> Result<UnlinkedConstant, RuntimeError> {
+    UnlinkedConstant::primitive(value).map_err(|error| {
         RuntimeError::Engine(Error::internal(format!(
             "trusted scalar draft produced an invalid primitive constant: {error}"
         )))
-    })?;
-    Ok((Instruction::PushConst(0), vec![constant]))
+    })
 }
 
 fn map_read_error(error: ScalarScriptReadError) -> RuntimeError {

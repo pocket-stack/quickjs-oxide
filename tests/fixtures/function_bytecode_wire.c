@@ -25,7 +25,7 @@ static const uint8_t scalar_local[] = {
     0x01, 0x00, 0x00, 0x00, 0x00,
 };
 
-#define SCALAR_MAX_CODE_SIZE 7
+#define SCALAR_MAX_CODE_SIZE 8
 #define SCALAR_FLOAT64_POOL_SIZE 9
 #define SCALAR_MAX_WIRE_SIZE \
     (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) + \
@@ -203,7 +203,9 @@ static const ScalarCase compatible_scalar_float64[] = {
 
 typedef enum BigIntConstantCohort {
     BIGINT_CONSTANT_THREE_INSTRUCTION,
-    BIGINT_CONSTANT_NEG_FRONTIER,
+    BIGINT_CONSTANT_UNARY_NEG,
+    BIGINT_CONSTANT_DIRECT_UNARY_NEG,
+    BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE,
 } BigIntConstantCohort;
 
 typedef struct BigIntConstantCase {
@@ -232,8 +234,24 @@ static const uint8_t bigint_push_const8_neg[] = {
     0xbd, 0x00, 0x8a, 0xcb, 0x28,
 };
 
+static const uint8_t bigint_push_const_neg[] = {
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x8a, 0xcb, 0x28,
+};
+
+static const uint8_t bigint_push_bigint_i32_neg[] = {
+    0xb0, 0x2a, 0x00, 0x00, 0x00, 0x8a, 0xcb, 0x28,
+};
+
+static const uint8_t bigint_push_const8_double_neg[] = {
+    0xbd, 0x00, 0x8a, 0x8a, 0xcb, 0x28,
+};
+
 static const uint8_t bigint_i32_max_plus_one[] = {
     0x00, 0x00, 0x00, 0x80, 0x00,
+};
+
+static const uint8_t bigint_i32_max_plus_two[] = {
+    0x01, 0x00, 0x00, 0x80, 0x00,
 };
 
 static const uint8_t bigint_u32_max[] = {
@@ -242,6 +260,10 @@ static const uint8_t bigint_u32_max[] = {
 
 static const uint8_t bigint_i64_max[] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+};
+
+static const uint8_t bigint_i64_min[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
 };
 
 static const uint8_t bigint_i64_max_plus_one[] = {
@@ -365,12 +387,83 @@ static const BigIntConstantCase bigint_constant_cases[] = {
       bigint_redundant_minus_one, sizeof(bigint_redundant_minus_one),
       bigint_minus_one, sizeof(bigint_minus_one),
       BIGINT_CONSTANT_THREE_INSTRUCTION },
-    { "canonical-bigint-neg-i32-min-frontier", "-2147483648n;",
+    { "canonical-bigint-neg-i32-min", "-2147483648n;",
       "-2147483648", JS_TAG_SHORT_BIG_INT,
       bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
       bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
       bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
-      BIGINT_CONSTANT_NEG_FRONTIER },
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "canonical-bigint-neg-i32-below-min", "-2147483649n;",
+      "-2147483649", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_i32_max_plus_two, sizeof(bigint_i32_max_plus_two),
+      bigint_i32_max_plus_two, sizeof(bigint_i32_max_plus_two),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "canonical-bigint-neg-i64-max", "-9223372036854775807n;",
+      "-9223372036854775807", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_i64_max, sizeof(bigint_i64_max),
+      bigint_i64_max, sizeof(bigint_i64_max),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "canonical-bigint-neg-i64-min", "-9223372036854775808n;",
+      "-9223372036854775808", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_i64_max_plus_one, sizeof(bigint_i64_max_plus_one),
+      bigint_i64_max_plus_one, sizeof(bigint_i64_max_plus_one),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "canonical-bigint-neg-multilimb",
+      "-340282366920938463463374607431768211456n;",
+      "-340282366920938463463374607431768211456", JS_TAG_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_two_to_128, sizeof(bigint_two_to_128),
+      bigint_two_to_128, sizeof(bigint_two_to_128),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "compatible-bigint-neg-short", NULL,
+      "-42", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_small_42, sizeof(bigint_small_42),
+      bigint_small_42, sizeof(bigint_small_42),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "compatible-bigint-neg-wide", NULL,
+      "-42", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const_neg, sizeof(bigint_push_const_neg),
+      bigint_small_42, sizeof(bigint_small_42),
+      bigint_small_42, sizeof(bigint_small_42),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "compatible-bigint-neg-direct-i32", NULL,
+      "-42", JS_TAG_SHORT_BIG_INT,
+      bigint_push_bigint_i32_neg, sizeof(bigint_push_bigint_i32_neg),
+      NULL, 0, NULL, 0,
+      BIGINT_CONSTANT_DIRECT_UNARY_NEG },
+    { "compatible-bigint-neg-negative-pool", NULL,
+      "2147483649", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_negative_i32_below_min, sizeof(bigint_negative_i32_below_min),
+      bigint_negative_i32_below_min, sizeof(bigint_negative_i32_below_min),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "compatible-bigint-neg-i64-min-short-to-heap", NULL,
+      "9223372036854775808", JS_TAG_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_i64_min, sizeof(bigint_i64_min),
+      bigint_i64_min, sizeof(bigint_i64_min),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "compatible-bigint-neg-zero-pool", NULL,
+      "0", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      NULL, 0, NULL, 0,
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "compatible-bigint-neg-nonminimal-pool", NULL,
+      "-1", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_redundant_one, sizeof(bigint_redundant_one),
+      bigint_one, sizeof(bigint_one),
+      BIGINT_CONSTANT_UNARY_NEG },
+    { "compatible-bigint-double-neg-outside", NULL,
+      "2147483648", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_double_neg, sizeof(bigint_push_const8_double_neg),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE },
 };
 
 static const uint8_t compatible_scope_next_wrap[] = {
@@ -839,10 +932,23 @@ static int has_bigint_constant_code_shape(const BigIntConstantCase *test) {
                 memcmp(test->code, bigint_push_const,
                        sizeof(bigint_push_const)) == 0);
     }
-    if (test->cohort == BIGINT_CONSTANT_NEG_FRONTIER) {
-        return test->code_size == sizeof(bigint_push_const8_neg) &&
-               memcmp(test->code, bigint_push_const8_neg,
-                      sizeof(bigint_push_const8_neg)) == 0;
+    if (test->cohort == BIGINT_CONSTANT_UNARY_NEG) {
+        return (test->code_size == sizeof(bigint_push_const8_neg) &&
+                memcmp(test->code, bigint_push_const8_neg,
+                       sizeof(bigint_push_const8_neg)) == 0) ||
+               (test->code_size == sizeof(bigint_push_const_neg) &&
+                memcmp(test->code, bigint_push_const_neg,
+                       sizeof(bigint_push_const_neg)) == 0);
+    }
+    if (test->cohort == BIGINT_CONSTANT_DIRECT_UNARY_NEG) {
+        return test->code_size == sizeof(bigint_push_bigint_i32_neg) &&
+               memcmp(test->code, bigint_push_bigint_i32_neg,
+                      sizeof(bigint_push_bigint_i32_neg)) == 0;
+    }
+    if (test->cohort == BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE) {
+        return test->code_size == sizeof(bigint_push_const8_double_neg) &&
+               memcmp(test->code, bigint_push_const8_double_neg,
+                      sizeof(bigint_push_const8_double_neg)) == 0;
     }
     return 0;
 }
@@ -856,33 +962,40 @@ static int build_bigint_constant_wire(const BigIntConstantCase *test,
                                        : test->payload;
     size_t payload_size = canonical ? test->canonical_payload_size
                                     : test->payload_size;
+    int has_constant_pool =
+        test->cohort != BIGINT_CONSTANT_DIRECT_UNARY_NEG;
     size_t offset = 0;
 
     if (!test->label || !test->expected_decimal ||
         !has_bigint_constant_code_shape(test) ||
         test->code_size > SCALAR_MAX_CODE_SIZE ||
         payload_size > BIGINT_CONSTANT_MAX_PAYLOAD_SIZE ||
-        (payload_size != 0 && !payload))
+        (payload_size != 0 && !payload) ||
+        (!has_constant_pool && (payload_size != 0 || payload)))
         return -1;
 
     if (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) +
-            test->code_size + 1 > output_capacity)
+            test->code_size + (has_constant_pool ? 1 : 0) >
+        output_capacity)
         return -1;
     memcpy(output + offset, scalar_prefix, sizeof(scalar_prefix));
     offset += sizeof(scalar_prefix);
-    output[offset++] = 1;
+    output[offset++] = has_constant_pool ? 1 : 0;
     output[offset++] = (uint8_t)test->code_size;
     memcpy(output + offset, scalar_local, sizeof(scalar_local));
     offset += sizeof(scalar_local);
     memcpy(output + offset, test->code, test->code_size);
     offset += test->code_size;
-    output[offset++] = 0x0a;
-    if (append_uleb_size(output, output_capacity, &offset, payload_size) ||
-        payload_size > output_capacity - offset)
-        return -1;
-    if (payload_size != 0)
-        memcpy(output + offset, payload, payload_size);
-    offset += payload_size;
+    if (has_constant_pool) {
+        output[offset++] = 0x0a;
+        if (append_uleb_size(output, output_capacity, &offset,
+                             payload_size) ||
+            payload_size > output_capacity - offset)
+            return -1;
+        if (payload_size != 0)
+            memcpy(output + offset, payload, payload_size);
+        offset += payload_size;
+    }
     *output_size = offset;
     return 0;
 }
@@ -1017,10 +1130,19 @@ static int expect_bigint_constant_case(JSContext *compile_context,
     for (size_t index = 0; index < input_wire_size; index++)
         printf("%02x", input_wire[index]);
     putchar('\n');
-    printf("%s-cohort=%s\n", test->label,
-           test->cohort == BIGINT_CONSTANT_THREE_INSTRUCTION
-               ? "three-instruction"
-               : "outside-neg");
+    printf("%s-cohort=", test->label);
+    switch (test->cohort) {
+    case BIGINT_CONSTANT_THREE_INSTRUCTION:
+        puts("three-instruction");
+        break;
+    case BIGINT_CONSTANT_UNARY_NEG:
+    case BIGINT_CONSTANT_DIRECT_UNARY_NEG:
+        puts("unary-neg");
+        break;
+    case BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE:
+        puts("outside-double-neg");
+        break;
+    }
     printf("%s-rewrite=%s\n", test->label,
            rewrite_is_identity ? "identity" : "canonical");
     if (!rewrite_is_identity) {

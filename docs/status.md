@@ -66,9 +66,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   scalar Script cohort: `undefined`, `null`, booleans, the complete direct
   Int32 family, signed-i32 BigInts, the empty String, and exact Float64 or
   arbitrary-precision signed BigInt values behind an index-zero/one-entry
-  constant-pool pair; it completes the compatible whole-image read, translates
-  an inert DTO to typed Rust instructions and primitive constants, and enters
-  the ordinary verifier and transactional publication path before execution
+  constant-pool pair; direct and constant-pool BigInts may carry exactly one
+  unary `neg`. It completes the compatible whole-image read, translates an
+  inert DTO to typed Rust instructions and primitive constants, and enters the
+  ordinary verifier and transactional publication path before execution
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -259,8 +260,15 @@ outside signed Int32; Rust retains the reader-normalized, signed little-endian
 payload in the inert draft, then uses the ordinary BigInt codec and constant
 publication path. Zero, negative compatible payloads, the short/heap boundary,
 arbitrary-precision values within the trusted-input cap, and compatible
-redundant sign extension are covered without admitting the distinct unary
-`neg` bytecode shape.
+redundant sign extension are covered. Both direct `push_bigint_i32` and the
+index-zero constant-pool BigInt form may additionally contain exactly one
+`neg` between the push and `set_loc0; return`. The inert draft records this as
+a distinct BigInt-only shape; publication emits `Instruction::Neg`, so
+negation, including zero handling and the short-to-heap transition, occurs
+during execution rather than eagerly while decoding or lowering. Recoverable
+allocator-failure parity remains part of the later `num-bigint` hardening gate.
+Double `neg`, `neg` on Float64, Int32, String, or other values, and general
+unary-expression bytecode remain outside this narrow admission milestone.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
