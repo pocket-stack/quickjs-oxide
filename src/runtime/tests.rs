@@ -211,6 +211,81 @@ fn trusted_quickjs_scalar_script_executes_exact_float64_constant_pairs() {
 }
 
 #[test]
+fn trusted_quickjs_scalar_script_executes_exact_bigint_constant_pairs() {
+    const SHORT_INDEX_ZERO: &[u8] = &[0xbd, 0x00, 0xcb, 0x28];
+    const WIDE_INDEX_ZERO: &[u8] = &[0x02, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x28];
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    let cases = vec![
+        (Vec::new(), JsBigInt::zero()),
+        (vec![0x01], JsBigInt::one()),
+        (vec![0xff], JsBigInt::from(-1)),
+        (
+            vec![0x00, 0x00, 0x00, 0x80, 0x00],
+            JsBigInt::from(2_147_483_648_i64),
+        ),
+        (
+            vec![0xff, 0xff, 0xff, 0x7f, 0xff],
+            JsBigInt::from(-2_147_483_649_i64),
+        ),
+        (
+            vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+            JsBigInt::from(i64::MAX),
+        ),
+        (
+            vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00],
+            JsBigInt::parse_js_string("9223372036854775808").unwrap(),
+        ),
+        (
+            vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xff],
+            JsBigInt::parse_js_string("-9223372036854775809").unwrap(),
+        ),
+        (
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x01,
+            ],
+            JsBigInt::parse_js_string("340282366920938463463374607431768211456").unwrap(),
+        ),
+        // Compatible BC5 accepts redundant sign extension; the archival
+        // reader normalizes it before runtime publication.
+        (vec![0x00], JsBigInt::zero()),
+        (vec![0x01, 0x00], JsBigInt::one()),
+        (vec![0xff, 0xff], JsBigInt::from(-1)),
+    ];
+    let mut functions = Vec::new();
+
+    for (payload, expected) in &cases {
+        let image = quickjs_scalar_with_bigint_constant(SHORT_INDEX_ZERO, payload);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        assert_eq!(
+            context.execute(&function).unwrap(),
+            Value::BigInt(expected.clone())
+        );
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+        assert_eq!(runtime.heap_counts().object_nodes, baseline.object_nodes);
+        functions.push(function);
+    }
+
+    let image =
+        quickjs_scalar_with_bigint_constant(WIDE_INDEX_ZERO, &[0x00, 0x00, 0x00, 0x80, 0x00]);
+    let function = context.read_trusted_scalar_script(&image).unwrap();
+    assert_eq!(
+        context.execute(&function).unwrap(),
+        Value::BigInt(JsBigInt::from(2_147_483_648_i64))
+    );
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    assert_eq!(runtime.heap_counts().object_nodes, baseline.object_nodes);
+    functions.push(function);
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline.function_bytecode_nodes + cases.len() + 1
+    );
+}
+
+#[test]
 fn trusted_quickjs_scalar_script_accepts_compatible_wire_spellings() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -260,6 +335,8 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
     unused_atom_slot.splice(1..2, [0x01, 0x00]);
     let float_entry = quickjs_float_constant_entry(0.5_f64.to_bits());
     let other_float_entry = quickjs_float_constant_entry(1.5_f64.to_bits());
+    let bigint_entry = quickjs_bigint_constant_entry(&[0x00, 0x00, 0x00, 0x80, 0x00]);
+    let other_bigint_entry = quickjs_bigint_constant_entry(&[0x01]);
     let well_formed_unadmitted = [
         (
             "push_this scalar Script",
@@ -295,6 +372,32 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
         (
             "push_const8 scalar Script with an Int32 constant",
             quickjs_scalar_with_constants(&[0xbd, 0x00, 0xcb, 0x28], &[&[0x05, 0x54]]),
+        ),
+        (
+            "direct scalar Script with a BigInt constant",
+            quickjs_scalar_with_constants(&[0xb3, 0xcb, 0x28], &[bigint_entry.as_slice()]),
+        ),
+        (
+            "push_const8 BigInt scalar Script with a nonzero index",
+            quickjs_scalar_with_constants(&[0xbd, 0x01, 0xcb, 0x28], &[bigint_entry.as_slice()]),
+        ),
+        (
+            "push_const8 BigInt scalar Script with an extra constant",
+            quickjs_scalar_with_constants(
+                &[0xbd, 0x00, 0xcb, 0x28],
+                &[bigint_entry.as_slice(), other_bigint_entry.as_slice()],
+            ),
+        ),
+        (
+            "BigInt constant scalar Script with unary neg",
+            quickjs_scalar_with_constants(
+                &[0xbd, 0x00, 0x8a, 0xcb, 0x28],
+                &[bigint_entry.as_slice()],
+            ),
+        ),
+        (
+            "push_const8 scalar Script with a String constant",
+            quickjs_scalar_with_constants(&[0xbd, 0x00, 0xcb, 0x28], &[&[0x07, 0x02, 0x78]]),
         ),
     ];
     for (label, image) in well_formed_unadmitted {
@@ -567,6 +670,20 @@ fn quickjs_scalar_with_float_constant(code: &[u8], bits: u64) -> Vec<u8> {
 fn quickjs_float_constant_entry(bits: u64) -> Vec<u8> {
     let mut entry = vec![0x06];
     entry.extend_from_slice(&bits.to_le_bytes());
+    entry
+}
+
+fn quickjs_scalar_with_bigint_constant(code: &[u8], payload: &[u8]) -> Vec<u8> {
+    let entry = quickjs_bigint_constant_entry(payload);
+    quickjs_scalar_with_constants(code, &[entry.as_slice()])
+}
+
+fn quickjs_bigint_constant_entry(payload: &[u8]) -> Vec<u8> {
+    let mut entry = vec![
+        0x0a,
+        u8::try_from(payload.len()).expect("test BigInt length fits one-byte ULEB"),
+    ];
+    entry.extend_from_slice(payload);
     entry
 }
 

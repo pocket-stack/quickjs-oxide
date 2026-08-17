@@ -64,11 +64,11 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   Rust/WASM browser playground
 - a narrow trusted-bytecode Rust API for the pinned BC5 branch-free, atom-free
   scalar Script cohort: `undefined`, `null`, booleans, the complete direct
-  Int32 family, signed-i32 BigInts, the empty String, and Float64 values behind
-  an exact index-zero/one-entry constant-pool pair; it completes the compatible
-  whole-image read, translates an inert DTO to typed Rust instructions and
-  primitive constants, and enters the ordinary verifier and transactional
-  publication path before execution
+  Int32 family, signed-i32 BigInts, the empty String, and exact Float64 or
+  arbitrary-precision signed BigInt values behind an index-zero/one-entry
+  constant-pool pair; it completes the compatible whole-image read, translates
+  an inert DTO to typed Rust instructions and primitive constants, and enters
+  the ordinary verifier and transactional publication path before execution
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -211,12 +211,13 @@ internal archival facilities rather than a general public bytecode surface.
 The one public read path is deliberately narrower: after the entire image has
 decoded in QuickJS-compatible mode, it accepts only a stripped Script root
 whose original input header declares zero atom slots, whose semantic dynamic
-atom table, input constant pool, and native atom-relocation table are empty,
-and which has one completion local. Its release-pinned direct scalar push is
-`undefined`, `null`, either boolean, a signed-i32 BigInt, the empty String, or
-the complete Int32 family, followed by `set_loc0; return`. The Int32 path
-accepts QuickJS-reader-compatible wider i8/i16/i32 spellings as well as
-compiler-canonical short forms.
+atom table and native atom-relocation table are empty, and which has one
+completion local. The function constant pool is empty for direct pushes, or
+is the exact index-zero/one-entry Float64 or BigInt pair described below. Its
+release-pinned direct scalar push is `undefined`, `null`, either boolean, a
+signed-i32 BigInt, the empty String, or the complete Int32 family, followed by
+`set_loc0; return`. The Int32 path accepts QuickJS-reader-compatible wider
+i8/i16/i32 spellings as well as compiler-canonical short forms.
 The decoder and writer planner are physically split into shared-driver,
 Function, and Module files while retaining one frame/task stack and one set of
 atom, reference, preorder, and budget state. All binary-object submodules are
@@ -252,6 +253,14 @@ negative zero, integral Float64 values, both infinities, and quiet/signaling NaN
 payloads on the pinned 64-bit QuickJS build. Rust carries the authenticated
 `u64` bits into `Value::Float` instead of applying numeric canonicalization;
 32-bit QuickJS NaN-boxing representation parity remains outside this milestone.
+BigInt constant admission uses the same atomic opcode/index/pool pair with
+exactly one `BC_TAG_BIG_INT` entry. Pinned QuickJS emits this form for literals
+outside signed Int32; Rust retains the reader-normalized, signed little-endian
+payload in the inert draft, then uses the ordinary BigInt codec and constant
+publication path. Zero, negative compatible payloads, the short/heap boundary,
+arbitrary-precision values within the trusted-input cap, and compatible
+redundant sign extension are covered without admitting the distinct unary
+`neg` bytecode shape.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and

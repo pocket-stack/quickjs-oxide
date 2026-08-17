@@ -56,10 +56,28 @@ fn lower_scalar_draft(
         ScalarScriptDraft::BigIntI32(value) => {
             lower_scalar_constant(Value::BigInt(JsBigInt::from(value)))
         }
+        ScalarScriptDraft::BigIntBytes(bytes) => lower_bigint_constant(&bytes),
         ScalarScriptDraft::EmptyString => {
             lower_scalar_constant(Value::String(JsString::from_static("")))
         }
     }
+}
+
+fn lower_bigint_constant(
+    bytes: &[u8],
+) -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {
+    let (value, consumed) = JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), true)
+        .map_err(|error| {
+        RuntimeError::Engine(Error::internal(format!(
+            "trusted scalar draft contained invalid canonical BigInt bytes: {error:?}"
+        )))
+    })?;
+    if consumed != bytes.len() {
+        return Err(RuntimeError::Engine(Error::internal(
+            "trusted scalar BigInt draft was not consumed exactly",
+        )));
+    }
+    lower_scalar_constant(Value::BigInt(value))
 }
 
 fn lower_scalar_constant(

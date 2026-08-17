@@ -38,7 +38,7 @@ const OP_PUSH_EMPTY_STRING: u8 = 0xbf;
 const OP_SET_LOC0: u8 = 0xcb;
 
 /// Runtime-independent result of the executable BC5 scalar admission cohort.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum ScalarScriptDraft {
     Undefined,
     Null,
@@ -46,10 +46,11 @@ pub(in crate::runtime) enum ScalarScriptDraft {
     Int(i32),
     Float64Bits(u64),
     BigIntI32(i32),
+    BigIntBytes(Box<[u8]>),
     EmptyString,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ScalarPush {
     Direct(ScalarScriptDraft),
     Constant(u32),
@@ -250,7 +251,10 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
         }
         (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
             Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),
-            Ok(_) => return unadmitted("scalar constant is not a Float64 value"),
+            Ok(WireValue::BigInt(bytes)) => {
+                ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
+            }
+            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),
             Err(_) => return unadmitted("scalar constant is not a data value"),
         },
         (ScalarPush::Constant(_), [_]) => {
@@ -262,6 +266,19 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     };
 
     Ok(draft)
+}
+
+/// Preserve the normalized signed payload without coupling the archival
+/// decoder to the runtime BigInt representation. The whole-image model owns
+/// its constants, so the narrow DTO needs one explicit, fallible copy before
+/// that model is dropped.
+fn copy_bigint_bytes(bytes: &[u8]) -> Result<Box<[u8]>, ScalarScriptReadError> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len()).map_err(|_| {
+        ScalarScriptReadError::Internal("could not allocate the scalar BigInt draft".into())
+    })?;
+    copy.extend_from_slice(bytes);
+    Ok(copy.into_boxed_slice())
 }
 
 /// Decode the release-pinned scalar push spelling without separating a
@@ -657,7 +674,7 @@ mod tests {
         for (code, expected) in cases {
             assert_eq!(
                 decode_trusted_scalar_script(&scalar_with_code(code)),
-                Ok(*expected)
+                Ok(expected.clone())
             );
         }
     }
@@ -709,10 +726,6 @@ mod tests {
             ),
             scalar_with_constants(SHORT_INDEX_ZERO, &[&float_entry, &other_float_entry]),
             scalar_with_constants(SHORT_INDEX_ZERO, &[&[0x05, 0x54]]),
-            scalar_with_constants(
-                SHORT_INDEX_ZERO,
-                &[&[0x0a, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00]],
-            ),
         ];
         for object in invalid_pairs {
             assert!(matches!(
@@ -728,6 +741,96 @@ mod tests {
             decode_trusted_scalar_script(&truncated_float),
             Err(ScalarScriptReadError::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn admits_only_exactly_paired_normalized_bigint_constants() {
+        const SHORT_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST8, 0, OP_SET_LOC0, OP_RETURN];
+        const WIDE_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST, 0, 0, 0, 0, OP_SET_LOC0, OP_RETURN];
+        let cases: &[(&[u8], &[u8])] = &[
+            (&[], &[]),
+            (&[0x01], &[0x01]),
+            (&[0xff], &[0xff]),
+            (
+                &[0x00, 0x00, 0x00, 0x80, 0x00],
+                &[0x00, 0x00, 0x00, 0x80, 0x00],
+            ),
+            (
+                &[0xff, 0xff, 0xff, 0x7f, 0xff],
+                &[0xff, 0xff, 0xff, 0x7f, 0xff],
+            ),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+            ),
+            (
+                &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00],
+                &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00],
+            ),
+            (
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xff],
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xff],
+            ),
+            (
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x01,
+                ],
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x01,
+                ],
+            ),
+            // QuickJS-compatible mode accepts redundant sign extension and
+            // the graph decoder normalizes it before scalar admission.
+            (&[0x00], &[]),
+            (&[0x01, 0x00], &[0x01]),
+            (&[0xff, 0xff], &[0xff]),
+        ];
+
+        for (payload, expected) in cases {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_bigint_constant(
+                    SHORT_INDEX_ZERO,
+                    payload,
+                )),
+                Ok(ScalarScriptDraft::BigIntBytes(Box::from(*expected)))
+            );
+        }
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_bigint_constant(
+                WIDE_INDEX_ZERO,
+                &[0x00, 0x00, 0x00, 0x80, 0x00],
+            )),
+            Ok(ScalarScriptDraft::BigIntBytes(Box::from([
+                0x00, 0x00, 0x00, 0x80, 0x00,
+            ])))
+        );
+
+        let bigint_entry = bigint_constant_entry(&[0x00, 0x00, 0x00, 0x80, 0x00]);
+        let other_bigint_entry = bigint_constant_entry(&[0x01]);
+        let invalid_pairs = [
+            scalar_with_constants(&[OP_PUSH_0, OP_SET_LOC0, OP_RETURN], &[&bigint_entry]),
+            scalar_with_constants(
+                &[OP_PUSH_CONST8, 1, OP_SET_LOC0, OP_RETURN],
+                &[&bigint_entry],
+            ),
+            scalar_with_constants(
+                &[OP_PUSH_CONST, 1, 0, 0, 0, OP_SET_LOC0, OP_RETURN],
+                &[&bigint_entry],
+            ),
+            scalar_with_constants(SHORT_INDEX_ZERO, &[&bigint_entry, &other_bigint_entry]),
+            scalar_with_constants(
+                &[OP_PUSH_CONST8, 0, 0x8a, OP_SET_LOC0, OP_RETURN],
+                &[&bigint_entry],
+            ),
+        ];
+        for object in invalid_pairs {
+            assert!(matches!(
+                decode_trusted_scalar_script(&object),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
     }
 
     #[test]
@@ -781,24 +884,15 @@ mod tests {
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
 
-        let constant_pool_bigints: &[&[u8]] = &[
-            &[
-                0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-                0x01, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0xcb, 0x28, 0x0a, 0x05, 0x00,
-                0x00, 0x00, 0x80, 0x00,
-            ],
-            &[
-                0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-                0x01, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0x8a, 0xcb, 0x28, 0x0a, 0x05,
-                0x00, 0x00, 0x00, 0x80, 0x00,
-            ],
+        let constant_pool_bigint_with_neg = [
+            0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+            0x01, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0x8a, 0xcb, 0x28, 0x0a, 0x05,
+            0x00, 0x00, 0x00, 0x80, 0x00,
         ];
-        for object in constant_pool_bigints {
-            assert!(matches!(
-                decode_trusted_scalar_script(object),
-                Err(ScalarScriptReadError::Unadmitted(_))
-            ));
-        }
+        assert!(matches!(
+            decode_trusted_scalar_script(&constant_pool_bigint_with_neg),
+            Err(ScalarScriptReadError::Unadmitted(_))
+        ));
 
         let mut unsupported_metadata = RETURN_42;
         unsupported_metadata[3] = 0x01;
@@ -1009,6 +1103,20 @@ mod tests {
     fn scalar_with_float_constant(code: &[u8], bits: u64) -> Vec<u8> {
         let entry = float_constant_entry(bits);
         scalar_with_constants(code, &[&entry])
+    }
+
+    fn scalar_with_bigint_constant(code: &[u8], payload: &[u8]) -> Vec<u8> {
+        let entry = bigint_constant_entry(payload);
+        scalar_with_constants(code, &[&entry])
+    }
+
+    fn bigint_constant_entry(payload: &[u8]) -> Vec<u8> {
+        let mut entry = vec![
+            0x0a,
+            u8::try_from(payload.len()).expect("test BigInt length fits one-byte ULEB"),
+        ];
+        entry.extend_from_slice(payload);
+        entry
     }
 
     fn float_constant_entry(bits: u64) -> Vec<u8> {

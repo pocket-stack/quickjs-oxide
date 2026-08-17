@@ -30,6 +30,10 @@ static const uint8_t scalar_local[] = {
 #define SCALAR_MAX_WIRE_SIZE \
     (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) + \
      SCALAR_MAX_CODE_SIZE + SCALAR_FLOAT64_POOL_SIZE)
+#define BIGINT_CONSTANT_MAX_PAYLOAD_SIZE 17
+#define BIGINT_CONSTANT_MAX_WIRE_SIZE \
+    (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) + \
+     SCALAR_MAX_CODE_SIZE + 1 + 5 + BIGINT_CONSTANT_MAX_PAYLOAD_SIZE)
 
 typedef enum ScalarValueKind {
     SCALAR_VALUE_NUMBER,
@@ -195,6 +199,178 @@ static const ScalarCase compatible_scalar_float64[] = {
     { "compatible-float64-signaling-nan", NULL,
       EXPECT_FLOAT64(0x7ff0000000000042), 4,
       { 0xbd, 0x00, 0xcb, 0x28 } },
+};
+
+typedef enum BigIntConstantCohort {
+    BIGINT_CONSTANT_THREE_INSTRUCTION,
+    BIGINT_CONSTANT_NEG_FRONTIER,
+} BigIntConstantCohort;
+
+typedef struct BigIntConstantCase {
+    const char *label;
+    const char *source;
+    const char *expected_decimal;
+    int expected_tag;
+    const uint8_t *code;
+    size_t code_size;
+    const uint8_t *payload;
+    size_t payload_size;
+    const uint8_t *canonical_payload;
+    size_t canonical_payload_size;
+    BigIntConstantCohort cohort;
+} BigIntConstantCase;
+
+static const uint8_t bigint_push_const8[] = {
+    0xbd, 0x00, 0xcb, 0x28,
+};
+
+static const uint8_t bigint_push_const[] = {
+    0x02, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+
+static const uint8_t bigint_push_const8_neg[] = {
+    0xbd, 0x00, 0x8a, 0xcb, 0x28,
+};
+
+static const uint8_t bigint_i32_max_plus_one[] = {
+    0x00, 0x00, 0x00, 0x80, 0x00,
+};
+
+static const uint8_t bigint_u32_max[] = {
+    0xff, 0xff, 0xff, 0xff, 0x00,
+};
+
+static const uint8_t bigint_i64_max[] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+};
+
+static const uint8_t bigint_i64_max_plus_one[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00,
+};
+
+static const uint8_t bigint_two_to_128[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01,
+};
+
+static const uint8_t bigint_small_42[] = {
+    0x2a,
+};
+
+static const uint8_t bigint_negative_i32_below_min[] = {
+    0xff, 0xff, 0xff, 0x7f, 0xff,
+};
+
+static const uint8_t bigint_negative_i64_below_min[] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xff,
+};
+
+static const uint8_t bigint_one[] = {
+    0x01,
+};
+
+static const uint8_t bigint_minus_one[] = {
+    0xff,
+};
+
+static const uint8_t bigint_redundant_zero[] = {
+    0x00,
+};
+
+static const uint8_t bigint_redundant_one[] = {
+    0x01, 0x00,
+};
+
+static const uint8_t bigint_redundant_minus_one[] = {
+    0xff, 0xff,
+};
+
+static const BigIntConstantCase bigint_constant_cases[] = {
+    { "canonical-bigint-constant-i32-max-plus-one", "2147483648n;",
+      "2147483648", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "canonical-bigint-constant-u32-max", "4294967295n;",
+      "4294967295", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_u32_max, sizeof(bigint_u32_max),
+      bigint_u32_max, sizeof(bigint_u32_max),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "canonical-bigint-constant-i64-max", "9223372036854775807n;",
+      "9223372036854775807", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_i64_max, sizeof(bigint_i64_max),
+      bigint_i64_max, sizeof(bigint_i64_max),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "canonical-bigint-constant-i64-max-plus-one", "9223372036854775808n;",
+      "9223372036854775808", JS_TAG_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_i64_max_plus_one, sizeof(bigint_i64_max_plus_one),
+      bigint_i64_max_plus_one, sizeof(bigint_i64_max_plus_one),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "canonical-bigint-constant-multilimb",
+      "340282366920938463463374607431768211456n;",
+      "340282366920938463463374607431768211456", JS_TAG_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_two_to_128, sizeof(bigint_two_to_128),
+      bigint_two_to_128, sizeof(bigint_two_to_128),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-wide", NULL,
+      "2147483648", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const, sizeof(bigint_push_const),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-zero", NULL,
+      "0", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      NULL, 0, NULL, 0,
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-small", NULL,
+      "42", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_small_42, sizeof(bigint_small_42),
+      bigint_small_42, sizeof(bigint_small_42),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-negative", NULL,
+      "-2147483649", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_negative_i32_below_min, sizeof(bigint_negative_i32_below_min),
+      bigint_negative_i32_below_min, sizeof(bigint_negative_i32_below_min),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-negative-heap", NULL,
+      "-9223372036854775809", JS_TAG_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_negative_i64_below_min, sizeof(bigint_negative_i64_below_min),
+      bigint_negative_i64_below_min, sizeof(bigint_negative_i64_below_min),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-redundant-zero", NULL,
+      "0", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_redundant_zero, sizeof(bigint_redundant_zero),
+      NULL, 0,
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-redundant-positive", NULL,
+      "1", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_redundant_one, sizeof(bigint_redundant_one),
+      bigint_one, sizeof(bigint_one),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "compatible-bigint-constant-redundant-negative", NULL,
+      "-1", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8, sizeof(bigint_push_const8),
+      bigint_redundant_minus_one, sizeof(bigint_redundant_minus_one),
+      bigint_minus_one, sizeof(bigint_minus_one),
+      BIGINT_CONSTANT_THREE_INSTRUCTION },
+    { "canonical-bigint-neg-i32-min-frontier", "-2147483648n;",
+      "-2147483648", JS_TAG_SHORT_BIG_INT,
+      bigint_push_const8_neg, sizeof(bigint_push_const8_neg),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
+      BIGINT_CONSTANT_NEG_FRONTIER },
 };
 
 static const uint8_t compatible_scope_next_wrap[] = {
@@ -637,6 +813,244 @@ static int expect_compatible_scalar(const ScalarCase *test) {
     return expect_read_scalar(test->label, wire, wire_size, test->expected);
 }
 
+static int append_uleb_size(uint8_t *output,
+                            size_t output_capacity,
+                            size_t *offset,
+                            size_t value) {
+    do {
+        uint8_t byte = (uint8_t)(value & 0x7f);
+
+        value >>= 7;
+        if (value != 0)
+            byte |= 0x80;
+        if (*offset >= output_capacity)
+            return -1;
+        output[(*offset)++] = byte;
+    } while (value != 0);
+    return 0;
+}
+
+static int has_bigint_constant_code_shape(const BigIntConstantCase *test) {
+    if (test->cohort == BIGINT_CONSTANT_THREE_INSTRUCTION) {
+        return (test->code_size == sizeof(bigint_push_const8) &&
+                memcmp(test->code, bigint_push_const8,
+                       sizeof(bigint_push_const8)) == 0) ||
+               (test->code_size == sizeof(bigint_push_const) &&
+                memcmp(test->code, bigint_push_const,
+                       sizeof(bigint_push_const)) == 0);
+    }
+    if (test->cohort == BIGINT_CONSTANT_NEG_FRONTIER) {
+        return test->code_size == sizeof(bigint_push_const8_neg) &&
+               memcmp(test->code, bigint_push_const8_neg,
+                      sizeof(bigint_push_const8_neg)) == 0;
+    }
+    return 0;
+}
+
+static int build_bigint_constant_wire(const BigIntConstantCase *test,
+                                      int canonical,
+                                      uint8_t *output,
+                                      size_t output_capacity,
+                                      size_t *output_size) {
+    const uint8_t *payload = canonical ? test->canonical_payload
+                                       : test->payload;
+    size_t payload_size = canonical ? test->canonical_payload_size
+                                    : test->payload_size;
+    size_t offset = 0;
+
+    if (!test->label || !test->expected_decimal ||
+        !has_bigint_constant_code_shape(test) ||
+        test->code_size > SCALAR_MAX_CODE_SIZE ||
+        payload_size > BIGINT_CONSTANT_MAX_PAYLOAD_SIZE ||
+        (payload_size != 0 && !payload))
+        return -1;
+
+    if (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) +
+            test->code_size + 1 > output_capacity)
+        return -1;
+    memcpy(output + offset, scalar_prefix, sizeof(scalar_prefix));
+    offset += sizeof(scalar_prefix);
+    output[offset++] = 1;
+    output[offset++] = (uint8_t)test->code_size;
+    memcpy(output + offset, scalar_local, sizeof(scalar_local));
+    offset += sizeof(scalar_local);
+    memcpy(output + offset, test->code, test->code_size);
+    offset += test->code_size;
+    output[offset++] = 0x0a;
+    if (append_uleb_size(output, output_capacity, &offset, payload_size) ||
+        payload_size > output_capacity - offset)
+        return -1;
+    if (payload_size != 0)
+        memcpy(output + offset, payload, payload_size);
+    offset += payload_size;
+    *output_size = offset;
+    return 0;
+}
+
+static int expect_bigint_constant_case(JSContext *compile_context,
+                                       const BigIntConstantCase *test) {
+    uint8_t input_wire[BIGINT_CONSTANT_MAX_WIRE_SIZE];
+    uint8_t canonical_wire[BIGINT_CONSTANT_MAX_WIRE_SIZE];
+    size_t input_wire_size = 0;
+    size_t canonical_wire_size = 0;
+    JSValue compiled = JS_UNDEFINED;
+    uint8_t *compiled_wire = NULL;
+    size_t compiled_wire_size = 0;
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    uint8_t *rewritten_wire = NULL;
+    size_t rewritten_wire_size = 0;
+    const char *actual_decimal = NULL;
+    int actual_tag = -1;
+    int rewrite_is_identity;
+    int status = -1;
+
+    if (build_bigint_constant_wire(test, 0, input_wire,
+                                   sizeof(input_wire), &input_wire_size) ||
+        build_bigint_constant_wire(test, 1, canonical_wire,
+                                   sizeof(canonical_wire),
+                                   &canonical_wire_size)) {
+        fprintf(stderr, "%s has an invalid oracle definition\n", test->label);
+        goto cleanup;
+    }
+
+    if (test->source) {
+        compiled = JS_Eval(compile_context, test->source,
+                           strlen(test->source), "bigint-constant.js",
+                           JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (JS_IsException(compiled)) {
+            fprintf(stderr, "%s ", test->label);
+            report_exception(compile_context, "compile failed");
+            compiled = JS_UNDEFINED;
+            goto cleanup;
+        }
+        compiled_wire = JS_WriteObject(compile_context, &compiled_wire_size,
+                                       compiled, JS_WRITE_OBJ_BYTECODE);
+        if (!compiled_wire) {
+            fprintf(stderr, "%s ", test->label);
+            report_exception(compile_context,
+                             "bytecode serialization failed");
+            goto cleanup;
+        }
+        if (compiled_wire_size != input_wire_size ||
+            memcmp(compiled_wire, input_wire, input_wire_size) != 0) {
+            fprintf(stderr,
+                    "%s compiler wire did not match its pinned BC5 vector\n",
+                    test->label);
+            goto cleanup;
+        }
+        printf("%s-source-hex=", test->label);
+        for (size_t index = 0; test->source[index] != '\0'; index++)
+            printf("%02x", (unsigned char)test->source[index]);
+        putchar('\n');
+    }
+
+    runtime = JS_NewRuntime();
+    if (!runtime) {
+        fprintf(stderr, "%s runtime allocation failed\n", test->label);
+        goto cleanup;
+    }
+    context = JS_NewContext(runtime);
+    if (!context) {
+        fprintf(stderr, "%s context allocation failed\n", test->label);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, input_wire, input_wire_size,
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "bytecode read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten_wire = JS_WriteObject(context, &rewritten_wire_size, loaded,
+                                    JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten_wire) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "bytecode rewrite failed");
+        goto cleanup;
+    }
+    if (rewritten_wire_size != canonical_wire_size ||
+        memcmp(rewritten_wire, canonical_wire, canonical_wire_size) != 0) {
+        fprintf(stderr,
+                "%s rewrite did not match its canonical BC5 vector\n",
+                test->label);
+        goto cleanup;
+    }
+
+    result = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED; /* JS_EvalFunction consumes its argument. */
+    if (JS_IsException(result)) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "fresh-runtime evaluation failed");
+        result = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (!JS_IsBigInt(context, result)) {
+        fprintf(stderr, "%s did not evaluate to a BigInt\n", test->label);
+        goto cleanup;
+    }
+    actual_tag = JS_VALUE_GET_TAG(result);
+    if (actual_tag != test->expected_tag) {
+        fprintf(stderr, "%s evaluated with tag %d, expected %d\n",
+                test->label, actual_tag, test->expected_tag);
+        goto cleanup;
+    }
+    actual_decimal = JS_ToCString(context, result);
+    if (!actual_decimal) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "BigInt string conversion failed");
+        goto cleanup;
+    }
+    if (strcmp(actual_decimal, test->expected_decimal) != 0) {
+        fprintf(stderr, "%s evaluated to %sn, expected %sn\n",
+                test->label, actual_decimal, test->expected_decimal);
+        goto cleanup;
+    }
+
+    rewrite_is_identity = input_wire_size == canonical_wire_size &&
+                          memcmp(input_wire, canonical_wire,
+                                 input_wire_size) == 0;
+    printf("%s-hex=", test->label);
+    for (size_t index = 0; index < input_wire_size; index++)
+        printf("%02x", input_wire[index]);
+    putchar('\n');
+    printf("%s-cohort=%s\n", test->label,
+           test->cohort == BIGINT_CONSTANT_THREE_INSTRUCTION
+               ? "three-instruction"
+               : "outside-neg");
+    printf("%s-rewrite=%s\n", test->label,
+           rewrite_is_identity ? "identity" : "canonical");
+    if (!rewrite_is_identity) {
+        printf("%s-rewrite-hex=", test->label);
+        for (size_t index = 0; index < canonical_wire_size; index++)
+            printf("%02x", canonical_wire[index]);
+        putchar('\n');
+    }
+    printf("%s-eval-tag=%d\n", test->label, actual_tag);
+    printf("%s-eval=%sn\n", test->label, actual_decimal);
+    status = 0;
+
+cleanup:
+    if (context) {
+        if (actual_decimal)
+            JS_FreeCString(context, actual_decimal);
+        if (rewritten_wire)
+            js_free(context, rewritten_wire);
+        JS_FreeValue(context, result);
+        JS_FreeValue(context, loaded);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    if (compiled_wire)
+        js_free(compile_context, compiled_wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
 int main(void) {
     static const char source[] = "42;";
     JSRuntime *compile_runtime = NULL;
@@ -760,6 +1174,17 @@ int main(void) {
          index++) {
         if (expect_compiled_scalar(
                 compile_context, &canonical_scalar_float64[index]))
+            goto cleanup;
+    }
+    printf("bigint-constant-case-count=%zu\n",
+           sizeof(bigint_constant_cases) /
+           sizeof(bigint_constant_cases[0]));
+    for (size_t index = 0;
+         index < sizeof(bigint_constant_cases) /
+                 sizeof(bigint_constant_cases[0]);
+         index++) {
+        if (expect_bigint_constant_case(
+                compile_context, &bigint_constant_cases[index]))
             goto cleanup;
     }
     printf("compatible-scalar-integer-count=%zu\n",

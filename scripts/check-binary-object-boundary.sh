@@ -317,20 +317,28 @@ scalar_visibility = (
     r"pub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
     r"[ \t\n]*\)"
 )
+scalar_noncopy_derive = (
+    r"#[ \t\n]*\[[ \t\n]*derive[ \t\n]*\([ \t\n]*Clone[ \t\n]*,"
+    r"[ \t\n]*Debug[ \t\n]*,[ \t\n]*Eq[ \t\n]*,"
+    r"[ \t\n]*PartialEq[ \t\n]*\)[ \t\n]*\]"
+)
 scalar_draft_pattern = re.compile(
-    rf"\b{scalar_visibility}[ \t\n]+enum[ \t\n]+ScalarScriptDraft[ \t\n]*\{{"
+    rf"{scalar_noncopy_derive}[ \t\n]*{scalar_visibility}"
+    r"[ \t\n]+enum[ \t\n]+ScalarScriptDraft[ \t\n]*\{"
     r"[ \t\n]*Undefined[ \t\n]*,"
     r"[ \t\n]*Null[ \t\n]*,"
     r"[ \t\n]*Bool[ \t\n]*\([ \t\n]*bool[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*Int[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*Float64Bits[ \t\n]*\([ \t\n]*u64[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*BigIntI32[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*BigIntBytes[ \t\n]*\([ \t\n]*Box[ \t\n]*<"
+    r"[ \t\n]*\[[ \t\n]*u8[ \t\n]*\][ \t\n]*>[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*EmptyString[ \t\n]*,?[ \t\n]*\}"
 )
 if len(scalar_draft_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-draft-shape",
-        "ScalarScriptDraft must be runtime-visible only and contain exactly Undefined, Null, Bool(bool), Int(i32), Float64Bits(u64), BigIntI32(i32), and EmptyString",
+        "ScalarScriptDraft must be non-Copy, runtime-visible only, and contain exactly Undefined, Null, Bool(bool), Int(i32), Float64Bits(u64), BigIntI32(i32), BigIntBytes(Box<[u8]>), and EmptyString",
     )
 
 scalar_error_pattern = re.compile(
@@ -432,7 +440,7 @@ if (
     )
 
 scalar_push_pattern = re.compile(
-    r"\benum[ \t\n]+ScalarPush[ \t\n]*\{"
+    rf"{scalar_noncopy_derive}[ \t\n]*enum[ \t\n]+ScalarPush[ \t\n]*\{{"
     r"[ \t\n]*Direct[ \t\n]*\([ \t\n]*ScalarScriptDraft[ \t\n]*\)"
     r"[ \t\n]*,[ \t\n]*Constant[ \t\n]*\([ \t\n]*u32[ \t\n]*\)"
     r"[ \t\n]*,?[ \t\n]*\}"
@@ -441,6 +449,20 @@ if len(scalar_push_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-push-shape",
         "ScalarPush must remain one private Direct(ScalarScriptDraft) or Constant(u32) discriminator",
+    )
+
+scalar_copy_pattern = re.compile(
+    r"#[ \t\n]*\[[ \t\n]*derive[ \t\n]*\([^\]]*\bCopy\b[^\]]*\)"
+    r"[ \t\n]*\](?:[ \t\n]*#[ \t\n]*\[[^\]]*\])*[ \t\n]*"
+    rf"(?:{scalar_visibility}[ \t\n]+)?enum[ \t\n]+"
+    r"(?:ScalarScriptDraft|ScalarPush)\b|"
+    r"\bimpl[ \t\n]+Copy[ \t\n]+for[ \t\n]+"
+    r"(?:ScalarScriptDraft|ScalarPush)\b"
+)
+if scalar_copy_pattern.search(scalar_script_code):
+    fail(
+        "scalar-script-draft-shape",
+        "ScalarScriptDraft and ScalarPush must not regain Copy semantics around owned BigInt bytes",
     )
 
 scalar_push_decoder_item_pattern = re.compile(
@@ -476,6 +498,40 @@ if scalar_push_decoder_code:
         fail(
             "scalar-script-push-decoder",
             "decode_scalar_push must admit only push_const8/u8 and push_const/little-endian-u32 before the direct scalar decoder",
+        )
+
+bigint_copy_pattern = re.compile(
+    r"\bfn[ \t\n]+copy_bigint_bytes[ \t\n]*\([ \t\n]*bytes[ \t\n]*:"
+    r"[ \t\n]*&[ \t\n]*\[[ \t\n]*u8[ \t\n]*\][ \t\n]*\)"
+    r"[ \t\n]*->[ \t\n]*Result[ \t\n]*<[ \t\n]*Box[ \t\n]*<"
+    r"[ \t\n]*\[[ \t\n]*u8[ \t\n]*\][ \t\n]*>[ \t\n]*,"
+    r"[ \t\n]*ScalarScriptReadError[ \t\n]*>[ \t\n]*\{",
+    re.DOTALL,
+)
+bigint_copy_code, _, _ = unique_braced_item(
+    scalar_script_code,
+    bigint_copy_pattern,
+    "scalar-script-bigint-copy",
+    "fallible canonical BigInt byte-copy helper",
+)
+if bigint_copy_code:
+    expected_bigint_copy_source = """
+        fn copy_bigint_bytes(bytes: &[u8]) -> Result<Box<[u8]>, ScalarScriptReadError> {
+            let mut copy = Vec::new();
+            copy.try_reserve_exact(bytes.len()).map_err(|_| {
+                ScalarScriptReadError::Internal("could not allocate the scalar BigInt draft".into())
+            })?;
+            copy.extend_from_slice(bytes);
+            Ok(copy.into_boxed_slice())
+        }
+    """
+    if (
+        " ".join(bigint_copy_code.split())
+        != " ".join(rust_code_only(expected_bigint_copy_source).split())
+    ):
+        fail(
+            "scalar-script-bigint-copy",
+            "copy_bigint_bytes must perform one exact fallible reserve, byte-for-byte copy, and boxed ownership transfer",
         )
 
 scalar_visible_item_pattern = re.compile(
@@ -692,7 +748,10 @@ if scalar_admission_code:
                 }
                 (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
                     Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),
-                    Ok(_) => return unadmitted("scalar constant is not a Float64 value"),
+                    Ok(WireValue::BigInt(bytes)) => {
+                        ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
+                    }
+                    Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),
                     Err(_) => return unadmitted("scalar constant is not a data value"),
                 },
                 (ScalarPush::Constant(_), [_]) => {
@@ -722,7 +781,7 @@ if scalar_admission_code:
         ):
             fail(
                 "scalar-script-constant-pairing",
-                "admission must end in one top-level atomic pairing: direct pushes with an empty pool, or index-zero constant pushes with exactly one Float64Bits data value",
+                "admission must end in one top-level atomic pairing: direct pushes with an empty pool, or index-zero constant pushes with exactly one Float64Bits or fallibly copied canonical BigInt data value",
             )
 
     scalar_production_code = scalar_script_code.split("#[cfg(test)]", 1)[0]
@@ -742,17 +801,21 @@ if scalar_admission_code:
             )
         )
         != 1
+        or re.findall(
+            r"\bWireValue[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+            scalar_production_code,
+        ) != ["Float64Bits", "BigInt"]
         or len(
             re.findall(
-                r"\bWireValue[ \t\n]*::[ \t\n]*Float64Bits\b",
+                r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*BigIntBytes\b",
                 scalar_production_code,
             )
-        )
-        != 1
+        ) != 1
+        or len(re.findall(r"\bcopy_bigint_bytes\b", scalar_production_code)) != 2
     ):
         fail(
             "scalar-script-constant-pairing",
-            "the production scalar path must construct Float64Bits exactly once, only from the unique function constant-pool pairing",
+            "the production scalar path must construct Float64Bits or owned BigIntBytes exactly once, only from the unique function constant-pool pairing",
         )
 
     reviewed_binding_counts = {
@@ -920,30 +983,94 @@ if consumer_exists:
     scalar_lowering_code, _, _ = unique_braced_item(
         consumer_code,
         scalar_lowering_pattern,
-        "binary-object-consumer-float64",
+        "binary-object-consumer-scalar-mapping",
         "lower_scalar_draft function",
     )
-    scalar_float_publication_pattern = re.compile(
-        r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*Float64Bits"
-        r"[ \t\n]*\([ \t\n]*bits[ \t\n]*\)[ \t\n]*=>"
-        r"[ \t\n]*\{?[ \t\n]*lower_scalar_constant[ \t\n]*\("
-        r"[ \t\n]*Value[ \t\n]*::[ \t\n]*Float[ \t\n]*\("
-        r"[ \t\n]*f64[ \t\n]*::[ \t\n]*from_bits[ \t\n]*\("
-        r"[ \t\n]*bits[ \t\n]*\)[ \t\n]*\)[ \t\n]*\)"
-        r"[ \t\n]*\}?"
+    bigint_lowering_pattern = re.compile(
+        r"\bfn[ \t\n]+lower_bigint_constant[ \t\n]*\("
+        r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[[ \t\n]*u8"
+        r"[ \t\n]*\][ \t\n]*,?[ \t\n]*\)[ \t\n]*->[^{;]+\{",
+        re.DOTALL,
     )
+    bigint_lowering_code, _, _ = unique_braced_item(
+        consumer_code,
+        bigint_lowering_pattern,
+        "binary-object-consumer-bigint",
+        "lower_bigint_constant function",
+    )
+    expected_scalar_lowering_source = """
+        fn lower_scalar_draft(
+            draft: ScalarScriptDraft,
+        ) -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {
+            match draft {
+                ScalarScriptDraft::Undefined => Ok((Instruction::Undefined, Vec::new())),
+                ScalarScriptDraft::Null => Ok((Instruction::Null, Vec::new())),
+                ScalarScriptDraft::Bool(false) => Ok((Instruction::PushFalse, Vec::new())),
+                ScalarScriptDraft::Bool(true) => Ok((Instruction::PushTrue, Vec::new())),
+                ScalarScriptDraft::Int(value) => Ok((Instruction::PushI32(value), Vec::new())),
+                ScalarScriptDraft::Float64Bits(bits) => {
+                    lower_scalar_constant(Value::Float(f64::from_bits(bits)))
+                }
+                ScalarScriptDraft::BigIntI32(value) => {
+                    lower_scalar_constant(Value::BigInt(JsBigInt::from(value)))
+                }
+                ScalarScriptDraft::BigIntBytes(bytes) => lower_bigint_constant(&bytes),
+                ScalarScriptDraft::EmptyString => {
+                    lower_scalar_constant(Value::String(JsString::from_static("")))
+                }
+            }
+        }
+    """
+    expected_bigint_lowering_source = """
+        fn lower_bigint_constant(
+            bytes: &[u8],
+        ) -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {
+            let (value, consumed) =
+                JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), true)
+            .map_err(|error| {
+                RuntimeError::Engine(Error::internal(format!(
+                    "trusted scalar draft contained invalid canonical BigInt bytes: {error:?}"
+                )))
+            })?;
+            if consumed != bytes.len() {
+                return Err(RuntimeError::Engine(Error::internal(
+                    "trusted scalar BigInt draft was not consumed exactly",
+                )));
+            }
+            lower_scalar_constant(Value::BigInt(value))
+        }
+    """
     if (
-        len(scalar_float_publication_pattern.findall(scalar_lowering_code)) != 1
-        or len(
-            re.findall(
-                r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*Float64Bits\b",
-                consumer_code,
-            )
-        ) != 1
+        " ".join(scalar_lowering_code.split())
+        != " ".join(rust_code_only(expected_scalar_lowering_source).split())
+        or re.findall(
+            r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+            consumer_code,
+        ) != [
+            "Undefined",
+            "Null",
+            "Bool",
+            "Bool",
+            "Int",
+            "Float64Bits",
+            "BigIntI32",
+            "BigIntBytes",
+            "EmptyString",
+        ]
     ):
         fail(
-            "binary-object-consumer-float64",
-            f"{consumer_relative} must lower its sole Float64Bits arm inside lower_scalar_draft through Value::Float(f64::from_bits(bits)) and lower_scalar_constant",
+            "binary-object-consumer-scalar-mapping",
+            f"{consumer_relative} must retain the entire reviewed direct-scalar, bit-exact Float64, and canonical-byte BigInt lowering contract",
+        )
+    if (
+        " ".join(bigint_lowering_code.split())
+        != " ".join(rust_code_only(expected_bigint_lowering_source).split())
+        or len(re.findall(r"\blower_bigint_constant\b", consumer_code)) != 2
+        or len(re.findall(r"\bJsBigInt[ \t\n]*::[ \t\n]*decode_bc5_signed_le\b", consumer_code)) != 1
+    ):
+        fail(
+            "binary-object-consumer-bigint",
+            f"{consumer_relative} must decode BigIntBytes exactly once through the unique canonical BigInt helper",
         )
     for match in re.finditer(r"\b(?:r#)?number[ \t\n]*\(", consumer_code):
         fail(
@@ -2375,6 +2502,7 @@ printf '%s\n' \
     'const OP_PUSH_CONST8: u8 = 0xbd;' \
     'const OP_PUSH_EMPTY_STRING: u8 = 0xbf;' \
     'const OP_SET_LOC0: u8 = 0xcb;' \
+    '#[derive(Clone, Debug, Eq, PartialEq)]' \
     'pub(in crate::runtime) enum ScalarScriptDraft {' \
     '    Undefined,' \
     '    Null,' \
@@ -2382,8 +2510,10 @@ printf '%s\n' \
     '    Int(i32),' \
     '    Float64Bits(u64),' \
     '    BigIntI32(i32),' \
+    '    BigIntBytes(Box<[u8]>),' \
     '    EmptyString,' \
     '}' \
+    '#[derive(Clone, Debug, Eq, PartialEq)]' \
     'enum ScalarPush {' \
     '    Direct(ScalarScriptDraft),' \
     '    Constant(u32),' \
@@ -2436,7 +2566,10 @@ printf '%s\n' \
     '        }' \
     '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
     '            Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),' \
-    '            Ok(_) => return unadmitted("scalar constant is not a Float64 value"),' \
+    '            Ok(WireValue::BigInt(bytes)) => {' \
+    '                ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)' \
+    '            }' \
+    '            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),' \
     '            Err(_) => return unadmitted("scalar constant is not a data value"),' \
     '        },' \
     '        (ScalarPush::Constant(_), [_]) => {' \
@@ -2447,6 +2580,14 @@ printf '%s\n' \
     '        }' \
     '    };' \
     '    Ok(draft)' \
+    '}' \
+    'fn copy_bigint_bytes(bytes: &[u8]) -> Result<Box<[u8]>, ScalarScriptReadError> {' \
+    '    let mut copy = Vec::new();' \
+    '    copy.try_reserve_exact(bytes.len()).map_err(|_| {' \
+    '        ScalarScriptReadError::Internal("could not allocate the scalar BigInt draft".into())' \
+    '    })?;' \
+    '    copy.extend_from_slice(bytes);' \
+    '    Ok(copy.into_boxed_slice())' \
     '}' \
     'fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> {' \
     '    match bytes {' \
@@ -2762,11 +2903,39 @@ printf '%s\n' \
     '    draft: ScalarScriptDraft,' \
     ') -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {' \
     '    match draft {' \
+    '        ScalarScriptDraft::Undefined => Ok((Instruction::Undefined, Vec::new())),' \
+    '        ScalarScriptDraft::Null => Ok((Instruction::Null, Vec::new())),' \
+    '        ScalarScriptDraft::Bool(false) => Ok((Instruction::PushFalse, Vec::new())),' \
+    '        ScalarScriptDraft::Bool(true) => Ok((Instruction::PushTrue, Vec::new())),' \
+    '        ScalarScriptDraft::Int(value) => Ok((Instruction::PushI32(value), Vec::new())),' \
     '        ScalarScriptDraft::Float64Bits(bits) => {' \
     '            lower_scalar_constant(Value::Float(f64::from_bits(bits)))' \
     '        }' \
-    '        _ => unreachable!(),' \
+    '        ScalarScriptDraft::BigIntI32(value) => {' \
+    '            lower_scalar_constant(Value::BigInt(JsBigInt::from(value)))' \
+    '        }' \
+    '        ScalarScriptDraft::BigIntBytes(bytes) => lower_bigint_constant(&bytes),' \
+    '        ScalarScriptDraft::EmptyString => {' \
+    '            lower_scalar_constant(Value::String(JsString::from_static("")))' \
+    '        }' \
     '    }' \
+    '}' \
+    'fn lower_bigint_constant(' \
+    '    bytes: &[u8],' \
+    ') -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {' \
+    '    let (value, consumed) =' \
+    '        JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), true)' \
+    '            .map_err(|error| {' \
+    '                RuntimeError::Engine(Error::internal(format!(' \
+    '                    "trusted scalar draft contained invalid canonical BigInt bytes: {error:?}"' \
+    '                )))' \
+    '            })?;' \
+    '    if consumed != bytes.len() {' \
+    '        return Err(RuntimeError::Engine(Error::internal(' \
+    '            "trusted scalar BigInt draft was not consumed exactly",' \
+    '        )));' \
+    '    }' \
+    '    lower_scalar_constant(Value::BigInt(value))' \
     '}' \
     > "$fixture/src/runtime/binary_object_publish.rs"
 
@@ -2953,10 +3122,26 @@ expect_rejected consumer-heap-type binary-object-consumer-heap-type \
 expect_rejected consumer-root-forge binary-object-consumer-root-forge \
     src/runtime/binary_object_publish.rs \
     'fn forge(runtime: Runtime, id: FunctionBytecodeId) { let _ = FunctionBytecodeRef::from_owned_handle(runtime, id); }'
-expect_rewrite_rejected consumer-float-dead-helper-normalization binary-object-consumer-float64 \
+expect_rewrite_rejected consumer-float-normalization binary-object-consumer-float64 \
     src/runtime/binary_object_publish.rs \
-    $'        ScalarScriptDraft::Float64Bits(bits) => {\n            lower_scalar_constant(Value::Float(f64::from_bits(bits)))\n        }\n        _ => unreachable!(),\n    }\n}' \
-    $'        ScalarScriptDraft::Float64Bits(bits) => {\n            lower_scalar_constant(Value::number(f64::from_bits(bits)))\n        }\n        _ => unreachable!(),\n    }\n}\nfn decoy(draft: ScalarScriptDraft) {\n    match draft {\n        ScalarScriptDraft::Float64Bits(bits) => lower_scalar_constant(Value::Float(f64::from_bits(bits))),\n        _ => unreachable!(),\n    }\n}'
+    'lower_scalar_constant(Value::Float(f64::from_bits(bits)))' \
+    'lower_scalar_constant(Value::number(f64::from_bits(bits)))'
+expect_rewrite_rejected consumer-bigint-dead-path-coercion binary-object-consumer-scalar-mapping \
+    src/runtime/binary_object_publish.rs \
+    '        ScalarScriptDraft::BigIntBytes(bytes) => lower_bigint_constant(&bytes),' \
+    $'        ScalarScriptDraft::BigIntBytes(bytes) => {\n            if false { return lower_bigint_constant(&bytes); }\n            lower_scalar_constant(Value::Int(i32::from(bytes.first().copied().unwrap_or(0))))\n        }'
+expect_rewrite_rejected consumer-bigint-noncanonical-decode binary-object-consumer-bigint \
+    src/runtime/binary_object_publish.rs \
+    'JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), true)' \
+    'JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), false)'
+expect_rewrite_rejected consumer-bigint-partial-consumption binary-object-consumer-bigint \
+    src/runtime/binary_object_publish.rs \
+    '    if consumed != bytes.len() {' \
+    '    if false {'
+expect_rewrite_rejected consumer-bigint-input-shadow binary-object-consumer-bigint \
+    src/runtime/binary_object_publish.rs \
+    '    let (value, consumed) =' \
+    $'    let bytes = &bytes[..1];\n    let (value, consumed) ='
 expect_rewrite_rejected consumer-skips-safe-publication binary-object-consumer-publication \
     src/runtime/binary_object_publish.rs \
     '    runtime.publish_unlinked_function(realm, function)' \
@@ -2984,8 +3169,16 @@ expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shap
     'pub(crate) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};'
 expect_rewrite_rejected scalar-draft-raw-c-forgery scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
-    $'pub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    EmptyString,\n}' \
-    $'enum FloatDraft { Float(f64) }\nconst _FLOAT_DRAFT_FORGERY: &CStr = cr#""\npub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    EmptyString,\n}\n""#;'
+    $'pub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    EmptyString,\n}' \
+    $'enum FloatDraft { Float(f64) }\nconst _FLOAT_DRAFT_FORGERY: &CStr = cr#""\n#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    EmptyString,\n}\n""#;'
+expect_rewrite_rejected scalar-draft-copy-regression scalar-script-draft-shape \
+    src/runtime/binary_object/scalar_script.rs \
+    $'#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarScriptDraft' \
+    $'#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarScriptDraft'
+expect_rewrite_rejected scalar-push-copy-regression scalar-script-push-shape \
+    src/runtime/binary_object/scalar_script.rs \
+    $'#[derive(Clone, Debug, Eq, PartialEq)]\nenum ScalarPush' \
+    $'#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum ScalarPush'
 expect_rejected scalar-opcode-set-widening scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
     'const OP_PUSH_THIS: u8 = 0x08;'
@@ -3017,6 +3210,26 @@ expect_rewrite_rejected scalar-constant-wrong-type-comment-forgery scalar-script
     src/runtime/binary_object/scalar_script.rs \
     'Ok(WireValue::Float64Bits(bits))' \
     'Ok(WireValue::Int32(bits)) /* WireValue::Float64Bits */'
+expect_rewrite_rejected scalar-constant-string-opening scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    '            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),' \
+    $'            Ok(WireValue::String(_)) => ScalarScriptDraft::EmptyString,\n            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),'
+expect_rewrite_rejected scalar-constant-bool-opening scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    '            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),' \
+    $'            Ok(WireValue::Bool(value)) => ScalarScriptDraft::Bool(*value),\n            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),'
+expect_rewrite_rejected scalar-constant-wildcard-primitive scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    '            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),' \
+    '            Ok(_) => ScalarScriptDraft::BigIntBytes(Box::default()),'
+expect_rewrite_rejected scalar-bigint-truncated-copy scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    'ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)' \
+    'ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(&bytes[..1])?)'
+expect_rewrite_rejected scalar-bigint-infallible-copy scalar-script-bigint-copy \
+    src/runtime/binary_object/scalar_script.rs \
+    'copy.try_reserve_exact(bytes.len())' \
+    'copy.reserve(bytes.len())'
 expect_rewrite_rejected scalar-direct-with-pool scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
     '(ScalarPush::Direct(draft), [])' \
