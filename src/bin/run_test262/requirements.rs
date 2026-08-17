@@ -2170,12 +2170,28 @@ mod tests {
                 "{} frontmatter",
                 fields[1]
             );
-            assert_eq!(
-                is_exact_dependency_free_module_test(Path::new(fields[1]), &source, &metadata),
-                Ok(false),
-                "excluded surface entered dependency-free admission: {}",
-                fields[1]
-            );
+            let path = Path::new(fields[1]);
+            let authenticated = is_exact_dependency_free_module_test(path, &source, &metadata);
+            if let Some(admission) = ADMISSIONS.module(path) {
+                assert_ne!(
+                    admission.group, "module-static-negative-a",
+                    "historical exclusion re-entered its original cohort: {}",
+                    fields[1]
+                );
+                assert_eq!(
+                    authenticated,
+                    Ok(true),
+                    "cross-cohort admission did not authenticate: {}",
+                    fields[1]
+                );
+            } else {
+                assert_eq!(
+                    authenticated,
+                    Ok(false),
+                    "unadmitted historical exclusion changed classification: {}",
+                    fields[1]
+                );
+            }
         }
     }
 

@@ -70,9 +70,12 @@ jobs:
           node scripts/check-test262-artifact-inventory.mjs
           node scripts/check-bc5-pinned-atoms.mjs --self-test
           node scripts/check-bc5-pinned-opcodes.mjs --self-test
+          node --check scripts/audit-negative-diagnostics.mjs
           node --check scripts/test-negative-diagnostic-generator.mjs
           node --check scripts/generate-test262-dynamic-import-a.mjs
           node --check scripts/generate-test262-tla-core-a.mjs
+          node --check scripts/generate-test262-tla-b.mjs
+          node --check scripts/test-generate-test262-tla-b.mjs
           node --check scripts/generate-test262-module-var-lexical-shadow-a.mjs
           node --check scripts/generate-test262-module-import-attributes-a.mjs
           node --check scripts/test-generate-test262-module-import-attributes-a.mjs
@@ -164,6 +167,9 @@ jobs:
           node scripts/generate-test262-dynamic-import-a.mjs \
             --suite "$suite" --check-current
           node scripts/generate-test262-tla-core-a.mjs \
+            --suite "$suite" --check-current
+          node scripts/test-generate-test262-tla-b.mjs --suite "$suite"
+          node scripts/generate-test262-tla-b.mjs \
             --suite "$suite" --check-current
           node scripts/generate-test262-module-var-lexical-shadow-a.mjs \
             --suite "$suite" \

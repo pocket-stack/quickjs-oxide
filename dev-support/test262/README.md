@@ -41,16 +41,19 @@ match; Test262 paths and source hashes remain dev-support data and never enter
 the production parser.
 
 `negative-diagnostic-rules.tsv` is the complete registry for the semantic
-`rule` column and names the corresponding pinned QuickJS parser anchor. The
+`rule` column and names the corresponding pinned QuickJS source anchor. The
 authenticated audit tool rejects unknown or unused rules. Scheduled
 differential CI replays every exact contract through pinned QuickJS using the
 same Script/Module goal and strict-prefix policy and compares error type,
 message, line, and column. Parse contracts use an isolated command-line source;
-Module resolution contracts execute the authenticated root path inside the
-pinned suite through `run-test262 -N --module`, so QuickJS loads the real
-dependency graph. That oracle proves type, message, and location; the Oxide
-runner separately observes compilation, linking, and execution to enforce the
-declared phase. An absent location is represented by two empty TSV fields.
+Module resolution and runtime contracts execute the authenticated root path
+inside the pinned suite through `run-test262 -N --module`, so QuickJS loads the
+real dependency graph. Runtime dependency-rejection contracts additionally
+require an exact first source frame from their sole direct dependency; a root
+throw with the same type and message is rejected. The Oxide runner reads only
+own data properties, including the Error stack, when recovering the matching
+location and separately observes compilation, linking, and execution to enforce
+the declared phase. An absent location is represented by two empty TSV fields.
 
 `negative-diagnostic-exemptions.tsv` freezes the legacy variants admitted
 before exact diagnostic contracts became mandatory. Every audited negative

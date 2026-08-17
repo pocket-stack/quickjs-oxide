@@ -1134,20 +1134,51 @@ fn exception_diagnostic(runtime: &Runtime, exception: Value) -> ExceptionDiagnos
         Ok(None) => String::new(),
         Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
-    let line = match own_positive_u32_property(runtime, &object, "lineNumber") {
+    let mut line = match own_positive_u32_property(runtime, &object, "lineNumber") {
         Ok(value) => value,
         Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
-    let column = match own_positive_u32_property(runtime, &object, "columnNumber") {
+    let mut column = match own_positive_u32_property(runtime, &object, "columnNumber") {
         Ok(value) => value,
         Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
     };
+    if line.is_none() && column.is_none() {
+        let stack = match own_string_property(runtime, &object, "stack") {
+            Ok(value) => value,
+            Err(error) => return ExceptionDiagnostic::engine(error.to_string()),
+        };
+        if let Some((stack_line, stack_column)) = stack
+            .as_deref()
+            .and_then(first_quickjs_stack_source_location)
+        {
+            line = Some(stack_line);
+            column = Some(stack_column);
+        }
+    }
     ExceptionDiagnostic {
         error_type,
         message,
         line,
         column,
     }
+}
+
+fn first_quickjs_stack_source_location(stack: &str) -> Option<(u32, u32)> {
+    stack.lines().find_map(|raw_line| {
+        let frame = raw_line.trim().strip_prefix("at ")?;
+        let location = frame
+            .strip_suffix(')')
+            .and_then(|frame| frame.rsplit_once(" (").map(|(_, location)| location))
+            .unwrap_or(frame);
+        let (prefix, column) = location.rsplit_once(':')?;
+        let (filename, line) = prefix.rsplit_once(':')?;
+        if filename.is_empty() {
+            return None;
+        }
+        let line = line.parse::<u32>().ok().filter(|value| *value > 0)?;
+        let column = column.parse::<u32>().ok().filter(|value| *value > 0)?;
+        Some((line, column))
+    })
 }
 
 enum OwnDiagnosticString {
@@ -1276,7 +1307,8 @@ mod tests {
     use super::{
         ExactTest262ModuleLoader, ExceptionDiagnostic, authenticate_dynamic_import_bytecode,
         classify_async_print_log, classify_completion, configure_runtime_can_block,
-        finish_module_evaluation, install_worker_host, run_worker, take_error,
+        finish_module_evaluation, first_quickjs_stack_source_location, install_worker_host,
+        run_worker, take_error,
     };
     use crate::admissions::{AdmissionCatalog, DynamicImportRootPolicy, sha256};
     use crate::metadata::{Metadata, NegativeExpectation};
@@ -2088,6 +2120,53 @@ mod tests {
             (result.actual_line, result.actual_column),
             (Some(3), Some(7))
         );
+    }
+
+    #[test]
+    fn quickjs_stack_location_parser_skips_native_frames_and_rejects_partial_coordinates() {
+        assert_eq!(
+            first_quickjs_stack_source_location(
+                "    at nativeCall (native)\n    at <anonymous> (fixture.js:8:45)\n",
+            ),
+            Some((8, 45))
+        );
+        assert_eq!(
+            first_quickjs_stack_source_location("    at fixture.js:7:50\n"),
+            Some((7, 50))
+        );
+        for stack in [
+            "",
+            "    at nativeCall (native)\n",
+            "    at <anonymous> (fixture.js:0:45)\n",
+            "    at <anonymous> (fixture.js:8:0)\n",
+            "    at <anonymous> (fixture.js:8)\n",
+        ] {
+            assert_eq!(
+                first_quickjs_stack_source_location(stack),
+                None,
+                "{stack:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_error_stack_supplies_runtime_location_without_invoking_accessors() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let diagnostic = execute_thrown(&runtime, &mut context, "throw new TypeError('boom');");
+        assert_eq!(diagnostic.error_type, "TypeError");
+        assert_eq!(diagnostic.message, "boom");
+        assert_eq!((diagnostic.line, diagnostic.column), (Some(1), Some(20)));
+
+        let diagnostic = execute_thrown(
+            &runtime,
+            &mut context,
+            "globalThis.stackHits = 0; var error = new TypeError('safe'); Object.defineProperty(error, 'stack', { get: function () { stackHits++; return '    at forged.js:9:9'; } }); throw error;",
+        );
+        assert_eq!(diagnostic.error_type, "TypeError");
+        assert_eq!(diagnostic.message, "safe");
+        assert_eq!((diagnostic.line, diagnostic.column), (None, None));
+        assert_eq!(evaluate(&mut context, "stackHits"), Value::Int(0));
     }
 
     #[test]

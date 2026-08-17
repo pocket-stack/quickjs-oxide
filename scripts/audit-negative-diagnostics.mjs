@@ -20,6 +20,7 @@ const CONTRACT_HEADER =
   "path\tvariant\tsource_sha256\tphase\ttype\trule\tmessage\tline\tcolumn\tlocation_policy";
 const CANDIDATE_HEADER = "path\tvariant\trule";
 const RULE_HEADER = "rule\tquickjs_anchor\tdescription";
+const RUNTIME_MODULE_REJECTION_ANCHOR = "js_async_module_execution_rejected";
 const DEFAULT_CONTRACTS = "dev-support/test262/negative-diagnostics.tsv";
 const DEFAULT_RULES = "dev-support/test262/negative-diagnostic-rules.tsv";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -108,10 +109,13 @@ function parseArguments(arguments_) {
 }
 
 function isCanonicalTestPath(relative) {
+  return isCanonicalSuiteSourcePath(relative) && !relative.endsWith("_FIXTURE.js");
+}
+
+function isCanonicalSuiteSourcePath(relative) {
   return (
     relative.startsWith("test/") &&
     relative.endsWith(".js") &&
-    !relative.endsWith("_FIXTURE.js") &&
     !relative.includes("\\") &&
     !/\p{Cc}/u.test(relative) &&
     relative.split("/").every((part) => part && part !== "." && part !== "..")
@@ -232,10 +236,13 @@ async function loadContracts(file, rules, { requireAllRules = true } = {}) {
     if (!/^(sloppy|strict)$/.test(variant) || !/^[0-9a-f]{64}$/.test(sourceSha256)) {
       throw new Error(`negative diagnostic ${key} has invalid identity data`);
     }
-    if (!/^(?:parse|resolution)$/.test(phase) || errorType !== "SyntaxError") {
+    const syntaxDiagnostic = /^(?:parse|resolution)$/.test(phase) && errorType === "SyntaxError";
+    const runtimeTypeError = phase === "runtime" && errorType === "TypeError";
+    if (!syntaxDiagnostic && !runtimeTypeError) {
       throw new Error(`QuickJS audit does not yet support ${phase}/${errorType}: ${key}`);
     }
     if (!rules.has(rule)) throw new Error(`negative diagnostic ${key} uses unknown rule ${rule}`);
+    const quickJsAnchor = rules.get(rule).anchor;
     if (!message) throw new Error(`negative diagnostic ${key} has an empty message`);
     const exact = locationPolicy === "exact";
     const absent = locationPolicy === "absent";
@@ -252,6 +259,16 @@ async function loadContracts(file, rules, { requireAllRules = true } = {}) {
     ) {
       throw new Error(`negative diagnostic ${key} has an invalid location policy`);
     }
+    if (runtimeTypeError && !exact) {
+      throw new Error(
+        `QuickJS runtime TypeError audit requires an exact location: ${key}`,
+      );
+    }
+    if (runtimeTypeError && quickJsAnchor !== RUNTIME_MODULE_REJECTION_ANCHOR) {
+      throw new Error(
+        `QuickJS runtime TypeError audit requires ${RUNTIME_MODULE_REJECTION_ANCHOR}: ${key}`,
+      );
+    }
     previous = key;
     usedRules.add(rule);
     contracts.push({
@@ -261,6 +278,7 @@ async function loadContracts(file, rules, { requireAllRules = true } = {}) {
       locationPolicy,
       message,
       phase,
+      quickJsAnchor,
       relative,
       rule,
       sourceSha256,
@@ -399,6 +417,9 @@ function assertContractMetadata(metadata, contract) {
   if (contract.phase === "resolution" && !metadata.flags.has("module")) {
     throw new Error(`${contract.relative} resolution contract is not a Module test`);
   }
+  if (contract.phase === "runtime" && !metadata.flags.has("module")) {
+    throw new Error(`${contract.relative} runtime contract is not a Module test`);
+  }
 }
 
 function parsePhaseProbe(source, variant, module) {
@@ -493,16 +514,48 @@ function parseQuickJsTest262Diagnostic(result, label) {
   const errorLine = lines.find((line) => /^[A-Za-z_$][A-Za-z0-9_$]*Error: /.test(line));
   if (!errorLine) throw new Error(`${label} emitted no native error: ${transcript}`);
   const separator = errorLine.indexOf(": ");
-  const locationLine = lines.find((line) =>
-    /^\s*at .+:[1-9][0-9]*:[1-9][0-9]*\s*$/.test(line),
-  );
-  const location = locationLine?.match(/:([1-9][0-9]*):([1-9][0-9]*)\s*$/);
+  const message = errorLine.slice(separator + 2);
+  if (!message) throw new Error(`${label} emitted an empty native error message`);
+  const location = lines.map(parseQuickJsStackSourceLocation).find(Boolean);
   return {
-    column: location ? Number(location[2]) : undefined,
+    column: location?.column,
     errorType: errorLine.slice(0, separator),
-    line: location ? Number(location[1]) : undefined,
-    message: errorLine.slice(separator + 2),
+    line: location?.line,
+    message,
+    source: location?.source,
   };
+}
+
+function parseQuickJsStackSourceLocation(rawLine) {
+  const frame = rawLine.trim().match(/^at\s+(.+)$/u)?.[1];
+  if (!frame) return undefined;
+  const location = frame.endsWith(")") && frame.includes(" (")
+    ? frame.slice(frame.lastIndexOf(" (") + 2, -1)
+    : frame;
+  const match = location.match(/^(.+):([1-9][0-9]*):([1-9][0-9]*)$/u);
+  if (!match) return undefined;
+  return {
+    column: Number(match[3]),
+    line: Number(match[2]),
+    source: match[1],
+  };
+}
+
+function parseQuickJsRuntimeModuleDiagnostic(result, label) {
+  if (result.stdout !== "") {
+    throw new Error(`${label} emitted unexpected stdout: ${result.stdout}`);
+  }
+  const transcript = result.stderr.replaceAll("\r\n", "\n");
+  const nativeErrors = transcript
+    .split("\n")
+    .filter((line) => /^[A-Za-z_$][A-Za-z0-9_$]*Error: /.test(line));
+  if (nativeErrors.length !== 1) {
+    throw new Error(`${label} must emit exactly one native error: ${transcript}`);
+  }
+  return parseQuickJsTest262Diagnostic(
+    { ...result, stdout: "", stderr: transcript },
+    label,
+  );
 }
 
 async function readSuiteSource(options, relative) {
@@ -517,6 +570,44 @@ async function readSuiteSource(options, relative) {
     throw new Error(`${relative} escapes the pinned suite`);
   }
   return readFile(resolved);
+}
+
+function directStaticModuleDependencies(source, relative) {
+  const dependencies = new Set();
+  const patterns = [
+    /^\s*import\s+(?:[^"']+?\s+from\s+)?["']([^"']+)["']/u,
+    /^\s*export\s+(?:\*|\{[^}]*\})\s+from\s+["']([^"']+)["']/u,
+  ];
+  for (const line of source.split(/\r\n|\n|\r/u)) {
+    const request = patterns.map((pattern) => line.match(pattern)?.[1]).find(Boolean);
+    if (!request?.startsWith(".")) continue;
+    const normalized = path.posix.normalize(
+      path.posix.join(path.posix.dirname(relative), request),
+    );
+    if (!isCanonicalSuiteSourcePath(normalized)) {
+      throw new Error(`${relative} has a non-canonical static dependency: ${request}`);
+    }
+    dependencies.add(normalized);
+  }
+  return [...dependencies];
+}
+
+async function assertRuntimeModuleRejectionProvenance(options, contract, source, actual) {
+  const dependencies = directStaticModuleDependencies(source, contract.relative);
+  if (
+    contract.quickJsAnchor !== RUNTIME_MODULE_REJECTION_ANCHOR ||
+    dependencies.length !== 1 ||
+    actual.source !== dependencies[0]
+  ) {
+    throw new Error(
+      `${contract.relative} ${contract.variant} ${contract.rule} runtime dependency ` +
+        `rejection provenance mismatch: ${JSON.stringify({
+          actualSource: actual.source,
+          dependencies,
+        })}`,
+    );
+  }
+  await readSuiteSource(options, actual.source);
 }
 
 async function replayContract(options, contract) {
@@ -535,13 +626,16 @@ async function replayContract(options, contract) {
   assertContractMetadata(metadata, contract);
   const module = metadata.flags.has("module");
   const resolution = contract.phase === "resolution";
+  const runtime = contract.phase === "runtime";
   const authored = authoredSource(source, contract.variant, module);
-  const result = resolution
+  const result = resolution || runtime
     ? await runEngine(
         options.quickJsRunner,
         ["-N", "--module", contract.relative],
         DEFAULT_TIMEOUT_MS,
-        "QuickJS Test262 module resolution",
+        resolution
+          ? "QuickJS Test262 module resolution"
+          : "QuickJS Test262 module runtime",
         { cwd: options.quickJsRoot },
       )
     : await runEngine(
@@ -552,7 +646,9 @@ async function replayContract(options, contract) {
       );
   const actual = resolution
     ? parseQuickJsTest262Diagnostic(result, "QuickJS Test262 module resolution")
-    : parseEngineDiagnostic(result, "QuickJS");
+    : runtime
+      ? parseQuickJsRuntimeModuleDiagnostic(result, "QuickJS Test262 module runtime")
+      : parseEngineDiagnostic(result, "QuickJS");
   const expectedLocation = contract.locationPolicy === "exact";
   if (
     actual.errorType !== contract.errorType ||
@@ -565,6 +661,9 @@ async function replayContract(options, contract) {
         `expected ${JSON.stringify({ type: contract.errorType, message: contract.message, line: contract.line, column: contract.column })}\n` +
         `actual   ${JSON.stringify(actual)}\n${result.stdout}${result.stderr}`,
     );
+  }
+  if (runtime) {
+    await assertRuntimeModuleRejectionProvenance(options, contract, source, actual);
   }
 }
 
@@ -786,7 +885,7 @@ async function replayAll(options, contracts) {
   const qjs = await executableIdentity(options.qjs, "QuickJS");
   if (!suite.isDirectory()) throw new Error("suite is not a directory");
   options.qjs = qjs.resolved;
-  if (contracts.some((contract) => contract.phase === "resolution")) {
+  if (contracts.some((contract) => /^(?:resolution|runtime)$/.test(contract.phase))) {
     const quickJsRoot = path.dirname(qjs.resolved);
     const runner = await executableIdentity(
       path.join(quickJsRoot, "run-test262"),
