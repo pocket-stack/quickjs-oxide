@@ -217,34 +217,33 @@ impl AdmissionCatalog {
                     }
                 }
                 "graph-root" | "dynamic-import-root" => {
-                    let (goal, dynamic_import_policy) = if fields[0] == "graph-root" {
-                        require_empty(
-                            &fields,
-                            &[3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15],
-                            line_number,
-                        )?;
-                        (ModuleGraphRootGoal::StaticModule, None)
+                    let goal = if fields[0] == "graph-root" {
+                        require_empty(&fields, &[3, 4, 5, 6, 7, 8, 11, 12, 13, 15], line_number)?;
+                        ModuleGraphRootGoal::StaticModule
                     } else {
                         require_empty(&fields, &[3, 4, 5, 6, 7, 8, 11, 12, 13, 15], line_number)?;
-                        let expectation = match fields[14] {
-                            "initial-import-tree" => DynamicImportRootPolicy::InitialImportTree,
-                            "runtime-compiled-import" => {
-                                DynamicImportRootPolicy::RuntimeCompiledImport
-                            }
-                            "parse-rejected" => DynamicImportRootPolicy::ParseRejected,
-                            "" => {
-                                return Err(format!(
-                                    "admissions line {line_number} is missing dynamic import policy"
-                                ));
-                            }
-                            unknown => {
-                                return Err(format!(
-                                    "admissions line {line_number} has unknown dynamic import policy {unknown:?}"
-                                ));
-                            }
-                        };
-                        (ModuleGraphRootGoal::DynamicImportScript, Some(expectation))
+                        ModuleGraphRootGoal::DynamicImportScript
                     };
+                    let dynamic_import_policy = match fields[14] {
+                        "initial-import-tree" => Some(DynamicImportRootPolicy::InitialImportTree),
+                        "runtime-compiled-import" => {
+                            Some(DynamicImportRootPolicy::RuntimeCompiledImport)
+                        }
+                        "parse-rejected" => Some(DynamicImportRootPolicy::ParseRejected),
+                        "" => None,
+                        unknown => {
+                            return Err(format!(
+                                "admissions line {line_number} has unknown dynamic import policy {unknown:?}"
+                            ));
+                        }
+                    };
+                    if goal == ModuleGraphRootGoal::DynamicImportScript
+                        && dynamic_import_policy.is_none()
+                    {
+                        return Err(format!(
+                            "admissions line {line_number} is missing dynamic import policy"
+                        ));
+                    }
                     validate_test_path(fields[2], false, line_number)?;
                     let closure_file_count =
                         parse_usize(fields[9], "closure_file_count", false, line_number)?;
@@ -469,6 +468,11 @@ impl AdmissionCatalog {
                 .iter()
                 .find(|file| file.path == root.path)
                 .expect("graph root presence was checked");
+            let has_dynamic_import_feature = root_file
+                .metadata
+                .features
+                .iter()
+                .any(|feature| feature == "dynamic-import");
             match root.goal {
                 ModuleGraphRootGoal::StaticModule
                     if !root_file.metadata.flags.iter().any(|flag| flag == "module") =>
@@ -500,10 +504,30 @@ impl AdmissionCatalog {
                 }
                 _ => {}
             }
-            if root.goal == ModuleGraphRootGoal::DynamicImportScript {
-                let expectation = root
-                    .dynamic_import_policy
-                    .expect("dynamic import roots always carry a policy");
+            if root.dynamic_import_policy == Some(DynamicImportRootPolicy::ParseRejected)
+                && root.goal != ModuleGraphRootGoal::DynamicImportScript
+            {
+                return Err(format!(
+                    "parse-rejected dynamic import policy is only valid for Script roots: {}/{}",
+                    root.group, root.path
+                ));
+            }
+            match (has_dynamic_import_feature, root.dynamic_import_policy) {
+                (true, None) => {
+                    return Err(format!(
+                        "dynamic-import graph root must declare an explicit policy: {}/{}",
+                        root.group, root.path
+                    ));
+                }
+                (false, Some(_)) => {
+                    return Err(format!(
+                        "dynamic import policy requires the dynamic-import feature: {}/{}",
+                        root.group, root.path
+                    ));
+                }
+                (true, Some(_)) | (false, None) => {}
+            }
+            if let Some(expectation) = root.dynamic_import_policy {
                 let parse_negative = root_file
                     .metadata
                     .negative
@@ -1265,6 +1289,49 @@ mod tests {
         format!("{HEADER}\n{}\n", rows.join("\n"))
     }
 
+    fn static_dynamic_import_graph_catalog(policy: &str) -> String {
+        let mut rows = [
+            row([
+                "graph-file",
+                "static-dynamic-import",
+                "test/static-dynamic.js",
+                SHA,
+                "",
+                "module",
+                "dynamic-import",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            row([
+                "graph-root",
+                "static-dynamic-import",
+                "test/static-dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "1",
+                "0",
+                "",
+                "",
+                "",
+                policy,
+                "",
+            ]),
+        ];
+        rows.sort();
+        format!("{HEADER}\n{}\n", rows.join("\n"))
+    }
+
     fn parse_rejected_dynamic_import_catalog() -> String {
         let mut rows = [
             row([
@@ -1469,12 +1536,42 @@ mod tests {
         let error = AdmissionCatalog::parse(&unknown).unwrap_err();
         assert!(error.contains("unknown dynamic import policy"), "{error}");
 
-        let static_policy = minimal_catalog().replace(
-            "graph-root\tgraph\ttest/root.js\t-\t-\t-\t-\t-\t-\t1\t0\t-\t-\t-\t-\t-",
-            "graph-root\tgraph\ttest/root.js\t-\t-\t-\t-\t-\t-\t1\t0\t-\t-\t-\tinitial-import-tree\t-",
+        for (policy, expected) in [
+            (
+                "initial-import-tree",
+                DynamicImportRootPolicy::InitialImportTree,
+            ),
+            (
+                "runtime-compiled-import",
+                DynamicImportRootPolicy::RuntimeCompiledImport,
+            ),
+        ] {
+            let catalog = AdmissionCatalog::parse(&static_dynamic_import_graph_catalog(policy))
+                .expect("static Module dynamic-import policy is independent of root goal");
+            assert_eq!(
+                catalog
+                    .graph_root(Path::new("test/static-dynamic.js"))
+                    .unwrap()
+                    .dynamic_import_policy,
+                Some(expected)
+            );
+        }
+
+        let missing = static_dynamic_import_graph_catalog("");
+        let error = AdmissionCatalog::parse(&missing).unwrap_err();
+        assert!(error.contains("must declare an explicit policy"), "{error}");
+
+        let featureless = static_dynamic_import_graph_catalog("initial-import-tree")
+            .replace("\tmodule\tdynamic-import\t", "\tmodule\t-\t");
+        let error = AdmissionCatalog::parse(&featureless).unwrap_err();
+        assert!(
+            error.contains("policy requires the dynamic-import feature"),
+            "{error}"
         );
-        let error = AdmissionCatalog::parse(&static_policy).unwrap_err();
-        assert!(error.contains("unexpected data in field policy"), "{error}");
+
+        let parse_rejected = static_dynamic_import_graph_catalog("parse-rejected");
+        let error = AdmissionCatalog::parse(&parse_rejected).unwrap_err();
+        assert!(error.contains("only valid for Script roots"), "{error}");
     }
 
     #[test]

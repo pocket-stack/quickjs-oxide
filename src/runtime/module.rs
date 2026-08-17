@@ -751,6 +751,53 @@ impl fmt::Debug for ModuleBytecodeRef {
 }
 
 impl Runtime {
+    /// Inspect every source-text function tree in one resolved static module
+    /// graph for the dynamic-import opcode.
+    ///
+    /// This conformance-host-only surface follows the authenticated graph's
+    /// resolved dependency edges rather than guessing from source text. JSON
+    /// modules contribute no bytecode, while incomplete or foreign graphs are
+    /// rejected before inspection.
+    #[cfg(feature = "test262-host")]
+    pub fn module_graph_contains_dynamic_import(
+        &self,
+        module: &ModuleBytecodeRef,
+    ) -> Result<bool, RuntimeError> {
+        if !module.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("module bytecode"));
+        }
+        self.preflight_module_graph_for_link(module.raw)?;
+
+        let mut pending = vec![module.raw];
+        let mut visited = HashSet::new();
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current.module) {
+                continue;
+            }
+            let record = self.module_record(current)?;
+            match &record.body {
+                ModuleRecordBody::SourceText { function }
+                    if self.dynamic_import_bytecode_id_tree_contains(*function)? =>
+                {
+                    return Ok(true);
+                }
+                ModuleRecordBody::SourceText { .. } | ModuleRecordBody::Json { .. } => {}
+                ModuleRecordBody::Parsing => {
+                    return Err(RuntimeError::IncompleteModuleResolution);
+                }
+                ModuleRecordBody::Aborted => return Err(RuntimeError::AbortedModule),
+            }
+            let ModuleResolutionState::Resolved(dependencies) = &record.resolution else {
+                return Err(RuntimeError::IncompleteModuleResolution);
+            };
+            pending.extend(dependencies.iter().rev().map(|dependency| RawModuleRef {
+                cache: current.cache,
+                module: *dependency,
+            }));
+        }
+        Ok(false)
+    }
+
     fn current_module_loader(&self) -> Option<Rc<dyn ModuleLoader>> {
         self.0
             .module_loader

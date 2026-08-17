@@ -5,8 +5,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::admissions::{
-    AdmissionCatalog, AgentHostAdmission, ModuleAdmission, ModuleGraphFileAdmission,
-    ModuleGraphRootGoal, ModuleMetadataContract, SupplementalAdmission, SupplementalPolicy,
+    AdmissionCatalog, AgentHostAdmission, DynamicImportRootPolicy, ModuleAdmission,
+    ModuleGraphFileAdmission, ModuleGraphRootGoal, ModuleMetadataContract, SupplementalAdmission,
+    SupplementalPolicy,
 };
 use super::metadata::{Metadata, parse_metadata};
 
@@ -47,6 +48,23 @@ impl HostCapabilities {
 pub(super) enum ExactModuleTest {
     DependencyFree,
     FixtureGraph,
+    FixtureGraphWithDynamicImport(DynamicImportRootPolicy),
+}
+
+impl ExactModuleTest {
+    pub(super) const fn is_fixture_graph(self) -> bool {
+        matches!(
+            self,
+            Self::FixtureGraph | Self::FixtureGraphWithDynamicImport(_)
+        )
+    }
+
+    pub(super) const fn dynamic_import_policy(self) -> Option<DynamicImportRootPolicy> {
+        match self {
+            Self::FixtureGraphWithDynamicImport(policy) => Some(policy),
+            Self::DependencyFree | Self::FixtureGraph => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -114,21 +132,28 @@ pub(super) fn exact_module_test(
     if is_exact_dependency_free_module_test(admissions, path, source, metadata)? {
         return Ok(Some(ExactModuleTest::DependencyFree));
     }
-    if is_exact_fixture_graph_module_test(admissions, suite, path, source, metadata)? {
-        return Ok(Some(ExactModuleTest::FixtureGraph));
+    if let Some(exact) = exact_fixture_graph_module_test(admissions, suite, path, source, metadata)?
+    {
+        return Ok(Some(exact));
     }
     Ok(None)
 }
 
-fn is_exact_fixture_graph_module_test(
+fn exact_fixture_graph_module_test(
     admissions: &AdmissionCatalog,
     suite: &Path,
     path: &Path,
     source: &str,
     metadata: &Metadata,
-) -> Result<bool, String> {
-    let Some(admission) = exact_module_graph_admission(admissions, path) else {
-        return Ok(false);
+) -> Result<Option<ExactModuleTest>, String> {
+    let Some(root_admission) = admissions.graph_root(path) else {
+        return Ok(None);
+    };
+    let admission = ExactModuleGraphAdmission {
+        root_path: &root_admission.path,
+        files: admissions.graph_files(&root_admission.group),
+        closure_file_count: root_admission.closure_file_count,
+        goal: root_admission.goal,
     };
     let root = module_graph_file(admission, admission.root_path).ok_or_else(|| {
         format!(
@@ -140,7 +165,10 @@ fn is_exact_fixture_graph_module_test(
     authenticate_exact_module_graph_closure(admission, |relative| {
         read_regular_module_graph_text(suite, relative)
     })?;
-    Ok(true)
+    Ok(Some(match root_admission.dynamic_import_policy {
+        Some(policy) => ExactModuleTest::FixtureGraphWithDynamicImport(policy),
+        None => ExactModuleTest::FixtureGraph,
+    }))
 }
 
 /// Authenticate a Script-goal root whose complete dynamic-import graph is
@@ -1262,9 +1290,9 @@ mod tests {
         supplemental_feature_hints as supplemental_feature_hints_impl,
     };
     use crate::admissions::{
-        AdmissionCatalog, AgentHostAdmission, ModuleAdmission, ModuleGraphFileAdmission,
-        ModuleGraphRootAdmission, ModuleGraphRootGoal, ModuleMetadataContract,
-        ModuleRequestAdmission, SupplementalAdmission, SupplementalPolicy,
+        AdmissionCatalog, AgentHostAdmission, DynamicImportRootPolicy, ModuleAdmission,
+        ModuleGraphFileAdmission, ModuleGraphRootAdmission, ModuleGraphRootGoal,
+        ModuleMetadataContract, ModuleRequestAdmission, SupplementalAdmission, SupplementalPolicy,
     };
     use crate::metadata::{Metadata, NegativeExpectation, parse_metadata};
 
@@ -1576,6 +1604,51 @@ mod tests {
                 "./fixture_FIXTURE.js",
                 "test/fixture_FIXTURE.js",
                 "",
+                "",
+            ]),
+        ];
+        rows.sort();
+        AdmissionCatalog::parse(&format!("{HEADER}\n{}\n", rows.join("\n"))).unwrap()
+    }
+
+    fn static_dynamic_import_catalog(root_source: &str, policy: &str) -> AdmissionCatalog {
+        const HEADER: &str = "kind\tgroup\tpath\tsource_sha256\tincludes\tflags\tfeatures\tnegative_phase\tnegative_type\tclosure_file_count\tpriority\trequest_index\tspecifier\tnormalized_path\tpolicy\tcohort";
+        let root_sha256 = crate::admissions::sha256(root_source.as_bytes());
+        let mut rows = [
+            admission_row([
+                "graph-file",
+                "static-dynamic-import-test",
+                "test/static-dynamic.js",
+                &root_sha256,
+                "",
+                "module",
+                "dynamic-import",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]),
+            admission_row([
+                "graph-root",
+                "static-dynamic-import-test",
+                "test/static-dynamic.js",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "1",
+                "0",
+                "",
+                "",
+                "",
+                policy,
                 "",
             ]),
         ];
@@ -3346,6 +3419,43 @@ mod tests {
             closure_drift.contains("fixture_FIXTURE.js"),
             "{closure_drift}"
         );
+
+        fs::remove_dir_all(suite).unwrap();
+    }
+
+    #[test]
+    fn exact_static_module_retains_its_authenticated_dynamic_import_policy() {
+        const ROOT_SOURCE: &str = "/*---\nflags: [module]\nfeatures: [dynamic-import]\n---*/\nexport function deferred() { return import('./fixture.js'); }\n";
+        let root = Path::new("test/static-dynamic.js");
+        let metadata = parse_metadata(ROOT_SOURCE).unwrap();
+        let suite = std::env::temp_dir().join(format!(
+            "quickjs-oxide-static-dynamic-import-auth-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(suite.join("test")).unwrap();
+        fs::write(suite.join(root), ROOT_SOURCE).unwrap();
+
+        for (policy, expected) in [
+            (
+                "initial-import-tree",
+                DynamicImportRootPolicy::InitialImportTree,
+            ),
+            (
+                "runtime-compiled-import",
+                DynamicImportRootPolicy::RuntimeCompiledImport,
+            ),
+        ] {
+            let catalog = static_dynamic_import_catalog(ROOT_SOURCE, policy);
+            let exact = exact_module_test_impl(&catalog, &suite, root, ROOT_SOURCE, &metadata)
+                .unwrap()
+                .expect("authenticated static Module graph was not admitted");
+            assert!(exact.is_fixture_graph());
+            assert_eq!(exact.dynamic_import_policy(), Some(expected));
+        }
 
         fs::remove_dir_all(suite).unwrap();
     }

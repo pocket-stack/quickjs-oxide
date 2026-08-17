@@ -3127,8 +3127,16 @@ impl Runtime {
         if !function.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("function bytecode"));
         }
+        self.dynamic_import_bytecode_id_tree_contains(function.bytecode_id())
+    }
+
+    #[cfg(feature = "test262-host")]
+    fn dynamic_import_bytecode_id_tree_contains(
+        &self,
+        function: FunctionBytecodeId,
+    ) -> Result<bool, RuntimeError> {
         let state = self.0.state.borrow();
-        let mut pending = vec![function.bytecode_id()];
+        let mut pending = vec![function];
         let mut visited = HashSet::new();
         while let Some(bytecode) = pending.pop() {
             if !visited.insert(bytecode) {
@@ -3165,6 +3173,36 @@ impl Runtime {
     #[cfg(feature = "test262-host")]
     pub fn set_dynamic_import_bytecode_allowed(&self, allowed: bool) {
         self.0.dynamic_import_bytecode_allowed.set(allowed);
+    }
+
+    /// Run one host operation with a temporary dynamic-import bytecode policy.
+    ///
+    /// The previous policy is restored on every return and during unwinding,
+    /// so a failed compiler or module-loader callback cannot leave an
+    /// unauthenticated runtime capability enabled.
+    #[cfg(feature = "test262-host")]
+    pub fn with_dynamic_import_bytecode_allowed<T>(
+        &self,
+        allowed: bool,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        struct RestoreDynamicImportPolicy<'a> {
+            policy: &'a Cell<bool>,
+            previous: bool,
+        }
+
+        impl Drop for RestoreDynamicImportPolicy<'_> {
+            fn drop(&mut self) {
+                self.policy.set(self.previous);
+            }
+        }
+
+        let previous = self.0.dynamic_import_bytecode_allowed.replace(allowed);
+        let _restore = RestoreDynamicImportPolicy {
+            policy: &self.0.dynamic_import_bytecode_allowed,
+            previous,
+        };
+        operation()
     }
 
     #[cfg(feature = "test262-host")]

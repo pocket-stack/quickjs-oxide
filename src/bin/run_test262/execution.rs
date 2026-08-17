@@ -410,7 +410,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     let runtime = Runtime::new();
     runtime.set_dynamic_import_bytecode_allowed(false);
     let module_resolution_started = Rc::new(Cell::new(false));
-    let graph_loader_goal = if exact_module == Some(ExactModuleTest::FixtureGraph) {
+    let graph_loader_goal = if exact_module.is_some_and(ExactModuleTest::is_fixture_graph) {
         Some(ModuleGraphRootGoal::StaticModule)
     } else if exact_dynamic_import && !parse_rejected_dynamic_import {
         Some(ModuleGraphRootGoal::DynamicImportScript)
@@ -521,7 +521,7 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
                 exact_module,
                 resolution_started: &module_resolution_started,
             },
-        );
+        )?;
         agent_run.finish()?;
         return Ok(result);
     }
@@ -540,9 +540,10 @@ pub(super) fn run_worker(options: &WorkerOptions) -> Result<WorkerResult, String
     // Initial Script publication is host-side and executes no JavaScript.
     // Open the capability only for this compile so the immutable tree can be
     // inspected below, then close it again before any authored code runs.
-    runtime.set_dynamic_import_bytecode_allowed(!parse_rejected_dynamic_import);
-    let compilation = context.compile_with_options(&authored, &compile_options);
-    runtime.set_dynamic_import_bytecode_allowed(false);
+    let compilation = runtime
+        .with_dynamic_import_bytecode_allowed(!parse_rejected_dynamic_import, || {
+            context.compile_with_options(&authored, &compile_options)
+        });
     let function = match compilation {
         Ok(function) => function,
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
@@ -655,11 +656,51 @@ fn authenticate_dynamic_import_bytecode(
     }
 }
 
+fn authenticate_dynamic_import_module_graph(
+    runtime: &Runtime,
+    module: &quickjs_oxide::ModuleBytecodeRef,
+    policy: Option<DynamicImportRootPolicy>,
+    path: &Path,
+) -> Result<(), String> {
+    let contains_dynamic_import = runtime
+        .module_graph_contains_dynamic_import(module)
+        .map_err(|error| {
+            format!(
+                "inspect Test262 Module graph bytecode for {}: {error}",
+                path.display()
+            )
+        })?;
+    match (contains_dynamic_import, policy) {
+        (true, None) => Err(format!(
+            "Test262 dynamic-import Module worker rejected unaudited path: {}",
+            path.display()
+        )),
+        (false, Some(DynamicImportRootPolicy::InitialImportTree)) => Err(format!(
+            "authenticated Test262 dynamic-import Module graph compiled without dynamic-import bytecode: {}",
+            path.display()
+        )),
+        (true, Some(DynamicImportRootPolicy::RuntimeCompiledImport)) => Err(format!(
+            "runtime-compiled Test262 dynamic-import Module graph unexpectedly contained initial dynamic-import bytecode: {}",
+            path.display()
+        )),
+        (_, Some(DynamicImportRootPolicy::ParseRejected)) => Err(format!(
+            "parse-rejected Test262 dynamic-import policy reached a Module graph: {}",
+            path.display()
+        )),
+        (true, Some(DynamicImportRootPolicy::InitialImportTree))
+        | (false, Some(DynamicImportRootPolicy::RuntimeCompiledImport)) => {
+            runtime.set_dynamic_import_bytecode_allowed(true);
+            Ok(())
+        }
+        (false, None) => Ok(()),
+    }
+}
+
 fn run_exact_module(
     runtime: &Runtime,
     context: &mut Context,
     run: ExactModuleRun<'_>,
-) -> WorkerResult {
+) -> Result<WorkerResult, String> {
     let ExactModuleRun {
         path,
         relative_path,
@@ -668,17 +709,24 @@ fn run_exact_module(
         exact_module,
         resolution_started,
     } = run;
-    let filename = if exact_module == ExactModuleTest::FixtureGraph {
+    let filename = if exact_module.is_fixture_graph() {
         relative_path.to_string_lossy()
     } else {
         path.to_string_lossy()
     };
     let compile_options = CompileOptions::new(filename.as_ref());
-    let module = match context.compile_module_with_options(source, &compile_options) {
+    let dynamic_import_policy = exact_module.dynamic_import_policy();
+    // Module graph construction is host-side and executes no authored code.
+    // Permit publication only inside this scoped call so the complete resolved
+    // graph can be inspected below, including an opcode which lacks policy.
+    let compilation = runtime.with_dynamic_import_bytecode_allowed(true, || {
+        context.compile_module_with_options(source, &compile_options)
+    });
+    let module = match compilation {
         Ok(module) => module,
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
             let phase = module_compile_failure_phase(exact_module, resolution_started);
-            return WorkerResult::failure(
+            return Ok(WorkerResult::failure(
                 if phase == "resolution" {
                     "unsupported-resolution"
                 } else {
@@ -687,48 +735,54 @@ fn run_exact_module(
                 phase,
                 "Unsupported",
                 error.message(),
-            );
+            ));
         }
         Err(RuntimeError::Exception) => {
             let diagnostic = take_error(runtime, context, RuntimeError::Exception);
-            return classify_completion(
+            return Ok(classify_completion(
                 metadata,
                 module_compile_failure_phase(exact_module, resolution_started),
                 &diagnostic,
-            );
+            ));
         }
         Err(error) => {
-            return engine_fault(
+            return Ok(engine_fault(
                 "engine-fault",
                 module_compile_failure_phase(exact_module, resolution_started),
                 error,
                 None,
-            );
+            ));
         }
     };
+    authenticate_dynamic_import_module_graph(
+        runtime,
+        &module,
+        dynamic_import_policy,
+        relative_path,
+    )?;
     if metadata
         .negative
         .as_ref()
         .and_then(|negative| negative.phase.as_deref())
         .is_some_and(|phase| matches!(phase, "parse" | "early"))
     {
-        return classify_normal(metadata);
+        return Ok(classify_normal(metadata));
     }
     match context.link_module(&module) {
         Ok(()) => {}
         Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Unsupported => {
-            return WorkerResult::failure(
+            return Ok(WorkerResult::failure(
                 "unsupported-resolution",
                 "resolution",
                 "Unsupported",
                 error.message(),
-            );
+            ));
         }
         Err(RuntimeError::Exception) => {
             let diagnostic = take_error(runtime, context, RuntimeError::Exception);
-            return classify_completion(metadata, "resolution", &diagnostic);
+            return Ok(classify_completion(metadata, "resolution", &diagnostic));
         }
-        Err(error) => return engine_fault("engine-fault", "resolution", error, None),
+        Err(error) => return Ok(engine_fault("engine-fault", "resolution", error, None)),
     }
     if metadata
         .negative
@@ -736,9 +790,9 @@ fn run_exact_module(
         .and_then(|negative| negative.phase.as_deref())
         == Some("resolution")
     {
-        return classify_normal(metadata);
+        return Ok(classify_normal(metadata));
     }
-    match context.execute_module(&module) {
+    Ok(match context.execute_module(&module) {
         Ok(Value::Object(promise)) => {
             finish_module_evaluation(runtime, context, metadata, &promise)
         }
@@ -757,14 +811,14 @@ fn run_exact_module(
             classify_completion(metadata, "runtime", &diagnostic)
         }
         Err(error) => engine_fault("engine-fault", "runtime", error, None),
-    }
+    })
 }
 
 fn module_compile_failure_phase(
     exact_module: ExactModuleTest,
     resolution_started: &Cell<bool>,
 ) -> &'static str {
-    if exact_module == ExactModuleTest::FixtureGraph && resolution_started.get() {
+    if exact_module.is_fixture_graph() && resolution_started.get() {
         "resolution"
     } else {
         "parse"
@@ -1306,9 +1360,9 @@ mod tests {
 
     use super::{
         ExactTest262ModuleLoader, ExceptionDiagnostic, authenticate_dynamic_import_bytecode,
-        classify_async_print_log, classify_completion, configure_runtime_can_block,
-        finish_module_evaluation, first_quickjs_stack_source_location, install_worker_host,
-        run_worker, take_error,
+        authenticate_dynamic_import_module_graph, classify_async_print_log, classify_completion,
+        configure_runtime_can_block, finish_module_evaluation, first_quickjs_stack_source_location,
+        install_worker_host, run_worker, take_error,
     };
     use crate::admissions::{AdmissionCatalog, DynamicImportRootPolicy, sha256};
     use crate::metadata::{Metadata, NegativeExpectation};
@@ -1568,6 +1622,55 @@ mod tests {
         let error = context.execute(&function).unwrap_err();
         assert_eq!(error, RuntimeError::Exception);
         take_error(runtime, context, error)
+    }
+
+    #[derive(Debug)]
+    struct SingleDependencyLoader {
+        source: &'static str,
+    }
+
+    impl ModuleLoader for SingleDependencyLoader {
+        fn load(
+            &self,
+            _normalized_name: &JsString,
+        ) -> Result<String, quickjs_oxide::ModuleLoaderError> {
+            Ok(self.source.to_owned())
+        }
+    }
+
+    #[derive(Debug)]
+    struct VerifyDfsLoader;
+
+    impl ModuleLoader for VerifyDfsLoader {
+        fn load(
+            &self,
+            normalized_name: &JsString,
+        ) -> Result<String, quickjs_oxide::ModuleLoaderError> {
+            let name = String::from_utf16(&normalized_name.utf16_units().collect::<Vec<_>>())
+                .map_err(|_| quickjs_oxide::ModuleLoaderError::new("invalid test module name"))?;
+            match name.as_str() {
+                "test/verify-dfs-a_FIXTURE.js" => {
+                    Ok("import './verify-dfs.js'; import('./verify-dfs-b_FIXTURE.js');".to_owned())
+                }
+                "test/verify-dfs-b_FIXTURE.js" => Ok("import './verify-dfs.js';".to_owned()),
+                _ => Err(quickjs_oxide::ModuleLoaderError::new(format!(
+                    "unexpected test module: {name}"
+                ))),
+            }
+        }
+    }
+
+    fn compile_single_dependency_graph(
+        runtime: &Runtime,
+        context: &mut Context,
+        dependency_source: &'static str,
+    ) -> quickjs_oxide::ModuleBytecodeRef {
+        let _loader = runtime.set_module_loader(SingleDependencyLoader {
+            source: dependency_source,
+        });
+        context
+            .compile_module_with_filename("import './dependency.js';", "test/root.js")
+            .unwrap()
     }
 
     fn evaluate(context: &mut Context, source: &str) -> Value {
@@ -1915,6 +2018,137 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("unexpectedly contained initial"), "{error}");
+    }
+
+    #[test]
+    fn module_graph_dynamic_import_verifier_walks_dependencies_and_function_children() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let module = compile_single_dependency_graph(
+            &runtime,
+            &mut context,
+            "export function deferred() { return import('./runtime.js'); }",
+        );
+
+        assert_eq!(
+            runtime.module_graph_contains_dynamic_import(&module),
+            Ok(true),
+            "the root has no import opcode; the verifier must reach the dependency child function"
+        );
+    }
+
+    #[test]
+    fn module_graph_dynamic_import_verifier_finds_verify_dfs_dependency_only_opcode() {
+        let runtime = Runtime::new();
+        let _loader = runtime.set_module_loader(VerifyDfsLoader);
+        let mut context = runtime.new_context();
+        let module = context
+            .compile_module_with_filename(
+                "import './verify-dfs-a_FIXTURE.js'; import './verify-dfs-b_FIXTURE.js';",
+                "test/verify-dfs.js",
+            )
+            .unwrap();
+
+        assert_eq!(
+            runtime.module_graph_contains_dynamic_import(&module),
+            Ok(true),
+            "the cyclic root and B dependency have no opcode; DFS must inspect dependency A"
+        );
+    }
+
+    #[test]
+    fn module_graph_dynamic_import_policy_is_bidirectional_and_fails_closed() {
+        let dynamic_runtime = Runtime::new();
+        let mut dynamic_context = dynamic_runtime.new_context();
+        let dynamic_module = compile_single_dependency_graph(
+            &dynamic_runtime,
+            &mut dynamic_context,
+            "export function deferred() { return import('./runtime.js'); }",
+        );
+        let plain_runtime = Runtime::new();
+        let mut plain_context = plain_runtime.new_context();
+        let plain_module = compile_single_dependency_graph(
+            &plain_runtime,
+            &mut plain_context,
+            "export function deferred() { return 42; }",
+        );
+        let path = Path::new("test/root.js");
+
+        assert_eq!(
+            plain_runtime.module_graph_contains_dynamic_import(&plain_module),
+            Ok(false)
+        );
+
+        dynamic_runtime.set_dynamic_import_bytecode_allowed(false);
+        let unauthenticated =
+            authenticate_dynamic_import_module_graph(&dynamic_runtime, &dynamic_module, None, path)
+                .unwrap_err();
+        assert!(
+            unauthenticated.contains("unaudited path"),
+            "{unauthenticated}"
+        );
+
+        let wrong_runtime_policy = authenticate_dynamic_import_module_graph(
+            &dynamic_runtime,
+            &dynamic_module,
+            Some(DynamicImportRootPolicy::RuntimeCompiledImport),
+            path,
+        )
+        .unwrap_err();
+        assert!(
+            wrong_runtime_policy.contains("unexpectedly contained initial"),
+            "{wrong_runtime_policy}"
+        );
+
+        plain_runtime.set_dynamic_import_bytecode_allowed(false);
+        let missing_initial = authenticate_dynamic_import_module_graph(
+            &plain_runtime,
+            &plain_module,
+            Some(DynamicImportRootPolicy::InitialImportTree),
+            path,
+        )
+        .unwrap_err();
+        assert!(
+            missing_initial.contains("compiled without dynamic-import bytecode"),
+            "{missing_initial}"
+        );
+
+        authenticate_dynamic_import_module_graph(
+            &dynamic_runtime,
+            &dynamic_module,
+            Some(DynamicImportRootPolicy::InitialImportTree),
+            path,
+        )
+        .unwrap();
+        authenticate_dynamic_import_module_graph(
+            &plain_runtime,
+            &plain_module,
+            Some(DynamicImportRootPolicy::RuntimeCompiledImport),
+            path,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn temporary_dynamic_import_compile_capability_restores_closed_policy() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        runtime.set_dynamic_import_bytecode_allowed(false);
+
+        let admitted = runtime.with_dynamic_import_bytecode_allowed(true, || {
+            context.compile("import('./fixture.js');")
+        });
+        assert!(admitted.is_ok());
+
+        let error = context.compile("import('./other.js');").unwrap_err();
+        let RuntimeError::Engine(error) = error else {
+            panic!("closed dynamic-import publication returned {error:?}");
+        };
+        assert!(
+            error.message().contains("dynamic-import bytecode policy"),
+            "{}",
+            error.message()
+        );
     }
 
     #[test]

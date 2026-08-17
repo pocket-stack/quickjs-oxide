@@ -735,7 +735,11 @@ fn run_coordinator(options: &CoordinatorOptions) -> Result<bool, String> {
         worker_host_capabilities.retain_missing(&mut missing_host);
         let mut required_features = metadata.features.clone();
         required_features.extend(supplemental_feature_hints(&admissions, &relative, &source)?);
-        if exact_dynamic_import {
+        if exact_dynamic_import
+            || exact_module
+                .and_then(requirements::ExactModuleTest::dynamic_import_policy)
+                .is_some()
+        {
             required_features.retain(|feature| feature != "dynamic-import");
         }
         let capability =
