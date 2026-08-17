@@ -50,6 +50,9 @@ fn lower_scalar_draft(
         ScalarScriptDraft::Bool(false) => Ok((Instruction::PushFalse, Vec::new())),
         ScalarScriptDraft::Bool(true) => Ok((Instruction::PushTrue, Vec::new())),
         ScalarScriptDraft::Int(value) => Ok((Instruction::PushI32(value), Vec::new())),
+        ScalarScriptDraft::Float64Bits(bits) => {
+            lower_scalar_constant(Value::Float(f64::from_bits(bits)))
+        }
         ScalarScriptDraft::BigIntI32(value) => {
             lower_scalar_constant(Value::BigInt(JsBigInt::from(value)))
         }

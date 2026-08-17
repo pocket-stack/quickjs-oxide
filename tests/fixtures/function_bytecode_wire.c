@@ -1,8 +1,14 @@
 #include "quickjs.h"
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+_Static_assert(sizeof(double) == sizeof(uint64_t),
+               "QuickJS Float64 oracle requires 64-bit double");
+_Static_assert(sizeof(void *) == sizeof(uint64_t),
+               "QuickJS Float64 oracle requires a 64-bit build");
 
 static const uint8_t expected_bytecode[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
@@ -12,7 +18,7 @@ static const uint8_t expected_bytecode[] = {
 
 static const uint8_t scalar_prefix[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
-    0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x01, 0x00, 0x00,
 };
 
 static const uint8_t scalar_local[] = {
@@ -20,9 +26,10 @@ static const uint8_t scalar_local[] = {
 };
 
 #define SCALAR_MAX_CODE_SIZE 7
+#define SCALAR_FLOAT64_POOL_SIZE 9
 #define SCALAR_MAX_WIRE_SIZE \
-    (sizeof(scalar_prefix) + 1 + sizeof(scalar_local) + \
-     SCALAR_MAX_CODE_SIZE)
+    (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) + \
+     SCALAR_MAX_CODE_SIZE + SCALAR_FLOAT64_POOL_SIZE)
 
 typedef enum ScalarValueKind {
     SCALAR_VALUE_NUMBER,
@@ -31,18 +38,22 @@ typedef enum ScalarValueKind {
     SCALAR_VALUE_BOOLEAN,
     SCALAR_VALUE_BIGINT,
     SCALAR_VALUE_EMPTY_STRING,
+    SCALAR_VALUE_FLOAT64,
 } ScalarValueKind;
 
 typedef struct ScalarExpectation {
     ScalarValueKind kind;
     double number;
     int32_t integer;
+    uint64_t bits;
 } ScalarExpectation;
 
 #define EXPECT_NUMBER(value) \
     { .kind = SCALAR_VALUE_NUMBER, .number = (value) }
 #define EXPECT_VALUE(value_kind, value) \
     { .kind = (value_kind), .integer = (value) }
+#define EXPECT_FLOAT64(value) \
+    { .kind = SCALAR_VALUE_FLOAT64, .bits = UINT64_C(value) }
 
 typedef struct ScalarCase {
     const char *label;
@@ -139,6 +150,51 @@ static const ScalarCase compatible_scalar_values[] = {
     { "compatible-bigint-i32-min", NULL,
       EXPECT_VALUE(SCALAR_VALUE_BIGINT, INT32_MIN), 7,
       { 0xb0, 0x00, 0x00, 0x00, 0x80, 0xcb, 0x28 } },
+};
+
+static const ScalarCase canonical_scalar_float64[] = {
+    { "canonical-float64-half", "0.5;",
+      EXPECT_FLOAT64(0x3fe0000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "canonical-float64-i32-max-plus-one", "2147483648;",
+      EXPECT_FLOAT64(0x41e0000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "canonical-float64-min-subnormal", "5e-324;",
+      EXPECT_FLOAT64(0x0000000000000001), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "canonical-float64-max-finite", "1.7976931348623157e308;",
+      EXPECT_FLOAT64(0x7fefffffffffffff), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "canonical-float64-positive-infinity", "1e309;",
+      EXPECT_FLOAT64(0x7ff0000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+};
+
+static const ScalarCase compatible_scalar_float64[] = {
+    { "compatible-float64-wide-half", NULL,
+      EXPECT_FLOAT64(0x3fe0000000000000), 7,
+      { 0x02, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x28 } },
+    { "compatible-float64-positive-zero", NULL,
+      EXPECT_FLOAT64(0x0000000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "compatible-float64-negative-zero", NULL,
+      EXPECT_FLOAT64(0x8000000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "compatible-float64-integral-42", NULL,
+      EXPECT_FLOAT64(0x4045000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "compatible-float64-positive-infinity", NULL,
+      EXPECT_FLOAT64(0x7ff0000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "compatible-float64-negative-infinity", NULL,
+      EXPECT_FLOAT64(0xfff0000000000000), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "compatible-float64-quiet-nan", NULL,
+      EXPECT_FLOAT64(0x7ff8000000000042), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
+    { "compatible-float64-signaling-nan", NULL,
+      EXPECT_FLOAT64(0x7ff0000000000042), 4,
+      { 0xbd, 0x00, 0xcb, 0x28 } },
 };
 
 static const uint8_t compatible_scope_next_wrap[] = {
@@ -290,7 +346,11 @@ static int expect_read_scalar(const char *label,
     JSContext *context = NULL;
     JSValue loaded = JS_UNDEFINED;
     JSValue result = JS_UNDEFINED;
+    uint8_t *rewritten_bytecode = NULL;
+    size_t rewritten_bytecode_size = 0;
     double actual_number = 0;
+    uint64_t actual_bits = 0;
+    int actual_tag = -1;
     int actual_boolean = -1;
     int64_t actual_integer = 0;
     const char *actual_string = NULL;
@@ -314,6 +374,20 @@ static int expect_read_scalar(const char *label,
         report_exception(context, "scalar bytecode read failed");
         loaded = JS_UNDEFINED;
         goto cleanup;
+    }
+    if (expected.kind == SCALAR_VALUE_FLOAT64) {
+        rewritten_bytecode = JS_WriteObject(
+            context, &rewritten_bytecode_size, loaded,
+            JS_WRITE_OBJ_BYTECODE);
+        if (!rewritten_bytecode) {
+            report_exception(context, "scalar bytecode rewrite failed");
+            goto cleanup;
+        }
+        if (rewritten_bytecode_size != bytecode_size ||
+            memcmp(rewritten_bytecode, bytecode, bytecode_size) != 0) {
+            fprintf(stderr, "%s did not preserve its bytecode wire\n", label);
+            goto cleanup;
+        }
     }
     result = JS_EvalFunction(context, loaded);
     loaded = JS_UNDEFINED; /* JS_EvalFunction consumes its argument. */
@@ -391,6 +465,22 @@ static int expect_read_scalar(const char *label,
             goto cleanup;
         }
         break;
+    case SCALAR_VALUE_FLOAT64:
+        actual_tag = JS_VALUE_GET_TAG(result);
+        if (actual_tag != JS_TAG_FLOAT64 ||
+            JS_ToFloat64(context, &actual_number, result) < 0) {
+            fprintf(stderr, "%s did not evaluate to JS_TAG_FLOAT64\n", label);
+            goto cleanup;
+        }
+        memcpy(&actual_bits, &actual_number, sizeof(actual_bits));
+        if (actual_bits != expected.bits) {
+            fprintf(stderr,
+                    "%s evaluated to Float64 bits %016" PRIx64
+                    ", expected %016" PRIx64 "\n",
+                    label, actual_bits, expected.bits);
+            goto cleanup;
+        }
+        break;
     default:
         fprintf(stderr, "%s has an invalid expected scalar kind\n", label);
         goto cleanup;
@@ -420,11 +510,18 @@ static int expect_read_scalar(const char *label,
     case SCALAR_VALUE_EMPTY_STRING:
         printf("%s-eval=\"\"\n", label);
         break;
+    case SCALAR_VALUE_FLOAT64:
+        printf("%s-rewrite=identity\n", label);
+        printf("%s-eval-tag=%d\n", label, actual_tag);
+        printf("%s-eval-bits=%016" PRIx64 "\n", label, actual_bits);
+        break;
     }
     status = 0;
 
 cleanup:
     if (context) {
+        if (rewritten_bytecode)
+            js_free(context, rewritten_bytecode);
         if (actual_string)
             JS_FreeCString(context, actual_string);
         JS_FreeValue(context, result);
@@ -442,22 +539,31 @@ static int build_scalar_wire(const ScalarCase *test,
                              size_t *output_size) {
     size_t offset = 0;
     size_t expected_size;
+    int has_float64_constant;
 
     if (test->code_size == 0 ||
         test->code_size > SCALAR_MAX_CODE_SIZE)
         return -1;
-    expected_size = sizeof(scalar_prefix) + 1 +
-                    sizeof(scalar_local) + test->code_size;
+    has_float64_constant = test->expected.kind == SCALAR_VALUE_FLOAT64;
+    expected_size = sizeof(scalar_prefix) + 2 +
+                    sizeof(scalar_local) + test->code_size +
+                    (has_float64_constant ? SCALAR_FLOAT64_POOL_SIZE : 0);
     if (expected_size > output_capacity)
         return -1;
 
     memcpy(output + offset, scalar_prefix, sizeof(scalar_prefix));
     offset += sizeof(scalar_prefix);
+    output[offset++] = has_float64_constant ? 1 : 0;
     output[offset++] = (uint8_t)test->code_size;
     memcpy(output + offset, scalar_local, sizeof(scalar_local));
     offset += sizeof(scalar_local);
     memcpy(output + offset, test->code, test->code_size);
     offset += test->code_size;
+    if (has_float64_constant) {
+        output[offset++] = 0x06;
+        for (unsigned shift = 0; shift < 64; shift += 8)
+            output[offset++] = (uint8_t)(test->expected.bits >> shift);
+    }
     *output_size = offset;
     return 0;
 }
@@ -645,6 +751,17 @@ int main(void) {
                 compile_context, &canonical_scalar_values[index]))
             goto cleanup;
     }
+    printf("canonical-scalar-float64-count=%zu\n",
+           sizeof(canonical_scalar_float64) /
+           sizeof(canonical_scalar_float64[0]));
+    for (size_t index = 0;
+         index < sizeof(canonical_scalar_float64) /
+                 sizeof(canonical_scalar_float64[0]);
+         index++) {
+        if (expect_compiled_scalar(
+                compile_context, &canonical_scalar_float64[index]))
+            goto cleanup;
+    }
     printf("compatible-scalar-integer-count=%zu\n",
            sizeof(compatible_scalar_integers) /
            sizeof(compatible_scalar_integers[0]));
@@ -664,6 +781,16 @@ int main(void) {
                  sizeof(compatible_scalar_values[0]);
          index++) {
         if (expect_compatible_scalar(&compatible_scalar_values[index]))
+            goto cleanup;
+    }
+    printf("compatible-scalar-float64-count=%zu\n",
+           sizeof(compatible_scalar_float64) /
+           sizeof(compatible_scalar_float64[0]));
+    for (size_t index = 0;
+         index < sizeof(compatible_scalar_float64) /
+                 sizeof(compatible_scalar_float64[0]);
+         index++) {
+        if (expect_compatible_scalar(&compatible_scalar_float64[index]))
             goto cleanup;
     }
 

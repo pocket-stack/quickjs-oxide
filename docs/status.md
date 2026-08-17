@@ -64,10 +64,11 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   Rust/WASM browser playground
 - a narrow trusted-bytecode Rust API for the pinned BC5 branch-free, atom-free
   scalar Script cohort: `undefined`, `null`, booleans, the complete direct
-  Int32 family, signed-i32 BigInts, and the empty String; it completes the
-  compatible whole-image read, translates an inert DTO to typed Rust
-  instructions and primitive constants, and enters the ordinary verifier and
-  transactional publication path before execution
+  Int32 family, signed-i32 BigInts, the empty String, and Float64 values behind
+  an exact index-zero/one-entry constant-pool pair; it completes the compatible
+  whole-image read, translates an inert DTO to typed Rust instructions and
+  primitive constants, and enters the ordinary verifier and transactional
+  publication path before execution
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -241,8 +242,16 @@ The same table-driven oracle pins compiler-canonical `push_minus1`,
 valid non-canonical i8/i16/i32 reader spellings. It also pins exact BC5 and
 fresh-runtime type/value receipts for `undefined`, `null`, `push_false`,
 `push_true`, `push_bigint_i32`, and `push_empty_string`; Rust admits the full
-signed Int32 and direct signed-i32 BigInt ranges without opening input constant
-pools or atom slots.
+signed Int32 and direct signed-i32 BigInt ranges without opening atom slots.
+Float64 admission remains a separate exact pair: canonical `push_const8 0` or
+reader-compatible `push_const 0`, exactly one `BC_TAG_FLOAT64` pool entry, and
+no other constant-pool shape. The oracle pins compiler wires for `0.5`, the
+first value above signed Int32, the minimum subnormal, the maximum finite value,
+and positive infinity; compatible wires additionally preserve positive and
+negative zero, integral Float64 values, both infinities, and quiet/signaling NaN
+payloads on the pinned 64-bit QuickJS build. Rust carries the authenticated
+`u64` bits into `Value::Float` instead of applying numeric canonicalization;
+32-bit QuickJS NaN-boxing representation parity remains outside this milestone.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and

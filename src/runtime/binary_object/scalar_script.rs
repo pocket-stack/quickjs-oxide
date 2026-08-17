@@ -13,12 +13,15 @@ use super::bytecode_image::{
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits};
 use super::graph::decode::DecodeError;
-use super::graph::model::{ArrayBufferLayoutError, GraphError, GraphLimits, TypedArrayLayoutError};
+use super::graph::model::{
+    ArrayBufferLayoutError, GraphError, GraphLimits, TypedArrayLayoutError, WireValue,
+};
 use super::wire::{ReaderMode, WireCursor, WireError, WireLimits};
 
 const MAX_INPUT_BYTES: usize = 4096;
 
 const OP_PUSH_I32: u8 = 0x01;
+const OP_PUSH_CONST: u8 = 0x02;
 const OP_UNDEFINED: u8 = 0x06;
 const OP_NULL: u8 = 0x07;
 const OP_PUSH_FALSE: u8 = 0x09;
@@ -30,6 +33,7 @@ const OP_PUSH_0: u8 = 0xb3;
 const OP_PUSH_7: u8 = 0xba;
 const OP_PUSH_I8: u8 = 0xbb;
 const OP_PUSH_I16: u8 = 0xbc;
+const OP_PUSH_CONST8: u8 = 0xbd;
 const OP_PUSH_EMPTY_STRING: u8 = 0xbf;
 const OP_SET_LOC0: u8 = 0xcb;
 
@@ -40,8 +44,15 @@ pub(in crate::runtime) enum ScalarScriptDraft {
     Null,
     Bool(bool),
     Int(i32),
+    Float64Bits(u64),
     BigIntI32(i32),
     EmptyString,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScalarPush {
+    Direct(ScalarScriptDraft),
+    Constant(u32),
 }
 
 /// Failure classes preserved across the archive/runtime publication boundary.
@@ -170,9 +181,6 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     let [function] = image.functions() else {
         return unadmitted("image does not contain exactly one FunctionBytecode record");
     };
-    if !function.constants().is_empty() {
-        return unadmitted("function constant pool is not empty");
-    }
     let Some(root) = image.root().function_id() else {
         return unadmitted("root value is not FunctionBytecode");
     };
@@ -220,7 +228,7 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     let [push, set_completion, return_value] = native_payload.instructions() else {
         return unadmitted("native payload is not the three-instruction scalar shape");
     };
-    let Some((draft, push_width)) = decode_direct_scalar(native_payload.as_bytes()) else {
+    let Some((scalar_push, push_width)) = decode_scalar_push(native_payload.as_bytes()) else {
         return unadmitted("native payload opcode sequence is outside the admitted shape");
     };
     if push.offset() != 0
@@ -235,7 +243,48 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
         ));
     }
 
+    let draft = match (scalar_push, function.constants()) {
+        (ScalarPush::Direct(draft), []) => draft,
+        (ScalarPush::Direct(_), _) => {
+            return unadmitted("direct scalar opcode carries a function constant");
+        }
+        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
+            Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),
+            Ok(_) => return unadmitted("scalar constant is not a Float64 value"),
+            Err(_) => return unadmitted("scalar constant is not a data value"),
+        },
+        (ScalarPush::Constant(_), [_]) => {
+            return unadmitted("scalar constant opcode does not reference index zero");
+        }
+        (ScalarPush::Constant(_), _) => {
+            return unadmitted("scalar constant opcode requires exactly one function constant");
+        }
+    };
+
     Ok(draft)
+}
+
+/// Decode the release-pinned scalar push spelling without separating a
+/// constant-pool operand from the pool entry that admission authenticates.
+fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> {
+    match bytes {
+        [OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN] => {
+            Some((ScalarPush::Constant(u32::from(*index)), 2))
+        }
+        [
+            OP_PUSH_CONST,
+            byte_0,
+            byte_1,
+            byte_2,
+            byte_3,
+            OP_SET_LOC0,
+            OP_RETURN,
+        ] => Some((
+            ScalarPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
+            5,
+        )),
+        _ => decode_direct_scalar(bytes).map(|(draft, width)| (ScalarPush::Direct(draft), width)),
+    }
 }
 
 /// Decode the release-pinned atom-free scalar opcode cohort.
@@ -614,6 +663,74 @@ mod tests {
     }
 
     #[test]
+    fn admits_only_exactly_paired_float64_constants() {
+        const SHORT_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST8, 0, OP_SET_LOC0, OP_RETURN];
+        const WIDE_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST, 0, 0, 0, 0, OP_SET_LOC0, OP_RETURN];
+        let bits_cases = [
+            0.5_f64.to_bits(),
+            2_147_483_648_f64.to_bits(),
+            1,
+            f64::MAX.to_bits(),
+            f64::INFINITY.to_bits(),
+            f64::NEG_INFINITY.to_bits(),
+            0.0_f64.to_bits(),
+            (-0.0_f64).to_bits(),
+            42.0_f64.to_bits(),
+            0x7ff8_0000_0000_0042,
+            0x7ff0_0000_0000_0042,
+        ];
+
+        for bits in bits_cases {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_float_constant(SHORT_INDEX_ZERO, bits,)),
+                Ok(ScalarScriptDraft::Float64Bits(bits))
+            );
+        }
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_float_constant(
+                WIDE_INDEX_ZERO,
+                0.5_f64.to_bits(),
+            )),
+            Ok(ScalarScriptDraft::Float64Bits(0.5_f64.to_bits()))
+        );
+
+        let float_entry = float_constant_entry(0.5_f64.to_bits());
+        let other_float_entry = float_constant_entry(1.5_f64.to_bits());
+        let invalid_pairs = [
+            scalar_with_code(SHORT_INDEX_ZERO),
+            scalar_with_constants(&[OP_PUSH_0, OP_SET_LOC0, OP_RETURN], &[&float_entry]),
+            scalar_with_constants(
+                &[OP_PUSH_CONST8, 1, OP_SET_LOC0, OP_RETURN],
+                &[&float_entry],
+            ),
+            scalar_with_constants(
+                &[OP_PUSH_CONST, 1, 0, 0, 0, OP_SET_LOC0, OP_RETURN],
+                &[&float_entry],
+            ),
+            scalar_with_constants(SHORT_INDEX_ZERO, &[&float_entry, &other_float_entry]),
+            scalar_with_constants(SHORT_INDEX_ZERO, &[&[0x05, 0x54]]),
+            scalar_with_constants(
+                SHORT_INDEX_ZERO,
+                &[&[0x0a, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00]],
+            ),
+        ];
+        for object in invalid_pairs {
+            assert!(matches!(
+                decode_trusted_scalar_script(&object),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
+
+        let mut truncated_float = scalar_with_code(SHORT_INDEX_ZERO);
+        truncated_float[14] = 1;
+        truncated_float.extend_from_slice(&[0x06, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(matches!(
+            decode_trusted_scalar_script(&truncated_float),
+            Err(ScalarScriptReadError::Malformed(_))
+        ));
+    }
+
+    #[test]
     fn compatible_reader_accepts_non_minimal_fields_and_trailing_bytes() {
         let mut non_minimal = RETURN_42.to_vec();
         non_minimal.splice(8..9, [0x80, 0x00]);
@@ -886,6 +1003,26 @@ mod tests {
         let mut object = RETURN_42.to_vec();
         object[15] = u8::try_from(code.len()).expect("test code length fits one-byte ULEB");
         object.splice(21.., code.iter().copied());
+        object
+    }
+
+    fn scalar_with_float_constant(code: &[u8], bits: u64) -> Vec<u8> {
+        let entry = float_constant_entry(bits);
+        scalar_with_constants(code, &[&entry])
+    }
+
+    fn float_constant_entry(bits: u64) -> Vec<u8> {
+        let mut entry = vec![0x06];
+        entry.extend_from_slice(&bits.to_le_bytes());
+        entry
+    }
+
+    fn scalar_with_constants(code: &[u8], constants: &[&[u8]]) -> Vec<u8> {
+        let mut object = scalar_with_code(code);
+        object[14] = u8::try_from(constants.len()).expect("test constant count fits one-byte ULEB");
+        for constant in constants {
+            object.extend_from_slice(constant);
+        }
         object
     }
 }

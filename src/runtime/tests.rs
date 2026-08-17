@@ -161,6 +161,56 @@ fn trusted_quickjs_scalar_script_executes_direct_atom_free_primitives() {
 }
 
 #[test]
+fn trusted_quickjs_scalar_script_executes_exact_float64_constant_pairs() {
+    const SHORT_INDEX_ZERO: &[u8] = &[0xbd, 0x00, 0xcb, 0x28];
+    const WIDE_INDEX_ZERO: &[u8] = &[0x02, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x28];
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    let mut functions = Vec::new();
+    let bits_cases = [
+        0.5_f64.to_bits(),
+        2_147_483_648_f64.to_bits(),
+        1,
+        f64::MAX.to_bits(),
+        f64::INFINITY.to_bits(),
+        f64::NEG_INFINITY.to_bits(),
+        0.0_f64.to_bits(),
+        (-0.0_f64).to_bits(),
+        42.0_f64.to_bits(),
+        0x7ff8_0000_0000_0042,
+        0x7ff0_0000_0000_0042,
+    ];
+
+    for bits in bits_cases {
+        let image = quickjs_scalar_with_float_constant(SHORT_INDEX_ZERO, bits);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        let Value::Float(actual) = context.execute(&function).unwrap() else {
+            panic!("Float64 constant did not retain its runtime value kind");
+        };
+        assert_eq!(actual.to_bits(), bits);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+        assert_eq!(runtime.heap_counts().object_nodes, baseline.object_nodes);
+        functions.push(function);
+    }
+
+    let image = quickjs_scalar_with_float_constant(WIDE_INDEX_ZERO, 0.5_f64.to_bits());
+    let function = context.read_trusted_scalar_script(&image).unwrap();
+    let Value::Float(actual) = context.execute(&function).unwrap() else {
+        panic!("wide Float64 constant did not retain its runtime value kind");
+    };
+    assert_eq!(actual.to_bits(), 0.5_f64.to_bits());
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    assert_eq!(runtime.heap_counts().object_nodes, baseline.object_nodes);
+    functions.push(function);
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline.function_bytecode_nodes + bits_cases.len() + 1
+    );
+}
+
+#[test]
 fn trusted_quickjs_scalar_script_accepts_compatible_wire_spellings() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -190,6 +240,8 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
     let baseline = runtime.heap_counts().function_bytecode_nodes;
+    let baseline_objects = runtime.heap_counts().object_nodes;
+    let baseline_atoms = runtime.test_atom_count();
 
     // A valid BC5 Int32 data root is not a scalar Script. The public API must
     // preserve that implementation frontier instead of fabricating a parse
@@ -206,6 +258,8 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
 
     let mut unused_atom_slot = QUICKJS_SCALAR_42_BC5.to_vec();
     unused_atom_slot.splice(1..2, [0x01, 0x00]);
+    let float_entry = quickjs_float_constant_entry(0.5_f64.to_bits());
+    let other_float_entry = quickjs_float_constant_entry(1.5_f64.to_bits());
     let well_formed_unadmitted = [
         (
             "push_this scalar Script",
@@ -219,6 +273,29 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
             "scalar Script with an unused input atom slot",
             unused_atom_slot,
         ),
+        (
+            "push_const8 scalar Script with an empty constant pool",
+            quickjs_scalar_with_code(&[0xbd, 0x00, 0xcb, 0x28]),
+        ),
+        (
+            "direct scalar Script with a Float64 constant",
+            quickjs_scalar_with_constants(&[0xb3, 0xcb, 0x28], &[float_entry.as_slice()]),
+        ),
+        (
+            "push_const8 scalar Script with a nonzero index",
+            quickjs_scalar_with_constants(&[0xbd, 0x01, 0xcb, 0x28], &[float_entry.as_slice()]),
+        ),
+        (
+            "push_const8 scalar Script with an extra constant",
+            quickjs_scalar_with_constants(
+                &[0xbd, 0x00, 0xcb, 0x28],
+                &[float_entry.as_slice(), other_float_entry.as_slice()],
+            ),
+        ),
+        (
+            "push_const8 scalar Script with an Int32 constant",
+            quickjs_scalar_with_constants(&[0xbd, 0x00, 0xcb, 0x28], &[&[0x05, 0x54]]),
+        ),
     ];
     for (label, image) in well_formed_unadmitted {
         let RuntimeError::Engine(error) = context.read_trusted_scalar_script(&image).unwrap_err()
@@ -228,6 +305,8 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
         assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert!(!context.has_exception());
         assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+        assert_eq!(runtime.heap_counts().object_nodes, baseline_objects);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
     }
 
     let mut wrapping_scope_link = QUICKJS_SCALAR_42_BC5.to_vec();
@@ -477,6 +556,26 @@ fn quickjs_scalar_with_code(code: &[u8]) -> Vec<u8> {
     let mut object = QUICKJS_SCALAR_42_BC5.to_vec();
     object[15] = u8::try_from(code.len()).expect("test code length fits one-byte ULEB");
     object.splice(21.., code.iter().copied());
+    object
+}
+
+fn quickjs_scalar_with_float_constant(code: &[u8], bits: u64) -> Vec<u8> {
+    let entry = quickjs_float_constant_entry(bits);
+    quickjs_scalar_with_constants(code, &[entry.as_slice()])
+}
+
+fn quickjs_float_constant_entry(bits: u64) -> Vec<u8> {
+    let mut entry = vec![0x06];
+    entry.extend_from_slice(&bits.to_le_bytes());
+    entry
+}
+
+fn quickjs_scalar_with_constants(code: &[u8], constants: &[&[u8]]) -> Vec<u8> {
+    let mut object = quickjs_scalar_with_code(code);
+    object[14] = u8::try_from(constants.len()).expect("test constant count fits one-byte ULEB");
+    for constant in constants {
+        object.extend_from_slice(constant);
+    }
     object
 }
 

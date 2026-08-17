@@ -46,7 +46,7 @@ def blank(text: str) -> str:
     return "".join("\n" if character == "\n" else " " for character in text)
 
 
-raw_string_prefix = re.compile(r'(?:br|rb|r)(?P<hashes>#{0,255})"')
+raw_string_prefix = re.compile(r'(?:br|rb|cr|rc|r)(?P<hashes>#{0,255})"')
 
 
 def rust_code_only(source: str) -> str:
@@ -122,6 +122,30 @@ def location(relative: str, source: str, offset: int) -> str:
         line_end = len(source)
     excerpt = source[line_start:line_end].strip()
     return f"{relative}:{line}: {excerpt}"
+
+
+def unique_braced_item(
+    code: str,
+    pattern: re.Pattern[str],
+    error_code: str,
+    description: str,
+) -> tuple[str, int, int]:
+    matches = list(pattern.finditer(code))
+    if len(matches) != 1:
+        fail(error_code, f"must contain exactly one {description}")
+        return "", -1, -1
+
+    item = matches[0]
+    depth = 0
+    for offset in range(item.end() - 1, len(code)):
+        if code[offset] == "{":
+            depth += 1
+        elif code[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[item.start():offset + 1], item.start(), offset + 1
+    fail(error_code, f"{description} has no balanced closing brace")
+    return "", -1, -1
 
 
 lib_source = read_source("src/lib.rs")
@@ -299,13 +323,14 @@ scalar_draft_pattern = re.compile(
     r"[ \t\n]*Null[ \t\n]*,"
     r"[ \t\n]*Bool[ \t\n]*\([ \t\n]*bool[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*Int[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*Float64Bits[ \t\n]*\([ \t\n]*u64[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*BigIntI32[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*EmptyString[ \t\n]*,?[ \t\n]*\}"
 )
 if len(scalar_draft_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-draft-shape",
-        "ScalarScriptDraft must be runtime-visible only and contain exactly Undefined, Null, Bool(bool), Int(i32), BigIntI32(i32), and EmptyString",
+        "ScalarScriptDraft must be runtime-visible only and contain exactly Undefined, Null, Bool(bool), Int(i32), Float64Bits(u64), BigIntI32(i32), and EmptyString",
     )
 
 scalar_error_pattern = re.compile(
@@ -324,17 +349,48 @@ if len(scalar_error_pattern.findall(scalar_script_code)) != 1:
         "ScalarScriptReadError must retain exactly Malformed, Type, Range, JsInternal, Unadmitted, Resource, and Internal String variants",
     )
 
-scalar_decode_pattern = re.compile(
+scalar_decode_item_pattern = re.compile(
     rf"\b{scalar_visibility}[ \t\n]+fn[ \t\n]+decode_trusted_scalar_script"
     r"[ \t\n]*\([ \t\n]*(?:bytes|input)[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\]"
     r"[ \t\n]*,?[ \t\n]*\)[ \t\n]*->[ \t\n]*Result[ \t\n]*<"
     r"[ \t\n]*ScalarScriptDraft[ \t\n]*,[ \t\n]*ScalarScriptReadError[ \t\n]*>"
+    r"[ \t\n]*\{"
 )
-if len(scalar_decode_pattern.findall(scalar_script_code)) != 1:
-    fail(
-        "scalar-script-decoder-shape",
-        "decode_trusted_scalar_script must be the reviewed &[u8] to scalar draft facade",
+scalar_decoder_code, _, _ = unique_braced_item(
+    scalar_script_code,
+    scalar_decode_item_pattern,
+    "scalar-script-decoder-shape",
+    "runtime-visible &[u8] to scalar draft decoder",
+)
+if scalar_decoder_code:
+    decoder_steps = (
+        list(re.finditer(r"\bdecode_bytecode_image_body[ \t\n]*\(", scalar_decoder_code)),
+        list(re.finditer(
+            r"\bcursor[ \t\n]*\.[ \t\n]*finish[ \t\n]*\([ \t\n]*\)",
+            scalar_decoder_code,
+        )),
+        list(re.finditer(
+            r"\badmit_image[ \t\n]*\([ \t\n]*&[ \t\n]*image[ \t\n]*\)",
+            scalar_decoder_code,
+        )),
     )
+    decoder_step_offsets = tuple(
+        step[0].start() if len(step) == 1 else -1 for step in decoder_steps
+    )
+    if (
+        any(len(step) != 1 for step in decoder_steps)
+        or decoder_step_offsets != tuple(sorted(decoder_step_offsets))
+        or re.search(r"\bOk[ \t\n]*\(", scalar_decoder_code)
+        or re.search(
+            r"\badmit_image[ \t\n]*\([ \t\n]*&[ \t\n]*image[ \t\n]*\)"
+            r"[ \t\n]*\}[ \t\n]*\Z",
+            scalar_decoder_code,
+        ) is None
+    ):
+        fail(
+            "scalar-script-decoder-shape",
+            "decode_trusted_scalar_script must uniquely complete decode_bytecode_image_body, cursor.finish(), and final admit_image(&image), without an alternate Ok result",
+        )
 
 scalar_opcode_declarations = re.findall(
     r"(?m)^[ \t]*const[ \t]+(OP_[A-Z0-9_]+)\b",
@@ -347,6 +403,7 @@ scalar_opcode_entries = re.findall(
 scalar_opcode_constants = {name: int(raw, 16) for name, raw in scalar_opcode_entries}
 expected_scalar_opcode_constants = {
     "OP_PUSH_I32": 0x01,
+    "OP_PUSH_CONST": 0x02,
     "OP_UNDEFINED": 0x06,
     "OP_NULL": 0x07,
     "OP_PUSH_FALSE": 0x09,
@@ -358,6 +415,7 @@ expected_scalar_opcode_constants = {
     "OP_PUSH_7": 0xBA,
     "OP_PUSH_I8": 0xBB,
     "OP_PUSH_I16": 0xBC,
+    "OP_PUSH_CONST8": 0xBD,
     "OP_PUSH_EMPTY_STRING": 0xBF,
     "OP_SET_LOC0": 0xCB,
 }
@@ -369,9 +427,56 @@ if (
 ):
     fail(
         "scalar-script-opcode-set",
-        "scalar-script admission must define each reviewed atom-free scalar push, direct Int32 family, set_loc0, and return opcode exactly once; "
+        "scalar-script admission must define each reviewed direct scalar push, the two Float64 constant-pool pushes, set_loc0, and return opcode exactly once; "
         f"found declarations {scalar_opcode_declarations} and exact entries {scalar_opcode_entries}",
     )
+
+scalar_push_pattern = re.compile(
+    r"\benum[ \t\n]+ScalarPush[ \t\n]*\{"
+    r"[ \t\n]*Direct[ \t\n]*\([ \t\n]*ScalarScriptDraft[ \t\n]*\)"
+    r"[ \t\n]*,[ \t\n]*Constant[ \t\n]*\([ \t\n]*u32[ \t\n]*\)"
+    r"[ \t\n]*,?[ \t\n]*\}"
+)
+if len(scalar_push_pattern.findall(scalar_script_code)) != 1:
+    fail(
+        "scalar-script-push-shape",
+        "ScalarPush must remain one private Direct(ScalarScriptDraft) or Constant(u32) discriminator",
+    )
+
+scalar_push_decoder_item_pattern = re.compile(
+    r"\bfn[ \t\n]+decode_scalar_push[ \t\n]*\("
+    r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
+    r"[ \t\n]*->[ \t\n]*Option[ \t\n]*<[ \t\n]*\("
+    r"[ \t\n]*ScalarPush[ \t\n]*,[ \t\n]*u32[ \t\n]*\)"
+    r"[ \t\n]*>[ \t\n]*\{",
+    re.DOTALL,
+)
+scalar_push_decoder_code, _, _ = unique_braced_item(
+    scalar_script_code,
+    scalar_push_decoder_item_pattern,
+    "scalar-script-push-decoder",
+    "private &[u8] to (ScalarPush, u32) decoder",
+)
+
+if scalar_push_decoder_code:
+    normalized_push_decoder = " ".join(scalar_push_decoder_code.split())
+    expected_push_decoder = (
+        "fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> { "
+        "match bytes { "
+        "[OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN] => { "
+        "Some((ScalarPush::Constant(u32::from(*index)), 2)) } "
+        "[ OP_PUSH_CONST, byte_0, byte_1, byte_2, byte_3, OP_SET_LOC0, "
+        "OP_RETURN, ] => Some(( "
+        "ScalarPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, "
+        "*byte_2, *byte_3])), 5, )), "
+        "_ => decode_direct_scalar(bytes).map(|(draft, width)| "
+        "(ScalarPush::Direct(draft), width)), } }"
+    )
+    if normalized_push_decoder != expected_push_decoder:
+        fail(
+            "scalar-script-push-decoder",
+            "decode_scalar_push must admit only push_const8/u8 and push_const/little-endian-u32 before the direct scalar decoder",
+        )
 
 scalar_visible_item_pattern = re.compile(
     r"\b(?P<visibility>pub(?:[ \t\n]*\([^)]*\))?)[ \t\n]+"
@@ -426,34 +531,12 @@ scalar_admission_item_pattern = re.compile(
     r"[ \t\n]*->[^{;]+\{",
     re.DOTALL,
 )
-scalar_admission_items = list(scalar_admission_item_pattern.finditer(scalar_script_code))
-scalar_admission_code = ""
-if len(scalar_admission_items) != 1:
-    fail(
-        "scalar-script-admission-empty-boundaries",
-        "scalar_script.rs must contain exactly one private admit_image function",
-    )
-else:
-    admission_item = scalar_admission_items[0]
-    open_offset = admission_item.end() - 1
-    depth = 0
-    close_offset = None
-    for offset in range(open_offset, len(scalar_script_code)):
-        character = scalar_script_code[offset]
-        if character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                close_offset = offset + 1
-                break
-    if close_offset is None:
-        fail(
-            "scalar-script-admission-empty-boundaries",
-            "scalar_script.rs admit_image function has no balanced closing brace",
-        )
-    else:
-        scalar_admission_code = scalar_script_code[admission_item.start():close_offset]
+scalar_admission_code, scalar_admission_start, _ = unique_braced_item(
+    scalar_script_code,
+    scalar_admission_item_pattern,
+    "scalar-script-admission-empty-boundaries",
+    "private admit_image function",
+)
 
 scalar_admission_empty_boundaries = (
     (
@@ -480,19 +563,6 @@ scalar_admission_empty_boundaries = (
         ),
         re.compile(
             r"\bimage[ \t\n]*\.[ \t\n]*atoms[ \t\n]*\([ \t\n]*\)"
-        ),
-    ),
-    (
-        "the input function constant pool",
-        re.compile(
-            r"\bif[ \t\n]+![ \t\n]*function[ \t\n]*\.[ \t\n]*constants"
-            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty"
-            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\{"
-            r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
-            r"[ \t\n]*;[ \t\n]*\}"
-        ),
-        re.compile(
-            r"\bfunction[ \t\n]*\.[ \t\n]*constants[ \t\n]*\([ \t\n]*\)"
         ),
     ),
     (
@@ -537,16 +607,11 @@ if scalar_admission_code:
         r"[ \t\n]*image[ \t\n]*\.[ \t\n]*functions[ \t\n]*\([ \t\n]*\)"
         r"[ \t\n]*else[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
         r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}[ \t\n]*;"
-        r"[ \t\n]*if[ \t\n]+![ \t\n]*function[ \t\n]*\.[ \t\n]*constants"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\{"
-        r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
-        r"[ \t\n]*;[ \t\n]*\}"
     )
     if len(scalar_function_guard_pattern.findall(scalar_admission_code)) != 1:
         fail(
             "scalar-script-admission-empty-boundaries",
-            "admit_image must reject the input constant pool immediately after binding its unique decoded function",
+            "admit_image must directly bind exactly one decoded function before authenticating its opcode/constant-pool pair",
         )
 
     scalar_native_guard_pattern = re.compile(
@@ -588,10 +653,115 @@ if scalar_admission_code:
             "admit_image must bind the checked envelope once at function scope, directly from the unique decoded function and before the native payload",
         )
 
+    scalar_push_binding_pattern = re.compile(
+        r"\blet[ \t\n]+Some[ \t\n]*\([ \t\n]*\([ \t\n]*scalar_push"
+        r"[ \t\n]*,[ \t\n]*push_width[ \t\n]*\)[ \t\n]*\)[ \t\n]*="
+        r"[ \t\n]*decode_scalar_push[ \t\n]*\([ \t\n]*native_payload"
+        r"[ \t\n]*\.[ \t\n]*as_bytes[ \t\n]*\([ \t\n]*\)[ \t\n]*\)"
+        r"[ \t\n]*else[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}[ \t\n]*;"
+    )
+    scalar_push_binding_matches = list(
+        scalar_push_binding_pattern.finditer(scalar_admission_code)
+    )
+    if len(scalar_push_binding_matches) != 1:
+        fail(
+            "scalar-script-constant-pairing",
+            "admit_image must decode exactly one scalar_push/push_width pair from the authenticated native payload",
+        )
+
+    scalar_pairing_pattern = re.compile(
+        r"\blet[ \t\n]+draft[ \t\n]*=[ \t\n]*match[ \t\n]*\("
+        r"[ \t\n]*scalar_push[ \t\n]*,[ \t\n]*function[ \t\n]*\."
+        r"[ \t\n]*constants[ \t\n]*\([ \t\n]*\)[ \t\n]*\)"
+        r"[ \t\n]*\{"
+    )
+    scalar_pairing_code, pairing_start, pairing_close = unique_braced_item(
+        scalar_admission_code,
+        scalar_pairing_pattern,
+        "scalar-script-constant-pairing",
+        "draft-producing scalar push/constant-pool match",
+    )
+
+    if scalar_pairing_code:
+        expected_pairing_source = """
+            let draft = match (scalar_push, function.constants()) {
+                (ScalarPush::Direct(draft), []) => draft,
+                (ScalarPush::Direct(_), _) => {
+                    return unadmitted("direct scalar opcode carries a function constant");
+                }
+                (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
+                    Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),
+                    Ok(_) => return unadmitted("scalar constant is not a Float64 value"),
+                    Err(_) => return unadmitted("scalar constant is not a data value"),
+                },
+                (ScalarPush::Constant(_), [_]) => {
+                    return unadmitted("scalar constant opcode does not reference index zero");
+                }
+                (ScalarPush::Constant(_), _) => {
+                    return unadmitted("scalar constant opcode requires exactly one function constant");
+                }
+            }
+        """
+        pairing_is_direct_and_final = (
+            len(scalar_push_binding_matches) == 1
+            and scalar_push_binding_matches[0].end() < pairing_start
+            and scalar_admission_code[:pairing_start].count("{")
+            - scalar_admission_code[:pairing_start].count("}")
+            == 1
+            and re.fullmatch(
+                r"[ \t\n]*;[ \t\n]*Ok[ \t\n]*\([ \t\n]*draft[ \t\n]*\)"
+                r"[ \t\n]*\}[ \t\n]*",
+                scalar_admission_code[pairing_close:],
+            ) is not None
+        )
+        if (
+            " ".join(scalar_pairing_code.split())
+            != " ".join(rust_code_only(expected_pairing_source).split())
+            or not pairing_is_direct_and_final
+        ):
+            fail(
+                "scalar-script-constant-pairing",
+                "admission must end in one top-level atomic pairing: direct pushes with an empty pool, or index-zero constant pushes with exactly one Float64Bits data value",
+            )
+
+    scalar_production_code = scalar_script_code.split("#[cfg(test)]", 1)[0]
+    if (
+        len(
+            re.findall(
+                r"\bfunction[ \t\n]*\.[ \t\n]*constants"
+                r"[ \t\n]*\([ \t\n]*\)",
+                scalar_admission_code,
+            )
+        )
+        != 1
+        or len(
+            re.findall(
+                r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*Float64Bits\b",
+                scalar_production_code,
+            )
+        )
+        != 1
+        or len(
+            re.findall(
+                r"\bWireValue[ \t\n]*::[ \t\n]*Float64Bits\b",
+                scalar_production_code,
+            )
+        )
+        != 1
+    ):
+        fail(
+            "scalar-script-constant-pairing",
+            "the production scalar path must construct Float64Bits exactly once, only from the unique function constant-pool pairing",
+        )
+
     reviewed_binding_counts = {
         "function": 0,
         "envelope": 0,
         "native_payload": 0,
+        "scalar_push": 0,
+        "push_width": 0,
+        "draft": 0,
     }
     for binding_match in re.finditer(
         r"\blet\b(?P<pattern>[^=;]+)=", scalar_admission_code
@@ -605,10 +775,13 @@ if scalar_admission_code:
         "function": 1,
         "envelope": 1,
         "native_payload": 1,
+        "scalar_push": 1,
+        "push_width": 1,
+        "draft": 1,
     }:
         fail(
             "scalar-script-admission-empty-boundaries",
-            "admit_image must bind function, envelope, and native_payload exactly once; "
+            "admit_image must bind function, envelope, native_payload, scalar_push, push_width, and draft exactly once; "
             f"found {reviewed_binding_counts}",
         )
 
@@ -628,7 +801,12 @@ if scalar_admission_code:
                 "admit_image may return early only through the reviewed unadmitted or internal-error paths",
             )
 
-    success_matches = list(re.finditer(r"\bOk[ \t\n]*\(", scalar_admission_code))
+    success_matches = list(
+        re.finditer(
+            r"\bOk[ \t\n]*\([ \t\n]*draft[ \t\n]*\)",
+            scalar_admission_code,
+        )
+    )
     if len(success_matches) != 1 or re.search(
         r"\bOk[ \t\n]*\([ \t\n]*draft[ \t\n]*\)[ \t\n]*\}[ \t\n]*\Z",
         scalar_admission_code,
@@ -732,6 +910,46 @@ if consumer_exists:
         fail(
             "binary-object-consumer-publication",
             f"{consumer_relative} must enter publish_unlinked_function exactly once",
+        )
+
+    scalar_lowering_pattern = re.compile(
+        r"\bfn[ \t\n]+lower_scalar_draft[ \t\n]*\([^{};]*\)"
+        r"[ \t\n]*->[^{;]+\{",
+        re.DOTALL,
+    )
+    scalar_lowering_code, _, _ = unique_braced_item(
+        consumer_code,
+        scalar_lowering_pattern,
+        "binary-object-consumer-float64",
+        "lower_scalar_draft function",
+    )
+    scalar_float_publication_pattern = re.compile(
+        r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*Float64Bits"
+        r"[ \t\n]*\([ \t\n]*bits[ \t\n]*\)[ \t\n]*=>"
+        r"[ \t\n]*\{?[ \t\n]*lower_scalar_constant[ \t\n]*\("
+        r"[ \t\n]*Value[ \t\n]*::[ \t\n]*Float[ \t\n]*\("
+        r"[ \t\n]*f64[ \t\n]*::[ \t\n]*from_bits[ \t\n]*\("
+        r"[ \t\n]*bits[ \t\n]*\)[ \t\n]*\)[ \t\n]*\)"
+        r"[ \t\n]*\}?"
+    )
+    if (
+        len(scalar_float_publication_pattern.findall(scalar_lowering_code)) != 1
+        or len(
+            re.findall(
+                r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*Float64Bits\b",
+                consumer_code,
+            )
+        ) != 1
+    ):
+        fail(
+            "binary-object-consumer-float64",
+            f"{consumer_relative} must lower its sole Float64Bits arm inside lower_scalar_draft through Value::Float(f64::from_bits(bits)) and lower_scalar_constant",
+        )
+    for match in re.finditer(r"\b(?:r#)?number[ \t\n]*\(", consumer_code):
+        fail(
+            "binary-object-consumer-float64",
+            f"{consumer_relative} must not normalize an authenticated Float64 tag through Value::number or an alias; found "
+            + location(consumer_relative, consumer_source, match.start()),
         )
 
     consumer_forbidden_patterns = (
@@ -2142,6 +2360,7 @@ printf '%s\n' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 printf '%s\n' \
     'const OP_PUSH_I32: u8 = 0x01;' \
+    'const OP_PUSH_CONST: u8 = 0x02;' \
     'const OP_UNDEFINED: u8 = 0x06;' \
     'const OP_NULL: u8 = 0x07;' \
     'const OP_PUSH_FALSE: u8 = 0x09;' \
@@ -2153,6 +2372,7 @@ printf '%s\n' \
     'const OP_PUSH_7: u8 = 0xba;' \
     'const OP_PUSH_I8: u8 = 0xbb;' \
     'const OP_PUSH_I16: u8 = 0xbc;' \
+    'const OP_PUSH_CONST8: u8 = 0xbd;' \
     'const OP_PUSH_EMPTY_STRING: u8 = 0xbf;' \
     'const OP_SET_LOC0: u8 = 0xcb;' \
     'pub(in crate::runtime) enum ScalarScriptDraft {' \
@@ -2160,8 +2380,13 @@ printf '%s\n' \
     '    Null,' \
     '    Bool(bool),' \
     '    Int(i32),' \
+    '    Float64Bits(u64),' \
     '    BigIntI32(i32),' \
     '    EmptyString,' \
+    '}' \
+    'enum ScalarPush {' \
+    '    Direct(ScalarScriptDraft),' \
+    '    Constant(u32),' \
     '}' \
     'pub(in crate::runtime) enum ScalarScriptReadError {' \
     '    Malformed(String),' \
@@ -2180,9 +2405,10 @@ printf '%s\n' \
     'pub(in crate::runtime) fn decode_trusted_scalar_script(' \
     '    bytes: &[u8],' \
     ') -> Result<ScalarScriptDraft, ScalarScriptReadError> {' \
-    '    let _ = bytes;' \
-    '    let _ = ReaderMode::QuickJsCompatible;' \
-    '    Ok(ScalarScriptDraft::Int(0))' \
+    '    let cursor = WireCursor::new(bytes, ReaderMode::QuickJsCompatible, limits)?;' \
+    '    let (cursor, image) = decode_bytecode_image_body(cursor, limits, true)?;' \
+    '    cursor.finish()?;' \
+    '    admit_image(&image)' \
     '}' \
     'fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptReadError> {' \
     '    if image.input_atom_slot_count() != 0 {' \
@@ -2194,16 +2420,53 @@ printf '%s\n' \
     '    let [function] = image.functions() else {' \
     '        return unadmitted("image does not contain exactly one FunctionBytecode record");' \
     '    };' \
-    '    if !function.constants().is_empty() {' \
-    '        return unadmitted("function constant pool is not empty");' \
-    '    }' \
     '    let envelope = function.envelope();' \
     '    let native_payload = envelope.code();' \
     '    if !native_payload.atom_relocations().is_empty() {' \
     '        return unadmitted("native payload contains atom relocations");' \
     '    }' \
-    '    let draft = ScalarScriptDraft::EmptyString;' \
+    '    let Some((scalar_push, push_width)) = decode_scalar_push(native_payload.as_bytes()) else {' \
+    '        return unadmitted("native payload opcode sequence is outside the admitted shape");' \
+    '    };' \
+    '    let _ = push_width;' \
+    '    let draft = match (scalar_push, function.constants()) {' \
+    '        (ScalarPush::Direct(draft), []) => draft,' \
+    '        (ScalarPush::Direct(_), _) => {' \
+    '            return unadmitted("direct scalar opcode carries a function constant");' \
+    '        }' \
+    '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
+    '            Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),' \
+    '            Ok(_) => return unadmitted("scalar constant is not a Float64 value"),' \
+    '            Err(_) => return unadmitted("scalar constant is not a data value"),' \
+    '        },' \
+    '        (ScalarPush::Constant(_), [_]) => {' \
+    '            return unadmitted("scalar constant opcode does not reference index zero");' \
+    '        }' \
+    '        (ScalarPush::Constant(_), _) => {' \
+    '            return unadmitted("scalar constant opcode requires exactly one function constant");' \
+    '        }' \
+    '    };' \
     '    Ok(draft)' \
+    '}' \
+    'fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> {' \
+    '    match bytes {' \
+    '        [OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN] => {' \
+    '            Some((ScalarPush::Constant(u32::from(*index)), 2))' \
+    '        }' \
+    '        [' \
+    '            OP_PUSH_CONST,' \
+    '            byte_0,' \
+    '            byte_1,' \
+    '            byte_2,' \
+    '            byte_3,' \
+    '            OP_SET_LOC0,' \
+    '            OP_RETURN,' \
+    '        ] => Some((' \
+    '            ScalarPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),' \
+    '            5,' \
+    '        )),' \
+    '        _ => decode_direct_scalar(bytes).map(|(draft, width)| (ScalarPush::Direct(draft), width)),' \
+    '    }' \
     '}' \
     > "$fixture/src/runtime/binary_object/scalar_script.rs"
 printf '%s\n' '// no alternate binary-object consumers' \
@@ -2495,6 +2758,16 @@ printf '%s\n' \
     '    let _: Option<ScalarScriptReadError> = None;' \
     '    runtime.publish_unlinked_function(realm, function)' \
     '}' \
+    'fn lower_scalar_draft(' \
+    '    draft: ScalarScriptDraft,' \
+    ') -> Result<(Instruction, Vec<UnlinkedConstant>), RuntimeError> {' \
+    '    match draft {' \
+    '        ScalarScriptDraft::Float64Bits(bits) => {' \
+    '            lower_scalar_constant(Value::Float(f64::from_bits(bits)))' \
+    '        }' \
+    '        _ => unreachable!(),' \
+    '    }' \
+    '}' \
     > "$fixture/src/runtime/binary_object_publish.rs"
 
 scan_root "$fixture" \
@@ -2680,6 +2953,10 @@ expect_rejected consumer-heap-type binary-object-consumer-heap-type \
 expect_rejected consumer-root-forge binary-object-consumer-root-forge \
     src/runtime/binary_object_publish.rs \
     'fn forge(runtime: Runtime, id: FunctionBytecodeId) { let _ = FunctionBytecodeRef::from_owned_handle(runtime, id); }'
+expect_rewrite_rejected consumer-float-dead-helper-normalization binary-object-consumer-float64 \
+    src/runtime/binary_object_publish.rs \
+    $'        ScalarScriptDraft::Float64Bits(bits) => {\n            lower_scalar_constant(Value::Float(f64::from_bits(bits)))\n        }\n        _ => unreachable!(),\n    }\n}' \
+    $'        ScalarScriptDraft::Float64Bits(bits) => {\n            lower_scalar_constant(Value::number(f64::from_bits(bits)))\n        }\n        _ => unreachable!(),\n    }\n}\nfn decoy(draft: ScalarScriptDraft) {\n    match draft {\n        ScalarScriptDraft::Float64Bits(bits) => lower_scalar_constant(Value::Float(f64::from_bits(bits))),\n        _ => unreachable!(),\n    }\n}'
 expect_rewrite_rejected consumer-skips-safe-publication binary-object-consumer-publication \
     src/runtime/binary_object_publish.rs \
     '    runtime.publish_unlinked_function(realm, function)' \
@@ -2705,10 +2982,10 @@ expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shap
     src/runtime/binary_object/mod.rs \
     'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};' \
     'pub(crate) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};'
-expect_rewrite_rejected scalar-draft-extra-variant scalar-script-draft-shape \
+expect_rewrite_rejected scalar-draft-raw-c-forgery scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
-    '    EmptyString,' \
-    '    EmptyString, Float(f64),'
+    $'pub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    EmptyString,\n}' \
+    $'enum FloatDraft { Float(f64) }\nconst _FLOAT_DRAFT_FORGERY: &CStr = cr#""\npub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    EmptyString,\n}\n""#;'
 expect_rejected scalar-opcode-set-widening scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
     'const OP_PUSH_THIS: u8 = 0x08;'
@@ -2716,6 +2993,41 @@ expect_rewrite_rejected scalar-opcode-duplicate scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
     'const OP_NULL: u8 = 0x07;' \
     $'    const OP_NULL: u8 = 0xfe + 1;\nconst OP_NULL: u8 = 0x07;'
+expect_rewrite_rejected scalar-const8-index-forgery scalar-script-push-decoder \
+    src/runtime/binary_object/scalar_script.rs \
+    'ScalarPush::Constant(u32::from(*index))' \
+    'ScalarPush::Constant(0)'
+expect_rewrite_rejected scalar-fclosure8-substitution scalar-script-push-decoder \
+    src/runtime/binary_object/scalar_script.rs \
+    '[OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN]' \
+    '[0xbe, index, OP_SET_LOC0, OP_RETURN]'
+expect_rewrite_rejected scalar-constant-index-widening scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    '(ScalarPush::Constant(0), [constant])' \
+    '(ScalarPush::Constant(_), [constant])'
+expect_rewrite_rejected scalar-constant-extra-pool scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    '(ScalarPush::Constant(0), [constant])' \
+    '(ScalarPush::Constant(0), [constant, ..])'
+expect_rewrite_rejected scalar-constant-wrong-type scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    'Ok(WireValue::Float64Bits(bits))' \
+    'Ok(WireValue::Int32(bits))'
+expect_rewrite_rejected scalar-constant-wrong-type-comment-forgery scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    'Ok(WireValue::Float64Bits(bits))' \
+    'Ok(WireValue::Int32(bits)) /* WireValue::Float64Bits */'
+expect_rewrite_rejected scalar-direct-with-pool scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    '(ScalarPush::Direct(draft), [])' \
+    '(ScalarPush::Direct(draft), [_])'
+expect_rewrite_rejected scalar-constant-pairing-bypass scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    '    let draft = match (scalar_push, function.constants()) {' \
+    $'    let draft = ScalarScriptDraft::Float64Bits(0);\n    let _reviewed_pair = match (scalar_push, function.constants()) {'
+expect_rejected scalar-float-evidence-alias scalar-script-constant-pairing \
+    src/runtime/binary_object/scalar_script.rs \
+    'use WireValue::Float64Bits as AdmittedFloat;'
 expect_rewrite_rejected scalar-input-atom-slot-widening scalar-script-admission-empty-boundaries \
     src/runtime/binary_object/scalar_script.rs \
     '    if image.input_atom_slot_count() != 0 {' \
@@ -2742,8 +3054,8 @@ expect_rewrite_rejected scalar-admission-dead-envelope scalar-script-admission-e
     '    if false { let envelope = function.envelope(); }'
 expect_rewrite_rejected scalar-admission-native-payload-shadow scalar-script-admission-empty-boundaries \
     src/runtime/binary_object/scalar_script.rs \
-    '    let draft = ScalarScriptDraft::EmptyString;' \
-    '    let native_payload = envelope.code(); let draft = ScalarScriptDraft::EmptyString;'
+    '    let draft = match (scalar_push, function.constants()) {' \
+    '    let native_payload = envelope.code(); let draft = match (scalar_push, function.constants()) {'
 expect_rewrite_rejected scalar-error-missing-unadmitted scalar-script-error-shape \
     src/runtime/binary_object/scalar_script.rs \
     '    Unadmitted(String),' \
@@ -2753,8 +3065,8 @@ expect_rejected scalar-extra-visible-item scalar-script-visible-item-set \
     'pub(in crate::runtime) fn leak_image() {}'
 expect_rewrite_rejected scalar-strict-reader scalar-script-reader-mode \
     src/runtime/binary_object/scalar_script.rs \
-    '    let _ = ReaderMode::QuickJsCompatible;' \
-    '    let _ = ReaderMode::Strict;'
+    '    let cursor = WireCursor::new(bytes, ReaderMode::QuickJsCompatible, limits)?;' \
+    '    let cursor = WireCursor::new(bytes, ReaderMode::Strict, limits)?;'
 expect_rewrite_rejected image-atom-visibility-widening image-atom-visibility \
     src/runtime/binary_object/bytecode_image/atoms.rs \
     'pub(super) enum ImageAtom {' \
