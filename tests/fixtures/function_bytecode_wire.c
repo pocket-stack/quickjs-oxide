@@ -10,82 +10,135 @@ static const uint8_t expected_bytecode[] = {
     0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
 };
 
-static const uint8_t scalar_integer_prefix[] = {
+static const uint8_t scalar_prefix[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
     0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
 };
 
-static const uint8_t scalar_integer_local[] = {
+static const uint8_t scalar_local[] = {
     0x01, 0x00, 0x00, 0x00, 0x00,
 };
 
-#define SCALAR_INTEGER_MAX_CODE_SIZE 7
-#define SCALAR_INTEGER_MAX_WIRE_SIZE \
-    (sizeof(scalar_integer_prefix) + 1 + sizeof(scalar_integer_local) + \
-     SCALAR_INTEGER_MAX_CODE_SIZE)
+#define SCALAR_MAX_CODE_SIZE 7
+#define SCALAR_MAX_WIRE_SIZE \
+    (sizeof(scalar_prefix) + 1 + sizeof(scalar_local) + \
+     SCALAR_MAX_CODE_SIZE)
 
-typedef struct ScalarIntegerCase {
+typedef enum ScalarValueKind {
+    SCALAR_VALUE_NUMBER,
+    SCALAR_VALUE_UNDEFINED,
+    SCALAR_VALUE_NULL,
+    SCALAR_VALUE_BOOLEAN,
+    SCALAR_VALUE_BIGINT,
+    SCALAR_VALUE_EMPTY_STRING,
+} ScalarValueKind;
+
+typedef struct ScalarExpectation {
+    ScalarValueKind kind;
+    double number;
+    int32_t integer;
+} ScalarExpectation;
+
+#define EXPECT_NUMBER(value) \
+    { .kind = SCALAR_VALUE_NUMBER, .number = (value) }
+#define EXPECT_VALUE(value_kind, value) \
+    { .kind = (value_kind), .integer = (value) }
+
+typedef struct ScalarCase {
     const char *label;
     const char *source;
-    double expected;
+    ScalarExpectation expected;
     size_t code_size;
-    uint8_t code[SCALAR_INTEGER_MAX_CODE_SIZE];
-} ScalarIntegerCase;
+    uint8_t code[SCALAR_MAX_CODE_SIZE];
+} ScalarCase;
 
-static const ScalarIntegerCase canonical_scalar_integers[] = {
-    { "canonical-short-minus1", "-1;", -1, 3,
+static const ScalarCase canonical_scalar_integers[] = {
+    { "canonical-short-minus1", "-1;", EXPECT_NUMBER(-1), 3,
       { 0xb2, 0xcb, 0x28 } },
-    { "canonical-short-0", "0;", 0, 3,
+    { "canonical-short-0", "0;", EXPECT_NUMBER(0), 3,
       { 0xb3, 0xcb, 0x28 } },
-    { "canonical-short-1", "1;", 1, 3,
+    { "canonical-short-1", "1;", EXPECT_NUMBER(1), 3,
       { 0xb4, 0xcb, 0x28 } },
-    { "canonical-short-2", "2;", 2, 3,
+    { "canonical-short-2", "2;", EXPECT_NUMBER(2), 3,
       { 0xb5, 0xcb, 0x28 } },
-    { "canonical-short-3", "3;", 3, 3,
+    { "canonical-short-3", "3;", EXPECT_NUMBER(3), 3,
       { 0xb6, 0xcb, 0x28 } },
-    { "canonical-short-4", "4;", 4, 3,
+    { "canonical-short-4", "4;", EXPECT_NUMBER(4), 3,
       { 0xb7, 0xcb, 0x28 } },
-    { "canonical-short-5", "5;", 5, 3,
+    { "canonical-short-5", "5;", EXPECT_NUMBER(5), 3,
       { 0xb8, 0xcb, 0x28 } },
-    { "canonical-short-6", "6;", 6, 3,
+    { "canonical-short-6", "6;", EXPECT_NUMBER(6), 3,
       { 0xb9, 0xcb, 0x28 } },
-    { "canonical-short-7", "7;", 7, 3,
+    { "canonical-short-7", "7;", EXPECT_NUMBER(7), 3,
       { 0xba, 0xcb, 0x28 } },
-    { "canonical-i8-min", "-128;", -128, 4,
+    { "canonical-i8-min", "-128;", EXPECT_NUMBER(-128), 4,
       { 0xbb, 0x80, 0xcb, 0x28 } },
-    { "canonical-i8-below-short", "-2;", -2, 4,
+    { "canonical-i8-below-short", "-2;", EXPECT_NUMBER(-2), 4,
       { 0xbb, 0xfe, 0xcb, 0x28 } },
-    { "canonical-i8-above-short", "8;", 8, 4,
+    { "canonical-i8-above-short", "8;", EXPECT_NUMBER(8), 4,
       { 0xbb, 0x08, 0xcb, 0x28 } },
-    { "canonical-i8-max", "127;", 127, 4,
+    { "canonical-i8-max", "127;", EXPECT_NUMBER(127), 4,
       { 0xbb, 0x7f, 0xcb, 0x28 } },
-    { "canonical-i16-min", "-32768;", -32768, 5,
+    { "canonical-i16-min", "-32768;", EXPECT_NUMBER(-32768), 5,
       { 0xbc, 0x00, 0x80, 0xcb, 0x28 } },
-    { "canonical-i16-below-i8", "-129;", -129, 5,
+    { "canonical-i16-below-i8", "-129;", EXPECT_NUMBER(-129), 5,
       { 0xbc, 0x7f, 0xff, 0xcb, 0x28 } },
-    { "canonical-i16-above-i8", "128;", 128, 5,
+    { "canonical-i16-above-i8", "128;", EXPECT_NUMBER(128), 5,
       { 0xbc, 0x80, 0x00, 0xcb, 0x28 } },
-    { "canonical-i16-max", "32767;", 32767, 5,
+    { "canonical-i16-max", "32767;", EXPECT_NUMBER(32767), 5,
       { 0xbc, 0xff, 0x7f, 0xcb, 0x28 } },
-    { "canonical-i32-lowest-emitted", "-2147483647;", -2147483647.0, 7,
+    { "canonical-i32-lowest-emitted", "-2147483647;",
+      EXPECT_NUMBER(-2147483647.0), 7,
       { 0x01, 0x01, 0x00, 0x00, 0x80, 0xcb, 0x28 } },
-    { "canonical-i32-below-i16", "-32769;", -32769, 7,
+    { "canonical-i32-below-i16", "-32769;", EXPECT_NUMBER(-32769), 7,
       { 0x01, 0xff, 0x7f, 0xff, 0xff, 0xcb, 0x28 } },
-    { "canonical-i32-above-i16", "32768;", 32768, 7,
+    { "canonical-i32-above-i16", "32768;", EXPECT_NUMBER(32768), 7,
       { 0x01, 0x00, 0x80, 0x00, 0x00, 0xcb, 0x28 } },
-    { "canonical-i32-max", "2147483647;", 2147483647.0, 7,
+    { "canonical-i32-max", "2147483647;", EXPECT_NUMBER(2147483647.0), 7,
       { 0x01, 0xff, 0xff, 0xff, 0x7f, 0xcb, 0x28 } },
 };
 
-static const ScalarIntegerCase compatible_scalar_integers[] = {
-    { "compatible-i8-one", NULL, 1, 4,
+static const ScalarCase compatible_scalar_integers[] = {
+    { "compatible-i8-one", NULL, EXPECT_NUMBER(1), 4,
       { 0xbb, 0x01, 0xcb, 0x28 } },
-    { "compatible-i16-one", NULL, 1, 5,
+    { "compatible-i16-one", NULL, EXPECT_NUMBER(1), 5,
       { 0xbc, 0x01, 0x00, 0xcb, 0x28 } },
-    { "compatible-i32-one", NULL, 1, 7,
+    { "compatible-i32-one", NULL, EXPECT_NUMBER(1), 7,
       { 0x01, 0x01, 0x00, 0x00, 0x00, 0xcb, 0x28 } },
-    { "compatible-i32-min", NULL, -2147483648.0, 7,
+    { "compatible-i32-min", NULL, EXPECT_NUMBER(-2147483648.0), 7,
       { 0x01, 0x00, 0x00, 0x00, 0x80, 0xcb, 0x28 } },
+};
+
+static const ScalarCase canonical_scalar_values[] = {
+    { "canonical-undefined", "void 0;",
+      EXPECT_VALUE(SCALAR_VALUE_UNDEFINED, 0), 3,
+      { 0x06, 0xcb, 0x28 } },
+    { "canonical-null", "null;", EXPECT_VALUE(SCALAR_VALUE_NULL, 0), 3,
+      { 0x07, 0xcb, 0x28 } },
+    { "canonical-false", "false;", EXPECT_VALUE(SCALAR_VALUE_BOOLEAN, 0), 3,
+      { 0x09, 0xcb, 0x28 } },
+    { "canonical-true", "true;", EXPECT_VALUE(SCALAR_VALUE_BOOLEAN, 1), 3,
+      { 0x0a, 0xcb, 0x28 } },
+    { "canonical-empty-string", "\"\";",
+      EXPECT_VALUE(SCALAR_VALUE_EMPTY_STRING, 0), 3,
+      { 0xbf, 0xcb, 0x28 } },
+    { "canonical-bigint-0", "0n;", EXPECT_VALUE(SCALAR_VALUE_BIGINT, 0), 7,
+      { 0xb0, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x28 } },
+    { "canonical-bigint-minus1", "-1n;",
+      EXPECT_VALUE(SCALAR_VALUE_BIGINT, -1), 7,
+      { 0xb0, 0xff, 0xff, 0xff, 0xff, 0xcb, 0x28 } },
+    { "canonical-bigint-max", "2147483647n;",
+      EXPECT_VALUE(SCALAR_VALUE_BIGINT, INT32_MAX), 7,
+      { 0xb0, 0xff, 0xff, 0xff, 0x7f, 0xcb, 0x28 } },
+    { "canonical-bigint-lowest-emitted", "-2147483647n;",
+      EXPECT_VALUE(SCALAR_VALUE_BIGINT, -2147483647), 7,
+      { 0xb0, 0x01, 0x00, 0x00, 0x80, 0xcb, 0x28 } },
+};
+
+static const ScalarCase compatible_scalar_values[] = {
+    { "compatible-bigint-i32-min", NULL,
+      EXPECT_VALUE(SCALAR_VALUE_BIGINT, INT32_MIN), 7,
+      { 0xb0, 0x00, 0x00, 0x00, 0x80, 0xcb, 0x28 } },
 };
 
 static const uint8_t compatible_scope_next_wrap[] = {
@@ -229,15 +282,19 @@ cleanup:
     return status;
 }
 
-static int expect_read_number(const char *label,
+static int expect_read_scalar(const char *label,
                               const uint8_t *bytecode,
                               size_t bytecode_size,
-                              double expected) {
+                              ScalarExpectation expected) {
     JSRuntime *runtime = NULL;
     JSContext *context = NULL;
     JSValue loaded = JS_UNDEFINED;
     JSValue result = JS_UNDEFINED;
-    double actual = 0;
+    double actual_number = 0;
+    int actual_boolean = -1;
+    int64_t actual_integer = 0;
+    const char *actual_string = NULL;
+    size_t actual_string_length = 0;
     int status = -1;
 
     runtime = JS_NewRuntime();
@@ -254,24 +311,88 @@ static int expect_read_number(const char *label,
     loaded = JS_ReadObject(context, bytecode, bytecode_size,
                            JS_READ_OBJ_BYTECODE);
     if (JS_IsException(loaded)) {
-        report_exception(context, "compatible bytecode read failed");
+        report_exception(context, "scalar bytecode read failed");
         loaded = JS_UNDEFINED;
         goto cleanup;
     }
     result = JS_EvalFunction(context, loaded);
     loaded = JS_UNDEFINED; /* JS_EvalFunction consumes its argument. */
     if (JS_IsException(result)) {
-        report_exception(context, "compatible bytecode evaluation failed");
+        report_exception(context, "scalar bytecode evaluation failed");
         result = JS_UNDEFINED;
         goto cleanup;
     }
-    if (!JS_IsNumber(result) || JS_ToFloat64(context, &actual, result) < 0) {
-        fprintf(stderr, "%s did not evaluate to a number\n", label);
-        goto cleanup;
-    }
-    if (actual != expected) {
-        fprintf(stderr, "%s evaluated to %.17g, expected %.17g\n",
-                label, actual, expected);
+
+    switch (expected.kind) {
+    case SCALAR_VALUE_NUMBER:
+        if (!JS_IsNumber(result) ||
+            JS_ToFloat64(context, &actual_number, result) < 0) {
+            fprintf(stderr, "%s did not evaluate to a number\n", label);
+            goto cleanup;
+        }
+        if (actual_number != expected.number) {
+            fprintf(stderr, "%s evaluated to %.17g, expected %.17g\n",
+                    label, actual_number, expected.number);
+            goto cleanup;
+        }
+        break;
+    case SCALAR_VALUE_UNDEFINED:
+        if (!JS_IsUndefined(result)) {
+            fprintf(stderr, "%s did not evaluate to undefined\n", label);
+            goto cleanup;
+        }
+        break;
+    case SCALAR_VALUE_NULL:
+        if (!JS_IsNull(result)) {
+            fprintf(stderr, "%s did not evaluate to null\n", label);
+            goto cleanup;
+        }
+        break;
+    case SCALAR_VALUE_BOOLEAN:
+        if (!JS_IsBool(result)) {
+            fprintf(stderr, "%s did not evaluate to a boolean\n", label);
+            goto cleanup;
+        }
+        actual_boolean = JS_ToBool(context, result);
+        if (actual_boolean != expected.integer) {
+            fprintf(stderr, "%s evaluated to %s, expected %s\n", label,
+                    actual_boolean ? "true" : "false",
+                    expected.integer ? "true" : "false");
+            goto cleanup;
+        }
+        break;
+    case SCALAR_VALUE_BIGINT:
+        if (!JS_IsBigInt(context, result)) {
+            fprintf(stderr, "%s did not evaluate to a BigInt\n", label);
+            goto cleanup;
+        }
+        if (JS_ToBigInt64(context, &actual_integer, result) < 0) {
+            report_exception(context, "BigInt conversion failed");
+            goto cleanup;
+        }
+        if (actual_integer != expected.integer) {
+            fprintf(stderr, "%s evaluated to %lldn, expected %dn\n", label,
+                    (long long)actual_integer, expected.integer);
+            goto cleanup;
+        }
+        break;
+    case SCALAR_VALUE_EMPTY_STRING:
+        if (!JS_IsString(result)) {
+            fprintf(stderr, "%s did not evaluate to a string\n", label);
+            goto cleanup;
+        }
+        actual_string = JS_ToCStringLen(context, &actual_string_length, result);
+        if (!actual_string) {
+            report_exception(context, "string conversion failed");
+            goto cleanup;
+        }
+        if (actual_string_length != 0 || actual_string[0] != '\0') {
+            fprintf(stderr, "%s did not evaluate to the empty string\n", label);
+            goto cleanup;
+        }
+        break;
+    default:
+        fprintf(stderr, "%s has an invalid expected scalar kind\n", label);
         goto cleanup;
     }
 
@@ -279,11 +400,33 @@ static int expect_read_number(const char *label,
     for (size_t index = 0; index < bytecode_size; index++)
         printf("%02x", bytecode[index]);
     putchar('\n');
-    printf("%s-eval=%.17g\n", label, actual);
+    switch (expected.kind) {
+    case SCALAR_VALUE_NUMBER:
+        printf("%s-eval=%.17g\n", label, actual_number);
+        break;
+    case SCALAR_VALUE_UNDEFINED:
+        printf("%s-eval=undefined\n", label);
+        break;
+    case SCALAR_VALUE_NULL:
+        printf("%s-eval=null\n", label);
+        break;
+    case SCALAR_VALUE_BOOLEAN:
+        printf("%s-eval=%s\n", label,
+               actual_boolean ? "true" : "false");
+        break;
+    case SCALAR_VALUE_BIGINT:
+        printf("%s-eval=%lldn\n", label, (long long)actual_integer);
+        break;
+    case SCALAR_VALUE_EMPTY_STRING:
+        printf("%s-eval=\"\"\n", label);
+        break;
+    }
     status = 0;
 
 cleanup:
     if (context) {
+        if (actual_string)
+            JS_FreeCString(context, actual_string);
         JS_FreeValue(context, result);
         JS_FreeValue(context, loaded);
         JS_FreeContext(context);
@@ -293,37 +436,35 @@ cleanup:
     return status;
 }
 
-static int build_scalar_integer_wire(const ScalarIntegerCase *test,
-                                     uint8_t *output,
-                                     size_t output_capacity,
-                                     size_t *output_size) {
+static int build_scalar_wire(const ScalarCase *test,
+                             uint8_t *output,
+                             size_t output_capacity,
+                             size_t *output_size) {
     size_t offset = 0;
     size_t expected_size;
 
     if (test->code_size == 0 ||
-        test->code_size > SCALAR_INTEGER_MAX_CODE_SIZE)
+        test->code_size > SCALAR_MAX_CODE_SIZE)
         return -1;
-    expected_size = sizeof(scalar_integer_prefix) + 1 +
-                    sizeof(scalar_integer_local) + test->code_size;
+    expected_size = sizeof(scalar_prefix) + 1 +
+                    sizeof(scalar_local) + test->code_size;
     if (expected_size > output_capacity)
         return -1;
 
-    memcpy(output + offset, scalar_integer_prefix,
-           sizeof(scalar_integer_prefix));
-    offset += sizeof(scalar_integer_prefix);
+    memcpy(output + offset, scalar_prefix, sizeof(scalar_prefix));
+    offset += sizeof(scalar_prefix);
     output[offset++] = (uint8_t)test->code_size;
-    memcpy(output + offset, scalar_integer_local,
-           sizeof(scalar_integer_local));
-    offset += sizeof(scalar_integer_local);
+    memcpy(output + offset, scalar_local, sizeof(scalar_local));
+    offset += sizeof(scalar_local);
     memcpy(output + offset, test->code, test->code_size);
     offset += test->code_size;
     *output_size = offset;
     return 0;
 }
 
-static int expect_compiled_scalar_integer(JSContext *compile_context,
-                                          const ScalarIntegerCase *test) {
-    uint8_t expected_wire[SCALAR_INTEGER_MAX_WIRE_SIZE];
+static int expect_compiled_scalar(JSContext *compile_context,
+                                  const ScalarCase *test) {
+    uint8_t expected_wire[SCALAR_MAX_WIRE_SIZE];
     size_t expected_wire_size = 0;
     JSValue compiled = JS_UNDEFINED;
     uint8_t *bytecode = NULL;
@@ -331,15 +472,14 @@ static int expect_compiled_scalar_integer(JSContext *compile_context,
     int status = -1;
 
     if (!test->source ||
-        build_scalar_integer_wire(test, expected_wire,
-                                  sizeof(expected_wire),
-                                  &expected_wire_size)) {
+        build_scalar_wire(test, expected_wire, sizeof(expected_wire),
+                          &expected_wire_size)) {
         fprintf(stderr, "%s has an invalid oracle definition\n", test->label);
         goto cleanup;
     }
 
     compiled = JS_Eval(compile_context, test->source, strlen(test->source),
-                       "scalar-integer.js",
+                       "scalar.js",
                        JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
     if (JS_IsException(compiled)) {
         fprintf(stderr, "%s ", test->label);
@@ -367,7 +507,7 @@ static int expect_compiled_scalar_integer(JSContext *compile_context,
     for (size_t index = 0; test->source[index] != '\0'; index++)
         printf("%02x", (unsigned char)test->source[index]);
     putchar('\n');
-    if (expect_read_number(test->label, bytecode, bytecode_size,
+    if (expect_read_scalar(test->label, bytecode, bytecode_size,
                            test->expected))
         goto cleanup;
     status = 0;
@@ -379,16 +519,16 @@ cleanup:
     return status;
 }
 
-static int expect_compatible_scalar_integer(const ScalarIntegerCase *test) {
-    uint8_t wire[SCALAR_INTEGER_MAX_WIRE_SIZE];
+static int expect_compatible_scalar(const ScalarCase *test) {
+    uint8_t wire[SCALAR_MAX_WIRE_SIZE];
     size_t wire_size = 0;
 
     if (test->source ||
-        build_scalar_integer_wire(test, wire, sizeof(wire), &wire_size)) {
+        build_scalar_wire(test, wire, sizeof(wire), &wire_size)) {
         fprintf(stderr, "%s has an invalid oracle definition\n", test->label);
         return -1;
     }
-    return expect_read_number(test->label, wire, wire_size, test->expected);
+    return expect_read_scalar(test->label, wire, wire_size, test->expected);
 }
 
 int main(void) {
@@ -490,8 +630,19 @@ int main(void) {
          index < sizeof(canonical_scalar_integers) /
                  sizeof(canonical_scalar_integers[0]);
          index++) {
-        if (expect_compiled_scalar_integer(
+        if (expect_compiled_scalar(
                 compile_context, &canonical_scalar_integers[index]))
+            goto cleanup;
+    }
+    printf("canonical-scalar-value-count=%zu\n",
+           sizeof(canonical_scalar_values) /
+           sizeof(canonical_scalar_values[0]));
+    for (size_t index = 0;
+         index < sizeof(canonical_scalar_values) /
+                 sizeof(canonical_scalar_values[0]);
+         index++) {
+        if (expect_compiled_scalar(
+                compile_context, &canonical_scalar_values[index]))
             goto cleanup;
     }
     printf("compatible-scalar-integer-count=%zu\n",
@@ -501,13 +652,26 @@ int main(void) {
          index < sizeof(compatible_scalar_integers) /
                  sizeof(compatible_scalar_integers[0]);
          index++) {
-        if (expect_compatible_scalar_integer(
+        if (expect_compatible_scalar(
                 &compatible_scalar_integers[index]))
             goto cleanup;
     }
+    printf("compatible-scalar-value-count=%zu\n",
+           sizeof(compatible_scalar_values) /
+           sizeof(compatible_scalar_values[0]));
+    for (size_t index = 0;
+         index < sizeof(compatible_scalar_values) /
+                 sizeof(compatible_scalar_values[0]);
+         index++) {
+        if (expect_compatible_scalar(&compatible_scalar_values[index]))
+            goto cleanup;
+    }
 
-    if (expect_read_number("scope-next-wrap", compatible_scope_next_wrap,
-                           sizeof(compatible_scope_next_wrap), 42))
+    if (expect_read_scalar(
+            "scope-next-wrap", compatible_scope_next_wrap,
+            sizeof(compatible_scope_next_wrap),
+            (ScalarExpectation){ .kind = SCALAR_VALUE_NUMBER,
+                                 .number = 42 }))
         goto cleanup;
     memcpy(wrong_version, expected_bytecode, sizeof(wrong_version));
     wrong_version[0] = 4;

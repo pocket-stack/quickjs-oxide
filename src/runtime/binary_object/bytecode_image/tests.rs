@@ -943,6 +943,7 @@ fn decodes_the_exact_quickjs_42_function_as_non_executable_image() {
     let vector = bytes("05000c000200a80100010001000000040100000000bb2acb28");
     let image = decode_image(&vector).unwrap();
 
+    assert_eq!(image.input_atom_slot_count(), 0);
     assert!(image.atoms().is_empty());
     assert!(image.nodes().is_empty());
     assert!(image.reference_table().is_empty());
@@ -959,6 +960,18 @@ fn decodes_the_exact_quickjs_42_function_as_non_executable_image() {
         image.functions()[0].envelope().code().instructions().len(),
         3
     );
+}
+
+#[test]
+fn decoded_image_retains_non_dynamic_input_atom_slots() {
+    // One unused empty-string header atom precedes the exact QuickJS 42
+    // function. The slot remaps to a predefined atom, so it intentionally
+    // contributes no image-local dynamic string.
+    let vector = bytes("0501000c000200a80100010001000000040100000000bb2acb28");
+    let image = decode_image(&vector).unwrap();
+
+    assert_eq!(image.input_atom_slot_count(), 1);
+    assert!(image.atoms().is_empty());
 }
 
 #[test]
@@ -2474,7 +2487,7 @@ fn image_writer_requires_archived_context_for_reachable_shared_backings_only() {
         let machine = DataMachine::<ImageValue, ImageKey>::new(GRAPH_LIMITS, true).unwrap();
         super::BytecodeImage::new(
             machine.source(),
-            Box::default(),
+            super::ImageAtomSummary::new(0, Box::default()),
             nodes.into_boxed_slice(),
             Box::default(),
             Box::default(),

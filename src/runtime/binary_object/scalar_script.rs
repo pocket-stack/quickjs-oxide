@@ -19,18 +19,29 @@ use super::wire::{ReaderMode, WireCursor, WireError, WireLimits};
 const MAX_INPUT_BYTES: usize = 4096;
 
 const OP_PUSH_I32: u8 = 0x01;
+const OP_UNDEFINED: u8 = 0x06;
+const OP_NULL: u8 = 0x07;
+const OP_PUSH_FALSE: u8 = 0x09;
+const OP_PUSH_TRUE: u8 = 0x0a;
 const OP_RETURN: u8 = 0x28;
+const OP_PUSH_BIGINT_I32: u8 = 0xb0;
 const OP_PUSH_MINUS1: u8 = 0xb2;
 const OP_PUSH_0: u8 = 0xb3;
 const OP_PUSH_7: u8 = 0xba;
 const OP_PUSH_I8: u8 = 0xbb;
 const OP_PUSH_I16: u8 = 0xbc;
+const OP_PUSH_EMPTY_STRING: u8 = 0xbf;
 const OP_SET_LOC0: u8 = 0xcb;
 
 /// Runtime-independent result of the executable BC5 scalar admission cohort.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum ScalarScriptDraft {
+    Undefined,
+    Null,
+    Bool(bool),
     Int(i32),
+    BigIntI32(i32),
+    EmptyString,
 }
 
 /// Failure classes preserved across the archive/runtime publication boundary.
@@ -81,7 +92,7 @@ impl fmt::Display for ScalarScriptReadError {
 impl std::error::Error for ScalarScriptReadError {}
 
 /// Decode one complete pinned-QuickJS object and admit the branch-free direct
-/// Int32 script shape. Compatibility mode is semantic: pinned QuickJS accepts
+/// scalar script shape. Compatibility mode is semantic: pinned QuickJS accepts
 /// non-minimal ULEB values and trailing bytes, so this path must do the same.
 pub(in crate::runtime) fn decode_trusted_scalar_script(
     input: &[u8],
@@ -143,6 +154,9 @@ impl AdmissionLimits {
 }
 
 fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptReadError> {
+    if image.input_atom_slot_count() != 0 {
+        return unadmitted("input atom table is not empty");
+    }
     if !image.atoms().is_empty() {
         return unadmitted("dynamic atom table is not empty");
     }
@@ -156,6 +170,9 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     let [function] = image.functions() else {
         return unadmitted("image does not contain exactly one FunctionBytecode record");
     };
+    if !function.constants().is_empty() {
+        return unadmitted("function constant pool is not empty");
+    }
     let Some(root) = image.root().function_id() else {
         return unadmitted("root value is not FunctionBytecode");
     };
@@ -168,9 +185,6 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
         return Err(ScalarScriptReadError::Internal(
             "authenticated function root did not resolve in its source image".into(),
         ));
-    }
-    if !function.constants().is_empty() {
-        return unadmitted("function constant pool is not empty");
     }
 
     let envelope = function.envelope();
@@ -206,7 +220,7 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     let [push, set_completion, return_value] = native_payload.instructions() else {
         return unadmitted("native payload is not the three-instruction scalar shape");
     };
-    let Some((value, push_width)) = decode_direct_int32(native_payload.as_bytes()) else {
+    let Some((draft, push_width)) = decode_direct_scalar(native_payload.as_bytes()) else {
         return unadmitted("native payload opcode sequence is outside the admitted shape");
     };
     if push.offset() != 0
@@ -221,7 +235,33 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
         ));
     }
 
-    Ok(ScalarScriptDraft::Int(value))
+    Ok(draft)
+}
+
+/// Decode the release-pinned atom-free scalar opcode cohort.
+fn decode_direct_scalar(bytes: &[u8]) -> Option<(ScalarScriptDraft, u32)> {
+    match bytes {
+        [OP_UNDEFINED, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Undefined, 1)),
+        [OP_NULL, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Null, 1)),
+        [OP_PUSH_FALSE, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Bool(false), 1)),
+        [OP_PUSH_TRUE, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Bool(true), 1)),
+        [
+            OP_PUSH_BIGINT_I32,
+            byte_0,
+            byte_1,
+            byte_2,
+            byte_3,
+            OP_SET_LOC0,
+            OP_RETURN,
+        ] => Some((
+            ScalarScriptDraft::BigIntI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
+            5,
+        )),
+        [OP_PUSH_EMPTY_STRING, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::EmptyString, 1)),
+        _ => {
+            decode_direct_int32(bytes).map(|(value, width)| (ScalarScriptDraft::Int(value), width))
+        }
+    }
 }
 
 /// Decode the complete release-pinned direct Int32 opcode family.
@@ -484,6 +524,96 @@ mod tests {
     }
 
     #[test]
+    fn admits_the_direct_atom_free_scalar_primitive_cohort() {
+        let cases: &[(&[u8], ScalarScriptDraft)] = &[
+            (
+                &[OP_UNDEFINED, OP_SET_LOC0, OP_RETURN],
+                ScalarScriptDraft::Undefined,
+            ),
+            (&[OP_NULL, OP_SET_LOC0, OP_RETURN], ScalarScriptDraft::Null),
+            (
+                &[OP_PUSH_FALSE, OP_SET_LOC0, OP_RETURN],
+                ScalarScriptDraft::Bool(false),
+            ),
+            (
+                &[OP_PUSH_TRUE, OP_SET_LOC0, OP_RETURN],
+                ScalarScriptDraft::Bool(true),
+            ),
+            (
+                &[
+                    OP_PUSH_BIGINT_I32,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ],
+                ScalarScriptDraft::BigIntI32(0),
+            ),
+            (
+                &[
+                    OP_PUSH_BIGINT_I32,
+                    0xff,
+                    0xff,
+                    0xff,
+                    0xff,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ],
+                ScalarScriptDraft::BigIntI32(-1),
+            ),
+            (
+                &[
+                    OP_PUSH_BIGINT_I32,
+                    0xff,
+                    0xff,
+                    0xff,
+                    0x7f,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ],
+                ScalarScriptDraft::BigIntI32(i32::MAX),
+            ),
+            (
+                &[
+                    OP_PUSH_BIGINT_I32,
+                    0x01,
+                    0x00,
+                    0x00,
+                    0x80,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ],
+                ScalarScriptDraft::BigIntI32(-2_147_483_647),
+            ),
+            (
+                &[
+                    OP_PUSH_BIGINT_I32,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x80,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ],
+                ScalarScriptDraft::BigIntI32(i32::MIN),
+            ),
+            (
+                &[OP_PUSH_EMPTY_STRING, OP_SET_LOC0, OP_RETURN],
+                ScalarScriptDraft::EmptyString,
+            ),
+        ];
+
+        for (code, expected) in cases {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_code(code)),
+                Ok(*expected)
+            );
+        }
+    }
+
+    #[test]
     fn compatible_reader_accepts_non_minimal_fields_and_trailing_bytes() {
         let mut non_minimal = RETURN_42.to_vec();
         non_minimal.splice(8..9, [0x80, 0x00]);
@@ -516,9 +646,42 @@ mod tests {
         ));
 
         assert!(matches!(
-            decode_trusted_scalar_script(&scalar_with_code(&[0x07, OP_SET_LOC0, OP_RETURN])),
+            decode_trusted_scalar_script(&scalar_with_code(&[0x08, OP_SET_LOC0, OP_RETURN])),
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
+
+        let mut unused_atom_slot = RETURN_42.to_vec();
+        unused_atom_slot.splice(1..2, [0x01, 0x00]);
+        assert!(matches!(
+            decode_trusted_scalar_script(&unused_atom_slot),
+            Err(ScalarScriptReadError::Unadmitted(_))
+        ));
+
+        let atom_backed_empty =
+            scalar_with_code(&[0x04, 0x2f, 0x00, 0x00, 0x00, OP_SET_LOC0, OP_RETURN]);
+        assert!(matches!(
+            decode_trusted_scalar_script(&atom_backed_empty),
+            Err(ScalarScriptReadError::Unadmitted(_))
+        ));
+
+        let constant_pool_bigints: &[&[u8]] = &[
+            &[
+                0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+                0x01, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0xcb, 0x28, 0x0a, 0x05, 0x00,
+                0x00, 0x00, 0x80, 0x00,
+            ],
+            &[
+                0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+                0x01, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0x8a, 0xcb, 0x28, 0x0a, 0x05,
+                0x00, 0x00, 0x00, 0x80, 0x00,
+            ],
+        ];
+        for object in constant_pool_bigints {
+            assert!(matches!(
+                decode_trusted_scalar_script(object),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
 
         let mut unsupported_metadata = RETURN_42;
         unsupported_metadata[3] = 0x01;
@@ -628,6 +791,15 @@ mod tests {
 
     #[test]
     fn malformed_and_resource_failures_remain_distinct() {
+        assert!(matches!(
+            decode_trusted_scalar_script(&scalar_with_code(&[
+                OP_PUSH_BIGINT_I32,
+                0x00,
+                0x00,
+                0x00,
+            ])),
+            Err(ScalarScriptReadError::Malformed(_))
+        ));
         assert_eq!(
             decode_trusted_scalar_script(&RETURN_42[..RETURN_42.len() - 1]),
             Err(ScalarScriptReadError::Malformed(

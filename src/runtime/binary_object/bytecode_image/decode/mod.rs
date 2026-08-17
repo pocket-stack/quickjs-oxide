@@ -19,7 +19,7 @@ use super::budget::{
     BytecodeImageBudgetError, BytecodeImageLimits, BytecodeImageResourceKind, ModuleBudgetError,
     ModuleResourceKind,
 };
-use super::model::{BytecodeImage, ImageOpaque, ImageValue};
+use super::model::{BytecodeImage, ImageAtomSummary, ImageOpaque, ImageValue};
 use std::fmt;
 
 mod function;
@@ -303,9 +303,10 @@ where
     let function_records = functions.finish(&output)?;
     let module_records = modules.finish(&output)?;
     let parts = output.into_parts();
+    let input_atom_slot_count = atoms.raw_space().header_count();
     let image = BytecodeImage::new(
         source,
-        atoms.into_dynamic_atoms(),
+        ImageAtomSummary::new(input_atom_slot_count, atoms.into_dynamic_atoms()),
         parts.nodes,
         parts.ref_table,
         function_records,

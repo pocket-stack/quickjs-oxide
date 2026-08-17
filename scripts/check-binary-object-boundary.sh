@@ -295,12 +295,17 @@ scalar_visibility = (
 )
 scalar_draft_pattern = re.compile(
     rf"\b{scalar_visibility}[ \t\n]+enum[ \t\n]+ScalarScriptDraft[ \t\n]*\{{"
-    r"[ \t\n]*Int[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,?[ \t\n]*\}"
+    r"[ \t\n]*Undefined[ \t\n]*,"
+    r"[ \t\n]*Null[ \t\n]*,"
+    r"[ \t\n]*Bool[ \t\n]*\([ \t\n]*bool[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*Int[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*BigIntI32[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*EmptyString[ \t\n]*,?[ \t\n]*\}"
 )
 if len(scalar_draft_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-draft-shape",
-        "ScalarScriptDraft must be runtime-visible only and contain exactly Int(i32)",
+        "ScalarScriptDraft must be runtime-visible only and contain exactly Undefined, Null, Bool(bool), Int(i32), BigIntI32(i32), and EmptyString",
     )
 
 scalar_error_pattern = re.compile(
@@ -331,28 +336,41 @@ if len(scalar_decode_pattern.findall(scalar_script_code)) != 1:
         "decode_trusted_scalar_script must be the reviewed &[u8] to scalar draft facade",
     )
 
-scalar_opcode_constants = {
-    name: int(raw, 16)
-    for name, raw in re.findall(
-        r"(?m)^const[ \t]+(OP_[A-Z0-9_]+)[ \t]*:[ \t]*u8[ \t]*=[ \t]*(0x[0-9a-fA-F]+)[ \t]*;[ \t]*$",
-        scalar_script_code,
-    )
-}
+scalar_opcode_declarations = re.findall(
+    r"(?m)^[ \t]*const[ \t]+(OP_[A-Z0-9_]+)\b",
+    scalar_script_code,
+)
+scalar_opcode_entries = re.findall(
+    r"(?m)^[ \t]*const[ \t]+(OP_[A-Z0-9_]+)[ \t]*:[ \t]*u8[ \t]*=[ \t]*(0x[0-9a-fA-F]+)[ \t]*;[ \t]*$",
+    scalar_script_code,
+)
+scalar_opcode_constants = {name: int(raw, 16) for name, raw in scalar_opcode_entries}
 expected_scalar_opcode_constants = {
     "OP_PUSH_I32": 0x01,
+    "OP_UNDEFINED": 0x06,
+    "OP_NULL": 0x07,
+    "OP_PUSH_FALSE": 0x09,
+    "OP_PUSH_TRUE": 0x0A,
     "OP_RETURN": 0x28,
+    "OP_PUSH_BIGINT_I32": 0xB0,
     "OP_PUSH_MINUS1": 0xB2,
     "OP_PUSH_0": 0xB3,
     "OP_PUSH_7": 0xBA,
     "OP_PUSH_I8": 0xBB,
     "OP_PUSH_I16": 0xBC,
+    "OP_PUSH_EMPTY_STRING": 0xBF,
     "OP_SET_LOC0": 0xCB,
 }
-if scalar_opcode_constants != expected_scalar_opcode_constants:
+if (
+    sorted(scalar_opcode_declarations) != sorted(expected_scalar_opcode_constants)
+    or len(scalar_opcode_declarations) != len(expected_scalar_opcode_constants)
+    or len(scalar_opcode_entries) != len(expected_scalar_opcode_constants)
+    or scalar_opcode_constants != expected_scalar_opcode_constants
+):
     fail(
         "scalar-script-opcode-set",
-        "scalar-script admission must retain exactly the reviewed direct Int32, set_loc0, and return opcode identities; "
-        f"found {scalar_opcode_constants}",
+        "scalar-script admission must define each reviewed atom-free scalar push, direct Int32 family, set_loc0, and return opcode exactly once; "
+        f"found declarations {scalar_opcode_declarations} and exact entries {scalar_opcode_entries}",
     )
 
 scalar_visible_item_pattern = re.compile(
@@ -402,6 +420,238 @@ for match in re.finditer(r"\bReaderMode[ \t\n]*::[ \t\n]*Strict\b", scalar_scrip
         "scalar-script admission must not use Strict or Strict-plus-fallback; found "
         + location(scalar_script_relative, scalar_script_source, match.start()),
     )
+
+scalar_admission_item_pattern = re.compile(
+    r"\bfn[ \t\n]+admit_image[ \t\n]*\([^{};]*\)"
+    r"[ \t\n]*->[^{;]+\{",
+    re.DOTALL,
+)
+scalar_admission_items = list(scalar_admission_item_pattern.finditer(scalar_script_code))
+scalar_admission_code = ""
+if len(scalar_admission_items) != 1:
+    fail(
+        "scalar-script-admission-empty-boundaries",
+        "scalar_script.rs must contain exactly one private admit_image function",
+    )
+else:
+    admission_item = scalar_admission_items[0]
+    open_offset = admission_item.end() - 1
+    depth = 0
+    close_offset = None
+    for offset in range(open_offset, len(scalar_script_code)):
+        character = scalar_script_code[offset]
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                close_offset = offset + 1
+                break
+    if close_offset is None:
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "scalar_script.rs admit_image function has no balanced closing brace",
+        )
+    else:
+        scalar_admission_code = scalar_script_code[admission_item.start():close_offset]
+
+scalar_admission_empty_boundaries = (
+    (
+        "the original input atom-slot count",
+        re.compile(
+            r"\bif[ \t\n]+image[ \t\n]*\.[ \t\n]*input_atom_slot_count"
+            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*!=[ \t\n]*0[ \t\n]*\{"
+            r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
+            r"[ \t\n]*;[ \t\n]*\}"
+        ),
+        re.compile(
+            r"\bimage[ \t\n]*\.[ \t\n]*input_atom_slot_count"
+            r"[ \t\n]*\([ \t\n]*\)"
+        ),
+    ),
+    (
+        "the semantic dynamic-atom table",
+        re.compile(
+            r"\bif[ \t\n]+![ \t\n]*image[ \t\n]*\.[ \t\n]*atoms"
+            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty"
+            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\{"
+            r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
+            r"[ \t\n]*;[ \t\n]*\}"
+        ),
+        re.compile(
+            r"\bimage[ \t\n]*\.[ \t\n]*atoms[ \t\n]*\([ \t\n]*\)"
+        ),
+    ),
+    (
+        "the input function constant pool",
+        re.compile(
+            r"\bif[ \t\n]+![ \t\n]*function[ \t\n]*\.[ \t\n]*constants"
+            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty"
+            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\{"
+            r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
+            r"[ \t\n]*;[ \t\n]*\}"
+        ),
+        re.compile(
+            r"\bfunction[ \t\n]*\.[ \t\n]*constants[ \t\n]*\([ \t\n]*\)"
+        ),
+    ),
+    (
+        "the native payload atom-relocation table",
+        re.compile(
+            r"\bif[ \t\n]+![ \t\n]*native_payload[ \t\n]*\.[ \t\n]*atom_relocations"
+            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty"
+            r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\{"
+            r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
+            r"[ \t\n]*;[ \t\n]*\}"
+        ),
+        re.compile(
+            r"\bnative_payload[ \t\n]*\.[ \t\n]*atom_relocations"
+            r"[ \t\n]*\([ \t\n]*\)"
+        ),
+    ),
+)
+if scalar_admission_code:
+    scalar_admission_prefix_pattern = re.compile(
+        r"\Afn[ \t\n]+admit_image[ \t\n]*\([ \t\n]*image[ \t\n]*:"
+        r"[ \t\n]*&[ \t\n]*BytecodeImage[ \t\n]*\)[ \t\n]*->"
+        r"[ \t\n]*Result[ \t\n]*<[ \t\n]*ScalarScriptDraft[ \t\n]*,"
+        r"[ \t\n]*ScalarScriptReadError[ \t\n]*>[ \t\n]*\{"
+        r"[ \t\n]*if[ \t\n]+image[ \t\n]*\.[ \t\n]*input_atom_slot_count"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*!=[ \t\n]*0[ \t\n]*\{"
+        r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
+        r"[ \t\n]*;[ \t\n]*\}"
+        r"[ \t\n]*if[ \t\n]+![ \t\n]*image[ \t\n]*\.[ \t\n]*atoms"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\{"
+        r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
+        r"[ \t\n]*;[ \t\n]*\}"
+    )
+    if not scalar_admission_prefix_pattern.search(scalar_admission_code):
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "admit_image must begin with the exact input atom-slot and semantic atom-table rejection guards",
+        )
+
+    scalar_function_guard_pattern = re.compile(
+        r"\blet[ \t\n]*\[[ \t\n]*function[ \t\n]*\][ \t\n]*="
+        r"[ \t\n]*image[ \t\n]*\.[ \t\n]*functions[ \t\n]*\([ \t\n]*\)"
+        r"[ \t\n]*else[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}[ \t\n]*;"
+        r"[ \t\n]*if[ \t\n]+![ \t\n]*function[ \t\n]*\.[ \t\n]*constants"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\{"
+        r"[ \t\n]*return[ \t\n]+unadmitted[ \t\n]*\([ \t\n]*\)"
+        r"[ \t\n]*;[ \t\n]*\}"
+    )
+    if len(scalar_function_guard_pattern.findall(scalar_admission_code)) != 1:
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "admit_image must reject the input constant pool immediately after binding its unique decoded function",
+        )
+
+    scalar_native_guard_pattern = re.compile(
+        r"\blet[ \t\n]+native_payload[ \t\n]*=[ \t\n]*envelope"
+        r"[ \t\n]*\.[ \t\n]*code[ \t\n]*\([ \t\n]*\)[ \t\n]*;"
+        r"[ \t\n]*if[ \t\n]+![ \t\n]*native_payload[ \t\n]*\."
+        r"[ \t\n]*atom_relocations[ \t\n]*\([ \t\n]*\)"
+        r"[ \t\n]*\.[ \t\n]*is_empty[ \t\n]*\([ \t\n]*\)"
+        r"[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
+        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}"
+    )
+    scalar_native_guard_matches = list(
+        scalar_native_guard_pattern.finditer(scalar_admission_code)
+    )
+    if len(scalar_native_guard_matches) != 1:
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "admit_image must reject atom relocations immediately after binding the decoded native payload",
+        )
+
+    scalar_envelope_binding_pattern = re.compile(
+        r"\blet[ \t\n]+envelope[ \t\n]*=[ \t\n]*function"
+        r"[ \t\n]*\.[ \t\n]*envelope[ \t\n]*\([ \t\n]*\)[ \t\n]*;"
+    )
+    scalar_envelope_binding_matches = list(
+        scalar_envelope_binding_pattern.finditer(scalar_admission_code)
+    )
+    envelope_binding_is_direct_and_ordered = False
+    if len(scalar_envelope_binding_matches) == 1 and len(scalar_native_guard_matches) == 1:
+        envelope_match = scalar_envelope_binding_matches[0]
+        envelope_prefix = scalar_admission_code[:envelope_match.start()]
+        envelope_binding_is_direct_and_ordered = (
+            envelope_prefix.count("{") - envelope_prefix.count("}") == 1
+            and envelope_match.end() < scalar_native_guard_matches[0].start()
+        )
+    if not envelope_binding_is_direct_and_ordered:
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "admit_image must bind the checked envelope once at function scope, directly from the unique decoded function and before the native payload",
+        )
+
+    reviewed_binding_counts = {
+        "function": 0,
+        "envelope": 0,
+        "native_payload": 0,
+    }
+    for binding_match in re.finditer(
+        r"\blet\b(?P<pattern>[^=;]+)=", scalar_admission_code
+    ):
+        binding_pattern = binding_match.group("pattern")
+        for binding_name in reviewed_binding_counts:
+            reviewed_binding_counts[binding_name] += len(
+                re.findall(rf"\b{binding_name}\b", binding_pattern)
+            )
+    if reviewed_binding_counts != {
+        "function": 1,
+        "envelope": 1,
+        "native_payload": 1,
+    }:
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "admit_image must bind function, envelope, and native_payload exactly once; "
+            f"found {reviewed_binding_counts}",
+        )
+
+    if re.search(r"\blet[ \t\n]+(?:mut[ \t\n]+)?image\b", scalar_admission_code):
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "admit_image must not shadow its authenticated image receiver",
+        )
+
+    allowed_return_pattern = re.compile(
+        r"\breturn[ \t\n]+(?:unadmitted|Err)[ \t\n]*\("
+    )
+    for return_match in re.finditer(r"\breturn\b", scalar_admission_code):
+        if allowed_return_pattern.match(scalar_admission_code, return_match.start()) is None:
+            fail(
+                "scalar-script-admission-empty-boundaries",
+                "admit_image may return early only through the reviewed unadmitted or internal-error paths",
+            )
+
+    success_matches = list(re.finditer(r"\bOk[ \t\n]*\(", scalar_admission_code))
+    if len(success_matches) != 1 or re.search(
+        r"\bOk[ \t\n]*\([ \t\n]*draft[ \t\n]*\)[ \t\n]*\}[ \t\n]*\Z",
+        scalar_admission_code,
+    ) is None:
+        fail(
+            "scalar-script-admission-empty-boundaries",
+            "admit_image must have exactly one successful exit: the final Ok(draft)",
+        )
+
+    for description, statement_pattern, call_pattern in scalar_admission_empty_boundaries:
+        statement_matches = list(statement_pattern.finditer(scalar_admission_code))
+        call_matches = list(call_pattern.finditer(scalar_script_code))
+        direct_statement = False
+        if len(statement_matches) == 1:
+            statement_offset = statement_matches[0].start()
+            prefix = scalar_admission_code[:statement_offset]
+            direct_statement = prefix.count("{") - prefix.count("}") == 1
+        if len(statement_matches) != 1 or len(call_matches) != 1 or not direct_statement:
+            fail(
+                "scalar-script-admission-empty-boundaries",
+                "admit_image must directly and exactly once reject a non-empty "
+                f"{description}",
+            )
 
 consumer_relative = "src/runtime/binary_object_publish.rs"
 consumer_path = root / consumer_relative
@@ -514,6 +764,16 @@ if consumer_exists:
                 r"[ \t\n]*(?:from_owned_handle|from_borrowed_handle)\b"
             ),
             "a direct FunctionBytecodeRef constructor",
+        ),
+        (
+            "binary-object-consumer-atom-string",
+            re.compile(r"\batom_string\b"),
+            "the atom_string identifier, including through an alias",
+        ),
+        (
+            "binary-object-consumer-atom-interning",
+            re.compile(r"\bintern(?:_[A-Za-z0-9_]+)?\b"),
+            "an atom-interning identifier",
         ),
         (
             "binary-object-consumer-vm-dependency",
@@ -1882,15 +2142,26 @@ printf '%s\n' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 printf '%s\n' \
     'const OP_PUSH_I32: u8 = 0x01;' \
+    'const OP_UNDEFINED: u8 = 0x06;' \
+    'const OP_NULL: u8 = 0x07;' \
+    'const OP_PUSH_FALSE: u8 = 0x09;' \
+    'const OP_PUSH_TRUE: u8 = 0x0a;' \
     'const OP_RETURN: u8 = 0x28;' \
+    'const OP_PUSH_BIGINT_I32: u8 = 0xb0;' \
     'const OP_PUSH_MINUS1: u8 = 0xb2;' \
     'const OP_PUSH_0: u8 = 0xb3;' \
     'const OP_PUSH_7: u8 = 0xba;' \
     'const OP_PUSH_I8: u8 = 0xbb;' \
     'const OP_PUSH_I16: u8 = 0xbc;' \
+    'const OP_PUSH_EMPTY_STRING: u8 = 0xbf;' \
     'const OP_SET_LOC0: u8 = 0xcb;' \
     'pub(in crate::runtime) enum ScalarScriptDraft {' \
+    '    Undefined,' \
+    '    Null,' \
+    '    Bool(bool),' \
     '    Int(i32),' \
+    '    BigIntI32(i32),' \
+    '    EmptyString,' \
     '}' \
     'pub(in crate::runtime) enum ScalarScriptReadError {' \
     '    Malformed(String),' \
@@ -1912,6 +2183,27 @@ printf '%s\n' \
     '    let _ = bytes;' \
     '    let _ = ReaderMode::QuickJsCompatible;' \
     '    Ok(ScalarScriptDraft::Int(0))' \
+    '}' \
+    'fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptReadError> {' \
+    '    if image.input_atom_slot_count() != 0 {' \
+    '        return unadmitted("input atom table is not empty");' \
+    '    }' \
+    '    if !image.atoms().is_empty() {' \
+    '        return unadmitted("dynamic atom table is not empty");' \
+    '    }' \
+    '    let [function] = image.functions() else {' \
+    '        return unadmitted("image does not contain exactly one FunctionBytecode record");' \
+    '    };' \
+    '    if !function.constants().is_empty() {' \
+    '        return unadmitted("function constant pool is not empty");' \
+    '    }' \
+    '    let envelope = function.envelope();' \
+    '    let native_payload = envelope.code();' \
+    '    if !native_payload.atom_relocations().is_empty() {' \
+    '        return unadmitted("native payload contains atom relocations");' \
+    '    }' \
+    '    let draft = ScalarScriptDraft::EmptyString;' \
+    '    Ok(draft)' \
     '}' \
     > "$fixture/src/runtime/binary_object/scalar_script.rs"
 printf '%s\n' '// no alternate binary-object consumers' \
@@ -2367,6 +2659,15 @@ expect_rejected second-scalar-facade-consumer scalar-script-consumer-set \
 expect_rejected consumer-codec-import binary-object-consumer-import \
     src/runtime/binary_object_publish.rs \
     'use super::binary_object::BytecodeImage;'
+expect_rejected consumer-atom-string binary-object-consumer-atom-string \
+    src/runtime/binary_object_publish.rs \
+    'fn atom_constant(value: JsString) { let _ = UnlinkedConstant::atom_string(value); }'
+expect_rejected consumer-atom-string-alias binary-object-consumer-atom-string \
+    src/runtime/binary_object_publish.rs \
+    'type C = UnlinkedConstant; fn aliased_atom_constant(value: JsString) { let _ = C::atom_string(value); }'
+expect_rejected consumer-atom-interning binary-object-consumer-atom-interning \
+    src/runtime/binary_object_publish.rs \
+    'fn intern_directly(runtime: &Runtime) { let _ = runtime.intern_property_key("forbidden"); }'
 expect_rejected consumer-verifier-bypass binary-object-consumer-verifier-bypass \
     src/runtime/binary_object_publish.rs \
     'fn bypass(runtime: &Runtime) { runtime.publish_verified_unlinked_function(realm, function); }'
@@ -2406,11 +2707,43 @@ expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shap
     'pub(crate) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};'
 expect_rewrite_rejected scalar-draft-extra-variant scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
-    '    Int(i32),' \
-    '    Int(i32), Bool(bool),'
+    '    EmptyString,' \
+    '    EmptyString, Float(f64),'
 expect_rejected scalar-opcode-set-widening scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
-    'const OP_PUSH_NULL: u8 = 0x07;'
+    'const OP_PUSH_THIS: u8 = 0x08;'
+expect_rewrite_rejected scalar-opcode-duplicate scalar-script-opcode-set \
+    src/runtime/binary_object/scalar_script.rs \
+    'const OP_NULL: u8 = 0x07;' \
+    $'    const OP_NULL: u8 = 0xfe + 1;\nconst OP_NULL: u8 = 0x07;'
+expect_rewrite_rejected scalar-input-atom-slot-widening scalar-script-admission-empty-boundaries \
+    src/runtime/binary_object/scalar_script.rs \
+    '    if image.input_atom_slot_count() != 0 {' \
+    '    if image.input_atom_slot_count() != 1 {'
+expect_rewrite_rejected scalar-input-atom-slot-comment-forgery scalar-script-admission-empty-boundaries \
+    src/runtime/binary_object/scalar_script.rs \
+    '    if image.input_atom_slot_count() != 0 {' \
+    '    if false { /* image.input_atom_slot_count() != 0 */'
+expect_rewrite_rejected scalar-admission-early-success scalar-script-admission-empty-boundaries \
+    src/runtime/binary_object/scalar_script.rs \
+    '    if image.input_atom_slot_count() != 0 {' \
+    '    return Ok(ScalarScriptDraft::EmptyString); if image.input_atom_slot_count() != 0 {'
+expect_rewrite_rejected scalar-admission-image-shadow scalar-script-admission-empty-boundaries \
+    src/runtime/binary_object/scalar_script.rs \
+    '    if image.input_atom_slot_count() != 0 {' \
+    '    let image = image; if image.input_atom_slot_count() != 0 {'
+expect_rewrite_rejected scalar-admission-envelope-shadow scalar-script-admission-empty-boundaries \
+    src/runtime/binary_object/scalar_script.rs \
+    '    let native_payload = envelope.code();' \
+    '    let envelope = function.envelope(); let native_payload = envelope.code();'
+expect_rewrite_rejected scalar-admission-dead-envelope scalar-script-admission-empty-boundaries \
+    src/runtime/binary_object/scalar_script.rs \
+    '    let envelope = function.envelope();' \
+    '    if false { let envelope = function.envelope(); }'
+expect_rewrite_rejected scalar-admission-native-payload-shadow scalar-script-admission-empty-boundaries \
+    src/runtime/binary_object/scalar_script.rs \
+    '    let draft = ScalarScriptDraft::EmptyString;' \
+    '    let native_payload = envelope.code(); let draft = ScalarScriptDraft::EmptyString;'
 expect_rewrite_rejected scalar-error-missing-unadmitted scalar-script-error-shape \
     src/runtime/binary_object/scalar_script.rs \
     '    Unadmitted(String),' \

@@ -778,11 +778,27 @@ impl ModuleRecord {
     }
 }
 
+/// Completed atom-table evidence retained by a whole decoded image.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ImageAtomSummary {
+    input_slot_count: u32,
+    dynamic: Box<[WireString]>,
+}
+
+impl ImageAtomSummary {
+    pub(super) const fn new(input_slot_count: u32, dynamic: Box<[WireString]>) -> Self {
+        Self {
+            input_slot_count,
+            dynamic,
+        }
+    }
+}
+
 /// Complete, heap-independent, and deliberately non-executable BC5 image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) struct BytecodeImage {
     source: MachineSource,
-    atoms: Box<[WireString]>,
+    atoms: ImageAtomSummary,
     nodes: Box<[ImageNode]>,
     ref_table: Box<[NodeId]>,
     functions: Box<[FunctionRecord]>,
@@ -793,7 +809,7 @@ pub(in crate::runtime) struct BytecodeImage {
 impl BytecodeImage {
     pub(super) const fn new(
         source: MachineSource,
-        atoms: Box<[WireString]>,
+        atoms: ImageAtomSummary,
         nodes: Box<[ImageNode]>,
         ref_table: Box<[NodeId]>,
         functions: Box<[FunctionRecord]>,
@@ -811,10 +827,16 @@ impl BytecodeImage {
         }
     }
 
+    /// Return the number of raw atom slots declared by the input BC5 header.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn input_atom_slot_count(&self) -> u32 {
+        self.atoms.input_slot_count
+    }
+
     /// Return the image-local dynamic strings indexed by `ImageAtom::Dynamic`.
     #[must_use]
     pub(in crate::runtime) const fn atoms(&self) -> &[WireString] {
-        &self.atoms
+        &self.atoms.dynamic
     }
 
     #[must_use]

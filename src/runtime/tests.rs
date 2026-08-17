@@ -110,6 +110,57 @@ fn trusted_quickjs_scalar_script_executes_the_full_direct_int32_family() {
 }
 
 #[test]
+fn trusted_quickjs_scalar_script_executes_direct_atom_free_primitives() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline_functions = runtime.heap_counts().function_bytecode_nodes;
+    let baseline_atoms = runtime.test_atom_count();
+    let mut functions = Vec::new();
+    let cases = vec![
+        (vec![0x06, 0xcb, 0x28], Value::Undefined),
+        (vec![0x07, 0xcb, 0x28], Value::Null),
+        (vec![0x09, 0xcb, 0x28], Value::Bool(false)),
+        (vec![0x0a, 0xcb, 0x28], Value::Bool(true)),
+        (
+            vec![0xb0, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x28],
+            Value::BigInt(JsBigInt::zero()),
+        ),
+        (
+            vec![0xb0, 0xff, 0xff, 0xff, 0xff, 0xcb, 0x28],
+            Value::BigInt(JsBigInt::from(-1)),
+        ),
+        (
+            vec![0xb0, 0xff, 0xff, 0xff, 0x7f, 0xcb, 0x28],
+            Value::BigInt(JsBigInt::from(i32::MAX)),
+        ),
+        (
+            vec![0xb0, 0x01, 0x00, 0x00, 0x80, 0xcb, 0x28],
+            Value::BigInt(JsBigInt::from(-2_147_483_647)),
+        ),
+        (
+            vec![0xb0, 0x00, 0x00, 0x00, 0x80, 0xcb, 0x28],
+            Value::BigInt(JsBigInt::from(i32::MIN)),
+        ),
+        (
+            vec![0xbf, 0xcb, 0x28],
+            Value::String(JsString::from_static("")),
+        ),
+    ];
+
+    for (code, expected) in &cases {
+        let image = quickjs_scalar_with_code(code);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        assert_eq!(context.execute(&function).unwrap(), expected.clone());
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+        functions.push(function);
+    }
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline_functions + cases.len()
+    );
+}
+
+#[test]
 fn trusted_quickjs_scalar_script_accepts_compatible_wire_spellings() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -153,15 +204,31 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
     assert!(!context.has_exception());
     assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
 
-    let RuntimeError::Engine(error) = context
-        .read_trusted_scalar_script(&quickjs_scalar_with_code(&[0x07, 0xcb, 0x28]))
-        .unwrap_err()
-    else {
-        panic!("valid null scalar Script did not preserve the admission frontier");
-    };
-    assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert!(!context.has_exception());
-    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+    let mut unused_atom_slot = QUICKJS_SCALAR_42_BC5.to_vec();
+    unused_atom_slot.splice(1..2, [0x01, 0x00]);
+    let well_formed_unadmitted = [
+        (
+            "push_this scalar Script",
+            quickjs_scalar_with_code(&[0x08, 0xcb, 0x28]),
+        ),
+        (
+            "atom-backed empty-string scalar Script",
+            quickjs_scalar_with_code(&[0x04, 0x2f, 0x00, 0x00, 0x00, 0xcb, 0x28]),
+        ),
+        (
+            "scalar Script with an unused input atom slot",
+            unused_atom_slot,
+        ),
+    ];
+    for (label, image) in well_formed_unadmitted {
+        let RuntimeError::Engine(error) = context.read_trusted_scalar_script(&image).unwrap_err()
+        else {
+            panic!("valid {label} did not preserve the admission frontier");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(!context.has_exception());
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+    }
 
     let mut wrapping_scope_link = QUICKJS_SCALAR_42_BC5.to_vec();
     wrapping_scope_link.splice(18..19, [0x80, 0x80, 0x80, 0x80, 0x08]);
