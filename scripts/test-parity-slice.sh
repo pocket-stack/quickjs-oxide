@@ -8,6 +8,8 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 cd -- "$root"
 
+./scripts/check-binary-object-boundary.sh
+
 oracle=${QJS_ORACLE:-}
 if [[ -z "$oracle" ]]; then
     oracle=$($script_dir/build-quickjs-oracle.sh)

@@ -184,6 +184,12 @@ references, or resource accounting. A complete encoded-size proof precedes
 the final bounded little-endian emission; failed authentication never returns
 a partial buffer. This remains an internal archival codec, not an execution or
 public bytecode-loading path.
+The decoder and writer planner are physically split into shared-driver,
+Function, and Module files while retaining one frame/task stack and one set of
+atom, reference, preorder, and budget state. All binary-object submodules are
+private. A self-testing architecture gate rejects VM/compiler and executable
+bytecode dependencies, runtime consumers, crate-surface exports, and widened
+module visibility before fast CI or the parity slice can proceed.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
 the Rust prefix codec against the exact bytes. A second authenticated 110-byte
