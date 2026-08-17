@@ -17,6 +17,9 @@ use super::super::wire::WireString;
 use super::decode::{AuthenticatedFunction, AuthenticatedModule};
 use super::{ImageAtom, ImageKey};
 
+/// QuickJS 2026-06-04's release-pinned atom identity for `<eval>`.
+const PINNED_EVAL_ATOM_RAW: u32 = 84;
+
 /// Zero-based identity of one [`FunctionRecord`] in a complete image.
 ///
 /// Construction consumes a decoder-private [`AuthenticatedFunction`] proof
@@ -303,6 +306,15 @@ impl ImageLocalVariable {
         self.name
     }
 
+    /// Whether this local carries QuickJS's atom-zero sentinel as its name.
+    ///
+    /// Scalar admission needs only this fact, not the image-private atom
+    /// representation or a way to reconstruct it.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn name_is_null(&self) -> bool {
+        matches!(self.name, ImageAtom::Null)
+    }
+
     #[must_use]
     pub(in crate::runtime) const fn scope_next(&self) -> ScopeLink {
         self.scope_next
@@ -451,6 +463,18 @@ impl ImageFunctionEnvelope {
     #[must_use]
     pub(super) const fn name(&self) -> ImageAtom {
         self.name
+    }
+
+    /// Whether this record names the pinned QuickJS `<eval>` atom.
+    ///
+    /// Keep the raw atom identity sealed inside the image model: scalar
+    /// admission receives only the exact-shape predicate it requires.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn name_is_pinned_eval(&self) -> bool {
+        match self.name {
+            ImageAtom::Predefined(atom) => atom.raw() == PINNED_EVAL_ATOM_RAW,
+            ImageAtom::Null | ImageAtom::Index(_) | ImageAtom::Dynamic(_) => false,
+        }
     }
 
     #[must_use]

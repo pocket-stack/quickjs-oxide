@@ -46,6 +46,9 @@ def blank(text: str) -> str:
     return "".join("\n" if character == "\n" else " " for character in text)
 
 
+raw_string_prefix = re.compile(r'(?:br|rb|r)(?P<hashes>#{0,255})"')
+
+
 def rust_code_only(source: str) -> str:
     """Remove comments and strings while retaining offsets and line numbers."""
     output: list[str] = []
@@ -76,11 +79,14 @@ def rust_code_only(source: str) -> str:
             output.append(blank(source[start:index]))
             continue
 
-        raw = re.match(r'(?:br|rb|r)(?P<hashes>#{0,255})"', source[index:])
+        # Match against the original buffer at an absolute offset. Slicing the
+        # entire remaining source at every byte turns large-file scans into an
+        # accidental quadratic operation.
+        raw = raw_string_prefix.match(source, index)
         if raw is not None:
             start = index
             hashes = raw.group("hashes")
-            index += raw.end()
+            index = raw.end()
             terminator = '"' + hashes
             end = source.find(terminator, index)
             index = length if end < 0 else end + len(terminator)
@@ -160,6 +166,7 @@ expected_root_modules = (
     "pinned_atoms",
     "pinned_opcodes",
     "read_cursor",
+    "scalar_script",
     "wire",
 )
 for module in expected_root_modules:
@@ -172,6 +179,17 @@ for module in expected_root_modules:
             "root-private-module",
             f"{binary_root_relative} must contain exactly one private `mod {module};` declaration",
         )
+
+root_module_declarations = re.findall(
+    r"(?m)^[ \t]*mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*;[ \t]*$",
+    binary_root_code,
+)
+if sorted(root_module_declarations) != sorted(expected_root_modules):
+    fail(
+        "root-private-module-set",
+        f"{binary_root_relative} must contain only the reviewed private module set; "
+        f"found {root_module_declarations}",
+    )
 
 public_module_pattern = re.compile(
     r"(?m)^[ \t]*pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+mod[ \t\n]+[A-Za-z_][A-Za-z0-9_]*"
@@ -186,10 +204,45 @@ for match in public_module_pattern.finditer(binary_root_code):
 public_use_pattern = re.compile(
     r"(?m)^[ \t]*pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+use\b"
 )
+scalar_facade_pattern = re.compile(
+    r"(?m)^[ \t]*pub[ \t\n]*\([ \t\n]*super[ \t\n]*\)[ \t\n]+use"
+    r"[ \t\n]+scalar_script[ \t\n]*::[ \t\n]*\{(?P<body>[^{}]*)\}"
+    r"[ \t\n]*;"
+)
+scalar_facades = list(scalar_facade_pattern.finditer(binary_root_code))
+expected_scalar_facade_names = {
+    "ScalarScriptDraft",
+    "ScalarScriptReadError",
+    "decode_trusted_scalar_script",
+}
+facade_names: set[str] = set()
+if len(scalar_facades) == 1:
+    facade_items = [
+        item.strip() for item in scalar_facades[0].group("body").split(",") if item.strip()
+    ]
+    facade_names = set(facade_items)
+    if (
+        len(facade_items) != len(expected_scalar_facade_names)
+        or facade_names != expected_scalar_facade_names
+    ):
+        fail(
+            "scalar-script-facade-shape",
+            "binary_object must expose exactly the reviewed scalar-script facade names; "
+            f"found {facade_items}",
+        )
+else:
+    fail(
+        "scalar-script-facade-shape",
+        "binary_object must contain exactly one private-parent scalar-script facade re-export",
+    )
+
+facade_offsets = {match.start() for match in scalar_facades}
 for match in public_use_pattern.finditer(binary_root_code):
+    if match.start() in facade_offsets:
+        continue
     fail(
         "root-reexport",
-        "binary_object root must not re-export codec internals; found "
+        "binary_object root may re-export only the reviewed scalar-script facade; found "
         + location(binary_root_relative, binary_root_source, match.start()),
     )
 
@@ -219,6 +272,311 @@ if binary_root.is_symlink() or not binary_root.is_dir():
     binary_sources: list[Path] = []
 else:
     binary_sources = sorted(binary_root.rglob("*.rs"))
+
+# This scanner intentionally cross-checks the same codec identifiers in many
+# independent invariants. Strip each source once: rust_code_only walks a file
+# byte-by-byte, so recomputing it in every invariant makes the public gate
+# quadratic in the number of checks and needlessly expensive for every canary.
+binary_source_cache = {
+    path: path.read_text(encoding="utf-8")
+    for path in binary_sources
+    if not path.is_symlink() and path.is_file()
+}
+binary_code_cache = {
+    path: rust_code_only(source) for path, source in binary_source_cache.items()
+}
+
+scalar_script_relative = "src/runtime/binary_object/scalar_script.rs"
+scalar_script_source = read_source(scalar_script_relative)
+scalar_script_code = rust_code_only(scalar_script_source)
+scalar_visibility = (
+    r"pub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
+    r"[ \t\n]*\)"
+)
+scalar_draft_pattern = re.compile(
+    rf"\b{scalar_visibility}[ \t\n]+enum[ \t\n]+ScalarScriptDraft[ \t\n]*\{{"
+    r"[ \t\n]*Int[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,?[ \t\n]*\}"
+)
+if len(scalar_draft_pattern.findall(scalar_script_code)) != 1:
+    fail(
+        "scalar-script-draft-shape",
+        "ScalarScriptDraft must be runtime-visible only and contain exactly Int(i32)",
+    )
+
+scalar_error_pattern = re.compile(
+    rf"\b{scalar_visibility}[ \t\n]+enum[ \t\n]+ScalarScriptReadError[ \t\n]*\{{"
+    r"[ \t\n]*Malformed[ \t\n]*\([ \t\n]*String[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*Type[ \t\n]*\([ \t\n]*String[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*Range[ \t\n]*\([ \t\n]*String[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*JsInternal[ \t\n]*\([ \t\n]*String[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*Unadmitted[ \t\n]*\([ \t\n]*String[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*Resource[ \t\n]*\([ \t\n]*String[ \t\n]*\)[ \t\n]*,"
+    r"[ \t\n]*Internal[ \t\n]*\([ \t\n]*String[ \t\n]*\)[ \t\n]*,?[ \t\n]*\}"
+)
+if len(scalar_error_pattern.findall(scalar_script_code)) != 1:
+    fail(
+        "scalar-script-error-shape",
+        "ScalarScriptReadError must retain exactly Malformed, Type, Range, JsInternal, Unadmitted, Resource, and Internal String variants",
+    )
+
+scalar_decode_pattern = re.compile(
+    rf"\b{scalar_visibility}[ \t\n]+fn[ \t\n]+decode_trusted_scalar_script"
+    r"[ \t\n]*\([ \t\n]*(?:bytes|input)[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\]"
+    r"[ \t\n]*,?[ \t\n]*\)[ \t\n]*->[ \t\n]*Result[ \t\n]*<"
+    r"[ \t\n]*ScalarScriptDraft[ \t\n]*,[ \t\n]*ScalarScriptReadError[ \t\n]*>"
+)
+if len(scalar_decode_pattern.findall(scalar_script_code)) != 1:
+    fail(
+        "scalar-script-decoder-shape",
+        "decode_trusted_scalar_script must be the reviewed &[u8] to scalar draft facade",
+    )
+
+scalar_visible_item_pattern = re.compile(
+    r"\b(?P<visibility>pub(?:[ \t\n]*\([^)]*\))?)[ \t\n]+"
+    r"(?P<kind>enum|struct|union|trait|type|fn|const|static|use|mod)[ \t\n]+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+)
+scalar_visible_items = [
+    (
+        " ".join(match.group("visibility").split()),
+        match.group("kind"),
+        match.group("name"),
+    )
+    for match in scalar_visible_item_pattern.finditer(scalar_script_code)
+]
+expected_scalar_visible_items = [
+    ("pub(in crate::runtime)", "enum", "ScalarScriptDraft"),
+    ("pub(in crate::runtime)", "enum", "ScalarScriptReadError"),
+    ("pub(in crate::runtime)", "fn", "decode_trusted_scalar_script"),
+]
+if sorted(scalar_visible_items) != sorted(expected_scalar_visible_items):
+    fail(
+        "scalar-script-visible-item-set",
+        "scalar_script.rs may expose only the reviewed draft, error, and decoder to runtime; "
+        f"found {scalar_visible_items}",
+    )
+
+scalar_display_pattern = re.compile(
+    r"\bimpl\b[^{};]*\b(?:fmt[ \t\n]*::[ \t\n]*)?Display[ \t\n]+for"
+    r"[ \t\n]+ScalarScriptReadError[ \t\n]*\{",
+    re.DOTALL,
+)
+if len(scalar_display_pattern.findall(scalar_script_code)) != 1:
+    fail(
+        "scalar-script-error-display",
+        "ScalarScriptReadError must have exactly one direct Display implementation",
+    )
+
+if len(re.findall(r"\bReaderMode[ \t\n]*::[ \t\n]*QuickJsCompatible\b", scalar_script_code)) != 1:
+    fail(
+        "scalar-script-reader-mode",
+        "scalar_script.rs must select QuickJsCompatible exactly once",
+    )
+for match in re.finditer(r"\bReaderMode[ \t\n]*::[ \t\n]*Strict\b", scalar_script_code):
+    fail(
+        "scalar-script-reader-mode",
+        "scalar-script admission must not use Strict or Strict-plus-fallback; found "
+        + location(scalar_script_relative, scalar_script_source, match.start()),
+    )
+
+consumer_relative = "src/runtime/binary_object_publish.rs"
+consumer_path = root / consumer_relative
+consumer_exists = consumer_path.exists() or consumer_path.is_symlink()
+consumer_module_declarations = re.findall(
+    r"(?m)^[ \t]*mod[ \t]+binary_object_publish[ \t]*;[ \t]*$",
+    runtime_code,
+)
+consumer_public_module_declarations = re.findall(
+    r"(?m)^[ \t]*pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+mod"
+    r"[ \t\n]+binary_object_publish[ \t\n]*;",
+    runtime_code,
+)
+if consumer_public_module_declarations:
+    fail(
+        "binary-object-consumer-module",
+        "binary_object_publish must remain a private runtime module",
+    )
+if consumer_exists:
+    if consumer_path.is_symlink() or not consumer_path.is_file():
+        fail("linked-source", f"{consumer_relative} must be a regular file")
+        consumer_source = ""
+    else:
+        consumer_source = consumer_path.read_text(encoding="utf-8")
+    if len(consumer_module_declarations) != 1:
+        fail(
+            "binary-object-consumer-module",
+            "an existing binary_object_publish.rs requires exactly one private runtime module declaration",
+        )
+else:
+    consumer_source = ""
+    if consumer_module_declarations:
+        fail(
+            "binary-object-consumer-module",
+            "runtime must not declare binary_object_publish before its reviewed source exists",
+        )
+
+consumer_code = rust_code_only(consumer_source)
+consumer_facade_import_pattern = re.compile(
+    r"(?m)^[ \t]*use[ \t\n]+super[ \t\n]*::[ \t\n]*binary_object"
+    r"[ \t\n]*::[ \t\n]*\{(?P<body>[^{}]*)\}[ \t\n]*;"
+)
+consumer_facade_imports = list(consumer_facade_import_pattern.finditer(consumer_code))
+if consumer_exists:
+    if len(consumer_facade_imports) != 1:
+        fail(
+            "binary-object-consumer-import",
+            f"{consumer_relative} must contain exactly one reviewed scalar facade import",
+        )
+    else:
+        consumer_import_items = [
+            item.strip()
+            for item in consumer_facade_imports[0].group("body").split(",")
+            if item.strip()
+        ]
+        if (
+            len(consumer_import_items) != len(expected_scalar_facade_names)
+            or set(consumer_import_items) != expected_scalar_facade_names
+        ):
+            fail(
+                "binary-object-consumer-import",
+                f"{consumer_relative} may import only the reviewed scalar facade; "
+                f"found {consumer_import_items}",
+            )
+
+    consumer_binary_mentions = list(re.finditer(r"\bbinary_object\b", consumer_code))
+    if len(consumer_binary_mentions) != 1:
+        fail(
+            "binary-object-consumer-import",
+            f"{consumer_relative} may name binary_object only in its one reviewed facade import",
+        )
+
+    safe_publication_calls = re.findall(
+        r"\b(?:self|runtime)[ \t\n]*\.[ \t\n]*publish_unlinked_function[ \t\n]*\(",
+        consumer_code,
+    )
+    if len(safe_publication_calls) != 1:
+        fail(
+            "binary-object-consumer-publication",
+            f"{consumer_relative} must enter publish_unlinked_function exactly once",
+        )
+
+    consumer_forbidden_patterns = (
+        (
+            "binary-object-consumer-verifier-bypass",
+            re.compile(r"\bpublish_verified_unlinked_function\b"),
+            "publish_verified_unlinked_function",
+        ),
+        (
+            "binary-object-consumer-alternate-entrypoint",
+            re.compile(
+                r"\b(?:(?:self|runtime)[ \t\n]*\.[ \t\n]*|Runtime[ \t\n]*::[ \t\n]*)"
+                r"(?!(?:publish_unlinked_function)\b)"
+                r"(?:compile|publish)_[A-Za-z_][A-Za-z0-9_]*[ \t\n]*\("
+            ),
+            "an alternate runtime compilation or publication entry point",
+        ),
+        (
+            "binary-object-consumer-heap-type",
+            re.compile(
+                r"\b(?:FunctionBytecodeData|BytecodeConstant|FunctionBytecodeId|ObjectId|"
+                r"RawValue|Heap|HeapObject|ObjectRef)\b"
+            ),
+            "a direct runtime heap representation type",
+        ),
+        (
+            "binary-object-consumer-root-forge",
+            re.compile(
+                r"\bFunctionBytecodeRef[ \t\n]*\{|\bFunctionBytecodeRef[ \t\n]*::"
+                r"[ \t\n]*(?:from_owned_handle|from_borrowed_handle)\b"
+            ),
+            "a direct FunctionBytecodeRef constructor",
+        ),
+        (
+            "binary-object-consumer-vm-dependency",
+            re.compile(
+                r"\bcrate[ \t\n]*::[ \t\n]*(?:r#)?vm\b|"
+                r"\b(?:super[ \t\n]*::[ \t\n]*)+(?:r#)?vm\b"
+            ),
+            "the VM module",
+        ),
+        (
+            "binary-object-consumer-compiler-dependency",
+            re.compile(
+                r"\bcrate[ \t\n]*::[ \t\n]*(?:r#)?compiler\b|"
+                r"\b(?:super[ \t\n]*::[ \t\n]*)+(?:r#)?compiler\b"
+            ),
+            "the source compiler",
+        ),
+        (
+            "binary-object-consumer-unsafe",
+            re.compile(r"\bunsafe\b|\bNonNull\b|\*[ \t\n]*(?:const|mut)\b"),
+            "unsafe code or native pointers",
+        ),
+    )
+    for code_name, pattern, description in consumer_forbidden_patterns:
+        for match in pattern.finditer(consumer_code):
+            fail(
+                code_name,
+                f"{consumer_relative} must not use {description}; found "
+                + location(consumer_relative, consumer_source, match.start()),
+            )
+
+src_root = root / "src"
+if src_root.is_symlink() or not src_root.is_dir():
+    fail("missing-source", "src must be a regular directory")
+    production_sources: list[Path] = []
+else:
+    production_sources = sorted(src_root.rglob("*.rs"))
+
+facade_name_pattern = re.compile(
+    r"\b(?:ScalarScriptDraft|ScalarScriptReadError|decode_trusted_scalar_script)\b"
+)
+for path in production_sources:
+    if path.is_symlink() or not path.is_file():
+        continue
+    relative = path.relative_to(root).as_posix()
+    if relative.startswith("src/runtime/binary_object/"):
+        continue
+    source = path.read_text(encoding="utf-8")
+    code = rust_code_only(source)
+    binary_mentions = list(re.finditer(r"\bbinary_object\b", code))
+    if relative == "src/runtime.rs":
+        if len(binary_mentions) != 1:
+            fail(
+                "binary-object-consumer-set",
+                "src/runtime.rs may name binary_object only in its private module declaration",
+            )
+    elif relative == consumer_relative and consumer_exists:
+        if len(binary_mentions) != 1:
+            fail(
+                "binary-object-consumer-set",
+                f"{consumer_relative} must remain the sole reviewed codec consumer",
+            )
+    elif binary_mentions:
+        for match in binary_mentions:
+            fail(
+                "binary-object-consumer-set",
+                "only binary_object_publish.rs may consume binary_object; found "
+                + location(relative, source, match.start()),
+            )
+
+    if relative not in {binary_root_relative, consumer_relative}:
+        for match in facade_name_pattern.finditer(code):
+            fail(
+                "scalar-script-consumer-set",
+                "only binary_object_publish.rs may name the scalar-script facade; found "
+                + location(relative, source, match.start()),
+            )
+
+    path_attribute = re.compile(
+        r"#[ \t\n]*\[[ \t\n]*path[ \t\n]*=[ \t\n]*[^\]]*binary_object[^\]]*\]"
+    )
+    for match in path_attribute.finditer(source):
+        fail(
+            "binary-object-consumer-set",
+            "path attributes must not create an alternate binary_object consumer; found "
+            + location(relative, source, match.start()),
+        )
 
 cursor_relative = "src/runtime/binary_object/read_cursor.rs"
 cursor_source = read_source(cursor_relative)
@@ -274,8 +632,8 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    source = path.read_text(encoding="utf-8")
-    code = rust_code_only(source)
+    source = binary_source_cache[path]
+    code = binary_code_cache[path]
     for match in checked_cursor_alias.finditer(code):
         fail(
             "common-cursor-trait-alias",
@@ -326,6 +684,7 @@ graph_decode_relative = "src/runtime/binary_object/graph/decode.rs"
 image_decode_relative = "src/runtime/binary_object/bytecode_image/decode/mod.rs"
 sab_transport_relative = "src/runtime/binary_object/graph/sab_transport.rs"
 image_model_relative = "src/runtime/binary_object/bytecode_image/model.rs"
+image_atoms_relative = "src/runtime/binary_object/bytecode_image/atoms.rs"
 graph_decode_source = read_source(graph_decode_relative)
 graph_decode_code = rust_code_only(graph_decode_source)
 image_decode_source = read_source(image_decode_relative)
@@ -334,6 +693,97 @@ sab_transport_source = read_source(sab_transport_relative)
 sab_transport_code = rust_code_only(sab_transport_source)
 image_model_source = read_source(image_model_relative)
 image_model_code = rust_code_only(image_model_source)
+image_atoms_source = read_source(image_atoms_relative)
+image_atoms_code = rust_code_only(image_atoms_source)
+
+image_atom_declaration = re.compile(
+    r"\bpub[ \t\n]*\([ \t\n]*super[ \t\n]*\)[ \t\n]+enum"
+    r"[ \t\n]+ImageAtom\b"
+)
+all_image_atom_declarations = re.compile(
+    r"\bpub(?:[ \t\n]*\([^)]*\))?[ \t\n]+enum[ \t\n]+ImageAtom\b"
+)
+if (
+    len(image_atom_declaration.findall(image_atoms_code)) != 1
+    or len(all_image_atom_declarations.findall(image_atoms_code)) != 1
+):
+    fail(
+        "image-atom-visibility",
+        "ImageAtom must remain visible only to its bytecode_image parent module",
+    )
+
+eval_atom_constant = re.compile(
+    r"(?m)^[ \t]*const[ \t]+PINNED_EVAL_ATOM_RAW[ \t]*:[ \t]*u32"
+    r"[ \t]*=[ \t]*84[ \t]*;[ \t]*$"
+)
+if len(eval_atom_constant.findall(image_model_code)) != 1:
+    fail(
+        "scalar-script-atom-predicate",
+        "the pinned <eval> identity must remain one private model constant with raw value 84",
+    )
+
+binary_object_visibility = (
+    r"pub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
+    r"[ \t\n]*::[ \t\n]*binary_object[ \t\n]*\)"
+)
+null_name_predicate = re.compile(
+    rf"\b{binary_object_visibility}[ \t\n]+const[ \t\n]+fn"
+    r"[ \t\n]+name_is_null[ \t\n]*\([ \t\n]*&self[ \t\n]*\)"
+    r"[ \t\n]*->[ \t\n]*bool[ \t\n]*\{[ \t\n]*matches!"
+    r"[ \t\n]*\([ \t\n]*self[ \t\n]*\.[ \t\n]*name[ \t\n]*,"
+    r"[ \t\n]*ImageAtom[ \t\n]*::[ \t\n]*Null[ \t\n]*\)"
+    r"[ \t\n]*\}"
+)
+eval_name_predicate = re.compile(
+    rf"\b{binary_object_visibility}[ \t\n]+const[ \t\n]+fn"
+    r"[ \t\n]+name_is_pinned_eval[ \t\n]*\([ \t\n]*&self[ \t\n]*\)"
+    r"[ \t\n]*->[ \t\n]*bool[ \t\n]*\{[ \t\n]*match"
+    r"[ \t\n]+self[ \t\n]*\.[ \t\n]*name[ \t\n]*\{"
+    r"[ \t\n]*ImageAtom[ \t\n]*::[ \t\n]*Predefined[ \t\n]*\("
+    r"[ \t\n]*atom[ \t\n]*\)[ \t\n]*=>[ \t\n]*atom[ \t\n]*\."
+    r"[ \t\n]*raw[ \t\n]*\([ \t\n]*\)[ \t\n]*==[ \t\n]*PINNED_EVAL_ATOM_RAW"
+    r"[ \t\n]*,[ \t\n]*ImageAtom[ \t\n]*::[ \t\n]*Null[ \t\n]*\|"
+    r"[ \t\n]*ImageAtom[ \t\n]*::[ \t\n]*Index[ \t\n]*\([ \t\n]*_[ \t\n]*\)"
+    r"[ \t\n]*\|[ \t\n]*ImageAtom[ \t\n]*::[ \t\n]*Dynamic"
+    r"[ \t\n]*\([ \t\n]*_[ \t\n]*\)[ \t\n]*=>[ \t\n]*false[ \t\n]*,?"
+    r"[ \t\n]*\}[ \t\n]*\}"
+)
+if (
+    len(null_name_predicate.findall(image_model_code)) != 1
+    or len(eval_name_predicate.findall(image_model_code)) != 1
+):
+    fail(
+        "scalar-script-atom-predicate",
+        "the model must expose only the reviewed null-local and pinned-<eval> boolean predicates",
+    )
+
+image_atom_export = re.compile(
+    r"\bpub(?:[ \t\n]*\([^)]*\))?[ \t\n]+use\b[^;]*"
+    r"\b(?:ImageAtom|PinnedAtomId)\b",
+    re.DOTALL,
+)
+raw_atom_return = re.compile(
+    rf"\b{binary_object_visibility}[^;{{}}]*\bfn\b[^;{{}}]*->[ \t\n]*"
+    r"(?:ImageAtom|PinnedAtomId)\b"
+)
+for path in binary_sources:
+    if path.is_symlink() or not path.is_file():
+        continue
+    relative = path.relative_to(root).as_posix()
+    source = binary_source_cache[path]
+    code = binary_code_cache[path]
+    for match in image_atom_export.finditer(code):
+        fail(
+            "image-atom-reexport",
+            "ImageAtom and PinnedAtomId must not cross the bytecode_image boundary; found "
+            + location(relative, source, match.start()),
+        )
+    for match in raw_atom_return.finditer(code):
+        fail(
+            "image-atom-escape",
+            "scalar admission may consume boolean atom predicates, not raw atom identities; found "
+            + location(relative, source, match.start()),
+        )
 
 retired_permit_names = (
     "GraphSabDecodePermit",
@@ -345,8 +795,8 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    source = path.read_text(encoding="utf-8")
-    code = rust_code_only(source)
+    source = binary_source_cache[path]
+    code = binary_code_cache[path]
     for name in retired_permit_names:
         match = re.search(rf"\b{re.escape(name)}\b", code)
         if match is not None:
@@ -384,7 +834,7 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    code = rust_code_only(path.read_text(encoding="utf-8"))
+    code = binary_code_cache[path]
     native_token_impl_sites.extend(
         (relative, code, match) for match in native_token_impl_pattern.finditer(code)
     )
@@ -445,7 +895,7 @@ def identifier_paths(name: str) -> list[str]:
         if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        code = rust_code_only(path.read_text(encoding="utf-8"))
+        code = binary_code_cache[path]
         found.extend(relative for _ in pattern.finditer(code))
     return found
 
@@ -466,7 +916,7 @@ def definition_paths(kind: str, name: str) -> list[str]:
         if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        code = rust_code_only(path.read_text(encoding="utf-8"))
+        code = binary_code_cache[path]
         found.extend(relative for _ in pattern.finditer(code))
     return found
 
@@ -954,7 +1404,7 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    code = rust_code_only(path.read_text(encoding="utf-8"))
+    code = binary_code_cache[path]
     graph_archive_brace_paths.extend(
         relative for _ in graph_archive_brace_pattern.finditer(code)
     )
@@ -987,7 +1437,7 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    code = rust_code_only(path.read_text(encoding="utf-8"))
+    code = binary_code_cache[path]
     graph_archive_impl_sites.extend(
         (relative, code, match) for match in graph_archive_impl_pattern.finditer(code)
     )
@@ -1066,7 +1516,7 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    code = rust_code_only(path.read_text(encoding="utf-8"))
+    code = binary_code_cache[path]
     archive_brace_paths.extend(relative for _ in archive_brace_pattern.finditer(code))
 if archive_brace_paths != [sab_transport_relative] * 3:
     fail(
@@ -1097,7 +1547,7 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    code = rust_code_only(path.read_text(encoding="utf-8"))
+    code = binary_code_cache[path]
     archive_impl_sites.extend((relative, code, match) for match in archive_impl_pattern.finditer(code))
 if len(archive_impl_sites) != 1 or archive_impl_sites[0][0] != sab_transport_relative:
     fail(
@@ -1159,8 +1609,8 @@ for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         fail("linked-source", f"{relative} must be a regular file")
         continue
-    source = path.read_text(encoding="utf-8")
-    code = rust_code_only(source)
+    source = binary_source_cache[path]
+    code = binary_code_cache[path]
     forbidden_patterns = (
         (
             "forbidden-vm-dependency",
@@ -1173,6 +1623,19 @@ for path in binary_sources:
             "crate::compiler",
         ),
         (
+            "forbidden-heap-dependency",
+            re.compile(r"\bcrate[ \t\n]*::[ \t\n]*(?:r#)?heap\b"),
+            "crate::heap",
+        ),
+        (
+            "forbidden-runtime-dependency",
+            re.compile(
+                r"\buse[ \t\n]+crate[ \t\n]*::[ \t\n]*(?:r#)?runtime\b"
+                r"(?![ \t\n]*::[ \t\n]*binary_object\b)"
+            ),
+            "crate::runtime",
+        ),
+        (
             "forbidden-shared-memory-dependency",
             re.compile(r"\bcrate[ \t\n]*::[ \t\n]*(?:r#)?shared_memory\b"),
             "crate::shared_memory",
@@ -1180,9 +1643,9 @@ for path in binary_sources:
         (
             "forbidden-parent-dependency",
             re.compile(
-                r"\b(?:super[ \t\n]*::[ \t\n]*)+(?:r#)?(?:vm|compiler)\b"
+                r"\b(?:super[ \t\n]*::[ \t\n]*)+(?:r#)?(?:vm|compiler|heap)\b"
             ),
-            "a parent-relative VM/compiler path",
+            "a parent-relative VM/compiler/heap path",
         ),
         (
             "forbidden-shared-memory-dependency",
@@ -1234,6 +1697,22 @@ for path in binary_sources:
             "BytecodeFunction or FunctionBytecodeRef",
         ),
         (
+            "forbidden-runtime-representation",
+            re.compile(
+                r"\b(?:Runtime|Context|RuntimeError|FunctionMetadata|FunctionBytecodeData|"
+                r"BytecodeConstant|FunctionBytecodeId|ObjectId|RawValue|UnlinkedFunction|"
+                r"Instruction|Heap|HeapObject|ObjectRef)\b"
+            ),
+            "a runtime, verifier-draft, VM, or heap representation type",
+        ),
+        (
+            "forbidden-publication-boundary",
+            re.compile(
+                r"\b(?:publish_unlinked_function|publish_verified_unlinked_function)\b"
+            ),
+            "a runtime publication function",
+        ),
+        (
             "forbidden-crate-alias",
             re.compile(
                 r"\b(?:use[ \t\n]+crate[ \t\n]+as|extern[ \t\n]+crate[ \t\n]+self[ \t\n]+as)\b"
@@ -1267,6 +1746,18 @@ for path in binary_sources:
                 "binary_object production sources must not import crate::compiler through a grouped use; found "
                 + location(relative, source, grouped.start()),
             )
+        if re.search(r"\b(?:r#)?heap\b", body):
+            fail(
+                "forbidden-heap-dependency",
+                "binary_object production sources must not import crate::heap through a grouped use; found "
+                + location(relative, source, grouped.start()),
+            )
+        if re.search(r"\b(?:r#)?runtime\b", body):
+            fail(
+                "forbidden-runtime-dependency",
+                "binary_object production sources must not import crate::runtime through a grouped use; found "
+                + location(relative, source, grouped.start()),
+            )
         if re.search(r"(?:^|[,{}])[ \t\n]*(?:r#)?shared_memory\b", body):
             fail(
                 "forbidden-shared-memory-dependency",
@@ -1286,10 +1777,17 @@ for path in binary_sources:
         re.DOTALL,
     )
     for grouped in parent_grouped_import_pattern.finditer(code):
-        if re.search(r"(?:^|[,{}])[ \t\n]*(?:r#)?shared_memory\b", grouped.group("body")):
+        grouped_body = grouped.group("body")
+        if re.search(r"(?:^|[,{}])[ \t\n]*(?:r#)?shared_memory\b", grouped_body):
             fail(
                 "forbidden-shared-memory-dependency",
                 "binary_object production sources must not import shared_memory through a parent-relative grouped use; found "
+                + location(relative, source, grouped.start()),
+            )
+        if re.search(r"(?:^|[,{}])[ \t\n]*(?:r#)?heap\b", grouped_body):
+            fail(
+                "forbidden-heap-dependency",
+                "binary_object production sources must not import heap through a parent-relative grouped use; found "
                 + location(relative, source, grouped.start()),
             )
 
@@ -1354,8 +1852,38 @@ printf '%s\n' \
     'mod pinned_atoms;' \
     'mod pinned_opcodes;' \
     'mod read_cursor;' \
+    'mod scalar_script;' \
     'mod wire;' \
+    'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
+printf '%s\n' \
+    'pub(in crate::runtime) enum ScalarScriptDraft {' \
+    '    Int(i32),' \
+    '}' \
+    'pub(in crate::runtime) enum ScalarScriptReadError {' \
+    '    Malformed(String),' \
+    '    Type(String),' \
+    '    Range(String),' \
+    '    JsInternal(String),' \
+    '    Unadmitted(String),' \
+    '    Resource(String),' \
+    '    Internal(String),' \
+    '}' \
+    'impl fmt::Display for ScalarScriptReadError {' \
+    '    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {' \
+    '        formatter.write_str("scalar script error")' \
+    '    }' \
+    '}' \
+    'pub(in crate::runtime) fn decode_trusted_scalar_script(' \
+    '    bytes: &[u8],' \
+    ') -> Result<ScalarScriptDraft, ScalarScriptReadError> {' \
+    '    let _ = bytes;' \
+    '    let _ = ReaderMode::QuickJsCompatible;' \
+    '    Ok(ScalarScriptDraft::Int(0))' \
+    '}' \
+    > "$fixture/src/runtime/binary_object/scalar_script.rs"
+printf '%s\n' '// no alternate binary-object consumers' \
+    > "$fixture/src/runtime/other.rs"
 printf '%s\n' \
     'fn retained_from_raw(raw: u32) {' \
     '    let _ = PinnedAtomId::from_raw(raw);' \
@@ -1382,6 +1910,30 @@ printf '%s\n' \
     'pub(in crate::runtime::binary_object) fn decode_bytecode_image_body() {}' \
     > "$fixture/src/runtime/binary_object/bytecode_image/decode/mod.rs"
 printf '%s\n' \
+    'pub(super) enum ImageAtom {' \
+    '    Null,' \
+    '    Index(u32),' \
+    '    Predefined(PinnedAtomId),' \
+    '    Dynamic(AtomId),' \
+    '}' \
+    > "$fixture/src/runtime/binary_object/bytecode_image/atoms.rs"
+printf '%s\n' \
+    'const PINNED_EVAL_ATOM_RAW: u32 = 84;' \
+    'struct ImageLocalVariable { name: ImageAtom }' \
+    'impl ImageLocalVariable {' \
+    '    pub(in crate::runtime::binary_object) const fn name_is_null(&self) -> bool {' \
+    '        matches!(self.name, ImageAtom::Null)' \
+    '    }' \
+    '}' \
+    'struct ImageFunctionEnvelope { name: ImageAtom }' \
+    'impl ImageFunctionEnvelope {' \
+    '    pub(in crate::runtime::binary_object) const fn name_is_pinned_eval(&self) -> bool {' \
+    '        match self.name {' \
+    '            ImageAtom::Predefined(atom) => atom.raw() == PINNED_EVAL_ATOM_RAW,' \
+    '            ImageAtom::Null | ImageAtom::Index(_) | ImageAtom::Dynamic(_) => false,' \
+    '        }' \
+    '    }' \
+    '}' \
     'impl BytecodeImage {' \
     '    fn sab_archive_occurrences(&self) {}' \
     '}' \
@@ -1607,7 +2159,22 @@ printf '%s\n' \
     '}' \
     > "$fixture/src/runtime/binary_object/graph/sab_transport.rs"
 
-scan_root "$fixture" || die "binary-object boundary rejected its clean self-test fixture"
+scan_root "$fixture" \
+    || die "binary-object boundary rejected its clean no-consumer self-test fixture"
+
+printf '%s\n' 'mod binary_object_publish;' >> "$fixture/src/runtime.rs"
+printf '%s\n' \
+    'use super::binary_object::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};' \
+    'fn publish(runtime: &Runtime, bytes: &[u8]) -> Result<(), Error> {' \
+    '    let draft = decode_trusted_scalar_script(bytes)?;' \
+    '    let _: ScalarScriptDraft = draft;' \
+    '    let _: Option<ScalarScriptReadError> = None;' \
+    '    runtime.publish_unlinked_function(realm, function)' \
+    '}' \
+    > "$fixture/src/runtime/binary_object_publish.rs"
+
+scan_root "$fixture" \
+    || die "binary-object boundary rejected its clean sole-consumer self-test fixture"
 
 expect_rejected() {
     local label=$1
@@ -1671,6 +2238,21 @@ expect_rejected vm-dependency forbidden-vm-dependency \
 expect_rejected compiler-dependency forbidden-compiler-dependency \
     src/runtime/binary_object/atoms.rs \
     'use crate::{atom::Atom, compiler as parser};'
+expect_rejected heap-dependency forbidden-heap-dependency \
+    src/runtime/binary_object/atoms.rs \
+    'use crate::heap as runtime_heap;'
+expect_rejected grouped-heap-dependency forbidden-heap-dependency \
+    src/runtime/binary_object/atoms.rs \
+    'use crate::{atom::Atom, heap as runtime_heap};'
+expect_rejected runtime-dependency forbidden-runtime-dependency \
+    src/runtime/binary_object/atoms.rs \
+    'use crate::runtime as engine_runtime;'
+expect_rejected runtime-representation forbidden-runtime-representation \
+    src/runtime/binary_object/atoms.rs \
+    'type Published = FunctionBytecodeData;'
+expect_rejected codec-publication forbidden-publication-boundary \
+    src/runtime/binary_object/atoms.rs \
+    'fn publish(runtime: Runtime) { runtime.publish_unlinked_function(realm, function); }'
 expect_rejected shared-memory-dependency forbidden-shared-memory-dependency \
     src/runtime/binary_object/atoms.rs \
     'use crate::shared_memory as runtime_shared_memory;'
@@ -1737,12 +2319,88 @@ expect_rejected lib-path-alias public-lib-boundary \
 expect_rejected runtime-consumer runtime-boundary \
     src/runtime.rs \
     'use self::binary_object::bytecode_image::decode_bytecode_image;'
+expect_rewrite_rejected consumer-public-module binary-object-consumer-module \
+    src/runtime.rs \
+    'mod binary_object_publish;' \
+    'pub(super) mod binary_object_publish;'
+expect_rejected second-binary-object-consumer binary-object-consumer-set \
+    src/runtime/other.rs \
+    'use super::binary_object::{ScalarScriptDraft, decode_trusted_scalar_script};'
+expect_rejected alternate-binary-object-path binary-object-consumer-set \
+    src/runtime/other.rs \
+    '#[path = "binary_object/mod.rs"] mod alternate_archive;'
+expect_rejected second-scalar-facade-consumer scalar-script-consumer-set \
+    src/runtime/other.rs \
+    'fn leak() { let _ = decode_trusted_scalar_script(bytes); }'
+expect_rejected consumer-codec-import binary-object-consumer-import \
+    src/runtime/binary_object_publish.rs \
+    'use super::binary_object::BytecodeImage;'
+expect_rejected consumer-verifier-bypass binary-object-consumer-verifier-bypass \
+    src/runtime/binary_object_publish.rs \
+    'fn bypass(runtime: &Runtime) { runtime.publish_verified_unlinked_function(realm, function); }'
+expect_rejected consumer-dead-safe-alternate-publication binary-object-consumer-alternate-entrypoint \
+    src/runtime/binary_object_publish.rs \
+    'fn alternate(runtime: &Runtime) { if false { let _ = runtime.publish_unlinked_function(realm, function); } let _ = runtime.compile_in_realm(realm, source); }'
+expect_rejected consumer-heap-type binary-object-consumer-heap-type \
+    src/runtime/binary_object_publish.rs \
+    'fn allocate_directly(value: FunctionBytecodeData) {}'
+expect_rejected consumer-root-forge binary-object-consumer-root-forge \
+    src/runtime/binary_object_publish.rs \
+    'fn forge(runtime: Runtime, id: FunctionBytecodeId) { let _ = FunctionBytecodeRef::from_owned_handle(runtime, id); }'
+expect_rewrite_rejected consumer-skips-safe-publication binary-object-consumer-publication \
+    src/runtime/binary_object_publish.rs \
+    '    runtime.publish_unlinked_function(realm, function)' \
+    '    runtime.compile_in_realm(realm, source)'
 expect_rejected root-public-module root-module-visibility \
     src/runtime/binary_object/mod.rs \
     'pub(in crate::runtime) mod leaked;'
+expect_rewrite_rejected scalar-script-public-module root-module-visibility \
+    src/runtime/binary_object/mod.rs \
+    'mod scalar_script;' \
+    'pub(super) mod scalar_script;'
+expect_rejected root-extra-private-module root-private-module-set \
+    src/runtime/binary_object/mod.rs \
+    'mod unreviewed_admission;'
 expect_rejected root-reexport root-reexport \
     src/runtime/binary_object/mod.rs \
     'pub(in crate::runtime) use bytecode_image::*;'
+expect_rewrite_rejected scalar-facade-extra-type scalar-script-facade-shape \
+    src/runtime/binary_object/mod.rs \
+    'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};' \
+    'pub(super) use scalar_script::{BytecodeImage, ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};'
+expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shape \
+    src/runtime/binary_object/mod.rs \
+    'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};' \
+    'pub(crate) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script};'
+expect_rewrite_rejected scalar-draft-extra-variant scalar-script-draft-shape \
+    src/runtime/binary_object/scalar_script.rs \
+    '    Int(i32),' \
+    '    Int(i32), Bool(bool),'
+expect_rewrite_rejected scalar-error-missing-unadmitted scalar-script-error-shape \
+    src/runtime/binary_object/scalar_script.rs \
+    '    Unadmitted(String),' \
+    '    Rejected(String),'
+expect_rejected scalar-extra-visible-item scalar-script-visible-item-set \
+    src/runtime/binary_object/scalar_script.rs \
+    'pub(in crate::runtime) fn leak_image() {}'
+expect_rewrite_rejected scalar-strict-reader scalar-script-reader-mode \
+    src/runtime/binary_object/scalar_script.rs \
+    '    let _ = ReaderMode::QuickJsCompatible;' \
+    '    let _ = ReaderMode::Strict;'
+expect_rewrite_rejected image-atom-visibility-widening image-atom-visibility \
+    src/runtime/binary_object/bytecode_image/atoms.rs \
+    'pub(super) enum ImageAtom {' \
+    'pub(in crate::runtime::binary_object) enum ImageAtom {'
+expect_rejected image-atom-reexport image-atom-reexport \
+    src/runtime/binary_object/bytecode_image/mod.rs \
+    'pub(in crate::runtime::binary_object) use atoms::ImageAtom;'
+expect_rejected image-atom-raw-accessor image-atom-escape \
+    src/runtime/binary_object/bytecode_image/model.rs \
+    'impl ImageLocalVariable { pub(in crate::runtime::binary_object) const fn raw_name(&self) -> ImageAtom { self.name } }'
+expect_rewrite_rejected pinned-eval-identity-drift scalar-script-atom-predicate \
+    src/runtime/binary_object/bytecode_image/model.rs \
+    'const PINNED_EVAL_ATOM_RAW: u32 = 84;' \
+    'const PINNED_EVAL_ATOM_RAW: u32 = 85;'
 expect_rejected image-public-module image-module-visibility \
     src/runtime/binary_object/bytecode_image/mod.rs \
     'pub(in crate::runtime) mod leaked;'

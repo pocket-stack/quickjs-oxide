@@ -31,6 +31,336 @@ use super::{
     VarRefRoot,
 };
 
+const QUICKJS_SCALAR_42_BC5: &[u8] = &[
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
+];
+
+const QUICKJS_SELF_CONTAINED_MODULE_BC5: &[u8] = &[
+    0x05, 0x03, 0x24, 0x73, 0x65, 0x6c, 0x66, 0x2d, 0x63, 0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65,
+    0x64, 0x2e, 0x6d, 0x6a, 0x73, 0x0c, 0x61, 0x6e, 0x73, 0x77, 0x65, 0x72, 0x2e, 0x5f, 0x5f, 0x6d,
+    0x6f, 0x64, 0x75, 0x6c, 0x65, 0x42, 0x79, 0x74, 0x65, 0x63, 0x6f, 0x64, 0x65, 0x52, 0x65, 0x63,
+    0x65, 0x69, 0x70, 0x74, 0x0d, 0xe6, 0x03, 0x00, 0x01, 0x00, 0x00, 0xe8, 0x03, 0x00, 0x00, 0x00,
+    0x0c, 0x20, 0x02, 0x01, 0xa8, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x14, 0x00, 0xe8,
+    0x03, 0x00, 0x1e, 0x00, 0xa0, 0x02, 0x00, 0x05, 0x00, 0x08, 0xe8, 0x02, 0x29, 0xbb, 0x2a, 0xdf,
+    0x38, 0x01, 0x00, 0x64, 0x00, 0x00, 0x3f, 0xf5, 0x00, 0x00, 0x00, 0x06, 0x2f,
+];
+
+#[test]
+fn trusted_quickjs_scalar_script_uses_verified_runtime_publication() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts().function_bytecode_nodes;
+
+    let function = context
+        .read_trusted_scalar_script(QUICKJS_SCALAR_42_BC5)
+        .unwrap();
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline + 1);
+    assert_eq!(context.execute(&function).unwrap(), Value::Int(42));
+
+    let mut same_runtime_realm = runtime.new_context();
+    assert_eq!(
+        same_runtime_realm.execute(&function).unwrap(),
+        Value::Int(42)
+    );
+
+    let foreign_runtime = Runtime::new();
+    let mut foreign_context = foreign_runtime.new_context();
+    let foreign_objects = foreign_runtime.heap_counts().object_nodes;
+    assert_eq!(
+        foreign_context.execute(&function),
+        Err(RuntimeError::WrongRuntime("function bytecode"))
+    );
+    assert_eq!(foreign_runtime.heap_counts().object_nodes, foreign_objects);
+}
+
+#[test]
+fn trusted_quickjs_scalar_script_accepts_compatible_wire_spellings() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    for (operand, expected) in [(0x29, 41), (0xff, -1)] {
+        let mut scalar = QUICKJS_SCALAR_42_BC5.to_vec();
+        scalar[22] = operand;
+        let function = context.read_trusted_scalar_script(&scalar).unwrap();
+        assert_eq!(context.execute(&function).unwrap(), Value::Int(expected));
+    }
+
+    let mut trailing = QUICKJS_SCALAR_42_BC5.to_vec();
+    trailing.extend_from_slice(&[0xde, 0xad]);
+    let function = context.read_trusted_scalar_script(&trailing).unwrap();
+    assert_eq!(context.execute(&function).unwrap(), Value::Int(42));
+
+    let mut non_minimal_header = vec![0x05, 0x80, 0x00];
+    non_minimal_header.extend_from_slice(&QUICKJS_SCALAR_42_BC5[2..]);
+    let function = context
+        .read_trusted_scalar_script(&non_minimal_header)
+        .unwrap();
+    assert_eq!(context.execute(&function).unwrap(), Value::Int(42));
+}
+
+#[test]
+fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts().function_bytecode_nodes;
+
+    // A valid BC5 Int32 data root is not a scalar Script. The public API must
+    // preserve that implementation frontier instead of fabricating a parse
+    // failure or publishing any heap bytecode.
+    let RuntimeError::Engine(error) = context
+        .read_trusted_scalar_script(&[0x05, 0x00, 0x05, 0x54])
+        .unwrap_err()
+    else {
+        panic!("valid but unadmitted BC5 root did not return an engine error");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let mut wrapping_scope_link = QUICKJS_SCALAR_42_BC5.to_vec();
+    wrapping_scope_link.splice(18..19, [0x80, 0x80, 0x80, 0x80, 0x08]);
+    let RuntimeError::Engine(error) = context
+        .read_trusted_scalar_script(&wrapping_scope_link)
+        .unwrap_err()
+    else {
+        panic!("compatible wrapping scope link did not preserve the admission frontier");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let RuntimeError::Engine(error) = context
+        .read_trusted_scalar_script(QUICKJS_SELF_CONTAINED_MODULE_BC5)
+        .unwrap_err()
+    else {
+        panic!("valid Module root did not preserve the admission frontier");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let mut wrapping_module_field = QUICKJS_SELF_CONTAINED_MODULE_BC5.to_vec();
+    wrapping_module_field.splice(58..59, [0x80, 0x80, 0x80, 0x80, 0x08]);
+    let RuntimeError::Engine(error) = context
+        .read_trusted_scalar_script(&wrapping_module_field)
+        .unwrap_err()
+    else {
+        panic!("compatible wrapping Module field did not preserve the admission frontier");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let mut truncated = QUICKJS_SCALAR_42_BC5.to_vec();
+    truncated.pop();
+    assert_eq!(
+        context.read_trusted_scalar_script(&truncated),
+        Err(RuntimeError::Exception)
+    );
+    assert!(context.has_exception());
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("SyntaxError"),
+            JsString::from_static("read after the end of the buffer"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let mut wrong_version = QUICKJS_SCALAR_42_BC5.to_vec();
+    wrong_version[0] = 4;
+    assert_eq!(
+        context.read_trusted_scalar_script(&wrong_version),
+        Err(RuntimeError::Exception)
+    );
+    assert!(context.has_exception());
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("SyntaxError"),
+            JsString::from_static("invalid version (4 expected=5)"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    assert_eq!(
+        context.read_trusted_scalar_script(&[0x05, 0x80, 0x80, 0x80, 0x80, 0x80]),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("SyntaxError"),
+            JsString::from_static("read after the end of the buffer"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let mut invalid_atom = QUICKJS_SCALAR_42_BC5.to_vec();
+    invalid_atom.splice(6..8, [0xe6, 0x03]);
+    assert_eq!(
+        context.read_trusted_scalar_script(&invalid_atom),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("SyntaxError"),
+            JsString::from_static("invalid atom index (pos=8)"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    assert_eq!(
+        context.read_trusted_scalar_script(&[0x05, 0x01, 0x80, 0x80, 0x80, 0x80, 0x08]),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("InternalError"),
+            JsString::from_static("string too long"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let mut negative_bytecode_length = QUICKJS_SCALAR_42_BC5.to_vec();
+    negative_bytecode_length.splice(15..16, [0x80, 0x80, 0x80, 0x80, 0x08]);
+    assert_eq!(
+        context.read_trusted_scalar_script(&negative_bytecode_length),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("InternalError"),
+            JsString::from_static("out of memory"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    let mut negative_module_count = QUICKJS_SELF_CONTAINED_MODULE_BC5.to_vec();
+    negative_module_count.splice(55..56, [0x80, 0x80, 0x80, 0x80, 0x08]);
+    assert_eq!(
+        context.read_trusted_scalar_script(&negative_module_count),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("InternalError"),
+            JsString::from_static("out of memory"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+
+    assert_eq!(
+        context.read_trusted_scalar_script(&[0x05, 0x00, 0x13, 0x00]),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("SyntaxError"),
+            JsString::from_static("invalid object reference (0 >= 0)"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+}
+
+#[test]
+fn trusted_quickjs_scalar_script_preserves_pinned_data_reader_errors() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts().function_bytecode_nodes;
+    let cases: [(&[u8], &str, &str); 10] = [
+        (
+            &[
+                0x05, 0x00, 0x12, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00,
+                0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
+            ],
+            "TypeError",
+            "cannot convert to object",
+        ),
+        (
+            &[
+                0x05, 0x00, 0x11, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00,
+                0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
+            ],
+            "TypeError",
+            "Number tag expected for date",
+        ),
+        (
+            &[
+                0x05, 0x00, 0x0e, 0x02, 0x01, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01,
+                0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb,
+                0x28,
+            ],
+            "TypeError",
+            "ArrayBuffer object expected",
+        ),
+        (
+            &[0x05, 0x00, 0x0f, 0x01, 0x00],
+            "TypeError",
+            "invalid array buffer",
+        ),
+        (
+            &[0x05, 0x00, 0x0e, 0xff],
+            "TypeError",
+            "invalid typed array",
+        ),
+        (
+            &[0x05, 0x00, 0x0e, 0x02, 0x00, 0x00, 0x01],
+            "TypeError",
+            "ArrayBuffer object expected",
+        ),
+        (
+            &[0x05, 0x00, 0x12, 0x01],
+            "TypeError",
+            "cannot convert to object",
+        ),
+        (
+            &[0x05, 0x00, 0x11, 0x01],
+            "TypeError",
+            "Number tag expected for date",
+        ),
+        (
+            &[0x05, 0x00, 0x0e, 0x04, 0x00, 0x01, 0x0f, 0x00, 0x00],
+            "RangeError",
+            "invalid offset",
+        ),
+        (
+            &[0x05, 0x00, 0x0e, 0x02, 0x01, 0x01, 0x0f, 0x01, 0x01, 0x00],
+            "RangeError",
+            "invalid length",
+        ),
+    ];
+
+    for (object, expected_name, expected_message) in cases {
+        assert_eq!(
+            context.read_trusted_scalar_script(object),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_name_and_message(&runtime, &mut context),
+            (
+                JsString::try_from_utf8(expected_name).unwrap(),
+                JsString::try_from_utf8(expected_message).unwrap(),
+            )
+        );
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline);
+    }
+}
+
 #[test]
 fn can_block_policy_is_runtime_wide_and_isolated() {
     let runtime = Runtime::new();
@@ -1638,6 +1968,24 @@ fn take_error_message(runtime: &Runtime, context: &mut super::Context) -> JsStri
         panic!("Error.message was not a string");
     };
     message
+}
+
+fn take_error_name_and_message(
+    runtime: &Runtime,
+    context: &mut super::Context,
+) -> (JsString, JsString) {
+    let Value::Object(error) = context.take_exception().unwrap().unwrap() else {
+        panic!("pending exception was not an Error object");
+    };
+    let name = runtime.intern_property_key("name").unwrap();
+    let message = runtime.intern_property_key("message").unwrap();
+    let Value::String(name) = context.get_property(&error, &name).unwrap() else {
+        panic!("Error.name was not a string");
+    };
+    let Value::String(message) = context.get_property(&error, &message).unwrap() else {
+        panic!("Error.message was not a string");
+    };
+    (name, message)
 }
 
 fn bytecode_callable(

@@ -1,9 +1,8 @@
 //! Release-pinned QuickJS binary-object support.
 //!
-//! The first implementation slice is deliberately limited to the pure wire
-//! layer. Runtime values, heap identities, and public `Context` APIs remain
-//! outside this module until their observable semantics can be admitted as a
-//! separate milestone.
+//! The archive reader remains heap-independent. Its only runtime-facing
+//! product is a narrow, non-executable scalar-script draft which a separate
+//! publication bridge must translate and verify before entering the heap.
 
 // The wire layer is intentionally staged before its runtime consumer. Keep the
 // allowance local so the rest of `runtime` still receives dead-code warnings.
@@ -32,4 +31,12 @@ mod pinned_opcodes;
 mod read_cursor;
 
 #[allow(dead_code)]
+mod scalar_script;
+
+#[allow(dead_code)]
 mod wire;
+
+#[allow(unused_imports)]
+pub(super) use scalar_script::{
+    ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script,
+};

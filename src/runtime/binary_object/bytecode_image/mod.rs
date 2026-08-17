@@ -16,10 +16,12 @@ pub(in crate::runtime) use super::graph::sab_transport::{
     ArchivedBytecodeImage, decode_bytecode_image_with_sab_transport,
 };
 #[allow(unused_imports)]
+pub(in crate::runtime::binary_object) use atoms::ImageAtomError;
+#[allow(unused_imports)]
 use atoms::*;
-pub(in crate::runtime::binary_object) use budget::BytecodeImageLimits;
 #[allow(unused_imports)]
 use budget::*;
+pub(in crate::runtime::binary_object) use budget::{BytecodeImageLimits, ModuleLimits};
 #[allow(unused_imports)]
 use decode::*;
 pub(in crate::runtime::binary_object) use decode::{

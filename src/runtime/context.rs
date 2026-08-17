@@ -482,6 +482,40 @@ impl Context {
         self.finish_compilation(compilation)
     }
 
+    /// Read one trusted QuickJS 2026-06-04 BC5 scalar Script.
+    ///
+    /// This deliberately narrow compatibility entry point is not a general
+    /// untrusted-bytecode sandbox. It accepts only the currently admitted
+    /// branch-free scalar Script cohort, translates it to typed engine
+    /// instructions, and runs the ordinary verifier before publication.
+    /// Well-formed QuickJS bytecode outside that cohort returns
+    /// [`ErrorKind::Unsupported`] without creating a pending exception.
+    pub fn read_trusted_scalar_script(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<FunctionBytecodeRef, RuntimeError> {
+        match self
+            .runtime
+            .read_trusted_scalar_script_in_realm(self.realm, bytes)
+        {
+            Ok(function) => Ok(function),
+            Err(RuntimeError::Engine(error))
+                if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>
+            {
+                let kind = NativeErrorKind::from_javascript_error(error.kind())
+                    .expect("guard proved this is a JavaScript-visible bytecode read error");
+                let exception = self
+                    .runtime
+                    .new_native_error_from_error(self.realm, kind, &error)?;
+                self.runtime
+                    .ensure_error_backtrace(&exception, false, None)?;
+                self.runtime.set_pending_exception(exception)?;
+                Err(RuntimeError::Exception)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn finish_compilation(
         &mut self,
         compilation: Compilation,

@@ -358,7 +358,7 @@ where
     for _ in 0..local_count {
         let name = atom_space.decode_metadata_atom(cursor)?;
         let scope_offset = cursor.position();
-        let scope_next = decode_scope_link(cursor.read_uleb128()?, scope_offset)?;
+        let scope_next = decode_scope_link(cursor.read_uleb128()?, cursor.mode(), scope_offset)?;
         let variable_reference_index =
             read_truncating_u16(cursor, FunctionField::LocalVariableReferenceIndex)?;
         let flags = LocalVariableFlags::decode(cursor.read_u8()?);
@@ -595,10 +595,19 @@ fn decode_closure_flags(
     Ok(ClosureVariableFlags(raw & CLOSURE_FLAGS_MASK))
 }
 
-fn decode_scope_link(encoded: u32, offset: usize) -> Result<ScopeLink, FunctionEnvelopeError> {
+fn decode_scope_link(
+    encoded: u32,
+    mode: ReaderMode,
+    offset: usize,
+) -> Result<ScopeLink, FunctionEnvelopeError> {
     let plus_one = encoded as i32;
-    let Some(scope_next) = plus_one.checked_sub(1) else {
-        return Err(FunctionEnvelopeError::InvalidScopeEncoding { offset, encoded });
+    let scope_next = match mode {
+        ReaderMode::Strict => plus_one
+            .checked_sub(1)
+            .ok_or(FunctionEnvelopeError::InvalidScopeEncoding { offset, encoded })?,
+        // Pinned QuickJS assigns the ULEB bits to int32_t and is built with
+        // `-fwrapv` before applying `scope_next--`.
+        ReaderMode::QuickJsCompatible => plus_one.wrapping_sub(1),
     };
     Ok(ScopeLink(scope_next))
 }

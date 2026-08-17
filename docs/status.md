@@ -62,6 +62,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   `import.meta` `url`/`main`; qjs-compatible side-effect-free structured
   `print`/`console.log` output with byte-exact WTF-8 String transport; plus a
   Rust/WASM browser playground
+- a narrow trusted-bytecode Rust API for the pinned BC5 branch-free scalar
+  Script cohort; it completes the compatible whole-image read, translates an
+  inert DTO to typed Rust instructions, and enters the ordinary verifier and
+  transactional publication path before execution
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -199,14 +203,22 @@ Ordinary-object writes match `JS_WriteObjectTag` by omitting enumerable symbol
 and private-name properties before their values can affect atoms, traversal,
 references, or resource accounting. A complete encoded-size proof precedes
 the final bounded little-endian emission; failed authentication never returns
-a partial buffer. This remains an internal archival codec, not an execution or
-public bytecode-loading path.
+a partial buffer. The canonical writer and general whole-image model remain
+internal archival facilities rather than a general public bytecode surface.
+The one public read path is deliberately narrower: it accepts only a stripped
+Script root with one completion local and the release-pinned
+`push_i8; set_loc0; return` family, after the entire image has decoded in
+QuickJS-compatible mode.
 The decoder and writer planner are physically split into shared-driver,
 Function, and Module files while retaining one frame/task stack and one set of
 atom, reference, preorder, and budget state. All binary-object submodules are
 private. A self-testing architecture gate rejects VM/compiler and executable
 bytecode dependencies, runtime consumers, crate-surface exports, and widened
-module visibility before fast CI or the parity slice can proceed.
+module visibility before fast CI or the parity slice can proceed. Its sole
+runtime-facing facade exposes an inert scalar draft to one sibling bridge; a
+self-testing consumer gate rejects any second reader, raw image leak, heap/VM
+dependency, verifier bypass, direct bytecode root construction, or alternate
+publication path.
 The same gate rejects shared-memory runtime types, `unsafe`, raw pointers,
 `NonNull`, and native raw-ownership bridges anywhere in the archival codec.
 An authenticated SharedArrayBuffer C oracle pins writer side-table order,
@@ -216,7 +228,17 @@ tests consume those three exact shapes with non-zero typed tokens and prove
 that changing the native token leaves the completed archive identical.
 An authenticated public-C-API oracle pins stripped `42;` as a 25-byte
 BC5 vector, reads it in a fresh QuickJS runtime, evaluates it to 42, and gates
-the Rust prefix codec against the exact bytes. A second authenticated 110-byte
+both the Rust codec and trusted scalar execution path against the exact bytes.
+The same oracle pins compatible 32-bit `scope_next` wrapping, exact
+`SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
+invalid-atom inputs, `InternalError` for an oversized string declaration and
+the allocation failure from a signed high-bit bytecode length, and the
+`TypeError`/`RangeError` branches for malformed ArrayBuffer and
+TypedArray layouts. Rust maps these authenticated reader branches without
+collapsing them into one error class; compatible high-bit metadata that
+QuickJS accepts but this cohort cannot model, including Module indices,
+remains non-JavaScript `Unsupported` with no pending exception. A second
+authenticated 110-byte
 vector pins a root-to-outer-to-inner constant-pool chain, the captured closure
 descriptor, and fresh-runtime evaluation to 42. A third authenticated 75-byte
 reference vector proves that neither the outer nor nested FunctionBytecode
@@ -241,8 +263,10 @@ and retains the function code, view/backing identity, reference numbering, and
 one backing descriptor in a single `ArchivedBytecodeImage`. Additional
 whole-image vectors prove that two complete SAB records with the same token
 share one archive backing while distinct tokens retain two ordered backings.
-Rust does not execute that archived function; the return-42 receipt remains
-the pinned QuickJS C-oracle result. Authenticated negative vectors also pin
+Rust does not execute the transport archive's embedded function; its return-42
+receipt remains the pinned QuickJS C-oracle result. The separate ordinary
+25-byte scalar image is now translated and executed by Rust through the full
+verified publication path. Authenticated negative vectors also pin
 QuickJS's
 three diagnostic classes when FunctionBytecode appears as the
 child of ObjectValue, Date, or
@@ -296,14 +320,15 @@ FunctionBytecode, and Module before their payloads; only its inseparable
 transport-aware counterpart admits SAB into `ArchivedWireGraph`. The ordinary
 `BytecodeImage` reader still rejects SharedArrayBuffer, while its separate
 transport-aware counterpart atomically binds the completed image to the
-authenticated occurrence table as `ArchivedBytecodeImage`. Neither archive
-exposes a bare graph/image or descriptor-table split, and neither reader is a
-public binary-object API. The canonical image writer continues to reject every
+authenticated occurrence table as `ArchivedBytecodeImage`. Neither transport
+archive exposes a bare graph/image or descriptor-table split, and neither
+transport reader is a public binary-object API. The scalar API cannot consume
+or expose either archive. The canonical image writer continues to reject every
 reachable archived SAB because there is no live backing capability, ownership
 callback bridge, or occurrence-side-table output; this milestone is decode,
-not encode or round-trip support. A heap materializer, native-code semantic
-verifier/translator, public read/write flags, and a public authenticated
-whole-image host bridge remain future milestones.
+not encode or round-trip support. A general heap materializer, broader
+native-code translation, public QuickJS-compatible read/write flags, and a
+public authenticated whole-image host bridge remain future milestones.
 In addition,
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted

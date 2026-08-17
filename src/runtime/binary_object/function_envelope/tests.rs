@@ -536,7 +536,7 @@ fn reserved_function_and_closure_bits_reject_strictly_and_normalize_compatibly()
 }
 
 #[test]
-fn scope_sentinels_round_trip_but_signed_decrement_overflow_is_rejected() {
+fn scope_sentinels_round_trip_and_compatible_mode_wraps_like_quickjs() {
     let (prefix, _) = read_prefix(
         &minimal_prefix(0, [1, 0, 0, 0, 0], 0, Some(0), None, &[41]),
         ReaderMode::Strict,
@@ -554,15 +554,21 @@ fn scope_sentinels_round_trip_but_signed_decrement_overflow_is_rejected() {
     invalid.write_uleb128(0).unwrap();
     invalid.write_u8(0).unwrap();
     invalid.write_u8(41).unwrap();
-    for mode in [ReaderMode::Strict, ReaderMode::QuickJsCompatible] {
-        assert!(matches!(
-            read_prefix(invalid.as_bytes(), mode, 0, limits()),
-            Err(FunctionEnvelopeError::InvalidScopeEncoding {
-                encoded: 0x8000_0000,
-                ..
-            })
-        ));
-    }
+    assert!(matches!(
+        read_prefix(invalid.as_bytes(), ReaderMode::Strict, 0, limits()),
+        Err(FunctionEnvelopeError::InvalidScopeEncoding {
+            encoded: 0x8000_0000,
+            ..
+        })
+    ));
+    let (prefix, _) = read_prefix(
+        invalid.as_bytes(),
+        ReaderMode::QuickJsCompatible,
+        0,
+        limits(),
+    )
+    .unwrap();
+    assert_eq!(prefix.envelope().locals()[0].scope_next().value(), i32::MAX);
 }
 
 #[test]

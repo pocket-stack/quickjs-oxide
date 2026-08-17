@@ -9,6 +9,7 @@ mod async_from_sync_iterator;
 mod async_function;
 mod async_generator;
 mod binary_object;
+mod binary_object_publish;
 mod buffer_access;
 mod bytecode_publish;
 mod class;
