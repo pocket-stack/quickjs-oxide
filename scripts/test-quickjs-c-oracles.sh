@@ -75,6 +75,10 @@ while IFS=$'\t' read -r id family source source_hash expected expected_hash desc
             [[ "$source" =~ ^tests/fixtures/function_bytecode_[a-z0-9_]+\.c$ ]] \
                 || die "invalid function-bytecode oracle source path: $source"
             ;;
+        shared-array-buffer)
+            [[ "$source" =~ ^tests/fixtures/shared_array_buffer_[a-z0-9_]+\.c$ ]] \
+                || die "invalid SharedArrayBuffer oracle source path: $source"
+            ;;
         *)
             die "unsupported oracle family: $family"
             ;;
@@ -108,7 +112,8 @@ for required_id in callback-contracts function-bytecode-ancestor-reference \
     function-bytecode-non-string-properties \
     function-bytecode-reference-boundary function-bytecode-wire \
     function-bytecode-writer-flags \
-    import-attributes import-meta json module-bytecode-wire; do
+    import-attributes import-meta json module-bytecode-wire \
+    shared-array-buffer-transport; do
     found=false
     for id in "${ids[@]}"; do
         [[ "$id" != "$required_id" ]] || found=true
@@ -121,7 +126,8 @@ done
 manifest_sources=$(printf '%s\n' "${source_paths[@]}" | LC_ALL=C sort)
 fixture_sources=$(CDPATH='' cd -- "$root" && find tests/fixtures -maxdepth 1 \
     \( -type f -o -type l \) \
-    \( -name 'module_*.c' -o -name 'function_bytecode_*.c' \) \
+    \( -name 'module_*.c' -o -name 'function_bytecode_*.c' \
+       -o -name 'shared_array_buffer_*.c' \) \
     -print | LC_ALL=C sort)
 [[ "$manifest_sources" == "$fixture_sources" ]] \
     || die 'QuickJS C oracle manifest does not cover the complete source inventory'
@@ -129,7 +135,8 @@ manifest_transcripts=$(printf '%s\n' "${expected_paths[@]}" | LC_ALL=C sort)
 fixture_transcripts=$(CDPATH='' cd -- "$root" && find tests/fixtures -maxdepth 1 \
     \( -type f -o -type l \) \
     \( -name 'module_*.quickjs-2026-06-04.txt' \
-       -o -name 'function_bytecode_*.quickjs-2026-06-04.txt' \) \
+       -o -name 'function_bytecode_*.quickjs-2026-06-04.txt' \
+       -o -name 'shared_array_buffer_*.quickjs-2026-06-04.txt' \) \
     -print | LC_ALL=C sort)
 [[ "$manifest_transcripts" == "$fixture_transcripts" ]] \
     || die 'QuickJS C oracle manifest does not cover the complete transcript inventory'
