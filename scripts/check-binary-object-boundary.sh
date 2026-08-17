@@ -255,26 +255,34 @@ for match in forbidden_cursor_capability.finditer(cursor_code):
         + location(cursor_relative, cursor_source, match.start()),
     )
 
-checked_cursor_alias = re.compile(r"\bCheckedReadCursor[ \t\n]+as[ \t\n]+")
-for match in checked_cursor_alias.finditer(cursor_code):
+sealed_cursor_alias = re.compile(r"\bSealed[ \t\n]+as[ \t\n]+")
+for match in sealed_cursor_alias.finditer(cursor_code):
     fail(
-        "common-cursor-trait-alias",
-        "CheckedReadCursor must not be renamed before an implementation; found "
+        "common-cursor-seal-alias",
+        "the common cursor seal must not be renamed before an implementation; found "
         + location(cursor_relative, cursor_source, match.start()),
     )
 
 checked_impl_pattern = re.compile(
-    r"\bimpl\b(?P<header>[^{};]*\bCheckedReadCursor\b[^{};]*)\{",
+    r"\bimpl\b(?P<header>[^{};]*\bCheckedReadCursor\b"
+    r"[ \t\n]*(?:<[^{};>]*>)?[ \t\n]+for\b[^{};]*)\{",
     re.DOTALL,
 )
+checked_cursor_alias = re.compile(r"\bCheckedReadCursor[ \t\n]+as[ \t\n]+")
 checked_impl_headers: list[tuple[str, str]] = []
 for path in binary_sources:
     if path.is_symlink() or not path.is_file():
         continue
     relative = path.relative_to(root).as_posix()
-    for match in checked_impl_pattern.finditer(
-        rust_code_only(path.read_text(encoding="utf-8"))
-    ):
+    source = path.read_text(encoding="utf-8")
+    code = rust_code_only(source)
+    for match in checked_cursor_alias.finditer(code):
+        fail(
+            "common-cursor-trait-alias",
+            "CheckedReadCursor must not be renamed before an implementation; found "
+            + location(relative, source, match.start()),
+        )
+    for match in checked_impl_pattern.finditer(code):
         header = " ".join(("impl" + match.group("header") + " {").split())
         checked_impl_headers.append((relative, header))
 expected_checked_impl_headers = [
@@ -292,6 +300,25 @@ if sorted(checked_impl_headers) != sorted(expected_checked_impl_headers):
         "common-cursor-implementation-set",
         "CheckedReadCursor must have only the two canonical implementations in read_cursor.rs; "
         f"found {checked_impl_headers}",
+    )
+
+sealed_impl_pattern = re.compile(
+    r"\bimpl\b(?P<header>[^{};]*\bSealed\b[ \t\n]+for\b[^{};]*)\{",
+    re.DOTALL,
+)
+sealed_impl_headers = [
+    " ".join(("impl" + match.group("header") + " {").split())
+    for match in sealed_impl_pattern.finditer(cursor_code)
+]
+expected_sealed_impl_headers = [
+    "impl Sealed for SabTransportCursor<'_> {",
+    "impl Sealed for WireCursor<'_> {",
+]
+if sorted(sealed_impl_headers) != sorted(expected_sealed_impl_headers):
+    fail(
+        "common-cursor-seal-implementation-set",
+        "the private common cursor seal must have only the two canonical implementations; "
+        f"found {sealed_impl_headers}",
     )
 
 for path in binary_sources:
@@ -503,6 +530,8 @@ printf '%s\n' \
 printf '%s\n' \
     'mod sealed {' \
     '    pub trait Sealed {}' \
+    "    impl Sealed for WireCursor<'_> {}" \
+    "    impl Sealed for SabTransportCursor<'_> {}" \
     '}' \
     "pub(in crate::runtime::binary_object) trait CheckedReadCursor<'input>: sealed::Sealed {}" \
     "impl<'input> CheckedReadCursor<'input> for WireCursor<'input> {}" \
@@ -639,5 +668,14 @@ expect_rejected common-cursor-qualified-impl common-cursor-implementation-set \
 expect_rejected common-cursor-aliased-impl common-cursor-trait-alias \
     src/runtime/binary_object/read_cursor.rs \
     "use self::CheckedReadCursor as Alias; impl Alias<'static> for ThirdCursor {}"
+expect_rejected common-cursor-cross-file-alias common-cursor-trait-alias \
+    src/runtime/binary_object/atoms.rs \
+    "use super::read_cursor::CheckedReadCursor as Alias; impl Alias<'static> for ThirdCursor {}"
+expect_rejected common-cursor-extra-seal common-cursor-seal-implementation-set \
+    src/runtime/binary_object/read_cursor.rs \
+    "impl sealed::Sealed for ThirdCursor {}"
+expect_rejected common-cursor-aliased-seal common-cursor-seal-alias \
+    src/runtime/binary_object/read_cursor.rs \
+    "use self::sealed::Sealed as Seal; impl Seal for ThirdCursor {}"
 
 echo "binary-object production boundary passed; all isolation canaries were rejected"
