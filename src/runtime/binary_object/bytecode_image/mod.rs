@@ -12,17 +12,27 @@ mod encode;
 mod model;
 
 #[allow(unused_imports)]
+pub(in crate::runtime) use super::graph::sab_transport::{
+    ArchivedBytecodeImage, decode_bytecode_image_with_sab_transport,
+};
+#[allow(unused_imports)]
 use atoms::*;
+pub(in crate::runtime::binary_object) use budget::BytecodeImageLimits;
 #[allow(unused_imports)]
 use budget::*;
 #[allow(unused_imports)]
 use decode::*;
+pub(in crate::runtime::binary_object) use decode::{
+    BytecodeImageError, decode_bytecode_image_body,
+};
 #[allow(unused_imports)]
 use encode::*;
 #[allow(unused_imports)]
 use model::*;
 #[allow(unused_imports)]
-pub(in crate::runtime::binary_object) use model::{FunctionId, ImageOpaque, ImageValue, ModuleId};
+pub(in crate::runtime::binary_object) use model::{
+    BytecodeImage, FunctionId, ImageOpaque, ImageValue, ModuleId,
+};
 
 #[cfg(test)]
 mod tests;

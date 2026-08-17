@@ -3,9 +3,10 @@ use super::super::code::{CodeError, CodeLimits, CodeResourceKind};
 use super::super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits};
 use super::super::graph::decode::{DataMachine, DecodeError, decode_graph_with_sab_transport};
 use super::super::graph::model::{
-    AtomId, GraphLimits, NodeId, TypedArrayKind, WireNodeCarrier, WireValue,
+    AtomId, GraphError, GraphLimits, GraphResourceKind, NodeId, TypedArrayKind, WireNodeCarrier,
+    WireValue,
 };
-use super::super::graph::sab_transport::{NativeSabToken, SabTransportInput};
+use super::super::graph::sab_transport::{NativeSabToken, SabArchiveError, SabTransportInput};
 use super::super::pinned_atoms::{PinnedAtomId, PinnedAtomKind};
 use super::super::wire::{
     BcTag, ReaderMode, ResourceKind, WireCursor, WireError, WireLimits, WireString, WireWriter,
@@ -13,8 +14,9 @@ use super::super::wire::{
 use super::{
     BytecodeImageBudgetError, BytecodeImageEncodeError, BytecodeImageEncodeOptions,
     BytecodeImageError, BytecodeImageLimits, BytecodeImageResourceKind, FunctionId, ImageAtom,
-    ImageAtomError, ImageAtomTable, ImageKey, ImageOpaque, ImageValue, ModuleBudgetError,
-    ModuleField, ModuleLimits, ModuleResourceKind, decode_bytecode_image, encode_bytecode_image,
+    ImageAtomError, ImageAtomTable, ImageFunctionEnvelope, ImageKey, ImageOpaque, ImageValue,
+    ModuleBudgetError, ModuleField, ModuleLimits, ModuleResourceKind, decode_bytecode_image,
+    decode_bytecode_image_with_sab_transport, encode_bytecode_image,
 };
 
 const TEST_LIMITS: WireLimits = WireLimits::new(4096, 32, 128, 512);
@@ -83,6 +85,210 @@ fn decode_image_with(
     references: bool,
 ) -> Result<super::BytecodeImage, BytecodeImageError> {
     decode_bytecode_image(input, mode, TEST_LIMITS, limits, references)
+}
+
+fn sab_image_limits() -> BytecodeImageLimits {
+    sab_image_limits_for(1, 1, 4)
+}
+
+fn sab_image_limits_for(
+    occurrences: usize,
+    backings: usize,
+    total_capacity: usize,
+) -> BytecodeImageLimits {
+    BytecodeImageLimits::new(
+        GRAPH_LIMITS.with_shared_array_buffers(occurrences, backings, 4, total_capacity),
+        ENVELOPE_LIMITS,
+        MODULE_LIMITS,
+        256,
+        256,
+        256,
+        4096,
+        4096,
+        4096,
+        16384,
+        16384,
+        16384,
+        16384,
+        4096,
+        4096,
+        4096,
+        4096,
+    )
+}
+
+fn decode_sab_image(
+    input: &[u8],
+    writer_occurrences: &[u64],
+    mode: ReaderMode,
+    references: bool,
+) -> Result<super::ArchivedBytecodeImage, BytecodeImageError> {
+    decode_sab_image_with_limits(
+        input,
+        writer_occurrences,
+        mode,
+        references,
+        sab_image_limits(),
+    )
+}
+
+fn decode_sab_image_with_limits(
+    input: &[u8],
+    writer_occurrences: &[u64],
+    mode: ReaderMode,
+    references: bool,
+    limits: BytecodeImageLimits,
+) -> Result<super::ArchivedBytecodeImage, BytecodeImageError> {
+    let writer_occurrences = writer_occurrences
+        .iter()
+        .copied()
+        .map(NativeSabToken::from_test_bits)
+        .collect::<Vec<_>>();
+    decode_bytecode_image_with_sab_transport(
+        SabTransportInput::new(input, &writer_occurrences),
+        mode,
+        TEST_LIMITS,
+        limits,
+        references,
+    )
+}
+
+fn function_bytecode_sab_reference_wire(token: u64) -> Vec<u8> {
+    // Pinned QuickJS 2026-06-04 whole-image oracle. The checked-in transcript
+    // zeroes the sole native token at byte 38 before it is printed.
+    let mut wire = bytes(
+        "050009040c000200a80100010001000000040100000000bb2acb280e0204001004ffffffff0f000000000000000013021302",
+    );
+    wire[38..46].copy_from_slice(&token.to_le_bytes());
+    wire
+}
+
+fn two_sab_records_wire(first: u64, second: u64) -> Vec<u8> {
+    let mut wire = vec![5, 0, 9, 2];
+    for token in [first, second] {
+        wire.extend_from_slice(&[16, 4, 0xff, 0xff, 0xff, 0xff, 0x0f]);
+        wire.extend_from_slice(&token.to_le_bytes());
+    }
+    wire
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum SabImageValueSnapshot {
+    Data(WireValue),
+    Function(u32),
+    Module(u32),
+}
+
+fn snapshot_sab_image_value(value: &ImageValue) -> SabImageValueSnapshot {
+    match value.as_wire() {
+        Ok(value) => SabImageValueSnapshot::Data(value.clone()),
+        Err(ImageOpaque::Function(function)) => {
+            SabImageValueSnapshot::Function(function.zero_based())
+        }
+        Err(ImageOpaque::Module(module)) => SabImageValueSnapshot::Module(module.zero_based()),
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum SabImageNodeSnapshot {
+    Array(Vec<SabImageValueSnapshot>),
+    TypedArray {
+        kind: TypedArrayKind,
+        length: u32,
+        byte_offset: u32,
+        buffer: u32,
+    },
+    SharedArrayBuffer {
+        byte_length: u32,
+        max_byte_length: Option<u32>,
+        backing: u32,
+        capacity: u32,
+        growable: bool,
+    },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SabImageFunctionSnapshot {
+    envelope: ImageFunctionEnvelope,
+    constants: Vec<SabImageValueSnapshot>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SabImageSemanticSnapshot {
+    atoms: Vec<WireString>,
+    nodes: Vec<SabImageNodeSnapshot>,
+    references: Vec<u32>,
+    functions: Vec<SabImageFunctionSnapshot>,
+    module_count: usize,
+    root: SabImageValueSnapshot,
+    shared_backing_count: usize,
+}
+
+fn snapshot_sab_image(archive: &super::ArchivedBytecodeImage) -> SabImageSemanticSnapshot {
+    let image = archive.test_image();
+    let nodes = image
+        .nodes()
+        .iter()
+        .map(|node| match node {
+            WireNodeCarrier::Array { elements } => {
+                SabImageNodeSnapshot::Array(elements.iter().map(snapshot_sab_image_value).collect())
+            }
+            WireNodeCarrier::TypedArray {
+                kind,
+                length,
+                byte_offset,
+                buffer,
+            } => SabImageNodeSnapshot::TypedArray {
+                kind: *kind,
+                length: *length,
+                byte_offset: *byte_offset,
+                buffer: buffer.zero_based(),
+            },
+            WireNodeCarrier::SharedArrayBuffer {
+                byte_length,
+                max_byte_length,
+                backing,
+            } => {
+                let descriptor = archive
+                    .test_shared_backing_descriptor(*backing)
+                    .expect("every archived SAB node must retain its backing descriptor");
+                SabImageNodeSnapshot::SharedArrayBuffer {
+                    byte_length: *byte_length,
+                    max_byte_length: *max_byte_length,
+                    backing: backing.zero_based(),
+                    capacity: descriptor.capacity(),
+                    growable: descriptor.is_growable(),
+                }
+            }
+            _ => panic!("whole-image SAB oracle contains an unexpected node: {node:?}"),
+        })
+        .collect();
+    let functions = image
+        .functions()
+        .iter()
+        .map(|function| SabImageFunctionSnapshot {
+            envelope: function.envelope().clone(),
+            constants: function
+                .constants()
+                .iter()
+                .map(snapshot_sab_image_value)
+                .collect(),
+        })
+        .collect();
+
+    SabImageSemanticSnapshot {
+        atoms: image.atoms().to_vec(),
+        nodes,
+        references: image
+            .reference_table()
+            .iter()
+            .map(|node| node.zero_based())
+            .collect(),
+        functions,
+        module_count: image.modules().len(),
+        root: snapshot_sab_image_value(image.root()),
+        shared_backing_count: archive.shared_backing_count(),
+    }
 }
 
 fn bounded_image_limits(
@@ -1967,6 +2173,266 @@ fn finalization_keeps_mode_reference_flags_and_unsupported_tags_observable() {
         decode_image(&[5, 0, BcTag::SharedArrayBuffer.to_byte()]),
         Err(BytecodeImageError::Data(
             DecodeError::SharedArrayBuffersNotAllowed { offset: 2 }
+        ))
+    );
+}
+
+#[test]
+fn sab_transport_whole_image_oracle_preserves_topology_and_normalizes_tokens() {
+    const FIRST_TOKEN: u64 = 0x0123_4567_89ab_cdef;
+    const RENAMED_TOKEN: u64 = 0xfedc_ba98_7654_3210;
+
+    let first_wire = function_bytecode_sab_reference_wire(FIRST_TOKEN);
+    assert_eq!(first_wire.len(), 50);
+    let first = decode_sab_image(&first_wire, &[FIRST_TOKEN], ReaderMode::Strict, true)
+        .expect("pinned FunctionBytecode/SAB oracle must decode");
+    let first_snapshot = snapshot_sab_image(&first);
+
+    assert_eq!(first_snapshot.atoms, []);
+    assert_eq!(
+        first_snapshot.root,
+        SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(0)))
+    );
+    assert_eq!(first_snapshot.references, [0, 1, 2]);
+    assert_eq!(first_snapshot.shared_backing_count, 1);
+    assert_eq!(first_snapshot.module_count, 0);
+    assert_eq!(first_snapshot.functions.len(), 1);
+    assert_eq!(
+        first_snapshot.functions[0].envelope.code().as_bytes(),
+        [0xbb, 0x2a, 0xcb, 0x28]
+    );
+    assert!(first_snapshot.functions[0].envelope.debug().is_none());
+    assert!(first_snapshot.functions[0].constants.is_empty());
+    assert_eq!(
+        first_snapshot.nodes.as_slice(),
+        [
+            SabImageNodeSnapshot::Array(vec![
+                SabImageValueSnapshot::Function(0),
+                SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(1))),
+                SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(2))),
+                SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(2))),
+            ]),
+            SabImageNodeSnapshot::TypedArray {
+                kind: TypedArrayKind::Uint8,
+                length: 4,
+                byte_offset: 0,
+                buffer: 2,
+            },
+            SabImageNodeSnapshot::SharedArrayBuffer {
+                byte_length: 4,
+                max_byte_length: None,
+                backing: 0,
+                capacity: 4,
+                growable: false,
+            },
+        ]
+    );
+    assert_eq!(
+        encode_image(first.test_image()),
+        Err(BytecodeImageEncodeError::ArchivedBackingContextRequired {
+            node: NodeId::from_zero_based(2),
+        })
+    );
+
+    let renamed_wire = function_bytecode_sab_reference_wire(RENAMED_TOKEN);
+    let renamed = decode_sab_image(&renamed_wire, &[RENAMED_TOKEN], ReaderMode::Strict, true)
+        .expect("alpha-renamed native token must decode to the same semantic image");
+    assert_eq!(snapshot_sab_image(&renamed), first_snapshot);
+
+    for (archive, raw_token) in [(&first, FIRST_TOKEN), (&renamed, RENAMED_TOKEN)] {
+        let debug = format!("{archive:#?}");
+        for spelling in [
+            raw_token.to_string(),
+            format!("{raw_token:x}"),
+            format!("{raw_token:X}"),
+            format!("0x{raw_token:016x}"),
+            format!("0x{raw_token:016X}"),
+        ] {
+            assert!(
+                !debug.contains(&spelling),
+                "ArchivedBytecodeImage Debug leaked native token spelling {spelling}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sab_transport_whole_image_canonicalizes_repeated_and_distinct_backings() {
+    const FIRST_TOKEN: u64 = 0x0123_4567_89ab_cdef;
+    const SECOND_TOKEN: u64 = 0xfedc_ba98_7654_3210;
+    let limits = sab_image_limits_for(2, 2, 8);
+
+    let repeated_wire = two_sab_records_wire(FIRST_TOKEN, FIRST_TOKEN);
+    let repeated = decode_sab_image_with_limits(
+        &repeated_wire,
+        &[FIRST_TOKEN, FIRST_TOKEN],
+        ReaderMode::Strict,
+        true,
+        limits,
+    )
+    .expect("two complete SAB records with one token must share one archived backing");
+    let repeated = snapshot_sab_image(&repeated);
+    assert_eq!(repeated.references, [0, 1, 2]);
+    assert_eq!(repeated.shared_backing_count, 1);
+    assert_eq!(
+        repeated.root,
+        SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(0)))
+    );
+    assert_eq!(
+        repeated.nodes,
+        [
+            SabImageNodeSnapshot::Array(vec![
+                SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(1))),
+                SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(2))),
+            ]),
+            SabImageNodeSnapshot::SharedArrayBuffer {
+                byte_length: 4,
+                max_byte_length: None,
+                backing: 0,
+                capacity: 4,
+                growable: false,
+            },
+            SabImageNodeSnapshot::SharedArrayBuffer {
+                byte_length: 4,
+                max_byte_length: None,
+                backing: 0,
+                capacity: 4,
+                growable: false,
+            },
+        ]
+    );
+
+    let distinct_wire = two_sab_records_wire(FIRST_TOKEN, SECOND_TOKEN);
+    let distinct = decode_sab_image_with_limits(
+        &distinct_wire,
+        &[FIRST_TOKEN, SECOND_TOKEN],
+        ReaderMode::Strict,
+        true,
+        limits,
+    )
+    .expect("two complete SAB records with distinct tokens must retain distinct backings");
+    let distinct = snapshot_sab_image(&distinct);
+    assert_eq!(distinct.references, [0, 1, 2]);
+    assert_eq!(distinct.shared_backing_count, 2);
+    assert_eq!(
+        distinct.nodes,
+        [
+            SabImageNodeSnapshot::Array(vec![
+                SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(1))),
+                SabImageValueSnapshot::Data(WireValue::Node(NodeId::from_zero_based(2))),
+            ]),
+            SabImageNodeSnapshot::SharedArrayBuffer {
+                byte_length: 4,
+                max_byte_length: None,
+                backing: 0,
+                capacity: 4,
+                growable: false,
+            },
+            SabImageNodeSnapshot::SharedArrayBuffer {
+                byte_length: 4,
+                max_byte_length: None,
+                backing: 1,
+                capacity: 4,
+                growable: false,
+            },
+        ]
+    );
+}
+
+#[test]
+fn sab_transport_whole_image_rejects_split_and_truncated_inputs() {
+    const TOKEN: u64 = 0x0123_4567_89ab_cdef;
+    let wire = function_bytecode_sab_reference_wire(TOKEN);
+
+    assert_eq!(
+        decode_sab_image(&wire, &[], ReaderMode::Strict, true),
+        Err(BytecodeImageError::Data(
+            DecodeError::SharedArrayBufferArchive(SabArchiveError::SideTableTooShort {
+                offset: 38,
+                ordinal: 0,
+                entry_count: 0,
+            })
+        ))
+    );
+    assert_eq!(
+        decode_sab_image(&wire, &[TOKEN ^ 1], ReaderMode::Strict, true),
+        Err(BytecodeImageError::Data(
+            DecodeError::SharedArrayBufferArchive(SabArchiveError::SideTableTokenMismatch {
+                offset: 38,
+                ordinal: 0,
+            })
+        ))
+    );
+    assert_eq!(
+        decode_sab_image(&wire, &[TOKEN, TOKEN ^ 1], ReaderMode::Strict, true),
+        Err(BytecodeImageError::Data(
+            DecodeError::SharedArrayBufferArchive(SabArchiveError::SideTableHasExtra {
+                consumed: 1,
+                entry_count: 2,
+            })
+        ))
+    );
+    assert_eq!(
+        decode_sab_image(&wire[..45], &[TOKEN], ReaderMode::Strict, true),
+        Err(BytecodeImageError::Data(DecodeError::Wire(
+            WireError::Truncated {
+                offset: 38,
+                needed: 8,
+                remaining: 7,
+            }
+        )))
+    );
+}
+
+#[test]
+fn sab_transport_whole_image_preserves_reference_and_finalization_policy() {
+    const TOKEN: u64 = 0x0123_4567_89ab_cdef;
+    let wire = function_bytecode_sab_reference_wire(TOKEN);
+    let writer_occurrences = [NativeSabToken::from_test_bits(TOKEN)];
+    assert_eq!(
+        decode_bytecode_image_with_sab_transport(
+            SabTransportInput::new(&wire, &writer_occurrences),
+            ReaderMode::Strict,
+            TEST_LIMITS,
+            IMAGE_LIMITS,
+            true,
+        ),
+        Err(BytecodeImageError::Data(DecodeError::Graph(
+            GraphError::ResourceLimit {
+                kind: GraphResourceKind::SharedArrayBufferOccurrences,
+                requested: 1,
+                limit: 0,
+            }
+        )))
+    );
+    assert_eq!(
+        decode_sab_image(&wire, &[TOKEN], ReaderMode::Strict, false),
+        Err(BytecodeImageError::Data(
+            DecodeError::ObjectReferencesNotAllowed { offset: 46 }
+        ))
+    );
+
+    let mut trailing = wire;
+    trailing.push(0xff);
+    assert_eq!(
+        decode_sab_image(&trailing, &[TOKEN, TOKEN ^ 1], ReaderMode::Strict, true),
+        Err(BytecodeImageError::Wire(WireError::TrailingBytes {
+            offset: 50,
+            remaining: 1,
+        }))
+    );
+    assert_eq!(
+        decode_sab_image(
+            &trailing,
+            &[TOKEN, TOKEN ^ 1],
+            ReaderMode::QuickJsCompatible,
+            true,
+        ),
+        Err(BytecodeImageError::Data(
+            DecodeError::SharedArrayBufferArchive(SabArchiveError::SideTableHasExtra {
+                consumed: 1,
+                entry_count: 2,
+            })
         ))
     );
 }

@@ -31,16 +31,11 @@ use super::model::{
 use super::model::{WireNode, WireProperty};
 #[cfg(test)]
 use super::sab_transport::NativeSabToken;
-use super::sab_transport::{
-    ArchiveBackingId, ArchivedWireGraph, SabArchiveError, SabTransportCursor, SabTransportInput,
-};
-
-/// Unforgeable permission for the SAB transport module to create its checked
-/// cursor. The type is visible to that sibling module, but its private field
-/// means only this decoder can construct a value in production code.
-pub(super) struct SabDecodePermit {
-    _sealed: (),
-}
+#[allow(unused_imports)]
+pub(in crate::runtime) use super::sab_transport::decode_graph_with_sab_transport;
+use super::sab_transport::{ArchiveBackingId, SabArchiveError, SabTransportCursor};
+#[cfg(test)]
+use super::sab_transport::{ArchivedWireGraph, SabTransportInput};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum DecodeError<Opaque = Infallible> {
@@ -228,7 +223,7 @@ impl<Opaque> From<ArenaError> for DecodeError<Opaque> {
     }
 }
 
-fn map_sab_archive_error<Opaque>(error: SabArchiveError) -> DecodeError<Opaque> {
+pub(super) fn map_sab_archive_error<Opaque>(error: SabArchiveError) -> DecodeError<Opaque> {
     match error {
         SabArchiveError::Wire(error) => DecodeError::Wire(error),
         SabArchiveError::Graph(error) => DecodeError::Graph(error),
@@ -423,23 +418,7 @@ pub(in crate::runtime) fn decode_graph(
     Ok(graph)
 }
 
-/// Decode one inseparable QuickJS SAB transport into a pointer-free archive.
-pub(in crate::runtime) fn decode_graph_with_sab_transport(
-    input: SabTransportInput<'_>,
-    mode: ReaderMode,
-    wire_limits: WireLimits,
-    graph_limits: GraphLimits,
-    allow_object_references: bool,
-) -> Result<ArchivedWireGraph, DecodeError> {
-    let permit = SabDecodePermit { _sealed: () };
-    let cursor = input
-        .into_cursor(&permit, mode, wire_limits, graph_limits)
-        .map_err(map_sab_archive_error)?;
-    let (cursor, graph) = decode_graph_body(cursor, graph_limits, allow_object_references)?;
-    cursor.finish(graph).map_err(map_sab_archive_error)
-}
-
-fn decode_graph_body<'input, C>(
+pub(super) fn decode_graph_body<'input, C>(
     mut cursor: C,
     graph_limits: GraphLimits,
     allow_object_references: bool,

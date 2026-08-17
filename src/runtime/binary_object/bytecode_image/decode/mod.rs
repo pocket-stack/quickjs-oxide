@@ -11,6 +11,7 @@ use super::super::graph::decode::{
     DataCompletion, DataCursor, DataFrame, DataMachine, DataReadStep, DecodeError, MachineSource,
     PropertyDisposition,
 };
+use super::super::graph::sab_transport::SabArchiveError;
 use super::super::read_cursor::CheckedReadCursor;
 use super::super::wire::{BcTag, ReaderMode, WireCursor, WireError, WireLimits};
 use super::atoms::{ImageAtom, ImageAtomError, ImageAtomTable, ImageKey};
@@ -183,6 +184,16 @@ impl From<BytecodeImageBudgetError> for BytecodeImageError {
     }
 }
 
+impl From<SabArchiveError> for BytecodeImageError {
+    fn from(error: SabArchiveError) -> Self {
+        match error {
+            SabArchiveError::Wire(error) => Self::Wire(error),
+            SabArchiveError::Graph(error) => Self::Data(DecodeError::Graph(error)),
+            error => Self::Data(DecodeError::SharedArrayBufferArchive(error)),
+        }
+    }
+}
+
 /// Decode one complete bytecode-mode BC5 image without making it executable.
 pub(in crate::runtime) fn decode_bytecode_image(
     input: &[u8],
@@ -199,7 +210,7 @@ pub(in crate::runtime) fn decode_bytecode_image(
     Ok(image)
 }
 
-fn decode_bytecode_image_body<'input, C>(
+pub(in crate::runtime::binary_object) fn decode_bytecode_image_body<'input, C>(
     mut cursor: C,
     limits: BytecodeImageLimits,
     allow_object_references: bool,
@@ -281,8 +292,8 @@ where
     // Preserve the ordinary reader's error order: strict trailing input is
     // rejected after the complete recursive record is consumed, but before
     // decoder-owned arenas and function/module tables are finalized. The
-    // consuming cursor finalizer runs again at the public boundary; a future
-    // SAB image entrypoint will consume the same cursor together with its
+    // consuming cursor finalizer runs again at the complete-input boundary;
+    // the SAB transport entrypoint consumes the same cursor together with its
     // authenticated occurrence table.
     cursor.validate_wire_end()?;
 

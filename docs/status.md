@@ -234,8 +234,17 @@ The function consumes no object-reference ID, the view and backing receive IDs
 1 and 2, and both later aliases resolve `ObjectReference(2)`. Its sole native
 token is authenticated against the writer side table and zeroed before the
 wire is printed; a fresh runtime evaluates the function to 42 and preserves
-the view bytes and all backing aliases. Authenticated negative vectors also
-pin QuickJS's three diagnostic classes when FunctionBytecode appears as the
+the view bytes and all backing aliases. The Rust transport-aware whole-image
+decoder now consumes that exact topology with a nonzero test token, proves
+that token alpha-renaming leaves the pointer-free semantic snapshot unchanged,
+and retains the function code, view/backing identity, reference numbering, and
+one backing descriptor in a single `ArchivedBytecodeImage`. Additional
+whole-image vectors prove that two complete SAB records with the same token
+share one archive backing while distinct tokens retain two ordered backings.
+Rust does not execute that archived function; the return-42 receipt remains
+the pinned QuickJS C-oracle result. Authenticated negative vectors also pin
+QuickJS's
+three diagnostic classes when FunctionBytecode appears as the
 child of ObjectValue, Date, or
 TypedArray; a truncated-record probe proves that all three parents first decode
 the complete function child before applying their typed rejection.
@@ -283,12 +292,18 @@ another node.
 Malicious TypedArray placeholder paths are rejected deterministically instead
 of reproducing pinned QuickJS's native crashes.
 The ordinary data-only graph facade still rejects SharedArrayBuffer,
-FunctionBytecode, and Module before their payloads; only the inseparable
-transport-aware facade admits SAB into a non-executable pointer-free archive.
-The BytecodeImage reader admits FunctionBytecode and Module but still rejects
-SharedArrayBuffer, and neither reader is a public binary-object API yet.
-A heap materializer, native-code semantic verifier/translator, public read/write
-flags, and a public authenticated whole-image facade remain future milestones.
+FunctionBytecode, and Module before their payloads; only its inseparable
+transport-aware counterpart admits SAB into `ArchivedWireGraph`. The ordinary
+`BytecodeImage` reader still rejects SharedArrayBuffer, while its separate
+transport-aware counterpart atomically binds the completed image to the
+authenticated occurrence table as `ArchivedBytecodeImage`. Neither archive
+exposes a bare graph/image or descriptor-table split, and neither reader is a
+public binary-object API. The canonical image writer continues to reject every
+reachable archived SAB because there is no live backing capability, ownership
+callback bridge, or occurrence-side-table output; this milestone is decode,
+not encode or round-trip support. A heap materializer, native-code semantic
+verifier/translator, public read/write flags, and a public authenticated
+whole-image host bridge remain future milestones.
 In addition,
 `num-bigint` lacks fallible construction, so heap materialization, decoder OOM
 mapping, and allocator fault-injection remain hardening gates before untrusted

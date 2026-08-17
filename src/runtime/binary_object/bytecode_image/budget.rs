@@ -223,7 +223,7 @@ impl BytecodeImageLimits {
     }
 
     #[must_use]
-    pub(super) const fn graph(self) -> GraphLimits {
+    pub(in crate::runtime::binary_object) const fn graph(self) -> GraphLimits {
         self.graph
     }
 

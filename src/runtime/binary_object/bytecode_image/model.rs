@@ -11,6 +11,7 @@ use super::super::function_envelope::{
 };
 use super::super::graph::decode::MachineSource;
 use super::super::graph::model::{NodeId, WireNodeCarrier, WireValue};
+use super::super::graph::sab_transport::SabArchiveOccurrence;
 use super::super::pinned_opcodes::PinnedOpcode;
 use super::super::wire::WireString;
 use super::decode::{AuthenticatedFunction, AuthenticatedModule};
@@ -795,6 +796,29 @@ impl BytecodeImage {
     #[must_use]
     pub(super) const fn nodes(&self) -> &[ImageNode] {
         &self.nodes
+    }
+
+    /// Project SAB occurrences solely while the transport finalizer binds this
+    /// image to its authenticated backing descriptor table.
+    ///
+    /// The completed transport archive exposes no corresponding image or node
+    /// accessor, so archive-local backing IDs cannot be detached from the table
+    /// which gives them meaning.
+    pub(in crate::runtime::binary_object) fn sab_archive_occurrences(
+        &self,
+    ) -> impl Iterator<Item = SabArchiveOccurrence> + '_ {
+        self.nodes.iter().filter_map(|node| match node {
+            WireNodeCarrier::SharedArrayBuffer {
+                byte_length,
+                max_byte_length,
+                backing,
+            } => Some(SabArchiveOccurrence::new(
+                *byte_length,
+                *max_byte_length,
+                *backing,
+            )),
+            _ => None,
+        })
     }
 
     #[must_use]

@@ -43,7 +43,7 @@ pub(super) enum ImageKey {
 
 /// Failures while reading or relocating the bytecode image's atom namespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ImageAtomError {
+pub(in crate::runtime) enum ImageAtomError {
     Wire(WireError),
     AtomIndexSpaceMismatch {
         expected: AtomIndexSpace,
