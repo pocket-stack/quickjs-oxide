@@ -384,12 +384,75 @@ assert(
   "future dynamic-import syntax entered the parse-negative cohort",
 );
 
+function javascriptFiles(relativeDirectory) {
+  return readdirSync(join(suite, relativeDirectory), { withFileTypes: true })
+    .flatMap((entry) => {
+      const relativePath = `${relativeDirectory}/${entry.name}`;
+      if (entry.isDirectory()) return javascriptFiles(relativePath);
+      return entry.isFile() && entry.name.endsWith(".js") ? [relativePath] : [];
+    })
+    .sort(bytewise);
+}
+
+const moduleAdmissionGroup = "dynamic-import-module-a";
+const moduleDynamicImportSurface = javascriptFiles("test").filter((relativePath) => {
+  const shape = metadata(relativePath);
+  return shape.flags.includes("module") && shape.features.includes("dynamic-import");
+});
+const moduleGoalRoots = moduleDynamicImportSurface.filter((relativePath) => {
+  const features = metadata(relativePath).features;
+  return features.length === 1 && features[0] === "dynamic-import";
+});
+const moduleGoalCanaries = moduleDynamicImportSurface.filter(
+  (relativePath) => !moduleGoalRoots.includes(relativePath),
+);
+assert.equal(moduleGoalRoots.length, 27, "dynamic-import Module-goal root count changed");
+assert.equal(moduleGoalCanaries.length, 15, "dynamic-import Module-goal canary count changed");
+assert.equal(
+  sha256(pathManifest(moduleGoalRoots)),
+  "f29c503a2b0e20da8fa72683443cd884cdb425d9904479afb69820b5e17914e0",
+  "dynamic-import Module-goal root path manifest changed",
+);
+for (const relativePath of moduleGoalRoots) {
+  const shape = metadata(relativePath);
+  assert(shape.flags.includes("async"), `${relativePath}: Module-goal root lost async flag`);
+  assert(shape.flags.includes("module"), `${relativePath}: Module-goal root lost module flag`);
+  assert.deepEqual(shape.features, ["dynamic-import"], `${relativePath}: feature shape changed`);
+  assert.equal(shape.negativePhase, "", `${relativePath}: negative phase changed`);
+  assert.equal(shape.negativeType, "", `${relativePath}: negative type changed`);
+}
+
 function requestSpecifiers(relativePath) {
   const body = source(relativePath).replace(/\/\*---[\s\S]*?---\*\//, "");
   const requests = [];
   const importCall = /\bimport\s*\(\s*(["'])([^"']+)\1/g;
   for (const match of body.matchAll(importCall)) {
     if (!requests.includes(match[2])) requests.push(match[2]);
+  }
+  for (const request of requests) {
+    assert(request.startsWith("./"), `${relativePath}: non-child request ${request}`);
+    assert(!request.includes("/../"), `${relativePath}: escaping request ${request}`);
+  }
+  return requests;
+}
+
+function moduleRequestSpecifiers(relativePath) {
+  const body = source(relativePath).replace(/\/\*---[\s\S]*?---\*\//, "");
+  const matches = [];
+  const literalRequestPatterns = [
+    /\bimport\s*\(\s*(["'])([^"']+)\1/g,
+    /\bimport\s+(?!\()(?:(?:[\w*{},\s]+)\s+from\s+)?(["'])([^"']+)\1/g,
+    /\bexport\s+(?:\*|\{[^}]*\})[^'";]*\bfrom\s*(["'])([^"']+)\1/g,
+  ];
+  for (const pattern of literalRequestPatterns) {
+    for (const match of body.matchAll(pattern)) {
+      matches.push({ offset: match.index, specifier: match[2] });
+    }
+  }
+  matches.sort((left, right) => left.offset - right.offset);
+  const requests = [];
+  for (const { specifier } of matches) {
+    if (!requests.includes(specifier)) requests.push(specifier);
   }
   for (const request of requests) {
     assert(request.startsWith("./"), `${relativePath}: non-child request ${request}`);
@@ -488,6 +551,112 @@ assert.equal(
   3,
 );
 assert.equal(admissionRecords.length, 13);
+
+const moduleFileEdges = new Map();
+const pendingModuleFiles = [...moduleGoalRoots].reverse();
+while (pendingModuleFiles.length !== 0) {
+  const relativePath = pendingModuleFiles.pop();
+  if (moduleFileEdges.has(relativePath)) continue;
+  const requests = moduleRequestSpecifiers(relativePath).map((specifier) => ({
+    specifier,
+    normalized: normalize(relativePath, specifier),
+  }));
+  moduleFileEdges.set(relativePath, requests);
+  for (const request of requests.toReversed()) {
+    assert(
+      existsSync(join(suite, request.normalized)),
+      `${relativePath}: missing requested module ${request.normalized}`,
+    );
+    if (!moduleFileEdges.has(request.normalized)) pendingModuleFiles.push(request.normalized);
+  }
+}
+const moduleSources = [...moduleFileEdges.keys()].sort(bytewise);
+const moduleEdgeLines = moduleSources.flatMap((relativePath) =>
+  moduleFileEdges
+    .get(relativePath)
+    .map((request) => `${relativePath}\t${request.specifier}\t${request.normalized}`),
+).sort(bytewise);
+assert.equal(moduleSources.length, 31, "dynamic-import Module-goal file count changed");
+assert.equal(moduleEdgeLines.length, 32, "dynamic-import Module-goal edge count changed");
+assert.equal(
+  sha256(pathManifest(moduleSources)),
+  "e75c150f36519ec500e65f25cbe7670b5115f98a3845955379eb98589b06242c",
+  "dynamic-import Module-goal file path manifest changed",
+);
+assert.equal(
+  sha256(pathManifest(moduleEdgeLines)),
+  "ff3a0ce8abb2962cbe255cce10320d5e66cc48a27a373815eaf052c7629fe130",
+  "dynamic-import Module-goal edge manifest changed",
+);
+
+function moduleClosureSize(rootPath) {
+  const visited = new Set();
+  const pending = [rootPath];
+  while (pending.length !== 0) {
+    const relativePath = pending.pop();
+    if (visited.has(relativePath)) continue;
+    visited.add(relativePath);
+    for (const request of moduleFileEdges.get(relativePath).toReversed()) {
+      pending.push(request.normalized);
+    }
+  }
+  return visited.size;
+}
+
+const moduleClosureDistribution = new Map();
+for (const rootPath of moduleGoalRoots) {
+  const size = moduleClosureSize(rootPath);
+  moduleClosureDistribution.set(size, (moduleClosureDistribution.get(size) ?? 0) + 1);
+}
+assert.deepEqual(
+  [...moduleClosureDistribution].sort(([left], [right]) => left - right),
+  [
+    [1, 11],
+    [2, 15],
+    [3, 1],
+  ],
+  "dynamic-import Module-goal closure distribution changed",
+);
+
+const moduleAdmissionRecords = [
+  ...moduleSources.map((relativePath) => {
+    const shape = metadata(relativePath);
+    return admissionRecord({
+      kind: "graph-file",
+      group: moduleAdmissionGroup,
+      path: relativePath,
+      source_sha256: sha256(source(relativePath)),
+      includes: shape.includes,
+      flags: shape.flags,
+      features: shape.features,
+      negative_phase: shape.negativePhase,
+      negative_type: shape.negativeType,
+    });
+  }),
+  ...moduleSources.flatMap((relativePath) =>
+    moduleFileEdges.get(relativePath).map((request, requestIndex) =>
+      admissionRecord({
+        kind: "graph-request",
+        group: moduleAdmissionGroup,
+        path: relativePath,
+        request_index: requestIndex,
+        specifier: request.specifier,
+        normalized_path: request.normalized,
+      }),
+    ),
+  ),
+  ...moduleGoalRoots.map((rootPath) =>
+    admissionRecord({
+      kind: "graph-root",
+      group: moduleAdmissionGroup,
+      path: rootPath,
+      closure_file_count: moduleClosureSize(rootPath),
+      priority: 0,
+      policy: "initial-import-tree",
+    }),
+  ),
+];
+assert.equal(moduleAdmissionRecords.length, 90);
 
 function parseRejectedAdmissionRecords(paths, group) {
   return [
@@ -616,6 +785,9 @@ function assertPromoted() {
   const profile = profileSection("audited-negative-tests");
   const focused = checkedLineSet(checkedFocused);
   const canaryPaths = new Set(futureSyntaxCanaries);
+  for (const relativePath of moduleGoalRoots) {
+    assert(focused.has(relativePath), `${relativePath}: Module-goal focused path not promoted`);
+  }
   for (const relativePath of assignmentTargetRoots) {
     assert(profile.has(relativePath), `${relativePath}: assignment profile path not promoted`);
   }
@@ -787,6 +959,7 @@ if (mode === "--admissions") {
   process.stdout.write(
     renderAdmissionRows([
       ...admissionRecords,
+      ...moduleAdmissionRecords,
       ...assignmentTargetAdmissionRecords,
       ...newTargetAdmissionRecords,
       ...parseNegativeAdmissionRecords,
@@ -796,6 +969,7 @@ if (mode === "--admissions") {
   process.stdout.write(`path\tvariant\trule\n${diagnosticCandidates.join("\n")}\n`);
 } else {
   assertAdmissionGroup(checkedAdmissions, admissionGroup, admissionRecords);
+  assertAdmissionGroup(checkedAdmissions, moduleAdmissionGroup, moduleAdmissionRecords);
   assertAdmissionGroup(
     checkedAdmissions,
     assignmentTargetGroup,
@@ -810,6 +984,7 @@ if (mode === "--admissions") {
   assertPromoted();
   console.log(
     "dynamic-import admissions authenticated: runtime roots=4/variants=8; " +
+      "module roots=27/files=31/edges=32; " +
       "assignment negatives=17/34; new-target negatives=21/40; " +
       "parse negatives=86/163; sources=130; edges=3",
   );
