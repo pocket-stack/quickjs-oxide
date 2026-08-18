@@ -42,6 +42,107 @@ static const uint8_t ordinary_leaf_bytecode[] = {
 _Static_assert(sizeof(ordinary_leaf_bytecode) == 119,
                "ordinary leaf oracle must retain its pinned 119-byte wire");
 
+enum {
+    ORD_ARGS, ORD_VARS, ORD_DEFINED_ARGS, ORD_STACK, ORD_VAR_REFS, ORD_CLOSURES,
+    ORD_CPOOL, ORD_CODE, ORD_LOCALS, ORD_METADATA_FIELD_COUNT,
+};
+typedef struct OrdinaryFunctionMetadata {
+    uint16_t flags;
+    uint8_t js_mode;
+    uint32_t fields[ORD_METADATA_FIELD_COUNT];
+    size_t code_offset;
+} OrdinaryFunctionMetadata;
+
+typedef struct OrdinaryExpansionCase {
+    const char *label, *source;
+    uint16_t wire_size;
+    uint64_t wire_fnv1a64;
+    OrdinaryFunctionMetadata child;
+} OrdinaryExpansionCase;
+
+static const OrdinaryExpansionCase ordinary_expansion_cases[] = {
+    { "implicit", "(function implicit(){})",
+      50, UINT64_C(0xca96655ed845f1b4),
+      { 0x0243, 0, { 0, 0, 0, 0, 0, 0, 0, 1, 0 }, 49 } },
+    { "primitives",
+      "(function primitives(f){'use strict';"
+      "return f(void 0)+f(null)+f(false)+f(true)+f('')+f(7n)+f(0.5);})",
+      97, UINT64_C(0xac53929d2069cf29),
+      { 0x0243, 1, { 1, 0, 1, 3, 0, 0, 1, 33, 1 }, 55 } },
+    { "predicates",
+      "(function predicates(a,k){'use strict';"
+      "if(k===0)return a===void 0;if(k===1)return a===null;"
+      "if(k===2)return typeof a==='undefined';"
+      "if(k===3)return typeof a==='function';return a==null;})",
+      95, UINT64_C(0x5cde810e0e789921),
+      { 0x0243, 1, { 2, 0, 2, 2, 0, 0, 0, 36, 2 }, 59 } },
+    { "calls", "(function calls(f,a,b,c,d){'use strict';"
+      "return f()+f(a)+f(a,b)+f(a,b,c)+f(a,b,c,d);})",
+      95, UINT64_C(0x851636a627a5ff92),
+      { 0x0243, 1, { 5, 0, 5, 6, 0, 0, 0, 29, 5 }, 66 } },
+    { "unary-binary", "(function unary_binary(f,a,b){'use strict';"
+      "f(-a);f(+a);f(++a);f(--a);f(~a);f(!a);f(typeof a);"
+      "f(a*b);f(a%b);f(a**b);f(a<<b);f(a>>b);f(a>>>b);"
+      "f(a<b);f(a<=b);f(a>=b);f(a==b);f(a!=b);f(a!==b);"
+      "f(a&b);f(a^b);f(a|b);return 42;})",
+      196, UINT64_C(0xa25f0c9a9b3e6e1d),
+      { 0x0243, 1, { 3, 0, 3, 3, 0, 0, 0, 130, 3 }, 66 } },
+    { "branches-updates",
+      "(function branches_updates(f,a,b){'use strict';"
+      "f(a++);f(b--);return (a&&b)||(a??b);})",
+      99, UINT64_C(0xce13ccf04c7cb95e),
+      { 0x0243, 1, { 3, 0, 3, 3, 0, 0, 0, 30, 3 }, 69 } },
+    { "wide-if-true",
+      "(function wide_if_true(f,a){'use strict';return a||("
+      "f()+f()+f()+f()+f()+f()+f()+f()+f()+f()+"
+      "f()+f()+f()+f()+f()+f()+f()+f()+f()+f()+"
+      "f()+f()+f()+f()+f()+f()+f()+f()+f()+f()+"
+      "f()+f()+f()+f()+f()+f()+f()+f()+f()+f()+"
+      "f()+f()+f()+f()+f()+f()+f()+f()+f()+f());})",
+      220, UINT64_C(0x6cc8033fc7dc4a7c),
+      { 0x0243, 1, { 2, 0, 2, 2, 0, 0, 0, 158, 2 }, 62 } },
+};
+static const uint8_t ordinary_expansion_atom_free_raws[] = {
+    6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+    25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
+    142, 143, 147, 148, 149, 152, 154, 157, 158, 159, 160, 161,
+    162, 164, 167, 168, 170, 171, 172, 173, 174, 176, 191, 233,
+    240, 241, 242, 243,
+};
+static const uint8_t ordinary_expansion_call_raws[] = {
+    34, 236, 237, 238, 239,
+};
+typedef struct OrdinaryStackCase {
+    const char *name;
+    uint8_t raw, input_count, output_count;
+    uint8_t inputs[5];
+    uint8_t outputs[6];
+    uint8_t lowering_count, lowering[4];
+} OrdinaryStackCase;
+static const OrdinaryStackCase ordinary_stack_cases[] = {
+    { "nip", 15, 2, 1, { 1, 2 }, { 2 }, 1, { 15 } },
+    { "nip1", 16, 3, 2, { 1, 2, 3 }, { 2, 3 }, 2, { 24, 15 } },
+    { "dup1", 18, 2, 3, { 1, 2 }, { 1, 1, 2 }, 1, { 18 } },
+    { "dup2", 19, 2, 4, { 1, 2 }, { 1, 2, 1, 2 }, 3, { 18, 17, 24 } },
+    { "dup3", 20, 3, 6, { 1, 2, 3 }, { 1, 2, 3, 1, 2, 3 }, 1, { 20 } },
+    { "insert2", 21, 2, 3, { 1, 2 }, { 2, 1, 2 }, 1, { 21 } },
+    { "insert3", 22, 3, 4, { 1, 2, 3 }, { 3, 1, 2, 3 }, 1, { 22 } },
+    { "insert4", 23, 4, 5, { 1, 2, 3, 4 }, { 4, 1, 2, 3, 4 }, 1, { 23 } },
+    { "perm3", 24, 3, 3, { 1, 2, 3 }, { 2, 1, 3 }, 1, { 24 } },
+    { "perm4", 25, 4, 4, { 1, 2, 3, 4 }, { 3, 1, 2, 4 }, 1, { 25 } },
+    { "perm5", 26, 5, 5, { 1, 2, 3, 4, 5 }, { 4, 1, 2, 3, 5 }, 1, { 26 } },
+    { "swap", 27, 2, 2, { 1, 2 }, { 2, 1 }, 1, { 27 } },
+    { "swap2", 28, 4, 4, { 1, 2, 3, 4 }, { 3, 4, 1, 2 }, 2, { 31, 31 } },
+    { "rot3l", 29, 3, 3, { 1, 2, 3 }, { 2, 3, 1 }, 2, { 24, 27 } },
+    { "rot3r", 30, 3, 3, { 1, 2, 3 }, { 3, 1, 2 }, 2, { 27, 24 } },
+    { "rot4l", 31, 4, 4, { 1, 2, 3, 4 }, { 2, 3, 4, 1 }, 1, { 31 } },
+    { "rot5l", 32, 5, 5, { 1, 2, 3, 4, 5 }, { 2, 3, 4, 5, 1 }, 4, { 25, 25, 26, 31 } },
+};
+
+_Static_assert(sizeof(ordinary_expansion_atom_free_raws) == 57, "57 atom-free rows");
+_Static_assert(sizeof(ordinary_expansion_call_raws) == 5, "five plain-call rows");
+_Static_assert(sizeof(ordinary_stack_cases) / sizeof(ordinary_stack_cases[0]) == 17,
+               "17 rare stack rows");
 static const uint8_t scalar_prefix[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
     0x01, 0x00, 0x01, 0x00, 0x00,
@@ -51,7 +152,7 @@ static const uint8_t scalar_local[] = {
     0x01, 0x00, 0x00, 0x00, 0x00,
 };
 
-#define SCALAR_MAX_CODE_SIZE 16
+#define SCALAR_MAX_CODE_SIZE 24
 #define SCALAR_FLOAT64_POOL_SIZE 9
 #define SCALAR_MAX_WIRE_SIZE \
     (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) + \
@@ -1905,7 +2006,7 @@ static int expect_read_scalar(const char *label,
         loaded = JS_UNDEFINED;
         goto cleanup;
     }
-    if (expected.kind == SCALAR_VALUE_FLOAT64) {
+    {
         rewritten_bytecode = JS_WriteObject(
             context, &rewritten_bytecode_size, loaded,
             JS_WRITE_OBJ_BYTECODE);
@@ -3315,6 +3416,751 @@ cleanup:
     return status;
 }
 
+static size_t ordinary_opcode_size(uint8_t raw) {
+    switch (raw) {
+    case 34: case 88:
+        return 3;
+    case 105: case 176:
+        return 5;
+    case 187: case 189: case 232: case 233:
+        return 2;
+    default:
+        return raw < 244 ? 1 : 0;
+    }
+}
+
+static int ordinary_collect_opcodes(const uint8_t *code,
+                                    size_t code_size,
+                                    uint8_t present[256]) {
+    size_t offset = 0;
+    while (offset < code_size) {
+        size_t size = ordinary_opcode_size(code[offset]);
+        if (size == 0 || size > code_size - offset)
+            return -1;
+        present[code[offset]] = 1;
+        offset += size;
+    }
+    return 0;
+}
+
+static void ordinary_print_raw_set(const char *label,
+                                   const uint8_t present[256]) {
+    int first = 1;
+    printf("%s=", label);
+    for (unsigned raw = 0; raw < 256; raw++) {
+        if (present[raw]) {
+            printf("%s%u", first ? "" : ",", raw);
+            first = 0;
+        }
+    }
+    putchar('\n');
+}
+
+static int ordinary_build_raw_set(const char *label, const uint8_t *raws,
+                                  size_t count, uint8_t present[256]) {
+    for (size_t index = 0; index < count; index++) {
+        if (present[raws[index]]) {
+            fprintf(stderr, "%s contains duplicate raw %u\n",
+                    label, raws[index]);
+            return -1;
+        }
+        present[raws[index]] = 1;
+    }
+    return 0;
+}
+
+static uint64_t ordinary_fnv1a64(const uint8_t *bytes, size_t length) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (size_t index = 0; index < length; index++)
+        hash = (hash ^ bytes[index]) * UINT64_C(1099511628211);
+    return hash;
+}
+
+typedef struct OrdinaryWireCursor {
+    const uint8_t *wire;
+    size_t size;
+    size_t offset;
+    int failed;
+} OrdinaryWireCursor;
+
+static void ordinary_wire_skip(OrdinaryWireCursor *cursor, size_t count) {
+    if (cursor->failed || count > cursor->size - cursor->offset)
+        cursor->failed = 1;
+    else
+        cursor->offset += count;
+}
+
+static uint8_t ordinary_wire_u8(OrdinaryWireCursor *cursor) {
+    if (cursor->failed || cursor->offset == cursor->size) {
+        cursor->failed = 1;
+        return 0;
+    }
+    return cursor->wire[cursor->offset++];
+}
+
+static uint32_t ordinary_wire_uleb(OrdinaryWireCursor *cursor) {
+    uint32_t result = 0;
+    for (unsigned shift = 0; shift <= 28; shift += 7) {
+        uint8_t byte = ordinary_wire_u8(cursor);
+        if (cursor->failed || (shift == 28 && (byte & 0xf0) != 0)) {
+            cursor->failed = 1;
+            return 0;
+        }
+        result |= (uint32_t)(byte & 0x7f) << shift;
+        if ((byte & 0x80) == 0)
+            return result;
+    }
+    cursor->failed = 1;
+    return 0;
+}
+
+static void ordinary_wire_function(OrdinaryWireCursor *cursor,
+                                   OrdinaryFunctionMetadata *metadata) {
+    if (ordinary_wire_u8(cursor) != 12)
+        cursor->failed = 1;
+    metadata->flags = ordinary_wire_u8(cursor);
+    metadata->flags |= (uint16_t)ordinary_wire_u8(cursor) << 8;
+    metadata->js_mode = ordinary_wire_u8(cursor);
+    (void)ordinary_wire_uleb(cursor); /* func_name */
+    for (size_t index = 0; index < ORD_METADATA_FIELD_COUNT; index++)
+        metadata->fields[index] = ordinary_wire_uleb(cursor);
+    for (uint32_t index = 0; index < metadata->fields[ORD_LOCALS]; index++) {
+        (void)ordinary_wire_uleb(cursor); /* name */
+        (void)ordinary_wire_uleb(cursor); /* scope_next */
+        (void)ordinary_wire_uleb(cursor); /* var_ref_idx */
+        (void)ordinary_wire_u8(cursor);   /* flags */
+    }
+    if (metadata->fields[ORD_CLOSURES] != 0 ||
+        (metadata->flags & 0x0400) != 0)
+        cursor->failed = 1; /* These stripped, detached functions have neither. */
+    metadata->code_offset = cursor->offset;
+    ordinary_wire_skip(cursor, metadata->fields[ORD_CODE]);
+}
+
+static int ordinary_wire_child_metadata(
+    const uint8_t *wire, size_t wire_size,
+    OrdinaryFunctionMetadata *child) {
+    OrdinaryWireCursor cursor = { wire, wire_size, 0, 0 };
+    OrdinaryFunctionMetadata root = { 0 };
+    uint8_t version = ordinary_wire_u8(&cursor);
+    uint32_t atom_count = ordinary_wire_uleb(&cursor);
+    for (uint32_t index = 0; index < atom_count; index++) {
+        uint32_t header = ordinary_wire_uleb(&cursor);
+        ordinary_wire_skip(&cursor,
+                           (size_t)(header >> 1) * (1 + (header & 1)));
+    }
+    ordinary_wire_function(&cursor, &root);
+    ordinary_wire_function(&cursor, child);
+    return cursor.failed || version != 5 || root.fields[ORD_CPOOL] != 1 ?
+               -1 : 0;
+}
+
+static int ordinary_metadata_equal(const OrdinaryFunctionMetadata *left,
+                                   const OrdinaryFunctionMetadata *right) {
+    return left->flags == right->flags && left->js_mode == right->js_mode &&
+           memcmp(left->fields, right->fields, sizeof(left->fields)) == 0 &&
+           left->code_offset == right->code_offset;
+}
+
+static int build_ordinary_stack_wire(const OrdinaryStackCase *test,
+                                     const uint8_t *operations,
+                                     size_t operation_count,
+                                     size_t output_index,
+                                     uint8_t wire[SCALAR_MAX_WIRE_SIZE],
+                                     size_t *wire_size) {
+    size_t drop_count = test->output_count - output_index - 1;
+    ScalarCase scalar = { 0 };
+    size_t offset = 0;
+    scalar.code_size = (size_t)test->input_count * 2 + operation_count +
+                       drop_count + 2;
+    if (output_index >= test->output_count ||
+        scalar.code_size > SCALAR_MAX_CODE_SIZE)
+        return -1;
+    for (size_t index = 0; index < test->input_count; index++) {
+        scalar.code[offset++] = 187;
+        scalar.code[offset++] = test->inputs[index];
+    }
+    for (size_t index = 0; index < operation_count; index++)
+        scalar.code[offset++] = operations[index];
+    for (size_t index = 0; index < drop_count; index++)
+        scalar.code[offset++] = 14;
+    scalar.code[offset++] = 203;
+    scalar.code[offset++] = 40;
+    if (offset != scalar.code_size ||
+        build_scalar_wire(&scalar, wire, SCALAR_MAX_WIRE_SIZE, wire_size))
+        return -1;
+    wire[11] = test->input_count > test->output_count ?
+                   test->input_count : test->output_count;
+    return 0;
+}
+
+static int expect_ordinary_stack_case(const OrdinaryStackCase *test) {
+    uint8_t wire[SCALAR_MAX_WIRE_SIZE];
+    size_t wire_size;
+    char label[80];
+    for (size_t index = 0; index < test->output_count; index++) {
+        snprintf(label, sizeof(label), "ordinary-stack-raw-%u-native-%zu",
+                 test->raw, index);
+        if (build_ordinary_stack_wire(test, &test->raw, 1, index,
+                                      wire, &wire_size) ||
+            expect_read_scalar(label, wire, wire_size,
+                               (ScalarExpectation)
+                                   EXPECT_NUMBER(test->outputs[index])))
+            return -1;
+        if (test->lowering_count > 1) {
+            snprintf(label, sizeof(label),
+                     "ordinary-stack-raw-%u-lowering-%zu",
+                     test->raw, index);
+            if (build_ordinary_stack_wire(test, test->lowering,
+                                          test->lowering_count, index,
+                                          wire, &wire_size) ||
+                expect_read_scalar(label, wire, wire_size,
+                                   (ScalarExpectation)
+                                       EXPECT_NUMBER(test->outputs[index])))
+                return -1;
+        }
+    }
+    printf("ordinary-stack-raw-%u-contract=%s,stack:%u->%u,peak:%u,"
+           "evidence:authenticated-manual-wire,lowering:",
+           test->raw, test->name, test->input_count, test->output_count,
+           test->input_count > test->output_count ?
+               test->input_count : test->output_count);
+    for (size_t index = 0; index < test->lowering_count; index++)
+        printf("%s%u", index == 0 ? "" : ",", test->lowering[index]);
+    puts(",rewrite:identity,fresh-eval:all-slots");
+    return 0;
+}
+
+static int ordinary_primitive_index, ordinary_call_index;
+static int ordinary_plain_receiver_count, ordinary_sink_mode;
+static int ordinary_bigint_tag, ordinary_float_tag, ordinary_float_norm_tag;
+static uint64_t ordinary_float_bits;
+static char ordinary_sink_sequence[160];
+static size_t ordinary_sink_sequence_length;
+
+static JSValue ordinary_callback_error(JSContext *context,
+                                       const char *message) {
+    return JS_ThrowInternalError(context, "%s", message);
+}
+
+static JSValue ordinary_sink(JSContext *context,
+                             JSValueConst this_value,
+                             int argc,
+                             JSValueConst *argv) {
+    static const int expected_tags[] = {
+        JS_TAG_UNDEFINED, JS_TAG_NULL, JS_TAG_BOOL, JS_TAG_BOOL,
+        JS_TAG_STRING, JS_TAG_SHORT_BIG_INT, JS_TAG_FLOAT64,
+    };
+    static const int expected_args[] = { 11, 22, 33, 44 };
+    if (!JS_IsUndefined(this_value))
+        return ordinary_callback_error(context, "plain receiver drifted");
+    ordinary_plain_receiver_count++;
+    if (ordinary_sink_mode == 2) {
+        char token[24];
+        int token_length;
+        if (argc != 1)
+            return ordinary_callback_error(context, "generic argc drifted");
+        if (JS_VALUE_GET_TAG(argv[0]) == JS_TAG_INT) {
+            token_length = snprintf(token, sizeof(token), "%d",
+                                    JS_VALUE_GET_INT(argv[0]));
+        } else if (JS_VALUE_GET_TAG(argv[0]) == JS_TAG_BOOL) {
+            token_length = snprintf(token, sizeof(token), "%s",
+                                    JS_VALUE_GET_BOOL(argv[0]) ?
+                                        "true" : "false");
+        } else if (JS_VALUE_GET_TAG(argv[0]) == JS_TAG_STRING) {
+            size_t length;
+            const char *text = JS_ToCStringLen(context, &length, argv[0]);
+            if (!text)
+                return JS_EXCEPTION;
+            token_length = snprintf(token, sizeof(token), "%.*s",
+                                    (int)length, text);
+            JS_FreeCString(context, text);
+        } else {
+            return ordinary_callback_error(context,
+                                           "generic result sequence drifted");
+        }
+        if (token_length < 0 || (size_t)token_length >= sizeof(token) ||
+            ordinary_sink_sequence_length + (ordinary_sink_sequence_length != 0) +
+                    (size_t)token_length >= sizeof(ordinary_sink_sequence))
+            return ordinary_callback_error(context, "generic result overflow");
+        ordinary_sink_sequence_length += snprintf(
+            ordinary_sink_sequence + ordinary_sink_sequence_length,
+            sizeof(ordinary_sink_sequence) - ordinary_sink_sequence_length,
+            "%s%s", ordinary_sink_sequence_length == 0 ? "" : ",", token);
+        return JS_NewInt32(context, 0);
+    }
+    if (ordinary_sink_mode == 1) {
+        if (ordinary_call_index >= 5 || argc != ordinary_call_index)
+            return ordinary_callback_error(context, "plain call argc drifted");
+        for (int index = 0; index < argc; index++) {
+            if (index >= 4 || JS_VALUE_GET_TAG(argv[index]) != JS_TAG_INT ||
+                JS_VALUE_GET_INT(argv[index]) != expected_args[index])
+                return ordinary_callback_error(context,
+                                               "plain call argument drifted");
+        }
+        ordinary_call_index++;
+        return JS_NewInt32(context, argc);
+    }
+    if (argc != 1 || ordinary_primitive_index >= 7 ||
+        JS_VALUE_GET_NORM_TAG(argv[0]) !=
+            expected_tags[ordinary_primitive_index])
+        return ordinary_callback_error(context, "primitive shape drifted");
+    if (ordinary_primitive_index == 2 && JS_VALUE_GET_BOOL(argv[0]) != 0)
+        return ordinary_callback_error(context, "false payload drifted");
+    if (ordinary_primitive_index == 3 && JS_VALUE_GET_BOOL(argv[0]) != 1)
+        return ordinary_callback_error(context, "true payload drifted");
+    if (ordinary_primitive_index == 4) {
+        size_t length;
+        const char *text = JS_ToCStringLen(context, &length, argv[0]);
+        if (!text)
+            return JS_EXCEPTION;
+        JS_FreeCString(context, text);
+        if (length != 0)
+            return ordinary_callback_error(context,
+                                           "empty String payload drifted");
+    } else if (ordinary_primitive_index == 5) {
+        ordinary_bigint_tag = JS_VALUE_GET_TAG(argv[0]);
+        if (ordinary_bigint_tag != JS_TAG_SHORT_BIG_INT ||
+            JS_VALUE_GET_SHORT_BIG_INT(argv[0]) != 7)
+            return ordinary_callback_error(context, "BigInt payload drifted");
+    } else if (ordinary_primitive_index == 6) {
+        double number = JS_VALUE_GET_FLOAT64(argv[0]);
+        ordinary_float_tag = JS_VALUE_GET_TAG(argv[0]);
+        ordinary_float_norm_tag = JS_VALUE_GET_NORM_TAG(argv[0]);
+        memcpy(&ordinary_float_bits, &number, sizeof(ordinary_float_bits));
+        if (ordinary_float_tag != JS_TAG_FLOAT64 ||
+            ordinary_float_bits != UINT64_C(0x3fe0000000000000))
+            return ordinary_callback_error(context, "Float64 bits drifted");
+    }
+    ordinary_primitive_index++;
+    return JS_NewInt32(context, 1);
+}
+
+static JSValue ordinary_html_dda_call(JSContext *context,
+                                      JSValueConst this_value,
+                                      int argc,
+                                      JSValueConst *argv) {
+    return JS_UNDEFINED;
+}
+
+static int ordinary_boolean_result(JSContext *context,
+                                   JSValueConst function,
+                                   JSValueConst value,
+                                   int selector) {
+    JSValue arguments[2] = {
+        JS_DupValue(context, value), JS_NewInt32(context, selector),
+    };
+    JSValue result = JS_Call(context, function, JS_UNDEFINED, 2, arguments);
+    int boolean = -1;
+    JS_FreeValue(context, arguments[1]);
+    JS_FreeValue(context, arguments[0]);
+    if (JS_IsException(result))
+        report_exception(context, "ordinary predicate call failed");
+    else if (JS_VALUE_GET_TAG(result) != JS_TAG_BOOL)
+        fputs("ordinary predicate result was not exact JS_TAG_BOOL\n",
+              stderr);
+    else
+        boolean = JS_VALUE_GET_BOOL(result);
+    JS_FreeValue(context, result);
+    return boolean;
+}
+
+static int ordinary_compile_load_case(JSContext *compile_context,
+                                      JSContext *eval_context,
+                                      const OrdinaryExpansionCase *test,
+                                      JSValue *function,
+                                      uint8_t union_raws[256]) {
+    JSValue compiled = JS_UNDEFINED;
+    JSValue loaded = JS_UNDEFINED;
+    uint8_t *wire = NULL;
+    uint8_t *rewritten = NULL;
+    size_t wire_size = 0;
+    size_t rewritten_size = 0;
+    uint8_t case_raws[256] = { 0 };
+    OrdinaryFunctionMetadata child = { 0 };
+    char raw_label[96];
+    int status = -1;
+    compiled = JS_Eval(compile_context, test->source, strlen(test->source),
+                       test->label,
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context, "ordinary compile-only failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    wire = JS_WriteObject(compile_context, &wire_size, compiled,
+                          JS_WRITE_OBJ_BYTECODE);
+    if (!wire) {
+        report_exception(compile_context, "ordinary write failed");
+        goto cleanup;
+    }
+    if (wire_size != test->wire_size ||
+        ordinary_fnv1a64(wire, wire_size) != test->wire_fnv1a64 ||
+        ordinary_wire_child_metadata(wire, wire_size, &child) ||
+        !ordinary_metadata_equal(&child, &test->child) ||
+        ordinary_collect_opcodes(wire + child.code_offset,
+                                 child.fields[ORD_CODE], case_raws)) {
+        fprintf(stderr, "%s ordinary BC5 wire/metadata/opcodes drifted\n",
+                test->label);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        union_raws[raw] |= case_raws[raw];
+    loaded = JS_ReadObject(eval_context, wire, wire_size,
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(eval_context, "ordinary fresh-runtime read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(eval_context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != wire_size ||
+        memcmp(rewritten, wire, wire_size) != 0) {
+        if (!rewritten)
+            report_exception(eval_context, "ordinary rewrite failed");
+        else
+            fprintf(stderr, "%s ordinary rewrite drifted\n", test->label);
+        goto cleanup;
+    }
+    *function = JS_EvalFunction(eval_context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(*function) ||
+        !JS_IsFunction(eval_context, *function)) {
+        report_exception(eval_context, "ordinary root evaluation failed");
+        *function = JS_UNDEFINED;
+        goto cleanup;
+    }
+    printf("ordinary-expansion-%s-wire-size=%zu\n", test->label, wire_size);
+    printf("ordinary-expansion-%s-wire-fnv1a64=%016" PRIx64 "\n",
+           test->label, ordinary_fnv1a64(wire, wire_size));
+    printf("ordinary-expansion-%s-wire-hex=", test->label);
+    for (size_t index = 0; index < wire_size; index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    printf("ordinary-expansion-%s-child-metadata=flags:%04x,js_mode:%u,"
+           "args:%" PRIu32 ",vars:%" PRIu32 ",defined_args:%" PRIu32
+           ",stack:%" PRIu32 ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu\n",
+           test->label, child.flags, child.js_mode, child.fields[ORD_ARGS],
+           child.fields[ORD_VARS], child.fields[ORD_DEFINED_ARGS],
+           child.fields[ORD_STACK], child.fields[ORD_VAR_REFS],
+           child.fields[ORD_CLOSURES], child.fields[ORD_CPOOL],
+           child.fields[ORD_CODE], child.fields[ORD_LOCALS], child.code_offset);
+    snprintf(raw_label, sizeof(raw_label),
+             "ordinary-expansion-%s-child-raw", test->label);
+    ordinary_print_raw_set(raw_label, case_raws);
+    printf("ordinary-expansion-%s-rewrite=identity\n", test->label);
+    printf("ordinary-expansion-%s-fresh-root=Function\n", test->label);
+    status = 0;
+
+cleanup:
+    if (rewritten)
+        js_free(eval_context, rewritten);
+    JS_FreeValue(eval_context, loaded);
+    if (wire)
+        js_free(compile_context, wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
+typedef enum OrdinaryCallResult {
+    ORDINARY_CALL_UNDEFINED, ORDINARY_CALL_INT, ORDINARY_CALL_BOOL,
+} OrdinaryCallResult;
+
+static int ordinary_expect_call(JSContext *context,
+                                JSValueConst function,
+                                int argc,
+                                JSValueConst *arguments,
+                                OrdinaryCallResult kind,
+                                int expected,
+                                const char *label) {
+    JSValue result = JS_Call(context, function, JS_UNDEFINED,
+                             argc, arguments);
+    int matches = kind == ORDINARY_CALL_UNDEFINED ?
+                      JS_IsUndefined(result) :
+                  kind == ORDINARY_CALL_INT ?
+                      JS_VALUE_GET_TAG(result) == JS_TAG_INT &&
+                          JS_VALUE_GET_INT(result) == expected :
+                      JS_VALUE_GET_TAG(result) == JS_TAG_BOOL &&
+                          JS_VALUE_GET_BOOL(result) == expected;
+    if (JS_IsException(result))
+        report_exception(context, label);
+    else if (!matches)
+        fprintf(stderr, "%s result drifted\n", label);
+    JS_FreeValue(context, result);
+    return matches ? 0 : -1;
+}
+
+static int ordinary_expect_i32_call(JSContext *context,
+                                    JSValueConst function,
+                                    JSValueConst sink,
+                                    const int *values,
+                                    size_t value_count,
+                                    int expected,
+                                    const char *label) {
+    JSValue arguments[5] = { JS_UNDEFINED };
+    int status;
+    if (value_count > 4)
+        return -1;
+    arguments[0] = sink;
+    for (size_t index = 0; index < value_count; index++)
+        arguments[index + 1] = JS_NewInt32(context, values[index]);
+    status = ordinary_expect_call(context, function,
+                                  (int)value_count + 1, arguments,
+                                  ORDINARY_CALL_INT, expected, label);
+    for (size_t index = 0; index < value_count; index++)
+        JS_FreeValue(context, arguments[index + 1]);
+    return status;
+}
+
+static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
+    static const char unary_binary_sequence[] =
+        "-6,6,7,6,-7,false,number,18,0,216,48,0,0,"
+        "false,false,true,false,true,true,2,5,7";
+    enum {
+        IMPLICIT_CASE, PRIMITIVES_CASE, PREDICATES_CASE, CALLS_CASE,
+        UNARY_BINARY_CASE, BRANCHES_UPDATES_CASE, WIDE_IF_TRUE_CASE,
+    };
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue functions[sizeof(ordinary_expansion_cases) /
+                      sizeof(ordinary_expansion_cases[0])];
+    JSValue sink = JS_UNDEFINED;
+    JSValue html_dda = JS_UNDEFINED;
+    JSValue normal = JS_UNDEFINED;
+    uint8_t compiler_raws[256] = { 0 };
+    uint8_t atom_free_raws[256] = { 0 };
+    uint8_t call_raws[256] = { 0 };
+    uint8_t emitted_raws[256] = { 0 };
+    uint8_t missing_raws[256] = { 0 };
+    uint8_t manual_raws[256] = { 0 };
+    size_t emitted_count = 0;
+    size_t compiler_raw_count = 0;
+    size_t atom_free_emitted_count = 0;
+    size_t call_emitted_count = 0;
+    int status = -1;
+
+    for (size_t index = 0;
+         index < sizeof(functions) / sizeof(functions[0]); index++)
+        functions[index] = JS_UNDEFINED;
+    if (ordinary_build_raw_set("ordinary atom-free raws",
+                               ordinary_expansion_atom_free_raws,
+                               sizeof(ordinary_expansion_atom_free_raws),
+                               atom_free_raws) ||
+        ordinary_build_raw_set("ordinary plain-call raws",
+                               ordinary_expansion_call_raws,
+                               sizeof(ordinary_expansion_call_raws),
+                               call_raws))
+        goto cleanup;
+    for (size_t index = 0;
+         index < sizeof(ordinary_stack_cases) /
+                     sizeof(ordinary_stack_cases[0]); index++) {
+        uint8_t raw = ordinary_stack_cases[index].raw;
+        if (manual_raws[raw]) {
+            fprintf(stderr, "ordinary manual stack cases duplicate raw %u\n",
+                    raw);
+            goto cleanup;
+        }
+        manual_raws[raw] = 1;
+    }
+    for (unsigned raw = 0; raw < 256; raw++) {
+        if (atom_free_raws[raw] && call_raws[raw]) {
+            fputs("ordinary expansion cohort overlap\n", stderr);
+            goto cleanup;
+        }
+    }
+    runtime = JS_NewRuntime();
+    context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!context) {
+        fputs("ordinary expansion fresh runtime allocation failed\n", stderr);
+        goto cleanup;
+    }
+    for (size_t index = 0;
+         index < sizeof(ordinary_expansion_cases) /
+                     sizeof(ordinary_expansion_cases[0]); index++) {
+        if (ordinary_compile_load_case(compile_context, context,
+                                       &ordinary_expansion_cases[index],
+                                       &functions[index], compiler_raws))
+            goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++) {
+        compiler_raw_count += compiler_raws[raw] != 0;
+        if ((atom_free_raws[raw] || call_raws[raw]) && compiler_raws[raw]) {
+            emitted_raws[raw] = 1;
+            emitted_count++;
+            atom_free_emitted_count += atom_free_raws[raw] != 0;
+            call_emitted_count += call_raws[raw] != 0;
+        } else if (atom_free_raws[raw] || call_raws[raw]) {
+            missing_raws[raw] = 1;
+        }
+    }
+    if (compiler_raw_count != 63 || emitted_count != 45 ||
+        atom_free_emitted_count != 40 || call_emitted_count != 5) {
+        fputs("ordinary compiler/manual evidence split drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++) {
+        if (missing_raws[raw] != manual_raws[raw]) {
+            fputs("ordinary manual stack evidence split drifted\n", stderr);
+            goto cleanup;
+        }
+    }
+    puts("ordinary-expansion-evidence=compile-only-write-read-write-fresh-runtime");
+    puts("ordinary-expansion-atom-free-status=upstream-evidence-for-rust-admission");
+    puts("ordinary-expansion-atom-free-count=57");
+    ordinary_print_raw_set("ordinary-expansion-atom-free-raw",
+                           atom_free_raws);
+    puts("ordinary-expansion-plain-call-status=upstream-pending-rust-admission");
+    puts("ordinary-expansion-plain-call-count=5");
+    ordinary_print_raw_set("ordinary-expansion-plain-call-raw", call_raws);
+    puts("ordinary-expansion-physical-row-count=62");
+    puts("ordinary-expansion-compiler-all-count=63");
+    ordinary_print_raw_set("ordinary-expansion-compiler-all-raw",
+                           compiler_raws);
+    puts("ordinary-expansion-compiler-new-count=45");
+    ordinary_print_raw_set("ordinary-expansion-compiler-new-raw",
+                           emitted_raws);
+    puts("ordinary-expansion-compiler-new-atom-free-count=40");
+    puts("ordinary-expansion-compiler-new-plain-call-count=5");
+    puts("ordinary-expansion-manual-stack-count=17");
+    ordinary_print_raw_set("ordinary-expansion-manual-stack-raw",
+                           missing_raws);
+    puts("ordinary-expansion-manual-stack-provenance="
+         "authenticated-wire-not-compiler-emitted");
+    puts("ordinary-expansion-stack-evidence-split="
+         "compiler:14,17;manual:15,16,18-32");
+    if (ordinary_expect_call(context, functions[IMPLICIT_CASE], 0, NULL,
+                             ORDINARY_CALL_UNDEFINED, 0,
+                             "return_undef execution"))
+        goto cleanup;
+    ordinary_primitive_index = 0;
+    ordinary_plain_receiver_count = 0;
+    ordinary_sink_mode = 0;
+    ordinary_bigint_tag = ordinary_float_tag = ordinary_float_norm_tag = -1;
+    ordinary_float_bits = 0;
+    sink = JS_NewCFunction(context, ordinary_sink,
+                           "ordinaryPrimitiveSink", 1);
+    if (ordinary_expect_call(context, functions[PRIMITIVES_CASE], 1, &sink,
+                             ORDINARY_CALL_INT, 7,
+                             "primitive cohort execution") ||
+        ordinary_primitive_index != 7)
+        goto cleanup;
+    JS_FreeValue(context, sink);
+    sink = JS_UNDEFINED;
+    html_dda = JS_NewCFunction(context, ordinary_html_dda_call, "htmlDDA", 0);
+    normal = JS_NewCFunction(context, ordinary_html_dda_call, "normal", 0);
+    JS_SetIsHTMLDDA(context, html_dda);
+    {
+        JSValueConst values[] = {
+            html_dda, html_dda, html_dda, html_dda, html_dda, normal, normal,
+        };
+        static const uint8_t selectors[] = { 0, 1, 2, 3, 4, 2, 3 };
+        static const uint8_t expected[] = { 0, 0, 1, 0, 1, 0, 1 };
+        for (size_t index = 0; index < sizeof(expected); index++) {
+            if (ordinary_boolean_result(context, functions[PREDICATES_CASE],
+                                        values[index], selectors[index]) !=
+                expected[index]) {
+                fputs("ordinary HTMLDDA predicate matrix drifted\n", stderr);
+                goto cleanup;
+            }
+        }
+    }
+    ordinary_call_index = 0;
+    ordinary_sink_mode = 1;
+    sink = JS_NewCFunction(context, ordinary_sink,
+                           "ordinaryCallSink", 4);
+    {
+        static const int values[] = { 11, 22, 33, 44 };
+        if (ordinary_expect_i32_call(context, functions[CALLS_CASE], sink,
+                                     values, 4, 10,
+                                     "plain call cohort execution"))
+            goto cleanup;
+    }
+    if (ordinary_call_index != 5)
+        goto cleanup;
+    JS_FreeValue(context, sink);
+    sink = JS_UNDEFINED;
+    ordinary_sink_mode = 2;
+    sink = JS_NewCFunction(context, ordinary_sink,
+                           "ordinaryGenericSink", 1);
+    {
+        static const int unary_values[] = { 6, 3 };
+        static const int branch_values[] = { 0, 5 };
+        ordinary_sink_sequence_length = 0;
+        ordinary_sink_sequence[0] = '\0';
+        if (ordinary_expect_i32_call(context,
+                                     functions[UNARY_BINARY_CASE], sink,
+                                     unary_values, 2, 42,
+                                     "unary/binary execution") ||
+            strcmp(ordinary_sink_sequence, unary_binary_sequence) != 0)
+            goto cleanup;
+        ordinary_sink_sequence_length = 0;
+        ordinary_sink_sequence[0] = '\0';
+        if (ordinary_expect_i32_call(context,
+                                     functions[BRANCHES_UPDATES_CASE], sink,
+                                     branch_values, 2, 4,
+                                     "branch/update execution") ||
+            strcmp(ordinary_sink_sequence, "0,5") != 0)
+            goto cleanup;
+    }
+    JS_FreeValue(context, sink);
+    sink = JS_NewCFunction(context, ordinary_html_dda_call,
+                           "ordinaryUnreachedSink", 0);
+    {
+        JSValue arguments[2] = { sink, JS_TRUE };
+        if (ordinary_expect_call(context, functions[WIDE_IF_TRUE_CASE], 2,
+                                 arguments, ORDINARY_CALL_BOOL, 1,
+                                 "wide if_true execution"))
+            goto cleanup;
+    }
+    if (ordinary_plain_receiver_count != 36) {
+        fputs("plain receiver observation count drifted\n", stderr);
+        goto cleanup;
+    }
+    puts("ordinary-expansion-return-undef-max-stack=0");
+    puts("ordinary-expansion-return-undef-fresh-eval=undefined");
+    puts("ordinary-expansion-html-dda=exact-undefined:false,exact-null:false,"
+         "typeof-undefined:true,typeof-function:false,equals-null:true");
+    puts("ordinary-expansion-normal-function="
+         "typeof-undefined:false,typeof-function:true");
+    puts("ordinary-expansion-plain-call-this=undefined");
+    puts("ordinary-expansion-plain-call-argc=0,1,2,3,4");
+    puts("ordinary-expansion-plain-call-undefined-receiver-count=36");
+    printf("ordinary-expansion-bigint-tag=%d,signed-i32=7\n",
+           ordinary_bigint_tag);
+    printf("ordinary-expansion-float64-tag=%d,normalized-tag=%d,bits=%016"
+           PRIx64 "\n", ordinary_float_tag, ordinary_float_norm_tag,
+           ordinary_float_bits);
+    printf("ordinary-expansion-unary-binary-sink-sequence=%s\n",
+           unary_binary_sequence);
+    puts("ordinary-expansion-unary-binary-fresh-eval=42");
+    puts("ordinary-expansion-branches-updates-fresh-eval=4");
+    puts("ordinary-expansion-wide-if-true-fresh-eval=true");
+    for (size_t index = 0;
+         index < sizeof(ordinary_stack_cases) /
+                     sizeof(ordinary_stack_cases[0]); index++) {
+        if (expect_ordinary_stack_case(&ordinary_stack_cases[index]))
+            goto cleanup;
+    }
+    puts("ordinary-expansion-compile-only-oracle=passed");
+    status = 0;
+cleanup:
+    if (context) {
+        JS_FreeValue(context, normal);
+        JS_FreeValue(context, html_dda);
+        JS_FreeValue(context, sink);
+        for (size_t index = 0;
+             index < sizeof(functions) / sizeof(functions[0]); index++)
+            JS_FreeValue(context, functions[index]);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    return status;
+}
+
 int main(void) {
     static const char source[] = "42;";
     JSRuntime *compile_runtime = NULL;
@@ -3408,6 +4254,8 @@ int main(void) {
     printf("fresh-eval=%.17g\n", evaluated);
 
     if (expect_ordinary_leaf())
+        goto cleanup;
+    if (expect_ordinary_expansion_cohort(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",
