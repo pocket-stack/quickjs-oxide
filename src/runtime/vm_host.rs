@@ -22,6 +22,20 @@ mod dynamic_environment;
 mod private_elements;
 mod super_property;
 
+// Relative order from pinned QuickJS 2026-06-04 `quickjs-atom.h`. QuickJS
+// installs the complete generated atom table at runtime construction; this
+// focused frontier pins every spelling that `js_operator_typeof` can return.
+pub(super) const TYPEOF_STATIC_ATOMS: [&str; 8] = [
+    "function",
+    "undefined",
+    "number",
+    "boolean",
+    "string",
+    "object",
+    "symbol",
+    "bigint",
+];
+
 /// Validated caller state retained while primitive-String eval is compiled.
 ///
 /// No frame binding has been converted to a VarRef yet. This preserves
@@ -574,6 +588,22 @@ enum VmPropertyKeyConversion {
 }
 
 impl RuntimeVmHost {
+    /// QuickJS `OP_typeof` converts one of its predefined type atoms back to
+    /// the atom's canonical String cell. Runtime construction pins the full
+    /// result set, so every realm reuses the same representation while sibling
+    /// runtimes remain isolated.
+    fn canonical_typeof_string(&self, spelling: &'static str) -> Result<JsString, Error> {
+        let mut state = self.runtime.0.state.borrow_mut();
+        let atom = state
+            .atoms
+            .intern_static(spelling)
+            .map_err(|error| runtime_error_to_vm_error(error.into()))?;
+        state
+            .atoms
+            .to_js_string(atom)
+            .map_err(|error| runtime_error_to_vm_error(error.into()))
+    }
+
     #[cfg(test)]
     pub(super) fn empty_for_test(runtime: Runtime, current_realm: ContextId) -> Self {
         Self {
@@ -2567,9 +2597,9 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
-    fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
+    fn type_of(&mut self, value: &Value) -> Result<JsString, Error> {
         let Value::Object(object) = value else {
-            return Ok(value.type_of());
+            return self.canonical_typeof_string(value.type_of());
         };
         if !object.belongs_to(&self.runtime) {
             return Err(Error::internal("typeof operand belongs to another runtime"));
@@ -2580,9 +2610,10 @@ impl VmHost for RuntimeVmHost {
             .object(object.object_id())
             .map_err(|error| Error::internal(error.to_string()))?;
         if object.is_html_dda {
-            return Ok("undefined");
+            drop(state);
+            return self.canonical_typeof_string("undefined");
         }
-        Ok(match &object.payload {
+        let spelling = match &object.payload {
             ObjectPayload::NativeFunction { .. }
             | ObjectPayload::BoundFunction { .. }
             | ObjectPayload::BytecodeFunction { .. } => "function",
@@ -2621,7 +2652,9 @@ impl VmHost for RuntimeVmHost {
             | ObjectPayload::RegExpStringIterator { .. }
             | ObjectPayload::Generator { .. }
             | ObjectPayload::AsyncGenerator(_) => "object",
-        })
+        };
+        drop(state);
+        self.canonical_typeof_string(spelling)
     }
 
     fn box_primitive(&mut self, value: Value) -> Result<Value, Error> {

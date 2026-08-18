@@ -248,9 +248,10 @@ scalar_facade_pattern = re.compile(
 )
 scalar_facades = list(scalar_facade_pattern.finditer(binary_root_code))
 expected_scalar_facade_names = {
-    "ScalarScriptDraft",
     "ScalarScriptReadError",
     "ScalarStringDraft",
+    "ScalarUnaryOp",
+    "ScalarValueDraft",
     "decode_trusted_scalar_script",
 }
 facade_names: set[str] = set()
@@ -364,7 +365,7 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/pinned_atoms.rs": 9,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
-    "src/runtime/binary_object/scalar_script.rs": 5,
+    "src/runtime/binary_object/scalar_script.rs": 6,
     "src/runtime/binary_object/wire.rs": 46,
 }
 expected_fixture_visible_counts = {
@@ -377,7 +378,7 @@ expected_fixture_visible_counts = {
     "src/runtime/binary_object/graph/sab_transport.rs": 29,
     "src/runtime/binary_object/mod.rs": 1,
     "src/runtime/binary_object/read_cursor.rs": 2,
-    "src/runtime/binary_object/scalar_script.rs": 5,
+    "src/runtime/binary_object/scalar_script.rs": 6,
 }
 binary_visible_counts = {
     path.relative_to(root).as_posix(): len(
@@ -564,9 +565,9 @@ scalar_noncopy_derive = (
     r"[ \t\n]*Debug[ \t\n]*,[ \t\n]*Eq[ \t\n]*,"
     r"[ \t\n]*PartialEq[ \t\n]*\)[ \t\n]*\]"
 )
-scalar_draft_pattern = re.compile(
+scalar_value_draft_pattern = re.compile(
     rf"{scalar_noncopy_derive}[ \t\n]*{scalar_visibility}"
-    r"[ \t\n]+enum[ \t\n]+ScalarScriptDraft[ \t\n]*\{"
+    r"[ \t\n]+enum[ \t\n]+ScalarValueDraft[ \t\n]*\{"
     r"[ \t\n]*Undefined[ \t\n]*,"
     r"[ \t\n]*Null[ \t\n]*,"
     r"[ \t\n]*Bool[ \t\n]*\([ \t\n]*bool[ \t\n]*\)[ \t\n]*,"
@@ -575,18 +576,74 @@ scalar_draft_pattern = re.compile(
     r"[ \t\n]*BigIntI32[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*BigIntBytes[ \t\n]*\([ \t\n]*Box[ \t\n]*<"
     r"[ \t\n]*\[[ \t\n]*u8[ \t\n]*\][ \t\n]*>[ \t\n]*\)[ \t\n]*,"
-    r"[ \t\n]*NegatedBigIntI32[ \t\n]*\([ \t\n]*i32[ \t\n]*\)[ \t\n]*,"
-    r"[ \t\n]*NegatedBigIntBytes[ \t\n]*\([ \t\n]*Box[ \t\n]*<"
-    r"[ \t\n]*\[[ \t\n]*u8[ \t\n]*\][ \t\n]*>[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*EmptyString[ \t\n]*,"
     r"[ \t\n]*ConstantString[ \t\n]*\([ \t\n]*ScalarStringDraft[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*AtomString[ \t\n]*\([ \t\n]*ScalarStringDraft[ \t\n]*\)[ \t\n]*,"
     r"[ \t\n]*IntegerAtomString[ \t\n]*\([ \t\n]*u32[ \t\n]*\)[ \t\n]*,?[ \t\n]*\}"
 )
-if len(scalar_draft_pattern.findall(scalar_script_code)) != 1:
+if len(scalar_value_draft_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-draft-shape",
-        "ScalarScriptDraft must retain exactly the reviewed primitive, BigInt, and provenance-typed String variants",
+        "ScalarValueDraft must retain exactly the reviewed primitive, BigInt, and provenance-typed String variants, with no precomputed unary result",
+    )
+
+scalar_unary_pattern = re.compile(
+    r"#[ \t\n]*\[[ \t\n]*derive[ \t\n]*\([ \t\n]*Clone[ \t\n]*,"
+    r"[ \t\n]*Copy[ \t\n]*,[ \t\n]*Debug[ \t\n]*,[ \t\n]*Eq"
+    r"[ \t\n]*,[ \t\n]*PartialEq[ \t\n]*\)[ \t\n]*\]"
+    rf"[ \t\n]*{scalar_visibility}[ \t\n]+enum[ \t\n]+ScalarUnaryOp"
+    r"[ \t\n]*\{[ \t\n]*Neg[ \t\n]*,[ \t\n]*Plus[ \t\n]*,"
+    r"[ \t\n]*Dec[ \t\n]*,[ \t\n]*Inc[ \t\n]*,[ \t\n]*BitNot"
+    r"[ \t\n]*,[ \t\n]*LogicalNot[ \t\n]*,[ \t\n]*TypeOf"
+    r"[ \t\n]*,?[ \t\n]*\}"
+)
+if len(scalar_unary_pattern.findall(scalar_script_code)) != 1:
+    fail(
+        "scalar-unary-operation-shape",
+        "ScalarUnaryOp must retain exactly the seven reviewed ordered, Copy operation tags",
+    )
+
+scalar_unary_impl_code, _, _ = unique_braced_item(
+    scalar_script_code,
+    re.compile(r"\bimpl[ \t\n]+ScalarUnaryOp[ \t\n]*\{"),
+    "scalar-unary-operation-shape",
+    "private ScalarUnaryOp implementation",
+)
+expected_scalar_unary_impl_source = """
+    impl ScalarUnaryOp {
+        fn from_opcode(opcode: u8) -> Option<Self> {
+            match opcode {
+                OP_NEG => Some(Self::Neg),
+                OP_PLUS => Some(Self::Plus),
+                OP_DEC => Some(Self::Dec),
+                OP_INC => Some(Self::Inc),
+                OP_BIT_NOT => Some(Self::BitNot),
+                OP_LOGICAL_NOT => Some(Self::LogicalNot),
+                OP_TYPEOF => Some(Self::TypeOf),
+                _ => None,
+            }
+        }
+
+        const fn opcode(self) -> u8 {
+            match self {
+                Self::Neg => OP_NEG,
+                Self::Plus => OP_PLUS,
+                Self::Dec => OP_DEC,
+                Self::Inc => OP_INC,
+                Self::BitNot => OP_BIT_NOT,
+                Self::LogicalNot => OP_LOGICAL_NOT,
+                Self::TypeOf => OP_TYPEOF,
+            }
+        }
+    }
+"""
+if scalar_unary_impl_code and (
+    " ".join(scalar_unary_impl_code.split())
+    != " ".join(rust_code_only(expected_scalar_unary_impl_source).split())
+):
+    fail(
+        "scalar-unary-operation-shape",
+        "ScalarUnaryOp must map only the seven exact pinned opcode bytes in both directions",
     )
 
 scalar_string_draft_pattern = re.compile(
@@ -620,7 +677,9 @@ scalar_decode_item_pattern = re.compile(
     rf"\b{scalar_visibility}[ \t\n]+fn[ \t\n]+decode_trusted_scalar_script"
     r"[ \t\n]*\([ \t\n]*(?:bytes|input)[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\]"
     r"[ \t\n]*,?[ \t\n]*\)[ \t\n]*->[ \t\n]*Result[ \t\n]*<"
-    r"[ \t\n]*ScalarScriptDraft[ \t\n]*,[ \t\n]*ScalarScriptReadError[ \t\n]*>"
+    r"[ \t\n]*\([ \t\n]*ScalarValueDraft[ \t\n]*,[ \t\n]*Box"
+    r"[ \t\n]*<[ \t\n]*\[[ \t\n]*ScalarUnaryOp[ \t\n]*\][ \t\n]*>"
+    r"[ \t\n]*\)[ \t\n]*,[ \t\n]*ScalarScriptReadError[ \t\n]*>"
     r"[ \t\n]*\{"
 )
 scalar_decoder_code, _, _ = unique_braced_item(
@@ -678,6 +737,12 @@ expected_scalar_opcode_constants = {
     "OP_PUSH_TRUE": 0x0A,
     "OP_RETURN": 0x28,
     "OP_NEG": 0x8A,
+    "OP_PLUS": 0x8B,
+    "OP_DEC": 0x8C,
+    "OP_INC": 0x8D,
+    "OP_BIT_NOT": 0x93,
+    "OP_LOGICAL_NOT": 0x94,
+    "OP_TYPEOF": 0x95,
     "OP_PUSH_BIGINT_I32": 0xB0,
     "OP_PUSH_MINUS1": 0xB2,
     "OP_PUSH_0": 0xB3,
@@ -696,13 +761,52 @@ if (
 ):
     fail(
         "scalar-script-opcode-set",
-        "scalar-script admission must define each reviewed scalar push, the one BigInt-only neg, set_loc0, and return opcode exactly once; "
+        "scalar-script admission must define each reviewed scalar push, all seven unary operations, set_loc0, and return opcode exactly once; "
         f"found declarations {scalar_opcode_declarations} and exact entries {scalar_opcode_entries}",
     )
 
+if is_full_binary_inventory:
+    pinned_opcode_relative = "src/runtime/binary_object/pinned_opcodes.rs"
+    pinned_opcode_code = binary_code_cache[root / pinned_opcode_relative]
+    pinned_descriptor_pattern = re.compile(
+        r"PinnedOpcodeInfo[ \t\n]*::[ \t\n]*new[ \t\n]*\("
+        r"[ \t\n]*,[ \t\n]*(\d+)[ \t\n]*,[ \t\n]*(\d+)"
+        r"[ \t\n]*,[ \t\n]*(\d+)[ \t\n]*,[ \t\n]*OpcodeFormat"
+        r"[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)[ \t\n]*\)"
+    )
+    pinned_descriptors = [
+        (int(size), int(n_pop), int(n_push), opcode_format)
+        for size, n_pop, n_push, opcode_format in pinned_descriptor_pattern.findall(
+            pinned_opcode_code.split("#[cfg(test)]", 1)[0]
+        )
+    ]
+    expected_unary_descriptors = {
+        0x8A: (1, 1, 1, "None"),
+        0x8B: (1, 1, 1, "None"),
+        0x8C: (1, 1, 1, "None"),
+        0x8D: (1, 1, 1, "None"),
+        0x93: (1, 1, 1, "None"),
+        0x94: (1, 1, 1, "None"),
+        0x95: (1, 1, 1, "None"),
+    }
+    found_unary_descriptors = {
+        opcode: pinned_descriptors[opcode]
+        for opcode in expected_unary_descriptors
+        if opcode < len(pinned_descriptors)
+    }
+    if (
+        len(pinned_descriptors) != 244
+        or found_unary_descriptors != expected_unary_descriptors
+    ):
+        fail(
+            "scalar-unary-opcode-descriptor",
+            "the seven admitted unary bytes must retain their exact one-byte, pop-one, push-one, operand-free pinned descriptors; "
+            f"found {found_unary_descriptors}",
+        )
+
 scalar_push_pattern = re.compile(
     rf"{scalar_noncopy_derive}[ \t\n]*enum[ \t\n]+ScalarPush[ \t\n]*\{{"
-    r"[ \t\n]*Direct[ \t\n]*\([ \t\n]*ScalarScriptDraft[ \t\n]*\)"
+    r"[ \t\n]*Direct[ \t\n]*\([ \t\n]*ScalarValueDraft[ \t\n]*\)"
     r"[ \t\n]*,[ \t\n]*Constant[ \t\n]*\([ \t\n]*u32[ \t\n]*\)"
     r"[ \t\n]*,[ \t\n]*AtomValue[ \t\n]*,?[ \t\n]*\}"
 )
@@ -712,40 +816,27 @@ if len(scalar_push_pattern.findall(scalar_script_code)) != 1:
         "ScalarPush must remain the private Direct, Constant-index, or AtomValue discriminator",
     )
 
-bigint_push_pattern = re.compile(
-    rf"{scalar_noncopy_derive}[ \t\n]*enum[ \t\n]+BigIntPush[ \t\n]*\{{"
-    r"[ \t\n]*DirectI32[ \t\n]*\([ \t\n]*i32[ \t\n]*\)"
-    r"[ \t\n]*,[ \t\n]*Constant[ \t\n]*\([ \t\n]*u32[ \t\n]*\)"
-    r"[ \t\n]*,?[ \t\n]*\}"
-)
-if len(bigint_push_pattern.findall(scalar_script_code)) != 1:
-    fail(
-        "scalar-script-bigint-push-shape",
-        "BigIntPush must remain one private DirectI32(i32) or Constant(u32) discriminator",
-    )
-
 scalar_sequence_pattern = re.compile(
-    rf"{scalar_noncopy_derive}[ \t\n]*enum[ \t\n]+ScalarSequence[ \t\n]*\{{"
-    r"[ \t\n]*Plain[ \t\n]*\{[ \t\n]*push[ \t\n]*:[ \t\n]*ScalarPush"
-    r"[ \t\n]*,[ \t\n]*width[ \t\n]*:[ \t\n]*u32[ \t\n]*\}"
-    r"[ \t\n]*,[ \t\n]*NegatedBigInt[ \t\n]*\{"
-    r"[ \t\n]*push[ \t\n]*:[ \t\n]*BigIntPush[ \t\n]*,"
-    r"[ \t\n]*width[ \t\n]*:[ \t\n]*u32[ \t\n]*\}"
+    rf"{scalar_noncopy_derive}[ \t\n]*struct[ \t\n]+ScalarSequence[ \t\n]*\{{"
+    r"[ \t\n]*push[ \t\n]*:[ \t\n]*ScalarPush[ \t\n]*,"
+    r"[ \t\n]*push_width[ \t\n]*:[ \t\n]*u32[ \t\n]*,"
+    r"[ \t\n]*unary_ops[ \t\n]*:[ \t\n]*Box[ \t\n]*<"
+    r"[ \t\n]*\[[ \t\n]*ScalarUnaryOp[ \t\n]*\][ \t\n]*>"
     r"[ \t\n]*,?[ \t\n]*\}"
 )
 if len(scalar_sequence_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-sequence-shape",
-        "ScalarSequence must keep plain scalars separate from the strongly typed single-neg BigInt shape",
+        "ScalarSequence must retain one value push, its checked byte width, and one owned ordered unary-operation slice",
     )
 
 scalar_copy_pattern = re.compile(
     r"#[ \t\n]*\[[ \t\n]*derive[ \t\n]*\([^\]]*\bCopy\b[^\]]*\)"
     r"[ \t\n]*\](?:[ \t\n]*#[ \t\n]*\[[^\]]*\])*[ \t\n]*"
     rf"(?:{scalar_visibility}[ \t\n]+)?enum[ \t\n]+"
-    r"(?:ScalarScriptDraft|ScalarStringDraft|ScalarPush|BigIntPush|ScalarSequence)\b|"
+    r"(?:ScalarValueDraft|ScalarStringDraft|ScalarPush|ScalarSequence)\b|"
     r"\bimpl[ \t\n]+Copy[ \t\n]+for[ \t\n]+"
-    r"(?:ScalarScriptDraft|ScalarStringDraft|ScalarPush|BigIntPush|ScalarSequence)\b"
+    r"(?:ScalarValueDraft|ScalarStringDraft|ScalarPush|ScalarSequence)\b"
 )
 if scalar_copy_pattern.search(scalar_script_code):
     fail(
@@ -756,54 +847,54 @@ if scalar_copy_pattern.search(scalar_script_code):
 scalar_sequence_decoder_item_pattern = re.compile(
     r"\bfn[ \t\n]+decode_scalar_sequence[ \t\n]*\("
     r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
-    r"[ \t\n]*->[ \t\n]*Option[ \t\n]*<[ \t\n]*ScalarSequence"
-    r"[ \t\n]*>[ \t\n]*\{",
+    r"[ \t\n]*->[ \t\n]*Result[ \t\n]*<[ \t\n]*Option"
+    r"[ \t\n]*<[ \t\n]*ScalarSequence[ \t\n]*>[ \t\n]*,"
+    r"[ \t\n]*ScalarScriptReadError[ \t\n]*>[ \t\n]*\{",
     re.DOTALL,
 )
 scalar_sequence_decoder_code, _, _ = unique_braced_item(
     scalar_script_code,
     scalar_sequence_decoder_item_pattern,
     "scalar-script-sequence-decoder",
-    "private &[u8] to ScalarSequence decoder",
+    "private &[u8] to fallible optional ScalarSequence decoder",
 )
 if scalar_sequence_decoder_code:
     expected_sequence_decoder_source = """
-        fn decode_scalar_sequence(bytes: &[u8]) -> Option<ScalarSequence> {
-            match bytes {
-                [OP_PUSH_CONST8, index, OP_NEG, OP_SET_LOC0, OP_RETURN] => {
-                    Some(ScalarSequence::NegatedBigInt {
-                        push: BigIntPush::Constant(u32::from(*index)),
-                        width: 2,
-                    })
-                }
-                [
-                    OP_PUSH_CONST,
-                    byte_0,
-                    byte_1,
-                    byte_2,
-                    byte_3,
-                    OP_NEG,
-                    OP_SET_LOC0,
-                    OP_RETURN,
-                ] => Some(ScalarSequence::NegatedBigInt {
-                    push: BigIntPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
-                    width: 5,
-                }),
-                [
-                    OP_PUSH_BIGINT_I32,
-                    byte_0,
-                    byte_1,
-                    byte_2,
-                    byte_3,
-                    OP_NEG,
-                    OP_SET_LOC0,
-                    OP_RETURN,
-                ] => Some(ScalarSequence::NegatedBigInt {
-                    push: BigIntPush::DirectI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
-                    width: 5,
-                }),
-                _ => decode_scalar_push(bytes).map(|(push, width)| ScalarSequence::Plain { push, width }),
+        fn decode_scalar_sequence(bytes: &[u8]) -> Result<Option<ScalarSequence>, ScalarScriptReadError> {
+            if !bytes.ends_with(&[OP_SET_LOC0, OP_RETURN]) {
+                return Ok(None);
             }
+            let body = &bytes[..bytes.len() - 2];
+            let Some((push, push_width)) = decode_scalar_push(body) else {
+                return Ok(None);
+            };
+            let Some(unary_bytes) = usize::try_from(push_width)
+                .ok()
+                .and_then(|width| body.get(width..))
+            else {
+                return Ok(None);
+            };
+
+            let mut unary_ops = Vec::new();
+            unary_ops
+                .try_reserve_exact(unary_bytes.len())
+                .map_err(|_| {
+                    ScalarScriptReadError::Internal(
+                        "could not allocate the scalar unary-operation draft".into(),
+                    )
+                })?;
+            for opcode in unary_bytes {
+                let Some(operation) = ScalarUnaryOp::from_opcode(*opcode) else {
+                    return Ok(None);
+                };
+                unary_ops.push(operation);
+            }
+
+            Ok(Some(ScalarSequence {
+                push,
+                push_width,
+                unary_ops: unary_ops.into_boxed_slice(),
+            }))
         }
     """
     if (
@@ -812,7 +903,7 @@ if scalar_sequence_decoder_code:
     ):
         fail(
             "scalar-script-sequence-decoder",
-            "decode_scalar_sequence must admit exactly one OP_NEG only after a direct-i32 or index-zero-capable BigInt push spelling, before set_loc0 and return",
+            "decode_scalar_sequence must preserve every finite reviewed unary byte in source order after one exact push prefix and before set_loc0/return",
         )
 
 scalar_push_decoder_item_pattern = re.compile(
@@ -835,22 +926,94 @@ if scalar_push_decoder_code:
     expected_push_decoder = (
         "fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> { "
         "match bytes { "
-        "[OP_PUSH_ATOM_VALUE, _, _, _, _, OP_SET_LOC0, OP_RETURN] => { "
-        "Some((ScalarPush::AtomValue, 5)) } "
-        "[OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN] => { "
-        "Some((ScalarPush::Constant(u32::from(*index)), 2)) } "
-        "[ OP_PUSH_CONST, byte_0, byte_1, byte_2, byte_3, OP_SET_LOC0, "
-        "OP_RETURN, ] => Some(( "
+        "[OP_PUSH_ATOM_VALUE, _, _, _, _, ..] => Some((ScalarPush::AtomValue, 5)), "
+        "[OP_PUSH_CONST8, index, ..] => "
+        "Some((ScalarPush::Constant(u32::from(*index)), 2)), "
+        "[OP_PUSH_CONST, byte_0, byte_1, byte_2, byte_3, ..] => Some(( "
         "ScalarPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, "
         "*byte_2, *byte_3])), 5, )), "
-        "_ => decode_direct_scalar(bytes).map(|(draft, width)| "
-        "(ScalarPush::Direct(draft), width)), } }"
+        "_ => decode_direct_scalar_push(bytes) .map(|(value, width)| "
+        "(ScalarPush::Direct(value), width)), } }"
     )
     if normalized_push_decoder != expected_push_decoder:
         fail(
             "scalar-script-push-decoder",
             "decode_scalar_push must admit the exact atom-value, constant-pool, and direct scalar spellings",
         )
+
+scalar_direct_decoder_code, _, _ = unique_braced_item(
+    scalar_script_code,
+    re.compile(
+        r"\bfn[ \t\n]+decode_direct_scalar_push[ \t\n]*\("
+        r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
+        r"[ \t\n]*->[ \t\n]*Option[ \t\n]*<[ \t\n]*\("
+        r"[ \t\n]*ScalarValueDraft[ \t\n]*,[ \t\n]*u32[ \t\n]*\)"
+        r"[ \t\n]*>[ \t\n]*\{"
+    ),
+    "scalar-script-push-decoder",
+    "private direct scalar push-prefix decoder",
+)
+expected_scalar_direct_decoder_source = """
+    fn decode_direct_scalar_push(bytes: &[u8]) -> Option<(ScalarValueDraft, u32)> {
+        match bytes {
+            [OP_UNDEFINED, ..] => Some((ScalarValueDraft::Undefined, 1)),
+            [OP_NULL, ..] => Some((ScalarValueDraft::Null, 1)),
+            [OP_PUSH_FALSE, ..] => Some((ScalarValueDraft::Bool(false), 1)),
+            [OP_PUSH_TRUE, ..] => Some((ScalarValueDraft::Bool(true), 1)),
+            [OP_PUSH_BIGINT_I32, byte_0, byte_1, byte_2, byte_3, ..] => Some((
+                ScalarValueDraft::BigIntI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
+                5,
+            )),
+            [OP_PUSH_EMPTY_STRING, ..] => Some((ScalarValueDraft::EmptyString, 1)),
+            _ => decode_direct_int32_push(bytes)
+                .map(|(value, width)| (ScalarValueDraft::Int(value), width)),
+        }
+    }
+"""
+if scalar_direct_decoder_code and (
+    " ".join(scalar_direct_decoder_code.split())
+    != " ".join(rust_code_only(expected_scalar_direct_decoder_source).split())
+):
+    fail(
+        "scalar-script-push-decoder",
+        "decode_direct_scalar_push must retain the exact prefix-based primitive push table",
+    )
+
+scalar_int_decoder_code, _, _ = unique_braced_item(
+    scalar_script_code,
+    re.compile(
+        r"\bfn[ \t\n]+decode_direct_int32_push[ \t\n]*\("
+        r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
+        r"[ \t\n]*->[ \t\n]*Option[ \t\n]*<[ \t\n]*\("
+        r"[ \t\n]*i32[ \t\n]*,[ \t\n]*u32[ \t\n]*\)"
+        r"[ \t\n]*>[ \t\n]*\{"
+    ),
+    "scalar-script-push-decoder",
+    "private direct Int32 push-prefix decoder",
+)
+expected_scalar_int_decoder_source = """
+    fn decode_direct_int32_push(bytes: &[u8]) -> Option<(i32, u32)> {
+        match bytes {
+            [opcode, ..] if (OP_PUSH_MINUS1..=OP_PUSH_7).contains(opcode) => {
+                Some((i32::from(*opcode) - i32::from(OP_PUSH_0), 1))
+            }
+            [OP_PUSH_I8, immediate, ..] => Some((i32::from(i8::from_le_bytes([*immediate])), 2)),
+            [OP_PUSH_I16, low, high, ..] => Some((i32::from(i16::from_le_bytes([*low, *high])), 3)),
+            [OP_PUSH_I32, byte_0, byte_1, byte_2, byte_3, ..] => {
+                Some((i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3]), 5))
+            }
+            _ => None,
+        }
+    }
+"""
+if scalar_int_decoder_code and (
+    " ".join(scalar_int_decoder_code.split())
+    != " ".join(rust_code_only(expected_scalar_int_decoder_source).split())
+):
+    fail(
+        "scalar-script-push-decoder",
+        "decode_direct_int32_push must retain the complete exact Int32 prefix table",
+    )
 
 bigint_copy_pattern = re.compile(
     r"\bfn[ \t\n]+copy_bigint_bytes[ \t\n]*\([ \t\n]*bytes[ \t\n]*:"
@@ -928,8 +1091,9 @@ scalar_visible_items = [
     for match in scalar_visible_item_pattern.finditer(scalar_script_code)
 ]
 expected_scalar_visible_items = [
-    ("pub(in crate::runtime)", "enum", "ScalarScriptDraft"),
     ("pub(in crate::runtime)", "enum", "ScalarScriptReadError"),
+    ("pub(in crate::runtime)", "enum", "ScalarUnaryOp"),
+    ("pub(in crate::runtime)", "enum", "ScalarValueDraft"),
     ("pub(in crate::runtime)", "struct", "ScalarStringDraft"),
     ("pub(in crate::runtime)", "fn", "into_units"),
     ("pub(in crate::runtime)", "fn", "decode_trusted_scalar_script"),
@@ -937,8 +1101,118 @@ expected_scalar_visible_items = [
 if sorted(scalar_visible_items) != sorted(expected_scalar_visible_items):
     fail(
         "scalar-script-visible-item-set",
-        "scalar_script.rs may expose only the reviewed scalar and String drafts, error, and decoder to runtime; "
+        "scalar_script.rs may expose only the reviewed value and unary DTOs, String draft, error, and decoder to runtime; "
         f"found {scalar_visible_items}",
+    )
+
+scalar_production_code = scalar_script_code.split("#[cfg(test)]", 1)[0]
+scalar_top_level_item_pattern = re.compile(
+    r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?"
+    r"(?P<kind>struct|enum|union|trait|type|mod)[ \t\n]+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+)
+scalar_top_level_items = [
+    (match.group("kind"), match.group("name"))
+    for match in scalar_top_level_item_pattern.finditer(scalar_production_code)
+    if scalar_production_code[:match.start()].count("{")
+    == scalar_production_code[:match.start()].count("}")
+]
+expected_scalar_top_level_items = [
+    ("enum", "ScalarValueDraft"),
+    ("enum", "ScalarUnaryOp"),
+    ("struct", "ScalarStringDraft"),
+    ("enum", "ScalarPush"),
+    ("struct", "ScalarSequence"),
+    ("enum", "ScalarScriptReadError"),
+    ("struct", "AdmissionLimits"),
+]
+if scalar_top_level_items != expected_scalar_top_level_items:
+    fail(
+        "scalar-script-top-level-item-set",
+        "scalar_script.rs must retain exactly the reviewed production DTO and private state types, with no module, trait, alias, union, or helper type escape; "
+        f"found {scalar_top_level_items}",
+    )
+
+scalar_top_level_function_pattern = re.compile(
+    r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?fn"
+    r"[ \t\n]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+)
+scalar_top_level_functions = [
+    match.group("name")
+    for match in scalar_top_level_function_pattern.finditer(scalar_production_code)
+    if scalar_production_code[:match.start()].count("{")
+    == scalar_production_code[:match.start()].count("}")
+]
+expected_scalar_top_level_functions = [
+    "decode_trusted_scalar_script",
+    "admit_image",
+    "project_atom_string",
+    "classify_string_atom_projection_error",
+    "copy_wire_string",
+    "copy_utf16",
+    "copy_bigint_bytes",
+    "decode_scalar_sequence",
+    "decode_scalar_push",
+    "decode_direct_scalar_push",
+    "decode_direct_int32_push",
+    "unadmitted",
+    "classify_image_error",
+    "classify_atom_error",
+    "classify_wire_error",
+    "classify_data_error",
+    "classify_envelope_error",
+    "classify_code_error",
+]
+if scalar_top_level_functions != expected_scalar_top_level_functions:
+    fail(
+        "scalar-script-helper-set",
+        "scalar_script.rs production free-function ownership drifted from the reviewed helper set; "
+        f"found {scalar_top_level_functions}",
+    )
+
+scalar_impl_header_pattern = re.compile(r"(?m)^[ \t]*impl\b(?P<header>[^{};]*)\{")
+scalar_impl_headers = [
+    " ".join(match.group("header").split())
+    for match in scalar_impl_header_pattern.finditer(scalar_production_code)
+    if scalar_production_code[:match.start()].count("{")
+    == scalar_production_code[:match.start()].count("}")
+]
+expected_scalar_impl_headers = [
+    "ScalarUnaryOp",
+    "ScalarStringDraft",
+    "fmt::Display for ScalarScriptReadError",
+    "std::error::Error for ScalarScriptReadError",
+    "AdmissionLimits",
+]
+if scalar_impl_headers != expected_scalar_impl_headers:
+    fail(
+        "scalar-script-implementation-set",
+        "scalar_script.rs must retain exactly the reviewed inherent and error-trait implementations; "
+        f"found {scalar_impl_headers}",
+    )
+
+scalar_macro_invocations = re.findall(
+    r"(?<![A-Za-z0-9_])((?:r#)?[A-Za-z_][A-Za-z0-9_]*)"
+    r"[ \t\n]*![ \t\n]*[([{]",
+    scalar_production_code,
+)
+if scalar_macro_invocations != [
+    "write",
+    "write",
+    "write",
+    "write",
+    "write",
+    "write",
+    "write",
+    "format",
+    "matches",
+    "format",
+    "format",
+]:
+    fail(
+        "scalar-script-macro-set",
+        "scalar_script.rs may invoke only the reviewed diagnostic and atom-predicate macros; "
+        f"found {scalar_macro_invocations}",
     )
 
 scalar_display_pattern = re.compile(
@@ -1015,10 +1289,21 @@ if scalar_admission_code:
             "admit_image must bind the checked envelope once at function scope, directly from the unique decoded function and before the native payload",
         )
 
+    if native_payload_binding is not None:
+        unary_admission_tail = scalar_admission_code[native_payload_binding.start():]
+        if normalized_code_sha256(unary_admission_tail) != (
+            "7a6650cecb843e37b4ae4f55a2d6f9ed50f90b812267101238f6fcbbeaecdba1"
+        ):
+            fail(
+                "scalar-script-unary-admission-tail",
+                "the native payload must flow without an alternate unary special case through exact sequence decode, atom boundary, sidecar authentication, value pairing, and final tuple return",
+            )
+
     scalar_sequence_binding_pattern = re.compile(
         r"\blet[ \t\n]+Some[ \t\n]*\([ \t\n]*sequence[ \t\n]*\)"
         r"[ \t\n]*=[ \t\n]*decode_scalar_sequence[ \t\n]*\([ \t\n]*native_payload"
         r"[ \t\n]*\.[ \t\n]*as_bytes[ \t\n]*\([ \t\n]*\)[ \t\n]*\)"
+        r"[ \t\n]*\?"
         r"[ \t\n]*else[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
         r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}[ \t\n]*;"
     )
@@ -1032,10 +1317,10 @@ if scalar_admission_code:
         )
 
     scalar_atom_boundary_pattern = re.compile(
-        r"\bif[ \t\n]+![ \t\n]*matches![ \t\n]*\([ \t\n]*sequence[ \t\n]*,"
-        r"[ \t\n]*ScalarSequence[ \t\n]*::[ \t\n]*Plain[ \t\n]*\{"
-        r"[ \t\n]*push[ \t\n]*:[ \t\n]*ScalarPush[ \t\n]*::[ \t\n]*AtomValue"
-        r"[ \t\n]*,[ \t\n]*\.\.[ \t\n]*\}[ \t\n]*\)[ \t\n]*&&"
+        r"\bif[ \t\n]+![ \t\n]*matches![ \t\n]*\([ \t\n]*&"
+        r"[ \t\n]*sequence[ \t\n]*\.[ \t\n]*push[ \t\n]*,"
+        r"[ \t\n]*ScalarPush[ \t\n]*::[ \t\n]*AtomValue[ \t\n]*\)"
+        r"[ \t\n]*&&"
         r"[ \t\n]*\([ \t\n]*image[ \t\n]*\.[ \t\n]*input_atom_slot_count"
         r"[ \t\n]*\([ \t\n]*\)[ \t\n]*!=[ \t\n]*0[ \t\n]*\|\|"
         r"[ \t\n]*![ \t\n]*native_payload[ \t\n]*\.[ \t\n]*atom_relocations"
@@ -1054,75 +1339,109 @@ if scalar_admission_code:
             "only the authenticated AtomValue shape may carry one input atom slot and relocation",
         )
 
-    scalar_sidecar_pattern = re.compile(
-        r"\blet[ \t\n]+sidecars_match[ \t\n]*=[ \t\n]*match"
-        r"[ \t\n]*\([ \t\n]*&[ \t\n]*sequence[ \t\n]*,"
-        r"[ \t\n]*native_payload[ \t\n]*\.[ \t\n]*instructions"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\)[ \t\n]*\{"
+    sidecar_start_matches = list(
+        re.finditer(
+            r"\blet[ \t\n]+instructions[ \t\n]*=[ \t\n]*native_payload"
+            r"[ \t\n]*\.[ \t\n]*instructions[ \t\n]*\([ \t\n]*\)"
+            r"[ \t\n]*;",
+            scalar_admission_code,
+        )
     )
-    scalar_sidecar_code, sidecar_start, sidecar_close = unique_braced_item(
+    _, sidecar_guard_start, sidecar_guard_close = unique_braced_item(
         scalar_admission_code,
-        scalar_sidecar_pattern,
+        re.compile(r"\bif[ \t\n]+![ \t\n]*sidecars_match[ \t\n]*\{"),
         "scalar-script-sequence-sidecars",
-        "typed scalar sequence/instruction-sidecar match",
+        "unary sidecar mismatch guard",
     )
-    if scalar_sidecar_code:
-        expected_sidecar_source = """
-            let sidecars_match = match (&sequence, native_payload.instructions()) {
-                (ScalarSequence::Plain { width, .. }, [push, set_completion, return_value]) => {
-                    push.offset() == 0
-                        && push.opcode().raw() == native_payload.as_bytes()[0]
-                        && set_completion.offset() == *width
-                        && set_completion.opcode().raw() == OP_SET_LOC0
-                        && return_value.offset() == *width + 1
-                        && return_value.opcode().raw() == OP_RETURN
-                }
-                (
-                    ScalarSequence::NegatedBigInt { width, .. },
-                    [push, negate, set_completion, return_value],
-                ) => {
-                    push.offset() == 0
-                        && push.opcode().raw() == native_payload.as_bytes()[0]
-                        && negate.offset() == *width
-                        && negate.opcode().raw() == OP_NEG
-                        && set_completion.offset() == *width + 1
-                        && set_completion.opcode().raw() == OP_SET_LOC0
-                        && return_value.offset() == *width + 2
-                        && return_value.opcode().raw() == OP_RETURN
-                }
-                _ => false,
-            }
-        """
-        sidecar_guard_pattern = re.compile(
-            r"[ \t\n]*;[ \t\n]*if[ \t\n]+![ \t\n]*sidecars_match"
-            r"[ \t\n]*\{[ \t\n]*return[ \t\n]+Err"
-            r"[ \t\n]*\([ \t\n]*ScalarScriptReadError[ \t\n]*::"
-            r"[ \t\n]*Internal[ \t\n]*\(.*?\)[ \t\n]*\)"
-            r"[ \t\n]*;[ \t\n]*\}",
-            re.DOTALL,
+    scalar_sidecar_code = ""
+    if len(sidecar_start_matches) != 1:
+        fail(
+            "scalar-script-sequence-sidecars",
+            "admit_image must bind exactly one native instruction-sidecar slice",
         )
-        sidecar_is_direct_and_guarded = (
-            len(scalar_sequence_binding_matches) == 1
-            and scalar_sequence_binding_matches[0].end() < sidecar_start
-            and scalar_admission_code[:sidecar_start].count("{")
-            - scalar_admission_code[:sidecar_start].count("}")
-            == 1
-            and sidecar_guard_pattern.match(scalar_admission_code, sidecar_close)
-            is not None
-        )
+    elif sidecar_guard_close >= 0:
+        sidecar_start = sidecar_start_matches[0].start()
+        scalar_sidecar_code = scalar_admission_code[sidecar_start:sidecar_guard_close]
         if (
-            " ".join(scalar_sidecar_code.split())
-            != " ".join(rust_code_only(expected_sidecar_source).split())
-            or not sidecar_is_direct_and_guarded
+            len(scalar_sequence_binding_matches) != 1
+            or scalar_sequence_binding_matches[0].end() >= sidecar_start
+            or scalar_admission_code[:sidecar_start].count("{")
+            - scalar_admission_code[:sidecar_start].count("}")
+            != 1
+            or scalar_admission_code[:sidecar_guard_start].count("{")
+            - scalar_admission_code[:sidecar_guard_start].count("}")
+            != 1
         ):
-            fail(
-                "scalar-script-sequence-sidecars",
-                "plain scalars must authenticate exactly three sidecars, while a BigInt-only single neg must authenticate exactly push, OP_NEG, set_loc0, and return at the reviewed offsets",
-            )
+            scalar_sidecar_code = ""
 
+    expected_sidecar_source = """
+        let instructions = native_payload.instructions();
+        let expected_sidecar_count = sequence.unary_ops.len().checked_add(3);
+        let unary_count = u32::try_from(sequence.unary_ops.len()).ok();
+        let completion_offset = unary_count.and_then(|count| sequence.push_width.checked_add(count));
+        let return_offset = completion_offset.and_then(|offset| offset.checked_add(1));
+        let push_width = usize::try_from(sequence.push_width).ok();
+        let sidecars_match = expected_sidecar_count == Some(instructions.len())
+            && instructions[0].offset() == 0
+            && instructions[0].opcode().raw() == native_payload.as_bytes()[0]
+            && push_width.is_some_and(|push_width| {
+                sequence
+                    .unary_ops
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .all(|(index, operation)| {
+                        let Some(offset) = u32::try_from(index)
+                            .ok()
+                            .and_then(|index| sequence.push_width.checked_add(index))
+                        else {
+                            return false;
+                        };
+                        let Some(byte_offset) = push_width.checked_add(index) else {
+                            return false;
+                        };
+                        let sidecar = &instructions[index + 1];
+                        sidecar.offset() == offset
+                            && sidecar.opcode().raw() == operation.opcode()
+                            && native_payload.as_bytes().get(byte_offset) == Some(&operation.opcode())
+                    })
+            })
+            && completion_offset.zip(return_offset).is_some_and(
+                |(completion_offset, return_offset)| {
+                    let set_completion = &instructions[instructions.len() - 2];
+                    let return_value = &instructions[instructions.len() - 1];
+                    set_completion.offset() == completion_offset
+                        && set_completion.opcode().raw() == OP_SET_LOC0
+                        && return_value.offset() == return_offset
+                        && return_value.opcode().raw() == OP_RETURN
+                },
+            );
+        if !sidecars_match {
+            return Err(ScalarScriptReadError::Internal(
+                "instruction sidecars disagree with their owned native bytes".into(),
+            ));
+        }
+    """
+    if (
+        " ".join(scalar_sidecar_code.split())
+        != " ".join(rust_code_only(expected_sidecar_source).split())
+    ):
+        fail(
+            "scalar-script-sequence-sidecars",
+            "every unary byte must authenticate its same-index operation and checked sidecar offset before the exact completion and return sidecars",
+        )
+
+    scalar_pairing_prefix = re.compile(
+        r"\blet[ \t\n]+ScalarSequence[ \t\n]*\{[ \t\n]*push[ \t\n]*,"
+        r"[ \t\n]*unary_ops[ \t\n]*,[ \t\n]*\.\.[ \t\n]*\}"
+        r"[ \t\n]*=[ \t\n]*sequence[ \t\n]*;[ \t\n]*"
+    )
+    scalar_pairing_prefix_matches = list(
+        scalar_pairing_prefix.finditer(scalar_admission_code)
+    )
     scalar_pairing_pattern = re.compile(
-        r"\blet[ \t\n]+draft[ \t\n]*=[ \t\n]*match[ \t\n]*\("
-        r"[ \t\n]*sequence[ \t\n]*,[ \t\n]*function[ \t\n]*\."
+        r"\blet[ \t\n]+value[ \t\n]*=[ \t\n]*match[ \t\n]*\("
+        r"[ \t\n]*push[ \t\n]*,[ \t\n]*function[ \t\n]*\."
         r"[ \t\n]*constants[ \t\n]*\([ \t\n]*\)[ \t\n]*\)"
         r"[ \t\n]*\{"
     )
@@ -1130,151 +1449,67 @@ if scalar_admission_code:
         scalar_admission_code,
         scalar_pairing_pattern,
         "scalar-script-constant-pairing",
-        "draft-producing scalar push/constant-pool match",
+        "value-producing scalar push/constant-pool match",
     )
-
-    if scalar_pairing_code:
-        expected_pairing_source = """
-            let draft = match (sequence, function.constants()) {
-                (
-                    ScalarSequence::Plain {
-                        push: ScalarPush::Direct(draft),
-                        ..
-                    },
-                    [],
-                ) => draft,
-                (
-                    ScalarSequence::Plain {
-                        push: ScalarPush::Direct(_),
-                        ..
-                    },
-                    _,
-                ) => {
-                    return unadmitted("direct scalar opcode carries a function constant");
-                }
-                (
-                    ScalarSequence::Plain {
-                        push: ScalarPush::Constant(0),
-                        ..
-                    },
-                    [constant],
-                ) => match constant.as_wire() {
-                    Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),
-                    Ok(WireValue::BigInt(bytes)) => {
-                        ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
-                    }
-                    Ok(WireValue::String(value)) => {
-                        ScalarScriptDraft::ConstantString(copy_wire_string(value)?)
-                    }
-                    Ok(_) => {
-                        return unadmitted("scalar constant is not a Float64, BigInt, or String value");
-                    }
-                    Err(_) => return unadmitted("scalar constant is not a data value"),
-                },
-                (
-                    ScalarSequence::Plain {
-                        push: ScalarPush::Constant(_),
-                        ..
-                    },
-                    [_],
-                ) => {
-                    return unadmitted("scalar constant opcode does not reference index zero");
-                }
-                (
-                    ScalarSequence::Plain {
-                        push: ScalarPush::Constant(_),
-                        ..
-                    },
-                    _,
-                ) => {
-                    return unadmitted("scalar constant opcode requires exactly one function constant");
-                }
-                (
-                    ScalarSequence::Plain {
-                        push: ScalarPush::AtomValue,
-                        ..
-                    },
-                    [],
-                ) => project_atom_string(image, root)?,
-                (
-                    ScalarSequence::Plain {
-                        push: ScalarPush::AtomValue,
-                        ..
-                    },
-                    _,
-                ) => return unadmitted("atom-value scalar opcode carries a function constant"),
-                (
-                    ScalarSequence::NegatedBigInt {
-                        push: BigIntPush::DirectI32(value),
-                        ..
-                    },
-                    [],
-                ) => ScalarScriptDraft::NegatedBigIntI32(value),
-                (
-                    ScalarSequence::NegatedBigInt {
-                        push: BigIntPush::DirectI32(_),
-                        ..
-                    },
-                    _,
-                ) => return unadmitted("direct negated BigInt opcode carries a function constant"),
-                (
-                    ScalarSequence::NegatedBigInt {
-                        push: BigIntPush::Constant(0),
-                        ..
-                    },
-                    [constant],
-                ) => match constant.as_wire() {
-                    Ok(WireValue::BigInt(bytes)) => {
-                        ScalarScriptDraft::NegatedBigIntBytes(copy_bigint_bytes(bytes)?)
-                    }
-                    Ok(_) => return unadmitted("negated scalar constant is not a BigInt value"),
-                    Err(_) => return unadmitted("negated scalar constant is not a data value"),
-                },
-                (
-                    ScalarSequence::NegatedBigInt {
-                        push: BigIntPush::Constant(_),
-                        ..
-                    },
-                    [_],
-                ) => return unadmitted("negated BigInt opcode does not reference index zero"),
-                (
-                    ScalarSequence::NegatedBigInt {
-                        push: BigIntPush::Constant(_),
-                        ..
-                    },
-                    _,
-                ) => {
-                    return unadmitted("negated BigInt opcode requires exactly one function constant");
-                }
+    expected_pairing_source = """
+        let value = match (push, function.constants()) {
+            (ScalarPush::Direct(value), []) => value,
+            (ScalarPush::Direct(_), _) => {
+                return unadmitted("direct scalar opcode carries a function constant");
             }
-        """
-        pairing_is_direct_and_final = (
-            len(scalar_sequence_binding_matches) == 1
-            and scalar_sequence_binding_matches[0].end() < pairing_start
-            and scalar_admission_code[:pairing_start].count("{")
-            - scalar_admission_code[:pairing_start].count("}")
-            == 1
-            and re.fullmatch(
-                r"[ \t\n]*;[ \t\n]*Ok[ \t\n]*\([ \t\n]*draft[ \t\n]*\)"
-                r"[ \t\n]*\}[ \t\n]*",
-                scalar_admission_code[pairing_close:],
-            ) is not None
+            (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
+                Ok(WireValue::Float64Bits(bits)) => ScalarValueDraft::Float64Bits(*bits),
+                Ok(WireValue::BigInt(bytes)) => {
+                    ScalarValueDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
+                }
+                Ok(WireValue::String(value)) => {
+                    ScalarValueDraft::ConstantString(copy_wire_string(value)?)
+                }
+                Ok(_) => {
+                    return unadmitted("scalar constant is not a Float64, BigInt, or String value");
+                }
+                Err(_) => return unadmitted("scalar constant is not a data value"),
+            },
+            (ScalarPush::Constant(_), [_]) => {
+                return unadmitted("scalar constant opcode does not reference index zero");
+            }
+            (ScalarPush::Constant(_), _) => {
+                return unadmitted("scalar constant opcode requires exactly one function constant");
+            }
+            (ScalarPush::AtomValue, []) => project_atom_string(image, root)?,
+            (ScalarPush::AtomValue, _) => {
+                return unadmitted("atom-value scalar opcode carries a function constant");
+            }
+        }
+    """
+    pairing_is_direct_and_final = (
+        len(scalar_pairing_prefix_matches) == 1
+        and scalar_pairing_prefix_matches[0].end() == pairing_start
+        and scalar_admission_code[:pairing_start].count("{")
+        - scalar_admission_code[:pairing_start].count("}")
+        == 1
+        and re.fullmatch(
+            r"[ \t\n]*;[ \t\n]*Ok[ \t\n]*\([ \t\n]*\([ \t\n]*value"
+            r"[ \t\n]*,[ \t\n]*unary_ops[ \t\n]*\)[ \t\n]*\)"
+            r"[ \t\n]*\}[ \t\n]*",
+            scalar_admission_code[pairing_close:],
+        ) is not None
+    )
+    if (
+        " ".join(scalar_pairing_code.split())
+        != " ".join(rust_code_only(expected_pairing_source).split())
+        or not pairing_is_direct_and_final
+    ):
+        fail(
+            "scalar-script-constant-pairing",
+            "admission must pair only the reviewed value push provenance and return its untouched unary-operation slice",
         )
-        if (
-            " ".join(scalar_pairing_code.split())
-            != " ".join(rust_code_only(expected_pairing_source).split())
-            or not pairing_is_direct_and_final
-        ):
-            fail(
-                "scalar-script-constant-pairing",
-                "admission must atomically pair direct, cpool, atom-value, or BigInt-only single-neg sequences with the exact reviewed provenance",
-            )
 
     scalar_production_code = scalar_script_code.split("#[cfg(test)]", 1)[0]
     if re.findall(
         r"\bWireValue[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
         scalar_production_code,
-    ) != ["Float64Bits", "BigInt", "String", "BigInt"]:
+    ) != ["Float64Bits", "BigInt", "String"]:
         fail(
             "scalar-script-constant-pairing",
             "the scalar-script path may name only the reviewed Float64, BigInt, and String pool variants",
@@ -1285,8 +1520,16 @@ if scalar_admission_code:
         "envelope": 0,
         "native_payload": 0,
         "sequence": 0,
+        "instructions": 0,
+        "expected_sidecar_count": 0,
+        "unary_count": 0,
+        "completion_offset": 0,
+        "return_offset": 0,
+        "push_width": 0,
         "sidecars_match": 0,
-        "draft": 0,
+        "push": 0,
+        "unary_ops": 0,
+        "value": 0,
     }
     for binding_match in re.finditer(
         r"\blet\b(?P<pattern>[^=;]+)=", scalar_admission_code
@@ -1301,12 +1544,20 @@ if scalar_admission_code:
         "envelope": 1,
         "native_payload": 1,
         "sequence": 1,
+        "instructions": 1,
+        "expected_sidecar_count": 1,
+        "unary_count": 1,
+        "completion_offset": 1,
+        "return_offset": 1,
+        "push_width": 1,
         "sidecars_match": 1,
-        "draft": 1,
+        "push": 1,
+        "unary_ops": 1,
+        "value": 1,
     }:
         fail(
             "scalar-script-admission-empty-boundaries",
-            "admit_image must bind function, envelope, native_payload, sequence, sidecars_match, and draft exactly once; "
+            "admit_image must bind every reviewed image, sequence, checked-offset, sidecar, value, and unary operation exactly once; "
             f"found {reviewed_binding_counts}",
         )
 
@@ -1317,7 +1568,7 @@ if scalar_admission_code:
         )
 
     allowed_return_pattern = re.compile(
-        r"\breturn[ \t\n]+(?:unadmitted|Err)[ \t\n]*\("
+        r"\breturn[ \t\n]+(?:(?:unadmitted|Err)[ \t\n]*\(|false[ \t\n]*;)"
     )
     for return_match in re.finditer(r"\breturn\b", scalar_admission_code):
         if allowed_return_pattern.match(scalar_admission_code, return_match.start()) is None:
@@ -1328,17 +1579,20 @@ if scalar_admission_code:
 
     success_matches = list(
         re.finditer(
-            r"\bOk[ \t\n]*\([ \t\n]*draft[ \t\n]*\)",
+            r"\bOk[ \t\n]*\([ \t\n]*\([ \t\n]*value[ \t\n]*,"
+            r"[ \t\n]*unary_ops[ \t\n]*\)[ \t\n]*\)",
             scalar_admission_code,
         )
     )
     if len(success_matches) != 1 or re.search(
-        r"\bOk[ \t\n]*\([ \t\n]*draft[ \t\n]*\)[ \t\n]*\}[ \t\n]*\Z",
+        r"\bOk[ \t\n]*\([ \t\n]*\([ \t\n]*value[ \t\n]*,"
+        r"[ \t\n]*unary_ops[ \t\n]*\)[ \t\n]*\)[ \t\n]*\}"
+        r"[ \t\n]*\Z",
         scalar_admission_code,
     ) is None:
         fail(
             "scalar-script-admission-empty-boundaries",
-            "admit_image must have exactly one successful exit: the final Ok(draft)",
+            "admit_image must have exactly one successful exit: the final Ok((value, unary_ops))",
         )
 
 scalar_project_atom_string_code, _, _ = unique_braced_item(
@@ -1351,7 +1605,7 @@ expected_scalar_project_atom_string_source = """
     fn project_atom_string(
         image: &BytecodeImage,
         function: super::bytecode_image::FunctionId,
-    ) -> Result<ScalarScriptDraft, ScalarScriptReadError> {
+    ) -> Result<ScalarValueDraft, ScalarScriptReadError> {
         let projection = image
             .project_single_string_atom(function)
             .map_err(classify_string_atom_projection_error)?;
@@ -1361,14 +1615,14 @@ expected_scalar_project_atom_string_source = """
             ));
         }
         if let Some(value) = projection.canonical_decimal() {
-            return Ok(ScalarScriptDraft::IntegerAtomString(value));
+            return Ok(ScalarValueDraft::IntegerAtomString(value));
         }
         if let Some(value) = projection.manifest_spelling() {
             return copy_utf16(value.encode_utf16(), value.encode_utf16().count())
-                .map(ScalarScriptDraft::AtomString);
+                .map(ScalarValueDraft::AtomString);
         }
         if let Some(value) = projection.dynamic_string() {
-            return copy_wire_string(value).map(ScalarScriptDraft::AtomString);
+            return copy_wire_string(value).map(ScalarValueDraft::AtomString);
         }
         Err(ScalarScriptReadError::Internal(
             "String atom projection contained no spelling".into(),
@@ -1408,9 +1662,9 @@ expected_scalar_projection_classifier_source = """
 scalar_projection_fragments = (
     ".project_single_string_atom(function) .map_err(classify_string_atom_projection_error)?;",
     "if projection.operand_offset() != 1",
-    "return Ok(ScalarScriptDraft::IntegerAtomString(value));",
-    "return copy_utf16(value.encode_utf16(), value.encode_utf16().count()) .map(ScalarScriptDraft::AtomString);",
-    "return copy_wire_string(value).map(ScalarScriptDraft::AtomString);",
+    "return Ok(ScalarValueDraft::IntegerAtomString(value));",
+    "return copy_utf16(value.encode_utf16(), value.encode_utf16().count()) .map(ScalarValueDraft::AtomString);",
+    "return copy_wire_string(value).map(ScalarValueDraft::AtomString);",
     "ImageStringAtomProjectionError::PrivateAtom | ImageStringAtomProjectionError::SymbolAtom",
 )
 if (
@@ -1475,6 +1729,87 @@ consumer_facade_import_pattern = re.compile(
 )
 consumer_facade_imports = list(consumer_facade_import_pattern.finditer(consumer_code))
 if consumer_exists:
+    consumer_production_code = consumer_code.split("#[cfg(test)]", 1)[0]
+    consumer_top_level_item_pattern = re.compile(
+        r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?"
+        r"(?P<kind>struct|enum|union|trait|type|mod)[ \t\n]+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    )
+    consumer_top_level_items = [
+        (match.group("kind"), match.group("name"))
+        for match in consumer_top_level_item_pattern.finditer(consumer_production_code)
+        if consumer_production_code[:match.start()].count("{")
+        == consumer_production_code[:match.start()].count("}")
+    ]
+    if consumer_top_level_items != [("enum", "LoweredScalar")]:
+        fail(
+            "binary-object-consumer-top-level-item-set",
+            f"{consumer_relative} may own only the reviewed LoweredScalar type and no module, trait, alias, union, or helper type escape; "
+            f"found {consumer_top_level_items}",
+        )
+
+    consumer_top_level_functions = [
+        match.group("name")
+        for match in re.finditer(
+            r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?fn"
+            r"[ \t\n]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)",
+            consumer_production_code,
+        )
+        if consumer_production_code[:match.start()].count("{")
+        == consumer_production_code[:match.start()].count("}")
+    ]
+    expected_consumer_top_level_functions = [
+        "lower_scalar_value",
+        "lower_scalar_string",
+        "lower_bigint_constant",
+        "decode_bigint_constant",
+        "lower_scalar_constant",
+        "map_read_error",
+    ]
+    if consumer_top_level_functions != expected_consumer_top_level_functions:
+        fail(
+            "binary-object-consumer-helper-set",
+            f"{consumer_relative} production free-function ownership drifted from the reviewed helper set; "
+            f"found {consumer_top_level_functions}",
+        )
+
+    consumer_impl_headers = [
+        " ".join(match.group("header").split())
+        for match in re.finditer(
+            r"(?m)^[ \t]*impl\b(?P<header>[^{};]*)\{",
+            consumer_production_code,
+        )
+        if consumer_production_code[:match.start()].count("{")
+        == consumer_production_code[:match.start()].count("}")
+    ]
+    if consumer_impl_headers != ["Runtime"]:
+        fail(
+            "binary-object-consumer-implementation-set",
+            f"{consumer_relative} must retain exactly one inherent Runtime implementation and no trait or alternate owner; "
+            f"found {consumer_impl_headers}",
+        )
+
+    consumer_macro_invocations = re.findall(
+        r"(?<![A-Za-z0-9_])((?:r#)?[A-Za-z_][A-Za-z0-9_]*)"
+        r"[ \t\n]*![ \t\n]*[([{]",
+        consumer_production_code,
+    )
+    if consumer_macro_invocations != ["vec", "format", "format", "format", "format"]:
+        fail(
+            "binary-object-consumer-macro-set",
+            f"{consumer_relative} may invoke only its reviewed constant-vector and diagnostic macros; "
+            f"found {consumer_macro_invocations}",
+        )
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9_])(?:r#)?include[ \t\n]*!",
+        consumer_production_code,
+    ):
+        fail(
+            "binary-object-consumer-source-include",
+            f"{consumer_relative} must not splice unscanned Rust source; found "
+            + location(consumer_relative, consumer_source, match.start()),
+        )
+
     if len(consumer_facade_imports) != 1:
         fail(
             "binary-object-consumer-import",
@@ -1518,22 +1853,13 @@ if consumer_exists:
         r"[ \t\n]*Direct[ \t\n]*\([ \t\n]*Instruction[ \t\n]*\)[ \t\n]*,"
         r"[ \t\n]*Constant[ \t\n]*\([ \t\n]*UnlinkedConstant[ \t\n]*\)[ \t\n]*,"
         r"[ \t\n]*AtomString[ \t\n]*\([ \t\n]*UnlinkedConstant[ \t\n]*\)[ \t\n]*,"
-        r"[ \t\n]*IntegerAtomString[ \t\n]*\([ \t\n]*u32[ \t\n]*\)[ \t\n]*,"
-        r"[ \t\n]*NegatedBigInt[ \t\n]*\([ \t\n]*UnlinkedConstant[ \t\n]*\)"
+        r"[ \t\n]*IntegerAtomString[ \t\n]*\([ \t\n]*u32[ \t\n]*\)"
         r"[ \t\n]*,?[ \t\n]*\}"
     )
     if len(lowered_scalar_pattern.findall(consumer_code)) != 1:
         fail(
             "binary-object-consumer-scalar-mapping",
-            "LoweredScalar must preserve direct, primitive-cpool, atom-cpool, fresh integer-atom, and negated-BigInt provenance",
-        )
-
-    if len(
-        re.findall(r"\bInstruction[ \t\n]*::[ \t\n]*Neg\b", consumer_code)
-    ) != 1:
-        fail(
-            "binary-object-consumer-bigint-negation",
-            f"{consumer_relative} must contain exactly one execution-time Instruction::Neg",
+            "LoweredScalar must preserve only direct, primitive-cpool, atom-cpool, and fresh integer-atom value provenance",
         )
 
     publication_bridge_pattern = re.compile(
@@ -1554,46 +1880,43 @@ if consumer_exists:
             realm: ContextId,
             bytes: &[u8],
         ) -> Result<FunctionBytecodeRef, RuntimeError> {
-            let draft = decode_trusted_scalar_script(bytes).map_err(map_read_error)?;
-            let (instructions, constants) = match lower_scalar_draft(draft)? {
-                LoweredScalar::Direct(push) => (
-                    vec![push, Instruction::SetLocal(0), Instruction::Return],
-                    Vec::new(),
-                ),
-                LoweredScalar::Constant(constant) => (
-                    vec![
-                        Instruction::PushConst(0),
-                        Instruction::SetLocal(0),
-                        Instruction::Return,
-                    ],
-                    vec![constant],
-                ),
-                LoweredScalar::AtomString(constant) => (
-                    vec![
-                        Instruction::PushConst(0),
-                        Instruction::SetLocal(0),
-                        Instruction::Return,
-                    ],
-                    vec![constant],
-                ),
-                LoweredScalar::IntegerAtomString(value) => (
-                    vec![
-                        Instruction::PushAtomValueIndex(value),
-                        Instruction::SetLocal(0),
-                        Instruction::Return,
-                    ],
-                    Vec::new(),
-                ),
-                LoweredScalar::NegatedBigInt(constant) => (
-                    vec![
-                        Instruction::PushConst(0),
-                        Instruction::Neg,
-                        Instruction::SetLocal(0),
-                        Instruction::Return,
-                    ],
-                    vec![constant],
-                ),
+            let (value, unary_ops) = decode_trusted_scalar_script(bytes).map_err(map_read_error)?;
+            let (push, constants) = match lower_scalar_value(value)? {
+                LoweredScalar::Direct(push) => (push, Vec::new()),
+                LoweredScalar::Constant(constant) | LoweredScalar::AtomString(constant) => {
+                    (Instruction::PushConst(0), vec![constant])
+                }
+                LoweredScalar::IntegerAtomString(value) => {
+                    (Instruction::PushAtomValueIndex(value), Vec::new())
+                }
             };
+            let instruction_capacity = unary_ops.len().checked_add(3).ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "trusted scalar instruction count overflowed",
+                ))
+            })?;
+            let mut instructions = Vec::new();
+            instructions
+                .try_reserve_exact(instruction_capacity)
+                .map_err(|_| {
+                    RuntimeError::Engine(Error::internal(
+                        "could not allocate trusted scalar instruction draft",
+                    ))
+                })?;
+            instructions.push(push);
+            for operation in unary_ops {
+                instructions.push(match operation {
+                    ScalarUnaryOp::Neg => Instruction::Neg,
+                    ScalarUnaryOp::Plus => Instruction::Plus,
+                    ScalarUnaryOp::Dec => Instruction::Dec,
+                    ScalarUnaryOp::Inc => Instruction::Inc,
+                    ScalarUnaryOp::BitNot => Instruction::BitNot,
+                    ScalarUnaryOp::LogicalNot => Instruction::Not,
+                    ScalarUnaryOp::TypeOf => Instruction::TypeOf,
+                });
+            }
+            instructions.push(Instruction::SetLocal(0));
+            instructions.push(Instruction::Return);
             let function = UnlinkedFunction::new(
                 instructions,
                 constants,
@@ -1604,6 +1927,7 @@ if consumer_exists:
                     ..FunctionMetadata::default()
                 },
             );
+
             self.publish_unlinked_function(realm, function)
         }
     """
@@ -1613,11 +1937,30 @@ if consumer_exists:
     ):
         fail(
             "binary-object-consumer-publication",
-            f"{consumer_relative} must preserve each scalar provenance before entering the ordinary verifier/publication boundary",
+            f"{consumer_relative} must publish one checked push, every authenticated unary operation in order, completion, and return before entering the ordinary verifier/publication boundary",
+        )
+    consumer_runtime_impl_code, _, _ = unique_braced_item(
+        consumer_production_code,
+        re.compile(r"(?m)^[ \t]*impl[ \t\n]+Runtime[ \t\n]*\{"),
+        "binary-object-consumer-implementation-set",
+        "sole Runtime publication implementation",
+    )
+    expected_consumer_runtime_impl = (
+        "impl Runtime { "
+        + " ".join(rust_code_only(expected_publication_bridge_source).split())
+        + " }"
+    )
+    if (
+        " ".join(consumer_runtime_impl_code.split())
+        != expected_consumer_runtime_impl
+    ):
+        fail(
+            "binary-object-consumer-implementation-set",
+            f"{consumer_relative} Runtime implementation must contain only the reviewed publication bridge",
         )
 
     scalar_lowering_pattern = re.compile(
-        r"\bfn[ \t\n]+lower_scalar_draft[ \t\n]*\([^{};]*\)"
+        r"\bfn[ \t\n]+lower_scalar_value[ \t\n]*\([^{};]*\)"
         r"[ \t\n]*->[^{;]+\{",
         re.DOTALL,
     )
@@ -1625,7 +1968,7 @@ if consumer_exists:
         consumer_code,
         scalar_lowering_pattern,
         "binary-object-consumer-scalar-mapping",
-        "lower_scalar_draft function",
+        "lower_scalar_value function",
     )
     bigint_lowering_pattern = re.compile(
         r"\bfn[ \t\n]+lower_bigint_constant[ \t\n]*\("
@@ -1651,18 +1994,6 @@ if consumer_exists:
         "binary-object-consumer-bigint",
         "decode_bigint_constant function",
     )
-    bigint_negation_pattern = re.compile(
-        r"\bfn[ \t\n]+lower_negated_bigint[ \t\n]*\("
-        r"[ \t\n]*value[ \t\n]*:[ \t\n]*JsBigInt[ \t\n]*,?"
-        r"[ \t\n]*\)[ \t\n]*->[^{;]+\{",
-        re.DOTALL,
-    )
-    bigint_negation_code, _, _ = unique_braced_item(
-        consumer_code,
-        bigint_negation_pattern,
-        "binary-object-consumer-bigint-negation",
-        "lower_negated_bigint function",
-    )
     scalar_constant_pattern = re.compile(
         r"\bfn[ \t\n]+lower_scalar_constant[ \t\n]*\([^{};]*\)"
         r"[ \t\n]*->[^{;]+\{",
@@ -1686,36 +2017,32 @@ if consumer_exists:
         "lower_scalar_string function",
     )
     expected_scalar_lowering_source = """
-        fn lower_scalar_draft(draft: ScalarScriptDraft) -> Result<LoweredScalar, RuntimeError> {
-            match draft {
-                ScalarScriptDraft::Undefined => Ok(LoweredScalar::Direct(Instruction::Undefined)),
-                ScalarScriptDraft::Null => Ok(LoweredScalar::Direct(Instruction::Null)),
-                ScalarScriptDraft::Bool(false) => Ok(LoweredScalar::Direct(Instruction::PushFalse)),
-                ScalarScriptDraft::Bool(true) => Ok(LoweredScalar::Direct(Instruction::PushTrue)),
-                ScalarScriptDraft::Int(value) => Ok(LoweredScalar::Direct(Instruction::PushI32(value))),
-                ScalarScriptDraft::Float64Bits(bits) => {
+        fn lower_scalar_value(value: ScalarValueDraft) -> Result<LoweredScalar, RuntimeError> {
+            match value {
+                ScalarValueDraft::Undefined => Ok(LoweredScalar::Direct(Instruction::Undefined)),
+                ScalarValueDraft::Null => Ok(LoweredScalar::Direct(Instruction::Null)),
+                ScalarValueDraft::Bool(false) => Ok(LoweredScalar::Direct(Instruction::PushFalse)),
+                ScalarValueDraft::Bool(true) => Ok(LoweredScalar::Direct(Instruction::PushTrue)),
+                ScalarValueDraft::Int(value) => Ok(LoweredScalar::Direct(Instruction::PushI32(value))),
+                ScalarValueDraft::Float64Bits(bits) => {
                     lower_scalar_constant(Value::Float(f64::from_bits(bits))).map(LoweredScalar::Constant)
                 }
-                ScalarScriptDraft::BigIntI32(value) => {
+                ScalarValueDraft::BigIntI32(value) => {
                     lower_scalar_constant(Value::BigInt(JsBigInt::from(value))).map(LoweredScalar::Constant)
                 }
-                ScalarScriptDraft::BigIntBytes(bytes) => {
+                ScalarValueDraft::BigIntBytes(bytes) => {
                     lower_bigint_constant(&bytes).map(LoweredScalar::Constant)
                 }
-                ScalarScriptDraft::NegatedBigIntI32(value) => lower_negated_bigint(JsBigInt::from(value)),
-                ScalarScriptDraft::NegatedBigIntBytes(bytes) => {
-                    lower_negated_bigint(decode_bigint_constant(&bytes)?)
-                }
-                ScalarScriptDraft::EmptyString => Ok(LoweredScalar::AtomString(
+                ScalarValueDraft::EmptyString => Ok(LoweredScalar::AtomString(
                     UnlinkedConstant::atom_string(JsString::from_static("")),
                 )),
-                ScalarScriptDraft::ConstantString(value) => lower_scalar_string(value)
+                ScalarValueDraft::ConstantString(value) => lower_scalar_string(value)
                     .and_then(|value| lower_scalar_constant(Value::String(value)))
                     .map(LoweredScalar::Constant),
-                ScalarScriptDraft::AtomString(value) => Ok(LoweredScalar::AtomString(
+                ScalarValueDraft::AtomString(value) => Ok(LoweredScalar::AtomString(
                     UnlinkedConstant::atom_string(lower_scalar_string(value)?),
                 )),
-                ScalarScriptDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),
+                ScalarValueDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),
             }
         }
     """
@@ -1746,11 +2073,6 @@ if consumer_exists:
             Ok(value)
         }
     """
-    expected_bigint_negation_source = """
-        fn lower_negated_bigint(value: JsBigInt) -> Result<LoweredScalar, RuntimeError> {
-            lower_scalar_constant(Value::BigInt(value)).map(LoweredScalar::NegatedBigInt)
-        }
-    """
     expected_scalar_constant_source = """
         fn lower_scalar_constant(value: Value) -> Result<UnlinkedConstant, RuntimeError> {
             UnlinkedConstant::primitive(value).map_err(|error| {
@@ -1764,8 +2086,8 @@ if consumer_exists:
         " ".join(scalar_lowering_code.split())
         != " ".join(rust_code_only(expected_scalar_lowering_source).split())
         or re.findall(
-            r"\bScalarScriptDraft[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
-            consumer_code,
+            r"\bScalarValueDraft[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+            consumer_code.split("#[cfg(test)]", 1)[0],
         ) != [
             "Undefined",
             "Null",
@@ -1775,8 +2097,6 @@ if consumer_exists:
             "Float64Bits",
             "BigIntI32",
             "BigIntBytes",
-            "NegatedBigIntI32",
-            "NegatedBigIntBytes",
             "EmptyString",
             "ConstantString",
             "AtomString",
@@ -1797,28 +2117,12 @@ if consumer_exists:
         or " ".join(bigint_decoder_code.split())
         != " ".join(rust_code_only(expected_bigint_decoder_source).split())
         or len(re.findall(r"\blower_bigint_constant\b", consumer_code)) != 2
-        or len(re.findall(r"\bdecode_bigint_constant\b", consumer_code)) != 3
+        or len(re.findall(r"\bdecode_bigint_constant\b", consumer_code)) != 2
         or len(re.findall(r"\bJsBigInt[ \t\n]*::[ \t\n]*decode_bc5_signed_le\b", consumer_code)) != 1
     ):
         fail(
             "binary-object-consumer-bigint",
             f"{consumer_relative} must decode BigIntBytes exactly once through the unique canonical BigInt helper and lower all primitive pushes through reviewed helpers",
-        )
-    if (
-        " ".join(bigint_negation_code.split())
-        != " ".join(rust_code_only(expected_bigint_negation_source).split())
-        or len(re.findall(r"\blower_negated_bigint\b", consumer_code)) != 3
-        or len(
-            re.findall(
-                r"\bLoweredScalar[ \t\n]*::[ \t\n]*NegatedBigInt\b",
-                consumer_code,
-            )
-        )
-        != 2
-    ):
-        fail(
-            "binary-object-consumer-bigint-negation",
-            f"{consumer_relative} must preserve BigInt unary negation as exactly one execution-time Instruction::Neg after a primitive constant push",
         )
     for match in re.finditer(r"\b(?:r#)?number[ \t\n]*\(", consumer_code):
         fail(
@@ -1942,7 +2246,7 @@ else:
     production_sources = sorted(src_root.rglob("*.rs"))
 
 facade_name_pattern = re.compile(
-    r"\b(?:ScalarScriptDraft|ScalarScriptReadError|ScalarStringDraft|decode_trusted_scalar_script)\b"
+    r"\b(?:ScalarValueDraft|ScalarUnaryOp|ScalarScriptReadError|ScalarStringDraft|decode_trusted_scalar_script)\b"
 )
 for path in production_sources:
     if path.is_symlink() or not path.is_file():
@@ -3745,7 +4049,7 @@ printf '%s\n' \
     'mod read_cursor;' \
     'mod scalar_script;' \
     'mod wire;' \
-    'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script};' \
+    'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 python3 - \
     "$repository_root/src/runtime/binary_object/scalar_script.rs" \
@@ -4240,7 +4544,7 @@ expect_rewrite_rejected consumer-public-module binary-object-consumer-module \
     'pub(super) mod binary_object_publish;'
 expect_rejected second-binary-object-consumer binary-object-consumer-set \
     src/runtime/other.rs \
-    'use super::binary_object::{ScalarScriptDraft, decode_trusted_scalar_script};'
+    'use super::binary_object::{ScalarValueDraft, decode_trusted_scalar_script};'
 expect_rejected alternate-binary-object-path binary-object-consumer-set \
     src/runtime/other.rs \
     '#[path = "binary_object/mod.rs"] mod alternate_archive;'
@@ -4274,30 +4578,30 @@ expect_rejected consumer-heap-type binary-object-consumer-heap-type \
 expect_rejected consumer-root-forge binary-object-consumer-root-forge \
     src/runtime/binary_object_publish.rs \
     'fn forge(runtime: Runtime, id: FunctionBytecodeId) { let _ = FunctionBytecodeRef::from_owned_handle(runtime, id); }'
-expect_rewrite_rejected consumer-lowered-scalar-vector binary-object-consumer-scalar-mapping \
+expect_rewrite_rejected consumer-lowered-scalar-unary-vector binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
-    '    NegatedBigInt(UnlinkedConstant),' \
-    '    NegatedBigInt(Vec<Instruction>),'
+    '    IntegerAtomString(u32),' \
+    $'    IntegerAtomString(u32),\n    Unary(Vec<Instruction>),'
 expect_rewrite_rejected consumer-float-normalization binary-object-consumer-float64 \
     src/runtime/binary_object_publish.rs \
     'lower_scalar_constant(Value::Float(f64::from_bits(bits)))' \
     'lower_scalar_constant(Value::number(f64::from_bits(bits)))'
 expect_rewrite_rejected consumer-pool-atom-swap binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
-    $'        ScalarScriptDraft::ConstantString(value) => lower_scalar_string(value)\n            .and_then(|value| lower_scalar_constant(Value::String(value)))\n            .map(LoweredScalar::Constant),' \
-    $'        ScalarScriptDraft::ConstantString(value) => Ok(LoweredScalar::AtomString(\n            UnlinkedConstant::atom_string(lower_scalar_string(value)?),\n        )),'
+    $'        ScalarValueDraft::ConstantString(value) => lower_scalar_string(value)\n            .and_then(|value| lower_scalar_constant(Value::String(value)))\n            .map(LoweredScalar::Constant),' \
+    $'        ScalarValueDraft::ConstantString(value) => Ok(LoweredScalar::AtomString(\n            UnlinkedConstant::atom_string(lower_scalar_string(value)?),\n        )),'
 expect_rewrite_rejected consumer-integer-via-cpool binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
-    'ScalarScriptDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),' \
-    'ScalarScriptDraft::IntegerAtomString(value) => lower_scalar_constant(Value::String(JsString::from_fresh_decimal_u32(value))).map(LoweredScalar::Constant),'
+    'ScalarValueDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),' \
+    'ScalarValueDraft::IntegerAtomString(value) => lower_scalar_constant(Value::String(JsString::from_fresh_decimal_u32(value))).map(LoweredScalar::Constant),'
 expect_rewrite_rejected consumer-empty-primitive binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
     'UnlinkedConstant::atom_string(JsString::from_static(""))' \
     'lower_scalar_constant(Value::String(JsString::from_static("")))?'
 expect_rewrite_rejected consumer-bigint-dead-path-coercion binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
-    $'        ScalarScriptDraft::BigIntBytes(bytes) => {\n            lower_bigint_constant(&bytes).map(LoweredScalar::Constant)\n        }' \
-    $'        ScalarScriptDraft::BigIntBytes(bytes) => {\n            if false { return lower_bigint_constant(&bytes).map(LoweredScalar::Constant); }\n            Ok(LoweredScalar::Direct(Instruction::PushI32(i32::from(bytes.first().copied().unwrap_or(0)))))\n        }'
+    $'        ScalarValueDraft::BigIntBytes(bytes) => {\n            lower_bigint_constant(&bytes).map(LoweredScalar::Constant)\n        }' \
+    $'        ScalarValueDraft::BigIntBytes(bytes) => {\n            if false { return lower_bigint_constant(&bytes).map(LoweredScalar::Constant); }\n            Ok(LoweredScalar::Direct(Instruction::PushI32(i32::from(bytes.first().copied().unwrap_or(0)))))\n        }'
 expect_rewrite_rejected consumer-bigint-noncanonical-decode binary-object-consumer-bigint \
     src/runtime/binary_object_publish.rs \
     'JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), true)' \
@@ -4310,10 +4614,18 @@ expect_rewrite_rejected consumer-bigint-input-shadow binary-object-consumer-bigi
     src/runtime/binary_object_publish.rs \
     '    let (value, consumed) =' \
     $'    let bytes = &bytes[..1];\n    let (value, consumed) ='
-expect_rewrite_rejected consumer-bigint-negation-omitted binary-object-consumer-bigint-negation \
+expect_rewrite_rejected consumer-unary-negation-mapping-drift binary-object-consumer-publication \
     src/runtime/binary_object_publish.rs \
-    'Instruction::Neg,' \
-    'Instruction::Nop,'
+    '                ScalarUnaryOp::Neg => Instruction::Neg,' \
+    '                ScalarUnaryOp::Neg => Instruction::Nop,'
+expect_rewrite_rejected consumer-unary-chain-reorder binary-object-consumer-publication \
+    src/runtime/binary_object_publish.rs \
+    '        for operation in unary_ops {' \
+    '        for operation in unary_ops.into_iter().rev() {'
+expect_rewrite_rejected consumer-unary-eager-precompute binary-object-consumer-publication \
+    src/runtime/binary_object_publish.rs \
+    '        let (value, unary_ops) = decode_trusted_scalar_script(bytes).map_err(map_read_error)?;' \
+    $'        let (value, unary_ops) = decode_trusted_scalar_script(bytes).map_err(map_read_error)?;\n        let value = match value { ScalarValueDraft::Int(value) => ScalarValueDraft::Int(value.wrapping_neg()), value => value };'
 expect_rejected consumer-bigint-eager-negation binary-object-consumer-bigint-eager-negation \
     src/runtime/binary_object_publish.rs \
     'fn eager_negation(value: JsBigInt) { let _ = std::ops::Neg::neg(value); }'
@@ -4336,20 +4648,28 @@ expect_rejected root-reexport root-reexport \
     'pub(in crate::runtime) use bytecode_image::*;'
 expect_rewrite_rejected scalar-facade-extra-type scalar-script-facade-shape \
     src/runtime/binary_object/mod.rs \
-    'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script};' \
-    'pub(super) use scalar_script::{BytecodeImage, ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script};'
+    'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
+    'pub(super) use scalar_script::{BytecodeImage, ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};'
 expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shape \
     src/runtime/binary_object/mod.rs \
-    'pub(super) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script};' \
-    'pub(crate) use scalar_script::{ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script};'
+    'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
+    'pub(crate) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};'
 expect_rewrite_rejected scalar-draft-raw-c-forgery scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
-    $'pub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    NegatedBigIntI32(i32),\n    NegatedBigIntBytes(Box<[u8]>),\n    EmptyString,\n    ConstantString(ScalarStringDraft),\n    AtomString(ScalarStringDraft),\n    IntegerAtomString(u32),\n}' \
-    $'enum FloatDraft { Float(f64) }\nconst _FLOAT_DRAFT_FORGERY: &CStr = cr#""\n#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarScriptDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    NegatedBigIntI32(i32),\n    NegatedBigIntBytes(Box<[u8]>),\n    EmptyString,\n    ConstantString(ScalarStringDraft),\n    AtomString(ScalarStringDraft),\n    IntegerAtomString(u32),\n}\n""#;'
+    $'pub(in crate::runtime) enum ScalarValueDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    EmptyString,\n    ConstantString(ScalarStringDraft),\n    AtomString(ScalarStringDraft),\n    IntegerAtomString(u32),\n}' \
+    $'enum FloatDraft { Float(f64) }\nconst _FLOAT_DRAFT_FORGERY: &CStr = cr#""\n#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarValueDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    EmptyString,\n    ConstantString(ScalarStringDraft),\n    AtomString(ScalarStringDraft),\n    IntegerAtomString(u32),\n}\n""#;'
 expect_rewrite_rejected scalar-draft-copy-regression scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
-    $'#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarScriptDraft' \
-    $'#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarScriptDraft'
+    $'#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarValueDraft' \
+    $'#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarValueDraft'
+expect_rewrite_rejected scalar-unary-dto-reorder scalar-unary-operation-shape \
+    src/runtime/binary_object/scalar_script.rs \
+    $'    Neg,\n    Plus,\n    Dec,\n    Inc,\n    BitNot,\n    LogicalNot,\n    TypeOf,' \
+    $'    Plus,\n    Neg,\n    Dec,\n    Inc,\n    BitNot,\n    LogicalNot,\n    TypeOf,'
+expect_rewrite_rejected scalar-unary-chain-storage scalar-script-sequence-shape \
+    src/runtime/binary_object/scalar_script.rs \
+    '    unary_ops: Box<[ScalarUnaryOp]>,' \
+    '    unary_ops: Vec<ScalarUnaryOp>,'
 expect_rewrite_rejected scalar-push-copy-regression scalar-script-push-shape \
     src/runtime/binary_object/scalar_script.rs \
     $'#[derive(Clone, Debug, Eq, PartialEq)]\nenum ScalarPush' \
@@ -4365,38 +4685,66 @@ expect_rewrite_rejected scalar-opcode-duplicate scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
     'const OP_NULL: u8 = 0x07;' \
     $'    const OP_NULL: u8 = 0xfe + 1;\nconst OP_NULL: u8 = 0x07;'
+for adjacent_unary_opcode in 0x89 0x8e 0x8f 0x90 0x91 0x92 0x96; do
+    expect_rewrite_rejected \
+        "scalar-unary-adjacent-${adjacent_unary_opcode#0x}" \
+        scalar-unary-operation-shape \
+        src/runtime/binary_object/scalar_script.rs \
+        $'            OP_TYPEOF => Some(Self::TypeOf),\n            _ => None,' \
+        $'            OP_TYPEOF => Some(Self::TypeOf),\n            '"$adjacent_unary_opcode"$' => Some(Self::Neg),\n            _ => None,'
+done
+expect_full_rewrite_rejected scalar-unary-descriptor-size scalar-unary-opcode-descriptor \
+    src/runtime/binary_object/pinned_opcodes.rs \
+    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
+    'PinnedOpcodeInfo::new("neg", 2, 1, 1, OpcodeFormat::None),'
+expect_full_rewrite_rejected scalar-unary-descriptor-pop scalar-unary-opcode-descriptor \
+    src/runtime/binary_object/pinned_opcodes.rs \
+    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
+    'PinnedOpcodeInfo::new("neg", 1, 0, 1, OpcodeFormat::None),'
+expect_full_rewrite_rejected scalar-unary-descriptor-push scalar-unary-opcode-descriptor \
+    src/runtime/binary_object/pinned_opcodes.rs \
+    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
+    'PinnedOpcodeInfo::new("neg", 1, 1, 2, OpcodeFormat::None),'
+expect_full_rewrite_rejected scalar-unary-descriptor-format scalar-unary-opcode-descriptor \
+    src/runtime/binary_object/pinned_opcodes.rs \
+    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
+    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::U8),'
 expect_rewrite_rejected scalar-const8-index-forgery scalar-script-push-decoder \
     src/runtime/binary_object/scalar_script.rs \
     'ScalarPush::Constant(u32::from(*index))' \
     'ScalarPush::Constant(0)'
 expect_rewrite_rejected scalar-fclosure8-substitution scalar-script-push-decoder \
     src/runtime/binary_object/scalar_script.rs \
-    '[OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN]' \
-    '[0xbe, index, OP_SET_LOC0, OP_RETURN]'
-expect_rewrite_rejected scalar-neg-wildcard scalar-script-sequence-decoder \
+    '[OP_PUSH_CONST8, index, ..]' \
+    '[0xbe, index, ..]'
+expect_rewrite_rejected scalar-unary-chain-fold scalar-script-sequence-decoder \
     src/runtime/binary_object/scalar_script.rs \
-    '        _ => decode_scalar_push(bytes).map(|(push, width)| ScalarSequence::Plain { push, width }),' \
-    '        _ if bytes.contains(&OP_NEG) => Some(ScalarSequence::NegatedBigInt { push: BigIntPush::Constant(0), width: 2 }),'
-expect_rewrite_rejected scalar-double-neg scalar-script-sequence-decoder \
+    '        unary_ops.push(operation);' \
+    '        if unary_ops.last() != Some(&operation) { unary_ops.push(operation); }'
+expect_rewrite_rejected scalar-unary-chain-reorder scalar-script-sequence-decoder \
     src/runtime/binary_object/scalar_script.rs \
-    '[OP_PUSH_CONST8, index, OP_NEG, OP_SET_LOC0, OP_RETURN]' \
-    '[OP_PUSH_CONST8, index, OP_NEG, OP_NEG, OP_SET_LOC0, OP_RETURN]'
-expect_rewrite_rejected scalar-int-neg scalar-script-sequence-decoder \
+    '        unary_ops.push(operation);' \
+    '        unary_ops.insert(0, operation);'
+expect_rewrite_rejected scalar-unary-sidecar-offset-drift scalar-script-sequence-sidecars \
     src/runtime/binary_object/scalar_script.rs \
-    $'            OP_PUSH_BIGINT_I32,\n            byte_0,\n            byte_1,\n            byte_2,\n            byte_3,\n            OP_NEG,' \
-    $'            OP_PUSH_I32,\n            byte_0,\n            byte_1,\n            byte_2,\n            byte_3,\n            OP_NEG,'
-expect_rewrite_rejected scalar-float-neg scalar-script-constant-pairing \
+    '                    sidecar.offset() == offset' \
+    '                    sidecar.offset() == offset + 1'
+expect_rewrite_rejected scalar-unary-sidecar-slot-drift scalar-script-sequence-sidecars \
     src/runtime/binary_object/scalar_script.rs \
-    $'        ) => match constant.as_wire() {\n            Ok(WireValue::BigInt(bytes)) => {\n                ScalarScriptDraft::NegatedBigIntBytes' \
-    $'        ) => match constant.as_wire() {\n            Ok(WireValue::Float64Bits(bytes)) => {\n                ScalarScriptDraft::NegatedBigIntBytes'
+    '                let sidecar = &instructions[index + 1];' \
+    '                let sidecar = &instructions[index];'
+expect_rewrite_rejected scalar-bigint-plus-early-rejection scalar-script-unary-admission-tail \
+    src/runtime/binary_object/scalar_script.rs \
+    '    Ok((value, unary_ops))' \
+    $'    if matches!(&value, ScalarValueDraft::BigIntI32(_) | ScalarValueDraft::BigIntBytes(_)) && unary_ops.contains(&ScalarUnaryOp::Plus) { return unadmitted("BigInt unary plus is not admitted"); }\n    Ok((value, unary_ops))'
 expect_rewrite_rejected scalar-constant-index-widening scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
-    '                push: ScalarPush::Constant(0),' \
-    '                push: ScalarPush::Constant(_),'
+    '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
+    '        (ScalarPush::Constant(_), [constant]) => match constant.as_wire() {'
 expect_rewrite_rejected scalar-constant-extra-pool scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
-    $'            [constant],\n        ) => match constant.as_wire() {\n            Ok(WireValue::Float64Bits(bits))' \
-    $'            [constant, ..],\n        ) => match constant.as_wire() {\n            Ok(WireValue::Float64Bits(bits))'
+    '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
+    '        (ScalarPush::Constant(0), [constant, ..]) => match constant.as_wire() {'
 expect_rewrite_rejected scalar-constant-wrong-type scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
     'Ok(WireValue::Float64Bits(bits))' \
@@ -4407,20 +4755,20 @@ expect_rewrite_rejected scalar-constant-wrong-type-comment-forgery scalar-script
     'Ok(WireValue::Int32(bits)) /* WireValue::Float64Bits */'
 expect_rewrite_rejected scalar-constant-string-opening scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
-    'ScalarScriptDraft::ConstantString(copy_wire_string(value)?)' \
-    'ScalarScriptDraft::EmptyString'
+    'ScalarValueDraft::ConstantString(copy_wire_string(value)?)' \
+    'ScalarValueDraft::EmptyString'
 expect_rewrite_rejected scalar-constant-bool-opening scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
     $'            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }' \
-    $'            Ok(WireValue::Bool(value)) => ScalarScriptDraft::Bool(*value),\n            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }'
+    $'            Ok(WireValue::Bool(value)) => ScalarValueDraft::Bool(*value),\n            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }'
 expect_rewrite_rejected scalar-constant-wildcard-primitive scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
     $'            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }' \
-    '            Ok(_) => ScalarScriptDraft::BigIntBytes(Box::default()),'
+    '            Ok(_) => ScalarValueDraft::BigIntBytes(Box::default()),'
 expect_rewrite_rejected scalar-bigint-truncated-copy scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
-    'ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)' \
-    'ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(&bytes[..1])?)'
+    'ScalarValueDraft::BigIntBytes(copy_bigint_bytes(bytes)?)' \
+    'ScalarValueDraft::BigIntBytes(copy_bigint_bytes(&bytes[..1])?)'
 expect_rewrite_rejected scalar-bigint-infallible-copy scalar-script-bigint-copy \
     src/runtime/binary_object/scalar_script.rs \
     'copy.try_reserve_exact(bytes.len())' \
@@ -4431,12 +4779,12 @@ expect_rewrite_rejected scalar-string-utf8-misdecode scalar-script-string-copy \
     'copy_utf16(String::from_utf8_lossy(bytes).encode_utf16(), bytes.len())'
 expect_rewrite_rejected scalar-direct-with-pool scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
-    $'                ..\n            },\n            [],\n        ) => draft,' \
-    $'                ..\n            },\n            [_],\n        ) => draft,'
+    '        (ScalarPush::Direct(value), []) => value,' \
+    '        (ScalarPush::Direct(value), [_]) => value,'
 expect_rewrite_rejected scalar-constant-pairing-bypass scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
-    '    let draft = match (sequence, function.constants()) {' \
-    $'    let draft = ScalarScriptDraft::Float64Bits(0);\n    let _reviewed_pair = match (sequence, function.constants()) {'
+    '    let value = match (push, function.constants()) {' \
+    $'    let value = ScalarValueDraft::Float64Bits(0);\n    let _reviewed_pair = match (push, function.constants()) {'
 expect_rejected scalar-float-evidence-alias scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
     'use WireValue::Float64Bits as AdmittedFloat;'
@@ -4451,7 +4799,7 @@ expect_rewrite_rejected scalar-input-atom-slot-comment-forgery scalar-script-adm
 expect_rewrite_rejected scalar-admission-early-success scalar-script-admission-empty-boundaries \
     src/runtime/binary_object/scalar_script.rs \
     '    let native_payload = envelope.code();' \
-    '    return Ok(ScalarScriptDraft::EmptyString); let native_payload = envelope.code();'
+    '    return Ok((ScalarValueDraft::EmptyString, Box::default())); let native_payload = envelope.code();'
 expect_rewrite_rejected scalar-admission-image-shadow scalar-script-admission-empty-boundaries \
     src/runtime/binary_object/scalar_script.rs \
     '    let native_payload = envelope.code();' \
@@ -4466,8 +4814,8 @@ expect_rewrite_rejected scalar-admission-dead-envelope scalar-script-admission-e
     '    if false { let envelope = function.envelope(); }'
 expect_rewrite_rejected scalar-admission-native-payload-shadow scalar-script-admission-empty-boundaries \
     src/runtime/binary_object/scalar_script.rs \
-    '    let draft = match (sequence, function.constants()) {' \
-    '    let native_payload = envelope.code(); let draft = match (sequence, function.constants()) {'
+    '    let value = match (push, function.constants()) {' \
+    '    let native_payload = envelope.code(); let value = match (push, function.constants()) {'
 expect_rewrite_rejected scalar-error-missing-unadmitted scalar-script-error-shape \
     src/runtime/binary_object/scalar_script.rs \
     '    Unadmitted(String),' \
@@ -4475,6 +4823,49 @@ expect_rewrite_rejected scalar-error-missing-unadmitted scalar-script-error-shap
 expect_rejected scalar-extra-visible-item scalar-script-visible-item-set \
     src/runtime/binary_object/scalar_script.rs \
     'pub(in crate::runtime) fn leak_image() {}'
+expect_rewrite_rejected scalar-unary-visibility-widening scalar-unary-operation-shape \
+    src/runtime/binary_object/scalar_script.rs \
+    'pub(in crate::runtime) enum ScalarUnaryOp {' \
+    'pub(crate) enum ScalarUnaryOp {'
+expect_rejected scalar-source-include forbidden-source-include \
+    src/runtime/binary_object/scalar_script.rs \
+    'include!("scalar_unary_escape.rs");'
+expect_rejected scalar-private-module scalar-script-top-level-item-set \
+    src/runtime/binary_object/scalar_script.rs \
+    'mod scalar_unary_escape;'
+expect_rejected scalar-private-trait scalar-script-top-level-item-set \
+    src/runtime/binary_object/scalar_script.rs \
+    'trait ScalarUnaryEscape {}'
+expect_rejected scalar-helper-escape scalar-script-helper-set \
+    src/runtime/binary_object/scalar_script.rs \
+    'fn admit_unary_without_sidecars() {}'
+expect_rejected scalar-macro-escape scalar-script-macro-set \
+    src/runtime/binary_object/scalar_script.rs \
+    'scalar_unary_escape!();'
+expect_rewrite_rejected consumer-publication-visibility-widening binary-object-consumer-publication \
+    src/runtime/binary_object_publish.rs \
+    '    pub(super) fn read_trusted_scalar_script_in_realm(' \
+    '    pub(crate) fn read_trusted_scalar_script_in_realm('
+expect_full_rewrite_rejected consumer-source-include binary-object-consumer-source-include \
+    src/runtime/binary_object_publish.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'include!("scalar_unary_escape.rs");\n\n#[cfg(test)]\nmod tests {'
+expect_full_rewrite_rejected consumer-private-module binary-object-consumer-top-level-item-set \
+    src/runtime/binary_object_publish.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'mod scalar_unary_escape;\n\n#[cfg(test)]\nmod tests {'
+expect_full_rewrite_rejected consumer-private-trait binary-object-consumer-top-level-item-set \
+    src/runtime/binary_object_publish.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'trait ScalarUnaryEscape {}\n\n#[cfg(test)]\nmod tests {'
+expect_full_rewrite_rejected consumer-helper-escape binary-object-consumer-helper-set \
+    src/runtime/binary_object_publish.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'fn publish_unary_without_verification() {}\n\n#[cfg(test)]\nmod tests {'
+expect_full_rewrite_rejected consumer-macro-escape binary-object-consumer-macro-set \
+    src/runtime/binary_object_publish.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'scalar_unary_escape!();\n\n#[cfg(test)]\nmod tests {'
 expect_rewrite_rejected scalar-strict-reader scalar-script-reader-mode \
     src/runtime/binary_object/scalar_script.rs \
     'ReaderMode::QuickJsCompatible' \
@@ -4549,7 +4940,7 @@ expect_rewrite_rejected scalar-projection-unused-header scalar-string-atom-proje
 expect_rewrite_rejected scalar-projection-consumer-early-success scalar-string-atom-projection \
     src/runtime/binary_object/scalar_script.rs \
     '    let projection = image' \
-    '    if image.input_atom_slot_count() == 1 { return Ok(ScalarScriptDraft::IntegerAtomString(0)); } let projection = image'
+    '    if image.input_atom_slot_count() == 1 { return Ok(ScalarValueDraft::IntegerAtomString(0)); } let projection = image'
 expect_rewrite_rejected scalar-projection-error-early-internal scalar-string-atom-projection \
     src/runtime/binary_object/scalar_script.rs \
     $'fn classify_string_atom_projection_error(\n    error: ImageStringAtomProjectionError,\n) -> ScalarScriptReadError {\n    let message = error.to_string();' \

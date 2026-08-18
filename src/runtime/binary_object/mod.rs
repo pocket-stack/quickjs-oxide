@@ -38,5 +38,6 @@ mod wire;
 
 #[allow(unused_imports)]
 pub(super) use scalar_script::{
-    ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script,
+    ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft,
+    decode_trusted_scalar_script,
 };

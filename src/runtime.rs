@@ -805,7 +805,8 @@ impl Runtime {
         let host_services: Rc<dyn HostServices> = Rc::new(host_services);
         let domain_id = NEXT_RUNTIME_DOMAIN_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(domain_id, 0, "runtime domain ID space exhausted");
-        let mut atoms = AtomTable::new();
+        let mut atoms = AtomTable::with_static_atoms(vm_host::TYPEOF_STATIC_ATOMS)
+            .expect("fixed typeof atom set fits the atom table");
         let mut well_known_symbols = HashMap::new();
         for symbol in WellKnownSymbol::ALL {
             let atom = atoms

@@ -25,7 +25,7 @@ static const uint8_t scalar_local[] = {
     0x01, 0x00, 0x00, 0x00, 0x00,
 };
 
-#define SCALAR_MAX_CODE_SIZE 8
+#define SCALAR_MAX_CODE_SIZE 16
 #define SCALAR_FLOAT64_POOL_SIZE 9
 #define SCALAR_MAX_WIRE_SIZE \
     (sizeof(scalar_prefix) + 2 + sizeof(scalar_local) + \
@@ -208,7 +208,7 @@ typedef enum StringScalarKind {
     STRING_SCALAR_SYMBOL,
 } StringScalarKind;
 
-typedef struct StringScalarEncoding {
+typedef struct ScalarWireEncoding {
     const uint8_t *atom_header;
     size_t atom_header_size;
     const uint8_t *code;
@@ -216,7 +216,7 @@ typedef struct StringScalarEncoding {
     const uint8_t *pool;
     size_t pool_size;
     uint32_t pool_count;
-} StringScalarEncoding;
+} ScalarWireEncoding;
 
 typedef struct StringScalarCase {
     const char *label;
@@ -226,9 +226,9 @@ typedef struct StringScalarCase {
     int expected_tag;
     const uint16_t *expected_units;
     size_t expected_unit_count;
-    StringScalarEncoding input;
+    ScalarWireEncoding input;
     /* A NULL atom header means the input is already the rewrite target. */
-    StringScalarEncoding canonical;
+    ScalarWireEncoding canonical;
 } StringScalarCase;
 
 #define STRING_NO_POOL_ENCODING(header, bytecode) \
@@ -551,7 +551,7 @@ typedef enum BigIntConstantCohort {
     BIGINT_CONSTANT_THREE_INSTRUCTION,
     BIGINT_CONSTANT_UNARY_NEG,
     BIGINT_CONSTANT_DIRECT_UNARY_NEG,
-    BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE,
+    BIGINT_CONSTANT_UNARY_CHAIN,
 } BigIntConstantCohort;
 
 typedef struct BigIntConstantCase {
@@ -804,13 +804,284 @@ static const BigIntConstantCase bigint_constant_cases[] = {
       bigint_redundant_one, sizeof(bigint_redundant_one),
       bigint_one, sizeof(bigint_one),
       BIGINT_CONSTANT_UNARY_NEG },
-    { "compatible-bigint-double-neg-outside", NULL,
+    { "compatible-bigint-double-neg-chain", NULL,
       "2147483648", JS_TAG_SHORT_BIG_INT,
       bigint_push_const8_double_neg, sizeof(bigint_push_const8_double_neg),
       bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
       bigint_i32_max_plus_one, sizeof(bigint_i32_max_plus_one),
-      BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE },
+      BIGINT_CONSTANT_UNARY_CHAIN },
 };
+
+typedef enum UnaryResultKind {
+    UNARY_RESULT_INT,
+    UNARY_RESULT_FLOAT64,
+    UNARY_RESULT_BOOLEAN,
+    UNARY_RESULT_BIGINT,
+    UNARY_RESULT_STRING,
+    UNARY_RESULT_EXCEPTION,
+} UnaryResultKind;
+
+typedef struct UnaryExpectation {
+    UnaryResultKind kind;
+    int tag;
+    int64_t integer;
+    uint64_t bits;
+    const char *text;
+    const char *exception_class;
+} UnaryExpectation;
+
+typedef struct UnaryCase {
+    const char *label;
+    const char *cohort;
+    const char *ops;
+    UnaryExpectation expected;
+    ScalarWireEncoding input;
+} UnaryCase;
+
+static const uint8_t unary_pool_float64_42[] = {
+    0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x45, 0x40,
+};
+static const uint8_t unary_pool_float64_41[] = {
+    0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x44, 0x40,
+};
+static const uint8_t unary_pool_float64_43[] = {
+    0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x45, 0x40,
+};
+static const uint8_t unary_pool_float64_negative_zero[] = {
+    0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
+};
+static const uint8_t unary_pool_float64_positive_nan[] = {
+    0x06, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x7f,
+};
+static const uint8_t unary_pool_float64_negative_nan[] = {
+    0x06, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xff,
+};
+static const uint8_t unary_pool_bigint_i64_max[] = {
+    0x0a, 0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+};
+static const uint8_t unary_pool_bigint_i64_min[] = {
+    0x0a, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
+};
+
+#define UNARY_NO_POOL(header, ...) \
+    { (header), sizeof(header), (const uint8_t[]){ __VA_ARGS__ }, \
+      sizeof((const uint8_t[]){ __VA_ARGS__ }), NULL, 0, 0 }
+#define UNARY_POOL(header, pool_value, ...) \
+    { (header), sizeof(header), (const uint8_t[]){ __VA_ARGS__ }, \
+      sizeof((const uint8_t[]){ __VA_ARGS__ }), \
+      (pool_value), sizeof(pool_value), 1 }
+#define UNARY_INT_CASE(label_value, cohort_value, ops_value, value, encoding) \
+    { (label_value), (cohort_value), (ops_value), \
+      { UNARY_RESULT_INT, JS_TAG_INT, (value), 0, NULL, NULL }, encoding }
+#define UNARY_FLOAT_CASE(label_value, cohort_value, ops_value, value, encoding) \
+    { (label_value), (cohort_value), (ops_value), \
+      { UNARY_RESULT_FLOAT64, JS_TAG_FLOAT64, 0, UINT64_C(value), NULL, NULL }, \
+      encoding }
+#define UNARY_BOOL_CASE(label_value, cohort_value, ops_value, value, encoding) \
+    { (label_value), (cohort_value), (ops_value), \
+      { UNARY_RESULT_BOOLEAN, JS_TAG_BOOL, (value), 0, NULL, NULL }, encoding }
+#define UNARY_BIGINT_CASE(label_value, cohort_value, ops_value, tag_value, \
+                          text_value, encoding) \
+    { (label_value), (cohort_value), (ops_value), \
+      { UNARY_RESULT_BIGINT, (tag_value), 0, 0, (text_value), NULL }, encoding }
+#define UNARY_STRING_CASE(label_value, cohort_value, ops_value, text_value, \
+                          encoding) \
+    { (label_value), (cohort_value), (ops_value), \
+      { UNARY_RESULT_STRING, JS_TAG_STRING, 0, 0, (text_value), NULL }, encoding }
+#define UNARY_EXCEPTION_CASE(label_value, cohort_value, ops_value, class_value, \
+                             message_value, encoding) \
+    { (label_value), (cohort_value), (ops_value), \
+      { UNARY_RESULT_EXCEPTION, 0, 0, 0, (message_value), (class_value) }, \
+      encoding }
+
+static const UnaryCase unary_cases[] = {
+    UNARY_FLOAT_CASE(
+        "unary-number-neg-int-zero", "number", "8a", 0x8000000000000000,
+        UNARY_NO_POOL(string_header_none, 0xb3, 0x8a, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-neg-int-min-promotion", "number", "8a",
+        0x41e0000000000000,
+        UNARY_NO_POOL(string_header_none, 0x01, 0x00, 0x00, 0x00, 0x80,
+                      0x8a, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-inc-int-max-promotion", "number", "8d",
+        0x41e0000000000000,
+        UNARY_NO_POOL(string_header_none, 0x01, 0xff, 0xff, 0xff, 0x7f,
+                      0x8d, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-dec-int-min-promotion", "number", "8c",
+        0xc1e0000000200000,
+        UNARY_NO_POOL(string_header_none, 0x01, 0x00, 0x00, 0x00, 0x80,
+                      0x8c, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-plus-integral-float", "number", "8b",
+        0x4045000000000000,
+        UNARY_POOL(string_header_none, unary_pool_float64_42,
+                   0xbd, 0x00, 0x8b, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-plus-negative-zero", "number", "8b",
+        0x8000000000000000,
+        UNARY_POOL(string_header_none, unary_pool_float64_negative_zero,
+                   0xbd, 0x00, 0x8b, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-neg-nan-payload-sign", "number", "8a",
+        0xfff8000000000042,
+        UNARY_POOL(string_header_none, unary_pool_float64_positive_nan,
+                   0xbd, 0x00, 0x8a, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-plus-nan-payload-sign", "number", "8b",
+        0xfff8000000000042,
+        UNARY_POOL(string_header_none, unary_pool_float64_negative_nan,
+                   0xbd, 0x00, 0x8b, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-inc-integral-float", "number", "8d",
+        0x4045000000000000,
+        UNARY_POOL(string_header_none, unary_pool_float64_41,
+                   0xbd, 0x00, 0x8d, 0xcb, 0x28)),
+    UNARY_FLOAT_CASE(
+        "unary-number-dec-integral-float", "number", "8c",
+        0x4045000000000000,
+        UNARY_POOL(string_header_none, unary_pool_float64_43,
+                   0xbd, 0x00, 0x8c, 0xcb, 0x28)),
+    UNARY_INT_CASE(
+        "unary-number-bitnot-float-nan-to-int32", "number", "93", -1,
+        UNARY_POOL(string_header_none, unary_pool_float64_positive_nan,
+                   0xbd, 0x00, 0x93, 0xcb, 0x28)),
+    UNARY_INT_CASE(
+        "unary-string-plus-decimal-to-int", "string-tonumeric", "8b", 42,
+        UNARY_POOL(string_header_none, string_pool_42,
+                   0xbd, 0x00, 0x8b, 0xcb, 0x28)),
+    UNARY_BIGINT_CASE(
+        "unary-bigint-neg-short", "bigint", "8a", JS_TAG_SHORT_BIG_INT,
+        "-42", UNARY_NO_POOL(string_header_none, 0xb0, 0x2a, 0x00, 0x00,
+                              0x00, 0x8a, 0xcb, 0x28)),
+    UNARY_BIGINT_CASE(
+        "unary-bigint-neg-i64-min-promotion", "bigint", "8a",
+        JS_TAG_BIG_INT, "9223372036854775808",
+        UNARY_POOL(string_header_none, unary_pool_bigint_i64_min,
+                   0xbd, 0x00, 0x8a, 0xcb, 0x28)),
+    UNARY_BIGINT_CASE(
+        "unary-bigint-inc-i64-max-promotion", "bigint", "8d",
+        JS_TAG_BIG_INT, "9223372036854775808",
+        UNARY_POOL(string_header_none, unary_pool_bigint_i64_max,
+                   0xbd, 0x00, 0x8d, 0xcb, 0x28)),
+    UNARY_BIGINT_CASE(
+        "unary-bigint-dec-short", "bigint", "8c",
+        JS_TAG_SHORT_BIG_INT, "41",
+        UNARY_NO_POOL(string_header_none, 0xb0, 0x2a, 0x00, 0x00, 0x00,
+                      0x8c, 0xcb, 0x28)),
+    UNARY_BIGINT_CASE(
+        "unary-bigint-dec-i64-min-pinned-unsigned-opcode-quirk",
+        "bigint-pinned-quirk", "8c", JS_TAG_SHORT_BIG_INT,
+        "-9223372032559808513",
+        UNARY_POOL(string_header_none, unary_pool_bigint_i64_min,
+                   0xbd, 0x00, 0x8c, 0xcb, 0x28)),
+    UNARY_BIGINT_CASE(
+        "unary-bigint-bitnot-short", "bigint", "93",
+        JS_TAG_SHORT_BIG_INT, "-43",
+        UNARY_NO_POOL(string_header_none, 0xb0, 0x2a, 0x00, 0x00, 0x00,
+                      0x93, 0xcb, 0x28)),
+    UNARY_EXCEPTION_CASE(
+        "unary-bigint-plus-type-error", "bigint", "8b", "TypeError",
+        "bigint argument with unary +",
+        UNARY_NO_POOL(string_header_none, 0xb0, 0x2a, 0x00, 0x00, 0x00,
+                      0x8b, 0xcb, 0x28)),
+    UNARY_BIGINT_CASE(
+        "unary-bigint-mixed-inc-neg-bitnot", "mixed-chain", "8d,8a,93",
+        JS_TAG_SHORT_BIG_INT, "41",
+        UNARY_NO_POOL(string_header_none, 0xb0, 0x29, 0x00, 0x00, 0x00,
+                      0x8d, 0x8a, 0x93, 0xcb, 0x28)),
+    UNARY_INT_CASE(
+        "unary-number-mixed-neg-lnot-plus", "mixed-chain", "8a,94,8b", 1,
+        UNARY_NO_POOL(string_header_none, 0xb3, 0x8a, 0x94, 0x8b,
+                      0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-undefined", "truthiness", "94", 1,
+        UNARY_NO_POOL(string_header_none, 0x06, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-null", "truthiness", "94", 1,
+        UNARY_NO_POOL(string_header_none, 0x07, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-false", "truthiness", "94", 1,
+        UNARY_NO_POOL(string_header_none, 0x09, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-true", "truthiness", "94", 0,
+        UNARY_NO_POOL(string_header_none, 0x0a, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-int-zero", "truthiness", "94", 1,
+        UNARY_NO_POOL(string_header_none, 0xb3, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-int-nonzero", "truthiness", "94", 0,
+        UNARY_NO_POOL(string_header_none, 0xbb, 0x2a, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-float-negative-zero", "truthiness", "94", 1,
+        UNARY_POOL(string_header_none, unary_pool_float64_negative_zero,
+                   0xbd, 0x00, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-float-nan", "truthiness", "94", 1,
+        UNARY_POOL(string_header_none, unary_pool_float64_positive_nan,
+                   0xbd, 0x00, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-bigint-zero", "truthiness", "94", 1,
+        UNARY_NO_POOL(string_header_none, 0xb0, 0x00, 0x00, 0x00, 0x00,
+                      0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-bigint-nonzero", "truthiness", "94", 0,
+        UNARY_NO_POOL(string_header_none, 0xb0, 0x01, 0x00, 0x00, 0x00,
+                      0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-empty-string", "truthiness", "94", 1,
+        UNARY_NO_POOL(string_header_none, 0xbf, 0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-nonempty-string", "truthiness", "94", 0,
+        UNARY_NO_POOL(string_header_a, 0x04, 0xf3, 0x00, 0x00, 0x00,
+                      0x94, 0xcb, 0x28)),
+    UNARY_BOOL_CASE(
+        "unary-lnot-symbol", "outside-symbol-atom", "94", 0,
+        UNARY_NO_POOL(string_header_none, 0x04, 0xe6, 0x00, 0x00, 0x00,
+                      0x94, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-undefined", "typeof", "95", "undefined",
+        UNARY_NO_POOL(string_header_none, 0x06, 0x95, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-null", "typeof", "95", "object",
+        UNARY_NO_POOL(string_header_none, 0x07, 0x95, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-boolean", "typeof", "95", "boolean",
+        UNARY_NO_POOL(string_header_none, 0x0a, 0x95, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-int-number", "typeof", "95", "number",
+        UNARY_NO_POOL(string_header_none, 0xbb, 0x2a, 0x95, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-float-number", "typeof", "95", "number",
+        UNARY_POOL(string_header_none, unary_pool_float64_42,
+                   0xbd, 0x00, 0x95, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-bigint", "typeof", "95", "bigint",
+        UNARY_NO_POOL(string_header_none, 0xb0, 0x2a, 0x00, 0x00, 0x00,
+                      0x95, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-string", "typeof", "95", "string",
+        UNARY_NO_POOL(string_header_a, 0x04, 0xf3, 0x00, 0x00, 0x00,
+                      0x95, 0xcb, 0x28)),
+    UNARY_STRING_CASE(
+        "unary-typeof-symbol", "outside-symbol-atom", "95", "symbol",
+        UNARY_NO_POOL(string_header_none, 0x04, 0xe6, 0x00, 0x00, 0x00,
+                      0x95, 0xcb, 0x28)),
+};
+
+static const ScalarWireEncoding unary_typeof_number_atom_literal =
+    UNARY_NO_POOL(string_header_none, 0x04, 0x4a, 0x00, 0x00, 0x00,
+                  0xcb, 0x28);
+
+#undef UNARY_EXCEPTION_CASE
+#undef UNARY_STRING_CASE
+#undef UNARY_BIGINT_CASE
+#undef UNARY_BOOL_CASE
+#undef UNARY_FLOAT_CASE
+#undef UNARY_INT_CASE
+#undef UNARY_POOL
+#undef UNARY_NO_POOL
 
 static const uint8_t compatible_scope_next_wrap[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
@@ -869,6 +1140,52 @@ static void report_exception(JSContext *ctx, const char *operation) {
     JS_FreeValue(ctx, exception);
 }
 
+static int expect_exception_fields(JSContext *context,
+                                   const char *label,
+                                   JSValueConst exception,
+                                   const char *expected_class,
+                                   const char *expected_message) {
+    JSValue class_value = JS_UNDEFINED;
+    JSValue message_value = JS_UNDEFINED;
+    const char *actual_class = NULL;
+    const char *actual_message = NULL;
+    int status = -1;
+
+    if (!JS_IsError(context, exception)) {
+        fprintf(stderr, "%s did not throw an Error object\n", label);
+        goto cleanup;
+    }
+    class_value = JS_GetPropertyStr(context, exception, "name");
+    message_value = JS_GetPropertyStr(context, exception, "message");
+    if (JS_IsException(class_value) || JS_IsException(message_value)) {
+        report_exception(context, "exception inspection failed");
+        goto cleanup;
+    }
+    actual_class = JS_ToCString(context, class_value);
+    actual_message = JS_ToCString(context, message_value);
+    if (!actual_class || !actual_message) {
+        report_exception(context, "exception conversion failed");
+        goto cleanup;
+    }
+    if (strcmp(actual_class, expected_class) != 0 ||
+        strcmp(actual_message, expected_message) != 0) {
+        fprintf(stderr, "%s returned %s: %s, expected %s: %s\n",
+                label, actual_class, actual_message,
+                expected_class, expected_message);
+        goto cleanup;
+    }
+    status = 0;
+
+cleanup:
+    if (actual_message)
+        JS_FreeCString(context, actual_message);
+    if (actual_class)
+        JS_FreeCString(context, actual_class);
+    JS_FreeValue(context, message_value);
+    JS_FreeValue(context, class_value);
+    return status;
+}
+
 static int expect_read_exception(const char *label,
                                  const uint8_t *bytecode,
                                  size_t bytecode_size,
@@ -878,10 +1195,6 @@ static int expect_read_exception(const char *label,
     JSContext *context = NULL;
     JSValue loaded = JS_UNDEFINED;
     JSValue exception = JS_UNDEFINED;
-    JSValue class_value = JS_UNDEFINED;
-    JSValue message_value = JS_UNDEFINED;
-    const char *actual_class = NULL;
-    const char *actual_message = NULL;
     int status = -1;
 
     runtime = JS_NewRuntime();
@@ -902,48 +1215,20 @@ static int expect_read_exception(const char *label,
         goto cleanup;
     }
     exception = JS_GetException(context);
-    if (!JS_IsError(context, exception)) {
-        fprintf(stderr, "%s did not throw an Error object\n", label);
+    if (expect_exception_fields(context, label, exception,
+                                expected_class, expected_message))
         goto cleanup;
-    }
-
-    class_value = JS_GetPropertyStr(context, exception, "name");
-    message_value = JS_GetPropertyStr(context, exception, "message");
-    if (JS_IsException(class_value) || JS_IsException(message_value)) {
-        report_exception(context, "malformed-read exception inspection failed");
-        goto cleanup;
-    }
-    actual_class = JS_ToCString(context, class_value);
-    actual_message = JS_ToCString(context, message_value);
-    if (!actual_class || !actual_message) {
-        report_exception(context, "malformed-read exception conversion failed");
-        goto cleanup;
-    }
-    if (strcmp(actual_class, expected_class) != 0 ||
-        strcmp(actual_message, expected_message) != 0) {
-        fprintf(stderr,
-                "%s returned %s: %s, expected %s: %s\n",
-                label, actual_class, actual_message,
-                expected_class, expected_message);
-        goto cleanup;
-    }
 
     printf("%s-hex=", label);
     for (size_t index = 0; index < bytecode_size; index++)
         printf("%02x", bytecode[index]);
     putchar('\n');
-    printf("%s-class=%s\n", label, actual_class);
-    printf("%s-message=%s\n", label, actual_message);
+    printf("%s-class=%s\n", label, expected_class);
+    printf("%s-message=%s\n", label, expected_message);
     status = 0;
 
 cleanup:
     if (context) {
-        if (actual_message)
-            JS_FreeCString(context, actual_message);
-        if (actual_class)
-            JS_FreeCString(context, actual_class);
-        JS_FreeValue(context, message_value);
-        JS_FreeValue(context, class_value);
         JS_FreeValue(context, exception);
         JS_FreeValue(context, loaded);
         JS_FreeContext(context);
@@ -1269,10 +1554,10 @@ static int append_uleb_size(uint8_t *output,
     return 0;
 }
 
-static int build_string_scalar_wire(const StringScalarEncoding *encoding,
-                                    uint8_t *output,
-                                    size_t output_capacity,
-                                    size_t *output_size) {
+static int build_scalar_encoding_wire(const ScalarWireEncoding *encoding,
+                                      uint8_t *output,
+                                      size_t output_capacity,
+                                      size_t *output_size) {
     size_t offset = 0;
 
     if (!encoding->atom_header || encoding->atom_header_size == 0 ||
@@ -1325,7 +1610,7 @@ static int expect_string_scalar_case(JSContext *compile_context,
     uint8_t canonical_wire[STRING_SCALAR_MAX_WIRE_SIZE];
     size_t input_wire_size = 0;
     size_t canonical_wire_size = 0;
-    const StringScalarEncoding *canonical =
+    const ScalarWireEncoding *canonical =
         test->canonical.atom_header ? &test->canonical : &test->input;
     JSValue compiled = JS_UNDEFINED;
     uint8_t *compiled_wire = NULL;
@@ -1349,11 +1634,11 @@ static int expect_string_scalar_case(JSContext *compile_context,
         (test->expected_kind == STRING_SCALAR_SYMBOL &&
          (test->expected_tag != JS_TAG_SYMBOL || test->expected_units ||
           test->expected_unit_count != 0)) ||
-        build_string_scalar_wire(&test->input, input_wire,
-                                 sizeof(input_wire), &input_wire_size) ||
-        build_string_scalar_wire(canonical, canonical_wire,
-                                 sizeof(canonical_wire),
-                                 &canonical_wire_size)) {
+        build_scalar_encoding_wire(&test->input, input_wire,
+                                   sizeof(input_wire), &input_wire_size) ||
+        build_scalar_encoding_wire(canonical, canonical_wire,
+                                   sizeof(canonical_wire),
+                                   &canonical_wire_size)) {
         fprintf(stderr, "%s has an invalid String oracle definition\n",
                 test->label ? test->label : "<unnamed>");
         goto cleanup;
@@ -1564,22 +1849,24 @@ static const StringScalarCase *find_string_scalar_case(const char *label) {
     return NULL;
 }
 
-static int read_string_scalar_function(JSContext *context,
-                                       const StringScalarCase *test,
-                                       JSValue *function) {
+static int read_scalar_encoding_function(JSContext *context,
+                                         const ScalarWireEncoding *encoding,
+                                         const char *label,
+                                         JSValue *function) {
     uint8_t wire[STRING_SCALAR_MAX_WIRE_SIZE];
     size_t wire_size = 0;
 
-    if (!test ||
-        build_string_scalar_wire(&test->input, wire, sizeof(wire),
-                                 &wire_size)) {
-        fprintf(stderr, "String identity matrix has an invalid oracle case\n");
+    if (!encoding || !label ||
+        build_scalar_encoding_wire(encoding, wire, sizeof(wire),
+                                   &wire_size)) {
+        fprintf(stderr, "%s has an invalid identity oracle encoding\n",
+                label ? label : "<unnamed>");
         return -1;
     }
     *function = JS_ReadObject(context, wire, wire_size,
                               JS_READ_OBJ_BYTECODE);
     if (JS_IsException(*function)) {
-        fprintf(stderr, "%s ", test->label);
+        fprintf(stderr, "%s ", label);
         report_exception(context, "identity bytecode read failed");
         *function = JS_UNDEFINED;
         return -1;
@@ -1587,9 +1874,20 @@ static int read_string_scalar_function(JSContext *context,
     return 0;
 }
 
-static int eval_string_scalar_function(JSContext *context,
-                                       JSValueConst function,
-                                       JSValue *result) {
+static int read_string_scalar_function(JSContext *context,
+                                       const StringScalarCase *test,
+                                       JSValue *function) {
+    if (!test) {
+        fprintf(stderr, "String identity matrix has an invalid oracle case\n");
+        return -1;
+    }
+    return read_scalar_encoding_function(context, &test->input,
+                                         test->label, function);
+}
+
+static int eval_string_function(JSContext *context,
+                                JSValueConst function,
+                                JSValue *result) {
     *result = JS_EvalFunction(context, JS_DupValue(context, function));
     if (JS_IsException(*result)) {
         report_exception(context, "identity bytecode evaluation failed");
@@ -1673,25 +1971,21 @@ static int expect_string_scalar_identity_matrix(void) {
         read_string_scalar_function(context, cpool_empty,
                                     &cpool_empty_function) ||
         read_string_scalar_function(context, tagged, &tagged_function) ||
-        eval_string_scalar_function(context, cpool_function,
-                                    &cpool_first) ||
-        eval_string_scalar_function(context, cpool_function,
-                                    &cpool_repeat) ||
-        eval_string_scalar_function(context, cpool_reload_function,
-                                    &cpool_reload) ||
-        eval_string_scalar_function(context, atom_function, &atom_first) ||
-        eval_string_scalar_function(context, atom_reload_function,
-                                    &atom_reload) ||
-        eval_string_scalar_function(context, empty_direct_function,
-                                    &empty_direct_result) ||
-        eval_string_scalar_function(context, empty_atom_function,
-                                    &empty_atom_result) ||
-        eval_string_scalar_function(context, cpool_empty_function,
-                                    &cpool_empty_result) ||
-        eval_string_scalar_function(context, tagged_function,
-                                    &tagged_first) ||
-        eval_string_scalar_function(context, tagged_function,
-                                    &tagged_repeat))
+        eval_string_function(context, cpool_function, &cpool_first) ||
+        eval_string_function(context, cpool_function, &cpool_repeat) ||
+        eval_string_function(context, cpool_reload_function,
+                             &cpool_reload) ||
+        eval_string_function(context, atom_function, &atom_first) ||
+        eval_string_function(context, atom_reload_function,
+                             &atom_reload) ||
+        eval_string_function(context, empty_direct_function,
+                             &empty_direct_result) ||
+        eval_string_function(context, empty_atom_function,
+                             &empty_atom_result) ||
+        eval_string_function(context, cpool_empty_function,
+                             &cpool_empty_result) ||
+        eval_string_function(context, tagged_function, &tagged_first) ||
+        eval_string_function(context, tagged_function, &tagged_repeat))
         goto cleanup;
 
     cpool_repeat_same =
@@ -1776,7 +2070,7 @@ static int has_bigint_constant_code_shape(const BigIntConstantCase *test) {
                memcmp(test->code, bigint_push_bigint_i32_neg,
                       sizeof(bigint_push_bigint_i32_neg)) == 0;
     }
-    if (test->cohort == BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE) {
+    if (test->cohort == BIGINT_CONSTANT_UNARY_CHAIN) {
         return test->code_size == sizeof(bigint_push_const8_double_neg) &&
                memcmp(test->code, bigint_push_const8_double_neg,
                       sizeof(bigint_push_const8_double_neg)) == 0;
@@ -1970,8 +2264,8 @@ static int expect_bigint_constant_case(JSContext *compile_context,
     case BIGINT_CONSTANT_DIRECT_UNARY_NEG:
         puts("unary-neg");
         break;
-    case BIGINT_CONSTANT_DOUBLE_NEG_OUTSIDE:
-        puts("outside-double-neg");
+    case BIGINT_CONSTANT_UNARY_CHAIN:
+        puts("unary-chain");
         break;
     }
     printf("%s-rewrite=%s\n", test->label,
@@ -2001,6 +2295,393 @@ cleanup:
     if (compiled_wire)
         js_free(compile_context, compiled_wire);
     JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
+static const char *unary_result_kind_name(UnaryResultKind kind) {
+    switch (kind) {
+    case UNARY_RESULT_INT:
+        return "Int";
+    case UNARY_RESULT_FLOAT64:
+        return "Float64";
+    case UNARY_RESULT_BOOLEAN:
+        return "Boolean";
+    case UNARY_RESULT_BIGINT:
+        return "BigInt";
+    case UNARY_RESULT_STRING:
+        return "String";
+    case UNARY_RESULT_EXCEPTION:
+        return "Exception";
+    }
+    return NULL;
+}
+
+static int expect_unary_case(const UnaryCase *test) {
+    uint8_t wire[STRING_SCALAR_MAX_WIRE_SIZE];
+    size_t wire_size = 0;
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    JSValue exception = JS_UNDEFINED;
+    uint8_t *rewritten_wire = NULL;
+    size_t rewritten_wire_size = 0;
+    const char *actual_text = NULL;
+    const char *kind_name;
+    double actual_float = 0;
+    uint64_t actual_bits = 0;
+    int actual_integer = 0;
+    int actual_boolean = -1;
+    int actual_tag = -1;
+    int status = -1;
+
+    kind_name = test ? unary_result_kind_name(test->expected.kind) : NULL;
+    if (!test || !test->label || !test->cohort || !test->ops || !kind_name ||
+        (test->expected.kind == UNARY_RESULT_INT &&
+         test->expected.tag != JS_TAG_INT) ||
+        (test->expected.kind == UNARY_RESULT_FLOAT64 &&
+         test->expected.tag != JS_TAG_FLOAT64) ||
+        (test->expected.kind == UNARY_RESULT_BOOLEAN &&
+         test->expected.tag != JS_TAG_BOOL) ||
+        (test->expected.kind == UNARY_RESULT_BIGINT &&
+         test->expected.tag != JS_TAG_SHORT_BIG_INT &&
+         test->expected.tag != JS_TAG_BIG_INT) ||
+        (test->expected.kind == UNARY_RESULT_STRING &&
+         test->expected.tag != JS_TAG_STRING) ||
+        ((test->expected.kind == UNARY_RESULT_BIGINT ||
+          test->expected.kind == UNARY_RESULT_STRING) &&
+         !test->expected.text) ||
+        (test->expected.kind == UNARY_RESULT_EXCEPTION &&
+         (!test->expected.exception_class || !test->expected.text)) ||
+        build_scalar_encoding_wire(&test->input, wire, sizeof(wire),
+                                   &wire_size)) {
+        fprintf(stderr, "%s has an invalid unary oracle definition\n",
+                test && test->label ? test->label : "<unnamed>");
+        goto cleanup;
+    }
+
+    runtime = JS_NewRuntime();
+    if (!runtime) {
+        fprintf(stderr, "%s runtime allocation failed\n", test->label);
+        goto cleanup;
+    }
+    context = JS_NewContext(runtime);
+    if (!context) {
+        fprintf(stderr, "%s context allocation failed\n", test->label);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, wire, wire_size, JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "unary bytecode read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten_wire = JS_WriteObject(context, &rewritten_wire_size, loaded,
+                                    JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten_wire) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "unary bytecode rewrite failed");
+        goto cleanup;
+    }
+    if (rewritten_wire_size != wire_size ||
+        memcmp(rewritten_wire, wire, wire_size) != 0) {
+        fprintf(stderr, "%s did not preserve its unary BC5 wire\n",
+                test->label);
+        goto cleanup;
+    }
+
+    result = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED; /* JS_EvalFunction consumes its argument. */
+    if (test->expected.kind == UNARY_RESULT_EXCEPTION) {
+        if (!JS_IsException(result)) {
+            fprintf(stderr, "%s did not throw during evaluation\n",
+                    test->label);
+            goto cleanup;
+        }
+        exception = JS_GetException(context);
+        result = JS_UNDEFINED;
+        if (expect_exception_fields(context, test->label, exception,
+                                    test->expected.exception_class,
+                                    test->expected.text))
+            goto cleanup;
+    } else {
+        if (JS_IsException(result)) {
+            fprintf(stderr, "%s ", test->label);
+            report_exception(context, "unary bytecode evaluation failed");
+            result = JS_UNDEFINED;
+            goto cleanup;
+        }
+        actual_tag = JS_VALUE_GET_TAG(result);
+        if (actual_tag != test->expected.tag) {
+            fprintf(stderr, "%s evaluated with tag %d, expected %d\n",
+                    test->label, actual_tag, test->expected.tag);
+            goto cleanup;
+        }
+
+        switch (test->expected.kind) {
+        case UNARY_RESULT_INT:
+            actual_integer = JS_VALUE_GET_INT(result);
+            if (actual_integer != test->expected.integer) {
+                fprintf(stderr, "%s evaluated to %d, expected %" PRId64 "\n",
+                        test->label, actual_integer,
+                        test->expected.integer);
+                goto cleanup;
+            }
+            break;
+        case UNARY_RESULT_FLOAT64:
+            if (JS_ToFloat64(context, &actual_float, result) < 0) {
+                fprintf(stderr, "%s ", test->label);
+                report_exception(context, "Float64 conversion failed");
+                goto cleanup;
+            }
+            memcpy(&actual_bits, &actual_float, sizeof(actual_bits));
+            if (actual_bits != test->expected.bits) {
+                fprintf(stderr,
+                        "%s evaluated to Float64 bits %016" PRIx64
+                        ", expected %016" PRIx64 "\n",
+                        test->label, actual_bits, test->expected.bits);
+                goto cleanup;
+            }
+            break;
+        case UNARY_RESULT_BOOLEAN:
+            actual_boolean = JS_ToBool(context, result);
+            if (actual_boolean != test->expected.integer) {
+                fprintf(stderr, "%s evaluated to %s, expected %s\n",
+                        test->label, actual_boolean ? "true" : "false",
+                        test->expected.integer ? "true" : "false");
+                goto cleanup;
+            }
+            break;
+        case UNARY_RESULT_BIGINT:
+            if (!JS_IsBigInt(context, result)) {
+                fprintf(stderr, "%s did not evaluate to a BigInt\n",
+                        test->label);
+                goto cleanup;
+            }
+            actual_text = JS_ToCString(context, result);
+            if (!actual_text) {
+                fprintf(stderr, "%s ", test->label);
+                report_exception(context, "BigInt string conversion failed");
+                goto cleanup;
+            }
+            if (strcmp(actual_text, test->expected.text) != 0) {
+                fprintf(stderr, "%s evaluated to %sn, expected %sn\n",
+                        test->label, actual_text, test->expected.text);
+                goto cleanup;
+            }
+            break;
+        case UNARY_RESULT_STRING:
+            if (!JS_IsString(result)) {
+                fprintf(stderr, "%s did not evaluate to a String\n",
+                        test->label);
+                goto cleanup;
+            }
+            actual_text = JS_ToCString(context, result);
+            if (!actual_text) {
+                fprintf(stderr, "%s ", test->label);
+                report_exception(context, "String conversion failed");
+                goto cleanup;
+            }
+            if (strcmp(actual_text, test->expected.text) != 0) {
+                fprintf(stderr, "%s evaluated to %s, expected %s\n",
+                        test->label, actual_text, test->expected.text);
+                goto cleanup;
+            }
+            break;
+        case UNARY_RESULT_EXCEPTION:
+            break;
+        }
+    }
+
+    printf("%s-hex=", test->label);
+    for (size_t index = 0; index < wire_size; index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    printf("%s-cohort=", test->label);
+    if (strncmp(test->cohort, "outside-", strlen("outside-")) != 0)
+        fputs("compatible-", stdout);
+    puts(test->cohort);
+    printf("%s-ops=%s\n", test->label, test->ops);
+    printf("%s-rewrite=identity\n", test->label);
+    printf("%s-eval-kind=%s\n", test->label, kind_name);
+    if (test->expected.kind == UNARY_RESULT_EXCEPTION) {
+        printf("%s-eval-class=%s\n", test->label,
+               test->expected.exception_class);
+        printf("%s-eval-message=%s\n", test->label,
+               test->expected.text);
+    } else {
+        printf("%s-eval-tag=%d\n", test->label, actual_tag);
+        switch (test->expected.kind) {
+        case UNARY_RESULT_INT:
+            printf("%s-eval=%d\n", test->label, actual_integer);
+            break;
+        case UNARY_RESULT_FLOAT64:
+            printf("%s-eval-bits=%016" PRIx64 "\n",
+                   test->label, actual_bits);
+            break;
+        case UNARY_RESULT_BOOLEAN:
+            printf("%s-eval=%s\n", test->label,
+                   actual_boolean ? "true" : "false");
+            break;
+        case UNARY_RESULT_BIGINT:
+            printf("%s-eval=%sn\n", test->label, actual_text);
+            break;
+        case UNARY_RESULT_STRING:
+            printf("%s-eval=%s\n", test->label, actual_text);
+            break;
+        case UNARY_RESULT_EXCEPTION:
+            break;
+        }
+    }
+    status = 0;
+
+cleanup:
+    if (context) {
+        if (actual_text)
+            JS_FreeCString(context, actual_text);
+        if (rewritten_wire)
+            js_free(context, rewritten_wire);
+        JS_FreeValue(context, exception);
+        JS_FreeValue(context, result);
+        JS_FreeValue(context, loaded);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    return status;
+}
+
+static const UnaryCase *find_unary_case(const char *label) {
+    for (size_t index = 0;
+         index < sizeof(unary_cases) / sizeof(unary_cases[0]); index++) {
+        if (strcmp(unary_cases[index].label, label) == 0)
+            return &unary_cases[index];
+    }
+    return NULL;
+}
+
+static int expect_unary_typeof_identity_matrix(void) {
+    const UnaryCase *number = find_unary_case("unary-typeof-int-number");
+    JSRuntime *first_runtime = NULL;
+    JSContext *first_context = NULL;
+    JSRuntime *second_runtime = NULL;
+    JSContext *second_context = NULL;
+    JSValue function = JS_UNDEFINED;
+    JSValue reload_function = JS_UNDEFINED;
+    JSValue literal_function = JS_UNDEFINED;
+    JSValue cross_runtime_function = JS_UNDEFINED;
+    JSValue first = JS_UNDEFINED;
+    JSValue repeat = JS_UNDEFINED;
+    JSValue reload = JS_UNDEFINED;
+    JSValue literal = JS_UNDEFINED;
+    JSValue cross_runtime = JS_UNDEFINED;
+    const char *first_text = NULL;
+    const char *cross_runtime_text = NULL;
+    int repeat_same;
+    int reload_same;
+    int literal_same;
+    int cross_runtime_distinct;
+    int status = -1;
+
+    if (!number) {
+        fprintf(stderr, "typeof identity matrix lost its number case\n");
+        goto cleanup;
+    }
+    first_runtime = JS_NewRuntime();
+    if (!first_runtime) {
+        fprintf(stderr, "typeof identity runtime allocation failed\n");
+        goto cleanup;
+    }
+    first_context = JS_NewContext(first_runtime);
+    if (!first_context) {
+        fprintf(stderr, "typeof identity context allocation failed\n");
+        goto cleanup;
+    }
+    second_runtime = JS_NewRuntime();
+    if (!second_runtime) {
+        fprintf(stderr, "typeof cross-runtime allocation failed\n");
+        goto cleanup;
+    }
+    second_context = JS_NewContext(second_runtime);
+    if (!second_context) {
+        fprintf(stderr, "typeof cross-runtime context allocation failed\n");
+        goto cleanup;
+    }
+
+    if (read_scalar_encoding_function(first_context, &number->input,
+                                      number->label, &function) ||
+        read_scalar_encoding_function(first_context, &number->input,
+                                      number->label, &reload_function) ||
+        read_scalar_encoding_function(first_context,
+                                      &unary_typeof_number_atom_literal,
+                                      "unary-typeof-number-atom-literal",
+                                      &literal_function) ||
+        read_scalar_encoding_function(second_context, &number->input,
+                                      number->label,
+                                      &cross_runtime_function) ||
+        eval_string_function(first_context, function, &first) ||
+        eval_string_function(first_context, function, &repeat) ||
+        eval_string_function(first_context, reload_function, &reload) ||
+        eval_string_function(first_context, literal_function, &literal) ||
+        eval_string_function(second_context, cross_runtime_function,
+                             &cross_runtime))
+        goto cleanup;
+
+    first_text = JS_ToCString(first_context, first);
+    cross_runtime_text = JS_ToCString(second_context, cross_runtime);
+    if (!first_text || !cross_runtime_text) {
+        fprintf(stderr, "typeof identity String conversion failed\n");
+        goto cleanup;
+    }
+    if (strcmp(first_text, "number") != 0 ||
+        strcmp(cross_runtime_text, "number") != 0) {
+        fprintf(stderr, "typeof identity matrix did not produce number\n");
+        goto cleanup;
+    }
+
+    repeat_same = JS_VALUE_GET_PTR(first) == JS_VALUE_GET_PTR(repeat);
+    reload_same = JS_VALUE_GET_PTR(first) == JS_VALUE_GET_PTR(reload);
+    literal_same = JS_VALUE_GET_PTR(first) == JS_VALUE_GET_PTR(literal);
+    cross_runtime_distinct =
+        JS_VALUE_GET_PTR(first) != JS_VALUE_GET_PTR(cross_runtime);
+    if (!repeat_same || !reload_same || !literal_same ||
+        !cross_runtime_distinct) {
+        fprintf(stderr,
+                "typeof representation identity matrix did not match pinned QuickJS\n");
+        goto cleanup;
+    }
+
+    puts("unary-typeof-identity-repeat=same");
+    puts("unary-typeof-identity-reload=same");
+    puts("unary-typeof-identity-atom-literal=same");
+    puts("unary-typeof-identity-cross-runtime=distinct");
+    status = 0;
+
+cleanup:
+    if (second_context) {
+        if (cross_runtime_text)
+            JS_FreeCString(second_context, cross_runtime_text);
+        JS_FreeValue(second_context, cross_runtime);
+        JS_FreeValue(second_context, cross_runtime_function);
+        JS_FreeContext(second_context);
+    }
+    if (second_runtime)
+        JS_FreeRuntime(second_runtime);
+    if (first_context) {
+        if (first_text)
+            JS_FreeCString(first_context, first_text);
+        JS_FreeValue(first_context, literal);
+        JS_FreeValue(first_context, reload);
+        JS_FreeValue(first_context, repeat);
+        JS_FreeValue(first_context, first);
+        JS_FreeValue(first_context, literal_function);
+        JS_FreeValue(first_context, reload_function);
+        JS_FreeValue(first_context, function);
+        JS_FreeContext(first_context);
+    }
+    if (first_runtime)
+        JS_FreeRuntime(first_runtime);
     return status;
 }
 
@@ -2151,6 +2832,15 @@ int main(void) {
                 compile_context, &bigint_constant_cases[index]))
             goto cleanup;
     }
+    printf("unary-case-count=%zu\n",
+           sizeof(unary_cases) / sizeof(unary_cases[0]));
+    for (size_t index = 0;
+         index < sizeof(unary_cases) / sizeof(unary_cases[0]); index++) {
+        if (expect_unary_case(&unary_cases[index]))
+            goto cleanup;
+    }
+    if (expect_unary_typeof_identity_matrix())
+        goto cleanup;
     printf("compatible-scalar-integer-count=%zu\n",
            sizeof(compatible_scalar_integers) /
            sizeof(compatible_scalar_integers[0]));

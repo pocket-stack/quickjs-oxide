@@ -6,7 +6,8 @@
 //! source compilation.
 
 use super::binary_object::{
-    ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script,
+    ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft,
+    decode_trusted_scalar_script,
 };
 use super::{Runtime, RuntimeError};
 use crate::bigint::JsBigInt;
@@ -22,46 +23,43 @@ impl Runtime {
         realm: ContextId,
         bytes: &[u8],
     ) -> Result<FunctionBytecodeRef, RuntimeError> {
-        let draft = decode_trusted_scalar_script(bytes).map_err(map_read_error)?;
-        let (instructions, constants) = match lower_scalar_draft(draft)? {
-            LoweredScalar::Direct(push) => (
-                vec![push, Instruction::SetLocal(0), Instruction::Return],
-                Vec::new(),
-            ),
-            LoweredScalar::Constant(constant) => (
-                vec![
-                    Instruction::PushConst(0),
-                    Instruction::SetLocal(0),
-                    Instruction::Return,
-                ],
-                vec![constant],
-            ),
-            LoweredScalar::AtomString(constant) => (
-                vec![
-                    Instruction::PushConst(0),
-                    Instruction::SetLocal(0),
-                    Instruction::Return,
-                ],
-                vec![constant],
-            ),
-            LoweredScalar::IntegerAtomString(value) => (
-                vec![
-                    Instruction::PushAtomValueIndex(value),
-                    Instruction::SetLocal(0),
-                    Instruction::Return,
-                ],
-                Vec::new(),
-            ),
-            LoweredScalar::NegatedBigInt(constant) => (
-                vec![
-                    Instruction::PushConst(0),
-                    Instruction::Neg,
-                    Instruction::SetLocal(0),
-                    Instruction::Return,
-                ],
-                vec![constant],
-            ),
+        let (value, unary_ops) = decode_trusted_scalar_script(bytes).map_err(map_read_error)?;
+        let (push, constants) = match lower_scalar_value(value)? {
+            LoweredScalar::Direct(push) => (push, Vec::new()),
+            LoweredScalar::Constant(constant) | LoweredScalar::AtomString(constant) => {
+                (Instruction::PushConst(0), vec![constant])
+            }
+            LoweredScalar::IntegerAtomString(value) => {
+                (Instruction::PushAtomValueIndex(value), Vec::new())
+            }
         };
+        let instruction_capacity = unary_ops.len().checked_add(3).ok_or_else(|| {
+            RuntimeError::Engine(Error::internal(
+                "trusted scalar instruction count overflowed",
+            ))
+        })?;
+        let mut instructions = Vec::new();
+        instructions
+            .try_reserve_exact(instruction_capacity)
+            .map_err(|_| {
+                RuntimeError::Engine(Error::internal(
+                    "could not allocate trusted scalar instruction draft",
+                ))
+            })?;
+        instructions.push(push);
+        for operation in unary_ops {
+            instructions.push(match operation {
+                ScalarUnaryOp::Neg => Instruction::Neg,
+                ScalarUnaryOp::Plus => Instruction::Plus,
+                ScalarUnaryOp::Dec => Instruction::Dec,
+                ScalarUnaryOp::Inc => Instruction::Inc,
+                ScalarUnaryOp::BitNot => Instruction::BitNot,
+                ScalarUnaryOp::LogicalNot => Instruction::Not,
+                ScalarUnaryOp::TypeOf => Instruction::TypeOf,
+            });
+        }
+        instructions.push(Instruction::SetLocal(0));
+        instructions.push(Instruction::Return);
         let function = UnlinkedFunction::new(
             instructions,
             constants,
@@ -84,39 +82,34 @@ enum LoweredScalar {
     Constant(UnlinkedConstant),
     AtomString(UnlinkedConstant),
     IntegerAtomString(u32),
-    NegatedBigInt(UnlinkedConstant),
 }
 
-fn lower_scalar_draft(draft: ScalarScriptDraft) -> Result<LoweredScalar, RuntimeError> {
-    match draft {
-        ScalarScriptDraft::Undefined => Ok(LoweredScalar::Direct(Instruction::Undefined)),
-        ScalarScriptDraft::Null => Ok(LoweredScalar::Direct(Instruction::Null)),
-        ScalarScriptDraft::Bool(false) => Ok(LoweredScalar::Direct(Instruction::PushFalse)),
-        ScalarScriptDraft::Bool(true) => Ok(LoweredScalar::Direct(Instruction::PushTrue)),
-        ScalarScriptDraft::Int(value) => Ok(LoweredScalar::Direct(Instruction::PushI32(value))),
-        ScalarScriptDraft::Float64Bits(bits) => {
+fn lower_scalar_value(value: ScalarValueDraft) -> Result<LoweredScalar, RuntimeError> {
+    match value {
+        ScalarValueDraft::Undefined => Ok(LoweredScalar::Direct(Instruction::Undefined)),
+        ScalarValueDraft::Null => Ok(LoweredScalar::Direct(Instruction::Null)),
+        ScalarValueDraft::Bool(false) => Ok(LoweredScalar::Direct(Instruction::PushFalse)),
+        ScalarValueDraft::Bool(true) => Ok(LoweredScalar::Direct(Instruction::PushTrue)),
+        ScalarValueDraft::Int(value) => Ok(LoweredScalar::Direct(Instruction::PushI32(value))),
+        ScalarValueDraft::Float64Bits(bits) => {
             lower_scalar_constant(Value::Float(f64::from_bits(bits))).map(LoweredScalar::Constant)
         }
-        ScalarScriptDraft::BigIntI32(value) => {
+        ScalarValueDraft::BigIntI32(value) => {
             lower_scalar_constant(Value::BigInt(JsBigInt::from(value))).map(LoweredScalar::Constant)
         }
-        ScalarScriptDraft::BigIntBytes(bytes) => {
+        ScalarValueDraft::BigIntBytes(bytes) => {
             lower_bigint_constant(&bytes).map(LoweredScalar::Constant)
         }
-        ScalarScriptDraft::NegatedBigIntI32(value) => lower_negated_bigint(JsBigInt::from(value)),
-        ScalarScriptDraft::NegatedBigIntBytes(bytes) => {
-            lower_negated_bigint(decode_bigint_constant(&bytes)?)
-        }
-        ScalarScriptDraft::EmptyString => Ok(LoweredScalar::AtomString(
+        ScalarValueDraft::EmptyString => Ok(LoweredScalar::AtomString(
             UnlinkedConstant::atom_string(JsString::from_static("")),
         )),
-        ScalarScriptDraft::ConstantString(value) => lower_scalar_string(value)
+        ScalarValueDraft::ConstantString(value) => lower_scalar_string(value)
             .and_then(|value| lower_scalar_constant(Value::String(value)))
             .map(LoweredScalar::Constant),
-        ScalarScriptDraft::AtomString(value) => Ok(LoweredScalar::AtomString(
+        ScalarValueDraft::AtomString(value) => Ok(LoweredScalar::AtomString(
             UnlinkedConstant::atom_string(lower_scalar_string(value)?),
         )),
-        ScalarScriptDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),
+        ScalarValueDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),
     }
 }
 
@@ -141,10 +134,6 @@ fn decode_bigint_constant(bytes: &[u8]) -> Result<JsBigInt, RuntimeError> {
         )));
     }
     Ok(value)
-}
-
-fn lower_negated_bigint(value: JsBigInt) -> Result<LoweredScalar, RuntimeError> {
-    lower_scalar_constant(Value::BigInt(value)).map(LoweredScalar::NegatedBigInt)
 }
 
 fn lower_scalar_constant(value: Value) -> Result<UnlinkedConstant, RuntimeError> {
@@ -172,4 +161,81 @@ fn map_read_error(error: ScalarScriptReadError) -> RuntimeError {
         ScalarScriptReadError::Internal(message) => (ErrorKind::Internal, message),
     };
     Error::new(kind, message).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RETURN_42: [u8; 25] = [
+        0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
+    ];
+
+    #[test]
+    fn publisher_emits_the_authenticated_unary_chain_in_order() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let image = scalar_with_code(&[
+            0xbb, 42, 0x8a, 0x8b, 0x8c, 0x8d, 0x93, 0x94, 0x95, 0xcb, 0x28,
+        ]);
+
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        let snapshot = runtime.snapshot_function_bytecode(&function).unwrap();
+        assert!(matches!(
+            snapshot.code.as_ref(),
+            [
+                Instruction::PushI32(42),
+                Instruction::Neg,
+                Instruction::Plus,
+                Instruction::Dec,
+                Instruction::Inc,
+                Instruction::BitNot,
+                Instruction::Not,
+                Instruction::TypeOf,
+                Instruction::SetLocal(0),
+                Instruction::Return,
+            ]
+        ));
+        assert!(snapshot.constants.is_empty());
+        drop(snapshot);
+
+        assert_eq!(
+            context.execute(&function).unwrap(),
+            Value::String(JsString::from_static("boolean"))
+        );
+    }
+
+    #[test]
+    fn bigint_unary_plus_publishes_and_throws_only_when_executed() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+        let baseline = runtime.heap_counts().function_bytecode_nodes;
+        let image = scalar_with_code(&[0xb0, 1, 0, 0, 0, 0x8b, 0xcb, 0x28]);
+
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        assert_eq!(runtime.heap_counts().function_bytecode_nodes, baseline + 1);
+        let snapshot = runtime.snapshot_function_bytecode(&function).unwrap();
+        assert!(matches!(
+            snapshot.code.as_ref(),
+            [
+                Instruction::PushConst(0),
+                Instruction::Plus,
+                Instruction::SetLocal(0),
+                Instruction::Return,
+            ]
+        ));
+        assert_eq!(snapshot.constants.len(), 1);
+        drop(snapshot);
+
+        assert_eq!(context.execute(&function), Err(RuntimeError::Exception));
+        assert!(context.has_exception());
+    }
+
+    fn scalar_with_code(code: &[u8]) -> Vec<u8> {
+        let mut object = RETURN_42.to_vec();
+        object[15] = u8::try_from(code.len()).expect("test code length fits one-byte ULEB");
+        object.splice(21.., code.iter().copied());
+        object
+    }
 }

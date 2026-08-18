@@ -37,11 +37,17 @@ const OP_PUSH_I16: u8 = 0xbc;
 const OP_PUSH_CONST8: u8 = 0xbd;
 const OP_PUSH_EMPTY_STRING: u8 = 0xbf;
 const OP_NEG: u8 = 0x8a;
+const OP_PLUS: u8 = 0x8b;
+const OP_DEC: u8 = 0x8c;
+const OP_INC: u8 = 0x8d;
+const OP_BIT_NOT: u8 = 0x93;
+const OP_LOGICAL_NOT: u8 = 0x94;
+const OP_TYPEOF: u8 = 0x95;
 const OP_SET_LOC0: u8 = 0xcb;
 
-/// Runtime-independent result of the executable BC5 scalar admission cohort.
+/// Runtime-independent scalar value crossing the archive/publication bridge.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::runtime) enum ScalarScriptDraft {
+pub(in crate::runtime) enum ScalarValueDraft {
     Undefined,
     Null,
     Bool(bool),
@@ -49,12 +55,53 @@ pub(in crate::runtime) enum ScalarScriptDraft {
     Float64Bits(u64),
     BigIntI32(i32),
     BigIntBytes(Box<[u8]>),
-    NegatedBigIntI32(i32),
-    NegatedBigIntBytes(Box<[u8]>),
     EmptyString,
     ConstantString(ScalarStringDraft),
     AtomString(ScalarStringDraft),
     IntegerAtomString(u32),
+}
+
+/// One release-pinned, one-byte QuickJS scalar unary operation.
+///
+/// The enum carries no runtime or bytecode-IR type. Publication supplies the
+/// corresponding typed instruction table only after the whole image and every
+/// sidecar entry have been authenticated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum ScalarUnaryOp {
+    Neg,
+    Plus,
+    Dec,
+    Inc,
+    BitNot,
+    LogicalNot,
+    TypeOf,
+}
+
+impl ScalarUnaryOp {
+    fn from_opcode(opcode: u8) -> Option<Self> {
+        match opcode {
+            OP_NEG => Some(Self::Neg),
+            OP_PLUS => Some(Self::Plus),
+            OP_DEC => Some(Self::Dec),
+            OP_INC => Some(Self::Inc),
+            OP_BIT_NOT => Some(Self::BitNot),
+            OP_LOGICAL_NOT => Some(Self::LogicalNot),
+            OP_TYPEOF => Some(Self::TypeOf),
+            _ => None,
+        }
+    }
+
+    const fn opcode(self) -> u8 {
+        match self {
+            Self::Neg => OP_NEG,
+            Self::Plus => OP_PLUS,
+            Self::Dec => OP_DEC,
+            Self::Inc => OP_INC,
+            Self::BitNot => OP_BIT_NOT,
+            Self::LogicalNot => OP_LOGICAL_NOT,
+            Self::TypeOf => OP_TYPEOF,
+        }
+    }
 }
 
 /// Runtime-independent UTF-16 value crossing the archive/publication bridge.
@@ -71,21 +118,16 @@ impl ScalarStringDraft {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ScalarPush {
-    Direct(ScalarScriptDraft),
+    Direct(ScalarValueDraft),
     Constant(u32),
     AtomValue,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum BigIntPush {
-    DirectI32(i32),
-    Constant(u32),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum ScalarSequence {
-    Plain { push: ScalarPush, width: u32 },
-    NegatedBigInt { push: BigIntPush, width: u32 },
+struct ScalarSequence {
+    push: ScalarPush,
+    push_width: u32,
+    unary_ops: Box<[ScalarUnaryOp]>,
 }
 
 /// Failure classes preserved across the archive/runtime publication boundary.
@@ -140,7 +182,7 @@ impl std::error::Error for ScalarScriptReadError {}
 /// non-minimal ULEB values and trailing bytes, so this path must do the same.
 pub(in crate::runtime) fn decode_trusted_scalar_script(
     input: &[u8],
-) -> Result<ScalarScriptDraft, ScalarScriptReadError> {
+) -> Result<(ScalarValueDraft, Box<[ScalarUnaryOp]>), ScalarScriptReadError> {
     if input.len() > MAX_INPUT_BYTES {
         return Err(ScalarScriptReadError::Resource(format!(
             "input has {} bytes, limit is {MAX_INPUT_BYTES}",
@@ -197,7 +239,9 @@ impl AdmissionLimits {
     }
 }
 
-fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptReadError> {
+fn admit_image(
+    image: &BytecodeImage,
+) -> Result<(ScalarValueDraft, Box<[ScalarUnaryOp]>), ScalarScriptReadError> {
     if !image.reference_table().is_empty() {
         return unadmitted("object-reference table is not empty");
     }
@@ -249,169 +293,101 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     }
 
     let native_payload = envelope.code();
-    let Some(sequence) = decode_scalar_sequence(native_payload.as_bytes()) else {
+    let Some(sequence) = decode_scalar_sequence(native_payload.as_bytes())? else {
         return unadmitted("native payload opcode sequence is outside the admitted shape");
     };
-    if !matches!(
-        sequence,
-        ScalarSequence::Plain {
-            push: ScalarPush::AtomValue,
-            ..
-        }
-    ) && (image.input_atom_slot_count() != 0 || !native_payload.atom_relocations().is_empty())
+    if !matches!(&sequence.push, ScalarPush::AtomValue)
+        && (image.input_atom_slot_count() != 0 || !native_payload.atom_relocations().is_empty())
     {
         return unadmitted("atom-free scalar shape carries an atom table or relocation");
     }
-    let sidecars_match = match (&sequence, native_payload.instructions()) {
-        (ScalarSequence::Plain { width, .. }, [push, set_completion, return_value]) => {
-            push.offset() == 0
-                && push.opcode().raw() == native_payload.as_bytes()[0]
-                && set_completion.offset() == *width
-                && set_completion.opcode().raw() == OP_SET_LOC0
-                && return_value.offset() == *width + 1
-                && return_value.opcode().raw() == OP_RETURN
-        }
-        (
-            ScalarSequence::NegatedBigInt { width, .. },
-            [push, negate, set_completion, return_value],
-        ) => {
-            push.offset() == 0
-                && push.opcode().raw() == native_payload.as_bytes()[0]
-                && negate.offset() == *width
-                && negate.opcode().raw() == OP_NEG
-                && set_completion.offset() == *width + 1
-                && set_completion.opcode().raw() == OP_SET_LOC0
-                && return_value.offset() == *width + 2
-                && return_value.opcode().raw() == OP_RETURN
-        }
-        _ => false,
-    };
+    let instructions = native_payload.instructions();
+    let expected_sidecar_count = sequence.unary_ops.len().checked_add(3);
+    let unary_count = u32::try_from(sequence.unary_ops.len()).ok();
+    let completion_offset = unary_count.and_then(|count| sequence.push_width.checked_add(count));
+    let return_offset = completion_offset.and_then(|offset| offset.checked_add(1));
+    let push_width = usize::try_from(sequence.push_width).ok();
+    let sidecars_match = expected_sidecar_count == Some(instructions.len())
+        && instructions[0].offset() == 0
+        && instructions[0].opcode().raw() == native_payload.as_bytes()[0]
+        && push_width.is_some_and(|push_width| {
+            sequence
+                .unary_ops
+                .iter()
+                .copied()
+                .enumerate()
+                .all(|(index, operation)| {
+                    let Some(offset) = u32::try_from(index)
+                        .ok()
+                        .and_then(|index| sequence.push_width.checked_add(index))
+                    else {
+                        return false;
+                    };
+                    let Some(byte_offset) = push_width.checked_add(index) else {
+                        return false;
+                    };
+                    let sidecar = &instructions[index + 1];
+                    sidecar.offset() == offset
+                        && sidecar.opcode().raw() == operation.opcode()
+                        && native_payload.as_bytes().get(byte_offset) == Some(&operation.opcode())
+                })
+        })
+        && completion_offset.zip(return_offset).is_some_and(
+            |(completion_offset, return_offset)| {
+                let set_completion = &instructions[instructions.len() - 2];
+                let return_value = &instructions[instructions.len() - 1];
+                set_completion.offset() == completion_offset
+                    && set_completion.opcode().raw() == OP_SET_LOC0
+                    && return_value.offset() == return_offset
+                    && return_value.opcode().raw() == OP_RETURN
+            },
+        );
     if !sidecars_match {
         return Err(ScalarScriptReadError::Internal(
             "instruction sidecars disagree with their owned native bytes".into(),
         ));
     }
 
-    let draft = match (sequence, function.constants()) {
-        (
-            ScalarSequence::Plain {
-                push: ScalarPush::Direct(draft),
-                ..
-            },
-            [],
-        ) => draft,
-        (
-            ScalarSequence::Plain {
-                push: ScalarPush::Direct(_),
-                ..
-            },
-            _,
-        ) => {
+    let ScalarSequence {
+        push, unary_ops, ..
+    } = sequence;
+    let value = match (push, function.constants()) {
+        (ScalarPush::Direct(value), []) => value,
+        (ScalarPush::Direct(_), _) => {
             return unadmitted("direct scalar opcode carries a function constant");
         }
-        (
-            ScalarSequence::Plain {
-                push: ScalarPush::Constant(0),
-                ..
-            },
-            [constant],
-        ) => match constant.as_wire() {
-            Ok(WireValue::Float64Bits(bits)) => ScalarScriptDraft::Float64Bits(*bits),
+        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
+            Ok(WireValue::Float64Bits(bits)) => ScalarValueDraft::Float64Bits(*bits),
             Ok(WireValue::BigInt(bytes)) => {
-                ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
+                ScalarValueDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
             }
             Ok(WireValue::String(value)) => {
-                ScalarScriptDraft::ConstantString(copy_wire_string(value)?)
+                ScalarValueDraft::ConstantString(copy_wire_string(value)?)
             }
             Ok(_) => {
                 return unadmitted("scalar constant is not a Float64, BigInt, or String value");
             }
             Err(_) => return unadmitted("scalar constant is not a data value"),
         },
-        (
-            ScalarSequence::Plain {
-                push: ScalarPush::Constant(_),
-                ..
-            },
-            [_],
-        ) => {
+        (ScalarPush::Constant(_), [_]) => {
             return unadmitted("scalar constant opcode does not reference index zero");
         }
-        (
-            ScalarSequence::Plain {
-                push: ScalarPush::Constant(_),
-                ..
-            },
-            _,
-        ) => {
+        (ScalarPush::Constant(_), _) => {
             return unadmitted("scalar constant opcode requires exactly one function constant");
         }
-        (
-            ScalarSequence::Plain {
-                push: ScalarPush::AtomValue,
-                ..
-            },
-            [],
-        ) => project_atom_string(image, root)?,
-        (
-            ScalarSequence::Plain {
-                push: ScalarPush::AtomValue,
-                ..
-            },
-            _,
-        ) => return unadmitted("atom-value scalar opcode carries a function constant"),
-        (
-            ScalarSequence::NegatedBigInt {
-                push: BigIntPush::DirectI32(value),
-                ..
-            },
-            [],
-        ) => ScalarScriptDraft::NegatedBigIntI32(value),
-        (
-            ScalarSequence::NegatedBigInt {
-                push: BigIntPush::DirectI32(_),
-                ..
-            },
-            _,
-        ) => return unadmitted("direct negated BigInt opcode carries a function constant"),
-        (
-            ScalarSequence::NegatedBigInt {
-                push: BigIntPush::Constant(0),
-                ..
-            },
-            [constant],
-        ) => match constant.as_wire() {
-            Ok(WireValue::BigInt(bytes)) => {
-                ScalarScriptDraft::NegatedBigIntBytes(copy_bigint_bytes(bytes)?)
-            }
-            Ok(_) => return unadmitted("negated scalar constant is not a BigInt value"),
-            Err(_) => return unadmitted("negated scalar constant is not a data value"),
-        },
-        (
-            ScalarSequence::NegatedBigInt {
-                push: BigIntPush::Constant(_),
-                ..
-            },
-            [_],
-        ) => return unadmitted("negated BigInt opcode does not reference index zero"),
-        (
-            ScalarSequence::NegatedBigInt {
-                push: BigIntPush::Constant(_),
-                ..
-            },
-            _,
-        ) => {
-            return unadmitted("negated BigInt opcode requires exactly one function constant");
+        (ScalarPush::AtomValue, []) => project_atom_string(image, root)?,
+        (ScalarPush::AtomValue, _) => {
+            return unadmitted("atom-value scalar opcode carries a function constant");
         }
     };
 
-    Ok(draft)
+    Ok((value, unary_ops))
 }
 
 fn project_atom_string(
     image: &BytecodeImage,
     function: super::bytecode_image::FunctionId,
-) -> Result<ScalarScriptDraft, ScalarScriptReadError> {
+) -> Result<ScalarValueDraft, ScalarScriptReadError> {
     let projection = image
         .project_single_string_atom(function)
         .map_err(classify_string_atom_projection_error)?;
@@ -421,14 +397,14 @@ fn project_atom_string(
         ));
     }
     if let Some(value) = projection.canonical_decimal() {
-        return Ok(ScalarScriptDraft::IntegerAtomString(value));
+        return Ok(ScalarValueDraft::IntegerAtomString(value));
     }
     if let Some(value) = projection.manifest_spelling() {
         return copy_utf16(value.encode_utf16(), value.encode_utf16().count())
-            .map(ScalarScriptDraft::AtomString);
+            .map(ScalarValueDraft::AtomString);
     }
     if let Some(value) = projection.dynamic_string() {
-        return copy_wire_string(value).map(ScalarScriptDraft::AtomString);
+        return copy_wire_string(value).map(ScalarValueDraft::AtomString);
     }
     Err(ScalarScriptReadError::Internal(
         "String atom projection contained no spelling".into(),
@@ -493,92 +469,72 @@ fn copy_bigint_bytes(bytes: &[u8]) -> Result<Box<[u8]>, ScalarScriptReadError> {
 
 /// Decode the release-pinned scalar sequence without separating a constant-
 /// pool operand from the pool entry that admission authenticates.
-fn decode_scalar_sequence(bytes: &[u8]) -> Option<ScalarSequence> {
-    match bytes {
-        [OP_PUSH_CONST8, index, OP_NEG, OP_SET_LOC0, OP_RETURN] => {
-            Some(ScalarSequence::NegatedBigInt {
-                push: BigIntPush::Constant(u32::from(*index)),
-                width: 2,
-            })
-        }
-        [
-            OP_PUSH_CONST,
-            byte_0,
-            byte_1,
-            byte_2,
-            byte_3,
-            OP_NEG,
-            OP_SET_LOC0,
-            OP_RETURN,
-        ] => Some(ScalarSequence::NegatedBigInt {
-            push: BigIntPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
-            width: 5,
-        }),
-        [
-            OP_PUSH_BIGINT_I32,
-            byte_0,
-            byte_1,
-            byte_2,
-            byte_3,
-            OP_NEG,
-            OP_SET_LOC0,
-            OP_RETURN,
-        ] => Some(ScalarSequence::NegatedBigInt {
-            push: BigIntPush::DirectI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
-            width: 5,
-        }),
-        _ => decode_scalar_push(bytes).map(|(push, width)| ScalarSequence::Plain { push, width }),
+fn decode_scalar_sequence(bytes: &[u8]) -> Result<Option<ScalarSequence>, ScalarScriptReadError> {
+    if !bytes.ends_with(&[OP_SET_LOC0, OP_RETURN]) {
+        return Ok(None);
     }
+    let body = &bytes[..bytes.len() - 2];
+    let Some((push, push_width)) = decode_scalar_push(body) else {
+        return Ok(None);
+    };
+    let Some(unary_bytes) = usize::try_from(push_width)
+        .ok()
+        .and_then(|width| body.get(width..))
+    else {
+        return Ok(None);
+    };
+
+    let mut unary_ops = Vec::new();
+    unary_ops
+        .try_reserve_exact(unary_bytes.len())
+        .map_err(|_| {
+            ScalarScriptReadError::Internal(
+                "could not allocate the scalar unary-operation draft".into(),
+            )
+        })?;
+    for opcode in unary_bytes {
+        let Some(operation) = ScalarUnaryOp::from_opcode(*opcode) else {
+            return Ok(None);
+        };
+        unary_ops.push(operation);
+    }
+
+    Ok(Some(ScalarSequence {
+        push,
+        push_width,
+        unary_ops: unary_ops.into_boxed_slice(),
+    }))
 }
 
-/// Decode a release-pinned scalar push without a following unary operation.
+/// Decode one release-pinned scalar push prefix. Any remaining bytes belong to
+/// the unary-operation chain and are authenticated separately.
 fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> {
     match bytes {
-        [OP_PUSH_ATOM_VALUE, _, _, _, _, OP_SET_LOC0, OP_RETURN] => {
-            Some((ScalarPush::AtomValue, 5))
-        }
-        [OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN] => {
-            Some((ScalarPush::Constant(u32::from(*index)), 2))
-        }
-        [
-            OP_PUSH_CONST,
-            byte_0,
-            byte_1,
-            byte_2,
-            byte_3,
-            OP_SET_LOC0,
-            OP_RETURN,
-        ] => Some((
+        [OP_PUSH_ATOM_VALUE, _, _, _, _, ..] => Some((ScalarPush::AtomValue, 5)),
+        [OP_PUSH_CONST8, index, ..] => Some((ScalarPush::Constant(u32::from(*index)), 2)),
+        [OP_PUSH_CONST, byte_0, byte_1, byte_2, byte_3, ..] => Some((
             ScalarPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
             5,
         )),
-        _ => decode_direct_scalar(bytes).map(|(draft, width)| (ScalarPush::Direct(draft), width)),
+        _ => decode_direct_scalar_push(bytes)
+            .map(|(value, width)| (ScalarPush::Direct(value), width)),
     }
 }
 
 /// Decode the release-pinned atom-free scalar opcode cohort.
-fn decode_direct_scalar(bytes: &[u8]) -> Option<(ScalarScriptDraft, u32)> {
+fn decode_direct_scalar_push(bytes: &[u8]) -> Option<(ScalarValueDraft, u32)> {
     match bytes {
-        [OP_UNDEFINED, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Undefined, 1)),
-        [OP_NULL, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Null, 1)),
-        [OP_PUSH_FALSE, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Bool(false), 1)),
-        [OP_PUSH_TRUE, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::Bool(true), 1)),
-        [
-            OP_PUSH_BIGINT_I32,
-            byte_0,
-            byte_1,
-            byte_2,
-            byte_3,
-            OP_SET_LOC0,
-            OP_RETURN,
-        ] => Some((
-            ScalarScriptDraft::BigIntI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
+        [OP_UNDEFINED, ..] => Some((ScalarValueDraft::Undefined, 1)),
+        [OP_NULL, ..] => Some((ScalarValueDraft::Null, 1)),
+        [OP_PUSH_FALSE, ..] => Some((ScalarValueDraft::Bool(false), 1)),
+        [OP_PUSH_TRUE, ..] => Some((ScalarValueDraft::Bool(true), 1)),
+        [OP_PUSH_BIGINT_I32, byte_0, byte_1, byte_2, byte_3, ..] => Some((
+            ScalarValueDraft::BigIntI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
             5,
         )),
-        [OP_PUSH_EMPTY_STRING, OP_SET_LOC0, OP_RETURN] => Some((ScalarScriptDraft::EmptyString, 1)),
-        _ => {
-            decode_direct_int32(bytes).map(|(value, width)| (ScalarScriptDraft::Int(value), width))
-        }
+        [OP_PUSH_EMPTY_STRING, ..] => Some((ScalarValueDraft::EmptyString, 1)),
+        _ => decode_direct_int32_push(bytes)
+            .map(|(value, width)| (ScalarValueDraft::Int(value), width)),
     }
 }
 
@@ -587,24 +543,16 @@ fn decode_direct_scalar(bytes: &[u8]) -> Option<(ScalarScriptDraft, u32)> {
 /// QuickJS canonicalizes source literals to the shortest spelling, but its
 /// bytecode reader also accepts wider spellings for the same value. Admission
 /// therefore keys on semantic width, not compiler canonicality.
-fn decode_direct_int32(bytes: &[u8]) -> Option<(i32, u32)> {
+fn decode_direct_int32_push(bytes: &[u8]) -> Option<(i32, u32)> {
     match bytes {
-        [opcode, OP_SET_LOC0, OP_RETURN] if (OP_PUSH_MINUS1..=OP_PUSH_7).contains(opcode) => {
+        [opcode, ..] if (OP_PUSH_MINUS1..=OP_PUSH_7).contains(opcode) => {
             Some((i32::from(*opcode) - i32::from(OP_PUSH_0), 1))
         }
-        [OP_PUSH_I8, immediate, OP_SET_LOC0, OP_RETURN] => Some((i32::from(*immediate as i8), 2)),
-        [OP_PUSH_I16, low, high, OP_SET_LOC0, OP_RETURN] => {
-            Some((i32::from(i16::from_le_bytes([*low, *high])), 3))
+        [OP_PUSH_I8, immediate, ..] => Some((i32::from(i8::from_le_bytes([*immediate])), 2)),
+        [OP_PUSH_I16, low, high, ..] => Some((i32::from(i16::from_le_bytes([*low, *high])), 3)),
+        [OP_PUSH_I32, byte_0, byte_1, byte_2, byte_3, ..] => {
+            Some((i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3]), 5))
         }
-        [
-            OP_PUSH_I32,
-            byte_0,
-            byte_1,
-            byte_2,
-            byte_3,
-            OP_SET_LOC0,
-            OP_RETURN,
-        ] => Some((i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3]), 5)),
         _ => None,
     }
 }
@@ -792,15 +740,26 @@ mod tests {
         0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
     ];
 
+    fn plain(value: ScalarValueDraft) -> (ScalarValueDraft, Box<[ScalarUnaryOp]>) {
+        (value, Box::from([]))
+    }
+
+    fn unary(
+        value: ScalarValueDraft,
+        operations: impl Into<Box<[ScalarUnaryOp]>>,
+    ) -> (ScalarValueDraft, Box<[ScalarUnaryOp]>) {
+        (value, operations.into())
+    }
+
     #[test]
     fn admits_the_complete_direct_int32_opcode_family_without_canonicality_checks() {
         for opcode in OP_PUSH_MINUS1..=OP_PUSH_7 {
             let object = scalar_with_code(&[opcode, OP_SET_LOC0, OP_RETURN]);
             assert_eq!(
                 decode_trusted_scalar_script(&object),
-                Ok(ScalarScriptDraft::Int(
+                Ok(plain(ScalarValueDraft::Int(
                     i32::from(opcode) - i32::from(OP_PUSH_0)
-                ))
+                )))
             );
         }
 
@@ -836,26 +795,26 @@ mod tests {
         for (code, expected) in cases {
             assert_eq!(
                 decode_trusted_scalar_script(&scalar_with_code(code)),
-                Ok(ScalarScriptDraft::Int(*expected))
+                Ok(plain(ScalarValueDraft::Int(*expected)))
             );
         }
     }
 
     #[test]
     fn admits_the_direct_atom_free_scalar_primitive_cohort() {
-        let cases: &[(&[u8], ScalarScriptDraft)] = &[
+        let cases: &[(&[u8], ScalarValueDraft)] = &[
             (
                 &[OP_UNDEFINED, OP_SET_LOC0, OP_RETURN],
-                ScalarScriptDraft::Undefined,
+                ScalarValueDraft::Undefined,
             ),
-            (&[OP_NULL, OP_SET_LOC0, OP_RETURN], ScalarScriptDraft::Null),
+            (&[OP_NULL, OP_SET_LOC0, OP_RETURN], ScalarValueDraft::Null),
             (
                 &[OP_PUSH_FALSE, OP_SET_LOC0, OP_RETURN],
-                ScalarScriptDraft::Bool(false),
+                ScalarValueDraft::Bool(false),
             ),
             (
                 &[OP_PUSH_TRUE, OP_SET_LOC0, OP_RETURN],
-                ScalarScriptDraft::Bool(true),
+                ScalarValueDraft::Bool(true),
             ),
             (
                 &[
@@ -867,7 +826,7 @@ mod tests {
                     OP_SET_LOC0,
                     OP_RETURN,
                 ],
-                ScalarScriptDraft::BigIntI32(0),
+                ScalarValueDraft::BigIntI32(0),
             ),
             (
                 &[
@@ -879,7 +838,7 @@ mod tests {
                     OP_SET_LOC0,
                     OP_RETURN,
                 ],
-                ScalarScriptDraft::BigIntI32(-1),
+                ScalarValueDraft::BigIntI32(-1),
             ),
             (
                 &[
@@ -891,7 +850,7 @@ mod tests {
                     OP_SET_LOC0,
                     OP_RETURN,
                 ],
-                ScalarScriptDraft::BigIntI32(i32::MAX),
+                ScalarValueDraft::BigIntI32(i32::MAX),
             ),
             (
                 &[
@@ -903,7 +862,7 @@ mod tests {
                     OP_SET_LOC0,
                     OP_RETURN,
                 ],
-                ScalarScriptDraft::BigIntI32(-2_147_483_647),
+                ScalarValueDraft::BigIntI32(-2_147_483_647),
             ),
             (
                 &[
@@ -915,18 +874,18 @@ mod tests {
                     OP_SET_LOC0,
                     OP_RETURN,
                 ],
-                ScalarScriptDraft::BigIntI32(i32::MIN),
+                ScalarValueDraft::BigIntI32(i32::MIN),
             ),
             (
                 &[OP_PUSH_EMPTY_STRING, OP_SET_LOC0, OP_RETURN],
-                ScalarScriptDraft::EmptyString,
+                ScalarValueDraft::EmptyString,
             ),
         ];
 
         for (code, expected) in cases {
             assert_eq!(
                 decode_trusted_scalar_script(&scalar_with_code(code)),
-                Ok(expected.clone())
+                Ok(plain(expected.clone()))
             );
         }
     }
@@ -952,9 +911,9 @@ mod tests {
             let object = scalar_with_string_constant(SHORT_INDEX_ZERO, units, wide);
             assert_eq!(
                 decode_trusted_scalar_script(&object),
-                Ok(ScalarScriptDraft::ConstantString(ScalarStringDraft(
+                Ok(plain(ScalarValueDraft::ConstantString(ScalarStringDraft(
                     Box::from(units)
-                )))
+                ))))
             );
         }
         assert_eq!(
@@ -963,41 +922,41 @@ mod tests {
                 &[u16::from(b'4'), u16::from(b'2')],
                 false,
             )),
-            Ok(ScalarScriptDraft::ConstantString(ScalarStringDraft(
+            Ok(plain(ScalarValueDraft::ConstantString(ScalarStringDraft(
                 Box::from([u16::from(b'4'), u16::from(b'2')])
-            )))
+            ))))
         );
 
-        let direct_atom_cases: &[(u32, ScalarScriptDraft)] = &[
+        let direct_atom_cases: &[(u32, ScalarValueDraft)] = &[
             (
                 47,
-                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from([]))),
+                ScalarValueDraft::AtomString(ScalarStringDraft(Box::from([]))),
             ),
             (
                 50,
-                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from(
+                ScalarValueDraft::AtomString(ScalarStringDraft(Box::from(
                     "length".encode_utf16().collect::<Vec<_>>(),
                 ))),
             ),
-            (0x8000_0000, ScalarScriptDraft::IntegerAtomString(0)),
-            (0x8000_002a, ScalarScriptDraft::IntegerAtomString(42)),
+            (0x8000_0000, ScalarValueDraft::IntegerAtomString(0)),
+            (0x8000_002a, ScalarValueDraft::IntegerAtomString(42)),
             (
                 0xffff_ffff,
-                ScalarScriptDraft::IntegerAtomString(i32::MAX as u32),
+                ScalarValueDraft::IntegerAtomString(i32::MAX as u32),
             ),
         ];
         for (atom, expected) in direct_atom_cases {
             assert_eq!(
                 decode_trusted_scalar_script(&scalar_with_atom_value(*atom)),
-                Ok(expected.clone())
+                Ok(plain(expected.clone()))
             );
         }
 
-        let slot_cases: &[(&[u16], bool, ScalarScriptDraft)] = &[
+        let slot_cases: &[(&[u16], bool, ScalarValueDraft)] = &[
             (
                 &[u16::from(b'a')],
                 false,
-                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from([u16::from(b'a')]))),
+                ScalarValueDraft::AtomString(ScalarStringDraft(Box::from([u16::from(b'a')]))),
             ),
             (
                 &[
@@ -1009,25 +968,25 @@ mod tests {
                     u16::from(b'h'),
                 ],
                 false,
-                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from(
+                ScalarValueDraft::AtomString(ScalarStringDraft(Box::from(
                     "length".encode_utf16().collect::<Vec<_>>(),
                 ))),
             ),
             (
                 &[u16::from(b'4'), u16::from(b'2')],
                 false,
-                ScalarScriptDraft::IntegerAtomString(42),
+                ScalarValueDraft::IntegerAtomString(42),
             ),
             (
                 &[0x0100, 0, 0xd800],
                 true,
-                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from([0x0100, 0, 0xd800]))),
+                ScalarValueDraft::AtomString(ScalarStringDraft(Box::from([0x0100, 0, 0xd800]))),
             ),
         ];
         for (units, wide, expected) in slot_cases {
             assert_eq!(
                 decode_trusted_scalar_script(&scalar_with_atom_slot(units, *wide)),
-                Ok(expected.clone())
+                Ok(plain(expected.clone()))
             );
         }
     }
@@ -1089,7 +1048,7 @@ mod tests {
         for bits in bits_cases {
             assert_eq!(
                 decode_trusted_scalar_script(&scalar_with_float_constant(SHORT_INDEX_ZERO, bits,)),
-                Ok(ScalarScriptDraft::Float64Bits(bits))
+                Ok(plain(ScalarValueDraft::Float64Bits(bits)))
             );
         }
         assert_eq!(
@@ -1097,7 +1056,7 @@ mod tests {
                 WIDE_INDEX_ZERO,
                 0.5_f64.to_bits(),
             )),
-            Ok(ScalarScriptDraft::Float64Bits(0.5_f64.to_bits()))
+            Ok(plain(ScalarValueDraft::Float64Bits(0.5_f64.to_bits())))
         );
 
         let float_entry = float_constant_entry(0.5_f64.to_bits());
@@ -1183,7 +1142,7 @@ mod tests {
                     SHORT_INDEX_ZERO,
                     payload,
                 )),
-                Ok(ScalarScriptDraft::BigIntBytes(Box::from(*expected)))
+                Ok(plain(ScalarValueDraft::BigIntBytes(Box::from(*expected))))
             );
         }
         assert_eq!(
@@ -1191,9 +1150,9 @@ mod tests {
                 WIDE_INDEX_ZERO,
                 &[0x00, 0x00, 0x00, 0x80, 0x00],
             )),
-            Ok(ScalarScriptDraft::BigIntBytes(Box::from([
+            Ok(plain(ScalarValueDraft::BigIntBytes(Box::from([
                 0x00, 0x00, 0x00, 0x80, 0x00,
-            ])))
+            ]))))
         );
 
         let bigint_entry = bigint_constant_entry(&[0x00, 0x00, 0x00, 0x80, 0x00]);
@@ -1219,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn admits_only_exactly_paired_single_negated_bigints() {
+    fn scalar_unary_admission_preserves_values_and_accepts_the_strict_opcode_table() {
         const SHORT_INDEX_ZERO_NEG: &[u8] = &[OP_PUSH_CONST8, 0, OP_NEG, OP_SET_LOC0, OP_RETURN];
         const WIDE_INDEX_ZERO_NEG: &[u8] =
             &[OP_PUSH_CONST, 0, 0, 0, 0, OP_NEG, OP_SET_LOC0, OP_RETURN];
@@ -1258,7 +1217,10 @@ mod tests {
                     SHORT_INDEX_ZERO_NEG,
                     payload,
                 )),
-                Ok(ScalarScriptDraft::NegatedBigIntBytes(Box::from(*expected)))
+                Ok(unary(
+                    ScalarValueDraft::BigIntBytes(Box::from(*expected)),
+                    Box::from([ScalarUnaryOp::Neg]),
+                ))
             );
         }
         assert_eq!(
@@ -1266,9 +1228,10 @@ mod tests {
                 WIDE_INDEX_ZERO_NEG,
                 &[0x00, 0x00, 0x00, 0x80, 0x00],
             )),
-            Ok(ScalarScriptDraft::NegatedBigIntBytes(Box::from([
-                0x00, 0x00, 0x00, 0x80, 0x00,
-            ])))
+            Ok(unary(
+                ScalarValueDraft::BigIntBytes(Box::from([0x00, 0x00, 0x00, 0x80, 0x00,])),
+                Box::from([ScalarUnaryOp::Neg]),
+            ))
         );
 
         for value in [0_i32, 1, -1, i32::MAX, i32::MIN] {
@@ -1277,13 +1240,98 @@ mod tests {
             code.extend_from_slice(&[OP_NEG, OP_SET_LOC0, OP_RETURN]);
             assert_eq!(
                 decode_trusted_scalar_script(&scalar_with_code(&code)),
-                Ok(ScalarScriptDraft::NegatedBigIntI32(value))
+                Ok(unary(
+                    ScalarValueDraft::BigIntI32(value),
+                    Box::from([ScalarUnaryOp::Neg]),
+                ))
             );
         }
 
+        let strict_table = [
+            (OP_NEG, ScalarUnaryOp::Neg),
+            (OP_PLUS, ScalarUnaryOp::Plus),
+            (OP_DEC, ScalarUnaryOp::Dec),
+            (OP_INC, ScalarUnaryOp::Inc),
+            (OP_BIT_NOT, ScalarUnaryOp::BitNot),
+            (OP_LOGICAL_NOT, ScalarUnaryOp::LogicalNot),
+            (OP_TYPEOF, ScalarUnaryOp::TypeOf),
+        ];
+        for (opcode, expected) in strict_table {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_code(&[
+                    OP_PUSH_0,
+                    opcode,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ])),
+                Ok(unary(ScalarValueDraft::Int(0), Box::from([expected]),))
+            );
+        }
+
+        let chain = [
+            OP_NEG,
+            OP_PLUS,
+            OP_DEC,
+            OP_INC,
+            OP_BIT_NOT,
+            OP_LOGICAL_NOT,
+            OP_TYPEOF,
+            OP_TYPEOF,
+            OP_LOGICAL_NOT,
+            OP_BIT_NOT,
+            OP_INC,
+            OP_DEC,
+            OP_PLUS,
+            OP_NEG,
+        ];
+        let mut chained_code = vec![OP_PUSH_I8, 42];
+        chained_code.extend(chain);
+        chained_code.extend_from_slice(&[OP_SET_LOC0, OP_RETURN]);
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_code(&chained_code)),
+            Ok(unary(
+                ScalarValueDraft::Int(42),
+                Box::from([
+                    ScalarUnaryOp::Neg,
+                    ScalarUnaryOp::Plus,
+                    ScalarUnaryOp::Dec,
+                    ScalarUnaryOp::Inc,
+                    ScalarUnaryOp::BitNot,
+                    ScalarUnaryOp::LogicalNot,
+                    ScalarUnaryOp::TypeOf,
+                    ScalarUnaryOp::TypeOf,
+                    ScalarUnaryOp::LogicalNot,
+                    ScalarUnaryOp::BitNot,
+                    ScalarUnaryOp::Inc,
+                    ScalarUnaryOp::Dec,
+                    ScalarUnaryOp::Plus,
+                    ScalarUnaryOp::Neg,
+                ]),
+            ))
+        );
+
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_float_constant(
+                &[OP_PUSH_CONST8, 0, OP_NEG, OP_SET_LOC0, OP_RETURN],
+                0.5_f64.to_bits(),
+            )),
+            Ok(unary(
+                ScalarValueDraft::Float64Bits(0.5_f64.to_bits()),
+                Box::from([ScalarUnaryOp::Neg]),
+            ))
+        );
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_atom_value_and_unary(50, &[OP_TYPEOF],)),
+            Ok(unary(
+                ScalarValueDraft::AtomString(ScalarStringDraft(Box::from(
+                    "length".encode_utf16().collect::<Vec<_>>(),
+                ))),
+                Box::from([ScalarUnaryOp::TypeOf]),
+            ))
+        );
+
         let bigint_entry = bigint_constant_entry(&[0x00, 0x00, 0x00, 0x80, 0x00]);
         let other_bigint_entry = bigint_constant_entry(&[0x01]);
-        let float_entry = float_constant_entry(0.5_f64.to_bits());
         let invalid_shapes = [
             scalar_with_code(SHORT_INDEX_ZERO_NEG),
             scalar_with_constants(
@@ -1291,9 +1339,7 @@ mod tests {
                 &[&bigint_entry],
             ),
             scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&bigint_entry, &other_bigint_entry]),
-            scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&float_entry]),
             scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&[0x05, 0x54]]),
-            scalar_with_constants(SHORT_INDEX_ZERO_NEG, &[&[0x07, 0x02, 0x78]]),
             scalar_with_constants(
                 &[
                     OP_PUSH_BIGINT_I32,
@@ -1307,11 +1353,23 @@ mod tests {
                 ],
                 &[&bigint_entry],
             ),
-            scalar_with_code(&[OP_PUSH_0, OP_NEG, OP_SET_LOC0, OP_RETURN]),
-            scalar_with_constants(
-                &[OP_PUSH_CONST8, 0, OP_NEG, OP_NEG, OP_SET_LOC0, OP_RETURN],
-                &[&bigint_entry],
-            ),
+        ];
+        for object in invalid_shapes {
+            assert!(matches!(
+                decode_trusted_scalar_script(&object),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn scalar_unary_admission_rejects_non_table_and_misplaced_operations() {
+        let invalid_shapes = [
+            scalar_with_code(&[OP_NEG, OP_PUSH_0, OP_SET_LOC0, OP_RETURN]),
+            scalar_with_code(&[OP_PUSH_0, 0x08, OP_SET_LOC0, OP_RETURN]),
+            scalar_with_code(&[OP_PUSH_0, OP_SET_LOC0, OP_NEG, OP_RETURN]),
+            scalar_with_code(&[OP_PUSH_0, OP_SET_LOC0, OP_RETURN, OP_NEG]),
+            scalar_with_code(&[OP_NEG, OP_SET_LOC0, OP_RETURN]),
         ];
         for object in invalid_shapes {
             assert!(matches!(
@@ -1327,14 +1385,14 @@ mod tests {
         non_minimal.splice(8..9, [0x80, 0x00]);
         assert_eq!(
             decode_trusted_scalar_script(&non_minimal),
-            Ok(ScalarScriptDraft::Int(42))
+            Ok(plain(ScalarValueDraft::Int(42)))
         );
 
         let mut trailing = RETURN_42.to_vec();
         trailing.extend_from_slice(&[0xde, 0xad]);
         assert_eq!(
             decode_trusted_scalar_script(&trailing),
-            Ok(ScalarScriptDraft::Int(42))
+            Ok(plain(ScalarValueDraft::Int(42)))
         );
     }
 
@@ -1362,16 +1420,6 @@ mod tests {
         unused_atom_slot.splice(1..2, [0x01, 0x00]);
         assert!(matches!(
             decode_trusted_scalar_script(&unused_atom_slot),
-            Err(ScalarScriptReadError::Unadmitted(_))
-        ));
-
-        let constant_pool_bigint_with_double_neg = [
-            0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-            0x01, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0x8a, 0x8a, 0xcb, 0x28, 0x0a,
-            0x05, 0x00, 0x00, 0x00, 0x80, 0x00,
-        ];
-        assert!(matches!(
-            decode_trusted_scalar_script(&constant_pool_bigint_with_double_neg),
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
 
@@ -1603,8 +1651,13 @@ mod tests {
     }
 
     fn scalar_with_atom_value(atom: u32) -> Vec<u8> {
+        scalar_with_atom_value_and_unary(atom, &[])
+    }
+
+    fn scalar_with_atom_value_and_unary(atom: u32, unary_ops: &[u8]) -> Vec<u8> {
         let mut code = vec![OP_PUSH_ATOM_VALUE];
         code.extend_from_slice(&atom.to_le_bytes());
+        code.extend_from_slice(unary_ops);
         code.extend_from_slice(&[OP_SET_LOC0, OP_RETURN]);
         scalar_with_code(&code)
     }

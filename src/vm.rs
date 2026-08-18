@@ -269,7 +269,10 @@ pub(crate) trait VmHost {
     fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error>;
     fn to_boolean(&mut self, value: &Value) -> Result<bool, Error>;
     fn is_html_dda(&mut self, value: &Value) -> Result<bool, Error>;
-    fn type_of(&mut self, value: &Value) -> Result<&'static str, Error>;
+    /// Return QuickJS's atom-backed `typeof` String. Runtime-backed hosts must
+    /// preserve the canonical atom identity instead of allocating a fresh
+    /// String for every execution.
+    fn type_of(&mut self, value: &Value) -> Result<JsString, Error>;
     fn box_primitive(&mut self, value: Value) -> Result<Value, Error>;
     fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error>;
     fn materialize_error(&mut self, error: Error) -> Result<Value, Error>;
@@ -1108,16 +1111,16 @@ impl VmHost for DetachedHost<'_> {
             .map_err(|error| Error::internal(error.to_string()))
     }
 
-    fn type_of(&mut self, value: &Value) -> Result<&'static str, Error> {
+    fn type_of(&mut self, value: &Value) -> Result<JsString, Error> {
         if let Value::Object(object) = value
             && object
                 .runtime()
                 .value_is_html_dda(value)
                 .map_err(|error| Error::internal(error.to_string()))?
         {
-            return Ok("undefined");
+            return Ok(JsString::from_static("undefined"));
         }
-        Ok(value.type_of())
+        Ok(JsString::from_static(value.type_of()))
     }
 
     fn box_primitive(&mut self, _value: Value) -> Result<Value, Error> {
@@ -3175,8 +3178,7 @@ impl VmActivation {
             }
             Instruction::TypeOf => {
                 let value = self.pop()?;
-                self.stack
-                    .push(Value::String(JsString::from_static(host.type_of(&value)?)));
+                self.stack.push(Value::String(host.type_of(&value)?));
             }
             Instruction::IsUndefinedOrNull => {
                 let value = self.pop()?;
@@ -4724,6 +4726,9 @@ impl VmActivation {
             Value::BigInt(value) => self
                 .stack
                 .push(Value::BigInt(value.neg().map_err(bigint_error)?)),
+            // QuickJS uses __JS_NewFloat64 for a Float64 operand, retaining
+            // the Float tag even when the result has an integral value.
+            Value::Float(value) => self.stack.push(Value::Float(-value)),
             value => self.stack.push(Value::number(-value.to_number()?)),
         }
         Ok(OperationOutcome::Value(()))
@@ -4737,7 +4742,13 @@ impl VmActivation {
         if matches!(operand, Value::BigInt(_)) {
             return Err(Error::new(ErrorKind::Type, "bigint argument with unary +"));
         }
-        self.stack.push(Value::number(operand.to_number()?));
+        match operand {
+            // OP_plus is a no-op for both native numeric tags. In particular,
+            // an integral Float64 must not be compacted to Int32.
+            Value::Int(value) => self.stack.push(Value::Int(value)),
+            Value::Float(value) => self.stack.push(Value::Float(value)),
+            value => self.stack.push(Value::number(value.to_number()?)),
+        }
         Ok(OperationOutcome::Value(()))
     }
 
@@ -4749,19 +4760,39 @@ impl VmActivation {
         increment: bool,
         postfix: bool,
     ) -> Result<OperationOutcome<()>, Error> {
-        let operand = match to_numeric(host, self.pop()?)? {
-            OperationOutcome::Value(value) => value,
-            OperationOutcome::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+        let operand = match host.to_primitive(self.pop()?, ToPrimitiveHint::Number)? {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
         };
         match operand {
-            NumericValue::Number(old) => {
+            Value::Int(old) => {
+                let new = if increment {
+                    old.checked_add(1)
+                } else {
+                    old.checked_sub(1)
+                };
+                if postfix {
+                    self.stack.push(Value::Int(old));
+                }
+                self.stack.push(new.map_or_else(
+                    || {
+                        Value::Float(if increment {
+                            f64::from(old) + 1.0
+                        } else {
+                            f64::from(old) - 1.0
+                        })
+                    },
+                    Value::Int,
+                ));
+            }
+            Value::Float(old) => {
                 let new = if increment { old + 1.0 } else { old - 1.0 };
                 if postfix {
-                    self.stack.push(Value::number(old));
+                    self.stack.push(Value::Float(old));
                 }
-                self.stack.push(Value::number(new));
+                self.stack.push(Value::Float(new));
             }
-            NumericValue::BigInt(old) => {
+            Value::BigInt(old) => {
                 let one = JsBigInt::from(1_i32);
                 let new = if increment {
                     old.add(&one)
@@ -4773,6 +4804,14 @@ impl VmActivation {
                     self.stack.push(Value::BigInt(old));
                 }
                 self.stack.push(Value::BigInt(new));
+            }
+            value => {
+                let old = value.to_number()?;
+                let new = if increment { old + 1.0 } else { old - 1.0 };
+                if postfix {
+                    self.stack.push(Value::number(old));
+                }
+                self.stack.push(Value::number(new));
             }
         }
         Ok(OperationOutcome::Value(()))
@@ -5121,6 +5160,102 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn unary_arithmetic_preserves_quickjs_numeric_tags_and_float_bits() {
+        fn execute(value: Value, instruction: Instruction) -> Value {
+            Vm::new()
+                .execute(&BytecodeFunction {
+                    name: None,
+                    code: vec![Instruction::PushConst(0), instruction, Instruction::Return],
+                    constants: vec![value],
+                    local_count: 0,
+                    max_stack: 1,
+                })
+                .unwrap()
+        }
+
+        fn execute_post(value: Value, instruction: Instruction, selector: Instruction) -> Value {
+            Vm::new()
+                .execute(&BytecodeFunction {
+                    name: None,
+                    code: vec![
+                        Instruction::PushConst(0),
+                        instruction,
+                        selector,
+                        Instruction::Return,
+                    ],
+                    constants: vec![value],
+                    local_count: 0,
+                    max_stack: 2,
+                })
+                .unwrap()
+        }
+
+        for (instruction, expected) in [
+            (Instruction::Neg, (-42.0_f64).to_bits()),
+            (Instruction::Plus, 42.0_f64.to_bits()),
+            (Instruction::Inc, 43.0_f64.to_bits()),
+            (Instruction::Dec, 41.0_f64.to_bits()),
+        ] {
+            let Value::Float(actual) = execute(Value::Float(42.0), instruction) else {
+                panic!("integral Float64 unary result lost its Float tag");
+            };
+            assert_eq!(actual.to_bits(), expected);
+        }
+
+        let nan_bits = 0x7ff8_0000_0000_0042;
+        let Value::Float(negated_nan) =
+            execute(Value::Float(f64::from_bits(nan_bits)), Instruction::Neg)
+        else {
+            panic!("negated NaN lost its Float tag");
+        };
+        assert_eq!(negated_nan.to_bits(), nan_bits ^ (1_u64 << 63));
+
+        for (value, instruction, expected) in [
+            (0, Instruction::Neg, (-0.0_f64).to_bits()),
+            (i32::MIN, Instruction::Neg, 2_147_483_648.0_f64.to_bits()),
+            (i32::MAX, Instruction::Inc, 2_147_483_648.0_f64.to_bits()),
+            (i32::MIN, Instruction::Dec, (-2_147_483_649.0_f64).to_bits()),
+        ] {
+            let Value::Float(actual) = execute(Value::Int(value), instruction) else {
+                panic!("Int32 unary boundary did not promote to Float64");
+            };
+            assert_eq!(actual.to_bits(), expected);
+        }
+
+        for (instruction, old_bits, new_bits) in [
+            (Instruction::PostInc, 42.0_f64.to_bits(), 43.0_f64.to_bits()),
+            (Instruction::PostDec, 42.0_f64.to_bits(), 41.0_f64.to_bits()),
+        ] {
+            let Value::Float(old) =
+                execute_post(Value::Float(42.0), instruction.clone(), Instruction::Drop)
+            else {
+                panic!("postfix Float64 old value lost its Float tag");
+            };
+            let Value::Float(new) = execute_post(Value::Float(42.0), instruction, Instruction::Nip)
+            else {
+                panic!("postfix Float64 replacement lost its Float tag");
+            };
+            assert_eq!(old.to_bits(), old_bits);
+            assert_eq!(new.to_bits(), new_bits);
+        }
+
+        assert_eq!(
+            execute_post(
+                Value::Int(i32::MAX),
+                Instruction::PostInc,
+                Instruction::Drop
+            ),
+            Value::Int(i32::MAX)
+        );
+        let Value::Float(promoted) =
+            execute_post(Value::Int(i32::MAX), Instruction::PostInc, Instruction::Nip)
+        else {
+            panic!("postfix Int32 boundary replacement did not promote to Float64");
+        };
+        assert_eq!(promoted.to_bits(), 2_147_483_648.0_f64.to_bits());
     }
 
     #[test]

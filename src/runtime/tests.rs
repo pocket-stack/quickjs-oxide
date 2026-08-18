@@ -75,6 +75,53 @@ fn trusted_quickjs_scalar_script_uses_verified_runtime_publication() {
 }
 
 #[test]
+fn runtime_preloads_quickjs_typeof_atoms_as_narrow_canonical_strings() {
+    const TYPEOF: u8 = 0x95;
+
+    let runtime = Runtime::new();
+    let initial_atom_count = runtime.test_atom_count();
+    let mut canonical_string = None;
+    for spelling in super::vm_host::TYPEOF_STATIC_ATOMS {
+        let key = runtime.intern_property_key(spelling).unwrap();
+        let canonical = runtime.property_key_to_js_string(&key).unwrap();
+        assert!(!canonical.is_wide());
+        assert_eq!(runtime.test_atom_count(), initial_atom_count);
+        if spelling == "string" {
+            canonical_string = Some(canonical);
+        }
+    }
+    let canonical_string = canonical_string.expect("typeof static set contains string");
+
+    let mut context = runtime.new_context();
+    let atom_count = runtime.test_atom_count();
+    let wide_atom = quickjs_scalar_with_atom_slot(
+        &[
+            u16::from(b's'),
+            u16::from(b't'),
+            u16::from(b'r'),
+            u16::from(b'i'),
+            u16::from(b'n'),
+            u16::from(b'g'),
+        ],
+        true,
+    );
+    let wide_atom = context.read_trusted_scalar_script(&wide_atom).unwrap();
+    let wide_atom = expect_string_value(context.execute(&wide_atom).unwrap());
+    assert_eq!(runtime.test_atom_count(), atom_count);
+    assert!(!wide_atom.is_wide());
+    assert!(wide_atom.same_representation(&canonical_string));
+
+    let typeof_string = quickjs_scalar_with_string_constant(
+        &[0xbd, 0x00, TYPEOF, 0xcb, 0x28],
+        &[u16::from(b'x')],
+        false,
+    );
+    let typeof_string = context.read_trusted_scalar_script(&typeof_string).unwrap();
+    let typeof_string = expect_string_value(context.execute(&typeof_string).unwrap());
+    assert!(typeof_string.same_representation(&canonical_string));
+}
+
+#[test]
 fn trusted_quickjs_scalar_script_executes_the_full_direct_int32_family() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -455,7 +502,7 @@ fn trusted_quickjs_scalar_script_executes_exact_bigint_constant_pairs() {
 }
 
 #[test]
-fn trusted_quickjs_scalar_script_executes_single_bigint_neg_at_runtime() {
+fn trusted_quickjs_scalar_script_executes_bigint_negation_at_runtime() {
     const SHORT_INDEX_ZERO_NEG: &[u8] = &[0xbd, 0x00, 0x8a, 0xcb, 0x28];
     const WIDE_INDEX_ZERO_NEG: &[u8] = &[0x02, 0x00, 0x00, 0x00, 0x00, 0x8a, 0xcb, 0x28];
     let runtime = Runtime::new();
@@ -544,6 +591,156 @@ fn trusted_quickjs_scalar_script_executes_single_bigint_neg_at_runtime() {
 }
 
 #[test]
+fn trusted_quickjs_scalar_script_executes_table_driven_unary_chains() {
+    const NEG: u8 = 0x8a;
+    const PLUS: u8 = 0x8b;
+    const DEC: u8 = 0x8c;
+    const INC: u8 = 0x8d;
+    const BIT_NOT: u8 = 0x93;
+    const LOGICAL_NOT: u8 = 0x94;
+    const TYPEOF: u8 = 0x95;
+
+    fn direct_code(push: &[u8], unary_ops: &[u8]) -> Vec<u8> {
+        let mut code = Vec::with_capacity(push.len() + unary_ops.len() + 2);
+        code.extend_from_slice(push);
+        code.extend_from_slice(unary_ops);
+        code.extend_from_slice(&[0xcb, 0x28]);
+        code
+    }
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    let direct_cases = [
+        (direct_code(&[0xb4], &[NEG]), Value::Int(-1)),
+        (direct_code(&[0x09], &[PLUS]), Value::Int(0)),
+        (direct_code(&[0xb3], &[DEC]), Value::Int(-1)),
+        (direct_code(&[0xb3], &[INC]), Value::Int(1)),
+        (direct_code(&[0xb3], &[BIT_NOT]), Value::Int(-1)),
+        (direct_code(&[0x0a], &[LOGICAL_NOT]), Value::Bool(false)),
+        // Exercises all six value-transforming operations before `typeof`;
+        // reader and publisher snapshots separately pin their exact order.
+        (
+            direct_code(
+                &[0x0a],
+                &[PLUS, INC, DEC, NEG, BIT_NOT, LOGICAL_NOT, TYPEOF],
+            ),
+            Value::String(JsString::from_static("boolean")),
+        ),
+        (direct_code(&[0xb4], &[NEG, NEG]), Value::Int(1)),
+    ];
+    for (code, expected) in &direct_cases {
+        let function = context
+            .read_trusted_scalar_script(&quickjs_scalar_with_code(code))
+            .unwrap();
+        assert_eq!(context.execute(&function).unwrap(), expected.clone());
+    }
+
+    for (bits, op, expected_bits) in [
+        (42.0_f64.to_bits(), NEG, (-42.0_f64).to_bits()),
+        ((-0.0_f64).to_bits(), PLUS, (-0.0_f64).to_bits()),
+        (
+            2_147_483_647.0_f64.to_bits(),
+            INC,
+            2_147_483_648.0_f64.to_bits(),
+        ),
+        (42.0_f64.to_bits(), DEC, 41.0_f64.to_bits()),
+    ] {
+        let code = [0xbd, 0x00, op, 0xcb, 0x28];
+        let image = quickjs_scalar_with_float_constant(&code, bits);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        let Value::Float(actual) = context.execute(&function).unwrap() else {
+            panic!("Float64 scalar unary result lost its QuickJS value tag");
+        };
+        assert_eq!(actual.to_bits(), expected_bits);
+    }
+
+    let bitnot_nan = quickjs_scalar_with_float_constant(
+        &[0xbd, 0x00, BIT_NOT, 0xcb, 0x28],
+        0x7ff8_0000_0000_0042,
+    );
+    let bitnot_nan = context.read_trusted_scalar_script(&bitnot_nan).unwrap();
+    assert_eq!(context.execute(&bitnot_nan).unwrap(), Value::Int(-1));
+
+    let string_plus = quickjs_scalar_with_string_constant(
+        &[0xbd, 0x00, PLUS, 0xcb, 0x28],
+        &[u16::from(b'4'), u16::from(b'2')],
+        false,
+    );
+    let string_plus = context.read_trusted_scalar_script(&string_plus).unwrap();
+    assert_eq!(context.execute(&string_plus).unwrap(), Value::Int(42));
+
+    let int_zero_neg = context
+        .read_trusted_scalar_script(&quickjs_scalar_with_code(&direct_code(&[0xb3], &[NEG])))
+        .unwrap();
+    let Value::Float(negative_zero) = context.execute(&int_zero_neg).unwrap() else {
+        panic!("negating Int32 zero did not produce QuickJS Float64 negative zero");
+    };
+    assert_eq!(negative_zero.to_bits(), (-0.0_f64).to_bits());
+
+    for (op, expected) in [
+        (NEG, JsBigInt::from(-1)),
+        (DEC, JsBigInt::zero()),
+        (INC, JsBigInt::from(2)),
+        (BIT_NOT, JsBigInt::from(-2)),
+    ] {
+        let code = direct_code(&[0xb0, 0x01, 0x00, 0x00, 0x00], &[op]);
+        let function = context
+            .read_trusted_scalar_script(&quickjs_scalar_with_code(&code))
+            .unwrap();
+        assert_eq!(context.execute(&function).unwrap(), Value::BigInt(expected));
+    }
+
+    // Pinned QuickJS performs unsigned opcode arithmetic in the heap-BigInt
+    // decrement slow path, adding UINT32_MAX instead of subtracting one.
+    // This is release behavior, not eager decoder normalization.
+    let heap_bigint_dec = quickjs_scalar_with_bigint_constant(
+        &[0xbd, 0x00, DEC, 0xcb, 0x28],
+        &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80],
+    );
+    let heap_bigint_dec = context
+        .read_trusted_scalar_script(&heap_bigint_dec)
+        .unwrap();
+    assert_eq!(
+        context.execute(&heap_bigint_dec).unwrap(),
+        Value::BigInt(JsBigInt::parse_js_string("-9223372032559808513").unwrap())
+    );
+
+    let typeof_image = quickjs_scalar_with_string_constant(
+        &[0xbd, 0x00, TYPEOF, 0xcb, 0x28],
+        &[u16::from(b'x')],
+        false,
+    );
+    let typeof_function = context.read_trusted_scalar_script(&typeof_image).unwrap();
+    let first_type = expect_string_value(context.execute(&typeof_function).unwrap());
+    let repeated_type = expect_string_value(context.execute(&typeof_function).unwrap());
+    let atoms_after_typeof = runtime.test_atom_count();
+    let string_key = runtime.intern_property_key("string").unwrap();
+    let canonical_type = runtime.property_key_to_js_string(&string_key).unwrap();
+    assert_eq!(first_type, JsString::from_static("string"));
+    assert!(!first_type.is_wide());
+    assert!(first_type.same_representation(&repeated_type));
+    assert!(first_type.same_representation(&canonical_type));
+    assert_eq!(runtime.test_atom_count(), atoms_after_typeof);
+
+    // Publication is independent from execution. QuickJS accepts OP_plus in
+    // the bytecode and raises TypeError only when it executes on a BigInt.
+    let plus_bigint =
+        quickjs_scalar_with_code(&direct_code(&[0xb0, 0x01, 0x00, 0x00, 0x00], &[PLUS, NEG]));
+    let function = context.read_trusted_scalar_script(&plus_bigint).unwrap();
+    for _ in 0..2 {
+        assert_eq!(context.execute(&function), Err(RuntimeError::Exception));
+        let (name, message) = take_error_name_and_message(&runtime, &mut context);
+        assert_eq!(name, JsString::from_static("TypeError"));
+        assert_eq!(
+            message,
+            JsString::from_static("bigint argument with unary +")
+        );
+        assert!(!context.has_exception());
+    }
+}
+
+#[test]
 fn trusted_quickjs_scalar_script_accepts_compatible_wire_spellings() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -601,6 +798,22 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
             quickjs_scalar_with_code(&[0x08, 0xcb, 0x28]),
         ),
         (
+            "scalar Script with await outside the unary table",
+            quickjs_scalar_with_code(&[0xb3, 0x89, 0xcb, 0x28]),
+        ),
+        (
+            "scalar Script with postfix decrement outside the unary table",
+            quickjs_scalar_with_code(&[0xb3, 0x8e, 0xcb, 0x28]),
+        ),
+        (
+            "scalar Script with postfix increment outside the unary table",
+            quickjs_scalar_with_code(&[0xb3, 0x8f, 0xcb, 0x28]),
+        ),
+        (
+            "scalar Script with delete outside the unary table",
+            quickjs_scalar_with_code(&[0xb3, 0x96, 0xcb, 0x28]),
+        ),
+        (
             "scalar Script with an unused input atom slot",
             unused_atom_slot,
         ),
@@ -643,13 +856,6 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
             ),
         ),
         (
-            "BigInt constant scalar Script with double unary neg",
-            quickjs_scalar_with_constants(
-                &[0xbd, 0x00, 0x8a, 0x8a, 0xcb, 0x28],
-                &[bigint_entry.as_slice()],
-            ),
-        ),
-        (
             "negated BigInt constant scalar Script with a nonzero index",
             quickjs_scalar_with_constants(
                 &[0xbd, 0x01, 0x8a, 0xcb, 0x28],
@@ -669,17 +875,6 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
                 &[0xb0, 0x01, 0x00, 0x00, 0x00, 0x8a, 0xcb, 0x28],
                 &[bigint_entry.as_slice()],
             ),
-        ),
-        (
-            "Float64 constant scalar Script with unary neg",
-            quickjs_scalar_with_constants(
-                &[0xbd, 0x00, 0x8a, 0xcb, 0x28],
-                &[float_entry.as_slice()],
-            ),
-        ),
-        (
-            "Int32 direct scalar Script with unary neg",
-            quickjs_scalar_with_code(&[0xb3, 0x8a, 0xcb, 0x28]),
         ),
     ];
     for (label, image) in well_formed_unadmitted {
@@ -6811,7 +7006,7 @@ fn runtime_typeof_distinguishes_callable_and_ordinary_objects() {
         .unwrap();
     let ordinary = runtime.new_object(None).unwrap();
 
-    assert_eq!(
+    let function_type = expect_string_value(
         context
             .call(
                 &callable,
@@ -6819,8 +7014,28 @@ fn runtime_typeof_distinguishes_callable_and_ordinary_objects() {
                 &[Value::Object(callable.as_object().clone())],
             )
             .unwrap(),
-        Value::String(JsString::from_static("function"))
     );
+    assert_eq!(function_type, JsString::from_static("function"));
+    let repeated_function_type = expect_string_value(
+        context
+            .call(
+                &callable,
+                Value::Undefined,
+                &[Value::Object(callable.as_object().clone())],
+            )
+            .unwrap(),
+    );
+    assert!(function_type.same_representation(&repeated_function_type));
+    let function_key = runtime.intern_property_key("function").unwrap();
+    let canonical_function = runtime.property_key_to_js_string(&function_key).unwrap();
+    assert!(function_type.same_representation(&canonical_function));
+
+    let foreign_runtime = Runtime::new();
+    let foreign_key = foreign_runtime.intern_property_key("function").unwrap();
+    let foreign_function = foreign_runtime
+        .property_key_to_js_string(&foreign_key)
+        .unwrap();
+    assert!(!function_type.same_representation(&foreign_function));
     assert_eq!(
         context
             .call(&callable, Value::Undefined, &[Value::Object(ordinary)],)

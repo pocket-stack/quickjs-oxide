@@ -66,15 +66,16 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   Script cohort: `undefined`, `null`, booleans, the complete direct Int32
   family, signed-i32 BigInts, and single String values, plus exact Float64,
   arbitrary-precision signed BigInt, and String values behind an
-  index-zero/one-entry constant-pool pair; direct and constant-pool BigInts may
-  carry exactly one unary `neg`. It completes the compatible whole-image read,
-  translates an inert DTO to typed Rust instructions and primitive constants,
-  and enters the ordinary verifier and transactional publication path before
-  execution. Constant-pool Strings retain primitive-constant identity,
-  ordinary String atoms use the runtime's canonical atom identity, empty
-  direct/atom Strings share that canonical empty identity, and tagged-integer
-  atoms produce a fresh decimal String on every execution. Private and Symbol
-  atoms remain understood but unadmitted
+  index-zero/one-entry constant-pool pair. Any admitted push may carry a finite
+  chain of pinned scalar unary operations (`neg`, unary `plus`, `dec`, `inc`,
+  bitwise `not`, logical `not`, and `typeof`). It completes the compatible
+  whole-image read, translates an inert DTO to typed Rust instructions and
+  primitive constants, and enters the ordinary verifier and transactional
+  publication path before execution. Constant-pool Strings retain primitive-
+  constant identity, ordinary String atoms use the runtime's canonical atom
+  identity, empty direct/atom Strings share that canonical empty identity, and
+  tagged-integer atoms produce a fresh decimal String on every execution.
+  Private and Symbol atoms remain understood but unadmitted
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -224,7 +225,8 @@ source. The function constant pool is empty for direct and atom-value pushes,
 or is the exact index-zero/one-entry Float64, BigInt, or String pair described
 below. Its release-pinned direct scalar push is `undefined`, `null`, either
 boolean, a signed-i32 BigInt, the empty String, or the complete Int32 family,
-followed by `set_loc0; return`. The Int32 path accepts
+optionally followed by the authenticated unary chain and then
+`set_loc0; return`. The Int32 path accepts
 QuickJS-reader-compatible wider i8/i16/i32 spellings as well as
 compiler-canonical short forms.
 
@@ -287,18 +289,48 @@ outside signed Int32; Rust retains the reader-normalized, signed little-endian
 payload in the inert draft, then uses the ordinary BigInt codec and constant
 publication path. Zero, negative compatible payloads, the short/heap boundary,
 arbitrary-precision values within the trusted-input cap, and compatible
-redundant sign extension are covered. Both direct `push_bigint_i32` and the
-index-zero constant-pool BigInt form may additionally contain exactly one
-`neg` between the push and `set_loc0; return`. The inert draft records this as
-a distinct BigInt-only shape; publication emits `Instruction::Neg`, so
-negation, including zero handling and the short-to-heap transition, occurs
-during execution rather than eagerly while decoding or lowering. Recoverable
-allocator-failure parity remains part of the later `num-bigint` hardening gate.
-Double `neg`, `neg` on Float64, Int32, String, or other values, and general
-unary-expression bytecode remain outside this narrow admission milestone. The
-next scalar step is table-driven unary admission; after that, work turns to
-general FunctionBytecode translation rather than adding more one-off scalar
-paths.
+redundant sign extension are covered. Every admitted scalar push may be
+followed by any finite chain drawn from the pinned one-byte, stack-one-to-one
+unary table: `neg` (`0x8a`), unary `plus` (`0x8b`), `dec` (`0x8c`), `inc`
+(`0x8d`), bitwise `not` (`0x93`), logical `not` (`0x94`), and `typeof`
+(`0x95`). The inert draft keeps the starting value and ordered operation slice
+separate. Admission authenticates every instruction sidecar's opcode and
+offset against its owned raw byte, plus the final `set_loc0; return`; the
+pinned descriptor gate separately locks each unary operation's one-to-one
+stack effect. Publication emits the corresponding typed instructions in source
+order. No unary result is computed while decoding or lowering, so BigInt unary
+`plus` is accepted and raises its `TypeError` only when executed, before any
+later operation in the chain.
+
+The authenticated function-bytecode C oracle exercises 42 synthesized unary
+vectors: 40 compatible inputs and two explicitly outside Symbol-atom inputs.
+Every vector survives read/write identity and then executes in a fresh pinned
+QuickJS runtime. The matrix covers all seven operations, Number and BigInt
+boundary tags, exact Float64 bits, String `ToNumeric`, scalar truthiness,
+mixed/double chains, the execution-time BigInt unary-plus diagnostic, and
+non-address `typeof` String identity within and across runtimes.
+
+Numeric execution preserves QuickJS representation details: native Float64
+inputs retain their Float64 tag and payload behavior, Int32 overflow boundaries
+promote to Float64, and BigInt arithmetic stays in the BigInt domain. `typeof`
+returns one of eight construction-preloaded, runtime-canonical atom-backed type
+Strings, shared within one runtime but not across runtimes. Heap-BigInt
+decrement also retains this pinned QuickJS release's unsigned opcode-enum
+arithmetic quirk instead of silently
+substituting spec-correct subtraction. Recoverable allocator-failure parity
+remains part of the later `num-bigint` hardening gate.
+
+Postfix update operations, reference/local mutation, `delete`, `void`, `await`,
+and Object, Private, or Symbol inputs remain outside this scalar-only cohort.
+This is the last scalar-specific admission milestone; the next bytecode step is
+general FunctionBytecode translation rather than another shape-specific path.
+The frozen R3fj Test262 receipt remains authenticated but is source-stale for
+this tree. Its result vector is expected to remain unchanged, but the generic
+VM numeric-tag corrections and Runtime atom initialization mean that only a
+fresh full run can certify that expectation; until then, the metrics above
+describe the preceding receipt. This milestone's current primary evidence is
+the pinned C bytecode/identity differential plus Rust execution and boundary
+gates.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
