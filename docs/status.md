@@ -324,12 +324,11 @@ Postfix update operations, reference/local mutation, `delete`, `void`, `await`,
 and Object, Private, or Symbol inputs remain outside this scalar-only cohort.
 This is the last scalar-specific admission milestone; the next bytecode step is
 general FunctionBytecode translation rather than another shape-specific path.
-The frozen R3fj Test262 receipt remains authenticated but is source-stale for
-this tree. Its result vector is expected to remain unchanged, but the generic
-VM numeric-tag corrections and Runtime atom initialization mean that only a
-fresh full run can certify that expectation; until then, the metrics above
-describe the preceding receipt. This milestone's current primary evidence is
-the pinned C bytecode/identity differential plus Rust execution and boundary
+A fresh full R3fj Test262 run certifies that the generic VM numeric-tag
+corrections and Runtime atom initialization leave the complete classified
+result vector unchanged: 79,982 full passes, 80,032 eligible variants, and
+102,037 total variants. The scalar-unary frontier's additional primary evidence
+is the pinned C bytecode/identity differential plus Rust execution and boundary
 gates.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
