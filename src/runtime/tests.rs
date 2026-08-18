@@ -36,6 +36,20 @@ const QUICKJS_SCALAR_42_BC5: &[u8] = &[
     0x01, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
 ];
 
+// QuickJS 2026-06-04, GLOBAL | COMPILE_ONLY with JS_STRIP_DEBUG, for:
+// (function(a,b){var acc=.5;var step=b;while(a>0){if(a===2)
+// acc=(acc+step)/1;else acc=(acc+1)/1;a=a-1;}return acc===5.5?42:0;})
+const QUICKJS_ORDINARY_LEAF_42_BC5: &[u8] = &[
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb, 0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x02, 0x02,
+    0x02, 0x02, 0x00, 0x00, 0x02, 0x2e, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xbd, 0x00, 0xc7, 0xd0, 0xc8, 0xcf, 0xb3, 0xa3, 0xe8,
+    0x1a, 0xcf, 0xb5, 0xa9, 0xe8, 0x09, 0xc3, 0xc4, 0x9b, 0xb4, 0x99, 0xc7, 0xea, 0x07, 0xc3, 0xb4,
+    0x9b, 0xb4, 0x99, 0xc7, 0xcf, 0xb4, 0x9c, 0xd3, 0xea, 0xe3, 0xc3, 0xbd, 0x01, 0xa9, 0xe8, 0x04,
+    0xbb, 0x2a, 0x28, 0xb3, 0x28, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x3f, 0x06, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x40,
+];
+
 const QUICKJS_SELF_CONTAINED_MODULE_BC5: &[u8] = &[
     0x05, 0x03, 0x24, 0x73, 0x65, 0x6c, 0x66, 0x2d, 0x63, 0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65,
     0x64, 0x2e, 0x6d, 0x6a, 0x73, 0x0c, 0x61, 0x6e, 0x73, 0x77, 0x65, 0x72, 0x2e, 0x5f, 0x5f, 0x6d,
@@ -72,6 +86,246 @@ fn trusted_quickjs_scalar_script_uses_verified_runtime_publication() {
         Err(RuntimeError::WrongRuntime("function bytecode"))
     );
     assert_eq!(foreign_runtime.heap_counts().object_nodes, foreign_objects);
+}
+
+#[test]
+fn trusted_quickjs_ordinary_leaf_executes_real_control_flow_and_function_properties() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+
+    let function = context
+        .read_trusted_ordinary_function(QUICKJS_ORDINARY_LEAF_42_BC5, 0)
+        .unwrap();
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline.function_bytecode_nodes + 1
+    );
+    assert_eq!(
+        runtime.heap_counts().object_nodes,
+        baseline.object_nodes + 1
+    );
+    assert!(runtime.is_constructor(function.as_object()).unwrap());
+    assert_eq!(
+        runtime.get_prototype_of(function.as_object()).unwrap(),
+        Some(context.function_prototype().unwrap())
+    );
+
+    assert_eq!(
+        context
+            .call(&function, Value::Undefined, &[Value::Int(3), Value::Int(3)],)
+            .unwrap(),
+        Value::Int(42)
+    );
+    assert_eq!(
+        context
+            .call(&function, Value::Undefined, &[Value::Int(3), Value::Int(4)],)
+            .unwrap(),
+        Value::Int(0)
+    );
+
+    let length = runtime.intern_property_key("length").unwrap();
+    let name = runtime.intern_property_key("name").unwrap();
+    let prototype_key = runtime.intern_property_key("prototype").unwrap();
+    let constructor = runtime.intern_property_key("constructor").unwrap();
+    let caller = runtime.intern_property_key("caller").unwrap();
+    let arguments = runtime.intern_property_key("arguments").unwrap();
+    assert_eq!(
+        runtime.own_property_keys(function.as_object()).unwrap(),
+        vec![length.clone(), name.clone(), prototype_key.clone()]
+    );
+    assert!(matches!(
+        runtime
+            .get_own_property(function.as_object(), &length)
+            .unwrap(),
+        Some(CompleteOrdinaryPropertyDescriptor::Data {
+            value: Value::Int(2),
+            writable: false,
+            enumerable: false,
+            configurable: true,
+        })
+    ));
+    let Some(CompleteOrdinaryPropertyDescriptor::Data {
+        value: Value::String(name_value),
+        writable: false,
+        enumerable: false,
+        configurable: true,
+    }) = runtime
+        .get_own_property(function.as_object(), &name)
+        .unwrap()
+    else {
+        panic!("trusted ordinary leaf has the wrong name descriptor");
+    };
+    assert!(name_value.is_empty());
+    let Some(CompleteOrdinaryPropertyDescriptor::Data {
+        value: Value::Object(prototype),
+        writable: true,
+        enumerable: false,
+        configurable: false,
+    }) = runtime
+        .get_own_property(function.as_object(), &prototype_key)
+        .unwrap()
+    else {
+        panic!("trusted ordinary leaf has the wrong prototype descriptor");
+    };
+    let Some(CompleteOrdinaryPropertyDescriptor::Data {
+        value: Value::Object(constructor_value),
+        writable: true,
+        enumerable: false,
+        configurable: true,
+    }) = runtime.get_own_property(&prototype, &constructor).unwrap()
+    else {
+        panic!("trusted ordinary leaf prototype has the wrong constructor descriptor");
+    };
+    assert_eq!(constructor_value, function.as_object().clone());
+    assert_eq!(
+        context.get_property(function.as_object(), &caller).unwrap(),
+        Value::Undefined
+    );
+    assert_eq!(
+        context
+            .get_property(function.as_object(), &arguments)
+            .unwrap(),
+        Value::Undefined
+    );
+    let Value::Object(instance) = context
+        .construct(&function, &[Value::Int(3), Value::Int(3)])
+        .unwrap()
+    else {
+        panic!("trusted ordinary leaf constructor returned a primitive");
+    };
+    assert_eq!(
+        runtime.get_prototype_of(&instance).unwrap(),
+        Some(prototype)
+    );
+}
+
+#[test]
+fn trusted_quickjs_ordinary_leaf_preserves_strict_and_capability_metadata() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+
+    let mut strict = QUICKJS_ORDINARY_LEAF_42_BC5.to_vec();
+    strict[28] = 0x01;
+    let strict = context.read_trusted_ordinary_function(&strict, 0).unwrap();
+    for property in ["caller", "arguments"] {
+        let key = runtime.intern_property_key(property).unwrap();
+        assert_eq!(
+            context.get_property(strict.as_object(), &key),
+            Err(RuntimeError::Exception)
+        );
+        assert_eq!(
+            take_error_name_and_message(&runtime, &mut context),
+            (
+                JsString::from_static("TypeError"),
+                JsString::from_static("invalid property access"),
+            )
+        );
+    }
+
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    let mut no_new_target = QUICKJS_ORDINARY_LEAF_42_BC5.to_vec();
+    no_new_target[26] &= !0x40;
+    let mut no_arguments = QUICKJS_ORDINARY_LEAF_42_BC5.to_vec();
+    no_arguments[27] &= !0x02;
+    for (label, image) in [
+        ("new.target capability", no_new_target),
+        ("arguments capability", no_arguments),
+    ] {
+        let RuntimeError::Engine(error) = context
+            .read_trusted_ordinary_function(&image, 0)
+            .unwrap_err()
+        else {
+            panic!("ordinary leaf without {label} did not return an engine error");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(!context.has_exception());
+        assert_eq!(runtime.heap_counts(), baseline);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+}
+
+#[test]
+fn trusted_quickjs_ordinary_leaf_preserves_frontier_and_malformed_provenance() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+
+    let RuntimeError::Engine(error) = context
+        .read_trusted_ordinary_function(QUICKJS_ORDINARY_LEAF_42_BC5, 1)
+        .unwrap_err()
+    else {
+        panic!("out-of-range root selector did not return an engine error");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts(), baseline);
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+
+    let RuntimeError::Engine(error) = context
+        .read_trusted_ordinary_function(QUICKJS_SCALAR_42_BC5, 0)
+        .unwrap_err()
+    else {
+        panic!("scalar root did not preserve the ordinary-leaf frontier");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts(), baseline);
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+
+    let mut verifier_rejected = QUICKJS_ORDINARY_LEAF_42_BC5.to_vec();
+    verifier_rejected[57] = 0x9b; // `add` is typed but underflows this CFG.
+    let RuntimeError::Engine(error) = context
+        .read_trusted_ordinary_function(&verifier_rejected, 0)
+        .unwrap_err()
+    else {
+        panic!("typed-verifier rejection did not return an engine error");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(error.message().contains("typed verification"));
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts(), baseline);
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+
+    let mut truncated = QUICKJS_ORDINARY_LEAF_42_BC5.to_vec();
+    truncated.pop();
+    assert_eq!(
+        context.read_trusted_ordinary_function(&truncated, 0),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("SyntaxError"),
+            JsString::from_static("read after the end of the buffer"),
+        )
+    );
+    assert!(!context.has_exception());
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline.function_bytecode_nodes
+    );
+}
+
+#[test]
+fn trusted_quickjs_ordinary_leaf_publication_rolls_back_a_stale_realm() {
+    let runtime = Runtime::new();
+    let context = runtime.new_context();
+    let stale_realm = context.realm;
+    drop(context);
+    runtime.run_gc().unwrap();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+
+    assert!(
+        runtime
+            .read_trusted_ordinary_function_in_realm(stale_realm, QUICKJS_ORDINARY_LEAF_42_BC5, 0,)
+            .is_err()
+    );
+    assert_eq!(runtime.heap_counts(), baseline);
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
 }
 
 #[test]

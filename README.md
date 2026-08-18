@@ -52,9 +52,9 @@ The file loader follows QuickJS policy: `.json` is strict JSON,
 file without that attribute remains a JavaScript module. Main files and
 dependencies are read as explicitly sized byte buffers.
 
-Rust embedders can also use `Context::read_trusted_scalar_script` for the
-current verified subset of QuickJS 2026-06-04 BC5 Script bytecode. It is a
-narrow pre-parity API, not a general untrusted-bytecode loader.
+Rust embedders can use the narrow QuickJS 2026-06-04 BC5 APIs
+`Context::read_trusted_scalar_script` and `Context::read_trusted_ordinary_function`.
+Neither is a general untrusted-bytecode loader or Feature Parity claim.
 
 ## Status
 

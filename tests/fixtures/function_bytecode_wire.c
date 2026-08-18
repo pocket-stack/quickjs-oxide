@@ -16,6 +16,32 @@ static const uint8_t expected_bytecode[] = {
     0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
 };
 
+static const char ordinary_leaf_source[] =
+    "(function(a,b){ var acc=0.5; var step=b; while(a>0){ "
+    "if(a===2) acc=(acc+step)/1; else acc=(acc+1)/1; "
+    "a=a-1; } return acc===5.5 ? 42 : 0; })";
+
+static const uint8_t ordinary_leaf_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x02, 0x02,
+    0x02, 0x02, 0x00, 0x00, 0x02, 0x2e, 0x04, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xbd,
+    0x00, 0xc7, 0xd0, 0xc8, 0xcf, 0xb3, 0xa3, 0xe8,
+    0x1a, 0xcf, 0xb5, 0xa9, 0xe8, 0x09, 0xc3, 0xc4,
+    0x9b, 0xb4, 0x99, 0xc7, 0xea, 0x07, 0xc3, 0xb4,
+    0x9b, 0xb4, 0x99, 0xc7, 0xcf, 0xb4, 0x9c, 0xd3,
+    0xea, 0xe3, 0xc3, 0xbd, 0x01, 0xa9, 0xe8, 0x04,
+    0xbb, 0x2a, 0x28, 0xb3, 0x28, 0x06, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xe0, 0x3f, 0x06, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x40,
+};
+
+_Static_assert(sizeof(ordinary_leaf_bytecode) == 119,
+               "ordinary leaf oracle must retain its pinned 119-byte wire");
+
 static const uint8_t scalar_prefix[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00,
     0x01, 0x00, 0x01, 0x00, 0x00,
@@ -1183,6 +1209,610 @@ cleanup:
         JS_FreeCString(context, actual_class);
     JS_FreeValue(context, message_value);
     JS_FreeValue(context, class_value);
+    return status;
+}
+
+static int expect_ordinary_leaf(void) {
+    enum {
+        ROOT_CPOOL_COUNT_OFFSET = 14,
+        ROOT_CODE_OFFSET = 21,
+        CHILD_OFFSET = 25,
+        CHILD_FLAGS_OFFSET = 26,
+        CHILD_JS_MODE_OFFSET = 28,
+        CHILD_ARG_COUNT_OFFSET = 30,
+        CHILD_VAR_COUNT_OFFSET = 31,
+        CHILD_DEFINED_ARG_COUNT_OFFSET = 32,
+        CHILD_STACK_SIZE_OFFSET = 33,
+        CHILD_VAR_REF_COUNT_OFFSET = 34,
+        CHILD_CLOSURE_COUNT_OFFSET = 35,
+        CHILD_CPOOL_COUNT_OFFSET = 36,
+        CHILD_CODE_SIZE_OFFSET = 37,
+        CHILD_LOCAL_COUNT_OFFSET = 38,
+        CHILD_CODE_OFFSET = 55,
+        CHILD_CODE_SIZE = 46,
+        CHILD_POOL_OFFSET = 101,
+        CHILD_INSTRUCTION_COUNT = 38,
+    };
+    static const uint8_t expected_root_code[] = {
+        0xbe, 0x00, 0xcb, 0x28,
+    };
+    static const uint8_t expected_child_code[] = {
+        0xbd, 0x00, 0xc7, 0xd0, 0xc8, 0xcf, 0xb3, 0xa3,
+        0xe8, 0x1a, 0xcf, 0xb5, 0xa9, 0xe8, 0x09, 0xc3,
+        0xc4, 0x9b, 0xb4, 0x99, 0xc7, 0xea, 0x07, 0xc3,
+        0xb4, 0x9b, 0xb4, 0x99, 0xc7, 0xcf, 0xb4, 0x9c,
+        0xd3, 0xea, 0xe3, 0xc3, 0xbd, 0x01, 0xa9, 0xe8,
+        0x04, 0xbb, 0x2a, 0x28, 0xb3, 0x28,
+    };
+    static const uint8_t expected_child_pool[] = {
+        0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x3f,
+        0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x40,
+    };
+    static const uint8_t expected_instruction_pcs[] = {
+        0, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15,
+        16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28,
+        29, 30, 31, 32, 33, 35, 36, 38, 39, 41, 43, 44, 45,
+    };
+    static const struct {
+        uint8_t opcode_pc;
+        uint8_t operand_pc;
+        uint8_t opcode;
+        int8_t displacement;
+        uint8_t target_pc;
+        uint8_t target_ir;
+    } expected_branches[] = {
+        { 8, 9, 0xe8, 26, 35, 30 },
+        { 13, 14, 0xe8, 9, 23, 19 },
+        { 21, 22, 0xea, 7, 29, 25 },
+        { 33, 34, 0xea, -29, 5, 4 },
+        { 39, 40, 0xe8, 4, 44, 36 },
+    };
+    _Static_assert(sizeof(expected_instruction_pcs) ==
+                       CHILD_INSTRUCTION_COUNT,
+                   "ordinary leaf instruction map must stay complete");
+    JSRuntime *compile_runtime = NULL;
+    JSContext *compile_context = NULL;
+    JSRuntime *eval_runtime = NULL;
+    JSContext *eval_context = NULL;
+    JSRuntime *strict_runtime = NULL;
+    JSContext *strict_context = NULL;
+    JSValue compiled = JS_UNDEFINED;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue function = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    JSValue exception = JS_UNDEFINED;
+    JSValue length_value = JS_UNDEFINED;
+    JSValue name_value = JS_UNDEFINED;
+    JSValue prototype_value = JS_UNDEFINED;
+    JSValue constructor_value = JS_UNDEFINED;
+    JSValue instance = JS_UNDEFINED;
+    JSValue instance_prototype = JS_UNDEFINED;
+    JSValue caller_value = JS_UNDEFINED;
+    JSValue arguments_value = JS_UNDEFINED;
+    JSValue strict_loaded = JS_UNDEFINED;
+    JSValue strict_function = JS_UNDEFINED;
+    JSValue strict_property = JS_UNDEFINED;
+    JSValue strict_exception = JS_UNDEFINED;
+    JSValue arguments[2] = { JS_UNDEFINED, JS_UNDEFINED };
+    uint8_t *bytecode = NULL;
+    uint8_t *rewritten = NULL;
+    uint8_t *function_wire = NULL;
+    uint8_t *strict_rewritten = NULL;
+    uint8_t strict_bytecode[sizeof(ordinary_leaf_bytecode)];
+    size_t bytecode_size = 0;
+    size_t rewritten_size = 0;
+    size_t function_wire_size = 0;
+    size_t strict_rewritten_size = 0;
+    size_t name_length = 0;
+    const char *name_string = NULL;
+    JSAtom length_atom = JS_ATOM_NULL;
+    JSAtom name_atom = JS_ATOM_NULL;
+    JSAtom prototype_atom = JS_ATOM_NULL;
+    JSAtom constructor_atom = JS_ATOM_NULL;
+    uint16_t child_flags;
+    int status = -1;
+
+    compile_runtime = JS_NewRuntime();
+    if (!compile_runtime) {
+        fputs("ordinary leaf compile runtime allocation failed\n", stderr);
+        goto cleanup;
+    }
+    JS_SetStripInfo(compile_runtime, JS_STRIP_DEBUG);
+    compile_context = JS_NewContext(compile_runtime);
+    if (!compile_context) {
+        fputs("ordinary leaf compile context allocation failed\n", stderr);
+        goto cleanup;
+    }
+    compiled = JS_Eval(compile_context, ordinary_leaf_source,
+                       strlen(ordinary_leaf_source), "x",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context, "ordinary leaf compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    bytecode = JS_WriteObject(compile_context, &bytecode_size, compiled,
+                              JS_WRITE_OBJ_BYTECODE);
+    if (!bytecode) {
+        report_exception(compile_context,
+                         "ordinary leaf bytecode serialization failed");
+        goto cleanup;
+    }
+    if (bytecode_size != sizeof(ordinary_leaf_bytecode) ||
+        memcmp(bytecode, ordinary_leaf_bytecode,
+               sizeof(ordinary_leaf_bytecode)) != 0) {
+        fputs("ordinary leaf bytecode did not match its pinned wire\n", stderr);
+        goto cleanup;
+    }
+
+    child_flags = (uint16_t)bytecode[CHILD_FLAGS_OFFSET] |
+                  ((uint16_t)bytecode[CHILD_FLAGS_OFFSET + 1] << 8);
+    if (bytecode[ROOT_CPOOL_COUNT_OFFSET] != 1 ||
+        bytecode[CHILD_OFFSET] != 0x0c || child_flags != 0x0243 ||
+        bytecode[CHILD_JS_MODE_OFFSET] != 0 ||
+        bytecode[CHILD_ARG_COUNT_OFFSET] != 2 ||
+        bytecode[CHILD_VAR_COUNT_OFFSET] != 2 ||
+        bytecode[CHILD_DEFINED_ARG_COUNT_OFFSET] != 2 ||
+        bytecode[CHILD_STACK_SIZE_OFFSET] != 2 ||
+        bytecode[CHILD_VAR_REF_COUNT_OFFSET] != 0 ||
+        bytecode[CHILD_CLOSURE_COUNT_OFFSET] != 0 ||
+        bytecode[CHILD_CPOOL_COUNT_OFFSET] != 2 ||
+        bytecode[CHILD_CODE_SIZE_OFFSET] != CHILD_CODE_SIZE ||
+        bytecode[CHILD_LOCAL_COUNT_OFFSET] != 4 ||
+        memcmp(bytecode + ROOT_CODE_OFFSET, expected_root_code,
+               sizeof(expected_root_code)) != 0 ||
+        memcmp(bytecode + CHILD_CODE_OFFSET, expected_child_code,
+               sizeof(expected_child_code)) != 0 ||
+        memcmp(bytecode + CHILD_POOL_OFFSET, expected_child_pool,
+               sizeof(expected_child_pool)) != 0) {
+        fputs("ordinary leaf metadata or branch targets drifted\n", stderr);
+        goto cleanup;
+    }
+    for (size_t index = 0;
+         index < sizeof(expected_branches) / sizeof(expected_branches[0]);
+         index++) {
+        int displacement = (int8_t)bytecode[
+            CHILD_CODE_OFFSET + expected_branches[index].operand_pc];
+        int target = expected_branches[index].operand_pc + displacement;
+        size_t target_ir = CHILD_INSTRUCTION_COUNT;
+
+        for (size_t instruction = 0;
+             instruction < sizeof(expected_instruction_pcs);
+             instruction++) {
+            if (expected_instruction_pcs[instruction] == target) {
+                target_ir = instruction;
+                break;
+            }
+        }
+
+        if (bytecode[CHILD_CODE_OFFSET +
+                     expected_branches[index].opcode_pc] !=
+                expected_branches[index].opcode ||
+            displacement != expected_branches[index].displacement ||
+            target != expected_branches[index].target_pc ||
+            target_ir != expected_branches[index].target_ir) {
+            fputs("ordinary leaf branch map drifted\n", stderr);
+            goto cleanup;
+        }
+    }
+
+    eval_runtime = JS_NewRuntime();
+    if (!eval_runtime) {
+        fputs("ordinary leaf evaluation runtime allocation failed\n", stderr);
+        goto cleanup;
+    }
+    eval_context = JS_NewContext(eval_runtime);
+    if (!eval_context) {
+        fputs("ordinary leaf evaluation context allocation failed\n", stderr);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(eval_context, bytecode, bytecode_size,
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(eval_context, "ordinary leaf bytecode read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(eval_context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten) {
+        report_exception(eval_context, "ordinary leaf bytecode rewrite failed");
+        goto cleanup;
+    }
+    if (rewritten_size != bytecode_size ||
+        memcmp(rewritten, bytecode, bytecode_size) != 0) {
+        fputs("ordinary leaf bytecode rewrite was not identical\n", stderr);
+        goto cleanup;
+    }
+
+    function = JS_EvalFunction(eval_context, loaded);
+    loaded = JS_UNDEFINED; /* JS_EvalFunction consumes its argument. */
+    if (JS_IsException(function)) {
+        report_exception(eval_context, "ordinary leaf root evaluation failed");
+        function = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (!JS_IsFunction(eval_context, function)) {
+        fputs("ordinary leaf root did not evaluate to a function\n", stderr);
+        goto cleanup;
+    }
+
+    if (JS_IsConstructor(eval_context, function) != 1) {
+        fputs("ordinary leaf function was not a constructor\n", stderr);
+        goto cleanup;
+    }
+    length_atom = JS_NewAtom(eval_context, "length");
+    name_atom = JS_NewAtom(eval_context, "name");
+    prototype_atom = JS_NewAtom(eval_context, "prototype");
+    constructor_atom = JS_NewAtom(eval_context, "constructor");
+    if (length_atom == JS_ATOM_NULL || name_atom == JS_ATOM_NULL ||
+        prototype_atom == JS_ATOM_NULL ||
+        constructor_atom == JS_ATOM_NULL) {
+        report_exception(eval_context,
+                         "ordinary leaf property atom allocation failed");
+        goto cleanup;
+    }
+    if (JS_GetOwnProperty(eval_context, NULL, function, length_atom) != 1 ||
+        JS_GetOwnProperty(eval_context, NULL, function, name_atom) != 1 ||
+        JS_GetOwnProperty(eval_context, NULL, function, prototype_atom) != 1) {
+        fputs("ordinary leaf function own properties drifted\n", stderr);
+        goto cleanup;
+    }
+    length_value = JS_GetPropertyStr(eval_context, function, "length");
+    if (JS_IsException(length_value)) {
+        report_exception(eval_context,
+                         "ordinary leaf function length read failed");
+        length_value = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (JS_VALUE_GET_TAG(length_value) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(length_value) != 2) {
+        fputs("ordinary leaf function length was not exact int 2\n", stderr);
+        goto cleanup;
+    }
+    name_value = JS_GetPropertyStr(eval_context, function, "name");
+    if (JS_IsException(name_value)) {
+        report_exception(eval_context, "ordinary leaf function name read failed");
+        name_value = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (!JS_IsString(name_value)) {
+        fputs("ordinary leaf function name was not a string\n", stderr);
+        goto cleanup;
+    }
+    name_string = JS_ToCStringLen(eval_context, &name_length, name_value);
+    if (!name_string) {
+        report_exception(eval_context,
+                         "ordinary leaf function name conversion failed");
+        goto cleanup;
+    }
+    if (name_length != 0 || name_string[0] != '\0') {
+        fputs("ordinary leaf function name was not empty\n", stderr);
+        goto cleanup;
+    }
+    prototype_value = JS_GetPropertyStr(eval_context, function, "prototype");
+    if (JS_IsException(prototype_value)) {
+        report_exception(eval_context,
+                         "ordinary leaf function prototype read failed");
+        prototype_value = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (!JS_IsObject(prototype_value) ||
+        JS_GetOwnProperty(eval_context, NULL, prototype_value,
+                          constructor_atom) != 1) {
+        fputs("ordinary leaf function prototype shape drifted\n", stderr);
+        goto cleanup;
+    }
+    constructor_value =
+        JS_GetPropertyStr(eval_context, prototype_value, "constructor");
+    if (JS_IsException(constructor_value)) {
+        report_exception(eval_context,
+                         "ordinary leaf prototype constructor read failed");
+        constructor_value = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (JS_StrictEq(eval_context, constructor_value, function) != 1) {
+        fputs("ordinary leaf prototype constructor lost identity\n", stderr);
+        goto cleanup;
+    }
+
+    arguments[0] = JS_NewInt32(eval_context, 3);
+    arguments[1] = JS_NewInt32(eval_context, 3);
+    result = JS_Call(eval_context, function, JS_UNDEFINED, 2, arguments);
+    if (JS_IsException(result)) {
+        report_exception(eval_context, "ordinary leaf equal call failed");
+        result = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (JS_VALUE_GET_TAG(result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(result) != 42) {
+        fputs("ordinary leaf equal call did not return exact int 42\n",
+              stderr);
+        goto cleanup;
+    }
+    JS_FreeValue(eval_context, result);
+    result = JS_UNDEFINED;
+
+    instance = JS_CallConstructor(eval_context, function, 2, arguments);
+    if (JS_IsException(instance)) {
+        report_exception(eval_context, "ordinary leaf constructor call failed");
+        instance = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (!JS_IsObject(instance)) {
+        fputs("ordinary leaf constructor did not return an object\n", stderr);
+        goto cleanup;
+    }
+    instance_prototype = JS_GetPrototype(eval_context, instance);
+    if (JS_IsException(instance_prototype)) {
+        report_exception(eval_context,
+                         "ordinary leaf instance prototype read failed");
+        instance_prototype = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (JS_StrictEq(eval_context, instance_prototype, prototype_value) != 1 ||
+        JS_IsInstanceOf(eval_context, instance, function) != 1) {
+        fputs("ordinary leaf constructed instance prototype drifted\n", stderr);
+        goto cleanup;
+    }
+
+    JS_FreeValue(eval_context, arguments[1]);
+    arguments[1] = JS_NewInt32(eval_context, 4);
+    result = JS_Call(eval_context, function, JS_UNDEFINED, 2, arguments);
+    if (JS_IsException(result)) {
+        report_exception(eval_context, "ordinary leaf unequal call failed");
+        result = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (JS_VALUE_GET_TAG(result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(result) != 0) {
+        fputs("ordinary leaf unequal call did not return exact int 0\n",
+              stderr);
+        goto cleanup;
+    }
+
+    caller_value = JS_GetPropertyStr(eval_context, function, "caller");
+    if (JS_IsException(caller_value)) {
+        report_exception(eval_context,
+                         "ordinary leaf sloppy caller read failed");
+        caller_value = JS_UNDEFINED;
+        goto cleanup;
+    }
+    arguments_value = JS_GetPropertyStr(eval_context, function, "arguments");
+    if (JS_IsException(arguments_value)) {
+        report_exception(eval_context,
+                         "ordinary leaf sloppy arguments read failed");
+        arguments_value = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (!JS_IsUndefined(caller_value) ||
+        !JS_IsUndefined(arguments_value)) {
+        fputs("ordinary leaf sloppy restricted properties drifted\n", stderr);
+        goto cleanup;
+    }
+
+    memcpy(strict_bytecode, bytecode, bytecode_size);
+    strict_bytecode[CHILD_JS_MODE_OFFSET] = 1;
+    strict_runtime = JS_NewRuntime();
+    if (!strict_runtime) {
+        fputs("ordinary leaf strict runtime allocation failed\n", stderr);
+        goto cleanup;
+    }
+    strict_context = JS_NewContext(strict_runtime);
+    if (!strict_context) {
+        fputs("ordinary leaf strict context allocation failed\n", stderr);
+        goto cleanup;
+    }
+    strict_loaded = JS_ReadObject(strict_context, strict_bytecode,
+                                  bytecode_size, JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(strict_loaded)) {
+        report_exception(strict_context,
+                         "ordinary leaf strict bytecode read failed");
+        strict_loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    strict_rewritten = JS_WriteObject(strict_context,
+                                      &strict_rewritten_size,
+                                      strict_loaded,
+                                      JS_WRITE_OBJ_BYTECODE);
+    if (!strict_rewritten) {
+        report_exception(strict_context,
+                         "ordinary leaf strict bytecode rewrite failed");
+        goto cleanup;
+    }
+    if (strict_rewritten_size != bytecode_size ||
+        memcmp(strict_rewritten, strict_bytecode, bytecode_size) != 0) {
+        fputs("ordinary leaf strict bytecode rewrite was not identical\n",
+              stderr);
+        goto cleanup;
+    }
+    strict_function = JS_EvalFunction(strict_context, strict_loaded);
+    strict_loaded = JS_UNDEFINED; /* JS_EvalFunction consumes its argument. */
+    if (JS_IsException(strict_function)) {
+        report_exception(strict_context,
+                         "ordinary leaf strict root evaluation failed");
+        strict_function = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (!JS_IsFunction(strict_context, strict_function)) {
+        fputs("ordinary leaf strict root did not evaluate to a function\n",
+              stderr);
+        goto cleanup;
+    }
+    strict_property =
+        JS_GetPropertyStr(strict_context, strict_function, "caller");
+    if (!JS_IsException(strict_property)) {
+        fputs("ordinary leaf strict caller did not throw\n", stderr);
+        goto cleanup;
+    }
+    strict_property = JS_UNDEFINED;
+    strict_exception = JS_GetException(strict_context);
+    if (expect_exception_fields(strict_context,
+                                "ordinary leaf strict caller read",
+                                strict_exception, "TypeError",
+                                "invalid property access"))
+        goto cleanup;
+    JS_FreeValue(strict_context, strict_exception);
+    strict_exception = JS_UNDEFINED;
+
+    strict_property =
+        JS_GetPropertyStr(strict_context, strict_function, "arguments");
+    if (!JS_IsException(strict_property)) {
+        fputs("ordinary leaf strict arguments did not throw\n", stderr);
+        goto cleanup;
+    }
+    strict_property = JS_UNDEFINED;
+    strict_exception = JS_GetException(strict_context);
+    if (expect_exception_fields(strict_context,
+                                "ordinary leaf strict arguments read",
+                                strict_exception, "TypeError",
+                                "invalid property access"))
+        goto cleanup;
+
+    function_wire = JS_WriteObject(eval_context, &function_wire_size,
+                                   function, JS_WRITE_OBJ_BYTECODE);
+    if (function_wire) {
+        fputs("ordinary leaf evaluated closure unexpectedly serialized\n",
+              stderr);
+        goto cleanup;
+    }
+    exception = JS_GetException(eval_context);
+    if (expect_exception_fields(eval_context,
+                                "ordinary leaf evaluated closure write",
+                                exception, "TypeError",
+                                "unsupported object class"))
+        goto cleanup;
+
+    fputs("ordinary-leaf-source-hex=", stdout);
+    for (size_t index = 0; index < strlen(ordinary_leaf_source); index++)
+        printf("%02x", (unsigned char)ordinary_leaf_source[index]);
+    putchar('\n');
+    printf("ordinary-leaf-bytecode-size=%zu\n", bytecode_size);
+    fputs("ordinary-leaf-bytecode-hex=", stdout);
+    for (size_t index = 0; index < bytecode_size; index++)
+        printf("%02x", bytecode[index]);
+    putchar('\n');
+    puts("ordinary-leaf-rewrite=identity");
+    printf("ordinary-leaf-root-cpool=%u\n",
+           bytecode[ROOT_CPOOL_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-offset=%d\n", CHILD_OFFSET);
+    printf("ordinary-leaf-child-flags=%04x\n", child_flags);
+    printf("ordinary-leaf-child-js-mode=%02x\n",
+           bytecode[CHILD_JS_MODE_OFFSET]);
+    printf("ordinary-leaf-child-args=%u\n",
+           bytecode[CHILD_ARG_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-vars=%u\n",
+           bytecode[CHILD_VAR_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-defined-args=%u\n",
+           bytecode[CHILD_DEFINED_ARG_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-stack=%u\n",
+           bytecode[CHILD_STACK_SIZE_OFFSET]);
+    printf("ordinary-leaf-child-var-refs=%u\n",
+           bytecode[CHILD_VAR_REF_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-closures=%u\n",
+           bytecode[CHILD_CLOSURE_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-cpool=%u\n",
+           bytecode[CHILD_CPOOL_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-code-size=%u\n",
+           bytecode[CHILD_CODE_SIZE_OFFSET]);
+    printf("ordinary-leaf-child-local-count=%u\n",
+           bytecode[CHILD_LOCAL_COUNT_OFFSET]);
+    printf("ordinary-leaf-child-instruction-count=%zu\n",
+           sizeof(expected_instruction_pcs));
+    fputs("ordinary-leaf-child-code-hex=", stdout);
+    for (size_t index = 0; index < CHILD_CODE_SIZE; index++)
+        printf("%02x", bytecode[CHILD_CODE_OFFSET + index]);
+    putchar('\n');
+    fputs("ordinary-leaf-child-cpool-hex=", stdout);
+    for (size_t index = 0; index < sizeof(expected_child_pool); index++)
+        printf("%02x", bytecode[CHILD_POOL_OFFSET + index]);
+    putchar('\n');
+    for (size_t index = 0;
+         index < sizeof(expected_branches) / sizeof(expected_branches[0]);
+         index++) {
+        printf("ordinary-leaf-branch-%zu=%u->%u/IR%u,operand%u,"
+               "displacement%d\n",
+               index, expected_branches[index].opcode_pc,
+               expected_branches[index].target_pc,
+               expected_branches[index].target_ir,
+               expected_branches[index].operand_pc,
+               expected_branches[index].displacement);
+    }
+    puts("ordinary-leaf-is-constructor=true");
+    puts("ordinary-leaf-own-length=2");
+    puts("ordinary-leaf-own-name=\"\"");
+    puts("ordinary-leaf-prototype-constructor=identity");
+    puts("ordinary-leaf-call-3-3-tag=int");
+    puts("ordinary-leaf-call-3-3=42");
+    puts("ordinary-leaf-new-3-3-prototype=identity");
+    puts("ordinary-leaf-new-3-3-instanceof=true");
+    puts("ordinary-leaf-call-3-4-tag=int");
+    puts("ordinary-leaf-call-3-4=0");
+    puts("ordinary-leaf-sloppy-caller=undefined");
+    puts("ordinary-leaf-sloppy-arguments=undefined");
+    puts("ordinary-leaf-strict-js-mode=01");
+    puts("ordinary-leaf-strict-rewrite=identity");
+    puts("ordinary-leaf-strict-caller-class=TypeError");
+    puts("ordinary-leaf-strict-caller-message=invalid property access");
+    puts("ordinary-leaf-strict-arguments-class=TypeError");
+    puts("ordinary-leaf-strict-arguments-message=invalid property access");
+    puts("ordinary-leaf-closure-write-class=TypeError");
+    puts("ordinary-leaf-closure-write-message=unsupported object class");
+    status = 0;
+
+cleanup:
+    if (strict_context) {
+        if (strict_rewritten)
+            js_free(strict_context, strict_rewritten);
+        JS_FreeValue(strict_context, strict_exception);
+        JS_FreeValue(strict_context, strict_property);
+        JS_FreeValue(strict_context, strict_function);
+        JS_FreeValue(strict_context, strict_loaded);
+        JS_FreeContext(strict_context);
+    }
+    if (strict_runtime)
+        JS_FreeRuntime(strict_runtime);
+    if (eval_context) {
+        if (function_wire)
+            js_free(eval_context, function_wire);
+        if (rewritten)
+            js_free(eval_context, rewritten);
+        if (name_string)
+            JS_FreeCString(eval_context, name_string);
+        if (constructor_atom != JS_ATOM_NULL)
+            JS_FreeAtom(eval_context, constructor_atom);
+        if (prototype_atom != JS_ATOM_NULL)
+            JS_FreeAtom(eval_context, prototype_atom);
+        if (name_atom != JS_ATOM_NULL)
+            JS_FreeAtom(eval_context, name_atom);
+        if (length_atom != JS_ATOM_NULL)
+            JS_FreeAtom(eval_context, length_atom);
+        JS_FreeValue(eval_context, exception);
+        JS_FreeValue(eval_context, arguments_value);
+        JS_FreeValue(eval_context, caller_value);
+        JS_FreeValue(eval_context, instance_prototype);
+        JS_FreeValue(eval_context, instance);
+        JS_FreeValue(eval_context, constructor_value);
+        JS_FreeValue(eval_context, prototype_value);
+        JS_FreeValue(eval_context, name_value);
+        JS_FreeValue(eval_context, length_value);
+        JS_FreeValue(eval_context, result);
+        JS_FreeValue(eval_context, arguments[1]);
+        JS_FreeValue(eval_context, arguments[0]);
+        JS_FreeValue(eval_context, function);
+        JS_FreeValue(eval_context, loaded);
+        JS_FreeContext(eval_context);
+    }
+    if (eval_runtime)
+        JS_FreeRuntime(eval_runtime);
+    if (compile_context) {
+        if (bytecode)
+            js_free(compile_context, bytecode);
+        JS_FreeValue(compile_context, compiled);
+        JS_FreeContext(compile_context);
+    }
+    if (compile_runtime)
+        JS_FreeRuntime(compile_runtime);
     return status;
 }
 
@@ -2776,6 +3406,9 @@ int main(void) {
         printf("%02x", bytecode[index]);
     putchar('\n');
     printf("fresh-eval=%.17g\n", evaluated);
+
+    if (expect_ordinary_leaf())
+        goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",
            sizeof(canonical_scalar_integers) /

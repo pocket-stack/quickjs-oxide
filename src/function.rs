@@ -268,6 +268,13 @@ impl UnlinkedConstant {
         }
     }
 
+    /// Return whether this is an ordinary primitive constant rather than an
+    /// atom-canonicalized String or another compiler-owned constant kind.
+    #[must_use]
+    pub(crate) const fn is_plain_primitive(&self) -> bool {
+        matches!(self.0, UnlinkedConstantKind::Primitive(_))
+    }
+
     /// Borrow a RegExp literal payload, or return `None` for other constants.
     #[must_use]
     pub(crate) fn as_regexp(&self) -> Option<(&JsString, &Rc<CompiledRegExp>)> {

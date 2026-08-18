@@ -203,6 +203,7 @@ expected_root_modules = (
     "pinned_atoms",
     "pinned_opcodes",
     "read_cursor",
+    "ordinary_leaf",
     "scalar_script",
     "wire",
 )
@@ -275,13 +276,51 @@ else:
         "binary_object must contain exactly one private-parent scalar-script facade re-export",
     )
 
-facade_offsets = {match.start() for match in scalar_facades}
+ordinary_facade_pattern = re.compile(
+    r"(?m)^[ \t]*pub[ \t\n]*\([ \t\n]*super[ \t\n]*\)[ \t\n]+use"
+    r"[ \t\n]+ordinary_leaf[ \t\n]*::[ \t\n]*\{(?P<body>[^{}]*)\}"
+    r"[ \t\n]*;"
+)
+ordinary_facades = list(ordinary_facade_pattern.finditer(binary_root_code))
+expected_ordinary_facade_names = {
+    "DetachedPrimitive",
+    "OrdinaryLeafDraft",
+    "OrdinaryLeafMetadataDraft",
+    "OrdinaryLeafOp",
+    "OrdinaryLeafReadError",
+    "RootFunctionConstantSelector",
+    "decode_trusted_ordinary_leaf",
+}
+if len(ordinary_facades) == 1:
+    ordinary_facade_items = [
+        item.strip()
+        for item in ordinary_facades[0].group("body").split(",")
+        if item.strip()
+    ]
+    if (
+        len(ordinary_facade_items) != len(expected_ordinary_facade_names)
+        or set(ordinary_facade_items) != expected_ordinary_facade_names
+    ):
+        fail(
+            "ordinary-leaf-facade-shape",
+            "binary_object must expose exactly the reviewed ordinary-leaf facade names; "
+            f"found {ordinary_facade_items}",
+        )
+else:
+    fail(
+        "ordinary-leaf-facade-shape",
+        "binary_object must contain exactly one private-parent ordinary-leaf facade re-export",
+    )
+
+facade_offsets = {
+    match.start() for match in (*scalar_facades, *ordinary_facades)
+}
 for match in public_use_pattern.finditer(binary_root_code):
     if match.start() in facade_offsets:
         continue
     fail(
         "root-reexport",
-        "binary_object root may re-export only the reviewed scalar-script facade; found "
+        "binary_object root may re-export only the reviewed scalar-script and ordinary-leaf facades; found "
         + location(binary_root_relative, binary_root_source, match.start()),
     )
 
@@ -356,7 +395,7 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/bytecode_image/encode/plan/mod.rs": 10,
     "src/runtime/binary_object/bytecode_image/encode/plan/module.rs": 2,
     "src/runtime/binary_object/bytecode_image/mod.rs": 6,
-    "src/runtime/binary_object/bytecode_image/model.rs": 110,
+    "src/runtime/binary_object/bytecode_image/model.rs": 111,
     "src/runtime/binary_object/bytecode_image/native_plan.rs": 27,
     "src/runtime/binary_object/code.rs": 27,
     "src/runtime/binary_object/function_envelope/mod.rs": 2,
@@ -369,7 +408,8 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/graph/model.rs": 56,
     "src/runtime/binary_object/graph/sab_transport.rs": 38,
     "src/runtime/binary_object/graph/write_state.rs": 21,
-    "src/runtime/binary_object/mod.rs": 1,
+    "src/runtime/binary_object/mod.rs": 2,
+    "src/runtime/binary_object/ordinary_leaf.rs": 23,
     "src/runtime/binary_object/pinned_atoms.rs": 9,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
@@ -384,7 +424,8 @@ expected_fixture_visible_counts = {
     "src/runtime/binary_object/bytecode_image/native_plan.rs": 27,
     "src/runtime/binary_object/graph/decode.rs": 1,
     "src/runtime/binary_object/graph/sab_transport.rs": 29,
-    "src/runtime/binary_object/mod.rs": 1,
+    "src/runtime/binary_object/mod.rs": 2,
+    "src/runtime/binary_object/ordinary_leaf.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
     "src/runtime/binary_object/scalar_script.rs": 6,
 }
@@ -1266,12 +1307,15 @@ for path, code in binary_code_cache.items():
                     for mention in unexpected
                 ),
             )
-    elif relative == "src/runtime/binary_object/scalar_script.rs":
+    elif relative in {
+        "src/runtime/binary_object/ordinary_leaf.rs",
+        "src/runtime/binary_object/scalar_script.rs",
+    }:
         continue
     elif mentions:
         fail(
             "native-plan-private-stage",
-            "native_plan may be named only by its private module/facade and sole scalar consumer; found "
+            "native_plan may be named only by its private module/facade and the reviewed scalar/ordinary consumers; found "
             + ", ".join(
                 location(relative, binary_source_cache[path], mention.start())
                 for mention in mentions
@@ -1288,6 +1332,7 @@ native_plan_facade_symbols = (
 allowed_native_plan_symbol_files = {
     native_plan_relative,
     image_root_relative,
+    "src/runtime/binary_object/ordinary_leaf.rs",
     "src/runtime/binary_object/scalar_script.rs",
 }
 for path, code in binary_code_cache.items():
@@ -1299,7 +1344,7 @@ for path, code in binary_code_cache.items():
         if mention is not None:
             fail(
                 "native-plan-consumer-set",
-                "only scalar_script may consume the reviewed native-plan facade; found "
+                "only scalar_script and ordinary_leaf may consume the reviewed native-plan facade; found "
                 + location(relative, binary_source_cache[path], mention.start()),
             )
 
@@ -1330,6 +1375,158 @@ for path, code in binary_code_cache.items():
             "binary_object production sources must not splice unscanned Rust source; found "
             + location(relative, binary_source_cache[path], match.start()),
         )
+
+ordinary_leaf_relative = "src/runtime/binary_object/ordinary_leaf.rs"
+ordinary_leaf_source = read_source(ordinary_leaf_relative)
+ordinary_leaf_code = rust_code_only(ordinary_leaf_source)
+ordinary_leaf_production_code = ordinary_leaf_code.split("#[cfg(test)]", 1)[0]
+ordinary_leaf_production_source = ordinary_leaf_source.split("#[cfg(test)]", 1)[0]
+ordinary_visibility = (
+    r"pub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
+    r"[ \t\n]*\)"
+)
+
+ordinary_visible_item_pattern = re.compile(
+    r"\b(?P<visibility>pub(?:[ \t\n]*\([^)]*\))?)[ \t\n]+"
+    r"(?:(?:const|async|unsafe|extern)[ \t\n]+)*"
+    r"(?P<kind>enum|struct|union|trait|type|fn|const|static|use|mod)[ \t\n]+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+)
+ordinary_visible_items = [
+    (
+        " ".join(match.group("visibility").split()),
+        match.group("kind"),
+        match.group("name"),
+    )
+    for match in ordinary_visible_item_pattern.finditer(ordinary_leaf_production_code)
+]
+expected_ordinary_visible_items = [
+    ("pub(in crate::runtime)", kind, name)
+    for kind, name in (
+        entry.split(":", 1)
+        for entry in """
+        struct:RootFunctionConstantSelector fn:from_zero_based fn:zero_based
+        struct:OrdinaryLeafMetadataDraft fn:argument_count fn:defined_argument_count
+        fn:local_count fn:max_stack fn:is_strict fn:has_simple_parameter_list
+        fn:has_prototype fn:allows_new_target fn:allows_arguments fn:strip_variable_debug
+        enum:DetachedPrimitive enum:OrdinaryLeafOp struct:OrdinaryLeafDraft fn:metadata
+        fn:constants fn:code fn:into_parts enum:OrdinaryLeafReadError
+        fn:decode_trusted_ordinary_leaf
+        """.split()
+    )
+]
+if ordinary_visible_items != expected_ordinary_visible_items:
+    fail(
+        "ordinary-leaf-visible-item-set",
+        "ordinary_leaf.rs may expose only the reviewed selector, owned semantic DTOs, accessors, error, and decoder to runtime; "
+        f"found {ordinary_visible_items}",
+    )
+
+ordinary_top_level_item_pattern = re.compile(
+    r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?"
+    r"(?P<kind>struct|enum|union|trait|type|mod)[ \t\n]+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+)
+ordinary_top_level_items = [
+    (match.group("kind"), match.group("name"))
+    for match in ordinary_top_level_item_pattern.finditer(ordinary_leaf_production_code)
+    if ordinary_leaf_production_code[:match.start()].count("{")
+    == ordinary_leaf_production_code[:match.start()].count("}")
+]
+expected_ordinary_top_level_items = [
+    tuple(entry.split(":", 1))
+    for entry in """
+    struct:RootFunctionConstantSelector struct:OrdinaryLeafMetadataDraft
+    enum:DetachedPrimitive enum:OrdinaryLeafOp struct:OrdinaryLeafDraft
+    enum:OrdinaryLeafReadError struct:AdmissionLimits enum:PendingOp
+    """.split()
+]
+if ordinary_top_level_items != expected_ordinary_top_level_items:
+    fail(
+        "ordinary-leaf-top-level-item-set",
+        "ordinary_leaf.rs must retain exactly the reviewed DTO and private state types, with no module, trait, alias, union, or helper type escape; "
+        f"found {ordinary_top_level_items}",
+    )
+
+ordinary_top_level_functions = [
+    match.group("name")
+    for match in re.finditer(
+        r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?fn"
+        r"[ \t\n]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)",
+        ordinary_leaf_production_code,
+    )
+    if ordinary_leaf_production_code[:match.start()].count("{")
+    == ordinary_leaf_production_code[:match.start()].count("}")
+]
+expected_ordinary_top_level_functions = """
+    decode_trusted_ordinary_leaf admit_image preflight_constants project_primitive
+    copy_wire_string copy_bigint lower_code lower_instruction lower_constant
+    lower_local lower_argument resolve_ir_target unadmitted classify_image_error
+    classify_atom_error classify_wire_error classify_data_error
+    classify_envelope_error classify_code_error
+""".split()
+if ordinary_top_level_functions != expected_ordinary_top_level_functions:
+    fail(
+        "ordinary-leaf-helper-set",
+        "ordinary_leaf.rs production free-function ownership drifted from the reviewed helper set; "
+        f"found {ordinary_top_level_functions}",
+    )
+
+ordinary_semantic_seals = [
+    ("metadata and capability admission", "admit_image", "46926b64842e1f2bfbc9370460acd543bf5c3094c144d9eea101284addf6b714"),
+    ("bit-preserving primitive projection", "project_primitive", "220a79708a4dbc884702539886354f8cacfef8e77c0035db07f431deeb5c4f96"),
+    ("typed CFG lowering", "lower_code", "e1482effa77cb82d1b1b01f55a28edc40e8f9efbabe0552ae55e76c8ebda8b2a"),
+    ("native-operation lowering", "lower_instruction", "579e3589d165285af0c254b02fa006963125aacd48b7f5b5b5b30a292a8e4e78"),
+]
+for description, function_name, expected_hash in ordinary_semantic_seals:
+    item_code, _, _ = unique_braced_item(
+        ordinary_leaf_production_code,
+        re.compile(
+            rf"(?m)^[ \t]*(?:{ordinary_visibility}[ \t\n]+)?fn"
+            rf"[ \t\n]+{function_name}\b[^{{}};]*\{{"
+        ),
+        "ordinary-leaf-semantic-seal",
+        description,
+    )
+    if item_code and normalized_code_sha256(item_code) != expected_hash:
+        fail(
+            "ordinary-leaf-semantic-seal",
+            f"ordinary_leaf {description} drifted from its reviewed normalized implementation",
+        )
+
+ordinary_raw_dependency = re.search(
+    r"\b(?:ImageAtom|PinnedAtomId|NativeAtomRef|ImageCode|ImageInstructionSpan|ImageRelocation)\b|"
+    r"\.[ \t\n]*(?:as_bytes|atom_relocations)[ \t\n]*\(",
+    ordinary_leaf_production_code,
+)
+if ordinary_raw_dependency is not None:
+    fail(
+        "ordinary-leaf-native-plan-boundary",
+        "ordinary-leaf admission must consume only the typed native-plan and authenticated image APIs, never raw atom identities, code bytes, or relocation sidecars; found "
+        + location(
+            ordinary_leaf_relative,
+            ordinary_leaf_source,
+            ordinary_raw_dependency.start(),
+        ),
+    )
+
+ordinary_special_case_pattern = re.compile(
+    r"(?i:\btest262\b|\bfixture(?:_[A-Za-z0-9_]+)?\b|"
+    r"\b(?:source|input|bytes)_[A-Za-z0-9_]*(?:hash|digest|sha_?(?:1|256|512))\b)|"
+    r"\b(?:input|bytes)[ \t\n]*(?:\.[A-Za-z_][A-Za-z0-9_]*[ \t\n]*\([^;\n]*\))*"
+    r"\.[ \t\n]*(?:contains|starts_with|ends_with|windows)[ \t\n]*\(",
+)
+ordinary_special_case = ordinary_special_case_pattern.search(ordinary_leaf_production_source)
+if ordinary_special_case is not None:
+    fail(
+        "ordinary-leaf-special-casing",
+        "ordinary-leaf production admission must remain structural and must not dispatch on Test262, fixture, digest, or exact input-byte identity; found "
+        + location(
+            ordinary_leaf_relative,
+            ordinary_leaf_source,
+            ordinary_special_case.start(),
+        ),
+    )
 
 scalar_script_relative = "src/runtime/binary_object/scalar_script.rs"
 scalar_script_source = read_source(scalar_script_relative)
@@ -2118,7 +2315,8 @@ if consumer_exists:
     consumer_top_level_functions = [
         match.group("name")
         for match in re.finditer(
-            r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?fn"
+            r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?"
+            r"(?:const[ \t\n]+)?fn"
             r"[ \t\n]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)",
             consumer_production_code,
         )
@@ -2130,7 +2328,11 @@ if consumer_exists:
         "lower_scalar_string",
         "lower_bigint_constant",
         "decode_bigint_constant",
-        "lower_scalar_constant",
+        "lower_primitive_constant",
+        "lower_detached_primitive",
+        "lower_ordinary_leaf_op",
+        "map_ordinary_leaf_verification_error",
+        "map_ordinary_leaf_read_error",
         "map_read_error",
     ]
     if consumer_top_level_functions != expected_consumer_top_level_functions:
@@ -2161,7 +2363,16 @@ if consumer_exists:
         r"[ \t\n]*![ \t\n]*[([{]",
         consumer_production_code,
     )
-    if consumer_macro_invocations != ["vec", "format", "format", "format", "format"]:
+    if consumer_macro_invocations != [
+        "vec",
+        "format",
+        "format",
+        "format",
+        "format",
+        "format",
+        "format",
+        "format",
+    ]:
         fail(
             "binary-object-consumer-macro-set",
             f"{consumer_relative} may invoke only its reviewed constant-vector and diagnostic macros; "
@@ -2180,7 +2391,7 @@ if consumer_exists:
     if len(consumer_facade_imports) != 1:
         fail(
             "binary-object-consumer-import",
-            f"{consumer_relative} must contain exactly one reviewed scalar facade import",
+            f"{consumer_relative} must contain exactly one reviewed scalar/ordinary facade import",
         )
     else:
         consumer_import_items = [
@@ -2188,13 +2399,21 @@ if consumer_exists:
             for item in consumer_facade_imports[0].group("body").split(",")
             if item.strip()
         ]
+        expected_consumer_facade_names = expected_scalar_facade_names | {
+            "DetachedPrimitive",
+            "OrdinaryLeafOp",
+            "OrdinaryLeafReadError",
+            "RootFunctionConstantSelector",
+            "decode_trusted_ordinary_leaf",
+        }
         if (
-            len(consumer_import_items) != len(expected_scalar_facade_names)
-            or set(consumer_import_items) != expected_scalar_facade_names
+            len(consumer_import_items) != len(expected_consumer_facade_names)
+            or set(consumer_import_items)
+            != expected_consumer_facade_names
         ):
             fail(
                 "binary-object-consumer-import",
-                f"{consumer_relative} may import only the reviewed scalar facade; "
+                f"{consumer_relative} may import only the reviewed scalar/ordinary facades; "
                 f"found {consumer_import_items}",
             )
 
@@ -2213,6 +2432,16 @@ if consumer_exists:
         fail(
             "binary-object-consumer-publication",
             f"{consumer_relative} must enter publish_unlinked_function exactly once",
+        )
+    verified_publication_calls = re.findall(
+        r"\b(?:self|runtime)[ \t\n]*\.[ \t\n]*publish_verified_unlinked_function"
+        r"[ \t\n]*\(",
+        consumer_code,
+    )
+    if len(verified_publication_calls) != 1:
+        fail(
+            "binary-object-consumer-publication",
+            f"{consumer_relative} must enter publish_verified_unlinked_function exactly once after the dedicated ordinary-leaf verifier",
         )
 
     lowered_scalar_pattern = re.compile(
@@ -2306,24 +2535,77 @@ if consumer_exists:
             "binary-object-consumer-publication",
             f"{consumer_relative} must publish one checked push, every authenticated unary operation in order, completion, and return before entering the ordinary verifier/publication boundary",
         )
+
+    ordinary_publication_bridge_code, _, _ = unique_braced_item(
+        consumer_production_code,
+        re.compile(
+            r"\bpub[ \t\n]*\([ \t\n]*super[ \t\n]*\)[ \t\n]+fn"
+            r"[ \t\n]+read_trusted_ordinary_function_in_realm\b[^{};]*\{"
+        ),
+        "ordinary-leaf-consumer-publication",
+        "trusted ordinary-leaf publication bridge",
+    )
+    ordinary_publication_steps = (
+        re.compile(r"\bdecode_trusted_ordinary_leaf[ \t\n]*\("),
+        re.compile(r"\bdraft[ \t\n]*\.[ \t\n]*into_parts[ \t\n]*\("),
+        re.compile(r"\bUnlinkedFunction[ \t\n]*::[ \t\n]*new[ \t\n]*\("),
+        re.compile(
+            r"\bbytecode_publish[ \t\n]*::[ \t\n]*verify_unlinked_ordinary_leaf"
+            r"[ \t\n]*\("
+        ),
+        re.compile(
+            r"\bself[ \t\n]*\.[ \t\n]*publish_verified_unlinked_function"
+            r"[ \t\n]*\("
+        ),
+        re.compile(r"\bself[ \t\n]*\.[ \t\n]*new_bytecode_closure[ \t\n]*\("),
+    )
+    ordinary_publication_matches = [
+        list(pattern.finditer(ordinary_publication_bridge_code))
+        for pattern in ordinary_publication_steps
+    ]
+    ordinary_publication_offsets = [
+        matches[0].start() if len(matches) == 1 else -1
+        for matches in ordinary_publication_matches
+    ]
+    if (
+        any(len(matches) != 1 for matches in ordinary_publication_matches)
+        or ordinary_publication_offsets != sorted(ordinary_publication_offsets)
+    ):
+        fail(
+            "ordinary-leaf-consumer-publication",
+            "the ordinary-leaf bridge must decode and detach before constructing the draft, then run the dedicated verifier before verified publication and closure allocation",
+        )
+    if normalized_code_sha256(ordinary_publication_bridge_code) != (
+        "fece37e905ce90f8a98ba655f9995a648e367c8938ec15c44ac5237bce7ed247"
+    ):
+        fail(
+            "ordinary-leaf-consumer-publication",
+            "the ordinary-leaf bridge metadata and capability lowering drifted from its reviewed normalized implementation",
+        )
+
     consumer_runtime_impl_code, _, _ = unique_braced_item(
         consumer_production_code,
         re.compile(r"(?m)^[ \t]*impl[ \t\n]+Runtime[ \t\n]*\{"),
         "binary-object-consumer-implementation-set",
         "sole Runtime publication implementation",
     )
-    expected_consumer_runtime_impl = (
-        "impl Runtime { "
-        + " ".join(rust_code_only(expected_publication_bridge_source).split())
-        + " }"
-    )
-    if (
-        " ".join(consumer_runtime_impl_code.split())
-        != expected_consumer_runtime_impl
-    ):
+    consumer_runtime_methods = [
+        match.group("name")
+        for match in re.finditer(
+            r"(?m)^[ \t]*(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?fn"
+            r"[ \t\n]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)",
+            consumer_runtime_impl_code,
+        )
+        if consumer_runtime_impl_code[:match.start()].count("{")
+        - consumer_runtime_impl_code[:match.start()].count("}") == 1
+    ]
+    if consumer_runtime_methods != [
+        "read_trusted_ordinary_function_in_realm",
+        "read_trusted_scalar_script_in_realm",
+    ]:
         fail(
             "binary-object-consumer-implementation-set",
-            f"{consumer_relative} Runtime implementation must contain only the reviewed publication bridge",
+            f"{consumer_relative} Runtime implementation must contain only the reviewed ordinary-leaf and scalar publication bridges; found {consumer_runtime_methods}",
         )
 
     scalar_lowering_pattern = re.compile(
@@ -2362,7 +2644,7 @@ if consumer_exists:
         "decode_bigint_constant function",
     )
     scalar_constant_pattern = re.compile(
-        r"\bfn[ \t\n]+lower_scalar_constant[ \t\n]*\([^{};]*\)"
+        r"\bfn[ \t\n]+lower_primitive_constant[ \t\n]*\([^{};]*\)"
         r"[ \t\n]*->[^{;]+\{",
         re.DOTALL,
     )
@@ -2370,7 +2652,7 @@ if consumer_exists:
         consumer_code,
         scalar_constant_pattern,
         "binary-object-consumer-scalar-mapping",
-        "lower_scalar_constant function",
+        "lower_primitive_constant function",
     )
     scalar_string_pattern = re.compile(
         r"\bfn[ \t\n]+lower_scalar_string[ \t\n]*\([^{};]*\)"
@@ -2392,10 +2674,12 @@ if consumer_exists:
                 ScalarValueDraft::Bool(true) => Ok(LoweredScalar::Direct(Instruction::PushTrue)),
                 ScalarValueDraft::Int(value) => Ok(LoweredScalar::Direct(Instruction::PushI32(value))),
                 ScalarValueDraft::Float64Bits(bits) => {
-                    lower_scalar_constant(Value::Float(f64::from_bits(bits))).map(LoweredScalar::Constant)
+                    lower_primitive_constant(Value::Float(f64::from_bits(bits)))
+                        .map(LoweredScalar::Constant)
                 }
                 ScalarValueDraft::BigIntI32(value) => {
-                    lower_scalar_constant(Value::BigInt(JsBigInt::from(value))).map(LoweredScalar::Constant)
+                    lower_primitive_constant(Value::BigInt(JsBigInt::from(value)))
+                        .map(LoweredScalar::Constant)
                 }
                 ScalarValueDraft::BigIntBytes(bytes) => {
                     lower_bigint_constant(&bytes).map(LoweredScalar::Constant)
@@ -2404,7 +2688,7 @@ if consumer_exists:
                     UnlinkedConstant::atom_string(JsString::from_static("")),
                 )),
                 ScalarValueDraft::ConstantString(value) => lower_scalar_string(value)
-                    .and_then(|value| lower_scalar_constant(Value::String(value)))
+                    .and_then(|value| lower_primitive_constant(Value::String(value)))
                     .map(LoweredScalar::Constant),
                 ScalarValueDraft::AtomString(value) => Ok(LoweredScalar::AtomString(
                     UnlinkedConstant::atom_string(lower_scalar_string(value)?),
@@ -2420,7 +2704,7 @@ if consumer_exists:
     """
     expected_bigint_lowering_source = """
         fn lower_bigint_constant(bytes: &[u8]) -> Result<UnlinkedConstant, RuntimeError> {
-            lower_scalar_constant(Value::BigInt(decode_bigint_constant(bytes)?))
+            lower_primitive_constant(Value::BigInt(decode_bigint_constant(bytes)?))
         }
     """
     expected_bigint_decoder_source = """
@@ -2429,7 +2713,7 @@ if consumer_exists:
                 JsBigInt::decode_bc5_signed_le(bytes, bytes.len(), bytes.len(), true)
             .map_err(|error| {
                 RuntimeError::Engine(Error::internal(format!(
-                    "trusted scalar draft contained invalid canonical BigInt bytes: {error:?}"
+                    "trusted binary-object draft contained invalid canonical BigInt bytes: {error:?}"
                 )))
             })?;
             if consumed != bytes.len() {
@@ -2441,10 +2725,10 @@ if consumer_exists:
         }
     """
     expected_scalar_constant_source = """
-        fn lower_scalar_constant(value: Value) -> Result<UnlinkedConstant, RuntimeError> {
+        fn lower_primitive_constant(value: Value) -> Result<UnlinkedConstant, RuntimeError> {
             UnlinkedConstant::primitive(value).map_err(|error| {
                 RuntimeError::Engine(Error::internal(format!(
-                    "trusted scalar draft produced an invalid primitive constant: {error}"
+                    "trusted binary-object draft produced an invalid primitive constant: {error}"
                 )))
             })
         }
@@ -2484,13 +2768,73 @@ if consumer_exists:
         or " ".join(bigint_decoder_code.split())
         != " ".join(rust_code_only(expected_bigint_decoder_source).split())
         or len(re.findall(r"\blower_bigint_constant\b", consumer_code)) != 2
-        or len(re.findall(r"\bdecode_bigint_constant\b", consumer_code)) != 2
+        or len(re.findall(r"\bdecode_bigint_constant\b", consumer_code)) != 3
         or len(re.findall(r"\bJsBigInt[ \t\n]*::[ \t\n]*decode_bc5_signed_le\b", consumer_code)) != 1
     ):
         fail(
             "binary-object-consumer-bigint",
             f"{consumer_relative} must decode BigIntBytes exactly once through the unique canonical BigInt helper and lower all primitive pushes through reviewed helpers",
         )
+
+    ordinary_consumer_seals = (
+        ("bit-preserving detached primitive lowering", "lower_detached_primitive", "9f4651e84dfd23fa3e53f3e2fa2a21f8b1088b904d8f9cb3258f3b85db2b5914"),
+        ("one-for-one typed instruction lowering", "lower_ordinary_leaf_op", "a24942efe9e7af1609321e37078a648cb1d8618c20c6613d08b34f9565a67b38"),
+        ("typed-verifier error classification", "map_ordinary_leaf_verification_error", "43d7c7fd3f77c74c9a4ba88cfa14f7d7e8394f7be1100214e8b08a424a8b59ee"),
+        ("archive error classification", "map_ordinary_leaf_read_error", "5bb4c99694272a03044d353e48e3f3848ade1e1bfbad2b87a552e1bafa45ba74"),
+    )
+    for description, function_name, expected_hash in ordinary_consumer_seals:
+        item_code, _, _ = unique_braced_item(
+            consumer_production_code,
+            re.compile(
+                rf"(?m)^[ \t]*(?:const[ \t\n]+)?fn[ \t\n]+"
+                rf"{function_name}\b[^{{}};]*\{{"
+            ),
+            "ordinary-leaf-consumer-lowering",
+            description,
+        )
+        if item_code and normalized_code_sha256(item_code) != expected_hash:
+            fail(
+                "ordinary-leaf-consumer-lowering",
+                f"ordinary-leaf {description} drifted from its reviewed normalized implementation",
+            )
+
+    consumer_raw_archive_dependency = re.search(
+        r"\b(?:BytecodeImage|ImageCode|ImageInstructionSpan|ImageRelocation|"
+        r"NativeCodePlan|NativeOperands|NativeInstruction|FunctionId|ImageAtom|"
+        r"PinnedAtomId)\b|\.[ \t\n]*(?:as_bytes|atom_relocations)[ \t\n]*\(",
+        consumer_production_code,
+    )
+    if consumer_raw_archive_dependency is not None:
+        fail(
+            "ordinary-leaf-consumer-import",
+            "the runtime publisher may consume only owned ordinary-leaf DTOs, never archival images, raw code, native-plan operands, identities, or sidecars; found "
+            + location(
+                consumer_relative,
+                consumer_source,
+                consumer_raw_archive_dependency.start(),
+            ),
+        )
+
+    consumer_special_case_pattern = re.compile(
+        r"(?i:\btest262\b|\bfixture(?:_[A-Za-z0-9_]+)?\b|"
+        r"\b(?:source|input|bytes)_[A-Za-z0-9_]*(?:hash|digest|sha_?(?:1|256|512))\b)|"
+        r"\bbytes[ \t\n]*(?:\.[A-Za-z_][A-Za-z0-9_]*[ \t\n]*\([^;\n]*\))*"
+        r"\.[ \t\n]*(?:contains|starts_with|ends_with|windows)[ \t\n]*\(",
+    )
+    consumer_special_case = consumer_special_case_pattern.search(
+        consumer_source.split("#[cfg(test)]", 1)[0]
+    )
+    if consumer_special_case is not None:
+        fail(
+            "ordinary-leaf-consumer-special-casing",
+            "the ordinary-leaf publisher must not dispatch on Test262, fixture, digest, or exact input-byte identity; found "
+            + location(
+                consumer_relative,
+                consumer_source,
+                consumer_special_case.start(),
+            ),
+        )
+
     for match in re.finditer(r"\b(?:r#)?number[ \t\n]*\(", consumer_code):
         fail(
             "binary-object-consumer-float64",
@@ -2521,15 +2865,10 @@ if consumer_exists:
             "eager BigInt negation; authenticated unary negation must remain Instruction::Neg execution semantics",
         ),
         (
-            "binary-object-consumer-verifier-bypass",
-            re.compile(r"\bpublish_verified_unlinked_function\b"),
-            "publish_verified_unlinked_function",
-        ),
-        (
             "binary-object-consumer-alternate-entrypoint",
             re.compile(
                 r"\b(?:(?:self|runtime)[ \t\n]*\.[ \t\n]*|Runtime[ \t\n]*::[ \t\n]*)"
-                r"(?!(?:publish_unlinked_function)\b)"
+                r"(?!(?:publish_unlinked_function|publish_verified_unlinked_function)\b)"
                 r"(?:compile|publish)_[A-Za-z_][A-Za-z0-9_]*[ \t\n]*\("
             ),
             "an alternate runtime compilation or publication entry point",
@@ -2585,6 +2924,125 @@ if consumer_exists:
                 + location(consumer_relative, consumer_source, match.start()),
             )
 
+bytecode_publish_relative = "src/runtime/bytecode_publish.rs"
+bytecode_publish_source = read_source(bytecode_publish_relative)
+bytecode_publish_code = rust_code_only(bytecode_publish_source)
+if (
+    len(
+        re.findall(
+            r"(?m)^[ \t]*TrustedOrdinaryLeaf[ \t]*,[ \t]*$",
+            bytecode_publish_code,
+        )
+    )
+    != 1
+    or len(re.findall(r"\bTrustedOrdinaryLeaf\b", bytecode_publish_code)) != 8
+):
+    fail(
+        "ordinary-leaf-verifier-role",
+        "RootPublication must declare one distinct TrustedOrdinaryLeaf role with the reviewed generic-verifier use set",
+    )
+
+ordinary_verifier_entry_code, _, _ = unique_braced_item(
+    bytecode_publish_code,
+    re.compile(
+        r"(?m)^[ \t]*pub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::"
+        r"[ \t\n]*runtime[ \t\n]*\)[ \t\n]+fn[ \t\n]+"
+        r"verify_unlinked_ordinary_leaf\b[^{};]*\{"
+    ),
+    "ordinary-leaf-verifier-entrypoint",
+    "dedicated ordinary-leaf verifier entry point",
+)
+expected_ordinary_verifier_entry = "pub(in crate::runtime) fn verify_unlinked_ordinary_leaf( function: &UnlinkedFunction, ) -> Result<(), RuntimeError> { verify_unlinked_tree_with_root(function, RootPublication::TrustedOrdinaryLeaf) }"
+if " ".join(ordinary_verifier_entry_code.split()) != " ".join(
+    expected_ordinary_verifier_entry.split()
+):
+    fail(
+        "ordinary-leaf-verifier-entrypoint",
+        "verify_unlinked_ordinary_leaf must enter the generic verifier through only the distinct TrustedOrdinaryLeaf role",
+    )
+
+ordinary_verifier_arm_pattern = re.compile(
+    r"RootPublication[ \t\n]*::[ \t\n]*TrustedOrdinaryLeaf"
+    r"[ \t\n]*=>[ \t\n]*\{"
+)
+ordinary_verifier_arms = []
+for arm_match in ordinary_verifier_arm_pattern.finditer(bytecode_publish_code):
+    arm_code, _, _ = braced_item_from_match(
+        bytecode_publish_code,
+        arm_match,
+        "ordinary-leaf-verifier-role",
+        "TrustedOrdinaryLeaf verifier arm",
+    )
+    ordinary_verifier_arms.append(arm_code)
+expected_ordinary_closure_arm = 'RootPublication::TrustedOrdinaryLeaf => { return Err(RuntimeError::Engine(Error::internal("trusted ordinary leaf retained a closure descriptor", ))); }'
+if (
+    len(ordinary_verifier_arms) != 2
+    or normalized_code_sha256(ordinary_verifier_arms[0])
+    != "e8d122cc4fb0e2bd50fb72133a584d5dbf2fe46cc670902253b72c28e099c329"
+    or " ".join(ordinary_verifier_arms[1].split())
+    != " ".join(rust_code_only(expected_ordinary_closure_arm).split())
+):
+    fail(
+        "ordinary-leaf-verifier-role",
+        "the dedicated verifier must retain its exact fail-closed metadata/debug/parameter/local/primitive-only checks and closure rejection; "
+        f"found {len(ordinary_verifier_arms)} role arms",
+    )
+
+function_relative = "src/function.rs"
+function_source = read_source(function_relative)
+function_code = rust_code_only(function_source)
+plain_primitive_code, _, _ = unique_braced_item(
+    function_code,
+    re.compile(
+        r"(?m)^[ \t]*pub[ \t\n]*\([ \t\n]*crate[ \t\n]*\)[ \t\n]+const"
+        r"[ \t\n]+fn[ \t\n]+is_plain_primitive\b[^{};]*\{"
+    ),
+    "ordinary-leaf-plain-primitive",
+    "UnlinkedConstant plain-primitive discriminator",
+)
+expected_plain_primitive = "pub(crate) const fn is_plain_primitive(&self) -> bool { matches!(self.0, UnlinkedConstantKind::Primitive(_)) }"
+if " ".join(plain_primitive_code.split()) != " ".join(expected_plain_primitive.split()):
+    fail(
+        "ordinary-leaf-plain-primitive",
+        "ordinary-leaf verification must classify only UnlinkedConstantKind::Primitive as a plain primitive",
+    )
+
+context_relative = "src/runtime/context.rs"
+context_source = read_source(context_relative)
+context_code = rust_code_only(context_source)
+ordinary_public_api_code, _, _ = unique_braced_item(
+    context_code,
+    re.compile(
+        r"(?m)^[ \t]*pub[ \t\n]+fn[ \t\n]+read_trusted_ordinary_function"
+        r"\b[^{};]*\{"
+    ),
+    "ordinary-leaf-public-api",
+    "Context ordinary-leaf public API",
+)
+expected_ordinary_public_api = "pub fn read_trusted_ordinary_function( &mut self, bytes: &[u8], root_constant_index: u32, ) -> Result<CallableRef, RuntimeError> { let result = self.runtime.read_trusted_ordinary_function_in_realm( self.realm, bytes, root_constant_index, ); self.finish_trusted_bytecode_read(result) }"
+if " ".join(ordinary_public_api_code.split()) != " ".join(
+    expected_ordinary_public_api.split()
+):
+    fail(
+        "ordinary-leaf-public-api",
+        "Context::read_trusted_ordinary_function must retain its exact selector, realm bridge, and trusted-read error finishing flow",
+    )
+trusted_read_finish_code, _, _ = unique_braced_item(
+    context_code,
+    re.compile(
+        r"(?m)^[ \t]*fn[ \t\n]+finish_trusted_bytecode_read\b[^{};]*\{"
+    ),
+    "ordinary-leaf-public-api",
+    "shared trusted-bytecode read finisher",
+)
+if trusted_read_finish_code and normalized_code_sha256(
+    trusted_read_finish_code
+) != "398f8677cddce39a30934cca10dfcde5fef30279c69f56e1f83f937aee7f745e":
+    fail(
+        "ordinary-leaf-public-api",
+        "trusted bytecode reads must convert only JavaScript-visible errors into pending exceptions and preserve Unsupported/Internal directly",
+    )
+
 bytecode_code = rust_code_only(read_source("src/bytecode.rs"))
 vm_code = rust_code_only(read_source("src/vm.rs"))
 value_code = rust_code_only(read_source("src/value.rs"))
@@ -2613,7 +3071,10 @@ else:
     production_sources = sorted(src_root.rglob("*.rs"))
 
 facade_name_pattern = re.compile(
-    r"\b(?:ScalarValueDraft|ScalarUnaryOp|ScalarScriptReadError|ScalarStringDraft|decode_trusted_scalar_script)\b"
+    r"\b(?:ScalarValueDraft|ScalarUnaryOp|ScalarScriptReadError|ScalarStringDraft|"
+    r"decode_trusted_scalar_script|DetachedPrimitive|OrdinaryLeafDraft|"
+    r"OrdinaryLeafMetadataDraft|OrdinaryLeafOp|OrdinaryLeafReadError|"
+    r"RootFunctionConstantSelector|decode_trusted_ordinary_leaf)\b"
 )
 for path in production_sources:
     if path.is_symlink() or not path.is_file():
@@ -2647,8 +3108,16 @@ for path in production_sources:
     if relative not in {binary_root_relative, consumer_relative}:
         for match in facade_name_pattern.finditer(code):
             fail(
-                "scalar-script-consumer-set",
-                "only binary_object_publish.rs may name the scalar-script facade; found "
+                "binary-object-facade-consumer-set",
+                "only binary_object_publish.rs may name the scalar-script or ordinary-leaf facade; found "
+                + location(relative, source, match.start()),
+            )
+
+    if relative not in {bytecode_publish_relative, consumer_relative}:
+        for match in re.finditer(r"\bverify_unlinked_ordinary_leaf\b", code):
+            fail(
+                "ordinary-leaf-verifier-consumer-set",
+                "only binary_object_publish.rs may call the dedicated ordinary-leaf verifier; found "
                 + location(relative, source, match.start()),
             )
 
@@ -2782,7 +3251,7 @@ image_atoms_code = rust_code_only(image_atoms_source)
 if (
     is_full_binary_inventory
     and normalized_code_sha256(image_model_code)
-    != "51574b7dde81ed10e6533c1d1113bf25421e3f1e7def3828a3df27654ac9a0ac"
+    != "a7ddad998b12ccd6f69e57aa0c57d124a24077d3e88c44e649a0d4a131fec69e"
 ):
     fail(
         "bytecode-image-model-seal",
@@ -2899,12 +3368,12 @@ eval_name_predicate = re.compile(
     r"[ \t\n]*\}[ \t\n]*\}"
 )
 if (
-    len(null_name_predicate.findall(image_model_code)) != 1
+    len(null_name_predicate.findall(image_model_code)) != (2 if is_full_binary_inventory else 1)
     or len(eval_name_predicate.findall(image_model_code)) != 1
 ):
     fail(
         "scalar-script-atom-predicate",
-        "the model must expose only the reviewed null-local and pinned-<eval> boolean predicates",
+        "the model must expose only the reviewed null-local, null-function-name, and pinned-<eval> boolean predicates",
     )
 
 image_atom_export = re.compile(
@@ -2972,10 +3441,18 @@ expected_atom_sensitive_visible_sites = [
         "name_is_pinned_eval",
     ),
 ]
+if is_full_binary_inventory:
+    expected_atom_sensitive_visible_sites.append(
+        (
+            "src/runtime/binary_object/bytecode_image/model.rs",
+            "pub(in crate::runtime::binary_object)",
+            "name_is_null",
+        )
+    )
 if atom_sensitive_visible_sites != expected_atom_sensitive_visible_sites:
     fail(
         "image-atom-visible-capability",
-        "only the reviewed boolean atom predicates may expose an atom-sensitive BytecodeImage method; "
+        "only the reviewed boolean atom predicates may expose an atom-sensitive bytecode-image method; "
         f"found {atom_sensitive_visible_sites}",
     )
 
@@ -4041,6 +4518,10 @@ cp -- "$repository_root/src/bytecode.rs" "$fixture/src/bytecode.rs"
 cp -- "$repository_root/src/vm.rs" "$fixture/src/vm.rs"
 cp -- "$repository_root/src/value.rs" "$fixture/src/value.rs"
 cp -- "$repository_root/src/atom.rs" "$fixture/src/atom.rs"
+cp -- "$repository_root/src/function.rs" "$fixture/src/function.rs"
+cp -- "$repository_root/src/runtime/context.rs" "$fixture/src/runtime/context.rs"
+cp -- "$repository_root/src/runtime/bytecode_publish.rs" \
+    "$fixture/src/runtime/bytecode_publish.rs"
 printf '%s\n' \
     'mod atoms;' \
     'mod code;' \
@@ -4050,9 +4531,11 @@ printf '%s\n' \
     'mod pinned_atoms;' \
     'mod pinned_opcodes;' \
     'mod read_cursor;' \
+    'mod ordinary_leaf;' \
     'mod scalar_script;' \
     'mod wire;' \
     'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
+    'pub(super) use ordinary_leaf::{DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafReadError, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 python3 - \
     "$repository_root/src/runtime/binary_object/scalar_script.rs" \
@@ -4071,6 +4554,23 @@ if source.count(test_module) != 1:
     )
 target_path.write_text(source.split(test_module, 1)[0] + "\n", encoding="utf-8")
 PY_FIXTURE
+python3 - \
+    "$repository_root/src/runtime/binary_object/ordinary_leaf.rs" \
+    "$fixture/src/runtime/binary_object/ordinary_leaf.rs" <<'PY_ORDINARY_FIXTURE'
+from pathlib import Path
+import sys
+
+
+source_path = Path(sys.argv[1])
+target_path = Path(sys.argv[2])
+source = source_path.read_text(encoding="utf-8")
+test_module = "\n#[cfg(test)]\nmod tests {"
+if source.count(test_module) != 1:
+    raise SystemExit(
+        "error: ordinary_leaf.rs must contain exactly one cfg(test) module boundary"
+    )
+target_path.write_text(source.split(test_module, 1)[0] + "\n", encoding="utf-8")
+PY_ORDINARY_FIXTURE
 printf '%s\n' '// no alternate binary-object consumers' \
     > "$fixture/src/runtime/other.rs"
 printf '%s\n' \
@@ -4551,7 +5051,7 @@ expect_rejected second-binary-object-consumer binary-object-consumer-set \
 expect_rejected alternate-binary-object-path binary-object-consumer-set \
     src/runtime/other.rs \
     '#[path = "binary_object/mod.rs"] mod alternate_archive;'
-expect_rejected second-scalar-facade-consumer scalar-script-consumer-set \
+expect_rejected second-scalar-facade-consumer binary-object-facade-consumer-set \
     src/runtime/other.rs \
     'fn leak() { let _ = decode_trusted_scalar_script(bytes); }'
 expect_rejected consumer-codec-import binary-object-consumer-import \
@@ -4569,7 +5069,7 @@ expect_rejected consumer-atom-interning binary-object-consumer-atom-interning \
 expect_rejected consumer-second-publisher binary-object-consumer-publication \
     src/runtime/binary_object_publish.rs \
     'fn publish_twice(runtime: &Runtime) { let _ = runtime.publish_unlinked_function(realm, function); }'
-expect_rejected consumer-verifier-bypass binary-object-consumer-verifier-bypass \
+expect_rejected consumer-verifier-bypass binary-object-consumer-publication \
     src/runtime/binary_object_publish.rs \
     'fn bypass(runtime: &Runtime) { runtime.publish_verified_unlinked_function(realm, function); }'
 expect_rejected consumer-dead-safe-alternate-publication binary-object-consumer-alternate-entrypoint \
@@ -4587,20 +5087,20 @@ expect_rewrite_rejected consumer-lowered-scalar-unary-vector binary-object-consu
     $'    IntegerAtomString(u32),\n    Unary(Vec<Instruction>),'
 expect_rewrite_rejected consumer-float-normalization binary-object-consumer-float64 \
     src/runtime/binary_object_publish.rs \
-    'lower_scalar_constant(Value::Float(f64::from_bits(bits)))' \
-    'lower_scalar_constant(Value::number(f64::from_bits(bits)))'
+    'lower_primitive_constant(Value::Float(f64::from_bits(bits)))' \
+    'lower_primitive_constant(Value::number(f64::from_bits(bits)))'
 expect_rewrite_rejected consumer-pool-atom-swap binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
-    $'        ScalarValueDraft::ConstantString(value) => lower_scalar_string(value)\n            .and_then(|value| lower_scalar_constant(Value::String(value)))\n            .map(LoweredScalar::Constant),' \
+    $'        ScalarValueDraft::ConstantString(value) => lower_scalar_string(value)\n            .and_then(|value| lower_primitive_constant(Value::String(value)))\n            .map(LoweredScalar::Constant),' \
     $'        ScalarValueDraft::ConstantString(value) => Ok(LoweredScalar::AtomString(\n            UnlinkedConstant::atom_string(lower_scalar_string(value)?),\n        )),'
 expect_rewrite_rejected consumer-integer-via-cpool binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
     'ScalarValueDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),' \
-    'ScalarValueDraft::IntegerAtomString(value) => lower_scalar_constant(Value::String(JsString::from_fresh_decimal_u32(value))).map(LoweredScalar::Constant),'
+    'ScalarValueDraft::IntegerAtomString(value) => lower_primitive_constant(Value::String(JsString::from_fresh_decimal_u32(value))).map(LoweredScalar::Constant),'
 expect_rewrite_rejected consumer-empty-primitive binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
     'UnlinkedConstant::atom_string(JsString::from_static(""))' \
-    'lower_scalar_constant(Value::String(JsString::from_static("")))?'
+    'lower_primitive_constant(Value::String(JsString::from_static("")))?'
 expect_rewrite_rejected consumer-bigint-dead-path-coercion binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
     $'        ScalarValueDraft::BigIntBytes(bytes) => {\n            lower_bigint_constant(&bytes).map(LoweredScalar::Constant)\n        }' \
@@ -4636,9 +5136,37 @@ expect_rewrite_rejected consumer-skips-safe-publication binary-object-consumer-p
     src/runtime/binary_object_publish.rs \
     '        self.publish_unlinked_function(realm, function)' \
     '        self.compile_in_realm(realm, source)'
+expect_rewrite_rejected ordinary-consumer-float-normalization ordinary-leaf-consumer-lowering \
+    src/runtime/binary_object_publish.rs \
+    'DetachedPrimitive::Float64Bits(bits) => Value::Float(f64::from_bits(bits)),' \
+    'DetachedPrimitive::Float64Bits(bits) => Value::number(f64::from_bits(bits)),'
+expect_rewrite_rejected ordinary-consumer-op-remap ordinary-leaf-consumer-lowering \
+    src/runtime/binary_object_publish.rs \
+    'OrdinaryLeafOp::Add => Instruction::Add,' \
+    'OrdinaryLeafOp::Add => Instruction::Sub,'
+expect_rewrite_rejected ordinary-consumer-verifier-dead-branch ordinary-leaf-consumer-publication \
+    src/runtime/binary_object_publish.rs \
+    $'        super::bytecode_publish::verify_unlinked_ordinary_leaf(&function)\n            .map_err(map_ordinary_leaf_verification_error)?;' \
+    $'        if false {\n            super::bytecode_publish::verify_unlinked_ordinary_leaf(&function)\n                .map_err(map_ordinary_leaf_verification_error)?;\n        }'
+expect_rewrite_rejected ordinary-consumer-generic-publisher ordinary-leaf-consumer-publication \
+    src/runtime/binary_object_publish.rs \
+    'self.publish_verified_unlinked_function(realm, function)?' \
+    'self.publish_unlinked_function(realm, function)?'
+expect_full_rewrite_rejected ordinary-consumer-raw-native-plan ordinary-leaf-consumer-import \
+    src/runtime/binary_object_publish.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'fn leak_native_plan(_: NativeCodePlan<'"'"'_>) {}\n\n#[cfg(test)]\nmod tests {'
+expect_full_rewrite_rejected ordinary-consumer-test262-branch ordinary-leaf-consumer-special-casing \
+    src/runtime/binary_object_publish.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'fn fixture_dispatch(bytes: &[u8]) -> bool { bytes.starts_with(&[0x05, 0x00]) } // Test262 fixture\n\n#[cfg(test)]\nmod tests {'
 expect_rejected root-public-module root-module-visibility \
     src/runtime/binary_object/mod.rs \
     'pub(in crate::runtime) mod leaked;'
+expect_rewrite_rejected ordinary-leaf-public-module root-module-visibility \
+    src/runtime/binary_object/mod.rs \
+    'mod ordinary_leaf;' \
+    'pub(super) mod ordinary_leaf;'
 expect_rewrite_rejected scalar-script-public-module root-module-visibility \
     src/runtime/binary_object/mod.rs \
     'mod scalar_script;' \
@@ -4657,6 +5185,58 @@ expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shap
     src/runtime/binary_object/mod.rs \
     'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
     'pub(crate) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};'
+expect_rewrite_rejected ordinary-facade-extra-type ordinary-leaf-facade-shape \
+    src/runtime/binary_object/mod.rs \
+    'DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp,' \
+    'BytecodeImage, DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp,'
+expect_rewrite_rejected ordinary-facade-wider-visibility ordinary-leaf-facade-shape \
+    src/runtime/binary_object/mod.rs \
+    'pub(super) use ordinary_leaf::{' \
+    'pub(crate) use ordinary_leaf::{'
+expect_rejected ordinary-extra-visible-item ordinary-leaf-visible-item-set \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    'pub(in crate::runtime) fn leak_archive_identity() {}'
+expect_rejected ordinary-private-helper ordinary-leaf-helper-set \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    'fn bypass_ordinary_admission() {}'
+expect_rejected ordinary-raw-code-dependency ordinary-leaf-native-plan-boundary \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    'fn leak_raw_code(_: &ImageCode) {}'
+expect_rejected ordinary-test262-path ordinary-leaf-special-casing \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    '// Test262 fixture language/statements/for/ordinary-leaf.js'
+expect_rewrite_rejected ordinary-input-prefix-dispatch ordinary-leaf-special-casing \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    '    if input.len() > MAX_INPUT_BYTES {' \
+    '    if input.starts_with(&[0x05, 0x00]) || input.len() > MAX_INPUT_BYTES {'
+expect_rewrite_rejected ordinary-cfg-op-remap ordinary-leaf-semantic-seal \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    '("add", NativeOperands::None) => ready(OrdinaryLeafOp::Add),' \
+    '("add", NativeOperands::None) => ready(OrdinaryLeafOp::Sub),'
+expect_rewrite_rejected ordinary-cfg-target-collapse ordinary-leaf-semantic-seal \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    'OrdinaryLeafOp::IfFalse(resolve_ir_target(&source_to_ir, target)?)' \
+    'OrdinaryLeafOp::IfFalse(0)'
+expect_rewrite_rejected ordinary-verifier-strip-bypass ordinary-leaf-verifier-role \
+    src/runtime/bytecode_publish.rs \
+    '                        || !metadata.strip_variable_debug' \
+    '                        || false'
+expect_rewrite_rejected ordinary-verifier-debug-bypass ordinary-leaf-verifier-role \
+    src/runtime/bytecode_publish.rs \
+    '                        || function.debug().is_some()' \
+    '                        || false'
+expect_rewrite_rejected ordinary-verifier-primitive-broadening ordinary-leaf-plain-primitive \
+    src/function.rs \
+    'matches!(self.0, UnlinkedConstantKind::Primitive(_))' \
+    'matches!(self.0, UnlinkedConstantKind::Primitive(_) | UnlinkedConstantKind::AtomString(_))'
+expect_rewrite_rejected ordinary-public-api-selector-collapse ordinary-leaf-public-api \
+    src/runtime/context.rs \
+    $'            bytes,\n            root_constant_index,\n        );' \
+    $'            bytes,\n            0,\n        );'
+expect_rewrite_rejected ordinary-public-api-pending-broadening ordinary-leaf-public-api \
+    src/runtime/context.rs \
+    $'            Ok(function) => Ok(function),\n            Err(RuntimeError::Engine(error))\n                if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>' \
+    $'            Ok(function) => Ok(function),\n            Err(RuntimeError::Engine(error))\n                if true || NativeErrorKind::from_javascript_error(error.kind()).is_some() =>'
 expect_rewrite_rejected scalar-draft-raw-c-forgery scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
     $'pub(in crate::runtime) enum ScalarValueDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    EmptyString,\n    ConstantString(ScalarStringDraft),\n    AtomString(ScalarStringDraft),\n    IntegerAtomString(u32),\n}' \
@@ -4684,6 +5264,10 @@ expect_rewrite_rejected scalar-string-copy-regression scalar-script-draft-shape 
 expect_rejected scalar-opcode-set-widening scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
     'const OP_PUSH_THIS: u8 = 0x08;'
+expect_full_rewrite_rejected scalar-goto8-opcode-drift scalar-script-opcode-set \
+    src/runtime/binary_object/scalar_script.rs \
+    $'    const OP_GOTO8: u8 = 0xea;\n\n    const RETURN_42: [u8; 25]' \
+    $'    const OP_GOTO8: u8 = 0xeb;\n\n    const RETURN_42: [u8; 25]'
 expect_rewrite_rejected scalar-unary-name-widening scalar-unary-operation-shape \
     src/runtime/binary_object/scalar_script.rs \
     $'            ("typeof", NativeOperands::None) => Some(Self::TypeOf),\n            _ => None,' \

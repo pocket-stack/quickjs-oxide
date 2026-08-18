@@ -1,8 +1,8 @@
 //! Release-pinned QuickJS binary-object support.
 //!
-//! The archive reader remains heap-independent. Its only runtime-facing
-//! product is a narrow, non-executable scalar-script draft which a separate
-//! publication bridge must translate and verify before entering the heap.
+//! The archive reader remains heap-independent. Its runtime-facing products
+//! are narrow, non-executable drafts which a separate publication bridge must
+//! translate and verify before entering the heap.
 
 // The wire layer is intentionally staged before its runtime consumer. Keep the
 // allowance local so the rest of `runtime` still receives dead-code warnings.
@@ -31,6 +31,9 @@ mod pinned_opcodes;
 mod read_cursor;
 
 #[allow(dead_code)]
+mod ordinary_leaf;
+
+#[allow(dead_code)]
 mod scalar_script;
 
 #[allow(dead_code)]
@@ -40,4 +43,10 @@ mod wire;
 pub(super) use scalar_script::{
     ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft,
     decode_trusted_scalar_script,
+};
+
+#[allow(unused_imports)]
+pub(super) use ordinary_leaf::{
+    DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp,
+    OrdinaryLeafReadError, RootFunctionConstantSelector, decode_trusted_ordinary_leaf,
 };

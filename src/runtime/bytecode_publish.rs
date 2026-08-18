@@ -1181,6 +1181,7 @@ fn verify_eval_environments(
 #[derive(Clone, Copy)]
 enum RootPublication<'a> {
     Script,
+    TrustedOrdinaryLeaf,
     Module(&'a UnlinkedModule),
     Eval {
         kind: EvalKind,
@@ -1200,6 +1201,18 @@ pub(in crate::runtime) struct EvalPublicationCapabilities {
 
 pub(super) fn verify_unlinked_tree(function: &UnlinkedFunction) -> Result<(), RuntimeError> {
     verify_unlinked_tree_with_root(function, RootPublication::Script)
+}
+
+/// Authenticate one detached ordinary callable translated from trusted BC5.
+///
+/// Unlike a Script root, this role may own arguments and ordinary locals. It
+/// remains a standalone leaf: no module, eval, class, super, HomeObject, or
+/// closure authority may be smuggled through the specialized publication
+/// entry point.
+pub(in crate::runtime) fn verify_unlinked_ordinary_leaf(
+    function: &UnlinkedFunction,
+) -> Result<(), RuntimeError> {
+    verify_unlinked_tree_with_root(function, RootPublication::TrustedOrdinaryLeaf)
 }
 
 /// Authenticate a compiler-owned module record and the distinct bytecode ABI
@@ -2035,7 +2048,9 @@ fn verify_unlinked_tree_with_root(
 ) -> Result<(), RuntimeError> {
     let (synthetic_eval_tree, tree_expected_bindings, tree_expected_profile) =
         match root_publication {
-            RootPublication::Script | RootPublication::Module(_) => (false, &[][..], None),
+            RootPublication::Script
+            | RootPublication::TrustedOrdinaryLeaf
+            | RootPublication::Module(_) => (false, &[][..], None),
             RootPublication::Eval {
                 expected_bindings,
                 expected_profile,
@@ -2142,7 +2157,9 @@ fn verify_unlinked_tree_with_root(
             .and_then(|layout| layout.arg_eval_variable_object_local);
         let expected_eval_kind = if is_root {
             match root_publication {
-                RootPublication::Script | RootPublication::Module(_) => EvalKind::None,
+                RootPublication::Script
+                | RootPublication::TrustedOrdinaryLeaf
+                | RootPublication::Module(_) => EvalKind::None,
                 RootPublication::Eval { kind, .. } => kind,
             }
         } else {
@@ -2171,6 +2188,47 @@ fn verify_unlinked_tree_with_root(
                     if function.metadata().super_call_allowed || function.metadata().super_allowed {
                         return Err(RuntimeError::Engine(Error::internal(
                             "script root retained a super capability",
+                        )));
+                    }
+                }
+                RootPublication::TrustedOrdinaryLeaf => {
+                    let metadata = function.metadata();
+                    if metadata.is_module
+                        || metadata.super_call_allowed
+                        || metadata.super_allowed
+                        || metadata.arguments_forbidden
+                        || metadata.needs_home_object
+                        || !metadata.strip_variable_debug
+                        || metadata.function_kind != FunctionKind::Normal
+                        || !metadata.has_prototype
+                        || metadata.constructor_kind != ConstructorKind::Base
+                        || metadata.function_name_local.is_some()
+                        || metadata.derived_this_local.is_some()
+                        || metadata.active_function_local.is_some()
+                        || metadata.eval_variable_object_local.is_some()
+                        || function.parameter_environment().is_some()
+                        || !function.closure_variables().is_empty()
+                        || !function.eval_environments().is_empty()
+                        || function.func_name().is_some()
+                        || function.debug().is_some()
+                        || function
+                            .constants()
+                            .iter()
+                            .any(|constant| !constant.is_plain_primitive())
+                        || function
+                            .argument_definitions()
+                            .iter()
+                            .chain(function.local_definitions())
+                            .any(|definition| {
+                                definition.name.is_some()
+                                    || definition.is_lexical
+                                    || definition.is_const
+                                    || definition.is_parameter_initializer
+                                    || definition.kind != ClosureVariableKind::Normal
+                            })
+                    {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "trusted ordinary leaf metadata disagrees with its publication entry point",
                         )));
                     }
                 }
@@ -2259,7 +2317,9 @@ fn verify_unlinked_tree_with_root(
         }
         let expected_eval_bindings = if is_root {
             match root_publication {
-                RootPublication::Script | RootPublication::Module(_) => None,
+                RootPublication::Script
+                | RootPublication::TrustedOrdinaryLeaf
+                | RootPublication::Module(_) => None,
                 RootPublication::Eval {
                     expected_bindings, ..
                 } => Some(expected_bindings),
@@ -3025,7 +3085,9 @@ fn verify_unlinked_tree_with_root(
         let mut verified_eval_binding_count = 0_usize;
         let eval_allows_global_declarations = is_root
             && match root_publication {
-                RootPublication::Script | RootPublication::Module(_) => false,
+                RootPublication::Script
+                | RootPublication::TrustedOrdinaryLeaf
+                | RootPublication::Module(_) => false,
                 RootPublication::Eval {
                     kind,
                     caller_strict,
@@ -3224,6 +3286,11 @@ fn verify_unlinked_tree_with_root(
                                 "root bytecode closure descriptor did not use Global",
                             )));
                         }
+                    }
+                    RootPublication::TrustedOrdinaryLeaf => {
+                        return Err(RuntimeError::Engine(Error::internal(
+                            "trusted ordinary leaf retained a closure descriptor",
+                        )));
                     }
                     RootPublication::Module(_) => match descriptor.source {
                         ClosureSource::ModuleDeclaration => {
@@ -4729,13 +4796,118 @@ mod tests {
     use crate::bytecode::Instruction;
     use crate::compiler::compile_unlinked_module_with_filename;
     use crate::debug::DebugInfoMode;
-    use crate::function::{UnlinkedFunctionParts, UnlinkedVariableDefinition};
+    use crate::function::{
+        UnlinkedFunctionDebug, UnlinkedFunctionParts, UnlinkedVariableDefinition,
+    };
     use crate::heap::{
         EvalBinding, EvalBindingSource, EvalEnvironment, EvalScope, EvalScopeKind,
         EvalVariableEnvironment, ParameterArgumentCell, ParameterBodyStorage,
         ParameterDefaultSource, ParameterPatternCopy,
     };
     use crate::module::{ModuleLinkInitializer, ModuleLinkInitializerValue, UnlinkedModuleTables};
+
+    fn trusted_ordinary_leaf(metadata: FunctionMetadata) -> UnlinkedFunction {
+        UnlinkedFunction::new(
+            vec![Instruction::GetArg(0), Instruction::Return],
+            Vec::new(),
+            metadata,
+        )
+    }
+
+    #[test]
+    fn trusted_ordinary_leaf_has_a_distinct_root_publication_role() {
+        let metadata = FunctionMetadata {
+            argument_count: 1,
+            defined_argument_count: 1,
+            max_stack: 1,
+            strip_variable_debug: true,
+            function_kind: FunctionKind::Normal,
+            has_prototype: true,
+            constructor_kind: ConstructorKind::Base,
+            ..FunctionMetadata::default()
+        };
+        verify_unlinked_ordinary_leaf(&trusted_ordinary_leaf(metadata)).unwrap();
+
+        for forged in [
+            FunctionMetadata {
+                super_allowed: true,
+                ..metadata
+            },
+            FunctionMetadata {
+                arguments_forbidden: true,
+                ..metadata
+            },
+            FunctionMetadata {
+                has_prototype: false,
+                ..metadata
+            },
+            FunctionMetadata {
+                constructor_kind: ConstructorKind::None,
+                ..metadata
+            },
+            FunctionMetadata {
+                strip_variable_debug: false,
+                ..metadata
+            },
+        ] {
+            assert!(
+                verify_unlinked_ordinary_leaf(&trusted_ordinary_leaf(forged))
+                    .unwrap_err()
+                    .to_string()
+                    .contains(
+                        "trusted ordinary leaf metadata disagrees with its publication entry point"
+                    )
+            );
+        }
+
+        let child = trusted_ordinary_leaf(metadata);
+        let with_child = UnlinkedFunction::new(
+            vec![Instruction::GetArg(0), Instruction::Return],
+            vec![UnlinkedConstant::child(child)],
+            metadata,
+        );
+        assert!(verify_unlinked_ordinary_leaf(&with_child).is_err());
+
+        let with_atom_string = UnlinkedFunction::new(
+            vec![Instruction::PushConst(0), Instruction::Return],
+            vec![UnlinkedConstant::atom_string(JsString::from_static("atom"))],
+            metadata,
+        );
+        assert!(verify_unlinked_ordinary_leaf(&with_atom_string).is_err());
+
+        let named_argument = trusted_ordinary_leaf(metadata).with_variable_definitions(
+            vec![UnlinkedVariableDefinition::ordinary(Some(
+                JsString::from_static("argument"),
+            ))],
+            Vec::new(),
+        );
+        assert!(verify_unlinked_ordinary_leaf(&named_argument).is_err());
+
+        let lexical_argument = trusted_ordinary_leaf(metadata).with_variable_definitions(
+            vec![UnlinkedVariableDefinition::lexical(None, false)],
+            Vec::new(),
+        );
+        assert!(verify_unlinked_ordinary_leaf(&lexical_argument).is_err());
+
+        let parameter_environment = trusted_ordinary_leaf(metadata).with_parameter_environment(
+            Some(ParameterEnvironmentLayout {
+                initialization_end: 0,
+                argument_cells: Box::new([]),
+                pattern_copies: Box::new([]),
+                default_sources: Box::new([]),
+                synthetic_arguments_local: None,
+                arg_eval_variable_object_local: None,
+            }),
+        );
+        assert!(verify_unlinked_ordinary_leaf(&parameter_environment).is_err());
+
+        let with_debug = trusted_ordinary_leaf(metadata).with_debug(UnlinkedFunctionDebug {
+            filename: JsString::from_static("ordinary-leaf.js"),
+            pc2line: None,
+            source: None,
+        });
+        assert!(verify_unlinked_ordinary_leaf(&with_debug).is_err());
+    }
 
     fn module_with_link_initializers(
         module: UnlinkedModule,

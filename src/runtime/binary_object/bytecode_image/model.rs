@@ -477,6 +477,16 @@ impl ImageFunctionEnvelope {
         }
     }
 
+    /// Whether this record uses QuickJS's null function-name sentinel.
+    ///
+    /// Ordinary-leaf admission needs only the sentinel distinction. Keeping
+    /// the image atom itself private prevents an executable bridge from
+    /// acquiring an archive-local atom identity.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn name_is_null(&self) -> bool {
+        matches!(self.name, ImageAtom::Null)
+    }
+
     #[must_use]
     pub(in crate::runtime) const fn argument_count(&self) -> u16 {
         self.argument_count

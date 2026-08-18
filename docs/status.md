@@ -76,6 +76,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   identity, empty direct/atom Strings share that canonical empty identity, and
   tagged-integer atoms produce a fresh decimal String on every execution.
   Private and Symbol atoms remain understood but unadmitted
+- a second narrow trusted-bytecode API for one ordinary synchronous function
+  selected from a compile-only root constant pool. It admits primitive
+  constants, arguments and locals, arithmetic and comparison, and bounded
+  conditional/loop control flow through a distinct verified publication role
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -176,13 +180,14 @@ and in-range instruction-boundary targets. Raw `ImageAtom`/`PinnedAtomId`
 identities and native code bytes never enter its DTOs: atoms become sealed
 semantic class, index, spelling, and input-table-provenance projections. The
 stage imports no engine `Instruction`, heap/VM type, or runtime
-`JsString`/`Value`. A narrow `bytecode_image` facade now supplies those typed
-DTOs to the existing scalar admission bridge, replacing its duplicate native
-byte, width, instruction-sidecar, and atom-relocation decoder; the detached
-single-atom projection path has been retired. This migration adds no admitted
-syntax, Feature Parity claim, or Test262 metric change. The plan remains
-non-executable, and a general FunctionBytecode execution bridge remains later
-work.
+`JsString`/`Value`. A narrow `bytecode_image` facade supplies those typed DTOs
+to the scalar and ordinary-leaf admission bridges. The scalar path no longer
+owns a duplicate native byte, width, instruction-sidecar, or atom-relocation
+decoder, and the detached single-atom projection path has been retired. The
+plan remains a runtime-independent archive representation; only the separate
+publication bridge creates executable instructions. This adds no source
+syntax, Feature Parity claim, or Test262 metric change, and a general
+FunctionBytecode execution bridge remains later work.
 A bounded `FunctionRecordPrefix` layer now reads and canonically writes the
 fixed FunctionBytecode body after tag 12: flags, frame metadata, locals,
 closures, scanned code, and optional debug bytes. It stops immediately before
@@ -338,13 +343,39 @@ remains part of the later `num-bigint` hardening gate.
 
 Postfix update operations, reference/local mutation, `delete`, `void`, `await`,
 and Object, Private, or Symbol inputs remain outside this scalar-only cohort.
-This is the last scalar-specific admission milestone; the next bytecode step is
-general FunctionBytecode translation rather than another shape-specific path.
-A fresh full R3fj run certifies that the archive-only native-plan refactors
-leave the complete classified result vector unchanged: 79,982 full passes,
-80,032 eligible variants, and 102,037 total variants. The scalar-unary
-frontier's additional primary evidence is the pinned C bytecode/identity
-differential plus Rust execution and boundary gates.
+That was the last scalar-specific admission milestone. The first broader step
+now admits one ordinary synchronous FunctionBytecode leaf selected by constant-
+pool index from an authenticated compile-only root. The child must retain the
+reviewed normal/simple-parameter/prototype metadata, null function/local names,
+no debug info or closures, no modules or object identities, no input atom table
+or variable references, and only primitive constants. Its typed cohort covers
+integer and constant pushes, argument/local get-put-set operations, `add`,
+`sub`, `div`, `gt`, `strict_eq`, `if_false`, `goto`, and `return`. Native
+branch destinations are resolved to instruction indices before the owned draft
+crosses the archive boundary. A dedicated ordinary-leaf verifier then
+authenticates the detached metadata and CFG before transactional publication
+creates a callable closure.
+
+The pinned QuickJS C oracle compiles a two-argument loop/branch function with
+`GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
+vector. It pins byte-identical read/write, child offset 25 and flags `0x0243`,
+two arguments, two locals, two Float64 constants, 46 code bytes and 38
+instructions, plus all five native branch targets. Fresh-runtime calls return
+42 for `(3, 3)` and 0 for `(3, 4)` with exact integer tags. The oracle also
+locks constructor/prototype identity and sloppy-versus-strict `caller` and
+`arguments` behavior. Public `JS_WriteObject` rejects the evaluated child
+closure with the exact `TypeError: unsupported object class`. Rust consumes the
+same vector through `Context::read_trusted_ordinary_function`, maps every target
+to an IR instruction index, and exercises both branches through the dedicated
+verified publication path.
+
+The authenticated R3fj receipt remains pinned to the preceding native-plan
+source and is source-stale for this ordinary-leaf feature tree. Its 79,982 full
+passes, 80,032 eligible variants, and 102,037 total variants remain the current
+published metrics, not a fresh certification of this source. The Test262
+profile is unchanged and an unchanged classified vector is expected, but only
+a fresh full run can certify it. Current primary evidence for this feature is
+the pinned C bytecode differential, Rust execution tests, and boundary gates.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
@@ -380,10 +411,10 @@ one backing descriptor in a single `ArchivedBytecodeImage`. Additional
 whole-image vectors prove that two complete SAB records with the same token
 share one archive backing while distinct tokens retain two ordered backings.
 Rust does not execute the transport archive's embedded function; its return-42
-receipt remains the pinned QuickJS C-oracle result. The separate admitted
-scalar images are translated and executed by Rust through the full verified
-publication path. Authenticated negative vectors also pin
-QuickJS's
+receipt remains the pinned QuickJS C-oracle result. Separate admitted scalar
+Script and ordinary-leaf images are translated and executed by Rust through
+their distinct verified publication roles. Authenticated negative vectors also
+pin QuickJS's
 three diagnostic classes when FunctionBytecode appears as the
 child of ObjectValue, Date, or
 TypedArray; a truncated-record probe proves that all three parents first decode
