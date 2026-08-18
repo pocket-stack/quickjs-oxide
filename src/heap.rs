@@ -1697,7 +1697,7 @@ pub(crate) fn validate_derived_constructor_bytecode_layout(
                     return Err("derived return targets another local");
                 }
             }
-            Instruction::Return if derived => {
+            Instruction::Return | Instruction::ReturnUndefined if derived => {
                 return Err("derived constructor contains an ordinary return");
             }
             _ => {}
@@ -11712,7 +11712,7 @@ impl Heap {
     }
 
     /// Set QuickJS's identity-local Annex B `is_HTMLDDA` bit.
-    #[cfg(feature = "test262-host")]
+    #[cfg(any(test, feature = "test262-host"))]
     pub(crate) fn set_object_is_html_dda(&mut self, id: ObjectId) -> Result<(), HeapError> {
         self.object_mut(id)?.is_html_dda = true;
         Ok(())
@@ -27755,6 +27755,24 @@ mod tests {
             ),
             Ok(()),
         );
+
+        for ordinary_return in [Instruction::Return, Instruction::ReturnUndefined] {
+            let forged = [
+                Instruction::PushActiveFunction,
+                Instruction::PutLocal(1),
+                ordinary_return,
+            ];
+            assert_eq!(
+                validate_derived_constructor_bytecode_layout(
+                    &metadata,
+                    &forged,
+                    &[true, false],
+                    &[false, false],
+                    &[],
+                ),
+                Err("derived constructor contains an ordinary return"),
+            );
+        }
 
         let dead = [
             Instruction::Undefined,

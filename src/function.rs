@@ -275,6 +275,17 @@ impl UnlinkedConstant {
         matches!(self.0, UnlinkedConstantKind::Primitive(_))
     }
 
+    /// Return whether this is exactly QuickJS's canonical empty atom String.
+    /// The trusted ordinary-leaf boundary permits this one sealed
+    /// representation without admitting arbitrary atom-backed constants.
+    #[must_use]
+    pub(crate) fn is_empty_atom_string(&self) -> bool {
+        matches!(
+            &self.0,
+            UnlinkedConstantKind::AtomString(Value::String(value)) if value.is_empty()
+        )
+    }
+
     /// Borrow a RegExp literal payload, or return `None` for other constants.
     #[must_use]
     pub(crate) fn as_regexp(&self) -> Option<(&JsString, &Rc<CompiledRegExp>)> {
@@ -787,12 +798,25 @@ mod tests {
     #[test]
     fn compiler_atom_string_keeps_a_structural_publication_marker() {
         let constant = UnlinkedConstant::atom_string(JsString::from_static("literal"));
+        assert!(!constant.is_empty_atom_string());
         assert!(matches!(constant.as_primitive(), Some(Value::String(_))));
         assert!(constant.as_child().is_none());
         let (primitive, atom_string, child) = constant.into_parts();
         assert!(matches!(primitive, Some(Value::String(_))));
         assert!(atom_string);
         assert!(child.is_none());
+    }
+
+    #[test]
+    fn empty_atom_string_is_the_only_narrow_ordinary_leaf_exception() {
+        let atom = UnlinkedConstant::atom_string(JsString::from_static(""));
+        let primitive =
+            UnlinkedConstant::primitive(Value::String(JsString::from_static(""))).unwrap();
+
+        assert!(atom.is_empty_atom_string());
+        assert!(!atom.is_plain_primitive());
+        assert!(!primitive.is_empty_atom_string());
+        assert!(primitive.is_plain_primitive());
     }
 
     #[test]

@@ -269,6 +269,7 @@ pub(crate) trait VmHost {
     fn redeclaration_error(&mut self, index: u32) -> Result<Error, Error>;
     fn to_boolean(&mut self, value: &Value) -> Result<bool, Error>;
     fn is_html_dda(&mut self, value: &Value) -> Result<bool, Error>;
+    fn is_callable(&mut self, value: &Value) -> Result<bool, Error>;
     /// Return QuickJS's atom-backed `typeof` String. Runtime-backed hosts must
     /// preserve the canonical atom identity instead of allocating a fresh
     /// String for every execution.
@@ -1108,6 +1109,16 @@ impl VmHost for DetachedHost<'_> {
         object
             .runtime()
             .value_is_html_dda(value)
+            .map_err(|error| Error::internal(error.to_string()))
+    }
+
+    fn is_callable(&mut self, value: &Value) -> Result<bool, Error> {
+        let Value::Object(object) = value else {
+            return Ok(false);
+        };
+        object
+            .runtime()
+            .value_is_callable(value)
             .map_err(|error| Error::internal(error.to_string()))
     }
 
@@ -3185,6 +3196,25 @@ impl VmActivation {
                 self.stack
                     .push(Value::Bool(matches!(value, Value::Undefined | Value::Null)));
             }
+            Instruction::IsUndefined => {
+                let value = self.pop()?;
+                self.stack
+                    .push(Value::Bool(matches!(value, Value::Undefined)));
+            }
+            Instruction::IsNull => {
+                let value = self.pop()?;
+                self.stack.push(Value::Bool(matches!(value, Value::Null)));
+            }
+            Instruction::TypeOfIsUndefined => {
+                let value = self.pop()?;
+                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;
+                self.stack.push(Value::Bool(is_undefined));
+            }
+            Instruction::TypeOfIsFunction => {
+                let value = self.pop()?;
+                let is_function = !host.is_html_dda(&value)? && host.is_callable(&value)?;
+                self.stack.push(Value::Bool(is_function));
+            }
             Instruction::Add => {
                 if let OperationOutcome::Throw(value) = self.add(host)? {
                     return Ok(Some(Completion::Throw(value)));
@@ -3447,6 +3477,10 @@ impl VmActivation {
                     | Instruction::Not
                     | Instruction::TypeOf
                     | Instruction::IsUndefinedOrNull
+                    | Instruction::IsUndefined
+                    | Instruction::IsNull
+                    | Instruction::TypeOfIsUndefined
+                    | Instruction::TypeOfIsFunction
                     | Instruction::Add
                     | Instruction::Sub
                     | Instruction::Mul
@@ -3956,8 +3990,12 @@ impl VmActivation {
                 let first = len
                     .checked_sub(3)
                     .ok_or_else(|| Error::internal("dup3 needs three stack values"))?;
-                let values = self.stack[first..].to_vec();
-                self.stack.extend(values);
+                let first_value = self.stack[first].clone();
+                let second_value = self.stack[first + 1].clone();
+                let third_value = self.stack[first + 2].clone();
+                self.stack.push(first_value);
+                self.stack.push(second_value);
+                self.stack.push(third_value);
             }
             Instruction::Insert4 => {
                 let value = self.pop()?;
@@ -4138,6 +4176,10 @@ impl VmActivation {
             | Instruction::Not
             | Instruction::TypeOf
             | Instruction::IsUndefinedOrNull
+            | Instruction::IsUndefined
+            | Instruction::IsNull
+            | Instruction::TypeOfIsUndefined
+            | Instruction::TypeOfIsFunction
             | Instruction::Add
             | Instruction::Sub
             | Instruction::Mul
@@ -4413,6 +4455,9 @@ impl VmActivation {
             }
             Instruction::Return => {
                 return self.pop().map(|value| Some(Completion::Return(value)));
+            }
+            Instruction::ReturnUndefined => {
+                return Ok(Some(Completion::Return(Value::Undefined)));
             }
             Instruction::ReturnDerived(index) => {
                 let value = self.pop()?;
@@ -5160,6 +5205,29 @@ mod tests {
         };
 
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn dup3_clones_the_three_values_in_order_without_a_temporary_buffer() {
+        for (drop_count, expected) in [(0, 3), (1, 2), (2, 1)] {
+            let mut code = vec![
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::PushI32(3),
+                Instruction::Dup3,
+            ];
+            code.extend(std::iter::repeat_n(Instruction::Drop, drop_count));
+            code.push(Instruction::Return);
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: 6,
+            };
+
+            assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(expected));
+        }
     }
 
     #[test]

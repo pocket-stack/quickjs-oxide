@@ -2597,6 +2597,12 @@ impl VmHost for RuntimeVmHost {
             .map_err(runtime_error_to_vm_error)
     }
 
+    fn is_callable(&mut self, value: &Value) -> Result<bool, Error> {
+        self.runtime
+            .value_is_callable(value)
+            .map_err(runtime_error_to_vm_error)
+    }
+
     fn type_of(&mut self, value: &Value) -> Result<JsString, Error> {
         let Value::Object(object) = value else {
             return self.canonical_typeof_string(value.type_of());

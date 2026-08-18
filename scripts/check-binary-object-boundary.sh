@@ -161,6 +161,21 @@ def braced_item_from_match(
     return "", -1, -1
 
 
+def rustfmt_match_arms(item: str, prefix: str) -> list[tuple[str, str]]:
+    """Return normalized top-level arms from a rustfmt-indented match."""
+    pattern = re.compile(
+        rf"(?ms)^        (?P<lhs>{re.escape(prefix)}.*?) => (?P<rhs>.*?)"
+        rf"(?=^        (?:{re.escape(prefix)}|_ =>)|^    \}})"
+    )
+    return [
+        (
+            " ".join(match.group("lhs").split()),
+            " ".join(match.group("rhs").rstrip(", \n").split()),
+        )
+        for match in pattern.finditer(item)
+    ]
+
+
 lib_source = read_source("src/lib.rs")
 for match in re.finditer(r"\bbinary_object\b", lib_source):
     fail(
@@ -285,10 +300,14 @@ ordinary_facade_pattern = re.compile(
 ordinary_facades = list(ordinary_facade_pattern.finditer(binary_root_code))
 expected_ordinary_facade_names = {
     "DetachedPrimitive",
+    "OrdinaryLeafBinaryOp",
     "OrdinaryLeafDraft",
     "OrdinaryLeafMetadataDraft",
     "OrdinaryLeafOp",
+    "OrdinaryLeafPredicateOp",
     "OrdinaryLeafReadError",
+    "OrdinaryLeafStackOp",
+    "OrdinaryLeafUnaryOp",
     "RootFunctionConstantSelector",
     "decode_trusted_ordinary_leaf",
 }
@@ -402,8 +421,8 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/function_envelope/mod.rs": 2,
     "src/runtime/binary_object/function_envelope/model.rs": 117,
     "src/runtime/binary_object/function_envelope/prefix.rs": 11,
-    "src/runtime/binary_object/function_translate/capability.rs": 9,
-    "src/runtime/binary_object/function_translate/dto.rs": 37,
+    "src/runtime/binary_object/function_translate/capability.rs": 10,
+    "src/runtime/binary_object/function_translate/dto.rs": 40,
     "src/runtime/binary_object/function_translate/mod.rs": 5,
     "src/runtime/binary_object/graph/arena.rs": 19,
     "src/runtime/binary_object/graph/decode.rs": 28,
@@ -413,7 +432,7 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/graph/sab_transport.rs": 38,
     "src/runtime/binary_object/graph/write_state.rs": 21,
     "src/runtime/binary_object/mod.rs": 2,
-    "src/runtime/binary_object/ordinary_leaf.rs": 23,
+    "src/runtime/binary_object/ordinary_leaf.rs": 27,
     "src/runtime/binary_object/pinned_atoms.rs": 9,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
@@ -428,11 +447,11 @@ expected_fixture_visible_counts = {
     "src/runtime/binary_object/bytecode_image/native_plan.rs": 27,
     "src/runtime/binary_object/graph/decode.rs": 1,
     "src/runtime/binary_object/graph/sab_transport.rs": 29,
-    "src/runtime/binary_object/function_translate/capability.rs": 9,
-    "src/runtime/binary_object/function_translate/dto.rs": 37,
+    "src/runtime/binary_object/function_translate/capability.rs": 10,
+    "src/runtime/binary_object/function_translate/dto.rs": 40,
     "src/runtime/binary_object/function_translate/mod.rs": 5,
     "src/runtime/binary_object/mod.rs": 2,
-    "src/runtime/binary_object/ordinary_leaf.rs": 23,
+    "src/runtime/binary_object/ordinary_leaf.rs": 27,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
     "src/runtime/binary_object/scalar_script.rs": 6,
@@ -1489,14 +1508,22 @@ registry_audience_counts = {
     audience: sum(row_audience == audience for _, _, row_audience, _ in registry_rows)
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
-expected_registry_audience_counts = dict(
-    zip(("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (172, 14, 42, 16))
+expected_registry_audience_counts = dict(zip(
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (128, 1, 86, 29)
+))
+derived_registry_counts = (
+    registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
+    registry_audience_counts["OrdinaryOnly"] + registry_audience_counts["Shared"],
+    244 - registry_audience_counts["Blocked"],
 )
-if registry_audience_counts != expected_registry_audience_counts:
+if (
+    registry_audience_counts != expected_registry_audience_counts
+    or derived_registry_counts != (30, 115, 116)
+):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact pre-refactor physical cohorts; "
-        f"found {registry_audience_counts}",
+        "the centralized registry must preserve the exact stage-one physical cohorts; "
+        f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
 expected_admitted_registry: dict[int, tuple[str, str]] = {}
@@ -1514,22 +1541,32 @@ def expect_admitted(audience: str, recipe: str, raws: tuple[int, ...]) -> None:
 
 expect_admitted("Shared", "Recipe::PushI32", (1, *range(178, 189)))
 expect_admitted("Shared", "Recipe::PushConstant", (2, 189))
+expect_admitted("Shared", "Recipe::PushUndefined", (6,))
+expect_admitted("Shared", "Recipe::PushNull", (7,))
+expect_admitted("Shared", "Recipe::PushFalse", (9,))
+expect_admitted("Shared", "Recipe::PushTrue", (10,))
 expect_admitted("Shared", "Recipe::Return", (40,))
+for raw, operation in zip((138, 139, 140, 141, 147, 148, 149),
+                          ("Neg", "Plus", "Dec", "Inc", "BitNot", "LogicalNot", "TypeOf")):
+    expect_admitted("Shared", f"Recipe::Unary(FunctionUnaryOp::{operation})", (raw,))
+expect_admitted("Shared", "Recipe::PushBigIntI32", (176,))
+expect_admitted("Shared", "Recipe::PushEmptyString", (191,))
 expect_admitted("Shared", "Recipe::SetLocal", (203,))
 expect_admitted("ScalarOnly", "Recipe::PushAtom", (4,))
-expect_admitted("ScalarOnly", "Recipe::PushUndefined", (6,))
-expect_admitted("ScalarOnly", "Recipe::PushNull", (7,))
-expect_admitted("ScalarOnly", "Recipe::PushFalse", (9,))
-expect_admitted("ScalarOnly", "Recipe::PushTrue", (10,))
-expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Neg)", (138,))
-expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Plus)", (139,))
-expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Dec)", (140,))
-expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Inc)", (141,))
-expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::BitNot)", (147,))
-expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::LogicalNot)", (148,))
-expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::TypeOf)", (149,))
-expect_admitted("ScalarOnly", "Recipe::PushBigIntI32", (176,))
-expect_admitted("ScalarOnly", "Recipe::PushEmptyString", (191,))
+for raw, recipe in zip(
+    range(14, 33),
+    (
+        "Direct(FunctionStackOp::Drop)", "Direct(FunctionStackOp::Nip)", "Nip1",
+        "Direct(FunctionStackOp::Dup)", "Direct(FunctionStackOp::Dup1)", "Dup2",
+        "Direct(FunctionStackOp::Dup3)", "Direct(FunctionStackOp::Insert2)",
+        "Direct(FunctionStackOp::Insert3)", "Direct(FunctionStackOp::Insert4)",
+        "Direct(FunctionStackOp::Perm3)", "Direct(FunctionStackOp::Perm4)",
+        "Direct(FunctionStackOp::Perm5)", "Direct(FunctionStackOp::Swap)", "Swap2",
+        "Rot3Left", "Rot3Right", "Direct(FunctionStackOp::Rot4Left)", "Rot5Left",
+    ),
+):
+    expect_admitted("OrdinaryOnly", f"Recipe::Stack(StackRecipe::{recipe})", (raw,))
+expect_admitted("OrdinaryOnly", "Recipe::ReturnUndefined", (41,))
 expect_admitted("OrdinaryOnly", "Recipe::GetLocal", (85, 192, 195, 196, 197, 198))
 expect_admitted("OrdinaryOnly", "Recipe::PutLocal", (86, 193, 199, 200, 201, 202))
 expect_admitted("OrdinaryOnly", "Recipe::SetLocal", (87, 194, 204, 205, 206))
@@ -1537,12 +1574,24 @@ expect_admitted("OrdinaryOnly", "Recipe::GetArgument", (88, 207, 208, 209, 210))
 expect_admitted("OrdinaryOnly", "Recipe::PutArgument", (89, 211, 212, 213, 214))
 expect_admitted("OrdinaryOnly", "Recipe::SetArgument", (90, 215, 216, 217, 218))
 expect_admitted("OrdinaryOnly", "Recipe::IfFalse", (104, 232))
+expect_admitted("OrdinaryOnly", "Recipe::IfTrue", (105, 233))
 expect_admitted("OrdinaryOnly", "Recipe::Goto", (106, 234, 235))
-expect_admitted("OrdinaryOnly", "Recipe::Div", (153,))
-expect_admitted("OrdinaryOnly", "Recipe::Add", (155,))
-expect_admitted("OrdinaryOnly", "Recipe::Sub", (156,))
-expect_admitted("OrdinaryOnly", "Recipe::GreaterThan", (163,))
-expect_admitted("OrdinaryOnly", "Recipe::StrictEqual", (169,))
+expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
+expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
+for raw, operation in (
+    (152, "Mul"), (153, "Div"), (154, "Mod"), (155, "Add"), (156, "Sub"),
+    (157, "Pow"), (158, "Shl"), (159, "Sar"), (160, "Shr"),
+    (161, "LessThan"), (162, "LessThanOrEqual"), (163, "GreaterThan"),
+    (164, "GreaterThanOrEqual"), (167, "Equal"), (168, "NotEqual"),
+    (169, "StrictEqual"), (170, "StrictNotEqual"), (171, "BitAnd"),
+    (172, "BitXor"), (173, "BitOr"),
+):
+    expect_admitted("OrdinaryOnly", f"Recipe::Binary(FunctionBinaryOp::{operation})", (raw,))
+for raw, predicate in (
+    (174, "IsUndefinedOrNull"), (240, "IsUndefined"), (241, "IsNull"),
+    (242, "TypeOfIsUndefined"), (243, "TypeOfIsFunction"),
+):
+    expect_admitted("OrdinaryOnly", f"Recipe::Predicate(FunctionPredicateOp::{predicate})", (raw,))
 found_admitted_registry = {
     raw: (audience, detail)
     for raw, _, audience, detail in registry_rows
@@ -1555,11 +1604,31 @@ if found_admitted_registry != expected_admitted_registry:
         f"found {found_admitted_registry}",
     )
 
+expected_stage_one_boundaries = {
+    34: (("call", 3, 1, 1, "NPop"), "Blocked", "Invocation"),
+    41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
+    236: (("call0", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
+    237: (("call1", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
+    238: (("call2", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
+    239: (("call3", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
+}
+found_stage_one_boundaries = {
+    raw: (pinned_descriptors[raw], registry_rows[raw][2], registry_rows[raw][3])
+    for raw in expected_stage_one_boundaries
+    if raw < len(pinned_descriptors) and raw < len(registry_rows)
+}
+if found_stage_one_boundaries != expected_stage_one_boundaries:
+    fail(
+        "function-translate-stage-one-boundary",
+        "zero-stack return-undefined and deferred plain calls must retain their pinned descriptor and policy rows; "
+        f"found {found_stage_one_boundaries}",
+    )
+
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 StackManipulation 19
-    Invocation 11 Completion 2 Exception 2 EvalOrModule 3 Binding 7 Property 16
-    ObjectConstruction 15 LexicalEnvironment 25 ControlFlow 6 DynamicScope 9
-    Iteration 11 Suspension 5 Operator 21 Specialized 9
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 11 Completion 1
+    Exception 2 EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
+    LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
+    Operator 4 Specialized 4
 """.split()
 expected_blocker_counts = dict(
     zip(blocker_count_tokens[::2], map(int, blocker_count_tokens[1::2]))
@@ -1581,7 +1650,7 @@ unexpected_blockers = sorted(
 if found_blocker_counts != expected_blocker_counts or unexpected_blockers:
     fail(
         "function-translate-registry-blockers",
-        "the blocked frontier must retain all 18 typed categories and their exact counts; "
+        "the blocked frontier must retain all 17 nonempty typed categories and their exact counts; "
         f"found {found_blocker_counts} with unexpected {unexpected_blockers}",
     )
 
@@ -1598,7 +1667,7 @@ dto_blocker_code, _, _ = unique_braced_item(
 if enum_variant_names(dto_blocker_code) != list(expected_blocker_counts):
     fail(
         "function-translate-dto-shape",
-        "TranslationBlocker must retain the 18 reviewed ordered categories; "
+        "TranslationBlocker must retain the 17 reviewed ordered categories and no retired empty bucket; "
         f"found {enum_variant_names(dto_blocker_code)}",
     )
 
@@ -1616,6 +1685,26 @@ for match in dto_forbidden.finditer(dto_production_code):
         "function-translate-dto-representation",
         "sanitized translation DTOs must not retain native PCs, image identities, wire strings, or executable runtime types; found "
         + location(function_translate_dto_relative, dto_source, match.start()),
+    )
+
+instruction_new_item, _, _ = unique_braced_item(
+    dto_production_code,
+    re.compile(
+        r"\bpub[ \t\n]*\([ \t\n]*super[ \t\n]*\)[ \t\n]+const[ \t\n]+fn"
+        r"[ \t\n]+new[ \t\n]*\([ \t\n]*audience[ \t\n]*:"
+    ),
+    "function-translate-dto-representation",
+    "FunctionInstruction constructor",
+)
+expected_instruction_new = (
+    "pub(super) const fn new( audience: InstructionAudience, "
+    "diagnostic: OperationDiagnostic, operation: FunctionOp<'image>, ) -> Self { "
+    "Self { audience, diagnostic, operation, } }"
+)
+if " ".join(instruction_new_item.split()) != expected_instruction_new:
+    fail(
+        "function-translate-dto-representation",
+        "FunctionInstruction::new must store its sanitized audience, diagnostic, and operation unchanged",
     )
 
 forbidden_dto_traits = {
@@ -1690,16 +1779,165 @@ translate_target_item, _, _ = unique_braced_item(
     "function-translate-atom-order",
     "target-filtered operand materializer",
 )
+pending_expansion_item, _, _ = unique_braced_item(
+    function_translate_production_code,
+    re.compile(r"\bstruct[ \t\n]+PendingExpansion\b[^{};]*\{"),
+    "function-translate-expansion",
+    "fixed-capacity pending expansion carrier",
+)
+if " ".join(pending_expansion_item.split()) != (
+    "struct PendingExpansion<'image> { "
+    "operations: [Option<PendingOperation<'image>>; 4], len: u8, }"
+):
+    fail(
+        "function-translate-expansion",
+        "pending expansions must remain a fixed four-slot carrier with no per-op allocation",
+    )
+pending_expansion_impl, _, _ = unique_braced_item(
+    function_translate_production_code,
+    re.compile(
+        r"\bimpl[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]+PendingExpansion"
+        r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
+    ),
+    "function-translate-expansion",
+    "pending expansion implementation",
+)
+normalized_pending_expansion = " ".join(pending_expansion_impl.split())
+found_pending_initializers = re.findall(
+    r"operations: \[([^]]+)\], len: ([1-4]),",
+    normalized_pending_expansion,
+)
+expected_pending_initializers = [
+    ("Some(operation), None, None, None", "1"),
+    ("Some(first), Some(second), None, None", "2"),
+    ("Some(first), Some(second), Some(third), None", "3"),
+    ("Some(first), Some(second), Some(third), Some(fourth)", "4"),
+]
+pending_helper_fragments = (
+    "const fn len(&self) -> usize { self.len as usize }",
+    "fn into_operations(self) -> impl Iterator<Item = PendingOperation<'image>> { "
+    "self.operations .into_iter() .take(usize::from(self.len)) .flatten() }",
+)
+if (
+    found_pending_initializers != expected_pending_initializers
+    or any(
+        normalized_pending_expansion.count(fragment) != 1
+        for fragment in pending_helper_fragments
+    )
+):
+    fail(
+        "function-translate-expansion",
+        "pending expansion constructors, length, and iterator must preserve exact source order",
+    )
 normalized_translate_target = " ".join(translate_target_item.split())
 if (
     normalized_translate_target.count(
-        "if target.accepts(audience) { lower_operation(recipe, operands) } else { Ok(PendingOperation::Ready(FunctionOp::OutsideTarget)) }"
+        "if target.accepts(audience) { lower_operation(recipe, operands) } else { "
+        "Ok(PendingExpansion::one(PendingOperation::Ready( FunctionOp::OutsideTarget, ))) }"
     )
     != 1
 ):
     fail(
         "function-translate-atom-order",
         "target audience rejection must precede all operand materialization",
+    )
+normalized_translate_lower = " ".join(translate_lower_item.split())
+if normalized_translate_lower.count(
+    "let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));"
+) != 1:
+    fail(
+        "function-translate-semantic-dispatch",
+        "the single-step lowering closure must pass its typed operation through unchanged",
+    )
+lower_match = re.search(
+    r"match \(recipe, operands\) \{ (.*) _ => Err\(",
+    normalized_translate_lower,
+)
+lowering_arm_matches = [] if lower_match is None else list(re.finditer(
+    r"\((Recipe::.*?), (NativeOperands::.*?)\) => (.*?)(?= \(Recipe::|$)",
+    lower_match.group(1).rstrip(", "),
+))
+found_single_step_arms = []
+for arm in lowering_arm_matches:
+    recipe_text, operands_text, body = arm.groups()
+    if "StackRecipe::" in recipe_text and "StackRecipe::Direct" not in recipe_text:
+        continue
+    found_single_step_arms.append((recipe_text, operands_text, body.rstrip(", ")))
+single_step_rows = """
+Recipe::PushI32 @ NativeOperands::I32(value) | NativeOperands::NoneInt(value) @ { ready(FunctionOp::PushI32(*value)) }
+Recipe::PushI32 @ NativeOperands::I8(value) @ { ready(FunctionOp::PushI32(i32::from(*value))) }
+Recipe::PushI32 @ NativeOperands::I16(value) @ { ready(FunctionOp::PushI32(i32::from(*value))) }
+Recipe::PushConstant @ NativeOperands::Const(index) @ { ready(FunctionOp::PushConstant(*index)) }
+Recipe::PushConstant @ NativeOperands::Const8(index) @ { ready(FunctionOp::PushConstant(u32::from(*index))) }
+Recipe::PushAtom @ NativeOperands::Atom(atom) @ { ready(FunctionOp::PushAtom(project_atom(*atom)?)) }
+Recipe::PushUndefined @ NativeOperands::None @ ready(FunctionOp::PushUndefined)
+Recipe::PushNull @ NativeOperands::None @ ready(FunctionOp::PushNull)
+Recipe::PushFalse @ NativeOperands::None @ ready(FunctionOp::PushBool(false))
+Recipe::PushTrue @ NativeOperands::None @ ready(FunctionOp::PushBool(true))
+Recipe::PushBigIntI32 @ NativeOperands::I32(value) @ { ready(FunctionOp::PushBigIntI32(*value)) }
+Recipe::PushEmptyString @ NativeOperands::None @ ready(FunctionOp::PushEmptyString)
+Recipe::Stack(capability::StackRecipe::Direct(operation)) @ NativeOperands::None @ { ready(FunctionOp::Stack(operation)) }
+Recipe::Unary(operation) @ NativeOperands::None @ ready(FunctionOp::Unary(operation))
+Recipe::PostDec @ NativeOperands::None @ ready(FunctionOp::PostDec)
+Recipe::PostInc @ NativeOperands::None @ ready(FunctionOp::PostInc)
+Recipe::GetLocal @ NativeOperands::Loc(index) | NativeOperands::NoneLoc(index) @ { ready(FunctionOp::GetLocal(*index)) }
+Recipe::GetLocal @ NativeOperands::Loc8(index) @ { ready(FunctionOp::GetLocal(u16::from(*index))) }
+Recipe::PutLocal @ NativeOperands::Loc(index) | NativeOperands::NoneLoc(index) @ { ready(FunctionOp::PutLocal(*index)) }
+Recipe::PutLocal @ NativeOperands::Loc8(index) @ { ready(FunctionOp::PutLocal(u16::from(*index))) }
+Recipe::SetLocal @ NativeOperands::Loc(index) | NativeOperands::NoneLoc(index) @ { ready(FunctionOp::SetLocal(*index)) }
+Recipe::SetLocal @ NativeOperands::Loc8(index) @ { ready(FunctionOp::SetLocal(u16::from(*index))) }
+Recipe::GetArgument @ NativeOperands::Arg(index) | NativeOperands::NoneArg(index) @ { ready(FunctionOp::GetArgument(*index)) }
+Recipe::PutArgument @ NativeOperands::Arg(index) | NativeOperands::NoneArg(index) @ { ready(FunctionOp::PutArgument(*index)) }
+Recipe::SetArgument @ NativeOperands::Arg(index) | NativeOperands::NoneArg(index) @ { ready(FunctionOp::SetArgument(*index)) }
+Recipe::Binary(operation) @ NativeOperands::None @ ready(FunctionOp::Binary(operation))
+Recipe::Predicate(operation) @ NativeOperands::None @ { ready(FunctionOp::Predicate(operation)) }
+Recipe::IfFalse @ NativeOperands::Label(label) @ Ok(PendingExpansion::one( PendingOperation::IfFalse(label.target_instruction()), ))
+Recipe::IfFalse @ NativeOperands::Label8(label) @ Ok(PendingExpansion::one( PendingOperation::IfFalse(label.target_instruction()), ))
+Recipe::IfTrue @ NativeOperands::Label(label) @ Ok(PendingExpansion::one( PendingOperation::IfTrue(label.target_instruction()), ))
+Recipe::IfTrue @ NativeOperands::Label8(label) @ Ok(PendingExpansion::one( PendingOperation::IfTrue(label.target_instruction()), ))
+Recipe::Goto @ NativeOperands::Label(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
+Recipe::Goto @ NativeOperands::Label8(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
+Recipe::Goto @ NativeOperands::Label16(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
+Recipe::Return @ NativeOperands::None @ ready(FunctionOp::Return)
+Recipe::ReturnUndefined @ NativeOperands::None @ ready(FunctionOp::ReturnUndefined)
+""".strip().splitlines()
+expected_single_step_arms = [
+    tuple(row.split(" @ ", 2)) for row in single_step_rows
+]
+if len(lowering_arm_matches) != 42 or found_single_step_arms != expected_single_step_arms:
+    fail(
+        "function-translate-semantic-dispatch",
+        "lower_operation must retain every reviewed single-step Recipe/operand and its exact normalized payload expression; "
+        f"found {found_single_step_arms}",
+    )
+stack_expansion_pattern = re.compile(
+    r"\(Recipe::Stack\(capability::StackRecipe::(\w+)\), NativeOperands::None\)"
+    r" => \{ Ok\(PendingExpansion::(two|three|four)\((.*?)\)\) \}"
+)
+stack_expansion_matches = stack_expansion_pattern.findall(normalized_translate_lower)
+found_stack_expansions = {
+    recipe: (arity, tuple(re.findall(r"FunctionStackOp::(\w+)", body)))
+    for recipe, arity, body in stack_expansion_matches
+}
+expected_stack_expansions = {
+    "Nip1": ("two", ("Perm3", "Nip")),
+    "Dup2": ("three", ("Dup1", "Dup", "Perm3")),
+    "Swap2": ("two", ("Rot4Left", "Rot4Left")),
+    "Rot3Left": ("two", ("Perm3", "Swap")),
+    "Rot3Right": ("two", ("Swap", "Perm3")),
+    "Rot5Left": ("four", ("Perm4", "Perm4", "Perm5", "Rot4Left")),
+}
+if (
+    len(stack_expansion_matches) != 6
+    or found_stack_expansions != expected_stack_expansions
+    or normalized_translate_lower.count(
+        "(Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),"
+    ) != 1
+):
+    fail(
+        "function-translate-expansion",
+        "the six stack expansions and single zero-stack ReturnUndefined lowering must retain their exact allocation-free shape; "
+        f"found {found_stack_expansions}",
     )
 if re.search(
     r"\b(?:OperationDiagnostic|opcode|diagnostic|mnemonic)\b|\.[ \t\n]*name[ \t\n]*\(",
@@ -1733,13 +1971,49 @@ if any(normalized_translate_native.count(fragment) != 1 for fragment in diagnost
 
 branch_fragments = (
     "source_to_output.push(output_index);",
+    "PendingOperation::Ready(operation) => operation,",
     "PendingOperation::IfFalse(target) => { FunctionOp::IfFalse(resolve_target(&source_to_output, target)?) }",
+    "PendingOperation::IfTrue(target) => { FunctionOp::IfTrue(resolve_target(&source_to_output, target)?) }",
     "PendingOperation::Goto(target) => { FunctionOp::Goto(resolve_target(&source_to_output, target)?) }",
+    "output.push(FunctionInstruction::new( instruction.audience, instruction.diagnostic, operation, ));",
 )
 if any(normalized_translate_native.count(fragment) != 1 for fragment in branch_fragments):
     fail(
         "function-translate-control-flow",
-        "translation must retain one source-to-output map and resolve both branch kinds through it in the second pass",
+        "translation must retain one source-to-output map and resolve all three branch kinds through it in the second pass",
+    )
+source_map_fragments = (
+    "let mut output_len = 0_usize;",
+    "let output_index = u32::try_from(output_len)",
+    "source_to_output.push(output_index);",
+    "let (audience, expansion) = match row.policy",
+    "output_len = output_len .checked_add(expansion.len())",
+    "pending.push(PendingInstruction",
+)
+source_map_offsets = [
+    normalized_translate_native.find(fragment) for fragment in source_map_fragments
+]
+output_len_writes = re.findall(
+    r"\boutput_len[ \t\n]*(?:[+*/%&|^-]?=)(?!=)",
+    translate_native_item,
+)
+output_index_writes = re.findall(
+    r"\boutput_index[ \t\n]*(?:[+*/%&|^-]?=)(?!=)",
+    translate_native_item,
+)
+if (
+    any(offset < 0 for offset in source_map_offsets)
+    or source_map_offsets != sorted(source_map_offsets)
+    or any(normalized_translate_native.count(fragment) != 1 for fragment in source_map_fragments)
+    or len(output_len_writes) != 2
+    or len(output_index_writes) != 1
+    or normalized_translate_native.count(
+        "pending .try_reserve_exact(plan.instructions().len())"
+    ) != 1
+):
+    fail(
+        "function-translate-control-flow",
+        "each physical source must reserve one pending slot and map to the cumulative output length before its expansion",
     )
 resolve_target_item, _, _ = unique_braced_item(
     function_translate_production_code,
@@ -1748,14 +2022,8 @@ resolve_target_item, _, _ = unique_braced_item(
     "sanitized branch-target resolver",
 )
 normalized_resolve_target = " ".join(resolve_target_item.split())
-if not all(
-    normalized_resolve_target.count(fragment) == 1
-    for fragment in (
-        "source_to_output .get(target_instruction as usize)",
-        ".copied()",
-        ".ok_or_else(FunctionTranslateError::invalid_branch_target)",
-    )
-):
+expected_resolve_target = "fn resolve_target( source_to_output: &[u32], target_instruction: u32, ) -> Result<u32, FunctionTranslateError> { source_to_output .get(target_instruction as usize) .copied() .ok_or_else(FunctionTranslateError::invalid_branch_target) }"
+if normalized_resolve_target != expected_resolve_target:
     fail(
         "function-translate-control-flow",
         "branch targets must remain bounds-checked instruction indexes in the sanitized output map",
@@ -1820,8 +2088,10 @@ expected_ordinary_visible_items = [
         struct:OrdinaryLeafMetadataDraft fn:argument_count fn:defined_argument_count
         fn:local_count fn:max_stack fn:is_strict fn:has_simple_parameter_list
         fn:has_prototype fn:allows_new_target fn:allows_arguments fn:strip_variable_debug
-        enum:DetachedPrimitive enum:OrdinaryLeafOp struct:OrdinaryLeafDraft fn:metadata
-        fn:constants fn:code fn:into_parts enum:OrdinaryLeafReadError
+        enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafStackOp
+        enum:OrdinaryLeafUnaryOp enum:OrdinaryLeafBinaryOp enum:OrdinaryLeafPredicateOp
+        struct:OrdinaryLeafDraft fn:metadata fn:constants fn:code fn:into_parts
+        enum:OrdinaryLeafReadError
         fn:decode_trusted_ordinary_leaf
         """.split()
     )
@@ -1848,8 +2118,9 @@ expected_ordinary_top_level_items = [
     tuple(entry.split(":", 1))
     for entry in """
     struct:RootFunctionConstantSelector struct:OrdinaryLeafMetadataDraft
-    enum:DetachedPrimitive enum:OrdinaryLeafOp struct:OrdinaryLeafDraft
-    enum:OrdinaryLeafReadError struct:AdmissionLimits
+    enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafStackOp
+    enum:OrdinaryLeafUnaryOp enum:OrdinaryLeafBinaryOp enum:OrdinaryLeafPredicateOp
+    struct:OrdinaryLeafDraft enum:OrdinaryLeafReadError struct:AdmissionLimits
     """.split()
 ]
 if ordinary_top_level_items != expected_ordinary_top_level_items:
@@ -1895,33 +2166,39 @@ ordinary_lower_operation, _, _ = unique_braced_item(
     "ordinary-leaf-translated-code",
     "sanitized ordinary operation lowering",
 )
-ordinary_operation_variants = re.findall(
-    r"FunctionOp[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
-    ordinary_lower_operation,
-)
-expected_ordinary_operation_variants = [
-    "PushI32",
-    "PushConstant",
-    "GetLocal",
-    "PutLocal",
-    "SetLocal",
-    "GetArgument",
-    "PutArgument",
-    "SetArgument",
-    "Add",
-    "Sub",
-    "Div",
-    "GreaterThan",
-    "StrictEqual",
-    "IfFalse",
-    "Goto",
-    "Return",
-]
-if ordinary_operation_variants != expected_ordinary_operation_variants:
+ordinary_handoff_rows = """
+FunctionOp::PushI32(value) @ Ok(OrdinaryLeafOp::PushI32(*value))
+FunctionOp::PushConstant(index) @ lower_constant(*index, constant_count)
+FunctionOp::PushUndefined @ Ok(OrdinaryLeafOp::PushUndefined)
+FunctionOp::PushNull @ Ok(OrdinaryLeafOp::PushNull)
+FunctionOp::PushBool(value) @ Ok(OrdinaryLeafOp::PushBool(*value))
+FunctionOp::PushBigIntI32(value) @ Ok(OrdinaryLeafOp::PushBigIntI32(*value))
+FunctionOp::PushEmptyString @ Ok(OrdinaryLeafOp::PushEmptyString)
+FunctionOp::Stack(operation) @ Ok(OrdinaryLeafOp::Stack(match operation { FunctionStackOp::Drop => OrdinaryLeafStackOp::Drop, FunctionStackOp::Nip => OrdinaryLeafStackOp::Nip, FunctionStackOp::Dup => OrdinaryLeafStackOp::Dup, FunctionStackOp::Dup1 => OrdinaryLeafStackOp::Dup1, FunctionStackOp::Dup3 => OrdinaryLeafStackOp::Dup3, FunctionStackOp::Insert2 => OrdinaryLeafStackOp::Insert2, FunctionStackOp::Insert3 => OrdinaryLeafStackOp::Insert3, FunctionStackOp::Insert4 => OrdinaryLeafStackOp::Insert4, FunctionStackOp::Perm3 => OrdinaryLeafStackOp::Perm3, FunctionStackOp::Perm4 => OrdinaryLeafStackOp::Perm4, FunctionStackOp::Perm5 => OrdinaryLeafStackOp::Perm5, FunctionStackOp::Swap => OrdinaryLeafStackOp::Swap, FunctionStackOp::Rot4Left => OrdinaryLeafStackOp::Rot4Left, }))
+FunctionOp::Unary(operation) @ Ok(OrdinaryLeafOp::Unary(match operation { FunctionUnaryOp::Neg => OrdinaryLeafUnaryOp::Neg, FunctionUnaryOp::Plus => OrdinaryLeafUnaryOp::Plus, FunctionUnaryOp::Dec => OrdinaryLeafUnaryOp::Dec, FunctionUnaryOp::Inc => OrdinaryLeafUnaryOp::Inc, FunctionUnaryOp::BitNot => OrdinaryLeafUnaryOp::BitNot, FunctionUnaryOp::LogicalNot => OrdinaryLeafUnaryOp::LogicalNot, FunctionUnaryOp::TypeOf => OrdinaryLeafUnaryOp::TypeOf, }))
+FunctionOp::PostDec @ Ok(OrdinaryLeafOp::PostDec)
+FunctionOp::PostInc @ Ok(OrdinaryLeafOp::PostInc)
+FunctionOp::GetLocal(index) @ lower_local(*index, local_count, OrdinaryLeafOp::GetLocal)
+FunctionOp::PutLocal(index) @ lower_local(*index, local_count, OrdinaryLeafOp::PutLocal)
+FunctionOp::SetLocal(index) @ lower_local(*index, local_count, OrdinaryLeafOp::SetLocal)
+FunctionOp::GetArgument(index) @ { lower_argument(*index, argument_count, OrdinaryLeafOp::GetArgument) }
+FunctionOp::PutArgument(index) @ { lower_argument(*index, argument_count, OrdinaryLeafOp::PutArgument) }
+FunctionOp::SetArgument(index) @ { lower_argument(*index, argument_count, OrdinaryLeafOp::SetArgument) }
+FunctionOp::Binary(operation) @ Ok(OrdinaryLeafOp::Binary(match operation { FunctionBinaryOp::Add => OrdinaryLeafBinaryOp::Add, FunctionBinaryOp::Sub => OrdinaryLeafBinaryOp::Sub, FunctionBinaryOp::Mul => OrdinaryLeafBinaryOp::Mul, FunctionBinaryOp::Div => OrdinaryLeafBinaryOp::Div, FunctionBinaryOp::Mod => OrdinaryLeafBinaryOp::Mod, FunctionBinaryOp::Pow => OrdinaryLeafBinaryOp::Pow, FunctionBinaryOp::Shl => OrdinaryLeafBinaryOp::Shl, FunctionBinaryOp::Sar => OrdinaryLeafBinaryOp::Sar, FunctionBinaryOp::Shr => OrdinaryLeafBinaryOp::Shr, FunctionBinaryOp::LessThan => OrdinaryLeafBinaryOp::LessThan, FunctionBinaryOp::LessThanOrEqual => OrdinaryLeafBinaryOp::LessThanOrEqual, FunctionBinaryOp::GreaterThan => OrdinaryLeafBinaryOp::GreaterThan, FunctionBinaryOp::GreaterThanOrEqual => OrdinaryLeafBinaryOp::GreaterThanOrEqual, FunctionBinaryOp::Equal => OrdinaryLeafBinaryOp::Equal, FunctionBinaryOp::NotEqual => OrdinaryLeafBinaryOp::NotEqual, FunctionBinaryOp::StrictEqual => OrdinaryLeafBinaryOp::StrictEqual, FunctionBinaryOp::StrictNotEqual => OrdinaryLeafBinaryOp::StrictNotEqual, FunctionBinaryOp::BitAnd => OrdinaryLeafBinaryOp::BitAnd, FunctionBinaryOp::BitXor => OrdinaryLeafBinaryOp::BitXor, FunctionBinaryOp::BitOr => OrdinaryLeafBinaryOp::BitOr, }))
+FunctionOp::Predicate(operation) @ Ok(OrdinaryLeafOp::Predicate(match operation { FunctionPredicateOp::IsUndefinedOrNull => OrdinaryLeafPredicateOp::IsUndefinedOrNull, FunctionPredicateOp::IsUndefined => OrdinaryLeafPredicateOp::IsUndefined, FunctionPredicateOp::IsNull => OrdinaryLeafPredicateOp::IsNull, FunctionPredicateOp::TypeOfIsUndefined => OrdinaryLeafPredicateOp::TypeOfIsUndefined, FunctionPredicateOp::TypeOfIsFunction => OrdinaryLeafPredicateOp::TypeOfIsFunction, }))
+FunctionOp::IfFalse(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfFalse) }
+FunctionOp::IfTrue(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfTrue) }
+FunctionOp::Goto(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto) }
+FunctionOp::Return @ Ok(OrdinaryLeafOp::Return)
+FunctionOp::ReturnUndefined @ Ok(OrdinaryLeafOp::ReturnUndefined)
+""".strip().splitlines()
+expected_ordinary_handoff = [tuple(row.split(" @ ", 1)) for row in ordinary_handoff_rows]
+found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionOp::")
+if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "ordinary_leaf must map the sanitized ordinary operation cohort one-for-one; "
-        f"found {ordinary_operation_variants}",
+        "all 24 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        f"found {found_ordinary_handoff}",
     )
 if (
     len(re.findall(r"\binstruction[ \t\n]*\.[ \t\n]*supports_ordinary[ \t\n]*\(", ordinary_lower_code)) != 1
@@ -2782,6 +3059,7 @@ if consumer_exists:
         consumer_production_code,
     )
     if consumer_macro_invocations != [
+        "matches",
         "vec",
         "format",
         "format",
@@ -2819,8 +3097,12 @@ if consumer_exists:
         ]
         expected_consumer_facade_names = expected_scalar_facade_names | {
             "DetachedPrimitive",
+            "OrdinaryLeafBinaryOp",
             "OrdinaryLeafOp",
+            "OrdinaryLeafPredicateOp",
             "OrdinaryLeafReadError",
+            "OrdinaryLeafStackOp",
+            "OrdinaryLeafUnaryOp",
             "RootFunctionConstantSelector",
             "decode_trusted_ordinary_leaf",
         }
@@ -2988,17 +3270,46 @@ if consumer_exists:
     if (
         any(len(matches) != 1 for matches in ordinary_publication_matches)
         or ordinary_publication_offsets != sorted(ordinary_publication_offsets)
+        or any(
+            ordinary_publication_bridge_code[:offset].count("{")
+            - ordinary_publication_bridge_code[:offset].count("}") != 1
+            for offset in ordinary_publication_offsets
+        )
     ):
         fail(
             "ordinary-leaf-consumer-publication",
             "the ordinary-leaf bridge must decode and detach before constructing the draft, then run the dedicated verifier before verified publication and closure allocation",
         )
-    if normalized_code_sha256(ordinary_publication_bridge_code) != (
-        "fece37e905ce90f8a98ba655f9995a648e367c8938ec15c44ac5237bce7ed247"
+    normalized_ordinary_publication = " ".join(ordinary_publication_bridge_code.split())
+    synthetic_publication_fragments = (
+        "let original_constant_count = detached_constants.len();",
+        "let synthetic_constant_count = detached_code .iter() .filter(",
+        "let total_constant_count = original_constant_count .checked_add(synthetic_constant_count)",
+        "u32::try_from(total_constant_count)",
+        "for constant in detached_constants { constants.push(lower_detached_primitive(constant)?); }",
+        "constants .try_reserve_exact(synthetic_constant_count)",
+        "for operation in &detached_code {",
+        "OrdinaryLeafOp::PushBigIntI32(value) => constants.push(lower_primitive_constant( Value::BigInt(JsBigInt::from(*value)), )?)",
+        "OrdinaryLeafOp::PushEmptyString => { constants.push(UnlinkedConstant::atom_string(JsString::from_static(",
+        "let mut next_synthetic_index = u32::try_from(original_constant_count)",
+        "for operation in detached_code { instructions.push(lower_ordinary_leaf_op(",
+        "if next_synthetic_index as usize != total_constant_count",
+    )
+    synthetic_publication_offsets = [
+        normalized_ordinary_publication.find(fragment)
+        for fragment in synthetic_publication_fragments
+    ]
+    if (
+        any(offset < 0 for offset in synthetic_publication_offsets)
+        or synthetic_publication_offsets != sorted(synthetic_publication_offsets)
+        or any(
+            normalized_ordinary_publication.count(fragment) != 1
+            for fragment in synthetic_publication_fragments
+        )
     ):
         fail(
             "ordinary-leaf-consumer-publication",
-            "the ordinary-leaf bridge metadata and capability lowering drifted from its reviewed normalized implementation",
+            "original constants must publish before code-ordered synthetic BigInts/empty atoms and the matching stable PushConst index pass",
         )
 
     consumer_runtime_impl_code, _, _ = unique_braced_item(
@@ -3194,9 +3505,152 @@ if consumer_exists:
             f"{consumer_relative} must decode BigIntBytes exactly once through the unique canonical BigInt helper and lower all primitive pushes through reviewed helpers",
         )
 
+    ordinary_detached_lowering, _, _ = unique_braced_item(
+        consumer_production_code,
+        re.compile(r"\bfn[ \t\n]+lower_detached_primitive\b[^{};]*\{"),
+        "ordinary-leaf-consumer-lowering",
+        "detached primitive lowering",
+    )
+    ordinary_instruction_lowering, _, _ = unique_braced_item(
+        consumer_production_code,
+        re.compile(r"\bfn[ \t\n]+lower_ordinary_leaf_op\b[^{};]*\{"),
+        "ordinary-leaf-consumer-lowering",
+        "typed instruction lowering",
+    )
+    detached_variants = re.findall(
+        r"\bDetachedPrimitive[ \t\n]*::[ \t\n]*(\w+)",
+        ordinary_detached_lowering,
+    )
+    normalized_detached_lowering = " ".join(ordinary_detached_lowering.split())
+    if detached_variants != [
+        "Undefined", "Null", "Bool", "Int", "Float64Bits", "String",
+        "BigIntSignedLeCanonical",
+    ] or any(
+        normalized_detached_lowering.count(fragment) != 1
+        for fragment in (
+            "DetachedPrimitive::Float64Bits(bits) => Value::Float(f64::from_bits(bits))",
+            "DetachedPrimitive::String(units) => Value::String( JsString::try_from_utf16(units.into_vec())",
+            "DetachedPrimitive::BigIntSignedLeCanonical(bytes) => { Value::BigInt(decode_bigint_constant(&bytes)?) }",
+            "lower_primitive_constant(value)",
+        )
+    ):
+        fail(
+            "ordinary-leaf-consumer-lowering",
+            "detached primitives must retain bit-preserving Float64, canonical BigInt, UTF-16 String, and primitive publication",
+        )
+    published_variants = re.findall(
+        r"\bOrdinaryLeafOp[ \t\n]*::[ \t\n]*(\w+)",
+        ordinary_instruction_lowering,
+    )
+    expected_published_variants = """
+        PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
+        PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
+        GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto
+        Return ReturnUndefined
+    """.split()
+    found_publisher_arms = rustfmt_match_arms(
+        ordinary_instruction_lowering, "OrdinaryLeafOp::"
+    )
+    publisher_families = {
+        "Stack": ("Drop", "Nip", "Dup", "Dup1", "Dup3", "Insert2", "Insert3", "Insert4", "Perm3", "Perm4", "Perm5", "Swap", "Rot4Left"),
+        "Unary": ("Neg", "Plus", "Dec", "Inc", "BitNot", "LogicalNot", "TypeOf"),
+        "Binary": ("Add", "Sub", "Mul", "Div", "Mod", "Pow", "Shl", "Sar", "Shr", "LessThan", "LessThanOrEqual", "GreaterThan", "GreaterThanOrEqual", "Equal", "NotEqual", "StrictEqual", "StrictNotEqual", "BitAnd", "BitXor", "BitOr"),
+        "Predicate": ("IsUndefinedOrNull", "IsUndefined", "IsNull", "TypeOfIsUndefined", "TypeOfIsFunction"),
+    }
+    engine_renames = {
+        "LogicalNot": "Not", "LessThan": "Lt", "LessThanOrEqual": "Lte",
+        "GreaterThan": "Gt", "GreaterThanOrEqual": "Gte", "Equal": "Eq",
+        "NotEqual": "Neq", "StrictEqual": "StrictEq", "StrictNotEqual": "StrictNeq",
+    }
+    publisher_arm_map = dict(found_publisher_arms)
+    for family, variants in publisher_families.items():
+        expected_body = "match operation { " + " ".join(
+            f"OrdinaryLeaf{family}Op::{variant} => "
+            f"Instruction::{engine_renames.get(variant, variant)},"
+            for variant in variants
+        ) + " }"
+        if publisher_arm_map.get(f"OrdinaryLeafOp::{family}(operation)") != expected_body:
+            fail(
+                "ordinary-leaf-consumer-lowering",
+                f"the {family.lower()} publisher mapping drifted",
+            )
+    publisher_direct_rows = """
+OrdinaryLeafOp::PushI32(value) @ Instruction::PushI32(value)
+OrdinaryLeafOp::PushConst(index) @ Instruction::PushConst(index)
+OrdinaryLeafOp::PushUndefined @ Instruction::Undefined
+OrdinaryLeafOp::PushNull @ Instruction::Null
+OrdinaryLeafOp::PushBool(false) @ Instruction::PushFalse
+OrdinaryLeafOp::PushBool(true) @ Instruction::PushTrue
+OrdinaryLeafOp::PostDec @ Instruction::PostDec
+OrdinaryLeafOp::PostInc @ Instruction::PostInc
+OrdinaryLeafOp::GetLocal(index) @ Instruction::GetLocal(index)
+OrdinaryLeafOp::PutLocal(index) @ Instruction::PutLocal(index)
+OrdinaryLeafOp::SetLocal(index) @ Instruction::SetLocal(index)
+OrdinaryLeafOp::GetArgument(index) @ Instruction::GetArg(index)
+OrdinaryLeafOp::PutArgument(index) @ Instruction::PutArg(index)
+OrdinaryLeafOp::SetArgument(index) @ Instruction::SetArg(index)
+OrdinaryLeafOp::IfFalse(target) @ Instruction::IfFalse(target)
+OrdinaryLeafOp::IfTrue(target) @ Instruction::IfTrue(target)
+OrdinaryLeafOp::Goto(target) @ Instruction::Goto(target)
+OrdinaryLeafOp::Return @ Instruction::Return
+OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
+""".strip().splitlines()
+    excluded_publisher_arms = {
+        *(f"OrdinaryLeafOp::{family}(operation)" for family in publisher_families),
+        "OrdinaryLeafOp::PushBigIntI32(_) | OrdinaryLeafOp::PushEmptyString",
+    }
+    found_publisher_direct = [
+        arm for arm in found_publisher_arms if arm[0] not in excluded_publisher_arms
+    ]
+    expected_publisher_direct = [
+        tuple(row.split(" @ ", 1)) for row in publisher_direct_rows
+    ]
+    normalized_instruction_lowering = " ".join(ordinary_instruction_lowering.split())
+    synthetic_index_arm, _, _ = unique_braced_item(
+        ordinary_instruction_lowering,
+        re.compile(
+            r"OrdinaryLeafOp[ \t\n]*::[ \t\n]*PushBigIntI32[ \t\n]*\([^)]*\)"
+            r"[ \t\n]*\|[ \t\n]*OrdinaryLeafOp[ \t\n]*::[ \t\n]*PushEmptyString"
+            r"[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "ordinary-leaf-consumer-lowering",
+        "synthetic constant index arm",
+    )
+    normalized_synthetic_index = " ".join(synthetic_index_arm.split())
+    synthetic_index_fragments = (
+        "let index = *next_synthetic_index;",
+        "*next_synthetic_index = next_synthetic_index.checked_add(1)",
+        "Instruction::PushConst(index)",
+    )
+    synthetic_index_offsets = [
+        normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
+    ]
+    if (
+        len(found_publisher_arms) != 24
+        or found_publisher_direct != expected_publisher_direct
+        or published_variants != expected_published_variants
+        or any(
+        normalized_instruction_lowering.count(fragment) != 1
+        for fragment in (
+            "OrdinaryLeafOp::PushBigIntI32(_) | OrdinaryLeafOp::PushEmptyString =>",
+        )
+        )
+        or normalized_instruction_lowering.count("Instruction::PushConst(index)") != 2
+        or (
+            any(offset < 0 for offset in synthetic_index_offsets)
+            or synthetic_index_offsets != sorted(synthetic_index_offsets)
+            or any(
+                normalized_synthetic_index.count(fragment) != 1
+                for fragment in synthetic_index_fragments
+            )
+        )
+    ):
+        fail(
+            "ordinary-leaf-consumer-lowering",
+            "ordinary operations must retain their complete typed publisher mapping and stable synthetic indices",
+        )
+
     ordinary_consumer_seals = (
-        ("bit-preserving detached primitive lowering", "lower_detached_primitive", "9f4651e84dfd23fa3e53f3e2fa2a21f8b1088b904d8f9cb3258f3b85db2b5914"),
-        ("one-for-one typed instruction lowering", "lower_ordinary_leaf_op", "a24942efe9e7af1609321e37078a648cb1d8618c20c6613d08b34f9565a67b38"),
         ("typed-verifier error classification", "map_ordinary_leaf_verification_error", "43d7c7fd3f77c74c9a4ba88cfa14f7d7e8394f7be1100214e8b08a424a8b59ee"),
         ("archive error classification", "map_ordinary_leaf_read_error", "5bb4c99694272a03044d353e48e3f3848ade1e1bfbad2b87a552e1bafa45ba74"),
     )
@@ -3261,12 +3715,12 @@ if consumer_exists:
         )
 
     if (
-        len(re.findall(r"\bUnlinkedConstant[ \t\n]*::[ \t\n]*atom_string[ \t\n]*\(", consumer_code)) != 2
-        or len(re.findall(r"\batom_string\b", consumer_code)) != 2
+        len(re.findall(r"\bUnlinkedConstant[ \t\n]*::[ \t\n]*atom_string[ \t\n]*\(", consumer_code)) != 3
+        or len(re.findall(r"\batom_string\b", consumer_code)) != 3
     ):
         fail(
             "binary-object-consumer-atom-string",
-            "only direct empty String and authenticated ordinary atom String may use the atom-string publication marker",
+            "only scalar direct/ordinary atom Strings and the ordinary direct-empty synthetic constant may use the atom-string publication marker",
         )
 
     consumer_forbidden_patterns = (
@@ -3396,7 +3850,7 @@ expected_ordinary_closure_arm = 'RootPublication::TrustedOrdinaryLeaf => { retur
 if (
     len(ordinary_verifier_arms) != 2
     or normalized_code_sha256(ordinary_verifier_arms[0])
-    != "e8d122cc4fb0e2bd50fb72133a584d5dbf2fe46cc670902253b72c28e099c329"
+        != "78509ea6396da4c20a0ee2b34304ac0224552e20e3b89e4346ab8173810c8c7e"
     or " ".join(ordinary_verifier_arms[1].split())
     != " ".join(rust_code_only(expected_ordinary_closure_arm).split())
 ):
@@ -3423,6 +3877,21 @@ if " ".join(plain_primitive_code.split()) != " ".join(expected_plain_primitive.s
     fail(
         "ordinary-leaf-plain-primitive",
         "ordinary-leaf verification must classify only UnlinkedConstantKind::Primitive as a plain primitive",
+    )
+empty_atom_code, _, _ = unique_braced_item(
+    function_code,
+    re.compile(
+        r"(?m)^[ \t]*pub[ \t\n]*\([ \t\n]*crate[ \t\n]*\)[ \t\n]+fn"
+        r"[ \t\n]+is_empty_atom_string\b[^{};]*\{"
+    ),
+    "ordinary-leaf-plain-primitive",
+    "exact empty atom-String discriminator",
+)
+expected_empty_atom = "pub(crate) fn is_empty_atom_string(&self) -> bool { matches!( &self.0, UnlinkedConstantKind::AtomString(Value::String(value)) if value.is_empty() ) }"
+if " ".join(empty_atom_code.split()) != expected_empty_atom:
+    fail(
+        "ordinary-leaf-plain-primitive",
+        "ordinary-leaf verification may admit only the exact empty atom String beside plain primitives",
     )
 
 context_relative = "src/runtime/context.rs"
@@ -3479,6 +3948,50 @@ if any(" ".join(code.split()).count(fragment) != 1 for code, fragment in engine_
     fail(
         "scalar-string-engine-path",
         "tagged integer atoms must verify within JS_ATOM_MAX_INT and execute through one fresh narrow String instruction",
+    )
+
+normalized_bytecode = " ".join(bytecode_code.split())
+if normalized_bytecode.count("| Self::ReturnUndefined | Self::ThrowRedeclaration(_)" ) != 1:
+    fail(
+        "ordinary-leaf-engine-semantics",
+        "ReturnUndefined must remain a zero-pop, zero-push terminal instruction",
+    )
+predicate_requirements = {
+    "IsUndefinedOrNull": ("matches!(value, Value::Undefined | Value::Null)", False),
+    "IsUndefined": ("matches!(value, Value::Undefined)", False),
+    "IsNull": ("matches!(value, Value::Null)", False),
+    "TypeOfIsUndefined": ("matches!(value, Value::Undefined) || host.is_html_dda(&value)?", True),
+    "TypeOfIsFunction": ("!host.is_html_dda(&value)? && host.is_callable(&value)?", True),
+}
+for instruction, (required, uses_html_dda) in predicate_requirements.items():
+    arm, _, _ = unique_braced_item(
+        vm_code,
+        re.compile(rf"\bInstruction[ \t\n]*::[ \t\n]*{instruction}[ \t\n]*=>[ \t\n]*\{{"),
+        "ordinary-leaf-engine-semantics",
+        f"VM {instruction} arm",
+    )
+    normalized_arm = " ".join(arm.split())
+    if (
+        normalized_arm.count("let value = self.pop()?;") != 1
+        or normalized_arm.count(required) != 1
+        or ("host.is_html_dda" in normalized_arm) != uses_html_dda
+    ):
+        fail(
+            "ordinary-leaf-engine-semantics",
+            f"VM {instruction} must retain its exact QuickJS tag/HTMLDDA predicate",
+        )
+return_undefined_arm, _, _ = unique_braced_item(
+    vm_code,
+    re.compile(r"\bInstruction[ \t\n]*::[ \t\n]*ReturnUndefined[ \t\n]*=>[ \t\n]*\{"),
+    "ordinary-leaf-engine-semantics",
+    "VM ReturnUndefined arm",
+)
+if " ".join(return_undefined_arm.split()).count(
+    "return Ok(Some(Completion::Return(Value::Undefined)));"
+) != 1:
+    fail(
+        "ordinary-leaf-engine-semantics",
+        "ReturnUndefined must complete directly with undefined without reading the operand stack",
     )
 
 src_root = root / "src"
@@ -4955,7 +5468,7 @@ printf '%s\n' \
     'mod scalar_script;' \
     'mod wire;' \
     'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
-    'pub(super) use ordinary_leaf::{DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafReadError, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
+    'pub(super) use ordinary_leaf::{DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafPredicateOp, OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 cp -- "$repository_root/src/runtime/binary_object/function_translate/mod.rs" \
     "$fixture/src/runtime/binary_object/function_translate/mod.rs"
@@ -5536,8 +6049,8 @@ expect_rewrite_rejected consumer-integer-via-cpool binary-object-consumer-scalar
     'ScalarValueDraft::IntegerAtomString(value) => lower_primitive_constant(Value::String(JsString::from_fresh_decimal_u32(value))).map(LoweredScalar::Constant),'
 expect_rewrite_rejected consumer-empty-primitive binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
-    'UnlinkedConstant::atom_string(JsString::from_static(""))' \
-    'lower_primitive_constant(Value::String(JsString::from_static("")))?'
+    $'        ScalarValueDraft::EmptyString => Ok(LoweredScalar::AtomString(\n            UnlinkedConstant::atom_string(JsString::from_static("")),\n        )),' \
+    $'        ScalarValueDraft::EmptyString => Ok(LoweredScalar::Constant(\n            lower_primitive_constant(Value::String(JsString::from_static("")))?,\n        )),'
 expect_rewrite_rejected consumer-bigint-dead-path-coercion binary-object-consumer-scalar-mapping \
     src/runtime/binary_object_publish.rs \
     $'        ScalarValueDraft::BigIntBytes(bytes) => {\n            lower_bigint_constant(&bytes).map(LoweredScalar::Constant)\n        }' \
@@ -5579,8 +6092,8 @@ expect_rewrite_rejected ordinary-consumer-float-normalization ordinary-leaf-cons
     'DetachedPrimitive::Float64Bits(bits) => Value::number(f64::from_bits(bits)),'
 expect_rewrite_rejected ordinary-consumer-op-remap ordinary-leaf-consumer-lowering \
     src/runtime/binary_object_publish.rs \
-    'OrdinaryLeafOp::Add => Instruction::Add,' \
-    'OrdinaryLeafOp::Add => Instruction::Sub,'
+    'OrdinaryLeafBinaryOp::Add => Instruction::Add,' \
+    'OrdinaryLeafBinaryOp::Add => Instruction::Sub,'
 expect_rewrite_rejected ordinary-consumer-verifier-dead-branch ordinary-leaf-consumer-publication \
     src/runtime/binary_object_publish.rs \
     $'        super::bytecode_publish::verify_unlinked_ordinary_leaf(&function)\n            .map_err(map_ordinary_leaf_verification_error)?;' \
@@ -5624,8 +6137,8 @@ expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shap
     'pub(crate) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};'
 expect_rewrite_rejected ordinary-facade-extra-type ordinary-leaf-facade-shape \
     src/runtime/binary_object/mod.rs \
-    'DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp,' \
-    'BytecodeImage, DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp,'
+    'DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafDraft,' \
+    'BytecodeImage, DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafDraft,'
 expect_rewrite_rejected ordinary-facade-wider-visibility ordinary-leaf-facade-shape \
     src/runtime/binary_object/mod.rs \
     'pub(super) use ordinary_leaf::{' \
@@ -5655,6 +6168,10 @@ expect_rewrite_rejected ordinary-verifier-primitive-broadening ordinary-leaf-pla
     src/function.rs \
     'matches!(self.0, UnlinkedConstantKind::Primitive(_))' \
     'matches!(self.0, UnlinkedConstantKind::Primitive(_) | UnlinkedConstantKind::AtomString(_))'
+expect_rewrite_rejected ordinary-verifier-empty-atom-broadening ordinary-leaf-plain-primitive \
+    src/function.rs \
+    'UnlinkedConstantKind::AtomString(Value::String(value)) if value.is_empty()' \
+    'UnlinkedConstantKind::AtomString(Value::String(_))'
 expect_rewrite_rejected ordinary-public-api-selector-collapse ordinary-leaf-public-api \
     src/runtime/context.rs \
     $'            bytes,\n            root_constant_index,\n        );' \
@@ -5681,11 +6198,13 @@ expect_rewrite_rejected scalar-unary-name-widening scalar-unary-operation-shape 
 expect_rejected translate-extra-module function-translate-module-set \
     src/runtime/binary_object/function_translate/escape.rs 'fn escape() {}'
 expect_full_rewrite_table <<'TRANSLATE_CANARIES'
-translate-registry-raw-drift|function-translate-registry-raw|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Add),|    row!(154, None, OrdinaryOnly, Recipe::Add),
-translate-registry-format-drift|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Add),|    row!(155, I32, OrdinaryOnly, Recipe::Add),
-translate-registry-policy-swap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(152, None, Blocked, Operator),\n    row!(153, None, OrdinaryOnly, Recipe::Div),|    row!(152, None, OrdinaryOnly, Recipe::Div),\n    row!(153, None, Blocked, Operator),
-translate-registry-recipe-remap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Add),|    row!(155, None, OrdinaryOnly, Recipe::Sub),
+translate-registry-raw-drift|function-translate-registry-raw|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Add)),|    row!(154, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Add)),
+translate-registry-format-drift|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Add)),|    row!(155, I32, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Add)),
+translate-registry-policy-swap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(150, None, Blocked, Operator),\n    row!(151, Atom, Blocked, Binding),\n    row!(152, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Mul)),|    row!(150, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Mul)),\n    row!(151, Atom, Blocked, Binding),\n    row!(152, None, Blocked, Operator),
+translate-registry-recipe-remap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Add)),|    row!(155, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Sub)),
 translate-registry-blocker-drift|function-translate-registry-blockers|src/runtime/binary_object/function_translate/capability.rs|    row!(5, Atom, Blocked, ValueConstruction),|    row!(5, Atom, Blocked, Property),
+translate-registry-call-admission|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(236, NPopX, Blocked, Invocation),|    row!(236, NPopX, OrdinaryOnly, Recipe::Return),
+translate-blocker-bucket-revival|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    FunctionGraph,\n    Invocation,|    FunctionGraph,\n    StackManipulation,\n    Invocation,
 translate-native-plan-second-consumer|native-plan-consumer-set|src/runtime/binary_object/scalar_script.rs|use std::fmt;|use super::bytecode_image::NativeCodePlan;\nuse std::fmt;
 translate-dto-function-id-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    function_id: FunctionId,\n    from_input_atom_table: bool,
 translate-dto-wire-string-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    wire: WireString,\n    from_input_atom_table: bool,
@@ -5695,14 +6214,54 @@ translate-dto-cfg-partial-eq|function-translate-dto-representation|src/runtime/b
 translate-dto-hash|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone, Copy)]\npub(in crate::runtime::binary_object) struct AtomOperand|#[derive(Clone, Copy, Hash)]\npub(in crate::runtime::binary_object) struct AtomOperand
 translate-code-debug|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone)]\npub(in crate::runtime::binary_object) struct FunctionCode|#[derive(Clone, Debug)]\npub(in crate::runtime::binary_object) struct FunctionCode
 translate-code-default|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone)]\npub(in crate::runtime::binary_object) struct FunctionCode|#[derive(Clone, Default)]\npub(in crate::runtime::binary_object) struct FunctionCode
+translate-dto-constructor-remap|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|        Self {\n            audience,\n            diagnostic,\n            operation,\n        }|        Self {\n            audience,\n            diagnostic,\n            operation: FunctionOp::OutsideTarget,\n        }
 translate-diagnostic-semantic-dispatch|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|    let ready =|    let _ = OperationDiagnostic::new("forbidden", OperandShape::None);\n    let ready =
 translate-diagnostic-extra-access|function-translate-diagnostic-boundary|src/runtime/binary_object/ordinary_leaf.rs|        if !instruction.supports_ordinary() {|        let _ = instruction.rejection_diagnostic();\n        if !instruction.supports_ordinary() {
+translate-expansion-capacity|function-translate-expansion|src/runtime/binary_object/function_translate/mod.rs|    operations: [Option<PendingOperation<'image>>; 4],|    operations: [Option<PendingOperation<'image>>; 5],
+translate-expansion-slot-swap|function-translate-expansion|src/runtime/binary_object/function_translate/mod.rs|            operations: [Some(first), Some(second), None, None],|            operations: [Some(second), Some(first), None, None],
+translate-expansion-length-collapse|function-translate-expansion|src/runtime/binary_object/function_translate/mod.rs|        self.len as usize|        1
+translate-expansion-iterator-reverse|function-translate-expansion|src/runtime/binary_object/function_translate/mod.rs|            .flatten()|            .flatten().rev()
+translate-expansion-remap|function-translate-expansion|src/runtime/binary_object/function_translate/mod.rs|                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm5)),|                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm4)),
+translate-return-undefined-expansion|function-translate-expansion|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),|        (Recipe::ReturnUndefined, NativeOperands::None) => Ok(PendingExpansion::two(\n            PendingOperation::Ready(FunctionOp::PushUndefined),\n            PendingOperation::Ready(FunctionOp::Return),\n        )),
+translate-undefined-null-swap|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::PushUndefined, NativeOperands::None) => ready(FunctionOp::PushUndefined),\n        (Recipe::PushNull, NativeOperands::None) => ready(FunctionOp::PushNull),|        (Recipe::PushUndefined, NativeOperands::None) => ready(FunctionOp::PushNull),\n        (Recipe::PushNull, NativeOperands::None) => ready(FunctionOp::PushUndefined),
+translate-false-payload|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::PushFalse, NativeOperands::None) => ready(FunctionOp::PushBool(false)),|        (Recipe::PushFalse, NativeOperands::None) => ready(FunctionOp::PushBool(true)),
+translate-second-pass-ready-remap|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|                PendingOperation::Ready(operation) => operation,|                PendingOperation::Ready(_) => FunctionOp::OutsideTarget,
+translate-instruction-construction-remap|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|            output.push(FunctionInstruction::new(\n                instruction.audience,\n                instruction.diagnostic,\n                operation,\n            ));|            output.push(FunctionInstruction::new(\n                instruction.audience,\n                instruction.diagnostic,\n                FunctionOp::OutsideTarget,\n            ));
 translate-branch-map-collapse|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|        source_to_output.push(output_index);|        source_to_output.push(0);
+translate-branch-map-offset|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|        let output_index = u32::try_from(output_len)|        output_len = output_len.saturating_add(1);\n        let output_index = u32::try_from(output_len)
+translate-branch-map-shadow|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|        source_to_output.push(output_index);|        let output_index = output_index.saturating_add(1);\n        source_to_output.push(output_index);
 translate-branch-target-collapse|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|FunctionOp::IfFalse(resolve_target(&source_to_output, target)?)|FunctionOp::IfFalse(0)
+translate-if-true-target-collapse|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|FunctionOp::IfTrue(resolve_target(&source_to_output, target)?)|FunctionOp::IfTrue(0)
 translate-target-filter-bypass|function-translate-atom-order|src/runtime/binary_object/function_translate/mod.rs|    if target.accepts(audience) {|    if true {
 translate-atom-allocation|function-translate-atom-order|src/runtime/binary_object/function_translate/mod.rs|    let from_input_atom_table = atom.originates_from_input_atom_table();|    let _scratch = Vec::<u8>::new();\n    let from_input_atom_table = atom.originates_from_input_atom_table();
 translate-source-hash-dispatch|function-translate-special-casing|src/runtime/binary_object/function_translate/mod.rs|    let ready =|    let source_hash = 0_u64;\n    let ready =
+ordinary-return-undefined-remap|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,|        OrdinaryLeafOp::ReturnUndefined => Instruction::Return,
+ordinary-handoff-push-i32-payload|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(-*value)),
+ordinary-handoff-get-local-remap|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::GetLocal),|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::PutLocal),
+ordinary-publisher-get-local-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index),|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index.saturating_add(1)),
+ordinary-synthetic-index-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            let index = *next_synthetic_index;|            let index = next_synthetic_index.saturating_add(1);
+ordinary-synthetic-bigint-coercion|ordinary-leaf-consumer-publication|src/runtime/binary_object_publish.rs|                    Value::BigInt(JsBigInt::from(*value)),|                    Value::BigInt(JsBigInt::from(value.unsigned_abs())),
 TRANSLATE_CANARIES
+expect_full_rewrite_rejected translate-ready-remap \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    '    let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));' \
+    '    let ready = |_operation| Ok(PendingExpansion::one(PendingOperation::Ready(FunctionOp::PushNull)));'
+expect_full_rewrite_rejected translate-push-i32-payload \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    $'        (Recipe::PushI32, NativeOperands::I32(value) | NativeOperands::NoneInt(value)) => {\n            ready(FunctionOp::PushI32(*value))\n        }' \
+    $'        (Recipe::PushI32, NativeOperands::I32(value) | NativeOperands::NoneInt(value)) => {\n            ready(FunctionOp::PushI32(-*value))\n        }'
+expect_full_rewrite_rejected translate-get-local-payload \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    $'        (Recipe::GetLocal, NativeOperands::Loc(index) | NativeOperands::NoneLoc(index)) => {\n            ready(FunctionOp::GetLocal(*index))\n        }' \
+    $'        (Recipe::GetLocal, NativeOperands::Loc(index) | NativeOperands::NoneLoc(index)) => {\n            ready(FunctionOp::GetLocal(index.saturating_add(1)))\n        }'
+expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
+    ordinary-leaf-engine-semantics src/vm.rs \
+    '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \
+    '                let is_undefined = matches!(value, Value::Undefined);'
+expect_full_rewrite_rejected translate-resolve-target-offset \
+    function-translate-control-flow src/runtime/binary_object/function_translate/mod.rs \
+    $'        .copied()\n        .ok_or_else(FunctionTranslateError::invalid_branch_target)' \
+    $'        .copied()\n        .map(|target| target.saturating_add(1))\n        .ok_or_else(FunctionTranslateError::invalid_branch_target)'
 expect_rewrite_rejected scalar-unary-chain-fold scalar-script-translated-code \
     src/runtime/binary_object/scalar_script.rs \
     '        unary_ops.push(ScalarUnaryOp::from_translated(*operation));' \

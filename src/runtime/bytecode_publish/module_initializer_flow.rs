@@ -101,6 +101,7 @@ fn build_control_shapes(
             .ok_or_else(|| internal("module evaluation control shape disappeared"))?;
         match &code[pc] {
             Instruction::Return
+            | Instruction::ReturnUndefined
             | Instruction::ReturnDerived(_)
             | Instruction::Throw
             | Instruction::ThrowReadOnly(_)
@@ -382,11 +383,33 @@ fn may_throw_js(instruction: &Instruction) -> bool {
             | Instruction::Not
             | Instruction::TypeOf
             | Instruction::IsUndefinedOrNull
+            | Instruction::IsUndefined
+            | Instruction::IsNull
+            | Instruction::TypeOfIsUndefined
+            | Instruction::TypeOfIsFunction
             | Instruction::StrictEq
             | Instruction::StrictNeq
             | Instruction::MarkSuperCall
             | Instruction::InitialYield
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fused_tag_predicates_cannot_create_a_catchable_js_throw() {
+        for instruction in [
+            Instruction::IsUndefinedOrNull,
+            Instruction::IsUndefined,
+            Instruction::IsNull,
+            Instruction::TypeOfIsUndefined,
+            Instruction::TypeOfIsFunction,
+        ] {
+            assert!(!may_throw_js(&instruction));
+        }
+    }
 }
 
 fn flow_error() -> RuntimeError {
@@ -464,7 +487,7 @@ fn analyze(
         let level = frames.last().expect("analysis frame remains present").level;
 
         match instruction {
-            Instruction::Return => {
+            Instruction::Return | Instruction::ReturnUndefined => {
                 if next_initializer != expected.len() {
                     return Err(flow_error());
                 }

@@ -18,8 +18,9 @@ use capability::{Recipe, operand_shape, row_for};
 use dto::InstructionAudience;
 
 pub(in crate::runtime::binary_object) use dto::{
-    AtomOperand, AtomOperandClass, FunctionCode, FunctionInstruction, FunctionOp, FunctionUnaryOp,
-    OperandShape, OperationDiagnostic, TranslationBlocker,
+    AtomOperand, AtomOperandClass, FunctionBinaryOp, FunctionCode, FunctionInstruction, FunctionOp,
+    FunctionPredicateOp, FunctionStackOp, FunctionUnaryOp, OperandShape, OperationDiagnostic,
+    TranslationBlocker,
 };
 
 /// Selects which unchanged public cohort may materialize translated operands.
@@ -160,13 +161,69 @@ impl std::error::Error for FunctionTranslateError {}
 enum PendingOperation<'image> {
     Ready(FunctionOp<'image>),
     IfFalse(u32),
+    IfTrue(u32),
     Goto(u32),
+}
+
+struct PendingExpansion<'image> {
+    operations: [Option<PendingOperation<'image>>; 4],
+    len: u8,
+}
+
+impl<'image> PendingExpansion<'image> {
+    fn one(operation: PendingOperation<'image>) -> Self {
+        Self {
+            operations: [Some(operation), None, None, None],
+            len: 1,
+        }
+    }
+
+    fn two(first: PendingOperation<'image>, second: PendingOperation<'image>) -> Self {
+        Self {
+            operations: [Some(first), Some(second), None, None],
+            len: 2,
+        }
+    }
+
+    fn three(
+        first: PendingOperation<'image>,
+        second: PendingOperation<'image>,
+        third: PendingOperation<'image>,
+    ) -> Self {
+        Self {
+            operations: [Some(first), Some(second), Some(third), None],
+            len: 3,
+        }
+    }
+
+    fn four(
+        first: PendingOperation<'image>,
+        second: PendingOperation<'image>,
+        third: PendingOperation<'image>,
+        fourth: PendingOperation<'image>,
+    ) -> Self {
+        Self {
+            operations: [Some(first), Some(second), Some(third), Some(fourth)],
+            len: 4,
+        }
+    }
+
+    const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    fn into_operations(self) -> impl Iterator<Item = PendingOperation<'image>> {
+        self.operations
+            .into_iter()
+            .take(usize::from(self.len))
+            .flatten()
+    }
 }
 
 struct PendingInstruction<'image> {
     audience: InstructionAudience,
     diagnostic: OperationDiagnostic,
-    operation: PendingOperation<'image>,
+    expansion: PendingExpansion<'image>,
 }
 
 /// Translate one authenticated function under the semantic union of the two
@@ -199,6 +256,7 @@ fn translate_native_plan<'image>(
     pending
         .try_reserve_exact(plan.instructions().len())
         .map_err(|_| FunctionTranslateError::allocation_failed())?;
+    let mut output_len = 0_usize;
 
     for instruction in plan.instructions() {
         let opcode = instruction.opcode();
@@ -219,13 +277,13 @@ fn translate_native_plan<'image>(
         }
 
         let diagnostic = OperationDiagnostic::new(opcode.name(), expected_shape);
-        let output_index = u32::try_from(pending.len())
+        let output_index = u32::try_from(output_len)
             .map_err(|_| FunctionTranslateError::instruction_count_overflow())?;
         source_to_output.push(output_index);
-        let (audience, operation) = match row.policy {
+        let (audience, expansion) = match row.policy {
             capability::CapabilityPolicy::Blocked(blocker) => (
                 InstructionAudience::Blocked,
-                PendingOperation::Ready(FunctionOp::Blocked(blocker)),
+                PendingExpansion::one(PendingOperation::Ready(FunctionOp::Blocked(blocker))),
             ),
             capability::CapabilityPolicy::ScalarOnly(recipe) => (
                 InstructionAudience::ScalarOnly,
@@ -255,32 +313,42 @@ fn translate_native_plan<'image>(
                 )?,
             ),
         };
+        output_len = output_len
+            .checked_add(expansion.len())
+            .ok_or_else(FunctionTranslateError::instruction_count_overflow)?;
+        u32::try_from(output_len)
+            .map_err(|_| FunctionTranslateError::instruction_count_overflow())?;
         pending.push(PendingInstruction {
             audience,
             diagnostic,
-            operation,
+            expansion,
         });
     }
 
     let mut output = Vec::new();
     output
-        .try_reserve_exact(pending.len())
+        .try_reserve_exact(output_len)
         .map_err(|_| FunctionTranslateError::allocation_failed())?;
     for instruction in pending {
-        let operation = match instruction.operation {
-            PendingOperation::Ready(operation) => operation,
-            PendingOperation::IfFalse(target) => {
-                FunctionOp::IfFalse(resolve_target(&source_to_output, target)?)
-            }
-            PendingOperation::Goto(target) => {
-                FunctionOp::Goto(resolve_target(&source_to_output, target)?)
-            }
-        };
-        output.push(FunctionInstruction::new(
-            instruction.audience,
-            instruction.diagnostic,
-            operation,
-        ));
+        for operation in instruction.expansion.into_operations() {
+            let operation = match operation {
+                PendingOperation::Ready(operation) => operation,
+                PendingOperation::IfFalse(target) => {
+                    FunctionOp::IfFalse(resolve_target(&source_to_output, target)?)
+                }
+                PendingOperation::IfTrue(target) => {
+                    FunctionOp::IfTrue(resolve_target(&source_to_output, target)?)
+                }
+                PendingOperation::Goto(target) => {
+                    FunctionOp::Goto(resolve_target(&source_to_output, target)?)
+                }
+            };
+            output.push(FunctionInstruction::new(
+                instruction.audience,
+                instruction.diagnostic,
+                operation,
+            ));
+        }
     }
     Ok(FunctionCode::new(output.into_boxed_slice()))
 }
@@ -290,19 +358,21 @@ fn operation_for_target<'image>(
     recipe: Recipe,
     target: TranslationTarget,
     operands: &NativeOperands<'image>,
-) -> Result<PendingOperation<'image>, FunctionTranslateError> {
+) -> Result<PendingExpansion<'image>, FunctionTranslateError> {
     if target.accepts(audience) {
         lower_operation(recipe, operands)
     } else {
-        Ok(PendingOperation::Ready(FunctionOp::OutsideTarget))
+        Ok(PendingExpansion::one(PendingOperation::Ready(
+            FunctionOp::OutsideTarget,
+        )))
     }
 }
 
 fn lower_operation<'image>(
     recipe: Recipe,
     operands: &NativeOperands<'image>,
-) -> Result<PendingOperation<'image>, FunctionTranslateError> {
-    let ready = |operation| Ok(PendingOperation::Ready(operation));
+) -> Result<PendingExpansion<'image>, FunctionTranslateError> {
+    let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));
     match (recipe, operands) {
         (Recipe::PushI32, NativeOperands::I32(value) | NativeOperands::NoneInt(value)) => {
             ready(FunctionOp::PushI32(*value))
@@ -330,7 +400,51 @@ fn lower_operation<'image>(
             ready(FunctionOp::PushBigIntI32(*value))
         }
         (Recipe::PushEmptyString, NativeOperands::None) => ready(FunctionOp::PushEmptyString),
+        (Recipe::Stack(capability::StackRecipe::Direct(operation)), NativeOperands::None) => {
+            ready(FunctionOp::Stack(operation))
+        }
+        (Recipe::Stack(capability::StackRecipe::Nip1), NativeOperands::None) => {
+            Ok(PendingExpansion::two(
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm3)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Nip)),
+            ))
+        }
+        (Recipe::Stack(capability::StackRecipe::Dup2), NativeOperands::None) => {
+            Ok(PendingExpansion::three(
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Dup1)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Dup)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm3)),
+            ))
+        }
+        (Recipe::Stack(capability::StackRecipe::Swap2), NativeOperands::None) => {
+            Ok(PendingExpansion::two(
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Rot4Left)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Rot4Left)),
+            ))
+        }
+        (Recipe::Stack(capability::StackRecipe::Rot3Left), NativeOperands::None) => {
+            Ok(PendingExpansion::two(
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm3)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Swap)),
+            ))
+        }
+        (Recipe::Stack(capability::StackRecipe::Rot3Right), NativeOperands::None) => {
+            Ok(PendingExpansion::two(
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Swap)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm3)),
+            ))
+        }
+        (Recipe::Stack(capability::StackRecipe::Rot5Left), NativeOperands::None) => {
+            Ok(PendingExpansion::four(
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm4)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm4)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Perm5)),
+                PendingOperation::Ready(FunctionOp::Stack(FunctionStackOp::Rot4Left)),
+            ))
+        }
         (Recipe::Unary(operation), NativeOperands::None) => ready(FunctionOp::Unary(operation)),
+        (Recipe::PostDec, NativeOperands::None) => ready(FunctionOp::PostDec),
+        (Recipe::PostInc, NativeOperands::None) => ready(FunctionOp::PostInc),
         (Recipe::GetLocal, NativeOperands::Loc(index) | NativeOperands::NoneLoc(index)) => {
             ready(FunctionOp::GetLocal(*index))
         }
@@ -358,27 +472,33 @@ fn lower_operation<'image>(
         (Recipe::SetArgument, NativeOperands::Arg(index) | NativeOperands::NoneArg(index)) => {
             ready(FunctionOp::SetArgument(*index))
         }
-        (Recipe::Add, NativeOperands::None) => ready(FunctionOp::Add),
-        (Recipe::Sub, NativeOperands::None) => ready(FunctionOp::Sub),
-        (Recipe::Div, NativeOperands::None) => ready(FunctionOp::Div),
-        (Recipe::GreaterThan, NativeOperands::None) => ready(FunctionOp::GreaterThan),
-        (Recipe::StrictEqual, NativeOperands::None) => ready(FunctionOp::StrictEqual),
-        (Recipe::IfFalse, NativeOperands::Label(label)) => {
-            Ok(PendingOperation::IfFalse(label.target_instruction()))
+        (Recipe::Binary(operation), NativeOperands::None) => ready(FunctionOp::Binary(operation)),
+        (Recipe::Predicate(operation), NativeOperands::None) => {
+            ready(FunctionOp::Predicate(operation))
         }
-        (Recipe::IfFalse, NativeOperands::Label8(label)) => {
-            Ok(PendingOperation::IfFalse(label.target_instruction()))
-        }
-        (Recipe::Goto, NativeOperands::Label(label)) => {
-            Ok(PendingOperation::Goto(label.target_instruction()))
-        }
-        (Recipe::Goto, NativeOperands::Label8(label)) => {
-            Ok(PendingOperation::Goto(label.target_instruction()))
-        }
-        (Recipe::Goto, NativeOperands::Label16(label)) => {
-            Ok(PendingOperation::Goto(label.target_instruction()))
-        }
+        (Recipe::IfFalse, NativeOperands::Label(label)) => Ok(PendingExpansion::one(
+            PendingOperation::IfFalse(label.target_instruction()),
+        )),
+        (Recipe::IfFalse, NativeOperands::Label8(label)) => Ok(PendingExpansion::one(
+            PendingOperation::IfFalse(label.target_instruction()),
+        )),
+        (Recipe::IfTrue, NativeOperands::Label(label)) => Ok(PendingExpansion::one(
+            PendingOperation::IfTrue(label.target_instruction()),
+        )),
+        (Recipe::IfTrue, NativeOperands::Label8(label)) => Ok(PendingExpansion::one(
+            PendingOperation::IfTrue(label.target_instruction()),
+        )),
+        (Recipe::Goto, NativeOperands::Label(label)) => Ok(PendingExpansion::one(
+            PendingOperation::Goto(label.target_instruction()),
+        )),
+        (Recipe::Goto, NativeOperands::Label8(label)) => Ok(PendingExpansion::one(
+            PendingOperation::Goto(label.target_instruction()),
+        )),
+        (Recipe::Goto, NativeOperands::Label16(label)) => Ok(PendingExpansion::one(
+            PendingOperation::Goto(label.target_instruction()),
+        )),
         (Recipe::Return, NativeOperands::None) => ready(FunctionOp::Return),
+        (Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),
         _ => Err(FunctionTranslateError::registry_drift(
             "translated operation",
             operand_shape(operands.format()),
@@ -434,25 +554,114 @@ mod tests {
 
     #[test]
     fn consumer_filter_precedes_operand_materialization() {
-        let operation = operation_for_target(
+        let expansion = operation_for_target(
             InstructionAudience::ScalarOnly,
             Recipe::PushAtom,
             TranslationTarget::Ordinary,
             &NativeOperands::None,
         )
         .expect("an out-of-audience operand is not materialized");
+        let mut operations = expansion.into_operations();
         assert!(matches!(
-            operation,
-            PendingOperation::Ready(FunctionOp::OutsideTarget)
+            operations.next(),
+            Some(PendingOperation::Ready(FunctionOp::OutsideTarget))
         ));
+        assert!(matches!(operations.next(), None));
     }
 
     #[test]
     fn semantic_lowering_has_no_mnemonic_or_diagnostic_input() {
-        let operation = lower_operation(Recipe::PushI32, &NativeOperands::I32(42)).unwrap();
+        let expansion = lower_operation(Recipe::PushI32, &NativeOperands::I32(42)).unwrap();
+        let mut operations = expansion.into_operations();
         assert!(matches!(
-            operation,
-            PendingOperation::Ready(FunctionOp::PushI32(42))
+            operations.next(),
+            Some(PendingOperation::Ready(FunctionOp::PushI32(42)))
         ));
+        assert!(operations.next().is_none());
+    }
+
+    #[test]
+    fn reviewed_stack_recipes_expand_to_the_exact_typed_sequences() {
+        fn expansion(recipe: capability::StackRecipe) -> Vec<FunctionStackOp> {
+            lower_operation(Recipe::Stack(recipe), &NativeOperands::None)
+                .unwrap()
+                .into_operations()
+                .map(|operation| match operation {
+                    PendingOperation::Ready(FunctionOp::Stack(operation)) => operation,
+                    _ => panic!("stack recipe produced a non-stack operation"),
+                })
+                .collect()
+        }
+
+        for operation in [
+            FunctionStackOp::Drop,
+            FunctionStackOp::Nip,
+            FunctionStackOp::Dup,
+            FunctionStackOp::Dup1,
+            FunctionStackOp::Dup3,
+            FunctionStackOp::Insert2,
+            FunctionStackOp::Insert3,
+            FunctionStackOp::Insert4,
+            FunctionStackOp::Perm3,
+            FunctionStackOp::Perm4,
+            FunctionStackOp::Perm5,
+            FunctionStackOp::Swap,
+            FunctionStackOp::Rot4Left,
+        ] {
+            assert_eq!(
+                expansion(capability::StackRecipe::Direct(operation)),
+                [operation]
+            );
+        }
+
+        assert_eq!(
+            expansion(capability::StackRecipe::Nip1),
+            [FunctionStackOp::Perm3, FunctionStackOp::Nip]
+        );
+        assert_eq!(
+            expansion(capability::StackRecipe::Dup2),
+            [
+                FunctionStackOp::Dup1,
+                FunctionStackOp::Dup,
+                FunctionStackOp::Perm3,
+            ]
+        );
+        assert_eq!(
+            expansion(capability::StackRecipe::Swap2),
+            [FunctionStackOp::Rot4Left, FunctionStackOp::Rot4Left]
+        );
+        assert_eq!(
+            expansion(capability::StackRecipe::Rot3Left),
+            [FunctionStackOp::Perm3, FunctionStackOp::Swap]
+        );
+        assert_eq!(
+            expansion(capability::StackRecipe::Rot3Right),
+            [FunctionStackOp::Swap, FunctionStackOp::Perm3]
+        );
+        assert_eq!(
+            expansion(capability::StackRecipe::Rot5Left),
+            [
+                FunctionStackOp::Perm4,
+                FunctionStackOp::Perm4,
+                FunctionStackOp::Perm5,
+                FunctionStackOp::Rot4Left,
+            ]
+        );
+    }
+
+    #[test]
+    fn target_filter_keeps_one_physical_rejection_without_materializing_operands() {
+        let expansion = operation_for_target(
+            InstructionAudience::OrdinaryOnly,
+            Recipe::Stack(capability::StackRecipe::Rot5Left),
+            TranslationTarget::Scalar,
+            &NativeOperands::I32(42),
+        )
+        .expect("outside-target stack operands are not materialized");
+        assert_eq!(expansion.len(), 1);
+        assert!(expansion.into_operations().all(|operation| matches!(
+            operation,
+            PendingOperation::Ready(FunctionOp::OutsideTarget)
+        )));
     }
 }

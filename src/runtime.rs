@@ -8881,6 +8881,30 @@ impl Runtime {
             .is_html_dda)
     }
 
+    /// Test `[[Call]]` without creating a capability handle or entering a
+    /// public runtime operation. Fused bytecode predicates use this after the
+    /// HTMLDDA check, matching QuickJS's allocation-free tag path.
+    pub(crate) fn value_is_callable(&self, value: &Value) -> Result<bool, RuntimeError> {
+        let Value::Object(object) = value else {
+            return Ok(false);
+        };
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("callable value"));
+        }
+        let state = self.0.state.borrow();
+        let object = state.heap.object(object.object_id())?;
+        Ok(matches!(
+            &object.payload,
+            ObjectPayload::NativeFunction { .. }
+                | ObjectPayload::BoundFunction { .. }
+                | ObjectPayload::BytecodeFunction { .. }
+                | ObjectPayload::Proxy(crate::heap::ProxyData {
+                    is_callable: true,
+                    ..
+                })
+        ))
+    }
+
     /// Apply ECMAScript `ToBoolean`, including QuickJS's Annex B falsy
     /// `is_HTMLDDA` object exception.
     pub(crate) fn value_to_boolean(&self, value: &Value) -> Result<bool, RuntimeError> {
@@ -8892,7 +8916,7 @@ impl Runtime {
     }
 
     /// Mirror `JS_SetIsHTMLDDA` for a runtime-owned object.
-    #[cfg(feature = "test262-host")]
+    #[cfg(any(test, feature = "test262-host"))]
     fn set_object_is_html_dda(&self, object: &ObjectRef) -> Result<(), RuntimeError> {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("IsHTMLDDA object"));

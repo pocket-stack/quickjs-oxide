@@ -498,6 +498,14 @@ pub enum Instruction {
     Not,
     TypeOf,
     IsUndefinedOrNull,
+    /// Exact `undefined` tag test. Unlike `typeof`, HTMLDDA objects are false.
+    IsUndefined,
+    /// Exact `null` tag test.
+    IsNull,
+    /// Fused `typeof value === "undefined"`, including HTMLDDA objects.
+    TypeOfIsUndefined,
+    /// Fused `typeof value === "function"`, excluding HTMLDDA objects.
+    TypeOfIsFunction,
     Add,
     Sub,
     Mul,
@@ -684,6 +692,8 @@ pub enum Instruction {
         environment: u16,
     },
     Return,
+    /// Return `undefined` without consuming an operand-stack value.
+    ReturnUndefined,
     /// Complete a derived constructor. Object results are returned directly;
     /// `undefined` resolves the authenticated derived-`this` local; every other
     /// primitive throws a TypeError. Return-protocol errors belong to the
@@ -700,6 +710,7 @@ impl Instruction {
             | Self::CheckCtor
             | Self::Goto(_)
             | Self::Gosub(_)
+            | Self::ReturnUndefined
             | Self::ThrowRedeclaration(_)
             | Self::ThrowIteratorMissingThrow
             | Self::SetLocalUninitialized(_)
@@ -866,7 +877,11 @@ impl Instruction {
             | Self::BitNot
             | Self::Not
             | Self::TypeOf
-            | Self::IsUndefinedOrNull => (1, 1),
+            | Self::IsUndefinedOrNull
+            | Self::IsUndefined
+            | Self::IsNull
+            | Self::TypeOfIsUndefined
+            | Self::TypeOfIsFunction => (1, 1),
             Self::PostInc | Self::PostDec => (1, 2),
             Self::Add
             | Self::Sub
@@ -1540,7 +1555,7 @@ pub(crate) fn verify_parts(
 
         if matches!(
             instruction,
-            Instruction::Return | Instruction::ReturnDerived(_)
+            Instruction::Return | Instruction::ReturnUndefined | Instruction::ReturnDerived(_)
         ) && state
             .regions
             .iter()
@@ -1559,6 +1574,7 @@ pub(crate) fn verify_parts(
             // `return` and `throw` inside a switch leave its discriminant
             // below that value rather than emitting synthetic cleanup.
             Instruction::Return
+            | Instruction::ReturnUndefined
             | Instruction::ReturnDerived(_)
             | Instruction::Throw
             | Instruction::Ret => {}

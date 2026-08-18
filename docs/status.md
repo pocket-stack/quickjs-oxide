@@ -78,8 +78,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   Private and Symbol atoms remain understood but unadmitted
 - a second narrow trusted-bytecode API for one ordinary synchronous function
   selected from a compile-only root constant pool. It admits primitive
-  constants, arguments and locals, arithmetic and comparison, and bounded
-  conditional/loop control flow through a distinct verified publication role
+  constants, arguments and locals, direct and expanded stack operations, unary,
+  postfix, binary, and HTMLDDA-aware predicates, plus bounded conditional/loop
+  control flow and direct `return_undef` through a distinct verified
+  publication role. Plain call opcodes remain outside this cohort
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -182,14 +184,14 @@ semantic class, index, spelling, and input-table-provenance projections. The
 stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
-formats, preserves the existing scalar and ordinary physical cohorts, and
-projects only sanitized semantic DTOs to those admission bridges. The scalar
-policy remains 30 opcodes, the ordinary policy 58, and their union 72 (172
-blocked, 14 scalar-only, 42 ordinary-only, and 16 shared registry rows).
+formats and projects only sanitized semantic DTOs to those admission bridges.
+The scalar policy remains 30 opcodes; the stage-one ordinary policy is 115,
+and their union is 116 (128 blocked, one scalar-only, 86 ordinary-only, and 29
+shared registry rows).
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
-refactor adds no public API, admitted opcode, source syntax, or Feature Parity
+stage changes no public API, source syntax, Test262 profile, or Feature Parity
 claim.
 A bounded `FunctionRecordPrefix` layer now reads and canonically writes the
 fixed FunctionBytecode body after tag 12: flags, frame metadata, locals,
@@ -351,13 +353,15 @@ now admits one ordinary synchronous FunctionBytecode leaf selected by constant-
 pool index from an authenticated compile-only root. The child must retain the
 reviewed normal/simple-parameter/prototype metadata, null function/local names,
 no debug info or closures, no modules or object identities, no input atom table
-or variable references, and only primitive constants. Its typed cohort covers
-integer and constant pushes, argument/local get-put-set operations, `add`,
-`sub`, `div`, `gt`, `strict_eq`, `if_false`, `goto`, and `return`. Native
-branch destinations are resolved to instruction indices before the owned draft
-crosses the archive boundary. A dedicated ordinary-leaf verifier then
-authenticates the detached metadata and CFG before transactional publication
-creates a callable closure.
+or variable references, and only primitive constants plus the exact canonical
+empty atom String. Its typed cohort covers all admitted atom-free primitive
+pushes; 13 direct stack operations and six exact multi-instruction expansions;
+the seven unary,
+two postfix, and 20 binary operations; five tag/`typeof` predicates;
+`if_false`, `if_true`, `goto`, `return`, and zero-stack `return_undef`. Direct
+signed-i32 BigInt and empty-String pushes append stable synthetic constants
+after the original pool. Native branches are reindexed through cumulative
+expanded output positions. Plain `call`/`call0`-`call3` remain blocked.
 
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
@@ -370,13 +374,15 @@ locks constructor/prototype identity and sloppy-versus-strict `caller` and
 closure with the exact `TypeError: unsupported object class`. Rust consumes the
 same vector through `Context::read_trusted_ordinary_function`, maps every target
 to an IR instruction index, and exercises both branches through the dedicated
-verified publication path.
+verified publication path. Additional pinned cases cover the newly admitted
+rows, all six stack expansions, expanded-branch reindexing, exact Float64 bits
+and signed-i32 BigInts, canonical empty String, HTMLDDA predicate distinctions,
+and zero-stack `return_undef`.
 
-A fresh full R3fj run now authenticates this translation-only architecture
-tree: all 102,037 classified outcomes are byte-for-byte unchanged after
-normalizing the source fingerprint, with 79,982 full passes among 80,032
-eligible variants. The profile, public APIs, and admitted physical cohorts are
-unchanged.
+The last promoted full R3fj receipt recorded 102,037 classified outcomes,
+79,982 full passes, and 80,032 eligible variants. It predates this stage-one
+source change, so its source fingerprint is stale until the next full run; the
+profile and public APIs themselves are unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and

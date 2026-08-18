@@ -13061,7 +13061,11 @@ fn apply_quickjs_late_throw_sites(
         survives_first_pass[index] = true;
         let parser_terminal = matches!(
             code[index],
-            Instruction::Goto(_) | Instruction::Return | Instruction::Throw | Instruction::Ret
+            Instruction::Goto(_)
+                | Instruction::Return
+                | Instruction::ReturnUndefined
+                | Instruction::Throw
+                | Instruction::Ret
         );
         if !parser_terminal {
             index += 1;
@@ -13256,6 +13260,7 @@ fn apply_quickjs_late_throw_sites(
                 code[index],
                 Instruction::Goto(_)
                     | Instruction::Return
+                    | Instruction::ReturnUndefined
                     | Instruction::Throw
                     | Instruction::Ret
                     | Instruction::ThrowReadOnly(_)

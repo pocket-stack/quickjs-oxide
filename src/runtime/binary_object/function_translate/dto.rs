@@ -78,7 +78,6 @@ pub(in crate::runtime::binary_object) enum TranslationBlocker {
     InvalidSentinel,
     ValueConstruction,
     FunctionGraph,
-    StackManipulation,
     Invocation,
     Completion,
     Exception,
@@ -296,6 +295,59 @@ pub(in crate::runtime::binary_object) enum FunctionUnaryOp {
     TypeOf,
 }
 
+/// One typed stack permutation in the sanitized instruction stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime::binary_object) enum FunctionStackOp {
+    Drop,
+    Nip,
+    Dup,
+    Dup1,
+    Dup3,
+    Insert2,
+    Insert3,
+    Insert4,
+    Perm3,
+    Perm4,
+    Perm5,
+    Swap,
+    Rot4Left,
+}
+
+/// One typed binary operator in the sanitized instruction stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime::binary_object) enum FunctionBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Shl,
+    Sar,
+    Shr,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Equal,
+    NotEqual,
+    StrictEqual,
+    StrictNotEqual,
+    BitAnd,
+    BitXor,
+    BitOr,
+}
+
+/// One typed tag or `typeof` predicate in the sanitized instruction stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime::binary_object) enum FunctionPredicateOp {
+    IsUndefinedOrNull,
+    IsUndefined,
+    IsNull,
+    TypeOfIsUndefined,
+    TypeOfIsFunction,
+}
+
 /// One sanitized semantic instruction.
 #[derive(Clone, Debug)]
 pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
@@ -309,21 +361,23 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     PushBool(bool),
     PushBigIntI32(i32),
     PushEmptyString,
+    Stack(FunctionStackOp),
     Unary(FunctionUnaryOp),
+    PostDec,
+    PostInc,
     GetLocal(u16),
     PutLocal(u16),
     SetLocal(u16),
     GetArgument(u16),
     PutArgument(u16),
     SetArgument(u16),
-    Add,
-    Sub,
-    Div,
-    GreaterThan,
-    StrictEqual,
+    Binary(FunctionBinaryOp),
+    Predicate(FunctionPredicateOp),
     IfFalse(u32),
+    IfTrue(u32),
     Goto(u32),
     Return,
+    ReturnUndefined,
 }
 
 /// Compatibility-only rejection descriptor without an opcode byte or source location.

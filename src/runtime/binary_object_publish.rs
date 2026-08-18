@@ -6,7 +6,8 @@
 //! transactional publication paths.
 
 use super::binary_object::{
-    DetachedPrimitive, OrdinaryLeafOp, OrdinaryLeafReadError, RootFunctionConstantSelector,
+    DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafOp, OrdinaryLeafPredicateOp,
+    OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector,
     ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft,
     decode_trusted_ordinary_leaf, decode_trusted_scalar_script,
 };
@@ -43,6 +44,29 @@ impl Runtime {
             )));
         }
 
+        let original_constant_count = detached_constants.len();
+        let synthetic_constant_count = detached_code
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation,
+                    OrdinaryLeafOp::PushBigIntI32(_) | OrdinaryLeafOp::PushEmptyString
+                )
+            })
+            .count();
+        let total_constant_count = original_constant_count
+            .checked_add(synthetic_constant_count)
+            .ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "trusted ordinary-leaf constant count overflowed",
+                ))
+            })?;
+        u32::try_from(total_constant_count).map_err(|_| {
+            RuntimeError::Engine(Error::internal(
+                "trusted ordinary-leaf constant count exceeded the typed index space",
+            ))
+        })?;
+
         let mut constants = Vec::new();
         constants
             .try_reserve_exact(detached_constants.len())
@@ -54,6 +78,26 @@ impl Runtime {
         for constant in detached_constants {
             constants.push(lower_detached_primitive(constant)?);
         }
+        if synthetic_constant_count != 0 {
+            constants
+                .try_reserve_exact(synthetic_constant_count)
+                .map_err(|_| {
+                    RuntimeError::Engine(Error::internal(
+                        "could not allocate trusted ordinary-leaf synthesized constants",
+                    ))
+                })?;
+        }
+        for operation in &detached_code {
+            match operation {
+                OrdinaryLeafOp::PushBigIntI32(value) => constants.push(lower_primitive_constant(
+                    Value::BigInt(JsBigInt::from(*value)),
+                )?),
+                OrdinaryLeafOp::PushEmptyString => {
+                    constants.push(UnlinkedConstant::atom_string(JsString::from_static("")))
+                }
+                _ => {}
+            }
+        }
 
         let mut instructions = Vec::new();
         instructions
@@ -63,8 +107,21 @@ impl Runtime {
                     "could not allocate trusted ordinary-leaf instructions",
                 ))
             })?;
+        let mut next_synthetic_index = u32::try_from(original_constant_count).map_err(|_| {
+            RuntimeError::Engine(Error::internal(
+                "trusted ordinary-leaf constant count exceeded the typed index space",
+            ))
+        })?;
         for operation in detached_code {
-            instructions.push(lower_ordinary_leaf_op(operation));
+            instructions.push(lower_ordinary_leaf_op(
+                operation,
+                &mut next_synthetic_index,
+            )?);
+        }
+        if next_synthetic_index as usize != total_constant_count {
+            return Err(RuntimeError::Engine(Error::internal(
+                "trusted ordinary-leaf synthesized constant plan drifted",
+            )));
         }
 
         let function = UnlinkedFunction::new(
@@ -237,25 +294,94 @@ fn lower_detached_primitive(constant: DetachedPrimitive) -> Result<UnlinkedConst
     lower_primitive_constant(value)
 }
 
-const fn lower_ordinary_leaf_op(operation: OrdinaryLeafOp) -> Instruction {
-    match operation {
+fn lower_ordinary_leaf_op(
+    operation: OrdinaryLeafOp,
+    next_synthetic_index: &mut u32,
+) -> Result<Instruction, RuntimeError> {
+    let instruction = match operation {
         OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),
         OrdinaryLeafOp::PushConst(index) => Instruction::PushConst(index),
+        OrdinaryLeafOp::PushUndefined => Instruction::Undefined,
+        OrdinaryLeafOp::PushNull => Instruction::Null,
+        OrdinaryLeafOp::PushBool(false) => Instruction::PushFalse,
+        OrdinaryLeafOp::PushBool(true) => Instruction::PushTrue,
+        OrdinaryLeafOp::PushBigIntI32(_) | OrdinaryLeafOp::PushEmptyString => {
+            let index = *next_synthetic_index;
+            *next_synthetic_index = next_synthetic_index.checked_add(1).ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "trusted ordinary-leaf synthesized constant index overflowed",
+                ))
+            })?;
+            Instruction::PushConst(index)
+        }
+        OrdinaryLeafOp::Stack(operation) => match operation {
+            OrdinaryLeafStackOp::Drop => Instruction::Drop,
+            OrdinaryLeafStackOp::Nip => Instruction::Nip,
+            OrdinaryLeafStackOp::Dup => Instruction::Dup,
+            OrdinaryLeafStackOp::Dup1 => Instruction::Dup1,
+            OrdinaryLeafStackOp::Dup3 => Instruction::Dup3,
+            OrdinaryLeafStackOp::Insert2 => Instruction::Insert2,
+            OrdinaryLeafStackOp::Insert3 => Instruction::Insert3,
+            OrdinaryLeafStackOp::Insert4 => Instruction::Insert4,
+            OrdinaryLeafStackOp::Perm3 => Instruction::Perm3,
+            OrdinaryLeafStackOp::Perm4 => Instruction::Perm4,
+            OrdinaryLeafStackOp::Perm5 => Instruction::Perm5,
+            OrdinaryLeafStackOp::Swap => Instruction::Swap,
+            OrdinaryLeafStackOp::Rot4Left => Instruction::Rot4Left,
+        },
+        OrdinaryLeafOp::Unary(operation) => match operation {
+            OrdinaryLeafUnaryOp::Neg => Instruction::Neg,
+            OrdinaryLeafUnaryOp::Plus => Instruction::Plus,
+            OrdinaryLeafUnaryOp::Dec => Instruction::Dec,
+            OrdinaryLeafUnaryOp::Inc => Instruction::Inc,
+            OrdinaryLeafUnaryOp::BitNot => Instruction::BitNot,
+            OrdinaryLeafUnaryOp::LogicalNot => Instruction::Not,
+            OrdinaryLeafUnaryOp::TypeOf => Instruction::TypeOf,
+        },
+        OrdinaryLeafOp::PostDec => Instruction::PostDec,
+        OrdinaryLeafOp::PostInc => Instruction::PostInc,
         OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index),
         OrdinaryLeafOp::PutLocal(index) => Instruction::PutLocal(index),
         OrdinaryLeafOp::SetLocal(index) => Instruction::SetLocal(index),
         OrdinaryLeafOp::GetArgument(index) => Instruction::GetArg(index),
         OrdinaryLeafOp::PutArgument(index) => Instruction::PutArg(index),
         OrdinaryLeafOp::SetArgument(index) => Instruction::SetArg(index),
-        OrdinaryLeafOp::Add => Instruction::Add,
-        OrdinaryLeafOp::Sub => Instruction::Sub,
-        OrdinaryLeafOp::Div => Instruction::Div,
-        OrdinaryLeafOp::GreaterThan => Instruction::Gt,
-        OrdinaryLeafOp::StrictEqual => Instruction::StrictEq,
+        OrdinaryLeafOp::Binary(operation) => match operation {
+            OrdinaryLeafBinaryOp::Add => Instruction::Add,
+            OrdinaryLeafBinaryOp::Sub => Instruction::Sub,
+            OrdinaryLeafBinaryOp::Mul => Instruction::Mul,
+            OrdinaryLeafBinaryOp::Div => Instruction::Div,
+            OrdinaryLeafBinaryOp::Mod => Instruction::Mod,
+            OrdinaryLeafBinaryOp::Pow => Instruction::Pow,
+            OrdinaryLeafBinaryOp::Shl => Instruction::Shl,
+            OrdinaryLeafBinaryOp::Sar => Instruction::Sar,
+            OrdinaryLeafBinaryOp::Shr => Instruction::Shr,
+            OrdinaryLeafBinaryOp::LessThan => Instruction::Lt,
+            OrdinaryLeafBinaryOp::LessThanOrEqual => Instruction::Lte,
+            OrdinaryLeafBinaryOp::GreaterThan => Instruction::Gt,
+            OrdinaryLeafBinaryOp::GreaterThanOrEqual => Instruction::Gte,
+            OrdinaryLeafBinaryOp::Equal => Instruction::Eq,
+            OrdinaryLeafBinaryOp::NotEqual => Instruction::Neq,
+            OrdinaryLeafBinaryOp::StrictEqual => Instruction::StrictEq,
+            OrdinaryLeafBinaryOp::StrictNotEqual => Instruction::StrictNeq,
+            OrdinaryLeafBinaryOp::BitAnd => Instruction::BitAnd,
+            OrdinaryLeafBinaryOp::BitXor => Instruction::BitXor,
+            OrdinaryLeafBinaryOp::BitOr => Instruction::BitOr,
+        },
+        OrdinaryLeafOp::Predicate(operation) => match operation {
+            OrdinaryLeafPredicateOp::IsUndefinedOrNull => Instruction::IsUndefinedOrNull,
+            OrdinaryLeafPredicateOp::IsUndefined => Instruction::IsUndefined,
+            OrdinaryLeafPredicateOp::IsNull => Instruction::IsNull,
+            OrdinaryLeafPredicateOp::TypeOfIsUndefined => Instruction::TypeOfIsUndefined,
+            OrdinaryLeafPredicateOp::TypeOfIsFunction => Instruction::TypeOfIsFunction,
+        },
         OrdinaryLeafOp::IfFalse(target) => Instruction::IfFalse(target),
+        OrdinaryLeafOp::IfTrue(target) => Instruction::IfTrue(target),
         OrdinaryLeafOp::Goto(target) => Instruction::Goto(target),
         OrdinaryLeafOp::Return => Instruction::Return,
-    }
+        OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,
+    };
+    Ok(instruction)
 }
 
 fn map_ordinary_leaf_verification_error(error: RuntimeError) -> RuntimeError {
@@ -377,70 +503,85 @@ mod tests {
 
     #[test]
     fn ordinary_leaf_draft_ops_lower_one_for_one_without_reordering() {
+        let lower = |operation| {
+            let mut next_synthetic_index = 7;
+            lower_ordinary_leaf_op(operation, &mut next_synthetic_index).unwrap()
+        };
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::PushI32(-7)),
+            lower(OrdinaryLeafOp::PushI32(-7)),
             Instruction::PushI32(-7)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::PushConst(2)),
+            lower(OrdinaryLeafOp::PushConst(2)),
             Instruction::PushConst(2)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::GetLocal(3)),
+            lower(OrdinaryLeafOp::GetLocal(3)),
             Instruction::GetLocal(3)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::PutLocal(3)),
+            lower(OrdinaryLeafOp::PutLocal(3)),
             Instruction::PutLocal(3)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::SetLocal(3)),
+            lower(OrdinaryLeafOp::SetLocal(3)),
             Instruction::SetLocal(3)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::GetArgument(4)),
+            lower(OrdinaryLeafOp::GetArgument(4)),
             Instruction::GetArg(4)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::PutArgument(4)),
+            lower(OrdinaryLeafOp::PutArgument(4)),
             Instruction::PutArg(4)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::SetArgument(4)),
+            lower(OrdinaryLeafOp::SetArgument(4)),
             Instruction::SetArg(4)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::Add),
-            Instruction::Add
-        ));
-        assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::Sub),
-            Instruction::Sub
-        ));
-        assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::Div),
-            Instruction::Div
-        ));
-        assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::GreaterThan),
-            Instruction::Gt
-        ));
-        assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::StrictEqual),
+            lower(OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::StrictEqual)),
             Instruction::StrictEq
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::IfFalse(11)),
+            lower(OrdinaryLeafOp::Predicate(
+                OrdinaryLeafPredicateOp::TypeOfIsUndefined
+            )),
+            Instruction::TypeOfIsUndefined
+        ));
+        assert!(matches!(
+            lower(OrdinaryLeafOp::IfFalse(11)),
             Instruction::IfFalse(11)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::Goto(12)),
-            Instruction::Goto(12)
+            lower(OrdinaryLeafOp::IfTrue(12)),
+            Instruction::IfTrue(12)
         ));
         assert!(matches!(
-            lower_ordinary_leaf_op(OrdinaryLeafOp::Return),
-            Instruction::Return
+            lower(OrdinaryLeafOp::Goto(13)),
+            Instruction::Goto(13)
         ));
+        assert!(matches!(
+            lower(OrdinaryLeafOp::ReturnUndefined),
+            Instruction::ReturnUndefined
+        ));
+        assert!(matches!(
+            lower(OrdinaryLeafOp::PushEmptyString),
+            Instruction::PushConst(7)
+        ));
+        assert!(matches!(
+            lower(OrdinaryLeafOp::PushBigIntI32(42)),
+            Instruction::PushConst(7)
+        ));
+        assert!(matches!(
+            lower(OrdinaryLeafOp::Stack(OrdinaryLeafStackOp::Rot4Left)),
+            Instruction::Rot4Left
+        ));
+        assert!(matches!(
+            lower(OrdinaryLeafOp::Unary(OrdinaryLeafUnaryOp::TypeOf)),
+            Instruction::TypeOf
+        ));
+        assert!(matches!(lower(OrdinaryLeafOp::Return), Instruction::Return));
     }
 
     fn scalar_with_code(code: &[u8]) -> Vec<u8> {

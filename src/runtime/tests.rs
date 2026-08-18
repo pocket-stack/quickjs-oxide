@@ -10,11 +10,11 @@ use crate::function::{
     UnlinkedConstant, UnlinkedFunction, UnlinkedFunctionDebug, UnlinkedVariableDefinition,
 };
 use crate::heap::{
-    ArrayJoinKind, ClosureSource, ClosureVariable, ClosureVariableKind, ClosureVariableName,
-    ConstructorKind, DynamicFunctionKind, EvalBinding, EvalBindingSource, EvalEnvironment,
-    EvalKind, EvalScope, EvalScopeKind, EvalVariableEnvironment, FunctionDebugPosition,
-    FunctionMetadata, HeapError, NativeCProto, NativeFunctionId, ObjectPayload, PrimitiveKind,
-    PrimitiveObjectData, PropertySlot, RawValue,
+    ArrayJoinKind, BytecodeConstant, ClosureSource, ClosureVariable, ClosureVariableKind,
+    ClosureVariableName, ConstructorKind, DynamicFunctionKind, EvalBinding, EvalBindingSource,
+    EvalEnvironment, EvalKind, EvalScope, EvalScopeKind, EvalVariableEnvironment,
+    FunctionDebugPosition, FunctionMetadata, HeapError, NativeCProto, NativeFunctionId,
+    ObjectPayload, PrimitiveKind, PrimitiveObjectData, PropertySlot, RawValue,
 };
 use crate::object::{
     AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField,
@@ -549,6 +549,271 @@ fn trusted_quickjs_empty_string_uses_the_runtime_canonical_atom() {
     let mut foreign_context = foreign_runtime.new_context();
     let foreign_value = expect_string_value(foreign_context.eval("''").unwrap());
     assert!(!direct_value.same_representation(&foreign_value));
+}
+
+#[test]
+fn trusted_quickjs_ordinary_leaf_synthesizes_bigint_and_canonical_empty_atom_constants() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let mut sibling = runtime.new_context();
+
+    let mut bigint_code = vec![0xb0];
+    bigint_code.extend_from_slice(&42_i32.to_le_bytes());
+    bigint_code.push(0x28);
+    let bigint_image = quickjs_ordinary_with_code_and_constants(&bigint_code, &[]);
+    let bigint_function = context
+        .read_trusted_ordinary_function(&bigint_image, 0)
+        .unwrap();
+    assert_eq!(
+        context
+            .call(&bigint_function, Value::Undefined, &[])
+            .unwrap(),
+        Value::BigInt(JsBigInt::from(42))
+    );
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&bigint_function).unwrap()
+    else {
+        panic!("trusted ordinary leaf did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [Instruction::PushConst(0), Instruction::Return]
+    ));
+    assert!(matches!(
+        snapshot.constants.as_ref(),
+        [BytecodeConstant::Value(RawValue::BigInt(value))]
+            if value == &JsBigInt::from(42)
+    ));
+
+    let direct_image = quickjs_ordinary_with_code_and_constants(&[0xbf, 0x28], &[]);
+    let empty_entry = quickjs_string_constant_entry(&[], false);
+    let constant_image =
+        quickjs_ordinary_with_code_and_constants(&[0xbd, 0x00, 0x28], &[empty_entry.as_slice()]);
+    let direct_function = context
+        .read_trusted_ordinary_function(&direct_image, 0)
+        .unwrap();
+    let sibling_function = sibling
+        .read_trusted_ordinary_function(&direct_image, 0)
+        .unwrap();
+    let constant_function = context
+        .read_trusted_ordinary_function(&constant_image, 0)
+        .unwrap();
+    let direct = expect_string_value(
+        context
+            .call(&direct_function, Value::Undefined, &[])
+            .unwrap(),
+    );
+    let repeated = expect_string_value(
+        context
+            .call(&direct_function, Value::Undefined, &[])
+            .unwrap(),
+    );
+    let sibling_value = expect_string_value(
+        sibling
+            .call(&sibling_function, Value::Undefined, &[])
+            .unwrap(),
+    );
+    let constant = expect_string_value(
+        context
+            .call(&constant_function, Value::Undefined, &[])
+            .unwrap(),
+    );
+    let source = expect_string_value(context.eval("''").unwrap());
+    assert!(direct.is_empty());
+    assert!(direct.same_representation(&repeated));
+    assert!(direct.same_representation(&sibling_value));
+    assert!(direct.same_representation(&source));
+    assert!(!direct.same_representation(&constant));
+
+    let original = quickjs_float_constant_entry(0.5_f64.to_bits());
+    let mut mixed_code = vec![0xbd, 0x00, 0x0e, 0xb0];
+    mixed_code.extend_from_slice(&7_i32.to_le_bytes());
+    mixed_code.extend_from_slice(&[0x0e, 0xbf, 0x0e, 0xb0]);
+    mixed_code.extend_from_slice(&(-3_i32).to_le_bytes());
+    mixed_code.extend_from_slice(&[0x0e, 0xbf, 0x28]);
+    let mut mixed_image =
+        quickjs_ordinary_with_code_and_constants(&mixed_code, &[original.as_slice()]);
+    mixed_image[33] = 1;
+    let mixed_function = context
+        .read_trusted_ordinary_function(&mixed_image, 0)
+        .unwrap();
+    let mixed_result = expect_string_value(
+        context
+            .call(&mixed_function, Value::Undefined, &[])
+            .unwrap(),
+    );
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&mixed_function).unwrap()
+    else {
+        panic!("trusted ordinary leaf did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [
+            Instruction::PushConst(0),
+            Instruction::Drop,
+            Instruction::PushConst(1),
+            Instruction::Drop,
+            Instruction::PushConst(2),
+            Instruction::Drop,
+            Instruction::PushConst(3),
+            Instruction::Drop,
+            Instruction::PushConst(4),
+            Instruction::Return,
+        ]
+    ));
+    assert_eq!(snapshot.constants.len(), 5);
+    assert!(matches!(
+        &snapshot.constants[0],
+        BytecodeConstant::Value(RawValue::Float(value))
+            if value.to_bits() == 0.5_f64.to_bits()
+    ));
+    assert!(matches!(
+        &snapshot.constants[1],
+        BytecodeConstant::Value(RawValue::BigInt(value)) if value == &JsBigInt::from(7)
+    ));
+    assert!(matches!(
+        &snapshot.constants[3],
+        BytecodeConstant::Value(RawValue::BigInt(value)) if value == &JsBigInt::from(-3)
+    ));
+    let BytecodeConstant::Value(RawValue::String(first_empty)) = &snapshot.constants[2] else {
+        panic!("first synthesized empty atom lost its String payload");
+    };
+    let BytecodeConstant::Value(RawValue::String(second_empty)) = &snapshot.constants[4] else {
+        panic!("second synthesized empty atom lost its String payload");
+    };
+    assert!(first_empty.same_representation(second_empty));
+    assert!(mixed_result.same_representation(first_empty));
+}
+
+#[test]
+fn trusted_quickjs_ordinary_leaf_return_undefined_is_a_zero_stack_terminal() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let mut image = quickjs_ordinary_with_code_and_constants(&[0x29], &[]);
+    image[33] = 0;
+
+    let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+    assert_eq!(
+        context.call(&function, Value::Undefined, &[]).unwrap(),
+        Value::Undefined
+    );
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("trusted ordinary leaf did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert_eq!(snapshot.metadata.max_stack, 0);
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [Instruction::ReturnUndefined]
+    ));
+}
+
+#[test]
+fn trusted_quickjs_ordinary_branch_targets_follow_the_first_expanded_instruction() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    // The taken label8 jump skips a raw rot3l. rot3l expands to Perm3, Swap,
+    // so the native target at source instruction 6 becomes IR 7.
+    let code = [0xbb, 1, 0xbb, 2, 0xbb, 3, 0x0a, 0xe9, 2, 0x1d, 0x28];
+    let mut image = quickjs_ordinary_with_code_and_constants(&code, &[]);
+    image[33] = 4;
+
+    let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+    assert_eq!(
+        context.call(&function, Value::Undefined, &[]).unwrap(),
+        Value::Int(3)
+    );
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("trusted ordinary leaf did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [
+            Instruction::PushI32(1),
+            Instruction::PushI32(2),
+            Instruction::PushI32(3),
+            Instruction::PushTrue,
+            Instruction::IfTrue(7),
+            Instruction::Perm3,
+            Instruction::Swap,
+            Instruction::Return,
+        ]
+    ));
+}
+
+#[test]
+fn trusted_quickjs_ordinary_fused_predicates_distinguish_htmldda() {
+    fn predicate(context: &mut super::Context, raw: u8, value: Value) -> Value {
+        let image = quickjs_ordinary_with_code_and_constants(&[0xcf, raw, 0x28], &[]);
+        let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+        context.call(&function, Value::Undefined, &[value]).unwrap()
+    }
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let Value::Object(normal_callable) = context.eval("(function () {})").unwrap() else {
+        panic!("function expression did not produce an Object");
+    };
+    let Value::Object(callable_proxy) = context.eval("new Proxy(function () {}, {})").unwrap()
+    else {
+        panic!("callable Proxy did not produce an Object");
+    };
+    let Value::Object(html_dda_callable) = context.eval("(function () {})").unwrap() else {
+        panic!("function expression did not produce an Object");
+    };
+    runtime.set_object_is_html_dda(&html_dda_callable).unwrap();
+    let Value::Object(ordinary_object) = context.eval("({})").unwrap() else {
+        panic!("object literal did not produce an Object");
+    };
+
+    assert_eq!(
+        predicate(&mut context, 0xf0, Value::Undefined),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf0, Value::Object(html_dda_callable.clone())),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf1, Value::Null),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf1, Value::Object(html_dda_callable.clone())),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf2, Value::Undefined),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf2, Value::Object(html_dda_callable.clone())),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf3, Value::Object(normal_callable)),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf3, Value::Object(callable_proxy)),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf3, Value::Object(html_dda_callable)),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        predicate(&mut context, 0xf3, Value::Object(ordinary_object)),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -1390,6 +1655,18 @@ fn quickjs_scalar_with_code(code: &[u8]) -> Vec<u8> {
     let mut object = QUICKJS_SCALAR_42_BC5.to_vec();
     object[15] = u8::try_from(code.len()).expect("test code length fits one-byte ULEB");
     object.splice(21.., code.iter().copied());
+    object
+}
+
+fn quickjs_ordinary_with_code_and_constants(code: &[u8], constants: &[&[u8]]) -> Vec<u8> {
+    let mut object = QUICKJS_ORDINARY_LEAF_42_BC5.to_vec();
+    object[36] = u8::try_from(constants.len()).expect("test constant count fits one-byte ULEB");
+    object[37] = u8::try_from(code.len()).expect("test code length fits one-byte ULEB");
+    object.truncate(55);
+    object.extend_from_slice(code);
+    for constant in constants {
+        object.extend_from_slice(constant);
+    }
     object
 }
 

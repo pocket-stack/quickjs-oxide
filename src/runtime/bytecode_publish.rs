@@ -2211,10 +2211,9 @@ fn verify_unlinked_tree_with_root(
                         || !function.eval_environments().is_empty()
                         || function.func_name().is_some()
                         || function.debug().is_some()
-                        || function
-                            .constants()
-                            .iter()
-                            .any(|constant| !constant.is_plain_primitive())
+                        || function.constants().iter().any(|constant| {
+                            !constant.is_plain_primitive() && !constant.is_empty_atom_string()
+                        })
                         || function
                             .argument_definitions()
                             .iter()
@@ -4874,6 +4873,13 @@ mod tests {
             metadata,
         );
         assert!(verify_unlinked_ordinary_leaf(&with_atom_string).is_err());
+
+        let with_empty_atom_string = UnlinkedFunction::new(
+            vec![Instruction::PushConst(0), Instruction::Return],
+            vec![UnlinkedConstant::atom_string(JsString::from_static(""))],
+            metadata,
+        );
+        verify_unlinked_ordinary_leaf(&with_empty_atom_string).unwrap();
 
         let named_argument = trusted_ordinary_leaf(metadata).with_variable_definitions(
             vec![UnlinkedVariableDefinition::ordinary(Some(

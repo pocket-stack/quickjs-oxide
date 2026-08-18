@@ -15,7 +15,8 @@ use super::bytecode_image::{
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits, FunctionKind};
 use super::function_translate::{
-    FunctionCode, FunctionOp, FunctionTranslateError, OperationDiagnostic, TranslationTarget,
+    FunctionBinaryOp, FunctionCode, FunctionOp, FunctionPredicateOp, FunctionStackOp,
+    FunctionTranslateError, FunctionUnaryOp, OperationDiagnostic, TranslationTarget,
     translate_function,
 };
 use super::graph::decode::DecodeError;
@@ -146,20 +147,89 @@ pub(in crate::runtime) enum DetachedPrimitive {
 pub(in crate::runtime) enum OrdinaryLeafOp {
     PushI32(i32),
     PushConst(u32),
+    PushUndefined,
+    PushNull,
+    PushBool(bool),
+    PushBigIntI32(i32),
+    PushEmptyString,
+    Stack(OrdinaryLeafStackOp),
+    Unary(OrdinaryLeafUnaryOp),
+    PostDec,
+    PostInc,
     GetLocal(u16),
     PutLocal(u16),
     SetLocal(u16),
     GetArgument(u16),
     PutArgument(u16),
     SetArgument(u16),
-    Add,
-    Sub,
-    Div,
-    GreaterThan,
-    StrictEqual,
+    Binary(OrdinaryLeafBinaryOp),
+    Predicate(OrdinaryLeafPredicateOp),
     IfFalse(u32),
+    IfTrue(u32),
     Goto(u32),
     Return,
+    ReturnUndefined,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum OrdinaryLeafStackOp {
+    Drop,
+    Nip,
+    Dup,
+    Dup1,
+    Dup3,
+    Insert2,
+    Insert3,
+    Insert4,
+    Perm3,
+    Perm4,
+    Perm5,
+    Swap,
+    Rot4Left,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum OrdinaryLeafUnaryOp {
+    Neg,
+    Plus,
+    Dec,
+    Inc,
+    BitNot,
+    LogicalNot,
+    TypeOf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum OrdinaryLeafBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Shl,
+    Sar,
+    Shr,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Equal,
+    NotEqual,
+    StrictEqual,
+    StrictNotEqual,
+    BitAnd,
+    BitXor,
+    BitOr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum OrdinaryLeafPredicateOp {
+    IsUndefinedOrNull,
+    IsUndefined,
+    IsNull,
+    TypeOfIsUndefined,
+    TypeOfIsFunction,
 }
 
 /// Owned archive-side handoff for the transactional publication boundary.
@@ -503,6 +573,37 @@ fn lower_operation(
     match operation {
         FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),
         FunctionOp::PushConstant(index) => lower_constant(*index, constant_count),
+        FunctionOp::PushUndefined => Ok(OrdinaryLeafOp::PushUndefined),
+        FunctionOp::PushNull => Ok(OrdinaryLeafOp::PushNull),
+        FunctionOp::PushBool(value) => Ok(OrdinaryLeafOp::PushBool(*value)),
+        FunctionOp::PushBigIntI32(value) => Ok(OrdinaryLeafOp::PushBigIntI32(*value)),
+        FunctionOp::PushEmptyString => Ok(OrdinaryLeafOp::PushEmptyString),
+        FunctionOp::Stack(operation) => Ok(OrdinaryLeafOp::Stack(match operation {
+            FunctionStackOp::Drop => OrdinaryLeafStackOp::Drop,
+            FunctionStackOp::Nip => OrdinaryLeafStackOp::Nip,
+            FunctionStackOp::Dup => OrdinaryLeafStackOp::Dup,
+            FunctionStackOp::Dup1 => OrdinaryLeafStackOp::Dup1,
+            FunctionStackOp::Dup3 => OrdinaryLeafStackOp::Dup3,
+            FunctionStackOp::Insert2 => OrdinaryLeafStackOp::Insert2,
+            FunctionStackOp::Insert3 => OrdinaryLeafStackOp::Insert3,
+            FunctionStackOp::Insert4 => OrdinaryLeafStackOp::Insert4,
+            FunctionStackOp::Perm3 => OrdinaryLeafStackOp::Perm3,
+            FunctionStackOp::Perm4 => OrdinaryLeafStackOp::Perm4,
+            FunctionStackOp::Perm5 => OrdinaryLeafStackOp::Perm5,
+            FunctionStackOp::Swap => OrdinaryLeafStackOp::Swap,
+            FunctionStackOp::Rot4Left => OrdinaryLeafStackOp::Rot4Left,
+        })),
+        FunctionOp::Unary(operation) => Ok(OrdinaryLeafOp::Unary(match operation {
+            FunctionUnaryOp::Neg => OrdinaryLeafUnaryOp::Neg,
+            FunctionUnaryOp::Plus => OrdinaryLeafUnaryOp::Plus,
+            FunctionUnaryOp::Dec => OrdinaryLeafUnaryOp::Dec,
+            FunctionUnaryOp::Inc => OrdinaryLeafUnaryOp::Inc,
+            FunctionUnaryOp::BitNot => OrdinaryLeafUnaryOp::BitNot,
+            FunctionUnaryOp::LogicalNot => OrdinaryLeafUnaryOp::LogicalNot,
+            FunctionUnaryOp::TypeOf => OrdinaryLeafUnaryOp::TypeOf,
+        })),
+        FunctionOp::PostDec => Ok(OrdinaryLeafOp::PostDec),
+        FunctionOp::PostInc => Ok(OrdinaryLeafOp::PostInc),
         FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::GetLocal),
         FunctionOp::PutLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::PutLocal),
         FunctionOp::SetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::SetLocal),
@@ -515,18 +616,46 @@ fn lower_operation(
         FunctionOp::SetArgument(index) => {
             lower_argument(*index, argument_count, OrdinaryLeafOp::SetArgument)
         }
-        FunctionOp::Add => Ok(OrdinaryLeafOp::Add),
-        FunctionOp::Sub => Ok(OrdinaryLeafOp::Sub),
-        FunctionOp::Div => Ok(OrdinaryLeafOp::Div),
-        FunctionOp::GreaterThan => Ok(OrdinaryLeafOp::GreaterThan),
-        FunctionOp::StrictEqual => Ok(OrdinaryLeafOp::StrictEqual),
+        FunctionOp::Binary(operation) => Ok(OrdinaryLeafOp::Binary(match operation {
+            FunctionBinaryOp::Add => OrdinaryLeafBinaryOp::Add,
+            FunctionBinaryOp::Sub => OrdinaryLeafBinaryOp::Sub,
+            FunctionBinaryOp::Mul => OrdinaryLeafBinaryOp::Mul,
+            FunctionBinaryOp::Div => OrdinaryLeafBinaryOp::Div,
+            FunctionBinaryOp::Mod => OrdinaryLeafBinaryOp::Mod,
+            FunctionBinaryOp::Pow => OrdinaryLeafBinaryOp::Pow,
+            FunctionBinaryOp::Shl => OrdinaryLeafBinaryOp::Shl,
+            FunctionBinaryOp::Sar => OrdinaryLeafBinaryOp::Sar,
+            FunctionBinaryOp::Shr => OrdinaryLeafBinaryOp::Shr,
+            FunctionBinaryOp::LessThan => OrdinaryLeafBinaryOp::LessThan,
+            FunctionBinaryOp::LessThanOrEqual => OrdinaryLeafBinaryOp::LessThanOrEqual,
+            FunctionBinaryOp::GreaterThan => OrdinaryLeafBinaryOp::GreaterThan,
+            FunctionBinaryOp::GreaterThanOrEqual => OrdinaryLeafBinaryOp::GreaterThanOrEqual,
+            FunctionBinaryOp::Equal => OrdinaryLeafBinaryOp::Equal,
+            FunctionBinaryOp::NotEqual => OrdinaryLeafBinaryOp::NotEqual,
+            FunctionBinaryOp::StrictEqual => OrdinaryLeafBinaryOp::StrictEqual,
+            FunctionBinaryOp::StrictNotEqual => OrdinaryLeafBinaryOp::StrictNotEqual,
+            FunctionBinaryOp::BitAnd => OrdinaryLeafBinaryOp::BitAnd,
+            FunctionBinaryOp::BitXor => OrdinaryLeafBinaryOp::BitXor,
+            FunctionBinaryOp::BitOr => OrdinaryLeafBinaryOp::BitOr,
+        })),
+        FunctionOp::Predicate(operation) => Ok(OrdinaryLeafOp::Predicate(match operation {
+            FunctionPredicateOp::IsUndefinedOrNull => OrdinaryLeafPredicateOp::IsUndefinedOrNull,
+            FunctionPredicateOp::IsUndefined => OrdinaryLeafPredicateOp::IsUndefined,
+            FunctionPredicateOp::IsNull => OrdinaryLeafPredicateOp::IsNull,
+            FunctionPredicateOp::TypeOfIsUndefined => OrdinaryLeafPredicateOp::TypeOfIsUndefined,
+            FunctionPredicateOp::TypeOfIsFunction => OrdinaryLeafPredicateOp::TypeOfIsFunction,
+        })),
         FunctionOp::IfFalse(target) => {
             validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfFalse)
+        }
+        FunctionOp::IfTrue(target) => {
+            validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfTrue)
         }
         FunctionOp::Goto(target) => {
             validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto)
         }
         FunctionOp::Return => Ok(OrdinaryLeafOp::Return),
+        FunctionOp::ReturnUndefined => Ok(OrdinaryLeafOp::ReturnUndefined),
         _ => Err(OrdinaryLeafReadError::Internal(
             "ordinary-capable translated operation has no ordinary-leaf lowering".into(),
         )),
@@ -580,7 +709,7 @@ fn validate_ir_target(
 
 fn unsupported_operation(diagnostic: OperationDiagnostic) -> OrdinaryLeafReadError {
     OrdinaryLeafReadError::Unadmitted(format!(
-        "native operation {} with {:?} operands is outside the first ordinary-leaf cohort",
+        "native operation {} with {:?} operands is outside the admitted ordinary-leaf cohort",
         diagnostic.mnemonic(),
         diagnostic.operand_shape()
     ))
@@ -892,33 +1021,33 @@ mod tests {
                 OrdinaryLeafOp::PutLocal(1),
                 OrdinaryLeafOp::GetArgument(0),
                 OrdinaryLeafOp::PushI32(0),
-                OrdinaryLeafOp::GreaterThan,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::GreaterThan),
                 OrdinaryLeafOp::IfFalse(30),
                 OrdinaryLeafOp::GetArgument(0),
                 OrdinaryLeafOp::PushI32(2),
-                OrdinaryLeafOp::StrictEqual,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::StrictEqual),
                 OrdinaryLeafOp::IfFalse(19),
                 OrdinaryLeafOp::GetLocal(0),
                 OrdinaryLeafOp::GetLocal(1),
-                OrdinaryLeafOp::Add,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Add),
                 OrdinaryLeafOp::PushI32(1),
-                OrdinaryLeafOp::Div,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Div),
                 OrdinaryLeafOp::PutLocal(0),
                 OrdinaryLeafOp::Goto(25),
                 OrdinaryLeafOp::GetLocal(0),
                 OrdinaryLeafOp::PushI32(1),
-                OrdinaryLeafOp::Add,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Add),
                 OrdinaryLeafOp::PushI32(1),
-                OrdinaryLeafOp::Div,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Div),
                 OrdinaryLeafOp::PutLocal(0),
                 OrdinaryLeafOp::GetArgument(0),
                 OrdinaryLeafOp::PushI32(1),
-                OrdinaryLeafOp::Sub,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Sub),
                 OrdinaryLeafOp::PutArgument(0),
                 OrdinaryLeafOp::Goto(4),
                 OrdinaryLeafOp::GetLocal(0),
                 OrdinaryLeafOp::PushConst(1),
-                OrdinaryLeafOp::StrictEqual,
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::StrictEqual),
                 OrdinaryLeafOp::IfFalse(36),
                 OrdinaryLeafOp::PushI32(42),
                 OrdinaryLeafOp::Return,
@@ -929,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_every_sanitized_ordinary_operation_without_consulting_diagnostics() {
+    fn lowers_representative_sanitized_operations_without_consulting_diagnostics() {
         let cases = [
             (
                 FunctionOp::PushI32(i32::MIN),
@@ -942,14 +1071,31 @@ mod tests {
             (FunctionOp::GetArgument(3), OrdinaryLeafOp::GetArgument(3)),
             (FunctionOp::PutArgument(2), OrdinaryLeafOp::PutArgument(2)),
             (FunctionOp::SetArgument(1), OrdinaryLeafOp::SetArgument(1)),
-            (FunctionOp::Add, OrdinaryLeafOp::Add),
-            (FunctionOp::Sub, OrdinaryLeafOp::Sub),
-            (FunctionOp::Div, OrdinaryLeafOp::Div),
-            (FunctionOp::GreaterThan, OrdinaryLeafOp::GreaterThan),
-            (FunctionOp::StrictEqual, OrdinaryLeafOp::StrictEqual),
+            (
+                FunctionOp::Binary(FunctionBinaryOp::Add),
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Add),
+            ),
+            (
+                FunctionOp::Binary(FunctionBinaryOp::Sub),
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Sub),
+            ),
+            (
+                FunctionOp::Binary(FunctionBinaryOp::Div),
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::Div),
+            ),
+            (
+                FunctionOp::Binary(FunctionBinaryOp::GreaterThan),
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::GreaterThan),
+            ),
+            (
+                FunctionOp::Binary(FunctionBinaryOp::StrictEqual),
+                OrdinaryLeafOp::Binary(OrdinaryLeafBinaryOp::StrictEqual),
+            ),
             (FunctionOp::IfFalse(7), OrdinaryLeafOp::IfFalse(7)),
+            (FunctionOp::IfTrue(7), OrdinaryLeafOp::IfTrue(7)),
             (FunctionOp::Goto(0), OrdinaryLeafOp::Goto(0)),
             (FunctionOp::Return, OrdinaryLeafOp::Return),
+            (FunctionOp::ReturnUndefined, OrdinaryLeafOp::ReturnUndefined),
         ];
         for (operation, expected) in cases {
             assert_eq!(lower_ready(operation), expected);
@@ -1101,21 +1247,21 @@ mod tests {
     #[test]
     fn rejects_outside_opcodes_operands_and_native_cfg_targets() {
         let mut unsupported_opcode = oracle();
-        unsupported_opcode[72] = 0x98; // mul in place of add
+        unsupported_opcode[72] = 0xa5; // instanceof in place of add
         assert_eq!(
             decode(&unsupported_opcode),
             Err(OrdinaryLeafReadError::Unadmitted(
-                "native operation mul with None operands is outside the first ordinary-leaf cohort"
+                "native operation instanceof with None operands is outside the admitted ordinary-leaf cohort"
                     .into()
             ))
         );
 
         let mut scalar_only_opcode = oracle();
-        scalar_only_opcode[72] = 0x8a; // neg is translated, but is not ordinary-leaf capable
+        scalar_only_opcode[55] = 0x04; // replace push_const with equal-width push_atom_value
         assert_eq!(
             decode(&scalar_only_opcode),
             Err(OrdinaryLeafReadError::Unadmitted(
-                "native operation neg with None operands is outside the first ordinary-leaf cohort"
+                "native operation push_atom_value with Atom operands is outside the admitted ordinary-leaf cohort"
                     .into()
             ))
         );

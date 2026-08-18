@@ -9,7 +9,20 @@ use crate::runtime::binary_object::pinned_opcodes::{
 };
 
 use super::TranslationBlocker;
-use super::dto::{FunctionUnaryOp, OperandShape};
+use super::dto::{
+    FunctionBinaryOp, FunctionPredicateOp, FunctionStackOp, FunctionUnaryOp, OperandShape,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StackRecipe {
+    Direct(FunctionStackOp),
+    Nip1,
+    Dup2,
+    Swap2,
+    Rot3Left,
+    Rot3Right,
+    Rot5Left,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Recipe {
@@ -22,21 +35,23 @@ pub(super) enum Recipe {
     PushTrue,
     PushBigIntI32,
     PushEmptyString,
+    Stack(StackRecipe),
     Unary(FunctionUnaryOp),
+    PostDec,
+    PostInc,
     GetLocal,
     PutLocal,
     SetLocal,
     GetArgument,
     PutArgument,
     SetArgument,
-    Add,
-    Sub,
-    Div,
-    GreaterThan,
-    StrictEqual,
+    Binary(FunctionBinaryOp),
+    Predicate(FunctionPredicateOp),
     IfFalse,
+    IfTrue,
     Goto,
     Return,
+    ReturnUndefined,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,8 +98,8 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 172 Blocked, 14 ScalarOnly, 42 OrdinaryOnly,
-/// and 16 Shared. This is exactly the union of the two pre-refactor cohorts.
+/// Counts are locked by tests: 128 Blocked, 1 ScalarOnly, 86 OrdinaryOnly,
+/// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(0, None, Blocked, InvalidSentinel),
@@ -93,33 +108,33 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(3, Const, Blocked, FunctionGraph),
     row!(4, Atom, ScalarOnly, Recipe::PushAtom),
     row!(5, Atom, Blocked, ValueConstruction),
-    row!(6, None, ScalarOnly, Recipe::PushUndefined),
-    row!(7, None, ScalarOnly, Recipe::PushNull),
+    row!(6, None, Shared, Recipe::PushUndefined),
+    row!(7, None, Shared, Recipe::PushNull),
     row!(8, None, Blocked, ValueConstruction),
-    row!(9, None, ScalarOnly, Recipe::PushFalse),
-    row!(10, None, ScalarOnly, Recipe::PushTrue),
+    row!(9, None, Shared, Recipe::PushFalse),
+    row!(10, None, Shared, Recipe::PushTrue),
     row!(11, None, Blocked, ValueConstruction),
     row!(12, U8, Blocked, ValueConstruction),
     row!(13, U16, Blocked, ValueConstruction),
-    row!(14, None, Blocked, StackManipulation),
-    row!(15, None, Blocked, StackManipulation),
-    row!(16, None, Blocked, StackManipulation),
-    row!(17, None, Blocked, StackManipulation),
-    row!(18, None, Blocked, StackManipulation),
-    row!(19, None, Blocked, StackManipulation),
-    row!(20, None, Blocked, StackManipulation),
-    row!(21, None, Blocked, StackManipulation),
-    row!(22, None, Blocked, StackManipulation),
-    row!(23, None, Blocked, StackManipulation),
-    row!(24, None, Blocked, StackManipulation),
-    row!(25, None, Blocked, StackManipulation),
-    row!(26, None, Blocked, StackManipulation),
-    row!(27, None, Blocked, StackManipulation),
-    row!(28, None, Blocked, StackManipulation),
-    row!(29, None, Blocked, StackManipulation),
-    row!(30, None, Blocked, StackManipulation),
-    row!(31, None, Blocked, StackManipulation),
-    row!(32, None, Blocked, StackManipulation),
+    row!(14, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Drop))),
+    row!(15, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Nip))),
+    row!(16, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Nip1)),
+    row!(17, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Dup))),
+    row!(18, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Dup1))),
+    row!(19, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Dup2)),
+    row!(20, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Dup3))),
+    row!(21, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Insert2))),
+    row!(22, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Insert3))),
+    row!(23, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Insert4))),
+    row!(24, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Perm3))),
+    row!(25, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Perm4))),
+    row!(26, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Perm5))),
+    row!(27, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Swap))),
+    row!(28, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Swap2)),
+    row!(29, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Rot3Left)),
+    row!(30, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Rot3Right)),
+    row!(31, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Rot4Left))),
+    row!(32, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Rot5Left)),
     row!(33, NPop, Blocked, Invocation),
     row!(34, NPop, Blocked, Invocation),
     row!(35, NPop, Blocked, Invocation),
@@ -128,7 +143,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(38, NPop, Blocked, Invocation),
     row!(39, U16, Blocked, Invocation),
     row!(40, None, Shared, Recipe::Return),
-    row!(41, None, Blocked, Completion),
+    row!(41, None, OrdinaryOnly, Recipe::ReturnUndefined),
     row!(42, None, Blocked, ObjectConstruction),
     row!(43, None, Blocked, ObjectConstruction),
     row!(44, None, Blocked, ObjectConstruction),
@@ -192,7 +207,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(102, VarRef, Blocked, LexicalEnvironment),
     row!(103, Loc, Blocked, LexicalEnvironment),
     row!(104, Label, OrdinaryOnly, Recipe::IfFalse),
-    row!(105, Label, Blocked, ControlFlow),
+    row!(105, Label, OrdinaryOnly, Recipe::IfTrue),
     row!(106, Label, OrdinaryOnly, Recipe::Goto),
     row!(107, Label, Blocked, ControlFlow),
     row!(108, Label, Blocked, ControlFlow),
@@ -225,45 +240,45 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(135, None, Blocked, Suspension),
     row!(136, None, Blocked, Suspension),
     row!(137, None, Blocked, Suspension),
-    row!(138, None, ScalarOnly, Recipe::Unary(FunctionUnaryOp::Neg)),
-    row!(139, None, ScalarOnly, Recipe::Unary(FunctionUnaryOp::Plus)),
-    row!(140, None, ScalarOnly, Recipe::Unary(FunctionUnaryOp::Dec)),
-    row!(141, None, ScalarOnly, Recipe::Unary(FunctionUnaryOp::Inc)),
-    row!(142, None, Blocked, Operator),
-    row!(143, None, Blocked, Operator),
+    row!(138, None, Shared, Recipe::Unary(FunctionUnaryOp::Neg)),
+    row!(139, None, Shared, Recipe::Unary(FunctionUnaryOp::Plus)),
+    row!(140, None, Shared, Recipe::Unary(FunctionUnaryOp::Dec)),
+    row!(141, None, Shared, Recipe::Unary(FunctionUnaryOp::Inc)),
+    row!(142, None, OrdinaryOnly, Recipe::PostDec),
+    row!(143, None, OrdinaryOnly, Recipe::PostInc),
     row!(144, Loc8, Blocked, Specialized),
     row!(145, Loc8, Blocked, Specialized),
     row!(146, Loc8, Blocked, Specialized),
-    row!(147, None, ScalarOnly, Recipe::Unary(FunctionUnaryOp::BitNot)),
-    row!(148, None, ScalarOnly, Recipe::Unary(FunctionUnaryOp::LogicalNot)),
-    row!(149, None, ScalarOnly, Recipe::Unary(FunctionUnaryOp::TypeOf)),
+    row!(147, None, Shared, Recipe::Unary(FunctionUnaryOp::BitNot)),
+    row!(148, None, Shared, Recipe::Unary(FunctionUnaryOp::LogicalNot)),
+    row!(149, None, Shared, Recipe::Unary(FunctionUnaryOp::TypeOf)),
     row!(150, None, Blocked, Operator),
     row!(151, Atom, Blocked, Binding),
-    row!(152, None, Blocked, Operator),
-    row!(153, None, OrdinaryOnly, Recipe::Div),
-    row!(154, None, Blocked, Operator),
-    row!(155, None, OrdinaryOnly, Recipe::Add),
-    row!(156, None, OrdinaryOnly, Recipe::Sub),
-    row!(157, None, Blocked, Operator),
-    row!(158, None, Blocked, Operator),
-    row!(159, None, Blocked, Operator),
-    row!(160, None, Blocked, Operator),
-    row!(161, None, Blocked, Operator),
-    row!(162, None, Blocked, Operator),
-    row!(163, None, OrdinaryOnly, Recipe::GreaterThan),
-    row!(164, None, Blocked, Operator),
+    row!(152, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Mul)),
+    row!(153, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Div)),
+    row!(154, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Mod)),
+    row!(155, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Add)),
+    row!(156, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Sub)),
+    row!(157, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Pow)),
+    row!(158, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Shl)),
+    row!(159, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Sar)),
+    row!(160, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Shr)),
+    row!(161, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::LessThan)),
+    row!(162, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::LessThanOrEqual)),
+    row!(163, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::GreaterThan)),
+    row!(164, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::GreaterThanOrEqual)),
     row!(165, None, Blocked, Operator),
     row!(166, None, Blocked, Operator),
-    row!(167, None, Blocked, Operator),
-    row!(168, None, Blocked, Operator),
-    row!(169, None, OrdinaryOnly, Recipe::StrictEqual),
-    row!(170, None, Blocked, Operator),
-    row!(171, None, Blocked, Operator),
-    row!(172, None, Blocked, Operator),
-    row!(173, None, Blocked, Operator),
-    row!(174, None, Blocked, Specialized),
+    row!(167, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Equal)),
+    row!(168, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::NotEqual)),
+    row!(169, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::StrictEqual)),
+    row!(170, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::StrictNotEqual)),
+    row!(171, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::BitAnd)),
+    row!(172, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::BitXor)),
+    row!(173, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::BitOr)),
+    row!(174, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::IsUndefinedOrNull)),
     row!(175, None, Blocked, Operator),
-    row!(176, I32, ScalarOnly, Recipe::PushBigIntI32),
+    row!(176, I32, Shared, Recipe::PushBigIntI32),
     row!(177, None, Blocked, Specialized),
     row!(178, NoneInt, Shared, Recipe::PushI32),
     row!(179, NoneInt, Shared, Recipe::PushI32),
@@ -278,7 +293,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(188, I16, Shared, Recipe::PushI32),
     row!(189, Const8, Shared, Recipe::PushConstant),
     row!(190, Const8, Blocked, FunctionGraph),
-    row!(191, None, ScalarOnly, Recipe::PushEmptyString),
+    row!(191, None, Shared, Recipe::PushEmptyString),
     row!(192, Loc8, OrdinaryOnly, Recipe::GetLocal),
     row!(193, Loc8, OrdinaryOnly, Recipe::PutLocal),
     row!(194, Loc8, OrdinaryOnly, Recipe::SetLocal),
@@ -320,17 +335,17 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(230, NoneVarRef, Blocked, LexicalEnvironment),
     row!(231, None, Blocked, Property),
     row!(232, Label8, OrdinaryOnly, Recipe::IfFalse),
-    row!(233, Label8, Blocked, ControlFlow),
+    row!(233, Label8, OrdinaryOnly, Recipe::IfTrue),
     row!(234, Label8, OrdinaryOnly, Recipe::Goto),
     row!(235, Label16, OrdinaryOnly, Recipe::Goto),
     row!(236, NPopX, Blocked, Invocation),
     row!(237, NPopX, Blocked, Invocation),
     row!(238, NPopX, Blocked, Invocation),
     row!(239, NPopX, Blocked, Invocation),
-    row!(240, None, Blocked, Specialized),
-    row!(241, None, Blocked, Specialized),
-    row!(242, None, Blocked, Specialized),
-    row!(243, None, Blocked, Specialized),
+    row!(240, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::IsUndefined)),
+    row!(241, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::IsNull)),
+    row!(242, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::TypeOfIsUndefined)),
+    row!(243, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::TypeOfIsFunction)),
 ];
 
 #[must_use]
@@ -376,6 +391,7 @@ pub(super) const fn operand_shape(format: OpcodeFormat) -> OperandShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::binary_object::function_translate::InstructionAudience;
 
     #[test]
     fn registry_is_an_exhaustive_raw_indexed_pinned_format_contract() {
@@ -388,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_preserves_both_existing_physical_cohorts_without_expansion() {
+    fn registry_locks_the_current_physical_cohorts() {
         let mut blocked = 0;
         let mut scalar_only = 0;
         let mut ordinary_only = 0;
@@ -403,16 +419,62 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (172, 14, 42, 16)
+            (128, 1, 86, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 58);
-        assert_eq!(scalar_only + ordinary_only + shared, 72);
+        assert_eq!(ordinary_only + shared, 115);
+        assert_eq!(scalar_only + ordinary_only + shared, 116);
+    }
+
+    #[test]
+    fn ordinary_leaf_addition_is_the_exact_reviewed_57_row_set() {
+        const NEW_ORDINARY_PHYSICAL_ROWS: [u8; 57] = [
+            6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+            32, 41, 105, 138, 139, 140, 141, 142, 143, 147, 148, 149, 152, 154, 157, 158, 159, 160,
+            161, 162, 164, 167, 168, 170, 171, 172, 173, 174, 176, 191, 233, 240, 241, 242, 243,
+        ];
+        const FORMER_SCALAR_ROWS: [u8; 13] =
+            [6, 7, 9, 10, 138, 139, 140, 141, 147, 148, 149, 176, 191];
+
+        let mut seen = [false; PINNED_OPCODE_COUNT];
+        for raw in NEW_ORDINARY_PHYSICAL_ROWS {
+            assert!(!seen[usize::from(raw)], "duplicate reviewed raw {raw}");
+            seen[usize::from(raw)] = true;
+            let expected = if FORMER_SCALAR_ROWS.contains(&raw) {
+                InstructionAudience::Shared
+            } else {
+                InstructionAudience::OrdinaryOnly
+            };
+            let actual = match CAPABILITY_REGISTRY[usize::from(raw)].policy {
+                CapabilityPolicy::Blocked(_) => InstructionAudience::Blocked,
+                CapabilityPolicy::ScalarOnly(_) => InstructionAudience::ScalarOnly,
+                CapabilityPolicy::OrdinaryOnly(_) => InstructionAudience::OrdinaryOnly,
+                CapabilityPolicy::Shared(_) => InstructionAudience::Shared,
+            };
+            assert_eq!(actual, expected, "reviewed raw {raw}");
+        }
+
+        assert!(matches!(
+            CAPABILITY_REGISTRY[163].policy,
+            CapabilityPolicy::OrdinaryOnly(Recipe::Binary(FunctionBinaryOp::GreaterThan))
+        ));
+        assert!(matches!(
+            CAPABILITY_REGISTRY[169].policy,
+            CapabilityPolicy::OrdinaryOnly(Recipe::Binary(FunctionBinaryOp::StrictEqual))
+        ));
+        assert!(matches!(
+            CAPABILITY_REGISTRY[165].policy,
+            CapabilityPolicy::Blocked(TranslationBlocker::Operator)
+        ));
+        assert!(matches!(
+            CAPABILITY_REGISTRY[166].policy,
+            CapabilityPolicy::Blocked(TranslationBlocker::Operator)
+        ));
     }
 
     #[test]
     fn blocked_frontier_has_stable_typed_category_counts() {
-        let mut counts = [0_usize; 18];
+        let mut counts = [0_usize; 17];
         for row in CAPABILITY_REGISTRY {
             let CapabilityPolicy::Blocked(blocker) = row.policy else {
                 continue;
@@ -421,29 +483,27 @@ mod tests {
                 TranslationBlocker::InvalidSentinel => 0,
                 TranslationBlocker::ValueConstruction => 1,
                 TranslationBlocker::FunctionGraph => 2,
-                TranslationBlocker::StackManipulation => 3,
-                TranslationBlocker::Invocation => 4,
-                TranslationBlocker::Completion => 5,
-                TranslationBlocker::Exception => 6,
-                TranslationBlocker::EvalOrModule => 7,
-                TranslationBlocker::Binding => 8,
-                TranslationBlocker::Property => 9,
-                TranslationBlocker::ObjectConstruction => 10,
-                TranslationBlocker::LexicalEnvironment => 11,
-                TranslationBlocker::ControlFlow => 12,
-                TranslationBlocker::DynamicScope => 13,
-                TranslationBlocker::Iteration => 14,
-                TranslationBlocker::Suspension => 15,
-                TranslationBlocker::Operator => 16,
-                TranslationBlocker::Specialized => 17,
+                TranslationBlocker::Invocation => 3,
+                TranslationBlocker::Completion => 4,
+                TranslationBlocker::Exception => 5,
+                TranslationBlocker::EvalOrModule => 6,
+                TranslationBlocker::Binding => 7,
+                TranslationBlocker::Property => 8,
+                TranslationBlocker::ObjectConstruction => 9,
+                TranslationBlocker::LexicalEnvironment => 10,
+                TranslationBlocker::ControlFlow => 11,
+                TranslationBlocker::DynamicScope => 12,
+                TranslationBlocker::Iteration => 13,
+                TranslationBlocker::Suspension => 14,
+                TranslationBlocker::Operator => 15,
+                TranslationBlocker::Specialized => 16,
             };
             counts[index] += 1;
         }
         assert_eq!(
             counts,
-            [1, 8, 2, 19, 11, 2, 2, 3, 7, 16, 15, 25, 6, 9, 11, 5, 21, 9]
+            [1, 8, 2, 11, 1, 2, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]
         );
-        assert!(counts.into_iter().all(|count| count > 0));
-        assert_eq!(counts.into_iter().sum::<usize>(), 172);
+        assert_eq!(counts.into_iter().sum::<usize>(), 128);
     }
 }
