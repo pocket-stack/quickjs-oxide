@@ -9,7 +9,7 @@
 use std::fmt;
 
 use super::{BytecodeImage, FunctionId, ImageAtom, ImageCode};
-use crate::runtime::binary_object::pinned_atoms::PinnedAtomKind;
+use crate::runtime::binary_object::pinned_atoms::{FIRST_DYNAMIC_ATOM, PinnedAtomKind};
 use crate::runtime::binary_object::pinned_opcodes::{OpcodeFormat, PinnedOpcode};
 use crate::runtime::binary_object::wire::WireString;
 
@@ -32,6 +32,7 @@ pub(in crate::runtime::binary_object) enum NativeAtomClass {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime::binary_object) struct NativeAtomRef<'image> {
     kind: NativeAtomRefKind<'image>,
+    from_input_atom_table: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +50,7 @@ impl<'image> NativeAtomRef<'image> {
     fn new(
         atom: ImageAtom,
         dynamic_atoms: &'image [WireString],
+        from_input_atom_table: bool,
         operand_pc: u32,
     ) -> Result<Self, NativePlanError> {
         let kind = match atom {
@@ -73,7 +75,20 @@ impl<'image> NativeAtomRef<'image> {
                 NativeAtomRefKind::Dynamic(spelling)
             }
         };
-        Ok(Self { kind })
+        Ok(Self {
+            kind,
+            from_input_atom_table,
+        })
+    }
+
+    /// Whether the native operand named one of this image's input atom slots.
+    ///
+    /// The slot number and raw atom spelling remain sealed inside the archive
+    /// decoder. This bit preserves the provenance of aliases which QuickJS
+    /// interns to a predefined String or tagged decimal identity.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn originates_from_input_atom_table(self) -> bool {
+        self.from_input_atom_table
     }
 
     #[must_use]
@@ -424,6 +439,23 @@ pub(in crate::runtime::binary_object) enum NativePlanError {
     AllocationFailed,
 }
 
+impl NativePlanError {
+    /// Whether this failure comes from the executable-plan label validation
+    /// which the pinned QuickJS object reader itself does not perform.
+    ///
+    /// A narrow consumer can use this distinction to keep an otherwise
+    /// understood, outside-cohort function unadmitted instead of reporting an
+    /// archive invariant failure. The concrete target and displacement remain
+    /// sealed in this archive module's diagnostic.
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn is_label_target_error(&self) -> bool {
+        matches!(
+            self,
+            Self::LabelTargetOutOfRange { .. } | Self::LabelTargetNotInstructionBoundary { .. }
+        )
+    }
+}
+
 impl fmt::Display for NativePlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -573,7 +605,11 @@ pub(in crate::runtime::binary_object) fn decode_native_code_plan<'image>(
     let record = image
         .function(function)
         .ok_or(NativePlanError::FunctionNotInImage)?;
-    let code_plan = decode_code_plan(record.envelope().code(), image.atoms())?;
+    let code_plan = decode_code_plan(
+        record.envelope().code(),
+        image.atoms(),
+        image.input_atom_slot_count(),
+    )?;
     Ok(NativeCodePlan {
         function,
         instructions: code_plan.instructions,
@@ -584,6 +620,7 @@ pub(in crate::runtime::binary_object) fn decode_native_code_plan<'image>(
 fn decode_code_plan<'image>(
     code: &'image ImageCode,
     dynamic_atoms: &'image [WireString],
+    input_atom_slot_count: u32,
 ) -> Result<DecodedCodePlan<'image>, NativePlanError> {
     let byte_length = u32::try_from(code.as_bytes().len()).map_err(|_| {
         NativePlanError::CodeLengthOutOfRange {
@@ -602,6 +639,9 @@ fn decode_code_plan<'image>(
         let byte_pc = span.offset();
         let opcode = span.opcode();
         let format = opcode.format();
+        let start = byte_pc as usize;
+        let end = start + usize::from(opcode.size());
+        let instruction_bytes = &code.as_bytes()[start..end];
         let atom = if format.has_atom_operand() {
             let expected = byte_pc
                 .checked_add(1)
@@ -622,18 +662,20 @@ fn decode_code_plan<'image>(
             }
             let relocation = &code.atom_relocations()[relocation_index];
             relocation_index += 1;
+            let raw_atom = read_u32(instruction_bytes, 1, byte_pc, opcode)?;
+            let from_input_atom_table = raw_atom
+                .checked_sub(FIRST_DYNAMIC_ATOM)
+                .is_some_and(|slot| slot < input_atom_slot_count);
             Some(NativeAtomRef::new(
                 relocation.atom(),
                 dynamic_atoms,
+                from_input_atom_table,
                 expected,
             )?)
         } else {
             None
         };
 
-        let start = byte_pc as usize;
-        let end = start + usize::from(opcode.size());
-        let instruction_bytes = &code.as_bytes()[start..end];
         let operands = decode_operands(
             format,
             opcode,
@@ -1118,7 +1160,7 @@ mod tests {
     }
 
     fn semantic_atom<'image>(dynamic_atoms: &'image [WireString]) -> NativeAtomRef<'image> {
-        NativeAtomRef::new(ImageAtom::Index(7), dynamic_atoms, 1).unwrap()
+        NativeAtomRef::new(ImageAtom::Index(7), dynamic_atoms, false, 1).unwrap()
     }
 
     fn make_code(
@@ -1196,11 +1238,11 @@ mod tests {
             let code = single_opcode_code(opcode);
             if raw == 0 {
                 assert!(matches!(
-                    decode_code_plan(&code, &[]),
+                    decode_code_plan(&code, &[], 0),
                     Err(NativePlanError::InvalidOpcode { opcode: 0, .. })
                 ));
             } else {
-                let plan = decode_code_plan(&code, &[])
+                let plan = decode_code_plan(&code, &[], 0)
                     .unwrap_or_else(|error| panic!("{} ({raw}) failed: {error}", opcode.name()));
                 assert_eq!(plan.native_pc_map.as_ref(), [0]);
                 assert_eq!(plan.instructions.len(), 1);
@@ -1279,7 +1321,7 @@ mod tests {
         ordinary[1..5].copy_from_slice(&4_i32.to_le_bytes());
         ordinary[5] = nop.raw();
         let ordinary = make_code(ordinary, [(0, goto), (5, nop)], []);
-        let plan = decode_code_plan(&ordinary, &[]).unwrap();
+        let plan = decode_code_plan(&ordinary, &[], 0).unwrap();
         let NativeOperands::Label(label) = plan.instructions[0].operands() else {
             panic!("goto did not decode a label");
         };
@@ -1297,7 +1339,7 @@ mod tests {
             [(0, with_get), (10, nop)],
             [(1, ImageAtom::Index(7))],
         );
-        let plan = decode_code_plan(&atom_label, &[]).unwrap();
+        let plan = decode_code_plan(&atom_label, &[], 0).unwrap();
         let NativeOperands::AtomLabelU8 { label, .. } = plan.instructions[0].operands() else {
             panic!("with_get_var did not decode an atom label");
         };
@@ -1324,7 +1366,7 @@ mod tests {
             [(1, ImageAtom::Index(7))],
         );
         assert!(matches!(
-            decode_code_plan(&code, &[]),
+            decode_code_plan(&code, &[], 0),
             Err(NativePlanError::LabelTargetOutOfRange {
                 operand_pc: 5,
                 displacement: 9,
@@ -1343,7 +1385,7 @@ mod tests {
             [],
         );
         assert!(matches!(
-            decode_code_plan(&code, &[]),
+            decode_code_plan(&code, &[], 0),
             Err(NativePlanError::LabelTargetNotInstructionBoundary {
                 operand_pc: 1,
                 target_pc: 1,
@@ -1354,7 +1396,7 @@ mod tests {
         let goto8 = opcode_named("goto8");
         let code = make_code(vec![goto8.raw(), 127], [(0, goto8)], []);
         assert!(matches!(
-            decode_code_plan(&code, &[]),
+            decode_code_plan(&code, &[], 0),
             Err(NativePlanError::LabelTargetOutOfRange {
                 operand_pc: 1,
                 displacement: 127,
@@ -1368,7 +1410,7 @@ mod tests {
         let nop = opcode_named("nop");
         let missing = make_code(vec![nop.raw()], [], []);
         assert!(matches!(
-            decode_code_plan(&missing, &[]),
+            decode_code_plan(&missing, &[], 0),
             Err(NativePlanError::CodeLengthMismatch {
                 covered: 0,
                 byte_length: 1,
@@ -1377,7 +1419,7 @@ mod tests {
 
         let extra = make_code(vec![nop.raw()], [(0, nop), (1, nop)], []);
         assert!(matches!(
-            decode_code_plan(&extra, &[]),
+            decode_code_plan(&extra, &[], 0),
             Err(NativePlanError::CodeLengthMismatch {
                 covered: 1,
                 byte_length: 1,
@@ -1386,7 +1428,7 @@ mod tests {
 
         let duplicate = make_code(vec![nop.raw()], [(0, nop), (0, nop)], []);
         assert!(matches!(
-            decode_code_plan(&duplicate, &[]),
+            decode_code_plan(&duplicate, &[], 0),
             Err(NativePlanError::InstructionBoundaryMismatch {
                 instruction: 1,
                 expected: 1,
@@ -1397,7 +1439,7 @@ mod tests {
         let return_undef = opcode_named("return_undef");
         let mismatch = make_code(vec![return_undef.raw()], [(0, nop)], []);
         assert!(matches!(
-            decode_code_plan(&mismatch, &[]),
+            decode_code_plan(&mismatch, &[], 0),
             Err(NativePlanError::OpcodeByteMismatch {
                 byte_pc: 0,
                 sidecar,
@@ -1412,7 +1454,7 @@ mod tests {
         let push_atom = opcode_named("push_atom_value");
         let missing = make_code(vec![push_atom.raw(), 0, 0, 0, 0], [(0, push_atom)], []);
         assert!(matches!(
-            decode_code_plan(&missing, &[]),
+            decode_code_plan(&missing, &[], 0),
             Err(NativePlanError::AtomRelocationMismatch {
                 relocation: 0,
                 expected: Some(1),
@@ -1423,7 +1465,7 @@ mod tests {
         let nop = opcode_named("nop");
         let extra = make_code(vec![nop.raw()], [(0, nop)], [(0, ImageAtom::Index(7))]);
         assert!(matches!(
-            decode_code_plan(&extra, &[]),
+            decode_code_plan(&extra, &[], 0),
             Err(NativePlanError::AtomRelocationMismatch {
                 relocation: 0,
                 expected: None,
@@ -1437,7 +1479,7 @@ mod tests {
             [(1, ImageAtom::Index(7)), (1, ImageAtom::Index(7))],
         );
         assert!(matches!(
-            decode_code_plan(&duplicate, &[]),
+            decode_code_plan(&duplicate, &[], 0),
             Err(NativePlanError::AtomRelocationMismatch {
                 relocation: 1,
                 expected: None,
@@ -1452,31 +1494,50 @@ mod tests {
         let dynamic = NativeAtomRef::new(
             ImageAtom::Dynamic(AtomId::from_zero_based(0)),
             &dynamic_atoms,
+            true,
             1,
         )
         .unwrap();
         assert_eq!(dynamic.class(), NativeAtomClass::String);
+        assert!(dynamic.originates_from_input_atom_table());
         assert_eq!(dynamic.dynamic_string(), Some(&dynamic_atoms[0]));
         assert_eq!(dynamic.manifest_string(), None);
 
         let private = NativeAtomRef::new(
             ImageAtom::Predefined(PinnedAtomId::from_raw(229).unwrap()),
             &[],
+            false,
             1,
         )
         .unwrap();
         assert_eq!(private.class(), NativeAtomClass::Private);
+        assert!(!private.originates_from_input_atom_table());
         assert_eq!(private.identity_description(), Some("<brand>"));
         assert_eq!(private.manifest_string(), None);
 
         let symbol = NativeAtomRef::new(
             ImageAtom::Predefined(PinnedAtomId::from_raw(230).unwrap()),
             &[],
+            false,
             1,
         )
         .unwrap();
         assert_eq!(symbol.class(), NativeAtomClass::Symbol);
         assert_eq!(symbol.identity_description(), Some("Symbol.toPrimitive"));
+
+        assert_eq!(
+            NativeAtomRef::new(
+                ImageAtom::Dynamic(AtomId::from_zero_based(0)),
+                &[],
+                false,
+                17,
+            ),
+            Err(NativePlanError::InvalidDynamicAtom {
+                operand_pc: 17,
+                index: 0,
+                atom_count: 0,
+            })
+        );
     }
 
     #[test]

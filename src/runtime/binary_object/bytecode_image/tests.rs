@@ -16,10 +16,10 @@ use super::super::wire::{
 use super::{
     BytecodeImageBudgetError, BytecodeImageEncodeError, BytecodeImageEncodeOptions,
     BytecodeImageError, BytecodeImageLimits, BytecodeImageResourceKind, FunctionId, ImageAtom,
-    ImageAtomError, ImageAtomTable, ImageFunctionEnvelope, ImageKey, ImageOpaque,
-    ImageStringAtomProjectionError, ImageValue, ModuleBudgetError, ModuleField, ModuleLimits,
-    ModuleResourceKind, decode_bytecode_image, decode_bytecode_image_with_sab_transport,
-    encode_bytecode_image,
+    ImageAtomError, ImageAtomTable, ImageFunctionEnvelope, ImageKey, ImageOpaque, ImageValue,
+    ModuleBudgetError, ModuleField, ModuleLimits, ModuleResourceKind, NativeAtomClass,
+    NativeAtomRef, NativeOperands, decode_bytecode_image, decode_bytecode_image_with_sab_transport,
+    decode_native_code_plan, encode_bytecode_image,
 };
 
 const TEST_LIMITS: WireLimits = WireLimits::new(4096, 32, 128, 512);
@@ -515,18 +515,6 @@ fn atom_relocation_record_with_raw_atom(raw_atom: u32) -> Vec<u8> {
     record
 }
 
-fn two_atom_relocation_record(raw_atom: u32) -> Vec<u8> {
-    let mut record = quickjs_42_record();
-    record[13] = 11;
-    record.truncate(19);
-    for _ in 0..2 {
-        record.push(4);
-        record.extend_from_slice(&raw_atom.to_le_bytes());
-    }
-    record.push(0x28);
-    record
-}
-
 fn debug_record() -> Vec<u8> {
     let mut record = quickjs_42_record();
     record[2] |= 4;
@@ -634,6 +622,19 @@ fn function_id(value: &ImageValue) -> FunctionId {
     value
         .function_id()
         .expect("test value must be a function identity")
+}
+
+fn first_native_atom(image: &super::BytecodeImage) -> NativeAtomRef<'_> {
+    let plan = decode_native_code_plan(image, function_id(image.root()))
+        .expect("test image must have an authenticated native plan");
+    let instruction = plan
+        .instructions()
+        .first()
+        .expect("test plan must contain its atom instruction");
+    match instruction.operands() {
+        NativeOperands::Atom(atom) => *atom,
+        operands => panic!("test plan must begin with an Atom operand, got {operands:?}"),
+    }
 }
 
 fn module_id(value: &ImageValue) -> super::ModuleId {
@@ -983,37 +984,34 @@ fn decodes_the_exact_quickjs_42_function_as_non_executable_image() {
 }
 
 #[test]
-fn authenticated_single_atom_projection_exposes_only_string_spellings() {
+fn authenticated_native_plan_preserves_atom_semantics_and_input_provenance() {
     let manifest_record = atom_relocation_record_with_raw_atom(ordinary_pinned("length").raw());
     let manifest_image = decode_image(&header_bytes(&[], &manifest_record)).unwrap();
-    let manifest = manifest_image
-        .project_single_string_atom(function_id(manifest_image.root()))
-        .unwrap();
-    assert_eq!(manifest.operand_offset(), 1);
-    assert_eq!(manifest.manifest_spelling(), Some("length"));
-    assert_eq!(manifest.canonical_decimal(), None);
+    let manifest = first_native_atom(&manifest_image);
+    assert_eq!(manifest.class(), NativeAtomClass::String);
+    assert!(!manifest.originates_from_input_atom_table());
+    assert_eq!(manifest.manifest_string(), Some("length"));
+    assert_eq!(manifest.index(), None);
     assert_eq!(manifest.dynamic_string(), None);
 
     let decimal_record = atom_relocation_record_with_raw_atom(ATOM_TAG_INT | 42);
     let decimal_image = decode_image(&header_bytes(&[], &decimal_record)).unwrap();
-    let decimal = decimal_image
-        .project_single_string_atom(function_id(decimal_image.root()))
-        .unwrap();
-    assert_eq!(decimal.operand_offset(), 1);
-    assert_eq!(decimal.manifest_spelling(), None);
-    assert_eq!(decimal.canonical_decimal(), Some(42));
+    let decimal = first_native_atom(&decimal_image);
+    assert_eq!(decimal.class(), NativeAtomClass::Index);
+    assert!(!decimal.originates_from_input_atom_table());
+    assert_eq!(decimal.manifest_string(), None);
+    assert_eq!(decimal.index(), Some(42));
     assert_eq!(decimal.dynamic_string(), None);
 
     let dynamic_spelling = wide(&[0x0100, 0xd800, 0x0000]);
     let dynamic_record = atom_relocation_record_with_raw_atom(FIRST_DYNAMIC_ATOM);
     let dynamic_image =
         decode_image(&header_bytes(&[dynamic_spelling.clone()], &dynamic_record)).unwrap();
-    let dynamic = dynamic_image
-        .project_single_string_atom(function_id(dynamic_image.root()))
-        .unwrap();
-    assert_eq!(dynamic.operand_offset(), 1);
-    assert_eq!(dynamic.manifest_spelling(), None);
-    assert_eq!(dynamic.canonical_decimal(), None);
+    let dynamic = first_native_atom(&dynamic_image);
+    assert_eq!(dynamic.class(), NativeAtomClass::String);
+    assert!(dynamic.originates_from_input_atom_table());
+    assert_eq!(dynamic.manifest_string(), None);
+    assert_eq!(dynamic.index(), None);
     assert_eq!(dynamic.dynamic_string(), Some(&dynamic_spelling));
     assert!(std::ptr::eq(
         dynamic.dynamic_string().unwrap(),
@@ -1028,11 +1026,11 @@ fn authenticated_single_atom_projection_exposes_only_string_spellings() {
         &atom_relocation_record_with_raw_atom(FIRST_DYNAMIC_ATOM),
     ))
     .unwrap();
-    let manifest_alias = manifest_alias_image
-        .project_single_string_atom(function_id(manifest_alias_image.root()))
-        .unwrap();
-    assert_eq!(manifest_alias.manifest_spelling(), Some("length"));
-    assert_eq!(manifest_alias.canonical_decimal(), None);
+    let manifest_alias = first_native_atom(&manifest_alias_image);
+    assert_eq!(manifest_alias.class(), NativeAtomClass::String);
+    assert!(manifest_alias.originates_from_input_atom_table());
+    assert_eq!(manifest_alias.manifest_string(), Some("length"));
+    assert_eq!(manifest_alias.index(), None);
     assert_eq!(manifest_alias.dynamic_string(), None);
 
     let decimal_alias_image = decode_image(&header_bytes(
@@ -1040,16 +1038,16 @@ fn authenticated_single_atom_projection_exposes_only_string_spellings() {
         &atom_relocation_record_with_raw_atom(FIRST_DYNAMIC_ATOM),
     ))
     .unwrap();
-    let decimal_alias = decimal_alias_image
-        .project_single_string_atom(function_id(decimal_alias_image.root()))
-        .unwrap();
-    assert_eq!(decimal_alias.manifest_spelling(), None);
-    assert_eq!(decimal_alias.canonical_decimal(), Some(42));
+    let decimal_alias = first_native_atom(&decimal_alias_image);
+    assert_eq!(decimal_alias.class(), NativeAtomClass::Index);
+    assert!(decimal_alias.originates_from_input_atom_table());
+    assert_eq!(decimal_alias.manifest_string(), None);
+    assert_eq!(decimal_alias.index(), Some(42));
     assert_eq!(decimal_alias.dynamic_string(), None);
 }
 
 #[test]
-fn single_atom_projection_distinguishes_every_non_string_atom_class() {
+fn authenticated_native_plan_distinguishes_every_non_string_atom_class() {
     let private = (1..=242)
         .filter_map(PinnedAtomId::from_raw)
         .find(|atom| atom.kind() == PinnedAtomKind::Private)
@@ -1060,70 +1058,19 @@ fn single_atom_projection_distinguishes_every_non_string_atom_class() {
         .expect("pinned manifest must contain symbol atoms");
 
     for (raw_atom, expected) in [
-        (0, ImageStringAtomProjectionError::NullAtom),
-        (private.raw(), ImageStringAtomProjectionError::PrivateAtom),
-        (symbol.raw(), ImageStringAtomProjectionError::SymbolAtom),
+        (0, NativeAtomClass::Null),
+        (private.raw(), NativeAtomClass::Private),
+        (symbol.raw(), NativeAtomClass::Symbol),
     ] {
         let record = atom_relocation_record_with_raw_atom(raw_atom);
         let image = decode_image(&header_bytes(&[], &record)).unwrap();
-        assert_eq!(
-            image.project_single_string_atom(function_id(image.root())),
-            Err(expected),
-        );
+        let atom = first_native_atom(&image);
+        assert_eq!(atom.class(), expected);
+        assert!(!atom.originates_from_input_atom_table());
+        assert_eq!(atom.index(), None);
+        assert_eq!(atom.manifest_string(), None);
+        assert_eq!(atom.dynamic_string(), None);
     }
-}
-
-#[test]
-fn single_atom_projection_authenticates_source_and_relocation_cardinality() {
-    let no_relocation = decode_image(&header_bytes(&[], &quickjs_42_record())).unwrap();
-    assert_eq!(
-        no_relocation.project_single_string_atom(function_id(no_relocation.root())),
-        Err(ImageStringAtomProjectionError::AtomRelocationCount { actual: 0 }),
-    );
-
-    let two_relocations = decode_image(&header_bytes(
-        &[],
-        &two_atom_relocation_record(ordinary_pinned("length").raw()),
-    ))
-    .unwrap();
-    assert_eq!(
-        two_relocations.project_single_string_atom(function_id(two_relocations.root())),
-        Err(ImageStringAtomProjectionError::AtomRelocationCount { actual: 2 }),
-    );
-
-    let first = decode_image(&header_bytes(&[], &atom_relocation_record())).unwrap();
-    let second = decode_image(&header_bytes(&[], &atom_relocation_record())).unwrap();
-    let foreign_function = function_id(first.root());
-    assert_eq!(
-        second.project_single_string_atom(foreign_function),
-        Err(ImageStringAtomProjectionError::FunctionNotInImage),
-    );
-    assert!(first.project_single_string_atom(foreign_function).is_ok());
-}
-
-#[test]
-fn single_atom_projection_rejects_unused_or_multiple_input_atom_slots() {
-    for raw_atom in [ordinary_pinned("length").raw(), ATOM_TAG_INT | 42] {
-        let image = decode_image(&header_bytes(
-            &[narrow(b"unused")],
-            &atom_relocation_record_with_raw_atom(raw_atom),
-        ))
-        .unwrap();
-        assert_eq!(
-            image.project_single_string_atom(function_id(image.root())),
-            Err(ImageStringAtomProjectionError::UnpairedInputAtomSlot),
-        );
-    }
-
-    let multiple = decode_image(&header_bytes(
-        &[narrow(b"used"), narrow(b"unused")],
-        &atom_relocation_record_with_raw_atom(FIRST_DYNAMIC_ATOM),
-    ))
-    .unwrap();
-    assert_eq!(
-        multiple.project_single_string_atom(function_id(multiple.root())),
-        Err(ImageStringAtomProjectionError::InputAtomSlotCount { actual: 2 }),
-    );
 }
 
 #[test]

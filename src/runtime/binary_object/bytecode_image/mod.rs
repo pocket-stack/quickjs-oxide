@@ -11,7 +11,6 @@ mod decode;
 mod encode;
 mod model;
 mod native_plan;
-mod scalar_atom;
 
 #[allow(unused_imports)]
 pub(in crate::runtime) use super::graph::sab_transport::{
@@ -38,8 +37,8 @@ pub(in crate::runtime::binary_object) use model::{
     BytecodeImage, FunctionId, ImageOpaque, ImageValue, ModuleId,
 };
 #[allow(unused_imports)]
-pub(in crate::runtime::binary_object) use scalar_atom::{
-    ImageStringAtomProjection, ImageStringAtomProjectionError,
+pub(in crate::runtime::binary_object) use native_plan::{
+    NativeAtomClass, NativeAtomRef, NativeCodePlan, NativeOperands, decode_native_code_plan,
 };
 
 #[cfg(test)]

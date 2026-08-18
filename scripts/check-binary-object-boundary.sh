@@ -295,7 +295,6 @@ expected_image_modules = (
     "encode",
     "model",
     "native_plan",
-    "scalar_atom",
     "tests",
 )
 for module in expected_image_modules:
@@ -358,8 +357,7 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/bytecode_image/encode/plan/module.rs": 2,
     "src/runtime/binary_object/bytecode_image/mod.rs": 6,
     "src/runtime/binary_object/bytecode_image/model.rs": 110,
-    "src/runtime/binary_object/bytecode_image/native_plan.rs": 25,
-    "src/runtime/binary_object/bytecode_image/scalar_atom.rs": 7,
+    "src/runtime/binary_object/bytecode_image/native_plan.rs": 27,
     "src/runtime/binary_object/code.rs": 27,
     "src/runtime/binary_object/function_envelope/mod.rs": 2,
     "src/runtime/binary_object/function_envelope/model.rs": 117,
@@ -383,8 +381,7 @@ expected_fixture_visible_counts = {
     "src/runtime/binary_object/bytecode_image/decode/mod.rs": 1,
     "src/runtime/binary_object/bytecode_image/mod.rs": 1,
     "src/runtime/binary_object/bytecode_image/model.rs": 2,
-    "src/runtime/binary_object/bytecode_image/native_plan.rs": 25,
-    "src/runtime/binary_object/bytecode_image/scalar_atom.rs": 7,
+    "src/runtime/binary_object/bytecode_image/native_plan.rs": 27,
     "src/runtime/binary_object/graph/decode.rs": 1,
     "src/runtime/binary_object/graph/sab_transport.rs": 29,
     "src/runtime/binary_object/mod.rs": 1,
@@ -513,14 +510,9 @@ expected_bytecode_image_impl_headers = {
         "NativeOperands<'_>",
         "<'image> NativeInstruction<'image>",
         "<'image> NativeCodePlan<'image>",
+        "NativePlanError",
         "fmt::Display for NativePlanError",
         "std::error::Error for NativePlanError",
-    ],
-    "src/runtime/binary_object/bytecode_image/scalar_atom.rs": [
-        "<'image> ImageStringAtomProjection<'image>",
-        "fmt::Display for ImageStringAtomProjectionError",
-        "std::error::Error for ImageStringAtomProjectionError",
-        "BytecodeImage",
     ],
 }
 expected_fixture_bytecode_image_impl_headers = {
@@ -535,14 +527,9 @@ expected_fixture_bytecode_image_impl_headers = {
         "NativeOperands<'_>",
         "<'image> NativeInstruction<'image>",
         "<'image> NativeCodePlan<'image>",
+        "NativePlanError",
         "fmt::Display for NativePlanError",
         "std::error::Error for NativePlanError",
-    ],
-    "src/runtime/binary_object/bytecode_image/scalar_atom.rs": [
-        "<'image> ImageStringAtomProjection<'image>",
-        "fmt::Display for ImageStringAtomProjectionError",
-        "std::error::Error for ImageStringAtomProjectionError",
-        "BytecodeImage",
     ],
 }
 if bytecode_image_impl_headers not in (
@@ -601,6 +588,7 @@ native_plan_visible_items = [
 expected_native_plan_visible_items = [
     ("enum", "NativeAtomClass"),
     ("struct", "NativeAtomRef"),
+    ("fn", "originates_from_input_atom_table"),
     ("fn", "class"),
     ("fn", "index"),
     ("fn", "manifest_string"),
@@ -623,6 +611,7 @@ expected_native_plan_visible_items = [
     ("fn", "native_pc_map"),
     ("fn", "instruction_at_native_pc"),
     ("enum", "NativePlanError"),
+    ("fn", "is_label_target_error"),
     ("fn", "decode_native_code_plan"),
 ]
 native_plan_visible_tokens = list(
@@ -661,7 +650,7 @@ native_plan_uses = {
 expected_native_plan_uses = {
     "use std::fmt;",
     "use super::{BytecodeImage, FunctionId, ImageAtom, ImageCode};",
-    "use crate::runtime::binary_object::pinned_atoms::PinnedAtomKind;",
+    "use crate::runtime::binary_object::pinned_atoms::{FIRST_DYNAMIC_ATOM, PinnedAtomKind};",
     "use crate::runtime::binary_object::pinned_opcodes::{OpcodeFormat, PinnedOpcode};",
     "use crate::runtime::binary_object::wire::WireString;",
 }
@@ -723,6 +712,7 @@ native_plan_function_keyword_count = len(
 )
 expected_native_plan_function_names = [
     "new",
+    "originates_from_input_atom_table",
     "class",
     "index",
     "manifest_string",
@@ -740,6 +730,7 @@ expected_native_plan_function_names = [
     "instructions",
     "native_pc_map",
     "instruction_at_native_pc",
+    "is_label_target_error",
     "fmt",
     "decode_native_code_plan",
     "decode_code_plan",
@@ -791,7 +782,7 @@ native_plan_static_keyword_count = len(
 if (
     native_plan_non_function_consts != ["WIDTH"]
     or native_plan_static_items
-    or native_plan_const_keyword_count != 19
+    or native_plan_const_keyword_count != 21
     or native_plan_static_keyword_count != 3
 ):
     fail(
@@ -903,6 +894,7 @@ native_atom_ref_code, _, _ = unique_braced_item(
 expected_native_atom_ref_source = """
     struct NativeAtomRef<'image> {
         kind: NativeAtomRefKind<'image>,
+        from_input_atom_table: bool,
     }
 """
 if (
@@ -1071,7 +1063,7 @@ native_plan_semantic_seals = [
             r"\bimpl[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]+"
             r"NativeAtomRef[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
         ),
-        "aefb47d474efb3ee8fa91fe2c8b8bf31689617ce04feef3087a3441481bbf7c1",
+        "be6f900535b456104e234a5babec4c1f1dae2d440c7fb25129724fe30dd6529a",
     ),
     (
         "label representation",
@@ -1135,17 +1127,22 @@ native_plan_semantic_seals = [
         "9d79a33a085e1fc0f2e71bc60430fb15f870449847182d2affbd3b8fea2328e6",
     ),
     (
+        "label-target error classification",
+        re.compile(r"\bimpl[ \t\n]+NativePlanError[ \t\n]*\{"),
+        "0610bf345f915003023c37f91cff4250885bf53cff7da15ca64486ecc8c50817",
+    ),
+    (
         "authenticated entrypoint",
         re.compile(
             rf"\b{native_plan_visibility_pattern}[ \t\n]+fn"
             r"[ \t\n]+decode_native_code_plan[^{{;]*\{"
         ),
-        "cd47613934de397e332fd81391c55a2b597e1539d0fc06aa3dc316ec08fa6496",
+        "df01f2c531c6981903a7d765fe9d9e6b5e9367d5970f17fff0938b2f907f0376",
     ),
     (
         "code and relocation decoder",
         re.compile(r"\bfn[ \t\n]+decode_code_plan[^{{;]*\{"),
-        "307300b78f624b09e82547fa625d8e44c73af162e5a98f10cb10b939b7b289c8",
+        "2a1fa56db24fc98351ba5035403576b36539cc560b8ebbf5bbda98c00333171e",
     ),
     (
         "instruction-boundary authentication",
@@ -1230,40 +1227,81 @@ for description, pattern in native_plan_implicit_string_patterns.items():
 native_plan_declaration_pattern = re.compile(
     r"(?m)^[ \t]*mod[ \t]+native_plan[ \t]*;[ \t]*$"
 )
+native_plan_facade_pattern = re.compile(
+    rf"\b{native_plan_visibility_pattern}[ \t\n]+use[ \t\n]+native_plan"
+    r"[ \t\n]*::[ \t\n]*\{[ \t\n]*NativeAtomClass[ \t\n]*,"
+    r"[ \t\n]*NativeAtomRef[ \t\n]*,[ \t\n]*NativeCodePlan[ \t\n]*,"
+    r"[ \t\n]*NativeOperands[ \t\n]*,[ \t\n]*decode_native_code_plan"
+    r"[ \t\n]*,?[ \t\n]*\}[ \t\n]*;"
+)
+native_plan_declarations = list(native_plan_declaration_pattern.finditer(image_root_code))
+native_plan_facades = list(native_plan_facade_pattern.finditer(image_root_code))
+if len(native_plan_declarations) != 1 or len(native_plan_facades) != 1:
+    fail(
+        "native-plan-private-stage",
+        "native_plan must remain one private bytecode_image child with one exact binary_object-only semantic facade",
+    )
+
 for path, code in binary_code_cache.items():
     relative = path.relative_to(root).as_posix()
     if relative == native_plan_relative:
         continue
     mentions = list(re.finditer(r"\bnative_plan\b", code))
     if relative == image_root_relative:
-        declarations = list(native_plan_declaration_pattern.finditer(code))
-        allowed_offsets = {match.start() for match in declarations}
+        allowed_ranges = [
+            (match.start(), match.end())
+            for match in (*native_plan_declarations, *native_plan_facades)
+        ]
         unexpected = [
             mention
             for mention in mentions
-            if not any(
-                declaration.start() <= mention.start() < declaration.end()
-                for declaration in declarations
-            )
+            if not any(start <= mention.start() < end for start, end in allowed_ranges)
         ]
-        if len(declarations) != 1 or unexpected:
+        if unexpected:
             fail(
                 "native-plan-private-stage",
-                "native_plan must remain one private bytecode_image child with no facade or consumer; found "
+                "native_plan module and facade shape drifted; found "
                 + ", ".join(
                     location(relative, binary_source_cache[path], mention.start())
                     for mention in unexpected
                 ),
             )
+    elif relative == "src/runtime/binary_object/scalar_script.rs":
+        continue
     elif mentions:
         fail(
             "native-plan-private-stage",
-            "native_plan must remain unconsumed outside its private bytecode_image child; found "
+            "native_plan may be named only by its private module/facade and sole scalar consumer; found "
             + ", ".join(
                 location(relative, binary_source_cache[path], mention.start())
                 for mention in mentions
             ),
         )
+
+native_plan_facade_symbols = (
+    "NativeAtomClass",
+    "NativeAtomRef",
+    "NativeCodePlan",
+    "NativeOperands",
+    "decode_native_code_plan",
+)
+allowed_native_plan_symbol_files = {
+    native_plan_relative,
+    image_root_relative,
+    "src/runtime/binary_object/scalar_script.rs",
+}
+for path, code in binary_code_cache.items():
+    relative = path.relative_to(root).as_posix()
+    if path.name == "tests.rs" or relative in allowed_native_plan_symbol_files:
+        continue
+    for symbol in native_plan_facade_symbols:
+        mention = re.search(rf"\b{symbol}\b", code)
+        if mention is not None:
+            fail(
+                "native-plan-consumer-set",
+                "only scalar_script may consume the reviewed native-plan facade; found "
+                + location(relative, binary_source_cache[path], mention.start()),
+            )
 
 bytecode_image_alias_pattern = re.compile(
     r"\btype[ \t\n]+[A-Za-z_][A-Za-z0-9_]*(?:[ \t\n]*<[^;=]*>)?"
@@ -1343,7 +1381,7 @@ if len(scalar_unary_pattern.findall(scalar_script_code)) != 1:
         "ScalarUnaryOp must retain exactly the seven reviewed ordered, Copy operation tags",
     )
 
-scalar_unary_impl_code, _, _ = unique_braced_item(
+scalar_unary_impl_code, scalar_unary_impl_start, scalar_unary_impl_end = unique_braced_item(
     scalar_script_code,
     re.compile(r"\bimpl[ \t\n]+ScalarUnaryOp[ \t\n]*\{"),
     "scalar-unary-operation-shape",
@@ -1351,39 +1389,27 @@ scalar_unary_impl_code, _, _ = unique_braced_item(
 )
 expected_scalar_unary_impl_source = """
     impl ScalarUnaryOp {
-        fn from_opcode(opcode: u8) -> Option<Self> {
-            match opcode {
-                OP_NEG => Some(Self::Neg),
-                OP_PLUS => Some(Self::Plus),
-                OP_DEC => Some(Self::Dec),
-                OP_INC => Some(Self::Inc),
-                OP_BIT_NOT => Some(Self::BitNot),
-                OP_LOGICAL_NOT => Some(Self::LogicalNot),
-                OP_TYPEOF => Some(Self::TypeOf),
+        fn from_native(name: &str, operands: &NativeOperands<'_>) -> Option<Self> {
+            match (name, operands) {
+                ("neg", NativeOperands::None) => Some(Self::Neg),
+                ("plus", NativeOperands::None) => Some(Self::Plus),
+                ("dec", NativeOperands::None) => Some(Self::Dec),
+                ("inc", NativeOperands::None) => Some(Self::Inc),
+                ("not", NativeOperands::None) => Some(Self::BitNot),
+                ("lnot", NativeOperands::None) => Some(Self::LogicalNot),
+                ("typeof", NativeOperands::None) => Some(Self::TypeOf),
                 _ => None,
-            }
-        }
-
-        const fn opcode(self) -> u8 {
-            match self {
-                Self::Neg => OP_NEG,
-                Self::Plus => OP_PLUS,
-                Self::Dec => OP_DEC,
-                Self::Inc => OP_INC,
-                Self::BitNot => OP_BIT_NOT,
-                Self::LogicalNot => OP_LOGICAL_NOT,
-                Self::TypeOf => OP_TYPEOF,
             }
         }
     }
 """
 if scalar_unary_impl_code and (
-    " ".join(scalar_unary_impl_code.split())
-    != " ".join(rust_code_only(expected_scalar_unary_impl_source).split())
+    " ".join(scalar_script_source[scalar_unary_impl_start:scalar_unary_impl_end].split())
+    != " ".join(expected_scalar_unary_impl_source.split())
 ):
     fail(
         "scalar-unary-operation-shape",
-        "ScalarUnaryOp must map only the seven exact pinned opcode bytes in both directions",
+        "ScalarUnaryOp must map only the seven exact operand-free native-plan opcode identities",
     )
 
 scalar_string_draft_pattern = re.compile(
@@ -1492,7 +1518,12 @@ expected_scalar_opcode_constants = {
     "OP_PUSH_CONST8": 0xBD,
     "OP_PUSH_EMPTY_STRING": 0xBF,
     "OP_SET_LOC0": 0xCB,
+    "OP_GOTO8": 0xEA,
 }
+if not is_full_binary_inventory:
+    # The self-test fixture intentionally strips cfg(test), which now owns
+    # every raw opcode spelling after production moved to typed native plans.
+    expected_scalar_opcode_constants = {}
 if (
     sorted(scalar_opcode_declarations) != sorted(expected_scalar_opcode_constants)
     or len(scalar_opcode_declarations) != len(expected_scalar_opcode_constants)
@@ -1545,21 +1576,24 @@ if is_full_binary_inventory:
         )
 
 scalar_push_pattern = re.compile(
-    rf"{scalar_noncopy_derive}[ \t\n]*enum[ \t\n]+ScalarPush[ \t\n]*\{{"
+    rf"{scalar_noncopy_derive}[ \t\n]*enum[ \t\n]+ScalarPush"
+    r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
     r"[ \t\n]*Direct[ \t\n]*\([ \t\n]*ScalarValueDraft[ \t\n]*\)"
     r"[ \t\n]*,[ \t\n]*Constant[ \t\n]*\([ \t\n]*u32[ \t\n]*\)"
-    r"[ \t\n]*,[ \t\n]*AtomValue[ \t\n]*,?[ \t\n]*\}"
+    r"[ \t\n]*,[ \t\n]*AtomValue[ \t\n]*\([ \t\n]*NativeAtomRef"
+    r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\)[ \t\n]*,?[ \t\n]*\}"
 )
 if len(scalar_push_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-push-shape",
-        "ScalarPush must remain the private Direct, Constant-index, or AtomValue discriminator",
+        "ScalarPush must retain only a direct draft, constant index, or sealed native atom reference",
     )
 
 scalar_sequence_pattern = re.compile(
-    rf"{scalar_noncopy_derive}[ \t\n]*struct[ \t\n]+ScalarSequence[ \t\n]*\{{"
-    r"[ \t\n]*push[ \t\n]*:[ \t\n]*ScalarPush[ \t\n]*,"
-    r"[ \t\n]*push_width[ \t\n]*:[ \t\n]*u32[ \t\n]*,"
+    rf"{scalar_noncopy_derive}[ \t\n]*struct[ \t\n]+ScalarSequence"
+    r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
+    r"[ \t\n]*push[ \t\n]*:[ \t\n]*ScalarPush"
+    r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*,"
     r"[ \t\n]*unary_ops[ \t\n]*:[ \t\n]*Box[ \t\n]*<"
     r"[ \t\n]*\[[ \t\n]*ScalarUnaryOp[ \t\n]*\][ \t\n]*>"
     r"[ \t\n]*,?[ \t\n]*\}"
@@ -1567,7 +1601,7 @@ scalar_sequence_pattern = re.compile(
 if len(scalar_sequence_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-sequence-shape",
-        "ScalarSequence must retain one value push, its checked byte width, and one owned ordered unary-operation slice",
+        "ScalarSequence must retain one sealed value push and one owned ordered unary-operation slice",
     )
 
 scalar_copy_pattern = re.compile(
@@ -1584,175 +1618,57 @@ if scalar_copy_pattern.search(scalar_script_code):
         "the scalar draft, push, and sequence discriminators must not regain Copy semantics around owned BigInt bytes",
     )
 
-scalar_sequence_decoder_item_pattern = re.compile(
-    r"\bfn[ \t\n]+decode_scalar_sequence[ \t\n]*\("
-    r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
-    r"[ \t\n]*->[ \t\n]*Result[ \t\n]*<[ \t\n]*Option"
-    r"[ \t\n]*<[ \t\n]*ScalarSequence[ \t\n]*>[ \t\n]*,"
-    r"[ \t\n]*ScalarScriptReadError[ \t\n]*>[ \t\n]*\{",
-    re.DOTALL,
-)
-scalar_sequence_decoder_code, _, _ = unique_braced_item(
-    scalar_script_code,
-    scalar_sequence_decoder_item_pattern,
-    "scalar-script-sequence-decoder",
-    "private &[u8] to fallible optional ScalarSequence decoder",
-)
-if scalar_sequence_decoder_code:
-    expected_sequence_decoder_source = """
-        fn decode_scalar_sequence(bytes: &[u8]) -> Result<Option<ScalarSequence>, ScalarScriptReadError> {
-            if !bytes.ends_with(&[OP_SET_LOC0, OP_RETURN]) {
-                return Ok(None);
-            }
-            let body = &bytes[..bytes.len() - 2];
-            let Some((push, push_width)) = decode_scalar_push(body) else {
-                return Ok(None);
-            };
-            let Some(unary_bytes) = usize::try_from(push_width)
-                .ok()
-                .and_then(|width| body.get(width..))
-            else {
-                return Ok(None);
-            };
-
-            let mut unary_ops = Vec::new();
-            unary_ops
-                .try_reserve_exact(unary_bytes.len())
-                .map_err(|_| {
-                    ScalarScriptReadError::Internal(
-                        "could not allocate the scalar unary-operation draft".into(),
-                    )
-                })?;
-            for opcode in unary_bytes {
-                let Some(operation) = ScalarUnaryOp::from_opcode(*opcode) else {
-                    return Ok(None);
-                };
-                unary_ops.push(operation);
-            }
-
-            Ok(Some(ScalarSequence {
-                push,
-                push_width,
-                unary_ops: unary_ops.into_boxed_slice(),
-            }))
-        }
-    """
-    if (
-        " ".join(scalar_sequence_decoder_code.split())
-        != " ".join(rust_code_only(expected_sequence_decoder_source).split())
-    ):
+scalar_native_decoder_seals = [
+    (
+        "typed scalar sequence decoder",
+        re.compile(r"\bfn[ \t\n]+decode_scalar_sequence\b[^{};]*\{"),
+        "9a15ff4d50eeeb3e5aba95ca4342fc9ea70256660fc47996f587a83c3e1d2b6a",
+    ),
+    (
+        "typed scalar push decoder",
+        re.compile(r"\bfn[ \t\n]+decode_scalar_push\b[^{};]*\{"),
+        "6774bdbfeceb646bebc7973de20b9c54b2ec6c43215f9689adbc13af8e3aaaab",
+    ),
+    (
+        "typed direct-scalar decoder",
+        re.compile(r"\bfn[ \t\n]+decode_direct_scalar_push\b[^{};]*\{"),
+        "1186787a1f3db58a3ffca9381e931c1e77368295a15025f45291d06266a279f6",
+    ),
+    (
+        "typed direct-Int32 decoder",
+        re.compile(r"\bfn[ \t\n]+decode_direct_int32_push\b[^{};]*\{"),
+        "25dd514dabcd269dc45229a1636732f2e4457a4931208905ab3b102d71348ac3",
+    ),
+]
+for description, pattern, expected_hash in scalar_native_decoder_seals:
+    item_code, item_start, item_end = unique_braced_item(
+        scalar_script_code,
+        pattern,
+        "scalar-script-native-plan-decoder",
+        description,
+    )
+    item_source = scalar_script_source[item_start:item_end] if item_start >= 0 else ""
+    if item_code and normalized_code_sha256(item_source) != expected_hash:
         fail(
-            "scalar-script-sequence-decoder",
-            "decode_scalar_sequence must preserve every finite reviewed unary byte in source order after one exact push prefix and before set_loc0/return",
+            "scalar-script-native-plan-decoder",
+            f"scalar_script {description} drifted from its reviewed typed native-plan implementation",
         )
 
-scalar_push_decoder_item_pattern = re.compile(
-    r"\bfn[ \t\n]+decode_scalar_push[ \t\n]*\("
-    r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
-    r"[ \t\n]*->[ \t\n]*Option[ \t\n]*<[ \t\n]*\("
-    r"[ \t\n]*ScalarPush[ \t\n]*,[ \t\n]*u32[ \t\n]*\)"
-    r"[ \t\n]*>[ \t\n]*\{",
-    re.DOTALL,
+scalar_native_production_code = scalar_script_code.split("#[cfg(test)]", 1)[0]
+raw_scalar_decoder_dependency = re.search(
+    r"\b(?:ImageCode|ImageInstructionSpan|ImageRelocation)\b|"
+    r"\.[ \t\n]*(?:as_bytes|atom_relocations)[ \t\n]*\(",
+    scalar_native_production_code,
 )
-scalar_push_decoder_code, _, _ = unique_braced_item(
-    scalar_script_code,
-    scalar_push_decoder_item_pattern,
-    "scalar-script-push-decoder",
-    "private &[u8] to (ScalarPush, u32) decoder",
-)
-
-if scalar_push_decoder_code:
-    normalized_push_decoder = " ".join(scalar_push_decoder_code.split())
-    expected_push_decoder = (
-        "fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> { "
-        "match bytes { "
-        "[OP_PUSH_ATOM_VALUE, _, _, _, _, ..] => Some((ScalarPush::AtomValue, 5)), "
-        "[OP_PUSH_CONST8, index, ..] => "
-        "Some((ScalarPush::Constant(u32::from(*index)), 2)), "
-        "[OP_PUSH_CONST, byte_0, byte_1, byte_2, byte_3, ..] => Some(( "
-        "ScalarPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, "
-        "*byte_2, *byte_3])), 5, )), "
-        "_ => decode_direct_scalar_push(bytes) .map(|(value, width)| "
-        "(ScalarPush::Direct(value), width)), } }"
-    )
-    if normalized_push_decoder != expected_push_decoder:
-        fail(
-            "scalar-script-push-decoder",
-            "decode_scalar_push must admit the exact atom-value, constant-pool, and direct scalar spellings",
-        )
-
-scalar_direct_decoder_code, _, _ = unique_braced_item(
-    scalar_script_code,
-    re.compile(
-        r"\bfn[ \t\n]+decode_direct_scalar_push[ \t\n]*\("
-        r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
-        r"[ \t\n]*->[ \t\n]*Option[ \t\n]*<[ \t\n]*\("
-        r"[ \t\n]*ScalarValueDraft[ \t\n]*,[ \t\n]*u32[ \t\n]*\)"
-        r"[ \t\n]*>[ \t\n]*\{"
-    ),
-    "scalar-script-push-decoder",
-    "private direct scalar push-prefix decoder",
-)
-expected_scalar_direct_decoder_source = """
-    fn decode_direct_scalar_push(bytes: &[u8]) -> Option<(ScalarValueDraft, u32)> {
-        match bytes {
-            [OP_UNDEFINED, ..] => Some((ScalarValueDraft::Undefined, 1)),
-            [OP_NULL, ..] => Some((ScalarValueDraft::Null, 1)),
-            [OP_PUSH_FALSE, ..] => Some((ScalarValueDraft::Bool(false), 1)),
-            [OP_PUSH_TRUE, ..] => Some((ScalarValueDraft::Bool(true), 1)),
-            [OP_PUSH_BIGINT_I32, byte_0, byte_1, byte_2, byte_3, ..] => Some((
-                ScalarValueDraft::BigIntI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
-                5,
-            )),
-            [OP_PUSH_EMPTY_STRING, ..] => Some((ScalarValueDraft::EmptyString, 1)),
-            _ => decode_direct_int32_push(bytes)
-                .map(|(value, width)| (ScalarValueDraft::Int(value), width)),
-        }
-    }
-"""
-if scalar_direct_decoder_code and (
-    " ".join(scalar_direct_decoder_code.split())
-    != " ".join(rust_code_only(expected_scalar_direct_decoder_source).split())
-):
+if raw_scalar_decoder_dependency is not None:
     fail(
-        "scalar-script-push-decoder",
-        "decode_direct_scalar_push must retain the exact prefix-based primitive push table",
-    )
-
-scalar_int_decoder_code, _, _ = unique_braced_item(
-    scalar_script_code,
-    re.compile(
-        r"\bfn[ \t\n]+decode_direct_int32_push[ \t\n]*\("
-        r"[ \t\n]*bytes[ \t\n]*:[ \t\n]*&[ \t\n]*\[u8\][ \t\n]*\)"
-        r"[ \t\n]*->[ \t\n]*Option[ \t\n]*<[ \t\n]*\("
-        r"[ \t\n]*i32[ \t\n]*,[ \t\n]*u32[ \t\n]*\)"
-        r"[ \t\n]*>[ \t\n]*\{"
-    ),
-    "scalar-script-push-decoder",
-    "private direct Int32 push-prefix decoder",
-)
-expected_scalar_int_decoder_source = """
-    fn decode_direct_int32_push(bytes: &[u8]) -> Option<(i32, u32)> {
-        match bytes {
-            [opcode, ..] if (OP_PUSH_MINUS1..=OP_PUSH_7).contains(opcode) => {
-                Some((i32::from(*opcode) - i32::from(OP_PUSH_0), 1))
-            }
-            [OP_PUSH_I8, immediate, ..] => Some((i32::from(i8::from_le_bytes([*immediate])), 2)),
-            [OP_PUSH_I16, low, high, ..] => Some((i32::from(i16::from_le_bytes([*low, *high])), 3)),
-            [OP_PUSH_I32, byte_0, byte_1, byte_2, byte_3, ..] => {
-                Some((i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3]), 5))
-            }
-            _ => None,
-        }
-    }
-"""
-if scalar_int_decoder_code and (
-    " ".join(scalar_int_decoder_code.split())
-    != " ".join(rust_code_only(expected_scalar_int_decoder_source).split())
-):
-    fail(
-        "scalar-script-push-decoder",
-        "decode_direct_int32_push must retain the complete exact Int32 prefix table",
+        "scalar-script-native-plan-decoder",
+        "scalar admission must consume only typed native-plan operands, never archival code bytes or relocation sidecars; found "
+        + location(
+            scalar_script_relative,
+            scalar_script_source,
+            raw_scalar_decoder_dependency.start(),
+        ),
     )
 
 bigint_copy_pattern = re.compile(
@@ -1887,7 +1803,8 @@ expected_scalar_top_level_functions = [
     "decode_trusted_scalar_script",
     "admit_image",
     "project_atom_string",
-    "classify_string_atom_projection_error",
+    "project_atom_string_spelling",
+    "classify_native_plan_error",
     "copy_wire_string",
     "copy_utf16",
     "copy_bigint_bytes",
@@ -1947,6 +1864,9 @@ if scalar_macro_invocations != [
     "format",
     "matches",
     "format",
+    "matches",
+    "matches",
+    "format",
     "format",
 ]:
     fail(
@@ -1983,447 +1903,154 @@ scalar_admission_item_pattern = re.compile(
     r"[ \t\n]*->[^{;]+\{",
     re.DOTALL,
 )
-scalar_admission_code, scalar_admission_start, _ = unique_braced_item(
-    scalar_script_code,
-    scalar_admission_item_pattern,
-    "scalar-script-admission-empty-boundaries",
-    "private admit_image function",
+scalar_admission_code, scalar_admission_start, scalar_admission_end = unique_braced_item(
+    scalar_production_code,
+    re.compile(r"\bfn[ \t\n]+admit_image\b[^{};]*\{"),
+    "scalar-script-native-plan-admission",
+    "typed native-plan scalar admission function",
 )
-
-if scalar_admission_code:
-    scalar_function_guard_pattern = re.compile(
-        r"\blet[ \t\n]*\[[ \t\n]*function[ \t\n]*\][ \t\n]*="
-        r"[ \t\n]*image[ \t\n]*\.[ \t\n]*functions[ \t\n]*\([ \t\n]*\)"
-        r"[ \t\n]*else[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}[ \t\n]*;"
-    )
-    if len(scalar_function_guard_pattern.findall(scalar_admission_code)) != 1:
-        fail(
-            "scalar-script-admission-empty-boundaries",
-            "admit_image must directly bind exactly one decoded function before authenticating its opcode/constant-pool pair",
-        )
-
-    scalar_envelope_binding_pattern = re.compile(
-        r"\blet[ \t\n]+envelope[ \t\n]*=[ \t\n]*function"
-        r"[ \t\n]*\.[ \t\n]*envelope[ \t\n]*\([ \t\n]*\)[ \t\n]*;"
-    )
-    scalar_envelope_binding_matches = list(
-        scalar_envelope_binding_pattern.finditer(scalar_admission_code)
-    )
-    envelope_binding_is_direct_and_ordered = False
-    native_payload_binding = re.search(
-        r"\blet[ \t\n]+native_payload[ \t\n]*=[ \t\n]*envelope"
-        r"[ \t\n]*\.[ \t\n]*code[ \t\n]*\([ \t\n]*\)[ \t\n]*;",
-        scalar_admission_code,
-    )
-    if len(scalar_envelope_binding_matches) == 1 and native_payload_binding is not None:
-        envelope_match = scalar_envelope_binding_matches[0]
-        envelope_prefix = scalar_admission_code[:envelope_match.start()]
-        envelope_binding_is_direct_and_ordered = (
-            envelope_prefix.count("{") - envelope_prefix.count("}") == 1
-            and envelope_match.end() < native_payload_binding.start()
-        )
-    if not envelope_binding_is_direct_and_ordered:
-        fail(
-            "scalar-script-admission-empty-boundaries",
-            "admit_image must bind the checked envelope once at function scope, directly from the unique decoded function and before the native payload",
-        )
-
-    if native_payload_binding is not None:
-        unary_admission_tail = scalar_admission_code[native_payload_binding.start():]
-        if normalized_code_sha256(unary_admission_tail) != (
-            "7a6650cecb843e37b4ae4f55a2d6f9ed50f90b812267101238f6fcbbeaecdba1"
-        ):
-            fail(
-                "scalar-script-unary-admission-tail",
-                "the native payload must flow without an alternate unary special case through exact sequence decode, atom boundary, sidecar authentication, value pairing, and final tuple return",
-            )
-
-    scalar_sequence_binding_pattern = re.compile(
-        r"\blet[ \t\n]+Some[ \t\n]*\([ \t\n]*sequence[ \t\n]*\)"
-        r"[ \t\n]*=[ \t\n]*decode_scalar_sequence[ \t\n]*\([ \t\n]*native_payload"
-        r"[ \t\n]*\.[ \t\n]*as_bytes[ \t\n]*\([ \t\n]*\)[ \t\n]*\)"
-        r"[ \t\n]*\?"
-        r"[ \t\n]*else[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}[ \t\n]*;"
-    )
-    scalar_sequence_binding_matches = list(
-        scalar_sequence_binding_pattern.finditer(scalar_admission_code)
-    )
-    if len(scalar_sequence_binding_matches) != 1:
-        fail(
-            "scalar-script-sequence-admission",
-            "admit_image must decode exactly one typed ScalarSequence from the authenticated native payload",
-        )
-
-    scalar_atom_boundary_pattern = re.compile(
-        r"\bif[ \t\n]+![ \t\n]*matches![ \t\n]*\([ \t\n]*&"
-        r"[ \t\n]*sequence[ \t\n]*\.[ \t\n]*push[ \t\n]*,"
-        r"[ \t\n]*ScalarPush[ \t\n]*::[ \t\n]*AtomValue[ \t\n]*\)"
-        r"[ \t\n]*&&"
-        r"[ \t\n]*\([ \t\n]*image[ \t\n]*\.[ \t\n]*input_atom_slot_count"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*!=[ \t\n]*0[ \t\n]*\|\|"
-        r"[ \t\n]*![ \t\n]*native_payload[ \t\n]*\.[ \t\n]*atom_relocations"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*\.[ \t\n]*is_empty[ \t\n]*\([ \t\n]*\)"
-        r"[ \t\n]*\)[ \t\n]*\{[ \t\n]*return[ \t\n]+unadmitted"
-        r"[ \t\n]*\([ \t\n]*\)[ \t\n]*;[ \t\n]*\}"
-    )
-    scalar_atom_boundaries = list(scalar_atom_boundary_pattern.finditer(scalar_admission_code))
-    if (
-        len(scalar_atom_boundaries) != 1
-        or len(scalar_sequence_binding_matches) != 1
-        or scalar_sequence_binding_matches[0].end() > scalar_atom_boundaries[0].start()
-    ):
-        fail(
-            "scalar-script-admission-empty-boundaries",
-            "only the authenticated AtomValue shape may carry one input atom slot and relocation",
-        )
-
-    sidecar_start_matches = list(
-        re.finditer(
-            r"\blet[ \t\n]+instructions[ \t\n]*=[ \t\n]*native_payload"
-            r"[ \t\n]*\.[ \t\n]*instructions[ \t\n]*\([ \t\n]*\)"
-            r"[ \t\n]*;",
-            scalar_admission_code,
-        )
-    )
-    _, sidecar_guard_start, sidecar_guard_close = unique_braced_item(
-        scalar_admission_code,
-        re.compile(r"\bif[ \t\n]+![ \t\n]*sidecars_match[ \t\n]*\{"),
-        "scalar-script-sequence-sidecars",
-        "unary sidecar mismatch guard",
-    )
-    scalar_sidecar_code = ""
-    if len(sidecar_start_matches) != 1:
-        fail(
-            "scalar-script-sequence-sidecars",
-            "admit_image must bind exactly one native instruction-sidecar slice",
-        )
-    elif sidecar_guard_close >= 0:
-        sidecar_start = sidecar_start_matches[0].start()
-        scalar_sidecar_code = scalar_admission_code[sidecar_start:sidecar_guard_close]
-        if (
-            len(scalar_sequence_binding_matches) != 1
-            or scalar_sequence_binding_matches[0].end() >= sidecar_start
-            or scalar_admission_code[:sidecar_start].count("{")
-            - scalar_admission_code[:sidecar_start].count("}")
-            != 1
-            or scalar_admission_code[:sidecar_guard_start].count("{")
-            - scalar_admission_code[:sidecar_guard_start].count("}")
-            != 1
-        ):
-            scalar_sidecar_code = ""
-
-    expected_sidecar_source = """
-        let instructions = native_payload.instructions();
-        let expected_sidecar_count = sequence.unary_ops.len().checked_add(3);
-        let unary_count = u32::try_from(sequence.unary_ops.len()).ok();
-        let completion_offset = unary_count.and_then(|count| sequence.push_width.checked_add(count));
-        let return_offset = completion_offset.and_then(|offset| offset.checked_add(1));
-        let push_width = usize::try_from(sequence.push_width).ok();
-        let sidecars_match = expected_sidecar_count == Some(instructions.len())
-            && instructions[0].offset() == 0
-            && instructions[0].opcode().raw() == native_payload.as_bytes()[0]
-            && push_width.is_some_and(|push_width| {
-                sequence
-                    .unary_ops
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .all(|(index, operation)| {
-                        let Some(offset) = u32::try_from(index)
-                            .ok()
-                            .and_then(|index| sequence.push_width.checked_add(index))
-                        else {
-                            return false;
-                        };
-                        let Some(byte_offset) = push_width.checked_add(index) else {
-                            return false;
-                        };
-                        let sidecar = &instructions[index + 1];
-                        sidecar.offset() == offset
-                            && sidecar.opcode().raw() == operation.opcode()
-                            && native_payload.as_bytes().get(byte_offset) == Some(&operation.opcode())
-                    })
-            })
-            && completion_offset.zip(return_offset).is_some_and(
-                |(completion_offset, return_offset)| {
-                    let set_completion = &instructions[instructions.len() - 2];
-                    let return_value = &instructions[instructions.len() - 1];
-                    set_completion.offset() == completion_offset
-                        && set_completion.opcode().raw() == OP_SET_LOC0
-                        && return_value.offset() == return_offset
-                        && return_value.opcode().raw() == OP_RETURN
-                },
-            );
-        if !sidecars_match {
-            return Err(ScalarScriptReadError::Internal(
-                "instruction sidecars disagree with their owned native bytes".into(),
-            ));
-        }
-    """
-    if (
-        " ".join(scalar_sidecar_code.split())
-        != " ".join(rust_code_only(expected_sidecar_source).split())
-    ):
-        fail(
-            "scalar-script-sequence-sidecars",
-            "every unary byte must authenticate its same-index operation and checked sidecar offset before the exact completion and return sidecars",
-        )
-
-    scalar_pairing_prefix = re.compile(
-        r"\blet[ \t\n]+ScalarSequence[ \t\n]*\{[ \t\n]*push[ \t\n]*,"
-        r"[ \t\n]*unary_ops[ \t\n]*,[ \t\n]*\.\.[ \t\n]*\}"
-        r"[ \t\n]*=[ \t\n]*sequence[ \t\n]*;[ \t\n]*"
-    )
-    scalar_pairing_prefix_matches = list(
-        scalar_pairing_prefix.finditer(scalar_admission_code)
-    )
-    scalar_pairing_pattern = re.compile(
-        r"\blet[ \t\n]+value[ \t\n]*=[ \t\n]*match[ \t\n]*\("
-        r"[ \t\n]*push[ \t\n]*,[ \t\n]*function[ \t\n]*\."
-        r"[ \t\n]*constants[ \t\n]*\([ \t\n]*\)[ \t\n]*\)"
-        r"[ \t\n]*\{"
-    )
-    scalar_pairing_code, pairing_start, pairing_close = unique_braced_item(
-        scalar_admission_code,
-        scalar_pairing_pattern,
-        "scalar-script-constant-pairing",
-        "value-producing scalar push/constant-pool match",
-    )
-    expected_pairing_source = """
-        let value = match (push, function.constants()) {
-            (ScalarPush::Direct(value), []) => value,
-            (ScalarPush::Direct(_), _) => {
-                return unadmitted("direct scalar opcode carries a function constant");
-            }
-            (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {
-                Ok(WireValue::Float64Bits(bits)) => ScalarValueDraft::Float64Bits(*bits),
-                Ok(WireValue::BigInt(bytes)) => {
-                    ScalarValueDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
-                }
-                Ok(WireValue::String(value)) => {
-                    ScalarValueDraft::ConstantString(copy_wire_string(value)?)
-                }
-                Ok(_) => {
-                    return unadmitted("scalar constant is not a Float64, BigInt, or String value");
-                }
-                Err(_) => return unadmitted("scalar constant is not a data value"),
-            },
-            (ScalarPush::Constant(_), [_]) => {
-                return unadmitted("scalar constant opcode does not reference index zero");
-            }
-            (ScalarPush::Constant(_), _) => {
-                return unadmitted("scalar constant opcode requires exactly one function constant");
-            }
-            (ScalarPush::AtomValue, []) => project_atom_string(image, root)?,
-            (ScalarPush::AtomValue, _) => {
-                return unadmitted("atom-value scalar opcode carries a function constant");
-            }
-        }
-    """
-    pairing_is_direct_and_final = (
-        len(scalar_pairing_prefix_matches) == 1
-        and scalar_pairing_prefix_matches[0].end() == pairing_start
-        and scalar_admission_code[:pairing_start].count("{")
-        - scalar_admission_code[:pairing_start].count("}")
-        == 1
-        and re.fullmatch(
-            r"[ \t\n]*;[ \t\n]*Ok[ \t\n]*\([ \t\n]*\([ \t\n]*value"
-            r"[ \t\n]*,[ \t\n]*unary_ops[ \t\n]*\)[ \t\n]*\)"
-            r"[ \t\n]*\}[ \t\n]*",
-            scalar_admission_code[pairing_close:],
-        ) is not None
-    )
-    if (
-        " ".join(scalar_pairing_code.split())
-        != " ".join(rust_code_only(expected_pairing_source).split())
-        or not pairing_is_direct_and_final
-    ):
-        fail(
-            "scalar-script-constant-pairing",
-            "admission must pair only the reviewed value push provenance and return its untouched unary-operation slice",
-        )
-
-    scalar_production_code = scalar_script_code.split("#[cfg(test)]", 1)[0]
-    if re.findall(
-        r"\bWireValue[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
-        scalar_production_code,
-    ) != ["Float64Bits", "BigInt", "String"]:
-        fail(
-            "scalar-script-constant-pairing",
-            "the scalar-script path may name only the reviewed Float64, BigInt, and String pool variants",
-        )
-
-    reviewed_binding_counts = {
-        "function": 0,
-        "envelope": 0,
-        "native_payload": 0,
-        "sequence": 0,
-        "instructions": 0,
-        "expected_sidecar_count": 0,
-        "unary_count": 0,
-        "completion_offset": 0,
-        "return_offset": 0,
-        "push_width": 0,
-        "sidecars_match": 0,
-        "push": 0,
-        "unary_ops": 0,
-        "value": 0,
-    }
-    for binding_match in re.finditer(
-        r"\blet\b(?P<pattern>[^=;]+)=", scalar_admission_code
-    ):
-        binding_pattern = binding_match.group("pattern")
-        for binding_name in reviewed_binding_counts:
-            reviewed_binding_counts[binding_name] += len(
-                re.findall(rf"\b{binding_name}\b", binding_pattern)
-            )
-    if reviewed_binding_counts != {
-        "function": 1,
-        "envelope": 1,
-        "native_payload": 1,
-        "sequence": 1,
-        "instructions": 1,
-        "expected_sidecar_count": 1,
-        "unary_count": 1,
-        "completion_offset": 1,
-        "return_offset": 1,
-        "push_width": 1,
-        "sidecars_match": 1,
-        "push": 1,
-        "unary_ops": 1,
-        "value": 1,
-    }:
-        fail(
-            "scalar-script-admission-empty-boundaries",
-            "admit_image must bind every reviewed image, sequence, checked-offset, sidecar, value, and unary operation exactly once; "
-            f"found {reviewed_binding_counts}",
-        )
-
-    if re.search(r"\blet[ \t\n]+(?:mut[ \t\n]+)?image\b", scalar_admission_code):
-        fail(
-            "scalar-script-admission-empty-boundaries",
-            "admit_image must not shadow its authenticated image receiver",
-        )
-
-    allowed_return_pattern = re.compile(
-        r"\breturn[ \t\n]+(?:(?:unadmitted|Err)[ \t\n]*\(|false[ \t\n]*;)"
-    )
-    for return_match in re.finditer(r"\breturn\b", scalar_admission_code):
-        if allowed_return_pattern.match(scalar_admission_code, return_match.start()) is None:
-            fail(
-                "scalar-script-admission-empty-boundaries",
-                "admit_image may return early only through the reviewed unadmitted or internal-error paths",
-            )
-
-    success_matches = list(
-        re.finditer(
-            r"\bOk[ \t\n]*\([ \t\n]*\([ \t\n]*value[ \t\n]*,"
-            r"[ \t\n]*unary_ops[ \t\n]*\)[ \t\n]*\)",
-            scalar_admission_code,
-        )
-    )
-    if len(success_matches) != 1 or re.search(
-        r"\bOk[ \t\n]*\([ \t\n]*\([ \t\n]*value[ \t\n]*,"
-        r"[ \t\n]*unary_ops[ \t\n]*\)[ \t\n]*\)[ \t\n]*\}"
-        r"[ \t\n]*\Z",
-        scalar_admission_code,
-    ) is None:
-        fail(
-            "scalar-script-admission-empty-boundaries",
-            "admit_image must have exactly one successful exit: the final Ok((value, unary_ops))",
-        )
-
-scalar_project_atom_string_code, _, _ = unique_braced_item(
-    scalar_script_code,
-    re.compile(r"\bfn[ \t\n]+project_atom_string\b[^{};]*\{"),
-    "scalar-string-atom-projection",
-    "scalar String-atom projection consumer",
+scalar_admission_source = (
+    scalar_script_source[scalar_admission_start:scalar_admission_end]
+    if scalar_admission_start >= 0
+    else ""
 )
-expected_scalar_project_atom_string_source = """
-    fn project_atom_string(
-        image: &BytecodeImage,
-        function: super::bytecode_image::FunctionId,
-    ) -> Result<ScalarValueDraft, ScalarScriptReadError> {
-        let projection = image
-            .project_single_string_atom(function)
-            .map_err(classify_string_atom_projection_error)?;
-        if projection.operand_offset() != 1 {
-            return Err(ScalarScriptReadError::Internal(
-                "atom-value relocation did not retain operand offset one".into(),
-            ));
-        }
-        if let Some(value) = projection.canonical_decimal() {
-            return Ok(ScalarValueDraft::IntegerAtomString(value));
-        }
-        if let Some(value) = projection.manifest_spelling() {
-            return copy_utf16(value.encode_utf16(), value.encode_utf16().count())
-                .map(ScalarValueDraft::AtomString);
-        }
-        if let Some(value) = projection.dynamic_string() {
-            return copy_wire_string(value).map(ScalarValueDraft::AtomString);
-        }
-        Err(ScalarScriptReadError::Internal(
-            "String atom projection contained no spelling".into(),
-        ))
-    }
-"""
-scalar_projection_classifier_code, _, _ = unique_braced_item(
-    scalar_script_code,
-    re.compile(
-        r"\bfn[ \t\n]+classify_string_atom_projection_error\b[^{};]*\{"
-    ),
-    "scalar-string-atom-projection",
-    "String-atom projection error classifier",
-)
-expected_scalar_projection_classifier_source = """
-    fn classify_string_atom_projection_error(
-        error: ImageStringAtomProjectionError,
-    ) -> ScalarScriptReadError {
-        let message = error.to_string();
-        match error {
-            ImageStringAtomProjectionError::NullAtom
-            | ImageStringAtomProjectionError::PrivateAtom
-            | ImageStringAtomProjectionError::SymbolAtom
-            | ImageStringAtomProjectionError::AtomRelocationCount { .. }
-            | ImageStringAtomProjectionError::InputAtomSlotCount { .. }
-            | ImageStringAtomProjectionError::UnpairedInputAtomSlot => {
-                ScalarScriptReadError::Unadmitted(message)
-            }
-            ImageStringAtomProjectionError::FunctionNotInImage
-            | ImageStringAtomProjectionError::MissingAtomOperand
-            | ImageStringAtomProjectionError::MissingDynamicString => {
-                ScalarScriptReadError::Internal(message)
-            }
-        }
-    }
-"""
-scalar_projection_fragments = (
-    ".project_single_string_atom(function) .map_err(classify_string_atom_projection_error)?;",
-    "if projection.operand_offset() != 1",
-    "return Ok(ScalarValueDraft::IntegerAtomString(value));",
-    "return copy_utf16(value.encode_utf16(), value.encode_utf16().count()) .map(ScalarValueDraft::AtomString);",
-    "return copy_wire_string(value).map(ScalarValueDraft::AtomString);",
-    "ImageStringAtomProjectionError::PrivateAtom | ImageStringAtomProjectionError::SymbolAtom",
-)
-if (
-    any(normalized_scalar_script.count(fragment) != 1 for fragment in scalar_projection_fragments)
-    or (
-        scalar_project_atom_string_code
-        and " ".join(scalar_project_atom_string_code.split())
-        != " ".join(rust_code_only(expected_scalar_project_atom_string_source).split())
-    )
-    or (
-        scalar_projection_classifier_code
-        and " ".join(scalar_projection_classifier_code.split())
-        != " ".join(rust_code_only(expected_scalar_projection_classifier_source).split())
-    )
-    or re.search(r"\b(?:ImageAtom|PinnedAtomId)\b", scalar_script_code)
+if scalar_admission_code and normalized_code_sha256(scalar_admission_source) != (
+    "afe68b7b5f408939cbe3c0dfd1f95c015a671b7a57b7553aee2039881c71a5d2"
 ):
     fail(
-        "scalar-string-atom-projection",
-        "scalar admission must consume only the sealed String spelling projection and preserve atom provenance",
+        "scalar-script-native-plan-admission",
+        "admit_image drifted from the reviewed single-function metadata, typed native-plan, atom provenance, constant pairing, and final tuple flow",
+    )
+
+normalized_scalar_production = " ".join(scalar_production_code.split())
+expected_scalar_native_facade_import = " ".join(
+    rust_code_only(
+        """
+        use super::bytecode_image::{
+            BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError, ModuleLimits,
+            NativeAtomClass, NativeAtomRef, NativeCodePlan, NativeOperands, decode_bytecode_image_body,
+            decode_native_code_plan,
+        };
+        """
+    ).split()
+)
+if normalized_scalar_production.count(expected_scalar_native_facade_import) != 1:
+    fail(
+        "native-plan-consumer-set",
+        "scalar_script must import exactly the reviewed archive decoder and native-plan semantic facade",
+    )
+direct_native_plan_import = re.search(
+    r"\bbytecode_image[ \t\n]*::[ \t\n]*native_plan\b",
+    scalar_production_code,
+)
+if direct_native_plan_import is not None:
+    fail(
+        "native-plan-consumer-set",
+        "scalar_script must consume native-plan semantics only through the reviewed bytecode_image facade; found "
+        + location(
+            scalar_script_relative,
+            scalar_script_source,
+            direct_native_plan_import.start(),
+        ),
+    )
+
+native_plan_consumer_fragments = (
+    "decode_native_code_plan(image, root).map_err(|error|",
+    "let outside_scalar_shape = error.is_label_target_error();",
+    "classify_native_plan_error(error, outside_scalar_shape)",
+    "let Some(sequence) = decode_scalar_sequence(&native_plan)? else",
+    "if !matches!(&sequence.push, ScalarPush::AtomValue(_)) && image.input_atom_slot_count() != 0",
+    "(ScalarPush::AtomValue(atom), []) => project_atom_string(image, atom)?",
+)
+if any(
+    normalized_scalar_production.count(fragment) != 1
+    for fragment in native_plan_consumer_fragments
+):
+    fail(
+        "scalar-script-native-plan-admission",
+        "scalar admission must have one direct typed-plan construction, label-error classification, sequence decode, atom-table boundary, and atom projection flow",
+    )
+if re.findall(
+    r"\bWireValue[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+    scalar_production_code,
+) != ["Float64Bits", "BigInt", "String"]:
+    fail(
+        "scalar-script-constant-pairing",
+        "the scalar-script path may name only the reviewed Float64, BigInt, and String pool variants",
+    )
+if re.search(r"\b(?:ImageAtom|PinnedAtomId|NativePlanError)\b", scalar_production_code):
+    fail(
+        "scalar-script-native-plan-admission",
+        "the scalar consumer may use only the sealed facade and inferred native-plan diagnostic, never raw atom identities or the private error type",
+    )
+
+native_atom_consumer_seals = [
+    (
+        "sealed atom class/provenance consumer",
+        re.compile(r"\bfn[ \t\n]+project_atom_string\b[^{};]*\{"),
+        "012c8449d3486977a6efba2f12c7eb08012fa9987aad80a6b90ea7c64f67e209",
+    ),
+    (
+        "ordinary String spelling consumer",
+        re.compile(r"\bfn[ \t\n]+project_atom_string_spelling\b[^{};]*\{"),
+        "72496307dfee8e1825ea88480abb5f7a1872bc5123e9e013d3e2c84c312a96c7",
+    ),
+    (
+        "native-plan error classifier",
+        re.compile(r"\bfn[ \t\n]+classify_native_plan_error\b[^{};]*\{"),
+        "72296c8005cc98127dd490f5321112d4a390361330ea5fd7a432c167e480076c",
+    ),
+]
+for description, pattern, expected_hash in native_atom_consumer_seals:
+    item_code, item_start, item_end = unique_braced_item(
+        scalar_production_code,
+        pattern,
+        "scalar-native-atom-consumer",
+        description,
+    )
+    item_source = scalar_script_source[item_start:item_end] if item_start >= 0 else ""
+    if item_code and normalized_code_sha256(item_source) != expected_hash:
+        fail(
+            "scalar-native-atom-consumer",
+            f"scalar_script {description} drifted from its reviewed implementation",
+        )
+
+native_atom_classes = re.findall(
+    r"\bNativeAtomClass[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+    scalar_production_code,
+)
+native_atom_accessor_counts = {
+    accessor: len(
+        re.findall(
+            rf"\batom[ \t\n]*\.[ \t\n]*{accessor}[ \t\n]*\(",
+            scalar_production_code,
+        )
+    )
+    for accessor in (
+        "originates_from_input_atom_table",
+        "class",
+        "index",
+        "manifest_string",
+        "dynamic_string",
+        "identity_description",
+    )
+}
+if (
+    native_atom_classes != ["Null", "Private", "Symbol", "Index", "String"]
+    or native_atom_accessor_counts
+    != {
+        "originates_from_input_atom_table": 2,
+        "class": 1,
+        "index": 1,
+        "manifest_string": 1,
+        "dynamic_string": 1,
+        "identity_description": 0,
+    }
+):
+    fail(
+        "scalar-native-atom-consumer",
+        "scalar admission must preserve the exact input-slot provenance and Null/Private/Symbol/Index/String identity-class boundary; "
+        f"found classes {native_atom_classes} and accessors {native_atom_accessor_counts}",
     )
 
 consumer_relative = "src/runtime/binary_object_publish.rs"
@@ -3192,19 +2819,6 @@ binary_object_visibility = (
     r"pub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
     r"[ \t\n]*::[ \t\n]*binary_object[ \t\n]*\)"
 )
-scalar_atom_relative = "src/runtime/binary_object/bytecode_image/scalar_atom.rs"
-scalar_atom_source = read_source(scalar_atom_relative)
-scalar_atom_code = rust_code_only(scalar_atom_source)
-scalar_atom_normalized = " ".join(scalar_atom_code.split())
-if (
-    is_full_binary_inventory
-    and normalized_code_sha256(scalar_atom_code)
-    != "49743bbebf97050973b2513381c638427a775e1271bfb6a42c687ee5aa1059da"
-):
-    fail(
-        "scalar-string-atom-projection",
-        "the sealed String-atom projection drifted from its reviewed normalized implementation",
-    )
 bytecode_image_impl_pattern = re.compile(
     r"\bimpl[ \t\n]+BytecodeImage[ \t\n]*\{"
 )
@@ -3214,25 +2828,16 @@ model_bytecode_image_impl_code, _, _ = unique_braced_item(
     "bytecode-image-visible-method-set",
     "model-owned BytecodeImage implementation",
 )
-scalar_bytecode_image_impl_code, _, _ = unique_braced_item(
-    scalar_atom_code,
-    bytecode_image_impl_pattern,
-    "bytecode-image-visible-method-set",
-    "projection-owned BytecodeImage implementation",
-)
 bytecode_image_impl_paths = []
 for path, code in binary_code_cache.items():
     bytecode_image_impl_paths.extend(
         path.relative_to(root).as_posix()
         for _ in bytecode_image_impl_pattern.finditer(code)
     )
-if bytecode_image_impl_paths != [
-    image_model_relative,
-    scalar_atom_relative,
-]:
+if bytecode_image_impl_paths != [image_model_relative]:
     fail(
         "bytecode-image-visible-method-set",
-        "BytecodeImage implementations must remain in the reviewed model and sealed projection owners; "
+        "BytecodeImage implementations must remain in the reviewed model owner; "
         f"found {bytecode_image_impl_paths}",
     )
 bytecode_image_visible_method_pattern = re.compile(
@@ -3265,347 +2870,10 @@ expected_model_bytecode_image_methods = [
     ("pub(in crate::runtime)", "root"),
 ]
 model_bytecode_image_methods = visible_method_set(model_bytecode_image_impl_code)
-if (
-    model_bytecode_image_methods not in (expected_model_bytecode_image_methods, [])
-    or visible_method_set(scalar_bytecode_image_impl_code)
-    != [
-        (
-            "pub(in crate::runtime::binary_object)",
-            "project_single_string_atom",
-        )
-    ]
-):
+if model_bytecode_image_methods not in (expected_model_bytecode_image_methods, []):
     fail(
         "bytecode-image-visible-method-set",
-        "BytecodeImage may expose only its reviewed model accessors and sealed String projection",
-    )
-scalar_atom_modules = re.findall(
-    r"\bmod[ \t\n]+([A-Za-z_][A-Za-z0-9_]*)[ \t\n]*(?:;|\{)",
-    scalar_atom_code,
-)
-scalar_atom_macros = re.findall(
-    r"(?<![A-Za-z0-9_])(?:r#)?([A-Za-z_][A-Za-z0-9_]*)[ \t\n]*!",
-    scalar_atom_code,
-)
-projection_reexport = re.compile(
-    rf"\b{binary_object_visibility}[ \t\n]+use[ \t\n]+scalar_atom[ \t\n]*::"
-    r"[ \t\n]*\{[ \t\n]*ImageStringAtomProjection[ \t\n]*,"
-    r"[ \t\n]*ImageStringAtomProjectionError[ \t\n]*,?[ \t\n]*\}[ \t\n]*;"
-)
-projection_shape = re.compile(
-    rf"\b{binary_object_visibility}[ \t\n]+struct[ \t\n]+ImageStringAtomProjection"
-    r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
-    r"[ \t\n]*operand_offset[ \t\n]*:[ \t\n]*u32[ \t\n]*,"
-    r"[ \t\n]*spelling[ \t\n]*:[ \t\n]*ImageStringAtomSpelling"
-    r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*,?[ \t\n]*\}"
-)
-projection_error_code, _, _ = unique_braced_item(
-    scalar_atom_code,
-    re.compile(rf"\b{binary_object_visibility}[ \t\n]+enum[ \t\n]+ImageStringAtomProjectionError[ \t\n]*\{{"),
-    "scalar-string-atom-projection",
-    "sealed String projection error enum",
-)
-projection_error_variants = re.findall(r"(?m)^[ \t]*([A-Z][A-Za-z0-9_]*)(?:[ \t]*\{[^}]*\})?[ \t]*,", projection_error_code)
-projection_spelling_code, _, _ = unique_braced_item(
-    scalar_atom_code,
-    re.compile(
-        r"\benum[ \t\n]+ImageStringAtomSpelling[ \t\n]*<"
-        r"[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
-    ),
-    "scalar-string-atom-projection",
-    "private String-atom spelling enum",
-)
-expected_projection_spelling_source = """
-    enum ImageStringAtomSpelling<'image> {
-        Manifest(&'static str),
-        CanonicalDecimal(u32),
-        Dynamic(&'image WireString),
-    }
-"""
-expected_projection_error_source = """
-    pub(in crate::runtime::binary_object) enum ImageStringAtomProjectionError {
-        FunctionNotInImage,
-        AtomRelocationCount { actual: usize },
-        InputAtomSlotCount { actual: u32 },
-        UnpairedInputAtomSlot,
-        MissingAtomOperand,
-        NullAtom,
-        PrivateAtom,
-        SymbolAtom,
-        MissingDynamicString,
-    }
-"""
-projection_accessor_impl_code, _, _ = unique_braced_item(
-    scalar_atom_code,
-    re.compile(
-        r"\bimpl[ \t\n]*<[ \t\n]*'image[ \t\n]*>"
-        r"[ \t\n]+ImageStringAtomProjection[ \t\n]*<"
-        r"[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
-    ),
-    "scalar-string-atom-projection",
-    "sealed String-atom projection accessor implementation",
-)
-expected_projection_accessor_impl_source = """
-    impl<'image> ImageStringAtomProjection<'image> {
-        const fn new(operand_offset: u32, spelling: ImageStringAtomSpelling<'image>) -> Self {
-            Self {
-                operand_offset,
-                spelling,
-            }
-        }
-
-        #[must_use]
-        pub(in crate::runtime::binary_object) const fn operand_offset(self) -> u32 {
-            self.operand_offset
-        }
-
-        #[must_use]
-        pub(in crate::runtime::binary_object) const fn manifest_spelling(self) -> Option<&'static str> {
-            match self.spelling {
-                ImageStringAtomSpelling::Manifest(spelling) => Some(spelling),
-                ImageStringAtomSpelling::CanonicalDecimal(_) | ImageStringAtomSpelling::Dynamic(_) => {
-                    None
-                }
-            }
-        }
-
-        #[must_use]
-        pub(in crate::runtime::binary_object) const fn canonical_decimal(self) -> Option<u32> {
-            match self.spelling {
-                ImageStringAtomSpelling::CanonicalDecimal(value) => Some(value),
-                ImageStringAtomSpelling::Manifest(_) | ImageStringAtomSpelling::Dynamic(_) => None,
-            }
-        }
-
-        #[must_use]
-        pub(in crate::runtime::binary_object) const fn dynamic_string(
-            self,
-        ) -> Option<&'image WireString> {
-            match self.spelling {
-                ImageStringAtomSpelling::Dynamic(spelling) => Some(spelling),
-                ImageStringAtomSpelling::Manifest(_) | ImageStringAtomSpelling::CanonicalDecimal(_) => {
-                    None
-                }
-            }
-        }
-    }
-"""
-projection_error_display_code, projection_error_display_start, projection_error_display_end = unique_braced_item(
-    scalar_atom_code,
-    re.compile(
-        r"\bimpl[ \t\n]+fmt[ \t\n]*::[ \t\n]*Display[ \t\n]+for"
-        r"[ \t\n]+ImageStringAtomProjectionError[ \t\n]*\{"
-    ),
-    "scalar-string-atom-projection",
-    "String-atom projection diagnostic formatter",
-)
-projection_error_display_source = (
-    scalar_atom_source[projection_error_display_start:projection_error_display_end]
-    if projection_error_display_start >= 0
-    else ""
-)
-expected_projection_error_display_source = """
-    impl fmt::Display for ImageStringAtomProjectionError {
-        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                Self::FunctionNotInImage => {
-                    formatter.write_str("function identity does not belong to this bytecode image")
-                }
-                Self::AtomRelocationCount { actual } => write!(
-                    formatter,
-                    "function contains {actual} atom relocations instead of exactly one"
-                ),
-                Self::InputAtomSlotCount { actual } => write!(
-                    formatter,
-                    "bytecode image contains {actual} input atom slots instead of at most one"
-                ),
-                Self::UnpairedInputAtomSlot => formatter.write_str(
-                    "bytecode image's sole input atom slot is not the function's sole atom operand",
-                ),
-                Self::MissingAtomOperand => {
-                    formatter.write_str("function atom sidecar points outside its code payload")
-                }
-                Self::NullAtom => formatter.write_str("null atom is not a String value"),
-                Self::PrivateAtom => formatter.write_str("private atom is not a String value"),
-                Self::SymbolAtom => formatter.write_str("symbol atom is not a String value"),
-                Self::MissingDynamicString => {
-                    formatter.write_str("dynamic atom is absent from its bytecode image")
-                }
-            }
-        }
-    }
-"""
-projection_methods = re.findall(
-    rf"\b{binary_object_visibility}[ \t\n]+(?:const[ \t\n]+)?fn"
-    r"[ \t\n]+([A-Za-z_][A-Za-z0-9_]*)",
-    scalar_atom_code,
-)
-projection_visibilities = [
-    " ".join(visibility.split())
-    for visibility in re.findall(
-        r"\b(pub(?:[ \t\n]*\([^)]*\))?)",
-        scalar_atom_code,
-    )
-]
-expected_projection_visibility = "pub(in crate::runtime::binary_object)"
-expected_projection_visibilities = [expected_projection_visibility] * 7
-projection_impl_heads = [
-    " ".join(match.group("head").split())
-    for match in re.finditer(
-        r"\bimpl(?P<head>[^{};]*)\{",
-        scalar_atom_code,
-    )
-]
-expected_projection_impl_heads = [
-    "<'image> ImageStringAtomProjection<'image>",
-    "fmt::Display for ImageStringAtomProjectionError",
-    "std::error::Error for ImageStringAtomProjectionError",
-    "BytecodeImage",
-]
-projection_project_code, _, _ = unique_braced_item(
-    scalar_atom_code,
-    re.compile(
-        rf"\b{binary_object_visibility}[ \t\n]+fn[ \t\n]+"
-        r"project_single_string_atom\b[^{};]*\{"
-    ),
-    "scalar-string-atom-projection",
-    "same-image single-String atom projection method",
-)
-expected_projection_project_source = """
-    pub(in crate::runtime::binary_object) fn project_single_string_atom(
-        &self,
-        function: FunctionId,
-    ) -> Result<ImageStringAtomProjection<'_>, ImageStringAtomProjectionError> {
-        let function = self
-            .function(function)
-            .ok_or(ImageStringAtomProjectionError::FunctionNotInImage)?;
-        let code = function.envelope().code();
-        let relocations = code.atom_relocations();
-        let [relocation] = relocations else {
-            return Err(ImageStringAtomProjectionError::AtomRelocationCount {
-                actual: relocations.len(),
-            });
-        };
-        let operand_offset = relocation.operand_offset();
-        authenticate_input_atom_pairing(
-            self.input_atom_slot_count(),
-            code.as_bytes(),
-            operand_offset,
-        )?;
-        let spelling = match relocation.atom() {
-            ImageAtom::Null => return Err(ImageStringAtomProjectionError::NullAtom),
-            ImageAtom::Index(value) => ImageStringAtomSpelling::CanonicalDecimal(value),
-            ImageAtom::Predefined(atom) => match atom.kind() {
-                PinnedAtomKind::String => ImageStringAtomSpelling::Manifest(atom.spelling()),
-                PinnedAtomKind::Private => {
-                    return Err(ImageStringAtomProjectionError::PrivateAtom);
-                }
-                PinnedAtomKind::Symbol => {
-                    return Err(ImageStringAtomProjectionError::SymbolAtom);
-                }
-            },
-            ImageAtom::Dynamic(atom) => {
-                let spelling = self
-                    .atoms()
-                    .get(atom.as_usize())
-                    .ok_or(ImageStringAtomProjectionError::MissingDynamicString)?;
-                ImageStringAtomSpelling::Dynamic(spelling)
-            }
-        };
-        Ok(ImageStringAtomProjection::new(operand_offset, spelling))
-    }
-"""
-projection_pairing_code, _, _ = unique_braced_item(
-    scalar_atom_code,
-    re.compile(
-        r"\bfn[ \t\n]+authenticate_input_atom_pairing\b[^{};]*\{"
-    ),
-    "scalar-string-atom-projection",
-    "input-atom provenance authenticator",
-)
-expected_projection_pairing_source = """
-    fn authenticate_input_atom_pairing(
-        input_atom_slots: u32,
-        code: &[u8],
-        operand_offset: u32,
-    ) -> Result<(), ImageStringAtomProjectionError> {
-        match input_atom_slots {
-            0 => Ok(()),
-            1 => {
-                let start = usize::try_from(operand_offset)
-                    .map_err(|_| ImageStringAtomProjectionError::MissingAtomOperand)?;
-                let end = start
-                    .checked_add(size_of::<u32>())
-                    .ok_or(ImageStringAtomProjectionError::MissingAtomOperand)?;
-                let operand = code
-                    .get(start..end)
-                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-                    .map(u32::from_le_bytes)
-                    .ok_or(ImageStringAtomProjectionError::MissingAtomOperand)?;
-                if operand == FIRST_DYNAMIC_ATOM {
-                    Ok(())
-                } else {
-                    Err(ImageStringAtomProjectionError::UnpairedInputAtomSlot)
-                }
-            }
-            actual => Err(ImageStringAtomProjectionError::InputAtomSlotCount { actual }),
-        }
-    }
-"""
-projection_fragments = (
-    "let [relocation] = relocations else",
-    "authenticate_input_atom_pairing( self.input_atom_slot_count(), code.as_bytes(), operand_offset, )?;",
-    "ImageAtom::Null => return Err(ImageStringAtomProjectionError::NullAtom)",
-    "ImageAtom::Index(value) => ImageStringAtomSpelling::CanonicalDecimal(value)",
-    "PinnedAtomKind::Private => { return Err(ImageStringAtomProjectionError::PrivateAtom); }",
-    "PinnedAtomKind::Symbol => { return Err(ImageStringAtomProjectionError::SymbolAtom); }",
-    "if operand == FIRST_DYNAMIC_ATOM { Ok(()) } else { Err(ImageStringAtomProjectionError::UnpairedInputAtomSlot) }",
-)
-if (
-    len(projection_reexport.findall(image_root_code)) != 1
-    or scalar_atom_modules
-    or scalar_atom_macros != ["write", "write"]
-    or len(projection_shape.findall(scalar_atom_code)) != 1
-    or projection_error_variants != ["FunctionNotInImage", "AtomRelocationCount", "InputAtomSlotCount", "UnpairedInputAtomSlot", "MissingAtomOperand", "NullAtom", "PrivateAtom", "SymbolAtom", "MissingDynamicString"]
-    or (
-        projection_spelling_code
-        and " ".join(projection_spelling_code.split())
-        != " ".join(rust_code_only(expected_projection_spelling_source).split())
-    )
-    or (
-        projection_error_code
-        and " ".join(projection_error_code.split())
-        != " ".join(rust_code_only(expected_projection_error_source).split())
-    )
-    or (
-        projection_accessor_impl_code
-        and " ".join(projection_accessor_impl_code.split())
-        != " ".join(rust_code_only(expected_projection_accessor_impl_source).split())
-    )
-    or (
-        projection_error_display_code
-        and " ".join(projection_error_display_source.split())
-        != " ".join(expected_projection_error_display_source.split())
-    )
-    or projection_visibilities != expected_projection_visibilities
-    or sorted(projection_methods)
-    != sorted(["operand_offset", "manifest_spelling", "canonical_decimal", "dynamic_string", "project_single_string_atom"])
-    or projection_impl_heads != expected_projection_impl_heads
-    or (
-        projection_project_code
-        and " ".join(projection_project_code.split())
-        != " ".join(rust_code_only(expected_projection_project_source).split())
-    )
-    or (
-        projection_pairing_code
-        and " ".join(projection_pairing_code.split())
-        != " ".join(rust_code_only(expected_projection_pairing_source).split())
-    )
-    or any(scalar_atom_normalized.count(fragment) != 1 for fragment in projection_fragments)
-):
-    fail(
-        "scalar-string-atom-projection",
-        "bytecode_image must expose only the sealed, same-image single-String atom projection",
+        "BytecodeImage may expose only its reviewed model accessors",
     )
 
 null_name_predicate = re.compile(
@@ -3703,16 +2971,11 @@ expected_atom_sensitive_visible_sites = [
         "pub(in crate::runtime::binary_object)",
         "name_is_pinned_eval",
     ),
-    (
-        "src/runtime/binary_object/bytecode_image/scalar_atom.rs",
-        "pub(in crate::runtime::binary_object)",
-        "project_single_string_atom",
-    ),
 ]
 if atom_sensitive_visible_sites != expected_atom_sensitive_visible_sites:
     fail(
         "image-atom-visible-capability",
-        "only the reviewed boolean predicates and sealed String projection may expose an atom-sensitive bytecode_image function; "
+        "only the reviewed boolean atom predicates may expose an atom-sensitive BytecodeImage method; "
         f"found {atom_sensitive_visible_sites}",
     )
 
@@ -4832,13 +4095,10 @@ printf '%s\n' \
     'mod encode;' \
     'mod model;' \
     'mod native_plan;' \
-    'mod scalar_atom;' \
     '#[cfg(test)]' \
     'mod tests;' \
-    'pub(in crate::runtime::binary_object) use scalar_atom::{ImageStringAtomProjection, ImageStringAtomProjectionError};' \
+    'pub(in crate::runtime::binary_object) use native_plan::{NativeAtomClass, NativeAtomRef, NativeCodePlan, NativeOperands, decode_native_code_plan};' \
     > "$fixture/src/runtime/binary_object/bytecode_image/mod.rs"
-cp -- "$repository_root/src/runtime/binary_object/bytecode_image/scalar_atom.rs" \
-    "$fixture/src/runtime/binary_object/bytecode_image/scalar_atom.rs"
 cp -- "$repository_root/src/runtime/binary_object/bytecode_image/native_plan.rs" \
     "$fixture/src/runtime/binary_object/bytecode_image/native_plan.rs"
 printf '%s\n' \
@@ -5424,18 +4684,10 @@ expect_rewrite_rejected scalar-string-copy-regression scalar-script-draft-shape 
 expect_rejected scalar-opcode-set-widening scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
     'const OP_PUSH_THIS: u8 = 0x08;'
-expect_rewrite_rejected scalar-opcode-duplicate scalar-script-opcode-set \
+expect_rewrite_rejected scalar-unary-name-widening scalar-unary-operation-shape \
     src/runtime/binary_object/scalar_script.rs \
-    'const OP_NULL: u8 = 0x07;' \
-    $'    const OP_NULL: u8 = 0xfe + 1;\nconst OP_NULL: u8 = 0x07;'
-for adjacent_unary_opcode in 0x89 0x8e 0x8f 0x90 0x91 0x92 0x96; do
-    expect_rewrite_rejected \
-        "scalar-unary-adjacent-${adjacent_unary_opcode#0x}" \
-        scalar-unary-operation-shape \
-        src/runtime/binary_object/scalar_script.rs \
-        $'            OP_TYPEOF => Some(Self::TypeOf),\n            _ => None,' \
-        $'            OP_TYPEOF => Some(Self::TypeOf),\n            '"$adjacent_unary_opcode"$' => Some(Self::Neg),\n            _ => None,'
-done
+    $'            ("typeof", NativeOperands::None) => Some(Self::TypeOf),\n            _ => None,' \
+    $'            ("typeof", NativeOperands::None) => Some(Self::TypeOf),\n            ("void", NativeOperands::None) => Some(Self::TypeOf),\n            _ => None,'
 expect_full_rewrite_rejected scalar-unary-descriptor-size scalar-unary-opcode-descriptor \
     src/runtime/binary_object/pinned_opcodes.rs \
     'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
@@ -5452,63 +4704,59 @@ expect_full_rewrite_rejected scalar-unary-descriptor-format scalar-unary-opcode-
     src/runtime/binary_object/pinned_opcodes.rs \
     'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
     'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::U8),'
-expect_rewrite_rejected scalar-const8-index-forgery scalar-script-push-decoder \
+expect_rewrite_rejected scalar-const8-index-forgery scalar-script-native-plan-decoder \
     src/runtime/binary_object/scalar_script.rs \
-    'ScalarPush::Constant(u32::from(*index))' \
-    'ScalarPush::Constant(0)'
-expect_rewrite_rejected scalar-fclosure8-substitution scalar-script-push-decoder \
+    'Some(ScalarPush::Constant(u32::from(*index)))' \
+    'Some(ScalarPush::Constant(0))'
+expect_rewrite_rejected scalar-fclosure8-substitution scalar-script-native-plan-decoder \
     src/runtime/binary_object/scalar_script.rs \
-    '[OP_PUSH_CONST8, index, ..]' \
-    '[0xbe, index, ..]'
-expect_rewrite_rejected scalar-unary-chain-fold scalar-script-sequence-decoder \
+    '("push_const8", NativeOperands::Const8(index))' \
+    '("fclosure8", NativeOperands::Const8(index))'
+expect_rewrite_rejected scalar-unary-chain-fold scalar-script-native-plan-decoder \
     src/runtime/binary_object/scalar_script.rs \
     '        unary_ops.push(operation);' \
     '        if unary_ops.last() != Some(&operation) { unary_ops.push(operation); }'
-expect_rewrite_rejected scalar-unary-chain-reorder scalar-script-sequence-decoder \
+expect_rewrite_rejected scalar-unary-chain-reorder scalar-script-native-plan-decoder \
     src/runtime/binary_object/scalar_script.rs \
     '        unary_ops.push(operation);' \
     '        unary_ops.insert(0, operation);'
-expect_rewrite_rejected scalar-unary-sidecar-offset-drift scalar-script-sequence-sidecars \
+expect_rewrite_rejected scalar-completion-slot-drift scalar-script-native-plan-decoder \
     src/runtime/binary_object/scalar_script.rs \
-    '                    sidecar.offset() == offset' \
-    '                    sidecar.offset() == offset + 1'
-expect_rewrite_rejected scalar-unary-sidecar-slot-drift scalar-script-sequence-sidecars \
+    '("set_loc0", NativeOperands::NoneLoc(0))' \
+    '("set_loc0", NativeOperands::NoneLoc(1))'
+expect_rewrite_rejected scalar-return-kind-drift scalar-script-native-plan-decoder \
     src/runtime/binary_object/scalar_script.rs \
-    '                let sidecar = &instructions[index + 1];' \
-    '                let sidecar = &instructions[index];'
-expect_rewrite_rejected scalar-bigint-plus-early-rejection scalar-script-unary-admission-tail \
+    '("return", NativeOperands::None)' \
+    '("return_undef", NativeOperands::None)'
+expect_rewrite_rejected scalar-bigint-plus-early-rejection scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     '    Ok((value, unary_ops))' \
     $'    if matches!(&value, ScalarValueDraft::BigIntI32(_) | ScalarValueDraft::BigIntBytes(_)) && unary_ops.contains(&ScalarUnaryOp::Plus) { return unadmitted("BigInt unary plus is not admitted"); }\n    Ok((value, unary_ops))'
-expect_rewrite_rejected scalar-constant-index-widening scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-constant-index-widening scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
     '        (ScalarPush::Constant(_), [constant]) => match constant.as_wire() {'
-expect_rewrite_rejected scalar-constant-extra-pool scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-constant-extra-pool scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
     '        (ScalarPush::Constant(0), [constant, ..]) => match constant.as_wire() {'
-expect_rewrite_rejected scalar-constant-wrong-type scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-constant-wrong-type scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     'Ok(WireValue::Float64Bits(bits))' \
     'Ok(WireValue::Int32(bits))'
-expect_rewrite_rejected scalar-constant-wrong-type-comment-forgery scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-constant-wrong-type-comment-forgery scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     'Ok(WireValue::Float64Bits(bits))' \
     'Ok(WireValue::Int32(bits)) /* WireValue::Float64Bits */'
-expect_rewrite_rejected scalar-constant-string-opening scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-constant-string-opening scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     'ScalarValueDraft::ConstantString(copy_wire_string(value)?)' \
     'ScalarValueDraft::EmptyString'
-expect_rewrite_rejected scalar-constant-bool-opening scalar-script-constant-pairing \
-    src/runtime/binary_object/scalar_script.rs \
-    $'            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }' \
-    $'            Ok(WireValue::Bool(value)) => ScalarValueDraft::Bool(*value),\n            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }'
-expect_rewrite_rejected scalar-constant-wildcard-primitive scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-constant-wildcard-primitive scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     $'            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }' \
     '            Ok(_) => ScalarValueDraft::BigIntBytes(Box::default()),'
-expect_rewrite_rejected scalar-bigint-truncated-copy scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-bigint-truncated-copy scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     'ScalarValueDraft::BigIntBytes(copy_bigint_bytes(bytes)?)' \
     'ScalarValueDraft::BigIntBytes(copy_bigint_bytes(&bytes[..1])?)'
@@ -5520,45 +4768,69 @@ expect_rewrite_rejected scalar-string-utf8-misdecode scalar-script-string-copy \
     src/runtime/binary_object/scalar_script.rs \
     'copy_utf16(bytes.iter().copied().map(u16::from), bytes.len())' \
     'copy_utf16(String::from_utf8_lossy(bytes).encode_utf16(), bytes.len())'
-expect_rewrite_rejected scalar-direct-with-pool scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-direct-with-pool scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     '        (ScalarPush::Direct(value), []) => value,' \
     '        (ScalarPush::Direct(value), [_]) => value,'
-expect_rewrite_rejected scalar-constant-pairing-bypass scalar-script-constant-pairing \
+expect_rewrite_rejected scalar-constant-pairing-bypass scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     '    let value = match (push, function.constants()) {' \
     $'    let value = ScalarValueDraft::Float64Bits(0);\n    let _reviewed_pair = match (push, function.constants()) {'
 expect_rejected scalar-float-evidence-alias scalar-script-constant-pairing \
     src/runtime/binary_object/scalar_script.rs \
     'use WireValue::Float64Bits as AdmittedFloat;'
-expect_rewrite_rejected scalar-input-atom-slot-widening scalar-script-admission-empty-boundaries \
+expect_rewrite_rejected scalar-input-atom-slot-widening scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     'image.input_atom_slot_count() != 0' \
     'image.input_atom_slot_count() != 2'
-expect_rewrite_rejected scalar-input-atom-slot-comment-forgery scalar-script-admission-empty-boundaries \
+expect_rewrite_rejected scalar-input-atom-slot-comment-forgery scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     'image.input_atom_slot_count() != 0' \
     'false /* image.input_atom_slot_count() != 0 */'
-expect_rewrite_rejected scalar-admission-early-success scalar-script-admission-empty-boundaries \
+expect_rewrite_rejected scalar-admission-early-success scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
-    '    let native_payload = envelope.code();' \
-    '    return Ok((ScalarValueDraft::EmptyString, Box::default())); let native_payload = envelope.code();'
-expect_rewrite_rejected scalar-admission-image-shadow scalar-script-admission-empty-boundaries \
+    '    let native_plan = decode_native_code_plan(image, root).map_err(|error| {' \
+    '    return Ok((ScalarValueDraft::EmptyString, Box::default())); let native_plan = decode_native_code_plan(image, root).map_err(|error| {'
+expect_rewrite_rejected scalar-admission-image-shadow scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
-    '    let native_payload = envelope.code();' \
-    '    let image = image; let native_payload = envelope.code();'
-expect_rewrite_rejected scalar-admission-envelope-shadow scalar-script-admission-empty-boundaries \
+    '    let native_plan = decode_native_code_plan(image, root).map_err(|error| {' \
+    '    let image = image; let native_plan = decode_native_code_plan(image, root).map_err(|error| {'
+expect_rewrite_rejected scalar-admission-envelope-shadow scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
-    '    let native_payload = envelope.code();' \
-    '    let envelope = function.envelope(); let native_payload = envelope.code();'
-expect_rewrite_rejected scalar-admission-dead-envelope scalar-script-admission-empty-boundaries \
+    '    let native_plan = decode_native_code_plan(image, root).map_err(|error| {' \
+    '    let envelope = function.envelope(); let native_plan = decode_native_code_plan(image, root).map_err(|error| {'
+expect_rewrite_rejected scalar-admission-dead-envelope scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
     '    let envelope = function.envelope();' \
     '    if false { let envelope = function.envelope(); }'
-expect_rewrite_rejected scalar-admission-native-payload-shadow scalar-script-admission-empty-boundaries \
+expect_rewrite_rejected scalar-label-error-bypass scalar-script-native-plan-admission \
     src/runtime/binary_object/scalar_script.rs \
-    '    let value = match (push, function.constants()) {' \
-    '    let native_payload = envelope.code(); let value = match (push, function.constants()) {'
+    '        let outside_scalar_shape = error.is_label_target_error();' \
+    '        let outside_scalar_shape = false;'
+expect_rewrite_rejected scalar-label-classifier-collapse scalar-native-atom-consumer \
+    src/runtime/binary_object/scalar_script.rs \
+    '    if outside_scalar_shape {' \
+    '    if false && outside_scalar_shape {'
+expect_rewrite_rejected scalar-input-origin-zero-bypass scalar-native-atom-consumer \
+    src/runtime/binary_object/scalar_script.rs \
+    '        0 if atom.originates_from_input_atom_table() => {' \
+    '        0 if false && atom.originates_from_input_atom_table() => {'
+expect_rewrite_rejected scalar-input-origin-one-bypass scalar-native-atom-consumer \
+    src/runtime/binary_object/scalar_script.rs \
+    '        1 if !atom.originates_from_input_atom_table() => {' \
+    '        1 if false && !atom.originates_from_input_atom_table() => {'
+expect_rewrite_rejected scalar-private-identity-admission scalar-native-atom-consumer \
+    src/runtime/binary_object/scalar_script.rs \
+    '        NativeAtomClass::Private => unadmitted("private atom is not a String value"),' \
+    '        NativeAtomClass::Private => project_atom_string_spelling(atom),'
+expect_rewrite_rejected scalar-symbol-identity-admission scalar-native-atom-consumer \
+    src/runtime/binary_object/scalar_script.rs \
+    '        NativeAtomClass::Symbol => unadmitted("symbol atom is not a String value"),' \
+    '        NativeAtomClass::Symbol => project_atom_string_spelling(atom),'
+expect_rewrite_rejected scalar-index-identity-collapse scalar-native-atom-consumer \
+    src/runtime/binary_object/scalar_script.rs \
+    '            .map(ScalarValueDraft::IntegerAtomString)' \
+    '            .map(|_| ScalarValueDraft::IntegerAtomString(0))'
 expect_rewrite_rejected scalar-error-missing-unadmitted scalar-script-error-shape \
     src/runtime/binary_object/scalar_script.rs \
     '    Unadmitted(String),' \
@@ -5637,57 +4909,6 @@ expect_full_rewrite_rejected bytecode-image-helper-indirection bytecode-image-mo
     src/runtime/binary_object/bytecode_image/model.rs \
     $'    pub(in crate::runtime) const fn operand_offset(self) -> u32 {\n        self.operand_offset\n    }' \
     $'    pub(in crate::runtime) const fn operand_offset(self) -> u32 {\n        Self::leak_atom_identity(self.atom)\n    }\n\n    const fn leak_atom_identity(atom: ImageAtom) -> u32 {\n        match atom {\n            ImageAtom::Null => 0,\n            ImageAtom::Index(value) => value,\n            ImageAtom::Predefined(atom) => atom.raw(),\n            ImageAtom::Dynamic(atom) => atom.zero_based(),\n        }\n    }'
-expect_rejected scalar-projection-raw-atom image-atom-escape \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    "impl ImageStringAtomProjection<'_> { pub(in crate::runtime::binary_object) fn raw_atom(self) -> ImageAtom { ImageAtom::Null } }"
-expect_rejected scalar-projection-wider-raw-leak scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    "impl ImageStringAtomProjection<'_> { pub(in crate::runtime) fn leaked_raw_atom(self) -> Option<u32> { Some(FIRST_DYNAMIC_ATOM) } }"
-expect_rejected scalar-projection-source-include forbidden-source-include \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    'include!("scalar_atom_escape.rs");'
-expect_rejected scalar-projection-private-module scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    'mod scalar_atom_escape;'
-expect_rejected scalar-projection-extra-macro scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    'scalar_atom_escape!();'
-expect_rewrite_rejected scalar-projection-decimal-value-drift scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    'ImageStringAtomSpelling::CanonicalDecimal(value) => Some(value),' \
-    'ImageStringAtomSpelling::CanonicalDecimal(_) => Some(0),'
-expect_rewrite_rejected scalar-projection-private-diagnostic-drift scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    'private atom is not a String value' \
-    'symbol atom is not a String value'
-expect_rewrite_rejected scalar-projection-early-non-string-admission scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    '        let spelling = match relocation.atom() {' \
-    $'        if let ImageAtom::Predefined(atom) = relocation.atom() {\n            if matches!(atom.kind(), PinnedAtomKind::Private | PinnedAtomKind::Symbol) {\n                return Ok(ImageStringAtomProjection::new(operand_offset, ImageStringAtomSpelling::Manifest(atom.spelling())));\n            }\n        }\n        let spelling = match relocation.atom() {'
-expect_rewrite_rejected scalar-projection-two-header-slots scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    '    match input_atom_slots {' \
-    '    if input_atom_slots == 2 { return Ok(()); } match input_atom_slots {'
-expect_rewrite_rejected scalar-projection-private-admission scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    'return Err(ImageStringAtomProjectionError::PrivateAtom);' \
-    'return Ok(ImageStringAtomProjection::new(operand_offset, ImageStringAtomSpelling::Manifest(atom.spelling())));'
-expect_rewrite_rejected scalar-projection-symbol-admission scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    'return Err(ImageStringAtomProjectionError::SymbolAtom);' \
-    'return Ok(ImageStringAtomProjection::new(operand_offset, ImageStringAtomSpelling::Manifest(atom.spelling())));'
-expect_rewrite_rejected scalar-projection-unused-header scalar-string-atom-projection \
-    src/runtime/binary_object/bytecode_image/scalar_atom.rs \
-    '            if operand == FIRST_DYNAMIC_ATOM {' \
-    '            if true || operand == FIRST_DYNAMIC_ATOM {'
-expect_rewrite_rejected scalar-projection-consumer-early-success scalar-string-atom-projection \
-    src/runtime/binary_object/scalar_script.rs \
-    '    let projection = image' \
-    '    if image.input_atom_slot_count() == 1 { return Ok(ScalarValueDraft::IntegerAtomString(0)); } let projection = image'
-expect_rewrite_rejected scalar-projection-error-early-internal scalar-string-atom-projection \
-    src/runtime/binary_object/scalar_script.rs \
-    $'fn classify_string_atom_projection_error(\n    error: ImageStringAtomProjectionError,\n) -> ScalarScriptReadError {\n    let message = error.to_string();' \
-    $'fn classify_string_atom_projection_error(\n    error: ImageStringAtomProjectionError,\n) -> ScalarScriptReadError {\n    let message = error.to_string();\n    if let ImageStringAtomProjectionError::InputAtomSlotCount { .. } = &error { return ScalarScriptReadError::Internal(message); }'
 expect_rewrite_rejected pinned-eval-identity-drift scalar-script-atom-predicate \
     src/runtime/binary_object/bytecode_image/model.rs \
     'const PINNED_EVAL_ATOM_RAW: u32 = 84;' \
@@ -5730,9 +4951,12 @@ expect_rewrite_rejected native-plan-trait-escape native-plan-expansion \
     src/runtime/binary_object/bytecode_image/native_plan.rs \
     'use std::fmt;' \
     $'use std::fmt;\ntrait NativePlanEscape {}'
-expect_rejected native-plan-sibling-consumer native-plan-private-stage \
+expect_rejected native-plan-sibling-consumer native-plan-consumer-set \
     src/runtime/binary_object/scalar_script.rs \
     'use super::bytecode_image::native_plan::NativeCodePlan;'
+expect_rejected native-plan-second-consumer native-plan-consumer-set \
+    src/runtime/binary_object/atoms.rs \
+    'fn consume_native_plan(_: NativeCodePlan) {}'
 expect_rejected native-plan-facade native-plan-private-stage \
     src/runtime/binary_object/bytecode_image/mod.rs \
     'pub(in crate::runtime::binary_object) use native_plan::NativeCodePlan;'
@@ -5748,6 +4972,22 @@ expect_rewrite_rejected native-plan-dynamic-index-helper native-plan-semantic-se
     src/runtime/binary_object/bytecode_image/native_plan.rs \
     'dynamic_atoms.get(index.as_usize())' \
     'dynamic_atoms.get(index.zero_based() as usize)'
+expect_rewrite_rejected native-plan-origin-accessor-drift native-plan-semantic-seal \
+    src/runtime/binary_object/bytecode_image/native_plan.rs \
+    $'    pub(in crate::runtime::binary_object) const fn originates_from_input_atom_table(self) -> bool {\n        self.from_input_atom_table\n    }' \
+    $'    pub(in crate::runtime::binary_object) const fn originates_from_input_atom_table(self) -> bool {\n        false\n    }'
+expect_rewrite_rejected native-plan-origin-range-widening native-plan-semantic-seal \
+    src/runtime/binary_object/bytecode_image/native_plan.rs \
+    '.is_some_and(|slot| slot < input_atom_slot_count);' \
+    '.is_some_and(|slot| slot <= input_atom_slot_count);'
+expect_rewrite_rejected native-plan-label-error-broadening native-plan-semantic-seal \
+    src/runtime/binary_object/bytecode_image/native_plan.rs \
+    'Self::LabelTargetOutOfRange { .. } | Self::LabelTargetNotInstructionBoundary { .. }' \
+    'Self::LabelTargetOutOfRange { .. } | Self::LabelTargetNotInstructionBoundary { .. } | Self::InvalidOpcode { .. }'
+expect_rewrite_rejected native-plan-label-error-collapse native-plan-semantic-seal \
+    src/runtime/binary_object/bytecode_image/native_plan.rs \
+    'Self::LabelTargetOutOfRange { .. } | Self::LabelTargetNotInstructionBoundary { .. }' \
+    'Self::LabelTargetOutOfRange { .. }'
 expect_rewrite_rejected native-plan-label-accessor-drift native-plan-semantic-seal \
     src/runtime/binary_object/bytecode_image/native_plan.rs \
     $'    pub(in crate::runtime::binary_object) const fn target_pc(self) -> u32 {\n        self.target_pc\n    }' \

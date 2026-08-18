@@ -7,8 +7,9 @@
 use std::fmt;
 
 use super::bytecode_image::{
-    BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError,
-    ImageStringAtomProjectionError, ModuleLimits, decode_bytecode_image_body,
+    BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError, ModuleLimits,
+    NativeAtomClass, NativeAtomRef, NativeCodePlan, NativeOperands, decode_bytecode_image_body,
+    decode_native_code_plan,
 };
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits};
@@ -19,31 +20,6 @@ use super::graph::model::{
 use super::wire::{ReaderMode, WireCursor, WireError, WireLimits};
 
 const MAX_INPUT_BYTES: usize = 4096;
-
-const OP_PUSH_I32: u8 = 0x01;
-const OP_PUSH_CONST: u8 = 0x02;
-const OP_PUSH_ATOM_VALUE: u8 = 0x04;
-const OP_UNDEFINED: u8 = 0x06;
-const OP_NULL: u8 = 0x07;
-const OP_PUSH_FALSE: u8 = 0x09;
-const OP_PUSH_TRUE: u8 = 0x0a;
-const OP_RETURN: u8 = 0x28;
-const OP_PUSH_BIGINT_I32: u8 = 0xb0;
-const OP_PUSH_MINUS1: u8 = 0xb2;
-const OP_PUSH_0: u8 = 0xb3;
-const OP_PUSH_7: u8 = 0xba;
-const OP_PUSH_I8: u8 = 0xbb;
-const OP_PUSH_I16: u8 = 0xbc;
-const OP_PUSH_CONST8: u8 = 0xbd;
-const OP_PUSH_EMPTY_STRING: u8 = 0xbf;
-const OP_NEG: u8 = 0x8a;
-const OP_PLUS: u8 = 0x8b;
-const OP_DEC: u8 = 0x8c;
-const OP_INC: u8 = 0x8d;
-const OP_BIT_NOT: u8 = 0x93;
-const OP_LOGICAL_NOT: u8 = 0x94;
-const OP_TYPEOF: u8 = 0x95;
-const OP_SET_LOC0: u8 = 0xcb;
 
 /// Runtime-independent scalar value crossing the archive/publication bridge.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,28 +54,16 @@ pub(in crate::runtime) enum ScalarUnaryOp {
 }
 
 impl ScalarUnaryOp {
-    fn from_opcode(opcode: u8) -> Option<Self> {
-        match opcode {
-            OP_NEG => Some(Self::Neg),
-            OP_PLUS => Some(Self::Plus),
-            OP_DEC => Some(Self::Dec),
-            OP_INC => Some(Self::Inc),
-            OP_BIT_NOT => Some(Self::BitNot),
-            OP_LOGICAL_NOT => Some(Self::LogicalNot),
-            OP_TYPEOF => Some(Self::TypeOf),
+    fn from_native(name: &str, operands: &NativeOperands<'_>) -> Option<Self> {
+        match (name, operands) {
+            ("neg", NativeOperands::None) => Some(Self::Neg),
+            ("plus", NativeOperands::None) => Some(Self::Plus),
+            ("dec", NativeOperands::None) => Some(Self::Dec),
+            ("inc", NativeOperands::None) => Some(Self::Inc),
+            ("not", NativeOperands::None) => Some(Self::BitNot),
+            ("lnot", NativeOperands::None) => Some(Self::LogicalNot),
+            ("typeof", NativeOperands::None) => Some(Self::TypeOf),
             _ => None,
-        }
-    }
-
-    const fn opcode(self) -> u8 {
-        match self {
-            Self::Neg => OP_NEG,
-            Self::Plus => OP_PLUS,
-            Self::Dec => OP_DEC,
-            Self::Inc => OP_INC,
-            Self::BitNot => OP_BIT_NOT,
-            Self::LogicalNot => OP_LOGICAL_NOT,
-            Self::TypeOf => OP_TYPEOF,
         }
     }
 }
@@ -117,16 +81,15 @@ impl ScalarStringDraft {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ScalarPush {
+enum ScalarPush<'image> {
     Direct(ScalarValueDraft),
     Constant(u32),
-    AtomValue,
+    AtomValue(NativeAtomRef<'image>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ScalarSequence {
-    push: ScalarPush,
-    push_width: u32,
+struct ScalarSequence<'image> {
+    push: ScalarPush<'image>,
     unary_ops: Box<[ScalarUnaryOp]>,
 }
 
@@ -292,65 +255,18 @@ fn admit_image(
         return unadmitted("completion-local metadata is outside the admitted shape");
     }
 
-    let native_payload = envelope.code();
-    let Some(sequence) = decode_scalar_sequence(native_payload.as_bytes())? else {
+    let native_plan = decode_native_code_plan(image, root).map_err(|error| {
+        let outside_scalar_shape = error.is_label_target_error();
+        classify_native_plan_error(error, outside_scalar_shape)
+    })?;
+    let Some(sequence) = decode_scalar_sequence(&native_plan)? else {
         return unadmitted("native payload opcode sequence is outside the admitted shape");
     };
-    if !matches!(&sequence.push, ScalarPush::AtomValue)
-        && (image.input_atom_slot_count() != 0 || !native_payload.atom_relocations().is_empty())
-    {
+    if !matches!(&sequence.push, ScalarPush::AtomValue(_)) && image.input_atom_slot_count() != 0 {
         return unadmitted("atom-free scalar shape carries an atom table or relocation");
     }
-    let instructions = native_payload.instructions();
-    let expected_sidecar_count = sequence.unary_ops.len().checked_add(3);
-    let unary_count = u32::try_from(sequence.unary_ops.len()).ok();
-    let completion_offset = unary_count.and_then(|count| sequence.push_width.checked_add(count));
-    let return_offset = completion_offset.and_then(|offset| offset.checked_add(1));
-    let push_width = usize::try_from(sequence.push_width).ok();
-    let sidecars_match = expected_sidecar_count == Some(instructions.len())
-        && instructions[0].offset() == 0
-        && instructions[0].opcode().raw() == native_payload.as_bytes()[0]
-        && push_width.is_some_and(|push_width| {
-            sequence
-                .unary_ops
-                .iter()
-                .copied()
-                .enumerate()
-                .all(|(index, operation)| {
-                    let Some(offset) = u32::try_from(index)
-                        .ok()
-                        .and_then(|index| sequence.push_width.checked_add(index))
-                    else {
-                        return false;
-                    };
-                    let Some(byte_offset) = push_width.checked_add(index) else {
-                        return false;
-                    };
-                    let sidecar = &instructions[index + 1];
-                    sidecar.offset() == offset
-                        && sidecar.opcode().raw() == operation.opcode()
-                        && native_payload.as_bytes().get(byte_offset) == Some(&operation.opcode())
-                })
-        })
-        && completion_offset.zip(return_offset).is_some_and(
-            |(completion_offset, return_offset)| {
-                let set_completion = &instructions[instructions.len() - 2];
-                let return_value = &instructions[instructions.len() - 1];
-                set_completion.offset() == completion_offset
-                    && set_completion.opcode().raw() == OP_SET_LOC0
-                    && return_value.offset() == return_offset
-                    && return_value.opcode().raw() == OP_RETURN
-            },
-        );
-    if !sidecars_match {
-        return Err(ScalarScriptReadError::Internal(
-            "instruction sidecars disagree with their owned native bytes".into(),
-        ));
-    }
 
-    let ScalarSequence {
-        push, unary_ops, ..
-    } = sequence;
+    let ScalarSequence { push, unary_ops } = sequence;
     let value = match (push, function.constants()) {
         (ScalarPush::Direct(value), []) => value,
         (ScalarPush::Direct(_), _) => {
@@ -375,8 +291,8 @@ fn admit_image(
         (ScalarPush::Constant(_), _) => {
             return unadmitted("scalar constant opcode requires exactly one function constant");
         }
-        (ScalarPush::AtomValue, []) => project_atom_string(image, root)?,
-        (ScalarPush::AtomValue, _) => {
+        (ScalarPush::AtomValue(atom), []) => project_atom_string(image, atom)?,
+        (ScalarPush::AtomValue(_), _) => {
             return unadmitted("atom-value scalar opcode carries a function constant");
         }
     };
@@ -386,24 +302,52 @@ fn admit_image(
 
 fn project_atom_string(
     image: &BytecodeImage,
-    function: super::bytecode_image::FunctionId,
+    atom: NativeAtomRef<'_>,
 ) -> Result<ScalarValueDraft, ScalarScriptReadError> {
-    let projection = image
-        .project_single_string_atom(function)
-        .map_err(classify_string_atom_projection_error)?;
-    if projection.operand_offset() != 1 {
-        return Err(ScalarScriptReadError::Internal(
-            "atom-value relocation did not retain operand offset one".into(),
-        ));
+    match image.input_atom_slot_count() {
+        0 if atom.originates_from_input_atom_table() => {
+            return Err(ScalarScriptReadError::Internal(
+                "native atom provenance names an absent input atom slot".into(),
+            ));
+        }
+        0 => {}
+        1 if !atom.originates_from_input_atom_table() => {
+            return unadmitted(
+                "bytecode image's sole input atom slot is not the function's sole atom operand",
+            );
+        }
+        1 => {}
+        actual => {
+            return unadmitted(&format!(
+                "bytecode image contains {actual} input atom slots instead of at most one"
+            ));
+        }
     }
-    if let Some(value) = projection.canonical_decimal() {
-        return Ok(ScalarValueDraft::IntegerAtomString(value));
+
+    match atom.class() {
+        NativeAtomClass::Null => unadmitted("null atom is not a String value"),
+        NativeAtomClass::Private => unadmitted("private atom is not a String value"),
+        NativeAtomClass::Symbol => unadmitted("symbol atom is not a String value"),
+        NativeAtomClass::Index => atom
+            .index()
+            .map(ScalarValueDraft::IntegerAtomString)
+            .ok_or_else(|| {
+                ScalarScriptReadError::Internal(
+                    "Index atom projection contained no integer value".into(),
+                )
+            }),
+        NativeAtomClass::String => project_atom_string_spelling(atom),
     }
-    if let Some(value) = projection.manifest_spelling() {
+}
+
+fn project_atom_string_spelling(
+    atom: NativeAtomRef<'_>,
+) -> Result<ScalarValueDraft, ScalarScriptReadError> {
+    if let Some(value) = atom.manifest_string() {
         return copy_utf16(value.encode_utf16(), value.encode_utf16().count())
             .map(ScalarValueDraft::AtomString);
     }
-    if let Some(value) = projection.dynamic_string() {
+    if let Some(value) = atom.dynamic_string() {
         return copy_wire_string(value).map(ScalarValueDraft::AtomString);
     }
     Err(ScalarScriptReadError::Internal(
@@ -411,25 +355,22 @@ fn project_atom_string(
     ))
 }
 
-fn classify_string_atom_projection_error(
-    error: ImageStringAtomProjectionError,
+fn classify_native_plan_error(
+    error: impl fmt::Display,
+    outside_scalar_shape: bool,
 ) -> ScalarScriptReadError {
-    let message = error.to_string();
-    match error {
-        ImageStringAtomProjectionError::NullAtom
-        | ImageStringAtomProjectionError::PrivateAtom
-        | ImageStringAtomProjectionError::SymbolAtom
-        | ImageStringAtomProjectionError::AtomRelocationCount { .. }
-        | ImageStringAtomProjectionError::InputAtomSlotCount { .. }
-        | ImageStringAtomProjectionError::UnpairedInputAtomSlot => {
-            ScalarScriptReadError::Unadmitted(message)
-        }
-        ImageStringAtomProjectionError::FunctionNotInImage
-        | ImageStringAtomProjectionError::MissingAtomOperand
-        | ImageStringAtomProjectionError::MissingDynamicString => {
-            ScalarScriptReadError::Internal(message)
-        }
+    if outside_scalar_shape {
+        return ScalarScriptReadError::Unadmitted(
+            "native payload opcode sequence is outside the admitted shape".into(),
+        );
     }
+    let message = error.to_string();
+    if message.is_empty() {
+        return ScalarScriptReadError::Internal(
+            "native scalar plan failed without a diagnostic".into(),
+        );
+    }
+    ScalarScriptReadError::Internal(message)
 }
 
 fn copy_wire_string(
@@ -467,33 +408,39 @@ fn copy_bigint_bytes(bytes: &[u8]) -> Result<Box<[u8]>, ScalarScriptReadError> {
     Ok(copy.into_boxed_slice())
 }
 
-/// Decode the release-pinned scalar sequence without separating a constant-
-/// pool operand from the pool entry that admission authenticates.
-fn decode_scalar_sequence(bytes: &[u8]) -> Result<Option<ScalarSequence>, ScalarScriptReadError> {
-    if !bytes.ends_with(&[OP_SET_LOC0, OP_RETURN]) {
-        return Ok(None);
-    }
-    let body = &bytes[..bytes.len() - 2];
-    let Some((push, push_width)) = decode_scalar_push(body) else {
+/// Decode the release-pinned scalar sequence from the authenticated native
+/// operand plan without consulting archival code bytes or scanner sidecars.
+fn decode_scalar_sequence<'image>(
+    plan: &NativeCodePlan<'image>,
+) -> Result<Option<ScalarSequence<'image>>, ScalarScriptReadError> {
+    let [push, unary_instructions @ .., set_completion, return_value] = plan.instructions() else {
         return Ok(None);
     };
-    let Some(unary_bytes) = usize::try_from(push_width)
-        .ok()
-        .and_then(|width| body.get(width..))
-    else {
+    if !matches!(
+        (set_completion.opcode().name(), set_completion.operands()),
+        ("set_loc0", NativeOperands::NoneLoc(0))
+    ) || !matches!(
+        (return_value.opcode().name(), return_value.operands()),
+        ("return", NativeOperands::None)
+    ) {
+        return Ok(None);
+    }
+    let Some(push) = decode_scalar_push(push.opcode().name(), push.operands()) else {
         return Ok(None);
     };
 
     let mut unary_ops = Vec::new();
     unary_ops
-        .try_reserve_exact(unary_bytes.len())
+        .try_reserve_exact(unary_instructions.len())
         .map_err(|_| {
             ScalarScriptReadError::Internal(
                 "could not allocate the scalar unary-operation draft".into(),
             )
         })?;
-    for opcode in unary_bytes {
-        let Some(operation) = ScalarUnaryOp::from_opcode(*opcode) else {
+    for instruction in unary_instructions {
+        let Some(operation) =
+            ScalarUnaryOp::from_native(instruction.opcode().name(), instruction.operands())
+        else {
             return Ok(None);
         };
         unary_ops.push(operation);
@@ -501,58 +448,59 @@ fn decode_scalar_sequence(bytes: &[u8]) -> Result<Option<ScalarSequence>, Scalar
 
     Ok(Some(ScalarSequence {
         push,
-        push_width,
         unary_ops: unary_ops.into_boxed_slice(),
     }))
 }
 
-/// Decode one release-pinned scalar push prefix. Any remaining bytes belong to
-/// the unary-operation chain and are authenticated separately.
-fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> {
-    match bytes {
-        [OP_PUSH_ATOM_VALUE, _, _, _, _, ..] => Some((ScalarPush::AtomValue, 5)),
-        [OP_PUSH_CONST8, index, ..] => Some((ScalarPush::Constant(u32::from(*index)), 2)),
-        [OP_PUSH_CONST, byte_0, byte_1, byte_2, byte_3, ..] => Some((
-            ScalarPush::Constant(u32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
-            5,
-        )),
-        _ => decode_direct_scalar_push(bytes)
-            .map(|(value, width)| (ScalarPush::Direct(value), width)),
+/// Classify one typed release-pinned scalar push. Any later instructions are
+/// authenticated independently as the unary-operation chain.
+fn decode_scalar_push<'image>(
+    name: &str,
+    operands: &NativeOperands<'image>,
+) -> Option<ScalarPush<'image>> {
+    match (name, operands) {
+        ("push_atom_value", NativeOperands::Atom(atom)) => Some(ScalarPush::AtomValue(*atom)),
+        ("push_const8", NativeOperands::Const8(index)) => {
+            Some(ScalarPush::Constant(u32::from(*index)))
+        }
+        ("push_const", NativeOperands::Const(index)) => Some(ScalarPush::Constant(*index)),
+        _ => decode_direct_scalar_push(name, operands).map(ScalarPush::Direct),
     }
 }
 
 /// Decode the release-pinned atom-free scalar opcode cohort.
-fn decode_direct_scalar_push(bytes: &[u8]) -> Option<(ScalarValueDraft, u32)> {
-    match bytes {
-        [OP_UNDEFINED, ..] => Some((ScalarValueDraft::Undefined, 1)),
-        [OP_NULL, ..] => Some((ScalarValueDraft::Null, 1)),
-        [OP_PUSH_FALSE, ..] => Some((ScalarValueDraft::Bool(false), 1)),
-        [OP_PUSH_TRUE, ..] => Some((ScalarValueDraft::Bool(true), 1)),
-        [OP_PUSH_BIGINT_I32, byte_0, byte_1, byte_2, byte_3, ..] => Some((
-            ScalarValueDraft::BigIntI32(i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3])),
-            5,
-        )),
-        [OP_PUSH_EMPTY_STRING, ..] => Some((ScalarValueDraft::EmptyString, 1)),
-        _ => decode_direct_int32_push(bytes)
-            .map(|(value, width)| (ScalarValueDraft::Int(value), width)),
+fn decode_direct_scalar_push(
+    name: &str,
+    operands: &NativeOperands<'_>,
+) -> Option<ScalarValueDraft> {
+    match (name, operands) {
+        ("undefined", NativeOperands::None) => Some(ScalarValueDraft::Undefined),
+        ("null", NativeOperands::None) => Some(ScalarValueDraft::Null),
+        ("push_false", NativeOperands::None) => Some(ScalarValueDraft::Bool(false)),
+        ("push_true", NativeOperands::None) => Some(ScalarValueDraft::Bool(true)),
+        ("push_bigint_i32", NativeOperands::I32(value)) => {
+            Some(ScalarValueDraft::BigIntI32(*value))
+        }
+        ("push_empty_string", NativeOperands::None) => Some(ScalarValueDraft::EmptyString),
+        _ => decode_direct_int32_push(name, operands).map(ScalarValueDraft::Int),
     }
 }
 
 /// Decode the complete release-pinned direct Int32 opcode family.
 ///
 /// QuickJS canonicalizes source literals to the shortest spelling, but its
-/// bytecode reader also accepts wider spellings for the same value. Admission
-/// therefore keys on semantic width, not compiler canonicality.
-fn decode_direct_int32_push(bytes: &[u8]) -> Option<(i32, u32)> {
-    match bytes {
-        [opcode, ..] if (OP_PUSH_MINUS1..=OP_PUSH_7).contains(opcode) => {
-            Some((i32::from(*opcode) - i32::from(OP_PUSH_0), 1))
-        }
-        [OP_PUSH_I8, immediate, ..] => Some((i32::from(i8::from_le_bytes([*immediate])), 2)),
-        [OP_PUSH_I16, low, high, ..] => Some((i32::from(i16::from_le_bytes([*low, *high])), 3)),
-        [OP_PUSH_I32, byte_0, byte_1, byte_2, byte_3, ..] => {
-            Some((i32::from_le_bytes([*byte_0, *byte_1, *byte_2, *byte_3]), 5))
-        }
+/// bytecode reader also accepts wider spellings for the same value. The native
+/// plan has already normalized each width to its signed semantic operand.
+fn decode_direct_int32_push(name: &str, operands: &NativeOperands<'_>) -> Option<i32> {
+    match (name, operands) {
+        (
+            "push_minus1" | "push_0" | "push_1" | "push_2" | "push_3" | "push_4" | "push_5"
+            | "push_6" | "push_7",
+            NativeOperands::NoneInt(value),
+        ) => Some(*value),
+        ("push_i8", NativeOperands::I8(value)) => Some(i32::from(*value)),
+        ("push_i16", NativeOperands::I16(value)) => Some(i32::from(*value)),
+        ("push_i32", NativeOperands::I32(value)) => Some(*value),
         _ => None,
     }
 }
@@ -734,6 +682,32 @@ fn classify_code_error(error: CodeError) -> ScalarScriptReadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OP_PUSH_I32: u8 = 0x01;
+    const OP_PUSH_CONST: u8 = 0x02;
+    const OP_PUSH_ATOM_VALUE: u8 = 0x04;
+    const OP_UNDEFINED: u8 = 0x06;
+    const OP_NULL: u8 = 0x07;
+    const OP_PUSH_FALSE: u8 = 0x09;
+    const OP_PUSH_TRUE: u8 = 0x0a;
+    const OP_RETURN: u8 = 0x28;
+    const OP_PUSH_BIGINT_I32: u8 = 0xb0;
+    const OP_PUSH_MINUS1: u8 = 0xb2;
+    const OP_PUSH_0: u8 = 0xb3;
+    const OP_PUSH_7: u8 = 0xba;
+    const OP_PUSH_I8: u8 = 0xbb;
+    const OP_PUSH_I16: u8 = 0xbc;
+    const OP_PUSH_CONST8: u8 = 0xbd;
+    const OP_PUSH_EMPTY_STRING: u8 = 0xbf;
+    const OP_NEG: u8 = 0x8a;
+    const OP_PLUS: u8 = 0x8b;
+    const OP_DEC: u8 = 0x8c;
+    const OP_INC: u8 = 0x8d;
+    const OP_BIT_NOT: u8 = 0x93;
+    const OP_LOGICAL_NOT: u8 = 0x94;
+    const OP_TYPEOF: u8 = 0x95;
+    const OP_SET_LOC0: u8 = 0xcb;
+    const OP_GOTO8: u8 = 0xea;
 
     const RETURN_42: [u8; 25] = [
         0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
@@ -999,7 +973,28 @@ mod tests {
         let null = scalar_with_atom_value(0);
         let unused_slot = scalar_with_unused_atom_slot(50, &[u16::from(b'x')], false);
         let two_slots = scalar_with_two_atom_slots();
-        for object in [private, symbol, null, unused_slot, two_slots] {
+        let two_atom_operands = scalar_with_code(&[
+            OP_PUSH_ATOM_VALUE,
+            50,
+            0,
+            0,
+            0,
+            OP_PUSH_ATOM_VALUE,
+            50,
+            0,
+            0,
+            0,
+            OP_SET_LOC0,
+            OP_RETURN,
+        ]);
+        for object in [
+            private,
+            symbol,
+            null,
+            unused_slot,
+            two_slots,
+            two_atom_operands,
+        ] {
             assert!(matches!(
                 decode_trusted_scalar_script(&object),
                 Err(ScalarScriptReadError::Unadmitted(_))
@@ -1415,6 +1410,22 @@ mod tests {
             decode_trusted_scalar_script(&scalar_with_code(&[0x08, OP_SET_LOC0, OP_RETURN])),
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
+
+        // QuickJS's object reader advances over label operands without
+        // validating their targets. The generic native plan validates them,
+        // but both invalid forms remain outside this scalar cohort rather than
+        // becoming archive-invariant failures.
+        for displacement in [0, 127] {
+            assert!(matches!(
+                decode_trusted_scalar_script(&scalar_with_code(&[
+                    OP_GOTO8,
+                    displacement,
+                    OP_SET_LOC0,
+                    OP_RETURN,
+                ])),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
 
         let mut unused_atom_slot = RETURN_42.to_vec();
         unused_atom_slot.splice(1..2, [0x01, 0x00]);

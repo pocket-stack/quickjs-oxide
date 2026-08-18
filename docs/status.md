@@ -167,18 +167,22 @@ end-of-payload invalid-atom diagnostic position, and can canonically re-encode
 in the same namespace. The scanned `ImageCode` remains deliberately
 non-executable: it does not validate stack or control-flow semantics, create
 runtime atoms, or bypass the existing verified-bytecode publication path.
-A private, currently unconsumed `native_plan` stage now derives a typed,
-non-executable instruction/PC plan from an authenticated function. Its table
+A private `native_plan` archive stage derives a typed, non-executable
+instruction/PC plan from an authenticated function. Its table
 covers all 29 pinned operand formats and every release-pinned descriptor
 outcome; it authenticates instruction sidecar offsets, opcode bytes and widths,
 the exact ordered atom-relocation bijection, each relative-label operand base,
 and in-range instruction-boundary targets. Raw `ImageAtom`/`PinnedAtomId`
 identities and native code bytes never enter its DTOs: atoms become sealed
-semantic class, index, and spelling projections. The stage imports no engine
-`Instruction`, heap/VM type, or runtime `JsString`/`Value`, and no facade,
-translator, publisher, or evaluator consumes it yet. It therefore adds no
-admitted syntax, Feature Parity claim, or Test262 metric change; a general
-FunctionBytecode execution bridge remains later work.
+semantic class, index, spelling, and input-table-provenance projections. The
+stage imports no engine `Instruction`, heap/VM type, or runtime
+`JsString`/`Value`. A narrow `bytecode_image` facade now supplies those typed
+DTOs to the existing scalar admission bridge, replacing its duplicate native
+byte, width, instruction-sidecar, and atom-relocation decoder; the detached
+single-atom projection path has been retired. This migration adds no admitted
+syntax, Feature Parity claim, or Test262 metric change. The plan remains
+non-executable, and a general FunctionBytecode execution bridge remains later
+work.
 A bounded `FunctionRecordPrefix` layer now reads and canonically writes the
 fixed FunctionBytecode body after tag 12: flags, frame metadata, locals,
 closures, scanned code, and optional debug bytes. It stops immediately before
@@ -336,12 +340,13 @@ Postfix update operations, reference/local mutation, `delete`, `void`, `await`,
 and Object, Private, or Symbol inputs remain outside this scalar-only cohort.
 This is the last scalar-specific admission milestone; the next bytecode step is
 general FunctionBytecode translation rather than another shape-specific path.
-A fresh full R3fj Test262 run certifies that the generic VM numeric-tag
-corrections and Runtime atom initialization leave the complete classified
-result vector unchanged: 79,982 full passes, 80,032 eligible variants, and
-102,037 total variants. The scalar-unary frontier's additional primary evidence
-is the pinned C bytecode/identity differential plus Rust execution and boundary
-gates.
+The current authenticated R3fj receipt certifies the scalar-unary semantic
+milestone at 79,982 full passes, 80,032 eligible variants, and 102,037 total
+variants. Its engine-source fingerprint is intentionally stale for the later
+archive-only native-plan refactors in this tree; an unchanged vector is the
+expected result, not yet a fresh certification of this source. The
+scalar-unary frontier's additional primary evidence is the pinned C
+bytecode/identity differential plus Rust execution and boundary gates.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
