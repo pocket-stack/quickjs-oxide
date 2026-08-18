@@ -379,10 +379,10 @@ rows, all six stack expansions, expanded-branch reindexing, exact Float64 bits
 and signed-i32 BigInts, canonical empty String, HTMLDDA predicate distinctions,
 and zero-stack `return_undef`.
 
-The last promoted full R3fj receipt recorded 102,037 classified outcomes,
-79,982 full passes, and 80,032 eligible variants. It predates this stage-one
-source change, so its source fingerprint is stale until the next full run; the
-profile and public APIs themselves are unchanged.
+A fresh full R3fj run now authenticates this stage-one ordinary-opcode tree:
+all 102,037 classified outcomes are byte-for-byte unchanged after normalizing
+the source fingerprint, with 79,982 full passes among 80,032 eligible variants.
+The profile and public APIs themselves are unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
