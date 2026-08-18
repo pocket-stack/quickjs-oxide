@@ -10,6 +10,7 @@ mod budget;
 mod decode;
 mod encode;
 mod model;
+mod native_plan;
 mod scalar_atom;
 
 #[allow(unused_imports)]

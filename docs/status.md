@@ -164,14 +164,26 @@ are rejected before either frozen digest is accepted.
 It records structural instruction spans, resolves all 21 fixed-width atom
 operands into typed bytecode-namespace identities, preserves QuickJS's
 end-of-payload invalid-atom diagnostic position, and can canonically re-encode
-in the same namespace. The scanned `CodeImage` remains deliberately
+in the same namespace. The scanned `ImageCode` remains deliberately
 non-executable: it does not validate stack or control-flow semantics, create
-runtime atoms, or bypass the existing verified-bytecode publication path. A
-bounded `FunctionRecordPrefix` layer now reads and canonically writes the fixed
-FunctionBytecode body after tag 12: flags, frame metadata, locals, closures,
-scanned code, and optional debug bytes. It stops immediately before the first
-of `pending_constant_pool_count` recursively encoded values and never admits
-the record to execution. A complete, bounded `BytecodeImage` reader now owns
+runtime atoms, or bypass the existing verified-bytecode publication path.
+A private, currently unconsumed `native_plan` stage now derives a typed,
+non-executable instruction/PC plan from an authenticated function. Its table
+covers all 29 pinned operand formats and every release-pinned descriptor
+outcome; it authenticates instruction sidecar offsets, opcode bytes and widths,
+the exact ordered atom-relocation bijection, each relative-label operand base,
+and in-range instruction-boundary targets. Raw `ImageAtom`/`PinnedAtomId`
+identities and native code bytes never enter its DTOs: atoms become sealed
+semantic class, index, and spelling projections. The stage imports no engine
+`Instruction`, heap/VM type, or runtime `JsString`/`Value`, and no facade,
+translator, publisher, or evaluator consumes it yet. It therefore adds no
+admitted syntax, Feature Parity claim, or Test262 metric change; a general
+FunctionBytecode execution bridge remains later work.
+A bounded `FunctionRecordPrefix` layer now reads and canonically writes the
+fixed FunctionBytecode body after tag 12: flags, frame metadata, locals,
+closures, scanned code, and optional debug bytes. It stops immediately before
+the first of `pending_constant_pool_count` recursively encoded values and never
+admits the record to execution. A complete, bounded `BytecodeImage` reader now owns
 the remaining traversal. It reads the bytecode header once, normalizes numeric,
 predefined-string, narrow/wide, and duplicate slots into one semantic atom
 namespace, and immediately relocates every function metadata and opcode atom.
