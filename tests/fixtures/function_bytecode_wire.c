@@ -4012,7 +4012,7 @@ static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
     puts("ordinary-expansion-atom-free-count=57");
     ordinary_print_raw_set("ordinary-expansion-atom-free-raw",
                            atom_free_raws);
-    puts("ordinary-expansion-plain-call-status=upstream-pending-rust-admission");
+    puts("ordinary-expansion-plain-call-status=upstream-evidence-for-rust-admission");
     puts("ordinary-expansion-plain-call-count=5");
     ordinary_print_raw_set("ordinary-expansion-plain-call-raw", call_raws);
     puts("ordinary-expansion-physical-row-count=62");

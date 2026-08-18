@@ -50,6 +50,7 @@ pub(super) enum Recipe {
     IfFalse,
     IfTrue,
     Goto,
+    Call,
     Return,
     ReturnUndefined,
 }
@@ -98,7 +99,7 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 128 Blocked, 1 ScalarOnly, 86 OrdinaryOnly,
+/// Counts are locked by tests: 123 Blocked, 1 ScalarOnly, 91 OrdinaryOnly,
 /// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
@@ -136,7 +137,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(31, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Rot4Left))),
     row!(32, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Rot5Left)),
     row!(33, NPop, Blocked, Invocation),
-    row!(34, NPop, Blocked, Invocation),
+    row!(34, NPop, OrdinaryOnly, Recipe::Call),
     row!(35, NPop, Blocked, Invocation),
     row!(36, NPop, Blocked, Invocation),
     row!(37, NPop, Blocked, Invocation),
@@ -338,10 +339,10 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(233, Label8, OrdinaryOnly, Recipe::IfTrue),
     row!(234, Label8, OrdinaryOnly, Recipe::Goto),
     row!(235, Label16, OrdinaryOnly, Recipe::Goto),
-    row!(236, NPopX, Blocked, Invocation),
-    row!(237, NPopX, Blocked, Invocation),
-    row!(238, NPopX, Blocked, Invocation),
-    row!(239, NPopX, Blocked, Invocation),
+    row!(236, NPopX, OrdinaryOnly, Recipe::Call),
+    row!(237, NPopX, OrdinaryOnly, Recipe::Call),
+    row!(238, NPopX, OrdinaryOnly, Recipe::Call),
+    row!(239, NPopX, OrdinaryOnly, Recipe::Call),
     row!(240, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::IsUndefined)),
     row!(241, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::IsNull)),
     row!(242, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::TypeOfIsUndefined)),
@@ -419,11 +420,11 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (128, 1, 86, 29)
+            (123, 1, 91, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 115);
-        assert_eq!(scalar_only + ordinary_only + shared, 116);
+        assert_eq!(ordinary_only + shared, 120);
+        assert_eq!(scalar_only + ordinary_only + shared, 121);
     }
 
     #[test]
@@ -473,6 +474,36 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_plain_calls_are_the_exact_reviewed_five_row_set() {
+        const PLAIN_CALL_ROWS: [(u8, OpcodeFormat); 5] = [
+            (34, OpcodeFormat::NPop),
+            (236, OpcodeFormat::NPopX),
+            (237, OpcodeFormat::NPopX),
+            (238, OpcodeFormat::NPopX),
+            (239, OpcodeFormat::NPopX),
+        ];
+
+        let actual = CAPABILITY_REGISTRY
+            .iter()
+            .filter_map(|row| {
+                matches!(row.policy, CapabilityPolicy::OrdinaryOnly(Recipe::Call))
+                    .then_some(row.raw)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, PLAIN_CALL_ROWS.map(|(raw, _)| raw));
+
+        for (raw, expected_format) in PLAIN_CALL_ROWS {
+            let row = CAPABILITY_REGISTRY[usize::from(raw)];
+            assert_eq!(row.raw, raw);
+            assert_eq!(row.expected_format, expected_format);
+            assert!(matches!(
+                row.policy,
+                CapabilityPolicy::OrdinaryOnly(Recipe::Call)
+            ));
+        }
+    }
+
+    #[test]
     fn blocked_frontier_has_stable_typed_category_counts() {
         let mut counts = [0_usize; 17];
         for row in CAPABILITY_REGISTRY {
@@ -502,8 +533,8 @@ mod tests {
         }
         assert_eq!(
             counts,
-            [1, 8, 2, 11, 1, 2, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]
+            [1, 8, 2, 6, 1, 2, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]
         );
-        assert_eq!(counts.into_iter().sum::<usize>(), 128);
+        assert_eq!(counts.into_iter().sum::<usize>(), 123);
     }
 }

@@ -80,8 +80,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   selected from a compile-only root constant pool. It admits primitive
   constants, arguments and locals, direct and expanded stack operations, unary,
   postfix, binary, and HTMLDDA-aware predicates, plus bounded conditional/loop
-  control flow and direct `return_undef` through a distinct verified
-  publication role. Plain call opcodes remain outside this cohort
+  control flow, direct `return_undef`, and exactly the five plain-call physical
+  rows through a distinct verified publication role. Raw 34 `call` carries its
+  `NPop` argument count, while raw 236-239 `call0`-`call3` carry their implicit
+  `NPopX` counts; all publish as `Call(argc)` with an undefined receiver
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -185,9 +187,11 @@ stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
 formats and projects only sanitized semantic DTOs to those admission bridges.
-The scalar policy remains 30 opcodes; the stage-one ordinary policy is 115,
-and their union is 116 (128 blocked, one scalar-only, 86 ordinary-only, and 29
-shared registry rows).
+The scalar policy remains 30 opcodes; the stage-two ordinary policy is 120,
+and their union is 121 (123 blocked, one scalar-only, 91 ordinary-only, and 29
+shared registry rows). The reviewed stage-one 57-row atom-free set is unchanged;
+stage two adds exactly raw 34 and 236-239. The blocked frontier retains its 17
+typed categories, with six rows now remaining in `Invocation`.
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
@@ -361,7 +365,11 @@ two postfix, and 20 binary operations; five tag/`typeof` predicates;
 `if_false`, `if_true`, `goto`, `return`, and zero-stack `return_undef`. Direct
 signed-i32 BigInt and empty-String pushes append stable synthetic constants
 after the original pool. Native branches are reindexed through cumulative
-expanded output positions. Plain `call`/`call0`-`call3` remain blocked.
+expanded output positions. Stage two admits exactly raw 34 `call` (`NPop`) and
+raw 236-239 `call0`-`call3` (`NPopX`) as plain calls. Their operand is the
+argument count itself, never count plus one: the callee and those arguments are
+consumed, the receiver is `undefined`, source argument/callback order is
+preserved, and one return value is produced.
 
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
@@ -377,12 +385,22 @@ to an IR instruction index, and exercises both branches through the dedicated
 verified publication path. Additional pinned cases cover the newly admitted
 rows, all six stack expansions, expanded-branch reindexing, exact Float64 bits
 and signed-i32 BigInts, canonical empty String, HTMLDDA predicate distinctions,
-and zero-stack `return_undef`.
+and zero-stack `return_undef`. The pinned upstream C oracle also discovers and
+round-trips the exact five plain-call rows, executes argument counts 0 through
+4, and records 36 undefined-receiver observations. The Rust public anonymous,
+atom-free fixture independently locks `Call(0)` through `Call(4)`, strict
+`this === undefined`, argument and callback order, and the returned value. It
+also proves recoverable non-callable `TypeError`, clean pending-exception retry,
+typed-verifier underflow and declared-`max_stack` rejection without heap, atom,
+or pending-state publication, and a branch target landing on `Call` across an
+existing multi-instruction expansion.
 
-A fresh full R3fj run now authenticates this stage-one ordinary-opcode tree:
-all 102,037 classified outcomes are byte-for-byte unchanged after normalizing
+The current full R3fj receipt authenticates the stage-one ordinary-opcode tree:
+all 102,037 classified outcomes were byte-for-byte unchanged after normalizing
 the source fingerprint, with 79,982 full passes among 80,032 eligible variants.
-The profile and public APIs themselves are unchanged.
+That receipt predates the stage-two source and is therefore source-stale for
+these five plain-call rows; it does not authenticate stage two. No Test262
+profile or metric changed, so the published baseline above remains unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and

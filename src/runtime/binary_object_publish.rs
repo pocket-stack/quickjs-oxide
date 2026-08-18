@@ -378,6 +378,7 @@ fn lower_ordinary_leaf_op(
         OrdinaryLeafOp::IfFalse(target) => Instruction::IfFalse(target),
         OrdinaryLeafOp::IfTrue(target) => Instruction::IfTrue(target),
         OrdinaryLeafOp::Goto(target) => Instruction::Goto(target),
+        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),
         OrdinaryLeafOp::Return => Instruction::Return,
         OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,
     };
@@ -582,6 +583,21 @@ mod tests {
             Instruction::TypeOf
         ));
         assert!(matches!(lower(OrdinaryLeafOp::Return), Instruction::Return));
+    }
+
+    #[test]
+    fn ordinary_plain_call_publishes_the_unchanged_argument_count() {
+        for argument_count in 0..=4 {
+            let mut next_synthetic_index = 0;
+            assert!(matches!(
+                lower_ordinary_leaf_op(
+                    OrdinaryLeafOp::Call(argument_count),
+                    &mut next_synthetic_index,
+                ),
+                Ok(Instruction::Call(actual)) if actual == argument_count
+            ));
+            assert_eq!(next_synthetic_index, 0);
+        }
     }
 
     fn scalar_with_code(code: &[u8]) -> Vec<u8> {

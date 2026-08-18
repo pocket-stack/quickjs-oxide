@@ -1448,6 +1448,57 @@ dto_source = read_source(function_translate_dto_relative)
 dto_production_source = dto_source.split("#[cfg(test)]", 1)[0]
 dto_production_code = rust_code_only(dto_production_source)
 
+recipe_code, _, _ = unique_braced_item(
+    capability_production_code,
+    re.compile(r"\benum[ \t\n]+Recipe[ \t\n]*\{"),
+    "function-translate-recipe-shape",
+    "Recipe enum",
+)
+expected_recipe_variants = """
+    PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
+    PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
+    SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
+    Goto Call Return ReturnUndefined
+""".split()
+if (
+    enum_variant_names(recipe_code) != expected_recipe_variants
+    or re.search(r"\bCall[ \t\n]*\(", recipe_code)
+    or len(re.findall(r"\bCall[ \t\n]*,", recipe_code)) != 1
+):
+    fail(
+        "function-translate-recipe-shape",
+        "Recipe must retain the exact reviewed inventory with one unit plain-Call recipe; "
+        f"found {enum_variant_names(recipe_code)}",
+    )
+
+dto_function_op_code, _, _ = unique_braced_item(
+    dto_production_code,
+    re.compile(
+        r"\benum[ \t\n]+FunctionOp[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
+    ),
+    "function-translate-dto-shape",
+    "FunctionOp enum",
+)
+expected_function_op_variants = """
+    Blocked OutsideTarget PushI32 PushConstant PushAtom PushUndefined PushNull
+    PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
+    PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
+    IfTrue Goto Call Return ReturnUndefined
+""".split()
+function_call_payloads = [
+    " ".join(payload.split())
+    for payload in re.findall(r"\bCall[ \t\n]*\(([^()]*)\)[ \t\n]*,", dto_function_op_code)
+]
+if (
+    enum_variant_names(dto_function_op_code) != expected_function_op_variants
+    or function_call_payloads != ["u16"]
+):
+    fail(
+        "function-translate-dto-shape",
+        "FunctionOp must retain the exact reviewed inventory with Call(u16); "
+        f"found {enum_variant_names(dto_function_op_code)} with Call payloads {function_call_payloads}",
+    )
+
 pinned_opcode_relative = "src/runtime/binary_object/pinned_opcodes.rs"
 pinned_opcode_source = read_source(pinned_opcode_relative)
 pinned_opcode_production_source = pinned_opcode_source.split("#[cfg(test)]", 1)[0]
@@ -1509,7 +1560,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (128, 1, 86, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (123, 1, 91, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1518,11 +1569,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 115, 116)
+    or derived_registry_counts != (30, 120, 121)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact stage-one physical cohorts; "
+        "the centralized registry must preserve the exact final stage-two physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1576,6 +1627,7 @@ expect_admitted("OrdinaryOnly", "Recipe::SetArgument", (90, 215, 216, 217, 218))
 expect_admitted("OrdinaryOnly", "Recipe::IfFalse", (104, 232))
 expect_admitted("OrdinaryOnly", "Recipe::IfTrue", (105, 233))
 expect_admitted("OrdinaryOnly", "Recipe::Goto", (106, 234, 235))
+expect_admitted("OrdinaryOnly", "Recipe::Call", (34, 236, 237, 238, 239))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
 expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
 for raw, operation in (
@@ -1604,28 +1656,61 @@ if found_admitted_registry != expected_admitted_registry:
         f"found {found_admitted_registry}",
     )
 
-expected_stage_one_boundaries = {
-    34: (("call", 3, 1, 1, "NPop"), "Blocked", "Invocation"),
+expected_stage_boundaries = {
+    34: (("call", 3, 1, 1, "NPop"), "OrdinaryOnly", "Recipe::Call"),
     41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
-    236: (("call0", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
-    237: (("call1", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
-    238: (("call2", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
-    239: (("call3", 1, 1, 1, "NPopX"), "Blocked", "Invocation"),
+    236: (("call0", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
+    237: (("call1", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
+    238: (("call2", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
+    239: (("call3", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
 }
-found_stage_one_boundaries = {
+found_stage_boundaries = {
     raw: (pinned_descriptors[raw], registry_rows[raw][2], registry_rows[raw][3])
-    for raw in expected_stage_one_boundaries
+    for raw in expected_stage_boundaries
     if raw < len(pinned_descriptors) and raw < len(registry_rows)
 }
-if found_stage_one_boundaries != expected_stage_one_boundaries:
+if found_stage_boundaries != expected_stage_boundaries:
     fail(
-        "function-translate-stage-one-boundary",
-        "zero-stack return-undefined and deferred plain calls must retain their pinned descriptor and policy rows; "
-        f"found {found_stage_one_boundaries}",
+        "function-translate-stage-boundary",
+        "zero-stack return-undefined and admitted plain calls must retain their pinned descriptor and policy rows; "
+        f"found {found_stage_boundaries}",
+    )
+
+stage_one_ordinary_rows = (
+    6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+    28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141, 142, 143, 147, 148, 149,
+    152, 154, 157, 158, 159, 160, 161, 162, 164, 167, 168, 170, 171, 172, 173,
+    174, 176, 191, 233, 240, 241, 242, 243,
+)
+former_scalar_rows = {6, 7, 9, 10, 138, 139, 140, 141, 147, 148, 149, 176, 191}
+found_stage_one_rows = tuple(
+    raw
+    for raw in stage_one_ordinary_rows
+    if registry_rows[raw][2]
+    == ("Shared" if raw in former_scalar_rows else "OrdinaryOnly")
+)
+if found_stage_one_rows != stage_one_ordinary_rows:
+    fail(
+        "function-translate-stage-one-set",
+        "the reviewed stage-one 57-row ordinary cohort must remain admitted with its exact audiences; "
+        f"found {found_stage_one_rows}",
+    )
+
+stage_two_plain_call_rows = (34, 236, 237, 238, 239)
+found_stage_two_plain_call_rows = tuple(
+    raw
+    for raw, _, audience, detail in registry_rows
+    if audience == "OrdinaryOnly" and detail == "Recipe::Call"
+)
+if found_stage_two_plain_call_rows != stage_two_plain_call_rows:
+    fail(
+        "function-translate-stage-two-set",
+        "stage two must admit exactly raw call plus call0 through call3 as ordinary plain calls; "
+        f"found {found_stage_two_plain_call_rows}",
     )
 
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 11 Completion 1
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 6 Completion 1
     Exception 2 EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
     Operator 4 Specialized 4
@@ -1854,7 +1939,7 @@ lower_match = re.search(
     normalized_translate_lower,
 )
 lowering_arm_matches = [] if lower_match is None else list(re.finditer(
-    r"\((Recipe::.*?), (NativeOperands::.*?)\) => (.*?)(?= \(Recipe::|$)",
+    r"\( *(Recipe::.*?), (NativeOperands::.*?)(?:,)? *\) => (.*?)(?= \( *Recipe::|$)",
     lower_match.group(1).rstrip(", "),
 ))
 found_single_step_arms = []
@@ -1898,16 +1983,17 @@ Recipe::IfTrue @ NativeOperands::Label8(label) @ Ok(PendingExpansion::one( Pendi
 Recipe::Goto @ NativeOperands::Label(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
 Recipe::Goto @ NativeOperands::Label8(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
 Recipe::Goto @ NativeOperands::Label16(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
+Recipe::Call @ NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argument_count) @ ready(FunctionOp::Call(*argument_count))
 Recipe::Return @ NativeOperands::None @ ready(FunctionOp::Return)
 Recipe::ReturnUndefined @ NativeOperands::None @ ready(FunctionOp::ReturnUndefined)
 """.strip().splitlines()
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 42 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 43 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain every reviewed single-step Recipe/operand and its exact normalized payload expression; "
+        "lower_operation must retain all 43 reviewed Recipe/operand arms and each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
 stack_expansion_pattern = re.compile(
@@ -2130,6 +2216,31 @@ if ordinary_top_level_items != expected_ordinary_top_level_items:
         f"found {ordinary_top_level_items}",
     )
 
+ordinary_leaf_op_code, _, _ = unique_braced_item(
+    ordinary_leaf_production_code,
+    re.compile(r"\benum[ \t\n]+OrdinaryLeafOp[ \t\n]*\{"),
+    "ordinary-leaf-operation-shape",
+    "OrdinaryLeafOp enum",
+)
+expected_ordinary_leaf_op_variants = """
+    PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
+    Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
+    SetArgument Binary Predicate IfFalse IfTrue Goto Call Return ReturnUndefined
+""".split()
+ordinary_call_payloads = [
+    " ".join(payload.split())
+    for payload in re.findall(r"\bCall[ \t\n]*\(([^()]*)\)[ \t\n]*,", ordinary_leaf_op_code)
+]
+if (
+    enum_variant_names(ordinary_leaf_op_code) != expected_ordinary_leaf_op_variants
+    or ordinary_call_payloads != ["u16"]
+):
+    fail(
+        "ordinary-leaf-operation-shape",
+        "OrdinaryLeafOp must retain the exact reviewed inventory with Call(u16); "
+        f"found {enum_variant_names(ordinary_leaf_op_code)} with Call payloads {ordinary_call_payloads}",
+    )
+
 ordinary_top_level_functions = [
     match.group("name")
     for match in re.finditer(
@@ -2189,6 +2300,7 @@ FunctionOp::Predicate(operation) @ Ok(OrdinaryLeafOp::Predicate(match operation 
 FunctionOp::IfFalse(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfFalse) }
 FunctionOp::IfTrue(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfTrue) }
 FunctionOp::Goto(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto) }
+FunctionOp::Call(argument_count) @ Ok(OrdinaryLeafOp::Call(*argument_count))
 FunctionOp::Return @ Ok(OrdinaryLeafOp::Return)
 FunctionOp::ReturnUndefined @ Ok(OrdinaryLeafOp::ReturnUndefined)
 """.strip().splitlines()
@@ -2197,7 +2309,7 @@ found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionO
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 24 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 25 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
@@ -3545,7 +3657,7 @@ if consumer_exists:
     expected_published_variants = """
         PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
-        GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto
+        GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto Call
         Return ReturnUndefined
     """.split()
     found_publisher_arms = rustfmt_match_arms(
@@ -3592,6 +3704,7 @@ OrdinaryLeafOp::SetArgument(index) @ Instruction::SetArg(index)
 OrdinaryLeafOp::IfFalse(target) @ Instruction::IfFalse(target)
 OrdinaryLeafOp::IfTrue(target) @ Instruction::IfTrue(target)
 OrdinaryLeafOp::Goto(target) @ Instruction::Goto(target)
+OrdinaryLeafOp::Call(argument_count) @ Instruction::Call(argument_count)
 OrdinaryLeafOp::Return @ Instruction::Return
 OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
 """.strip().splitlines()
@@ -3626,7 +3739,7 @@ OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 24
+        len(found_publisher_arms) != 25
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -6203,7 +6316,13 @@ translate-registry-format-drift|function-translate-registry-descriptor|src/runti
 translate-registry-policy-swap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(150, None, Blocked, Operator),\n    row!(151, Atom, Blocked, Binding),\n    row!(152, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Mul)),|    row!(150, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Mul)),\n    row!(151, Atom, Blocked, Binding),\n    row!(152, None, Blocked, Operator),
 translate-registry-recipe-remap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Add)),|    row!(155, None, OrdinaryOnly, Recipe::Binary(FunctionBinaryOp::Sub)),
 translate-registry-blocker-drift|function-translate-registry-blockers|src/runtime/binary_object/function_translate/capability.rs|    row!(5, Atom, Blocked, ValueConstruction),|    row!(5, Atom, Blocked, Property),
-translate-registry-call-admission|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(236, NPopX, Blocked, Invocation),|    row!(236, NPopX, OrdinaryOnly, Recipe::Return),
+translate-call-registry-raw|function-translate-registry-raw|src/runtime/binary_object/function_translate/capability.rs|    row!(34, NPop, OrdinaryOnly, Recipe::Call),|    row!(35, NPop, OrdinaryOnly, Recipe::Call),
+translate-call-registry-npop-format|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(34, NPop, OrdinaryOnly, Recipe::Call),|    row!(34, NPopX, OrdinaryOnly, Recipe::Call),
+translate-call0-registry-npopx-format|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(236, NPopX, OrdinaryOnly, Recipe::Call),|    row!(236, NPop, OrdinaryOnly, Recipe::Call),
+translate-call-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(34, NPop, OrdinaryOnly, Recipe::Call),|    row!(34, NPop, Shared, Recipe::Call),
+translate-recipe-call-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Call,|    Call(u16),
+translate-dto-call-payload|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Call(u16),|    Call(u32),
+ordinary-call-dto-payload|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Call(u16),|    Call(u32),
 translate-blocker-bucket-revival|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    FunctionGraph,\n    Invocation,|    FunctionGraph,\n    StackManipulation,\n    Invocation,
 translate-native-plan-second-consumer|native-plan-consumer-set|src/runtime/binary_object/scalar_script.rs|use std::fmt;|use super::bytecode_image::NativeCodePlan;\nuse std::fmt;
 translate-dto-function-id-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    function_id: FunctionId,\n    from_input_atom_table: bool,
@@ -6238,7 +6357,11 @@ translate-source-hash-dispatch|function-translate-special-casing|src/runtime/bin
 ordinary-return-undefined-remap|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,|        OrdinaryLeafOp::ReturnUndefined => Instruction::Return,
 ordinary-handoff-push-i32-payload|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(-*value)),
 ordinary-handoff-get-local-remap|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::GetLocal),|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::PutLocal),
+ordinary-handoff-call-argc|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(argument_count.saturating_add(1))),
 ordinary-publisher-get-local-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index),|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index.saturating_add(1)),
+ordinary-publisher-call-argc|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count.saturating_add(1)),
+ordinary-publisher-call-method|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::CallMethod(argument_count),
+ordinary-publisher-call-push-undefined|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(_argument_count) => Instruction::Undefined,
 ordinary-synthetic-index-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            let index = *next_synthetic_index;|            let index = next_synthetic_index.saturating_add(1);
 ordinary-synthetic-bigint-coercion|ordinary-leaf-consumer-publication|src/runtime/binary_object_publish.rs|                    Value::BigInt(JsBigInt::from(*value)),|                    Value::BigInt(JsBigInt::from(value.unsigned_abs())),
 TRANSLATE_CANARIES
@@ -6254,6 +6377,18 @@ expect_full_rewrite_rejected translate-get-local-payload \
     function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
     $'        (Recipe::GetLocal, NativeOperands::Loc(index) | NativeOperands::NoneLoc(index)) => {\n            ready(FunctionOp::GetLocal(*index))\n        }' \
     $'        (Recipe::GetLocal, NativeOperands::Loc(index) | NativeOperands::NoneLoc(index)) => {\n            ready(FunctionOp::GetLocal(index.saturating_add(1)))\n        }'
+expect_full_rewrite_rejected translate-call-format-union-collapse \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    $'        (\n            Recipe::Call,\n            NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argument_count),\n        ) => ready(FunctionOp::Call(*argument_count)),' \
+    $'        (Recipe::Call, NativeOperands::NPop(argument_count)) =>\n            ready(FunctionOp::Call(*argument_count)),'
+expect_full_rewrite_rejected translate-call-argc-plus-one \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    '        ) => ready(FunctionOp::Call(*argument_count)),' \
+    '        ) => ready(FunctionOp::Call(argument_count.saturating_add(1))),'
+expect_full_rewrite_rejected translate-call-argc-minus-one \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    '        ) => ready(FunctionOp::Call(*argument_count)),' \
+    '        ) => ready(FunctionOp::Call(argument_count.saturating_sub(1))),'
 expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
     ordinary-leaf-engine-semantics src/vm.rs \
     '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \

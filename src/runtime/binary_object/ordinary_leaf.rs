@@ -167,6 +167,7 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     IfFalse(u32),
     IfTrue(u32),
     Goto(u32),
+    Call(u16),
     Return,
     ReturnUndefined,
 }
@@ -654,6 +655,7 @@ fn lower_operation(
         FunctionOp::Goto(target) => {
             validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto)
         }
+        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),
         FunctionOp::Return => Ok(OrdinaryLeafOp::Return),
         FunctionOp::ReturnUndefined => Ok(OrdinaryLeafOp::ReturnUndefined),
         _ => Err(OrdinaryLeafReadError::Internal(
@@ -1113,6 +1115,16 @@ mod tests {
             lower_operation(&FunctionOp::Goto(8), 4, 4, 4, 8,),
             Err(OrdinaryLeafReadError::Internal(_))
         ));
+    }
+
+    #[test]
+    fn plain_call_argument_count_reaches_the_ordinary_dto_unchanged() {
+        for argument_count in 0..=4 {
+            assert_eq!(
+                lower_ready(FunctionOp::Call(argument_count)),
+                OrdinaryLeafOp::Call(argument_count)
+            );
+        }
     }
 
     #[test]

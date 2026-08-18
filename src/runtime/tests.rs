@@ -50,6 +50,16 @@ const QUICKJS_ORDINARY_LEAF_42_BC5: &[u8] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x40,
 ];
 
+const QUICKJS_ORDINARY_PLAIN_CALLS_CODE: &[u8] = &[
+    0xcf, 0xec, 0x0e, // get_arg0; call0; drop
+    0xcf, 0xb4, 0xed, 0x0e, // get_arg0; push_1; call1; drop
+    0xcf, 0xb4, 0xb5, 0xee, 0x0e, // get_arg0; push_1; push_2; call2; drop
+    0xcf, 0xb4, 0xb5, 0xb6, 0xef, 0x0e, // get_arg0; push_1; push_2; push_3; call3; drop
+    0xcf, 0xb4, 0xb5, 0xb6, 0xb7, 0x22, 0x04, 0x00,
+    0x28,
+    // get_arg0; push_1..push_4; call 4; return
+];
+
 const QUICKJS_SELF_CONTAINED_MODULE_BC5: &[u8] = &[
     0x05, 0x03, 0x24, 0x73, 0x65, 0x6c, 0x66, 0x2d, 0x63, 0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65,
     0x64, 0x2e, 0x6d, 0x6a, 0x73, 0x0c, 0x61, 0x6e, 0x73, 0x77, 0x65, 0x72, 0x2e, 0x5f, 0x5f, 0x6d,
@@ -714,6 +724,158 @@ fn trusted_quickjs_ordinary_leaf_return_undefined_is_a_zero_stack_terminal() {
 }
 
 #[test]
+fn trusted_quickjs_ordinary_plain_calls_preserve_receiver_arity_and_argument_order() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let mut image =
+        quickjs_ordinary_with_code_and_constants(QUICKJS_ORDINARY_PLAIN_CALLS_CODE, &[]);
+    image[33] = 5;
+
+    let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("trusted ordinary plain-call leaf did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert_eq!(snapshot.metadata.max_stack, 5);
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [
+            Instruction::GetArg(0),
+            Instruction::Call(0),
+            Instruction::Drop,
+            Instruction::GetArg(0),
+            Instruction::PushI32(1),
+            Instruction::Call(1),
+            Instruction::Drop,
+            Instruction::GetArg(0),
+            Instruction::PushI32(1),
+            Instruction::PushI32(2),
+            Instruction::Call(2),
+            Instruction::Drop,
+            Instruction::GetArg(0),
+            Instruction::PushI32(1),
+            Instruction::PushI32(2),
+            Instruction::PushI32(3),
+            Instruction::Call(3),
+            Instruction::Drop,
+            Instruction::GetArg(0),
+            Instruction::PushI32(1),
+            Instruction::PushI32(2),
+            Instruction::PushI32(3),
+            Instruction::PushI32(4),
+            Instruction::Call(4),
+            Instruction::Return,
+        ]
+    ));
+    drop(snapshot);
+
+    let callback = context
+        .eval(
+            r#"
+                globalThis.__qjo_plain_call_log = "";
+                (0, function () {
+                    "use strict";
+                    __qjo_plain_call_log += (this === undefined ? "u" : "x") + ":" + arguments.length;
+                    var index = 0;
+                    while (index < arguments.length) {
+                        __qjo_plain_call_log += ":" + arguments[index];
+                        index++;
+                    }
+                    __qjo_plain_call_log += "|";
+                    return arguments.length;
+                })
+            "#,
+        )
+        .unwrap();
+    assert!(matches!(callback, Value::Object(_)));
+    assert_eq!(
+        context
+            .call(&function, Value::Undefined, &[callback])
+            .unwrap(),
+        Value::Int(4)
+    );
+    assert_eq!(
+        expect_string_value(context.eval("__qjo_plain_call_log").unwrap()),
+        JsString::from_static("u:0|u:1:1|u:2:1:2|u:3:1:2:3|u:4:1:2:3:4|")
+    );
+}
+
+#[test]
+fn trusted_quickjs_ordinary_plain_call_non_callable_exception_is_recoverable() {
+    let mut image =
+        quickjs_ordinary_with_code_and_constants(QUICKJS_ORDINARY_PLAIN_CALLS_CODE, &[]);
+    image[33] = 5;
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+    assert_eq!(
+        context.call(&function, Value::Undefined, &[Value::Int(0)]),
+        Err(RuntimeError::Exception)
+    );
+    assert_eq!(
+        take_error_name_and_message(&runtime, &mut context),
+        (
+            JsString::from_static("TypeError"),
+            JsString::from_static("not a function"),
+        )
+    );
+    assert!(!context.has_exception());
+
+    let callback = context
+        .eval("(0, function () { 'use strict'; return arguments.length; })")
+        .unwrap();
+    assert_eq!(
+        context
+            .call(&function, Value::Undefined, &[callback])
+            .unwrap(),
+        Value::Int(4)
+    );
+    assert!(!context.has_exception());
+}
+
+#[test]
+fn trusted_quickjs_ordinary_plain_call_verification_rejections_do_not_publish() {
+    const CASES: [(&str, &[u8], u8, &str); 2] = [
+        (
+            "call operand underflow",
+            &[0x22, 0x04, 0x00, 0x28],
+            0,
+            "trusted QuickJS ordinary leaf is not admitted by typed verification: InternalError: bytecode stack underflow",
+        ),
+        (
+            "declared maximum stack",
+            &[0x06, 0xb4, 0xb5, 0xb6, 0xb7, 0x22, 0x04, 0x00, 0x28],
+            4,
+            "trusted QuickJS ordinary leaf is not admitted by typed verification: InternalError: declared maximum stack is smaller than required",
+        ),
+    ];
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+
+    for (label, code, max_stack, expected_message) in CASES {
+        let mut image = quickjs_ordinary_with_code_and_constants(code, &[]);
+        image[33] = max_stack;
+        let RuntimeError::Engine(error) = context
+            .read_trusted_ordinary_function(&image, 0)
+            .unwrap_err()
+        else {
+            panic!("{label} did not return an engine error");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{label}");
+        assert_eq!(error.message(), expected_message, "{label}");
+        assert!(!context.has_exception(), "{label}");
+        assert_eq!(runtime.heap_counts(), baseline, "{label}");
+        assert_eq!(runtime.test_atom_count(), baseline_atoms, "{label}");
+    }
+}
+
+#[test]
 fn trusted_quickjs_ordinary_branch_targets_follow_the_first_expanded_instruction() {
     let runtime = Runtime::new();
     let mut context = runtime.new_context();
@@ -744,6 +906,48 @@ fn trusted_quickjs_ordinary_branch_targets_follow_the_first_expanded_instruction
             Instruction::IfTrue(7),
             Instruction::Perm3,
             Instruction::Swap,
+            Instruction::Return,
+        ]
+    ));
+}
+
+#[test]
+fn trusted_quickjs_ordinary_branch_targets_can_land_on_plain_call_after_expansion() {
+    let code = [0xcf, 0xea, 0x05, 0xb4, 0xb5, 0xb6, 0x1d, 0xec, 0x28];
+    let mut image = quickjs_ordinary_with_code_and_constants(&code, &[]);
+    image[33] = 1;
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+    let callback = context
+        .eval("(0, function () { 'use strict'; return this === undefined; })")
+        .unwrap();
+    assert_eq!(
+        context
+            .call(&function, Value::Undefined, &[callback])
+            .unwrap(),
+        Value::Bool(true)
+    );
+
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("trusted ordinary branch-to-call leaf did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert_eq!(snapshot.metadata.max_stack, 1);
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [
+            Instruction::GetArg(0),
+            Instruction::Goto(7),
+            Instruction::PushI32(1),
+            Instruction::PushI32(2),
+            Instruction::PushI32(3),
+            Instruction::Perm3,
+            Instruction::Swap,
+            Instruction::Call(0),
             Instruction::Return,
         ]
     ));

@@ -497,6 +497,10 @@ fn lower_operation<'image>(
         (Recipe::Goto, NativeOperands::Label16(label)) => Ok(PendingExpansion::one(
             PendingOperation::Goto(label.target_instruction()),
         )),
+        (
+            Recipe::Call,
+            NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argument_count),
+        ) => ready(FunctionOp::Call(*argument_count)),
         (Recipe::Return, NativeOperands::None) => ready(FunctionOp::Return),
         (Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),
         _ => Err(FunctionTranslateError::registry_drift(
@@ -578,6 +582,27 @@ mod tests {
             Some(PendingOperation::Ready(FunctionOp::PushI32(42)))
         ));
         assert!(operations.next().is_none());
+    }
+
+    #[test]
+    fn plain_call_lowering_preserves_explicit_and_implicit_argument_counts() {
+        for (operands, expected) in [
+            (NativeOperands::NPop(4), 4),
+            (NativeOperands::NPopX(0), 0),
+            (NativeOperands::NPopX(1), 1),
+            (NativeOperands::NPopX(2), 2),
+            (NativeOperands::NPopX(3), 3),
+        ] {
+            let expansion = lower_operation(Recipe::Call, &operands).unwrap();
+            assert_eq!(expansion.len(), 1);
+            let mut operations = expansion.into_operations();
+            assert!(matches!(
+                operations.next(),
+                Some(PendingOperation::Ready(FunctionOp::Call(argument_count)))
+                    if argument_count == expected
+            ));
+            assert!(operations.next().is_none());
+        }
     }
 
     #[test]
