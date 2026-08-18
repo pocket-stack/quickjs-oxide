@@ -141,10 +141,6 @@ fn trusted_quickjs_scalar_script_executes_direct_atom_free_primitives() {
             vec![0xb0, 0x00, 0x00, 0x00, 0x80, 0xcb, 0x28],
             Value::BigInt(JsBigInt::from(i32::MIN)),
         ),
-        (
-            vec![0xbf, 0xcb, 0x28],
-            Value::String(JsString::from_static("")),
-        ),
     ];
 
     for (code, expected) in &cases {
@@ -158,6 +154,179 @@ fn trusted_quickjs_scalar_script_executes_direct_atom_free_primitives() {
         runtime.heap_counts().function_bytecode_nodes,
         baseline_functions + cases.len()
     );
+}
+
+#[test]
+fn trusted_quickjs_scalar_script_preserves_constant_pool_string_identity() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline_atoms = runtime.test_atom_count();
+    let cases: &[(&[u16], bool)] = &[
+        (&[], false),
+        (&[u16::from(b'a'), 0, 0x00e9], false),
+        (&[0x0100, 0xd83d, 0xde00, 0xd800], true),
+        // Reader-compatible wide storage containing only Latin-1.
+        (&[u16::from(b'4'), u16::from(b'2')], true),
+    ];
+
+    for &(units, wide) in cases {
+        let image = quickjs_scalar_with_string_constant(&[0xbd, 0x00, 0xcb, 0x28], units, wide);
+        let first_function = context.read_trusted_scalar_script(&image).unwrap();
+        let first = expect_string_value(context.execute(&first_function).unwrap());
+        let repeated = expect_string_value(context.execute(&first_function).unwrap());
+        assert_eq!(first.utf16_units().collect::<Vec<_>>(), units);
+        assert!(first.same_representation(&repeated));
+
+        let second_function = context.read_trusted_scalar_script(&image).unwrap();
+        let independent = expect_string_value(context.execute(&second_function).unwrap());
+        assert_eq!(independent, first);
+        assert!(!first.same_representation(&independent));
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+}
+
+#[test]
+fn trusted_quickjs_scalar_script_republishes_ordinary_atom_strings_by_runtime_identity() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let mut sibling = runtime.new_context();
+
+    let pinned = quickjs_scalar_with_atom_value(50);
+    let first_function = context.read_trusted_scalar_script(&pinned).unwrap();
+    let second_function = sibling.read_trusted_scalar_script(&pinned).unwrap();
+    let first = expect_string_value(context.execute(&first_function).unwrap());
+    let repeated = expect_string_value(context.execute(&first_function).unwrap());
+    let sibling_value = expect_string_value(sibling.execute(&second_function).unwrap());
+    let source_value = expect_string_value(context.eval("'length'").unwrap());
+    assert_eq!(first, JsString::from_static("length"));
+    assert!(first.same_representation(&repeated));
+    assert!(first.same_representation(&sibling_value));
+    assert!(first.same_representation(&source_value));
+
+    let dynamic_image = quickjs_scalar_with_atom_slot(
+        "quickjs-oxide-string-scalar"
+            .encode_utf16()
+            .collect::<Vec<_>>()
+            .as_slice(),
+        false,
+    );
+    let dynamic_left = context.read_trusted_scalar_script(&dynamic_image).unwrap();
+    let dynamic_right = sibling.read_trusted_scalar_script(&dynamic_image).unwrap();
+    let dynamic_left = expect_string_value(context.execute(&dynamic_left).unwrap());
+    let dynamic_right = expect_string_value(sibling.execute(&dynamic_right).unwrap());
+    let dynamic_source =
+        expect_string_value(context.eval("'quickjs-oxide-string-scalar'").unwrap());
+    assert!(dynamic_left.same_representation(&dynamic_right));
+    assert!(dynamic_left.same_representation(&dynamic_source));
+}
+
+#[test]
+fn trusted_quickjs_empty_string_uses_the_runtime_canonical_atom() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let mut sibling = runtime.new_context();
+
+    let direct = quickjs_scalar_with_code(&[0xbf, 0xcb, 0x28]);
+    let atom_backed = quickjs_scalar_with_atom_value(47);
+    let constant_pool = quickjs_scalar_with_string_constant(&[0xbd, 0, 0xcb, 0x28], &[], false);
+    let direct_function = context.read_trusted_scalar_script(&direct).unwrap();
+    let atom_function = sibling.read_trusted_scalar_script(&atom_backed).unwrap();
+    let constant_pool_function = context.read_trusted_scalar_script(&constant_pool).unwrap();
+    let direct_value = expect_string_value(context.execute(&direct_function).unwrap());
+    let repeated = expect_string_value(context.execute(&direct_function).unwrap());
+    let atom_value = expect_string_value(sibling.execute(&atom_function).unwrap());
+    let constant_pool_value =
+        expect_string_value(context.execute(&constant_pool_function).unwrap());
+    let source_value = expect_string_value(context.eval("''").unwrap());
+    assert!(direct_value.is_empty());
+    assert!(direct_value.same_representation(&repeated));
+    assert!(direct_value.same_representation(&atom_value));
+    assert!(direct_value.same_representation(&source_value));
+    assert!(!direct_value.same_representation(&constant_pool_value));
+
+    let foreign_runtime = Runtime::new();
+    let mut foreign_context = foreign_runtime.new_context();
+    let foreign_value = expect_string_value(foreign_context.eval("''").unwrap());
+    assert!(!direct_value.same_representation(&foreign_value));
+}
+
+#[test]
+fn trusted_quickjs_tagged_atom_strings_are_fresh_on_every_execution() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline_atoms = runtime.test_atom_count();
+    for (atom, expected) in [
+        (0x8000_0000, "0"),
+        (0x8000_002a, "42"),
+        (0xffff_ffff, "2147483647"),
+    ] {
+        let image = quickjs_scalar_with_atom_value(atom);
+        let function = context.read_trusted_scalar_script(&image).unwrap();
+        let first = expect_string_value(context.execute(&function).unwrap());
+        let second = expect_string_value(context.execute(&function).unwrap());
+        assert_eq!(first, JsString::from_static(expected));
+        assert_eq!(second, first);
+        assert!(!first.same_representation(&second));
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+
+    let slot_alias = quickjs_scalar_with_atom_slot(&[u16::from(b'4'), u16::from(b'2')], false);
+    let function = context.read_trusted_scalar_script(&slot_alias).unwrap();
+    let first = expect_string_value(context.execute(&function).unwrap());
+    let second = expect_string_value(context.execute(&function).unwrap());
+    assert_eq!(first, JsString::from_static("42"));
+    assert!(!first.same_representation(&second));
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+}
+
+#[test]
+fn trusted_quickjs_non_string_atoms_remain_unsupported_without_publication() {
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    let cases = [
+        quickjs_scalar_with_atom_value(0),
+        quickjs_scalar_with_atom_value(229),
+        quickjs_scalar_with_atom_value(230),
+        quickjs_scalar_with_unused_atom_slot(50, &[u16::from(b'x')], false),
+        quickjs_scalar_with_two_atom_slots(),
+    ];
+    for image in cases {
+        let RuntimeError::Engine(error) = context.read_trusted_scalar_script(&image).unwrap_err()
+        else {
+            panic!("non-String atom did not return an engine error");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(!context.has_exception());
+        assert_eq!(runtime.heap_counts(), baseline);
+        assert_eq!(runtime.test_atom_count(), baseline_atoms);
+    }
+}
+
+#[test]
+fn trusted_quickjs_atom_string_publication_rolls_back_a_stale_realm() {
+    let runtime = Runtime::new();
+    let context = runtime.new_context();
+    let stale_realm = context.realm;
+    drop(context);
+    runtime.run_gc().unwrap();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    let image = quickjs_scalar_with_atom_slot(
+        &"quickjs-oxide-rollback-string-scalar"
+            .encode_utf16()
+            .collect::<Vec<_>>(),
+        false,
+    );
+
+    assert!(
+        runtime
+            .read_trusted_scalar_script_in_realm(stale_realm, &image)
+            .is_err()
+    );
+    assert_eq!(runtime.heap_counts(), baseline);
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
 }
 
 #[test]
@@ -432,10 +601,6 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
             quickjs_scalar_with_code(&[0x08, 0xcb, 0x28]),
         ),
         (
-            "atom-backed empty-string scalar Script",
-            quickjs_scalar_with_code(&[0x04, 0x2f, 0x00, 0x00, 0x00, 0xcb, 0x28]),
-        ),
-        (
             "scalar Script with an unused input atom slot",
             unused_atom_slot,
         ),
@@ -515,10 +680,6 @@ fn trusted_quickjs_scalar_script_preserves_frontier_and_malformed_provenance() {
         (
             "Int32 direct scalar Script with unary neg",
             quickjs_scalar_with_code(&[0xb3, 0x8a, 0xcb, 0x28]),
-        ),
-        (
-            "push_const8 scalar Script with a String constant",
-            quickjs_scalar_with_constants(&[0xbd, 0x00, 0xcb, 0x28], &[&[0x07, 0x02, 0x78]]),
         ),
     ];
     for (label, image) in well_formed_unadmitted {
@@ -783,6 +944,13 @@ fn quickjs_scalar_with_code(code: &[u8]) -> Vec<u8> {
     object
 }
 
+fn expect_string_value(value: Value) -> JsString {
+    let Value::String(value) = value else {
+        panic!("scalar String execution returned another value kind");
+    };
+    value
+}
+
 fn quickjs_scalar_with_float_constant(code: &[u8], bits: u64) -> Vec<u8> {
     let entry = quickjs_float_constant_entry(bits);
     quickjs_scalar_with_constants(code, &[entry.as_slice()])
@@ -805,6 +973,64 @@ fn quickjs_bigint_constant_entry(payload: &[u8]) -> Vec<u8> {
         u8::try_from(payload.len()).expect("test BigInt length fits one-byte ULEB"),
     ];
     entry.extend_from_slice(payload);
+    entry
+}
+
+fn quickjs_scalar_with_string_constant(code: &[u8], units: &[u16], wide: bool) -> Vec<u8> {
+    let entry = quickjs_string_constant_entry(units, wide);
+    quickjs_scalar_with_constants(code, &[entry.as_slice()])
+}
+
+fn quickjs_string_constant_entry(units: &[u16], wide: bool) -> Vec<u8> {
+    let mut entry = vec![0x07];
+    entry.extend(quickjs_wire_string_entry(units, wide));
+    entry
+}
+
+fn quickjs_scalar_with_atom_value(atom: u32) -> Vec<u8> {
+    let mut code = vec![0x04];
+    code.extend_from_slice(&atom.to_le_bytes());
+    code.extend_from_slice(&[0xcb, 0x28]);
+    quickjs_scalar_with_code(&code)
+}
+
+fn quickjs_scalar_with_atom_slot(units: &[u16], wide: bool) -> Vec<u8> {
+    let mut object = quickjs_scalar_with_atom_value(243);
+    object[1] = 1;
+    object.splice(2..2, quickjs_wire_string_entry(units, wide));
+    object
+}
+
+fn quickjs_scalar_with_unused_atom_slot(atom: u32, units: &[u16], wide: bool) -> Vec<u8> {
+    let mut object = quickjs_scalar_with_atom_value(atom);
+    object[1] = 1;
+    object.splice(2..2, quickjs_wire_string_entry(units, wide));
+    object
+}
+
+fn quickjs_scalar_with_two_atom_slots() -> Vec<u8> {
+    let mut object = quickjs_scalar_with_atom_value(243);
+    object[1] = 2;
+    let mut slots = quickjs_wire_string_entry(&[u16::from(b'x')], false);
+    slots.extend(quickjs_wire_string_entry(&[u16::from(b'y')], false));
+    object.splice(2..2, slots);
+    object
+}
+
+fn quickjs_wire_string_entry(units: &[u16], wide: bool) -> Vec<u8> {
+    let length = u8::try_from(units.len()).expect("test String length fits one-byte ULEB");
+    let mut entry = vec![(length << 1) | u8::from(wide)];
+    if wide {
+        for unit in units {
+            entry.extend_from_slice(&unit.to_le_bytes());
+        }
+    } else {
+        entry.extend(
+            units
+                .iter()
+                .map(|unit| u8::try_from(*unit).expect("test narrow String contains only Latin-1")),
+        );
+    }
     entry
 }
 

@@ -10,6 +10,7 @@ mod budget;
 mod decode;
 mod encode;
 mod model;
+mod scalar_atom;
 
 #[allow(unused_imports)]
 pub(in crate::runtime) use super::graph::sab_transport::{
@@ -34,6 +35,10 @@ use model::*;
 #[allow(unused_imports)]
 pub(in crate::runtime::binary_object) use model::{
     BytecodeImage, FunctionId, ImageOpaque, ImageValue, ModuleId,
+};
+#[allow(unused_imports)]
+pub(in crate::runtime::binary_object) use scalar_atom::{
+    ImageStringAtomProjection, ImageStringAtomProjectionError,
 };
 
 #[cfg(test)]

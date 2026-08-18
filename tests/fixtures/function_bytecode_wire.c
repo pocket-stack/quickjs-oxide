@@ -201,6 +201,352 @@ static const ScalarCase compatible_scalar_float64[] = {
       { 0xbd, 0x00, 0xcb, 0x28 } },
 };
 
+#define STRING_SCALAR_MAX_WIRE_SIZE 256
+
+typedef enum StringScalarKind {
+    STRING_SCALAR_STRING,
+    STRING_SCALAR_SYMBOL,
+} StringScalarKind;
+
+typedef struct StringScalarEncoding {
+    const uint8_t *atom_header;
+    size_t atom_header_size;
+    const uint8_t *code;
+    size_t code_size;
+    const uint8_t *pool;
+    size_t pool_size;
+    uint32_t pool_count;
+} StringScalarEncoding;
+
+typedef struct StringScalarCase {
+    const char *label;
+    const char *source;
+    const char *cohort;
+    StringScalarKind expected_kind;
+    int expected_tag;
+    const uint16_t *expected_units;
+    size_t expected_unit_count;
+    StringScalarEncoding input;
+    /* A NULL atom header means the input is already the rewrite target. */
+    StringScalarEncoding canonical;
+} StringScalarCase;
+
+#define STRING_NO_POOL_ENCODING(header, bytecode) \
+    { (header), sizeof(header), (bytecode), sizeof(bytecode), NULL, 0, 0 }
+#define STRING_POOL_ENCODING(header, bytecode, constant) \
+    { (header), sizeof(header), (bytecode), sizeof(bytecode), \
+      (constant), sizeof(constant), 1 }
+#define STRING_IDENTITY_REWRITE \
+    { NULL, 0, NULL, 0, NULL, 0, 0 }
+
+static const uint8_t string_header_none[] = { 0x00 };
+static const uint8_t string_header_a[] = { 0x01, 0x02, 0x61 };
+static const uint8_t string_header_length[] = {
+    0x01, 0x0c, 0x6c, 0x65, 0x6e, 0x67, 0x74, 0x68,
+};
+static const uint8_t string_header_42[] = { 0x01, 0x04, 0x34, 0x32 };
+static const uint8_t string_header_i31_plus_one[] = {
+    0x01, 0x14, 0x32, 0x31, 0x34, 0x37, 0x34, 0x38,
+    0x33, 0x36, 0x34, 0x38,
+};
+static const uint8_t string_header_leading_zero[] = {
+    0x01, 0x04, 0x30, 0x31,
+};
+static const uint8_t string_header_nul[] = { 0x01, 0x02, 0x00 };
+static const uint8_t string_header_a_nul_b[] = {
+    0x01, 0x06, 0x61, 0x00, 0x62,
+};
+static const uint8_t string_header_latin1[] = { 0x01, 0x02, 0xe9 };
+static const uint8_t string_header_wide_bmp[] = {
+    0x01, 0x03, 0x00, 0x01,
+};
+static const uint8_t string_header_astral[] = {
+    0x01, 0x05, 0x3d, 0xd8, 0x00, 0xde,
+};
+static const uint8_t string_header_lone_high[] = {
+    0x01, 0x03, 0x00, 0xd8,
+};
+static const uint8_t string_header_lone_low[] = {
+    0x01, 0x03, 0x00, 0xdc,
+};
+static const uint8_t string_header_symbol_description[] = {
+    0x01, 0x24,
+    0x53, 0x79, 0x6d, 0x62, 0x6f, 0x6c, 0x2e, 0x74, 0x6f,
+    0x50, 0x72, 0x69, 0x6d, 0x69, 0x74, 0x69, 0x76, 0x65,
+};
+static const uint8_t string_header_wide_a[] = {
+    0x01, 0x03, 0x61, 0x00,
+};
+static const uint8_t string_header_nonminimal_a[] = {
+    0x81, 0x00, 0x82, 0x00, 0x61,
+};
+
+static const uint8_t string_code_push_empty[] = { 0xbf, 0xcb, 0x28 };
+static const uint8_t string_code_push_atom_slot0[] = {
+    0x04, 0xf3, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_atom_empty[] = {
+    0x04, 0x2f, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_atom_length[] = {
+    0x04, 0x32, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_atom_brand[] = {
+    0x04, 0x7c, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_atom_tagged_42[] = {
+    0x04, 0x2a, 0x00, 0x00, 0x80, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_atom_private_brand[] = {
+    0x04, 0xe5, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_atom_symbol[] = {
+    0x04, 0xe6, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_const8[] = {
+    0xbd, 0x00, 0xcb, 0x28,
+};
+static const uint8_t string_code_push_const[] = {
+    0x02, 0x00, 0x00, 0x00, 0x00, 0xcb, 0x28,
+};
+
+static const uint8_t string_pool_empty[] = { 0x07, 0x00 };
+static const uint8_t string_pool_a[] = { 0x07, 0x02, 0x61 };
+static const uint8_t string_pool_0[] = { 0x07, 0x02, 0x30 };
+static const uint8_t string_pool_42[] = { 0x07, 0x04, 0x34, 0x32 };
+static const uint8_t string_pool_i31_max[] = {
+    0x07, 0x14, 0x32, 0x31, 0x34, 0x37, 0x34, 0x38,
+    0x33, 0x36, 0x34, 0x37,
+};
+static const uint8_t string_pool_nul[] = { 0x07, 0x02, 0x00 };
+static const uint8_t string_pool_latin1[] = { 0x07, 0x02, 0xe9 };
+static const uint8_t string_pool_wide_bmp[] = {
+    0x07, 0x03, 0x00, 0x01,
+};
+static const uint8_t string_pool_astral[] = {
+    0x07, 0x05, 0x3d, 0xd8, 0x00, 0xde,
+};
+static const uint8_t string_pool_lone_high[] = {
+    0x07, 0x03, 0x00, 0xd8,
+};
+static const uint8_t string_pool_wide_a[] = {
+    0x07, 0x03, 0x61, 0x00,
+};
+static const uint8_t string_pool_nonminimal_a[] = {
+    0x07, 0x82, 0x00, 0x61,
+};
+
+static const uint16_t string_units_empty[] = { 0 };
+static const uint16_t string_units_a[] = { 0x0061 };
+static const uint16_t string_units_length[] = {
+    0x006c, 0x0065, 0x006e, 0x0067, 0x0074, 0x0068,
+};
+static const uint16_t string_units_0[] = { 0x0030 };
+static const uint16_t string_units_42[] = { 0x0034, 0x0032 };
+static const uint16_t string_units_i31_max[] = {
+    0x0032, 0x0031, 0x0034, 0x0037, 0x0034,
+    0x0038, 0x0033, 0x0036, 0x0034, 0x0037,
+};
+static const uint16_t string_units_i31_plus_one[] = {
+    0x0032, 0x0031, 0x0034, 0x0037, 0x0034,
+    0x0038, 0x0033, 0x0036, 0x0034, 0x0038,
+};
+static const uint16_t string_units_leading_zero[] = { 0x0030, 0x0031 };
+static const uint16_t string_units_nul[] = { 0x0000 };
+static const uint16_t string_units_a_nul_b[] = {
+    0x0061, 0x0000, 0x0062,
+};
+static const uint16_t string_units_latin1[] = { 0x00e9 };
+static const uint16_t string_units_wide_bmp[] = { 0x0100 };
+static const uint16_t string_units_astral[] = { 0xd83d, 0xde00 };
+static const uint16_t string_units_lone_high[] = { 0xd800 };
+static const uint16_t string_units_lone_low[] = { 0xdc00 };
+static const uint16_t string_units_brand[] = {
+    0x003c, 0x0062, 0x0072, 0x0061, 0x006e, 0x0064, 0x003e,
+};
+static const uint16_t string_units_symbol_description[] = {
+    0x0053, 0x0079, 0x006d, 0x0062, 0x006f, 0x006c,
+    0x002e, 0x0074, 0x006f, 0x0050, 0x0072, 0x0069,
+    0x006d, 0x0069, 0x0074, 0x0069, 0x0076, 0x0065,
+};
+
+#define STRING_CASE(label_value, source_value, cohort_value, units, count, encoding) \
+    { (label_value), (source_value), (cohort_value), STRING_SCALAR_STRING, \
+      JS_TAG_STRING, (units), (count), encoding, STRING_IDENTITY_REWRITE }
+
+static const StringScalarCase canonical_string_scalars[] = {
+    STRING_CASE("canonical-string-empty", "\"\";", "canonical",
+                string_units_empty, 0,
+                STRING_NO_POOL_ENCODING(string_header_none,
+                                        string_code_push_empty)),
+    STRING_CASE("canonical-string-predefined-length", "\"length\";",
+                "canonical", string_units_length, 6,
+                STRING_NO_POOL_ENCODING(string_header_none,
+                                        string_code_push_atom_length)),
+    STRING_CASE("canonical-string-dynamic-a", "\"a\";", "canonical",
+                string_units_a, 1,
+                STRING_NO_POOL_ENCODING(string_header_a,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-decimal-0", "\"0\";", "canonical",
+                string_units_0, 1,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8, string_pool_0)),
+    STRING_CASE("canonical-string-decimal-42", "\"42\";", "canonical",
+                string_units_42, 2,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8, string_pool_42)),
+    STRING_CASE("canonical-string-decimal-i31-max", "\"2147483647\";",
+                "canonical", string_units_i31_max, 10,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_i31_max)),
+    STRING_CASE("canonical-string-dynamic-i31-plus-one", "\"2147483648\";",
+                "canonical", string_units_i31_plus_one, 10,
+                STRING_NO_POOL_ENCODING(string_header_i31_plus_one,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-dynamic-leading-zero", "\"01\";",
+                "canonical", string_units_leading_zero, 2,
+                STRING_NO_POOL_ENCODING(string_header_leading_zero,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-narrow-nul", "\"\\0\";", "canonical",
+                string_units_nul, 1,
+                STRING_NO_POOL_ENCODING(string_header_nul,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-narrow-a-nul-b", "\"a\\0b\";",
+                "canonical", string_units_a_nul_b, 3,
+                STRING_NO_POOL_ENCODING(string_header_a_nul_b,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-narrow-latin1", "\"\\u00e9\";",
+                "canonical", string_units_latin1, 1,
+                STRING_NO_POOL_ENCODING(string_header_latin1,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-wide-bmp", "\"\\u0100\";", "canonical",
+                string_units_wide_bmp, 1,
+                STRING_NO_POOL_ENCODING(string_header_wide_bmp,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-wide-astral", "\"\\u{1f600}\";",
+                "canonical", string_units_astral, 2,
+                STRING_NO_POOL_ENCODING(string_header_astral,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-wide-lone-high", "\"\\ud800\";",
+                "canonical", string_units_lone_high, 1,
+                STRING_NO_POOL_ENCODING(string_header_lone_high,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-wide-lone-low", "\"\\udc00\";",
+                "canonical", string_units_lone_low, 1,
+                STRING_NO_POOL_ENCODING(string_header_lone_low,
+                                        string_code_push_atom_slot0)),
+    STRING_CASE("canonical-string-ordinary-brand", "\"<brand>\";",
+                "canonical", string_units_brand, 7,
+                STRING_NO_POOL_ENCODING(string_header_none,
+                                        string_code_push_atom_brand)),
+    STRING_CASE("canonical-string-symbol-description",
+                "\"Symbol.toPrimitive\";", "canonical",
+                string_units_symbol_description, 18,
+                STRING_NO_POOL_ENCODING(string_header_symbol_description,
+                                        string_code_push_atom_slot0)),
+};
+
+static const StringScalarCase compatible_string_scalars[] = {
+    STRING_CASE("compatible-string-atom-empty", NULL, "compatible-atom",
+                string_units_empty, 0,
+                STRING_NO_POOL_ENCODING(string_header_none,
+                                        string_code_push_atom_empty)),
+    STRING_CASE("compatible-string-atom-tagged-42", NULL,
+                "compatible-atom", string_units_42, 2,
+                STRING_NO_POOL_ENCODING(string_header_none,
+                                        string_code_push_atom_tagged_42)),
+    { "compatible-string-slot-predefined-length", NULL, "compatible-atom",
+      STRING_SCALAR_STRING, JS_TAG_STRING, string_units_length, 6,
+      STRING_NO_POOL_ENCODING(string_header_length,
+                              string_code_push_atom_slot0),
+      STRING_NO_POOL_ENCODING(string_header_none,
+                              string_code_push_atom_length) },
+    { "compatible-string-slot-tagged-42", NULL, "compatible-atom",
+      STRING_SCALAR_STRING, JS_TAG_STRING, string_units_42, 2,
+      STRING_NO_POOL_ENCODING(string_header_42,
+                              string_code_push_atom_slot0),
+      STRING_NO_POOL_ENCODING(string_header_none,
+                              string_code_push_atom_tagged_42) },
+    STRING_CASE("compatible-string-atom-wide-a", NULL, "compatible-atom",
+                string_units_a, 1,
+                STRING_NO_POOL_ENCODING(string_header_wide_a,
+                                        string_code_push_atom_slot0)),
+    { "compatible-string-atom-nonminimal-a", NULL, "compatible-atom",
+      STRING_SCALAR_STRING, JS_TAG_STRING, string_units_a, 1,
+      STRING_NO_POOL_ENCODING(string_header_nonminimal_a,
+                              string_code_push_atom_slot0),
+      STRING_NO_POOL_ENCODING(string_header_a,
+                              string_code_push_atom_slot0) },
+    STRING_CASE("compatible-string-cpool-empty", NULL, "compatible-cpool",
+                string_units_empty, 0,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_empty)),
+    STRING_CASE("compatible-string-cpool-a", NULL, "compatible-cpool",
+                string_units_a, 1,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8, string_pool_a)),
+    STRING_CASE("compatible-string-cpool-42-wide-op", NULL,
+                "compatible-cpool", string_units_42, 2,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const, string_pool_42)),
+    STRING_CASE("compatible-string-cpool-nul", NULL, "compatible-cpool",
+                string_units_nul, 1,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_nul)),
+    STRING_CASE("compatible-string-cpool-latin1", NULL, "compatible-cpool",
+                string_units_latin1, 1,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_latin1)),
+    STRING_CASE("compatible-string-cpool-wide-bmp", NULL,
+                "compatible-cpool", string_units_wide_bmp, 1,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_wide_bmp)),
+    STRING_CASE("compatible-string-cpool-astral", NULL, "compatible-cpool",
+                string_units_astral, 2,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_astral)),
+    STRING_CASE("compatible-string-cpool-lone-high", NULL,
+                "compatible-cpool", string_units_lone_high, 1,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_lone_high)),
+    STRING_CASE("compatible-string-cpool-wide-a", NULL, "compatible-cpool",
+                string_units_a, 1,
+                STRING_POOL_ENCODING(string_header_none,
+                                     string_code_push_const8,
+                                     string_pool_wide_a)),
+    { "compatible-string-cpool-nonminimal-a", NULL, "compatible-cpool",
+      STRING_SCALAR_STRING, JS_TAG_STRING, string_units_a, 1,
+      STRING_POOL_ENCODING(string_header_none, string_code_push_const8,
+                           string_pool_nonminimal_a),
+      STRING_POOL_ENCODING(string_header_none, string_code_push_const8,
+                           string_pool_a) },
+};
+
+static const StringScalarCase outside_string_scalars[] = {
+    { "outside-string-private-brand", NULL, "outside-symbol",
+      STRING_SCALAR_SYMBOL, JS_TAG_SYMBOL, NULL, 0,
+      STRING_NO_POOL_ENCODING(string_header_none,
+                              string_code_push_atom_private_brand),
+      STRING_IDENTITY_REWRITE },
+    { "outside-string-well-known-symbol", NULL, "outside-symbol",
+      STRING_SCALAR_SYMBOL, JS_TAG_SYMBOL, NULL, 0,
+      STRING_NO_POOL_ENCODING(string_header_none,
+                              string_code_push_atom_symbol),
+      STRING_IDENTITY_REWRITE },
+};
+
+#undef STRING_CASE
+#undef STRING_IDENTITY_REWRITE
+#undef STRING_POOL_ENCODING
+#undef STRING_NO_POOL_ENCODING
+
 typedef enum BigIntConstantCohort {
     BIGINT_CONSTANT_THREE_INSTRUCTION,
     BIGINT_CONSTANT_UNARY_NEG,
@@ -923,6 +1269,491 @@ static int append_uleb_size(uint8_t *output,
     return 0;
 }
 
+static int build_string_scalar_wire(const StringScalarEncoding *encoding,
+                                    uint8_t *output,
+                                    size_t output_capacity,
+                                    size_t *output_size) {
+    size_t offset = 0;
+
+    if (!encoding->atom_header || encoding->atom_header_size == 0 ||
+        !encoding->code || encoding->code_size == 0 ||
+        encoding->code_size > SCALAR_MAX_CODE_SIZE ||
+        encoding->pool_count > 1 ||
+        (encoding->pool_count == 0 &&
+         (encoding->pool || encoding->pool_size != 0)) ||
+        (encoding->pool_count == 1 &&
+         (!encoding->pool || encoding->pool_size == 0)))
+        return -1;
+
+    if (output_capacity < 1 ||
+        encoding->atom_header_size > output_capacity - 1)
+        return -1;
+    output[offset++] = 0x05;
+    memcpy(output + offset, encoding->atom_header,
+           encoding->atom_header_size);
+    offset += encoding->atom_header_size;
+
+    if (sizeof(scalar_prefix) - 2 > output_capacity - offset)
+        return -1;
+    memcpy(output + offset, scalar_prefix + 2, sizeof(scalar_prefix) - 2);
+    offset += sizeof(scalar_prefix) - 2;
+    if (append_uleb_size(output, output_capacity, &offset,
+                         encoding->pool_count) ||
+        append_uleb_size(output, output_capacity, &offset,
+                         encoding->code_size) ||
+        sizeof(scalar_local) > output_capacity - offset)
+        return -1;
+    memcpy(output + offset, scalar_local, sizeof(scalar_local));
+    offset += sizeof(scalar_local);
+
+    if (encoding->code_size > output_capacity - offset)
+        return -1;
+    memcpy(output + offset, encoding->code, encoding->code_size);
+    offset += encoding->code_size;
+    if (encoding->pool_size > output_capacity - offset)
+        return -1;
+    if (encoding->pool_size != 0)
+        memcpy(output + offset, encoding->pool, encoding->pool_size);
+    offset += encoding->pool_size;
+    *output_size = offset;
+    return 0;
+}
+
+static int expect_string_scalar_case(JSContext *compile_context,
+                                     const StringScalarCase *test) {
+    uint8_t input_wire[STRING_SCALAR_MAX_WIRE_SIZE];
+    uint8_t canonical_wire[STRING_SCALAR_MAX_WIRE_SIZE];
+    size_t input_wire_size = 0;
+    size_t canonical_wire_size = 0;
+    const StringScalarEncoding *canonical =
+        test->canonical.atom_header ? &test->canonical : &test->input;
+    JSValue compiled = JS_UNDEFINED;
+    uint8_t *compiled_wire = NULL;
+    size_t compiled_wire_size = 0;
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    JSValue length_value = JS_UNDEFINED;
+    JSValue char_code_at = JS_UNDEFINED;
+    uint8_t *rewritten_wire = NULL;
+    size_t rewritten_wire_size = 0;
+    uint32_t actual_length = 0;
+    int actual_tag = -1;
+    int rewrite_is_identity;
+    int status = -1;
+
+    if (!test->label || !test->cohort ||
+        (test->expected_kind == STRING_SCALAR_STRING &&
+         test->expected_tag != JS_TAG_STRING) ||
+        (test->expected_kind == STRING_SCALAR_SYMBOL &&
+         (test->expected_tag != JS_TAG_SYMBOL || test->expected_units ||
+          test->expected_unit_count != 0)) ||
+        build_string_scalar_wire(&test->input, input_wire,
+                                 sizeof(input_wire), &input_wire_size) ||
+        build_string_scalar_wire(canonical, canonical_wire,
+                                 sizeof(canonical_wire),
+                                 &canonical_wire_size)) {
+        fprintf(stderr, "%s has an invalid String oracle definition\n",
+                test->label ? test->label : "<unnamed>");
+        goto cleanup;
+    }
+
+    if (test->source) {
+        compiled = JS_Eval(compile_context, test->source,
+                           strlen(test->source), "string-scalar.js",
+                           JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (JS_IsException(compiled)) {
+            fprintf(stderr, "%s ", test->label);
+            report_exception(compile_context, "compile failed");
+            compiled = JS_UNDEFINED;
+            goto cleanup;
+        }
+        compiled_wire = JS_WriteObject(compile_context, &compiled_wire_size,
+                                       compiled, JS_WRITE_OBJ_BYTECODE);
+        if (!compiled_wire) {
+            fprintf(stderr, "%s ", test->label);
+            report_exception(compile_context,
+                             "bytecode serialization failed");
+            goto cleanup;
+        }
+        if (compiled_wire_size != input_wire_size ||
+            memcmp(compiled_wire, input_wire, input_wire_size) != 0) {
+            fprintf(stderr,
+                    "%s compiler wire did not match its pinned String BC5 vector\n",
+                    test->label);
+            goto cleanup;
+        }
+    }
+
+    runtime = JS_NewRuntime();
+    if (!runtime) {
+        fprintf(stderr, "%s runtime allocation failed\n", test->label);
+        goto cleanup;
+    }
+    context = JS_NewContext(runtime);
+    if (!context) {
+        fprintf(stderr, "%s context allocation failed\n", test->label);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, input_wire, input_wire_size,
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "bytecode read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten_wire = JS_WriteObject(context, &rewritten_wire_size, loaded,
+                                    JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten_wire) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "bytecode rewrite failed");
+        goto cleanup;
+    }
+    if (rewritten_wire_size != canonical_wire_size ||
+        memcmp(rewritten_wire, canonical_wire, canonical_wire_size) != 0) {
+        fprintf(stderr,
+                "%s rewrite did not match its canonical String BC5 vector\n",
+                test->label);
+        goto cleanup;
+    }
+
+    result = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED; /* JS_EvalFunction consumes its argument. */
+    if (JS_IsException(result)) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "fresh-runtime evaluation failed");
+        result = JS_UNDEFINED;
+        goto cleanup;
+    }
+    actual_tag = JS_VALUE_GET_TAG(result);
+    if (actual_tag != test->expected_tag) {
+        fprintf(stderr, "%s evaluated with tag %d, expected %d\n",
+                test->label, actual_tag, test->expected_tag);
+        goto cleanup;
+    }
+
+    if (test->expected_kind == STRING_SCALAR_SYMBOL) {
+        if (!JS_IsSymbol(result)) {
+            fprintf(stderr, "%s did not evaluate to a Symbol\n", test->label);
+            goto cleanup;
+        }
+    } else {
+        if (!JS_IsString(result)) {
+            fprintf(stderr, "%s did not evaluate to a String\n", test->label);
+            goto cleanup;
+        }
+        length_value = JS_GetPropertyStr(context, result, "length");
+        if (JS_IsException(length_value) ||
+            JS_ToUint32(context, &actual_length, length_value) < 0) {
+            fprintf(stderr, "%s ", test->label);
+            report_exception(context, "String length inspection failed");
+            goto cleanup;
+        }
+        if (actual_length != test->expected_unit_count) {
+            fprintf(stderr,
+                    "%s evaluated to %u UTF-16 units, expected %zu\n",
+                    test->label, actual_length,
+                    test->expected_unit_count);
+            goto cleanup;
+        }
+        char_code_at = JS_GetPropertyStr(context, result, "charCodeAt");
+        if (JS_IsException(char_code_at)) {
+            fprintf(stderr, "%s ", test->label);
+            report_exception(context, "String charCodeAt lookup failed");
+            goto cleanup;
+        }
+        for (uint32_t index = 0; index < actual_length; index++) {
+            JSValue argument = JS_NewUint32(context, index);
+            JSValue code = JS_Call(context, char_code_at, result,
+                                   1, &argument);
+            uint32_t actual_unit = 0;
+
+            JS_FreeValue(context, argument);
+            if (JS_IsException(code) ||
+                JS_ToUint32(context, &actual_unit, code) < 0) {
+                JS_FreeValue(context, code);
+                fprintf(stderr, "%s ", test->label);
+                report_exception(context,
+                                 "String charCodeAt inspection failed");
+                goto cleanup;
+            }
+            JS_FreeValue(context, code);
+            if (actual_unit != test->expected_units[index]) {
+                fprintf(stderr,
+                        "%s UTF-16 unit %u was %04x, expected %04x\n",
+                        test->label, index, actual_unit,
+                        test->expected_units[index]);
+                goto cleanup;
+            }
+        }
+    }
+
+    rewrite_is_identity = input_wire_size == canonical_wire_size &&
+                          memcmp(input_wire, canonical_wire,
+                                 input_wire_size) == 0;
+    if (test->source) {
+        printf("%s-source-hex=", test->label);
+        for (size_t index = 0; test->source[index] != '\0'; index++)
+            printf("%02x", (unsigned char)test->source[index]);
+        putchar('\n');
+    }
+    printf("%s-hex=", test->label);
+    for (size_t index = 0; index < input_wire_size; index++)
+        printf("%02x", input_wire[index]);
+    putchar('\n');
+    printf("%s-cohort=%s\n", test->label, test->cohort);
+    printf("%s-rewrite=%s\n", test->label,
+           rewrite_is_identity ? "identity" : "canonical");
+    if (!rewrite_is_identity) {
+        printf("%s-rewrite-hex=", test->label);
+        for (size_t index = 0; index < canonical_wire_size; index++)
+            printf("%02x", canonical_wire[index]);
+        putchar('\n');
+    }
+    printf("%s-eval-kind=%s\n", test->label,
+           test->expected_kind == STRING_SCALAR_STRING ? "String" : "Symbol");
+    printf("%s-eval-tag=%d\n", test->label, actual_tag);
+    printf("%s-eval-u16=", test->label);
+    if (test->expected_kind == STRING_SCALAR_SYMBOL) {
+        puts("-");
+    } else {
+        for (size_t index = 0; index < test->expected_unit_count; index++) {
+            if (index != 0)
+                putchar(',');
+            printf("%04x", test->expected_units[index]);
+        }
+        putchar('\n');
+    }
+    status = 0;
+
+cleanup:
+    if (context) {
+        if (rewritten_wire)
+            js_free(context, rewritten_wire);
+        JS_FreeValue(context, char_code_at);
+        JS_FreeValue(context, length_value);
+        JS_FreeValue(context, result);
+        JS_FreeValue(context, loaded);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    if (compiled_wire)
+        js_free(compile_context, compiled_wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
+static const StringScalarCase *find_string_scalar_case(const char *label) {
+    for (size_t index = 0;
+         index < sizeof(canonical_string_scalars) /
+                     sizeof(canonical_string_scalars[0]);
+         index++) {
+        if (strcmp(canonical_string_scalars[index].label, label) == 0)
+            return &canonical_string_scalars[index];
+    }
+    for (size_t index = 0;
+         index < sizeof(compatible_string_scalars) /
+                     sizeof(compatible_string_scalars[0]);
+         index++) {
+        if (strcmp(compatible_string_scalars[index].label, label) == 0)
+            return &compatible_string_scalars[index];
+    }
+    return NULL;
+}
+
+static int read_string_scalar_function(JSContext *context,
+                                       const StringScalarCase *test,
+                                       JSValue *function) {
+    uint8_t wire[STRING_SCALAR_MAX_WIRE_SIZE];
+    size_t wire_size = 0;
+
+    if (!test ||
+        build_string_scalar_wire(&test->input, wire, sizeof(wire),
+                                 &wire_size)) {
+        fprintf(stderr, "String identity matrix has an invalid oracle case\n");
+        return -1;
+    }
+    *function = JS_ReadObject(context, wire, wire_size,
+                              JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(*function)) {
+        fprintf(stderr, "%s ", test->label);
+        report_exception(context, "identity bytecode read failed");
+        *function = JS_UNDEFINED;
+        return -1;
+    }
+    return 0;
+}
+
+static int eval_string_scalar_function(JSContext *context,
+                                       JSValueConst function,
+                                       JSValue *result) {
+    *result = JS_EvalFunction(context, JS_DupValue(context, function));
+    if (JS_IsException(*result)) {
+        report_exception(context, "identity bytecode evaluation failed");
+        *result = JS_UNDEFINED;
+        return -1;
+    }
+    if (!JS_IsString(*result)) {
+        fprintf(stderr, "String identity matrix produced a non-String value\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int expect_string_scalar_identity_matrix(void) {
+    const StringScalarCase *cpool =
+        find_string_scalar_case("compatible-string-cpool-42-wide-op");
+    const StringScalarCase *atom =
+        find_string_scalar_case("canonical-string-dynamic-a");
+    const StringScalarCase *empty_direct =
+        find_string_scalar_case("canonical-string-empty");
+    const StringScalarCase *empty_atom =
+        find_string_scalar_case("compatible-string-atom-empty");
+    const StringScalarCase *cpool_empty =
+        find_string_scalar_case("compatible-string-cpool-empty");
+    const StringScalarCase *tagged =
+        find_string_scalar_case("compatible-string-atom-tagged-42");
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue cpool_function = JS_UNDEFINED;
+    JSValue cpool_reload_function = JS_UNDEFINED;
+    JSValue atom_function = JS_UNDEFINED;
+    JSValue atom_reload_function = JS_UNDEFINED;
+    JSValue empty_direct_function = JS_UNDEFINED;
+    JSValue empty_atom_function = JS_UNDEFINED;
+    JSValue cpool_empty_function = JS_UNDEFINED;
+    JSValue tagged_function = JS_UNDEFINED;
+    JSValue cpool_first = JS_UNDEFINED;
+    JSValue cpool_repeat = JS_UNDEFINED;
+    JSValue cpool_reload = JS_UNDEFINED;
+    JSValue atom_first = JS_UNDEFINED;
+    JSValue atom_reload = JS_UNDEFINED;
+    JSValue empty_direct_result = JS_UNDEFINED;
+    JSValue empty_atom_result = JS_UNDEFINED;
+    JSValue cpool_empty_result = JS_UNDEFINED;
+    JSValue tagged_first = JS_UNDEFINED;
+    JSValue tagged_repeat = JS_UNDEFINED;
+    int cpool_repeat_same;
+    int cpool_reload_same;
+    int atom_reload_same;
+    int empty_forms_same;
+    int cpool_empty_direct_same;
+    int tagged_repeat_same;
+    int tagged_cpool_same;
+    int status = -1;
+
+    if (!cpool || !atom || !empty_direct || !empty_atom || !cpool_empty ||
+        !tagged) {
+        fprintf(stderr, "String identity matrix lost a named oracle case\n");
+        goto cleanup;
+    }
+    runtime = JS_NewRuntime();
+    if (!runtime) {
+        fprintf(stderr, "String identity runtime allocation failed\n");
+        goto cleanup;
+    }
+    context = JS_NewContext(runtime);
+    if (!context) {
+        fprintf(stderr, "String identity context allocation failed\n");
+        goto cleanup;
+    }
+
+    if (read_string_scalar_function(context, cpool, &cpool_function) ||
+        read_string_scalar_function(context, cpool,
+                                    &cpool_reload_function) ||
+        read_string_scalar_function(context, atom, &atom_function) ||
+        read_string_scalar_function(context, atom, &atom_reload_function) ||
+        read_string_scalar_function(context, empty_direct,
+                                    &empty_direct_function) ||
+        read_string_scalar_function(context, empty_atom,
+                                    &empty_atom_function) ||
+        read_string_scalar_function(context, cpool_empty,
+                                    &cpool_empty_function) ||
+        read_string_scalar_function(context, tagged, &tagged_function) ||
+        eval_string_scalar_function(context, cpool_function,
+                                    &cpool_first) ||
+        eval_string_scalar_function(context, cpool_function,
+                                    &cpool_repeat) ||
+        eval_string_scalar_function(context, cpool_reload_function,
+                                    &cpool_reload) ||
+        eval_string_scalar_function(context, atom_function, &atom_first) ||
+        eval_string_scalar_function(context, atom_reload_function,
+                                    &atom_reload) ||
+        eval_string_scalar_function(context, empty_direct_function,
+                                    &empty_direct_result) ||
+        eval_string_scalar_function(context, empty_atom_function,
+                                    &empty_atom_result) ||
+        eval_string_scalar_function(context, cpool_empty_function,
+                                    &cpool_empty_result) ||
+        eval_string_scalar_function(context, tagged_function,
+                                    &tagged_first) ||
+        eval_string_scalar_function(context, tagged_function,
+                                    &tagged_repeat))
+        goto cleanup;
+
+    cpool_repeat_same =
+        JS_VALUE_GET_PTR(cpool_first) == JS_VALUE_GET_PTR(cpool_repeat);
+    cpool_reload_same =
+        JS_VALUE_GET_PTR(cpool_first) == JS_VALUE_GET_PTR(cpool_reload);
+    atom_reload_same =
+        JS_VALUE_GET_PTR(atom_first) == JS_VALUE_GET_PTR(atom_reload);
+    empty_forms_same =
+        JS_VALUE_GET_PTR(empty_direct_result) ==
+        JS_VALUE_GET_PTR(empty_atom_result);
+    cpool_empty_direct_same =
+        JS_VALUE_GET_PTR(cpool_empty_result) ==
+        JS_VALUE_GET_PTR(empty_direct_result);
+    tagged_repeat_same =
+        JS_VALUE_GET_PTR(tagged_first) == JS_VALUE_GET_PTR(tagged_repeat);
+    tagged_cpool_same =
+        JS_VALUE_GET_PTR(tagged_first) == JS_VALUE_GET_PTR(cpool_first);
+    if (!cpool_repeat_same || cpool_reload_same || !atom_reload_same ||
+        !empty_forms_same || cpool_empty_direct_same || tagged_repeat_same ||
+        tagged_cpool_same) {
+        fprintf(stderr,
+                "String representation identity matrix did not match pinned QuickJS\n");
+        goto cleanup;
+    }
+
+    puts("string-identity-cpool-repeat=same");
+    puts("string-identity-cpool-reload=distinct");
+    puts("string-identity-ordinary-atom-reload=same");
+    puts("string-identity-empty-direct-atom=same");
+    puts("string-identity-cpool-empty-direct=distinct");
+    puts("string-identity-tagged-repeat=distinct");
+    puts("string-identity-tagged-cpool-42=distinct");
+    status = 0;
+
+cleanup:
+    if (context) {
+        JS_FreeValue(context, tagged_repeat);
+        JS_FreeValue(context, tagged_first);
+        JS_FreeValue(context, empty_atom_result);
+        JS_FreeValue(context, empty_direct_result);
+        JS_FreeValue(context, cpool_empty_result);
+        JS_FreeValue(context, atom_reload);
+        JS_FreeValue(context, atom_first);
+        JS_FreeValue(context, cpool_reload);
+        JS_FreeValue(context, cpool_repeat);
+        JS_FreeValue(context, cpool_first);
+        JS_FreeValue(context, tagged_function);
+        JS_FreeValue(context, empty_atom_function);
+        JS_FreeValue(context, empty_direct_function);
+        JS_FreeValue(context, cpool_empty_function);
+        JS_FreeValue(context, atom_reload_function);
+        JS_FreeValue(context, atom_function);
+        JS_FreeValue(context, cpool_reload_function);
+        JS_FreeValue(context, cpool_function);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    return status;
+}
+
 static int has_bigint_constant_code_shape(const BigIntConstantCase *test) {
     if (test->cohort == BIGINT_CONSTANT_THREE_INSTRUCTION) {
         return (test->code_size == sizeof(bigint_push_const8) &&
@@ -1287,6 +2118,17 @@ int main(void) {
                 compile_context, &canonical_scalar_values[index]))
             goto cleanup;
     }
+    printf("canonical-string-scalar-count=%zu\n",
+           sizeof(canonical_string_scalars) /
+           sizeof(canonical_string_scalars[0]));
+    for (size_t index = 0;
+         index < sizeof(canonical_string_scalars) /
+                 sizeof(canonical_string_scalars[0]);
+         index++) {
+        if (expect_string_scalar_case(
+                compile_context, &canonical_string_scalars[index]))
+            goto cleanup;
+    }
     printf("canonical-scalar-float64-count=%zu\n",
            sizeof(canonical_scalar_float64) /
            sizeof(canonical_scalar_float64[0]));
@@ -1338,6 +2180,30 @@ int main(void) {
                  sizeof(compatible_scalar_float64[0]);
          index++) {
         if (expect_compatible_scalar(&compatible_scalar_float64[index]))
+            goto cleanup;
+    }
+    printf("compatible-string-scalar-count=%zu\n",
+           sizeof(compatible_string_scalars) /
+           sizeof(compatible_string_scalars[0]));
+    for (size_t index = 0;
+         index < sizeof(compatible_string_scalars) /
+                 sizeof(compatible_string_scalars[0]);
+         index++) {
+        if (expect_string_scalar_case(
+                compile_context, &compatible_string_scalars[index]))
+            goto cleanup;
+    }
+    if (expect_string_scalar_identity_matrix())
+        goto cleanup;
+    printf("outside-string-scalar-count=%zu\n",
+           sizeof(outside_string_scalars) /
+           sizeof(outside_string_scalars[0]));
+    for (size_t index = 0;
+         index < sizeof(outside_string_scalars) /
+                 sizeof(outside_string_scalars[0]);
+         index++) {
+        if (expect_string_scalar_case(
+                compile_context, &outside_string_scalars[index]))
             goto cleanup;
     }
 

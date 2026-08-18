@@ -3508,6 +3508,9 @@ impl VmActivation {
                 unreachable!("yield-star iterator dispatch was bypassed")
             }
             Instruction::PushI32(value) => self.stack.push(Value::Int(*value)),
+            Instruction::PushAtomValueIndex(value) => self.stack.push(Value::String(
+                crate::value::JsString::from_fresh_decimal_u32(*value),
+            )),
             Instruction::PushConst(index) => {
                 self.stack.push(host.load_constant(*index)?);
             }

@@ -843,7 +843,7 @@ impl AtomTable {
     /// Returns the same validation errors as [`Self::resolve`].
     pub fn to_js_string(&self, atom: Atom) -> Result<JsString, AtomError> {
         match self.resolve(atom)?.spelling {
-            AtomSpelling::Integer(value) => Ok(JsString::try_from_utf8(&value.to_string())?),
+            AtomSpelling::Integer(value) => Ok(JsString::from_fresh_decimal_u32(value)),
             AtomSpelling::Text(text) => Ok(text.clone()),
             AtomSpelling::NoDescription => Ok(JsString::from_static("")),
         }

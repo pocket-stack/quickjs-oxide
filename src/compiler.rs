@@ -13162,6 +13162,7 @@ fn apply_quickjs_late_throw_sites(
             Instruction::Undefined | Instruction::Null | Instruction::PushFalse => Some(false),
             Instruction::PushTrue => Some(true),
             Instruction::PushI32(value) => Some(value != 0),
+            Instruction::PushAtomValueIndex(_) => Some(true),
             _ => None,
         };
         let mut folded_goto = false;
@@ -16163,6 +16164,7 @@ fn fold_quickjs_constant_branches(code: &mut [Instruction]) {
             Instruction::Undefined | Instruction::Null | Instruction::PushFalse => false,
             Instruction::PushTrue => true,
             Instruction::PushI32(value) => value != 0,
+            Instruction::PushAtomValueIndex(_) => true,
             _ => continue,
         };
         let (branch_on_true, target) = match code[pc + 1] {

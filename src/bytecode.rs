@@ -116,6 +116,10 @@ pub enum ApplyKind {
 pub enum Instruction {
     Nop,
     PushI32(i32),
+    /// QuickJS `OP_push_atom_value` for a tagged non-negative integer atom.
+    /// Each execution materializes a fresh decimal String; it must not reuse
+    /// an atom-backed or ordinary constant-pool String representation.
+    PushAtomValueIndex(u32),
     PushConst(u32),
     FClosure(u32),
     /// QuickJS `OP_regexp`, represented as one typed compile-time constant
@@ -714,6 +718,7 @@ impl Instruction {
             Self::ForInStart => (1, 1),
             Self::ForInNext => (1, 3),
             Self::PushI32(_)
+            | Self::PushAtomValueIndex(_)
             | Self::PushConst(_)
             | Self::FClosure(_)
             | Self::RegExp(_)
@@ -1079,6 +1084,11 @@ pub(crate) fn verify_parts(
     // without letting malformed unreachable bytecode panic the runtime.
     for (pc, instruction) in code.iter().enumerate() {
         match instruction {
+            Instruction::PushAtomValueIndex(index) if *index > crate::atom::ATOM_MAX_INT => {
+                return Err(Error::internal(
+                    "atom-value index exceeds QuickJS JS_ATOM_MAX_INT",
+                ));
+            }
             Instruction::PushConst(index)
             | Instruction::FClosure(index)
             | Instruction::RegExp(index)
@@ -3235,6 +3245,22 @@ mod tests {
             max_stack: 1,
         };
         assert!(bad_constant.verify().is_err());
+
+        let bad_atom_value_index = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::Return,
+                Instruction::PushAtomValueIndex(0x8000_0000),
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        assert_eq!(
+            bad_atom_value_index.verify().unwrap_err().message(),
+            "atom-value index exceeds QuickJS JS_ATOM_MAX_INT"
+        );
 
         let runtime_regexp_constant = BytecodeFunction {
             name: None,

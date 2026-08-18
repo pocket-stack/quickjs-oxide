@@ -6,7 +6,7 @@
 //! source compilation.
 
 use super::binary_object::{
-    ScalarScriptDraft, ScalarScriptReadError, decode_trusted_scalar_script,
+    ScalarScriptDraft, ScalarScriptReadError, ScalarStringDraft, decode_trusted_scalar_script,
 };
 use super::{Runtime, RuntimeError};
 use crate::bigint::JsBigInt;
@@ -35,6 +35,22 @@ impl Runtime {
                     Instruction::Return,
                 ],
                 vec![constant],
+            ),
+            LoweredScalar::AtomString(constant) => (
+                vec![
+                    Instruction::PushConst(0),
+                    Instruction::SetLocal(0),
+                    Instruction::Return,
+                ],
+                vec![constant],
+            ),
+            LoweredScalar::IntegerAtomString(value) => (
+                vec![
+                    Instruction::PushAtomValueIndex(value),
+                    Instruction::SetLocal(0),
+                    Instruction::Return,
+                ],
+                Vec::new(),
             ),
             LoweredScalar::NegatedBigInt(constant) => (
                 vec![
@@ -66,6 +82,8 @@ impl Runtime {
 enum LoweredScalar {
     Direct(Instruction),
     Constant(UnlinkedConstant),
+    AtomString(UnlinkedConstant),
+    IntegerAtomString(u32),
     NegatedBigInt(UnlinkedConstant),
 }
 
@@ -89,11 +107,21 @@ fn lower_scalar_draft(draft: ScalarScriptDraft) -> Result<LoweredScalar, Runtime
         ScalarScriptDraft::NegatedBigIntBytes(bytes) => {
             lower_negated_bigint(decode_bigint_constant(&bytes)?)
         }
-        ScalarScriptDraft::EmptyString => {
-            lower_scalar_constant(Value::String(JsString::from_static("")))
-                .map(LoweredScalar::Constant)
-        }
+        ScalarScriptDraft::EmptyString => Ok(LoweredScalar::AtomString(
+            UnlinkedConstant::atom_string(JsString::from_static("")),
+        )),
+        ScalarScriptDraft::ConstantString(value) => lower_scalar_string(value)
+            .and_then(|value| lower_scalar_constant(Value::String(value)))
+            .map(LoweredScalar::Constant),
+        ScalarScriptDraft::AtomString(value) => Ok(LoweredScalar::AtomString(
+            UnlinkedConstant::atom_string(lower_scalar_string(value)?),
+        )),
+        ScalarScriptDraft::IntegerAtomString(value) => Ok(LoweredScalar::IntegerAtomString(value)),
     }
+}
+
+fn lower_scalar_string(value: ScalarStringDraft) -> Result<JsString, RuntimeError> {
+    JsString::try_from_utf16(value.into_units()).map_err(|error| RuntimeError::Engine(error.into()))
 }
 
 fn lower_bigint_constant(bytes: &[u8]) -> Result<UnlinkedConstant, RuntimeError> {

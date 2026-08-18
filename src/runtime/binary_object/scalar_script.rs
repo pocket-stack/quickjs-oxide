@@ -7,8 +7,8 @@
 use std::fmt;
 
 use super::bytecode_image::{
-    BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError, ModuleLimits,
-    decode_bytecode_image_body,
+    BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError,
+    ImageStringAtomProjectionError, ModuleLimits, decode_bytecode_image_body,
 };
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits};
@@ -22,6 +22,7 @@ const MAX_INPUT_BYTES: usize = 4096;
 
 const OP_PUSH_I32: u8 = 0x01;
 const OP_PUSH_CONST: u8 = 0x02;
+const OP_PUSH_ATOM_VALUE: u8 = 0x04;
 const OP_UNDEFINED: u8 = 0x06;
 const OP_NULL: u8 = 0x07;
 const OP_PUSH_FALSE: u8 = 0x09;
@@ -51,12 +52,28 @@ pub(in crate::runtime) enum ScalarScriptDraft {
     NegatedBigIntI32(i32),
     NegatedBigIntBytes(Box<[u8]>),
     EmptyString,
+    ConstantString(ScalarStringDraft),
+    AtomString(ScalarStringDraft),
+    IntegerAtomString(u32),
+}
+
+/// Runtime-independent UTF-16 value crossing the archive/publication bridge.
+/// The private representation prevents the scalar reader from leaking either
+/// BC5 wire width or an image/runtime atom identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct ScalarStringDraft(Box<[u16]>);
+
+impl ScalarStringDraft {
+    pub(in crate::runtime) fn into_units(self) -> Box<[u16]> {
+        self.0
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ScalarPush {
     Direct(ScalarScriptDraft),
     Constant(u32),
+    AtomValue,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,12 +198,6 @@ impl AdmissionLimits {
 }
 
 fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptReadError> {
-    if image.input_atom_slot_count() != 0 {
-        return unadmitted("input atom table is not empty");
-    }
-    if !image.atoms().is_empty() {
-        return unadmitted("dynamic atom table is not empty");
-    }
     if !image.reference_table().is_empty() {
         return unadmitted("object-reference table is not empty");
     }
@@ -238,12 +249,19 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     }
 
     let native_payload = envelope.code();
-    if !native_payload.atom_relocations().is_empty() {
-        return unadmitted("native payload contains atom relocations");
-    }
     let Some(sequence) = decode_scalar_sequence(native_payload.as_bytes()) else {
         return unadmitted("native payload opcode sequence is outside the admitted shape");
     };
+    if !matches!(
+        sequence,
+        ScalarSequence::Plain {
+            push: ScalarPush::AtomValue,
+            ..
+        }
+    ) && (image.input_atom_slot_count() != 0 || !native_payload.atom_relocations().is_empty())
+    {
+        return unadmitted("atom-free scalar shape carries an atom table or relocation");
+    }
     let sidecars_match = match (&sequence, native_payload.instructions()) {
         (ScalarSequence::Plain { width, .. }, [push, set_completion, return_value]) => {
             push.offset() == 0
@@ -302,7 +320,12 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
             Ok(WireValue::BigInt(bytes)) => {
                 ScalarScriptDraft::BigIntBytes(copy_bigint_bytes(bytes)?)
             }
-            Ok(_) => return unadmitted("scalar constant is not a Float64 or BigInt value"),
+            Ok(WireValue::String(value)) => {
+                ScalarScriptDraft::ConstantString(copy_wire_string(value)?)
+            }
+            Ok(_) => {
+                return unadmitted("scalar constant is not a Float64, BigInt, or String value");
+            }
             Err(_) => return unadmitted("scalar constant is not a data value"),
         },
         (
@@ -323,6 +346,20 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
         ) => {
             return unadmitted("scalar constant opcode requires exactly one function constant");
         }
+        (
+            ScalarSequence::Plain {
+                push: ScalarPush::AtomValue,
+                ..
+            },
+            [],
+        ) => project_atom_string(image, root)?,
+        (
+            ScalarSequence::Plain {
+                push: ScalarPush::AtomValue,
+                ..
+            },
+            _,
+        ) => return unadmitted("atom-value scalar opcode carries a function constant"),
         (
             ScalarSequence::NegatedBigInt {
                 push: BigIntPush::DirectI32(value),
@@ -369,6 +406,76 @@ fn admit_image(image: &BytecodeImage) -> Result<ScalarScriptDraft, ScalarScriptR
     };
 
     Ok(draft)
+}
+
+fn project_atom_string(
+    image: &BytecodeImage,
+    function: super::bytecode_image::FunctionId,
+) -> Result<ScalarScriptDraft, ScalarScriptReadError> {
+    let projection = image
+        .project_single_string_atom(function)
+        .map_err(classify_string_atom_projection_error)?;
+    if projection.operand_offset() != 1 {
+        return Err(ScalarScriptReadError::Internal(
+            "atom-value relocation did not retain operand offset one".into(),
+        ));
+    }
+    if let Some(value) = projection.canonical_decimal() {
+        return Ok(ScalarScriptDraft::IntegerAtomString(value));
+    }
+    if let Some(value) = projection.manifest_spelling() {
+        return copy_utf16(value.encode_utf16(), value.encode_utf16().count())
+            .map(ScalarScriptDraft::AtomString);
+    }
+    if let Some(value) = projection.dynamic_string() {
+        return copy_wire_string(value).map(ScalarScriptDraft::AtomString);
+    }
+    Err(ScalarScriptReadError::Internal(
+        "String atom projection contained no spelling".into(),
+    ))
+}
+
+fn classify_string_atom_projection_error(
+    error: ImageStringAtomProjectionError,
+) -> ScalarScriptReadError {
+    let message = error.to_string();
+    match error {
+        ImageStringAtomProjectionError::NullAtom
+        | ImageStringAtomProjectionError::PrivateAtom
+        | ImageStringAtomProjectionError::SymbolAtom
+        | ImageStringAtomProjectionError::AtomRelocationCount { .. }
+        | ImageStringAtomProjectionError::InputAtomSlotCount { .. }
+        | ImageStringAtomProjectionError::UnpairedInputAtomSlot => {
+            ScalarScriptReadError::Unadmitted(message)
+        }
+        ImageStringAtomProjectionError::FunctionNotInImage
+        | ImageStringAtomProjectionError::MissingAtomOperand
+        | ImageStringAtomProjectionError::MissingDynamicString => {
+            ScalarScriptReadError::Internal(message)
+        }
+    }
+}
+
+fn copy_wire_string(
+    value: &super::wire::WireString,
+) -> Result<ScalarStringDraft, ScalarScriptReadError> {
+    match value {
+        super::wire::WireString::Narrow(bytes) => {
+            copy_utf16(bytes.iter().copied().map(u16::from), bytes.len())
+        }
+        super::wire::WireString::Wide(units) => copy_utf16(units.iter().copied(), units.len()),
+    }
+}
+
+fn copy_utf16(
+    units: impl IntoIterator<Item = u16>,
+    length: usize,
+) -> Result<ScalarStringDraft, ScalarScriptReadError> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(length)
+        .map_err(|_| ScalarScriptReadError::JsInternal("out of memory".into()))?;
+    copy.extend(units);
+    Ok(ScalarStringDraft(copy.into_boxed_slice()))
 }
 
 /// Preserve the normalized signed payload without coupling the archival
@@ -427,6 +534,9 @@ fn decode_scalar_sequence(bytes: &[u8]) -> Option<ScalarSequence> {
 /// Decode a release-pinned scalar push without a following unary operation.
 fn decode_scalar_push(bytes: &[u8]) -> Option<(ScalarPush, u32)> {
     match bytes {
+        [OP_PUSH_ATOM_VALUE, _, _, _, _, OP_SET_LOC0, OP_RETURN] => {
+            Some((ScalarPush::AtomValue, 5))
+        }
         [OP_PUSH_CONST8, index, OP_SET_LOC0, OP_RETURN] => {
             Some((ScalarPush::Constant(u32::from(*index)), 2))
         }
@@ -822,6 +932,143 @@ mod tests {
     }
 
     #[test]
+    fn admits_the_complete_single_string_scalar_cohort() {
+        const SHORT_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST8, 0, OP_SET_LOC0, OP_RETURN];
+        const WIDE_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST, 0, 0, 0, 0, OP_SET_LOC0, OP_RETURN];
+
+        let constant_cases: &[(bool, &[u16])] = &[
+            (false, &[]),
+            (false, &[u16::from(b'a')]),
+            (false, &[0]),
+            (false, &[0x00e9]),
+            (true, &[0x0100]),
+            (true, &[0xd83d, 0xde00]),
+            (true, &[0xd800]),
+            // Wide storage containing only Latin-1 remains a valid input even
+            // though the runtime-independent DTO keeps only UTF-16 semantics.
+            (true, &[u16::from(b'a')]),
+        ];
+        for &(wide, units) in constant_cases {
+            let object = scalar_with_string_constant(SHORT_INDEX_ZERO, units, wide);
+            assert_eq!(
+                decode_trusted_scalar_script(&object),
+                Ok(ScalarScriptDraft::ConstantString(ScalarStringDraft(
+                    Box::from(units)
+                )))
+            );
+        }
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_string_constant(
+                WIDE_INDEX_ZERO,
+                &[u16::from(b'4'), u16::from(b'2')],
+                false,
+            )),
+            Ok(ScalarScriptDraft::ConstantString(ScalarStringDraft(
+                Box::from([u16::from(b'4'), u16::from(b'2')])
+            )))
+        );
+
+        let direct_atom_cases: &[(u32, ScalarScriptDraft)] = &[
+            (
+                47,
+                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from([]))),
+            ),
+            (
+                50,
+                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from(
+                    "length".encode_utf16().collect::<Vec<_>>(),
+                ))),
+            ),
+            (0x8000_0000, ScalarScriptDraft::IntegerAtomString(0)),
+            (0x8000_002a, ScalarScriptDraft::IntegerAtomString(42)),
+            (
+                0xffff_ffff,
+                ScalarScriptDraft::IntegerAtomString(i32::MAX as u32),
+            ),
+        ];
+        for (atom, expected) in direct_atom_cases {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_atom_value(*atom)),
+                Ok(expected.clone())
+            );
+        }
+
+        let slot_cases: &[(&[u16], bool, ScalarScriptDraft)] = &[
+            (
+                &[u16::from(b'a')],
+                false,
+                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from([u16::from(b'a')]))),
+            ),
+            (
+                &[
+                    u16::from(b'l'),
+                    u16::from(b'e'),
+                    u16::from(b'n'),
+                    u16::from(b'g'),
+                    u16::from(b't'),
+                    u16::from(b'h'),
+                ],
+                false,
+                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from(
+                    "length".encode_utf16().collect::<Vec<_>>(),
+                ))),
+            ),
+            (
+                &[u16::from(b'4'), u16::from(b'2')],
+                false,
+                ScalarScriptDraft::IntegerAtomString(42),
+            ),
+            (
+                &[0x0100, 0, 0xd800],
+                true,
+                ScalarScriptDraft::AtomString(ScalarStringDraft(Box::from([0x0100, 0, 0xd800]))),
+            ),
+        ];
+        for (units, wide, expected) in slot_cases {
+            assert_eq!(
+                decode_trusted_scalar_script(&scalar_with_atom_slot(units, *wide)),
+                Ok(expected.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn string_scalar_frontier_preserves_atom_and_pool_provenance() {
+        const SHORT_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST8, 0, OP_SET_LOC0, OP_RETURN];
+        let private = scalar_with_atom_value(229);
+        let symbol = scalar_with_atom_value(230);
+        let null = scalar_with_atom_value(0);
+        let unused_slot = scalar_with_unused_atom_slot(50, &[u16::from(b'x')], false);
+        let two_slots = scalar_with_two_atom_slots();
+        for object in [private, symbol, null, unused_slot, two_slots] {
+            assert!(matches!(
+                decode_trusted_scalar_script(&object),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
+
+        let string_entry = string_constant_entry(&[u16::from(b'x')], false);
+        let other_string_entry = string_constant_entry(&[u16::from(b'y')], false);
+        let invalid_pool_shapes = [
+            scalar_with_constants(
+                &[OP_PUSH_CONST8, 1, OP_SET_LOC0, OP_RETURN],
+                &[&string_entry],
+            ),
+            scalar_with_constants(SHORT_INDEX_ZERO, &[&string_entry, &other_string_entry]),
+            scalar_with_constants(
+                &[OP_PUSH_ATOM_VALUE, 50, 0, 0, 0, OP_SET_LOC0, OP_RETURN],
+                &[&string_entry],
+            ),
+        ];
+        for object in invalid_pool_shapes {
+            assert!(matches!(
+                decode_trusted_scalar_script(&object),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
+    }
+
+    #[test]
     fn admits_only_exactly_paired_float64_constants() {
         const SHORT_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST8, 0, OP_SET_LOC0, OP_RETURN];
         const WIDE_INDEX_ZERO: &[u8] = &[OP_PUSH_CONST, 0, 0, 0, 0, OP_SET_LOC0, OP_RETURN];
@@ -1118,13 +1365,6 @@ mod tests {
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
 
-        let atom_backed_empty =
-            scalar_with_code(&[0x04, 0x2f, 0x00, 0x00, 0x00, OP_SET_LOC0, OP_RETURN]);
-        assert!(matches!(
-            decode_trusted_scalar_script(&atom_backed_empty),
-            Err(ScalarScriptReadError::Unadmitted(_))
-        ));
-
         let constant_pool_bigint_with_double_neg = [
             0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
             0x01, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbd, 0x00, 0x8a, 0x8a, 0xcb, 0x28, 0x0a,
@@ -1349,6 +1589,62 @@ mod tests {
     fn scalar_with_bigint_constant(code: &[u8], payload: &[u8]) -> Vec<u8> {
         let entry = bigint_constant_entry(payload);
         scalar_with_constants(code, &[&entry])
+    }
+
+    fn scalar_with_string_constant(code: &[u8], units: &[u16], wide: bool) -> Vec<u8> {
+        let entry = string_constant_entry(units, wide);
+        scalar_with_constants(code, &[&entry])
+    }
+
+    fn string_constant_entry(units: &[u16], wide: bool) -> Vec<u8> {
+        let mut entry = vec![0x07];
+        entry.extend(wire_string_entry(units, wide));
+        entry
+    }
+
+    fn scalar_with_atom_value(atom: u32) -> Vec<u8> {
+        let mut code = vec![OP_PUSH_ATOM_VALUE];
+        code.extend_from_slice(&atom.to_le_bytes());
+        code.extend_from_slice(&[OP_SET_LOC0, OP_RETURN]);
+        scalar_with_code(&code)
+    }
+
+    fn scalar_with_atom_slot(units: &[u16], wide: bool) -> Vec<u8> {
+        let mut object = scalar_with_atom_value(243);
+        object[1] = 1;
+        object.splice(2..2, wire_string_entry(units, wide));
+        object
+    }
+
+    fn scalar_with_unused_atom_slot(atom: u32, units: &[u16], wide: bool) -> Vec<u8> {
+        let mut object = scalar_with_atom_value(atom);
+        object[1] = 1;
+        object.splice(2..2, wire_string_entry(units, wide));
+        object
+    }
+
+    fn scalar_with_two_atom_slots() -> Vec<u8> {
+        let mut object = scalar_with_atom_value(243);
+        object[1] = 2;
+        let mut slots = wire_string_entry(&[u16::from(b'x')], false);
+        slots.extend(wire_string_entry(&[u16::from(b'y')], false));
+        object.splice(2..2, slots);
+        object
+    }
+
+    fn wire_string_entry(units: &[u16], wide: bool) -> Vec<u8> {
+        let length = u8::try_from(units.len()).expect("test String length fits one-byte ULEB");
+        let mut entry = vec![(length << 1) | u8::from(wide)];
+        if wide {
+            for unit in units {
+                entry.extend_from_slice(&unit.to_le_bytes());
+            }
+        } else {
+            entry.extend(units.iter().map(|unit| {
+                u8::try_from(*unit).expect("test narrow String contains only Latin-1")
+            }));
+        }
+        entry
     }
 
     fn bigint_constant_entry(payload: &[u8]) -> Vec<u8> {

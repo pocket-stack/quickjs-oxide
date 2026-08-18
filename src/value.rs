@@ -950,6 +950,27 @@ impl JsString {
         Self(Rc::new(StringRepr::Latin1(units.into_boxed_slice())))
     }
 
+    /// Materialize QuickJS's `JS_AtomToString` result for one tagged integer
+    /// atom. The returned narrow String deliberately owns a fresh
+    /// representation on every call; routing this spelling through an atom or
+    /// constant pool would make QuickJS's representation identity observable.
+    #[must_use]
+    pub(crate) fn from_fresh_decimal_u32(mut value: u32) -> Self {
+        let mut digits = [0_u8; 10];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        Self(Rc::new(StringRepr::Latin1(
+            digits[start..].to_vec().into_boxed_slice(),
+        )))
+    }
+
     /// Adopt a checked wide result buffer without collecting its contents a
     /// second time. Callers must have enforced [`Self::MAX_LEN`].
     pub(crate) fn from_owned_utf16(units: Vec<u16>) -> Self {
@@ -2265,6 +2286,22 @@ mod tests {
         let mut state = DefaultHasher::new();
         value.hash(&mut state);
         state.finish()
+    }
+
+    #[test]
+    fn tagged_atom_decimal_strings_are_narrow_and_fresh() {
+        for (value, expected) in [
+            (0, "0"),
+            (42, "42"),
+            (crate::atom::ATOM_MAX_INT, "2147483647"),
+        ] {
+            let left = JsString::from_fresh_decimal_u32(value);
+            let right = JsString::from_fresh_decimal_u32(value);
+            assert_eq!(left, JsString::from_static(expected));
+            assert_eq!(right, left);
+            assert!(!left.same_representation(&right));
+            assert!(matches!(left.0.as_ref(), StringRepr::Latin1(_)));
+        }
     }
 
     #[test]

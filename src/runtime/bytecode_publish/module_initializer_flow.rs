@@ -334,6 +334,7 @@ fn may_throw_js(instruction: &Instruction) -> bool {
         instruction,
         Instruction::Nop
             | Instruction::PushI32(_)
+            | Instruction::PushAtomValueIndex(_)
             | Instruction::PushConst(_)
             | Instruction::FClosure(_)
             | Instruction::RegExp(_)

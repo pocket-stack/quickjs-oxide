@@ -62,14 +62,19 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   `import.meta` `url`/`main`; qjs-compatible side-effect-free structured
   `print`/`console.log` output with byte-exact WTF-8 String transport; plus a
   Rust/WASM browser playground
-- a narrow trusted-bytecode Rust API for the pinned BC5 branch-free, atom-free
-  scalar Script cohort: `undefined`, `null`, booleans, the complete direct
-  Int32 family, signed-i32 BigInts, the empty String, and exact Float64 or
-  arbitrary-precision signed BigInt values behind an index-zero/one-entry
-  constant-pool pair; direct and constant-pool BigInts may carry exactly one
-  unary `neg`. It completes the compatible whole-image read, translates an
-  inert DTO to typed Rust instructions and primitive constants, and enters the
-  ordinary verifier and transactional publication path before execution
+- a narrow trusted-bytecode Rust API for the pinned BC5 branch-free scalar
+  Script cohort: `undefined`, `null`, booleans, the complete direct Int32
+  family, signed-i32 BigInts, and single String values, plus exact Float64,
+  arbitrary-precision signed BigInt, and String values behind an
+  index-zero/one-entry constant-pool pair; direct and constant-pool BigInts may
+  carry exactly one unary `neg`. It completes the compatible whole-image read,
+  translates an inert DTO to typed Rust instructions and primitive constants,
+  and enters the ordinary verifier and transactional publication path before
+  execution. Constant-pool Strings retain primitive-constant identity,
+  ordinary String atoms use the runtime's canonical atom identity, empty
+  direct/atom Strings share that canonical empty identity, and tagged-integer
+  atoms produce a fresh decimal String on every execution. Private and Symbol
+  atoms remain understood but unadmitted
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -211,14 +216,28 @@ a partial buffer. The canonical writer and general whole-image model remain
 internal archival facilities rather than a general public bytecode surface.
 The one public read path is deliberately narrower: after the entire image has
 decoded in QuickJS-compatible mode, it accepts only a stripped Script root
-whose original input header declares zero atom slots, whose semantic dynamic
-atom table and native atom-relocation table are empty, and which has one
-completion local. The function constant pool is empty for direct pushes, or
-is the exact index-zero/one-entry Float64 or BigInt pair described below. Its
-release-pinned direct scalar push is `undefined`, `null`, either boolean, a
-signed-i32 BigInt, the empty String, or the complete Int32 family, followed by
-`set_loc0; return`. The Int32 path accepts QuickJS-reader-compatible wider
-i8/i16/i32 spellings as well as compiler-canonical short forms.
+with one completion local. Non-atom scalar forms still require zero input atom
+slots and no native atom relocations. A `push_atom_value` String instead
+requires exactly one authenticated relocation and at most one input atom slot;
+when the slot exists, its raw operand must prove that it is the relocation's
+source. The function constant pool is empty for direct and atom-value pushes,
+or is the exact index-zero/one-entry Float64, BigInt, or String pair described
+below. Its release-pinned direct scalar push is `undefined`, `null`, either
+boolean, a signed-i32 BigInt, the empty String, or the complete Int32 family,
+followed by `set_loc0; return`. The Int32 path accepts
+QuickJS-reader-compatible wider i8/i16/i32 spellings as well as
+compiler-canonical short forms.
+
+Single-String admission preserves QuickJS's distinct identity paths rather
+than flattening them into one representation. A constant-pool String is a
+primitive function constant: repeated executions of the same published
+function reuse it, while separately loaded functions keep independent
+constants. Ordinary predefined or dynamic String atoms canonicalize in the
+runtime, including `push_empty_string` and atom-backed empty Strings. A tagged
+integer atom bypasses that table and creates a fresh canonical-decimal String
+on every execution. Null, Private, and Symbol atom operands remain unadmitted
+and cannot reach publication. It does not establish Feature Parity and leaves
+the authoritative Test262 vector and the metrics above unchanged.
 The decoder and writer planner are physically split into shared-driver,
 Function, and Module files while retaining one frame/task stack and one set of
 atom, reference, preorder, and budget state. All binary-object submodules are
@@ -244,7 +263,15 @@ The same table-driven oracle pins compiler-canonical `push_minus1`,
 valid non-canonical i8/i16/i32 reader spellings. It also pins exact BC5 and
 fresh-runtime type/value receipts for `undefined`, `null`, `push_false`,
 `push_true`, `push_bigint_i32`, and `push_empty_string`; Rust admits the full
-signed Int32 and direct signed-i32 BigInt ranges without opening atom slots.
+signed Int32 and direct signed-i32 BigInt ranges on those direct zero-slot
+forms.
+The expanded table also pins canonical and reader-compatible single-String
+forms: narrow Latin-1 and wide UTF-16 constant-pool payloads, ordinary pinned
+and dynamic atoms, compatible atom-slot rewrites, and tagged-integer atoms.
+It covers embedded NULs, astral pairs, lone surrogates, and the Private/Symbol
+boundary without treating those Symbol-valued operands as Strings. A
+non-address C-oracle matrix separately pins the cpool, ordinary-atom, empty,
+and tagged-integer representation-identity relationships used by Rust.
 Float64 admission remains a separate exact pair: canonical `push_const8 0` or
 reader-compatible `push_const 0`, exactly one `BC_TAG_FLOAT64` pool entry, and
 no other constant-pool shape. The oracle pins compiler wires for `0.5`, the
@@ -268,7 +295,10 @@ negation, including zero handling and the short-to-heap transition, occurs
 during execution rather than eagerly while decoding or lowering. Recoverable
 allocator-failure parity remains part of the later `num-bigint` hardening gate.
 Double `neg`, `neg` on Float64, Int32, String, or other values, and general
-unary-expression bytecode remain outside this narrow admission milestone.
+unary-expression bytecode remain outside this narrow admission milestone. The
+next scalar step is table-driven unary admission; after that, work turns to
+general FunctionBytecode translation rather than adding more one-off scalar
+paths.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
@@ -304,9 +334,9 @@ one backing descriptor in a single `ArchivedBytecodeImage`. Additional
 whole-image vectors prove that two complete SAB records with the same token
 share one archive backing while distinct tokens retain two ordered backings.
 Rust does not execute the transport archive's embedded function; its return-42
-receipt remains the pinned QuickJS C-oracle result. The separate ordinary
-scalar integer images are translated and executed by Rust through the full
-verified publication path. Authenticated negative vectors also pin
+receipt remains the pinned QuickJS C-oracle result. The separate admitted
+scalar images are translated and executed by Rust through the full verified
+publication path. Authenticated negative vectors also pin
 QuickJS's
 three diagnostic classes when FunctionBytecode appears as the
 child of ObjectValue, Date, or
