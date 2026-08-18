@@ -395,12 +395,11 @@ typed-verifier underflow and declared-`max_stack` rejection without heap, atom,
 or pending-state publication, and a branch target landing on `Call` across an
 existing multi-instruction expansion.
 
-The current full R3fj receipt authenticates the stage-one ordinary-opcode tree:
-all 102,037 classified outcomes were byte-for-byte unchanged after normalizing
+A fresh full R3fj run now authenticates the stage-two ordinary-opcode tree:
+all 102,037 classified outcomes are byte-for-byte unchanged after normalizing
 the source fingerprint, with 79,982 full passes among 80,032 eligible variants.
-That receipt predates the stage-two source and is therefore source-stale for
-these five plain-call rows; it does not authenticate stage two. No Test262
-profile or metric changed, so the published baseline above remains unchanged.
+No Test262 profile or metric changed, so the published baseline above remains
+unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
