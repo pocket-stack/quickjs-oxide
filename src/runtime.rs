@@ -8916,7 +8916,7 @@ impl Runtime {
     }
 
     /// Mirror `JS_SetIsHTMLDDA` for a runtime-owned object.
-    #[cfg(any(test, feature = "test262-host"))]
+    #[cfg(feature = "test262-host")]
     fn set_object_is_html_dda(&self, object: &ObjectRef) -> Result<(), RuntimeError> {
         if !object.belongs_to(self) {
             return Err(RuntimeError::WrongRuntime("IsHTMLDDA object"));

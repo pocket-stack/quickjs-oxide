@@ -11712,7 +11712,7 @@ impl Heap {
     }
 
     /// Set QuickJS's identity-local Annex B `is_HTMLDDA` bit.
-    #[cfg(any(test, feature = "test262-host"))]
+    #[cfg(feature = "test262-host")]
     pub(crate) fn set_object_is_html_dda(&mut self, id: ObjectId) -> Result<(), HeapError> {
         self.object_mut(id)?.is_html_dda = true;
         Ok(())

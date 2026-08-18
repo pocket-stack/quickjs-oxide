@@ -749,6 +749,7 @@ fn trusted_quickjs_ordinary_branch_targets_follow_the_first_expanded_instruction
     ));
 }
 
+#[cfg(feature = "test262-host")]
 #[test]
 fn trusted_quickjs_ordinary_fused_predicates_distinguish_htmldda() {
     fn predicate(context: &mut super::Context, raw: u8, value: Value) -> Value {
