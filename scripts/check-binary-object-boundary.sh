@@ -198,6 +198,7 @@ expected_root_modules = (
     "atoms",
     "code",
     "function_envelope",
+    "function_translate",
     "bytecode_image",
     "graph",
     "pinned_atoms",
@@ -401,6 +402,9 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/function_envelope/mod.rs": 2,
     "src/runtime/binary_object/function_envelope/model.rs": 117,
     "src/runtime/binary_object/function_envelope/prefix.rs": 11,
+    "src/runtime/binary_object/function_translate/capability.rs": 9,
+    "src/runtime/binary_object/function_translate/dto.rs": 37,
+    "src/runtime/binary_object/function_translate/mod.rs": 5,
     "src/runtime/binary_object/graph/arena.rs": 19,
     "src/runtime/binary_object/graph/decode.rs": 28,
     "src/runtime/binary_object/graph/encode.rs": 4,
@@ -424,8 +428,12 @@ expected_fixture_visible_counts = {
     "src/runtime/binary_object/bytecode_image/native_plan.rs": 27,
     "src/runtime/binary_object/graph/decode.rs": 1,
     "src/runtime/binary_object/graph/sab_transport.rs": 29,
+    "src/runtime/binary_object/function_translate/capability.rs": 9,
+    "src/runtime/binary_object/function_translate/dto.rs": 37,
+    "src/runtime/binary_object/function_translate/mod.rs": 5,
     "src/runtime/binary_object/mod.rs": 2,
     "src/runtime/binary_object/ordinary_leaf.rs": 23,
+    "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
     "src/runtime/binary_object/scalar_script.rs": 6,
 }
@@ -1307,10 +1315,7 @@ for path, code in binary_code_cache.items():
                     for mention in unexpected
                 ),
             )
-    elif relative in {
-        "src/runtime/binary_object/ordinary_leaf.rs",
-        "src/runtime/binary_object/scalar_script.rs",
-    }:
+    elif relative == "src/runtime/binary_object/function_translate/mod.rs":
         continue
     elif mentions:
         fail(
@@ -1332,8 +1337,7 @@ native_plan_facade_symbols = (
 allowed_native_plan_symbol_files = {
     native_plan_relative,
     image_root_relative,
-    "src/runtime/binary_object/ordinary_leaf.rs",
-    "src/runtime/binary_object/scalar_script.rs",
+    "src/runtime/binary_object/function_translate/mod.rs",
 }
 for path, code in binary_code_cache.items():
     relative = path.relative_to(root).as_posix()
@@ -1344,7 +1348,7 @@ for path, code in binary_code_cache.items():
         if mention is not None:
             fail(
                 "native-plan-consumer-set",
-                "only scalar_script and ordinary_leaf may consume the reviewed native-plan facade; found "
+                "only function_translate may consume the reviewed native-plan facade; found "
                 + location(relative, binary_source_cache[path], mention.start()),
             )
 
@@ -1375,6 +1379,413 @@ for path, code in binary_code_cache.items():
             "binary_object production sources must not splice unscanned Rust source; found "
             + location(relative, binary_source_cache[path], match.start()),
         )
+
+function_translate_root = "src/runtime/binary_object/function_translate"
+function_translate_relative = f"{function_translate_root}/mod.rs"
+function_translate_capability_relative = f"{function_translate_root}/capability.rs"
+function_translate_dto_relative = f"{function_translate_root}/dto.rs"
+expected_function_translate_sources = {
+    function_translate_relative,
+    function_translate_capability_relative,
+    function_translate_dto_relative,
+}
+found_function_translate_sources = {
+    path.relative_to(root).as_posix()
+    for path in binary_sources
+    if path.relative_to(root).as_posix().startswith(f"{function_translate_root}/")
+}
+if found_function_translate_sources != expected_function_translate_sources:
+    fail(
+        "function-translate-module-set",
+        "function_translate must contain only the reviewed module root, capability registry, and sanitized DTO; "
+        f"found {sorted(found_function_translate_sources)}",
+    )
+
+function_translate_source = read_source(function_translate_relative)
+function_translate_code = rust_code_only(function_translate_source)
+function_translate_production_code = function_translate_code.split("#[cfg(test)]", 1)[0]
+function_translate_production_source = function_translate_source.split("#[cfg(test)]", 1)[0]
+function_translate_modules = re.findall(
+    r"(?m)^[ \t]*mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*;[ \t]*$",
+    function_translate_production_code,
+)
+if function_translate_modules != ["capability", "dto"]:
+    fail(
+        "function-translate-module-set",
+        "function_translate must retain exactly the private capability and dto children; "
+        f"found {function_translate_modules}",
+    )
+for match in public_module_pattern.finditer(function_translate_production_code):
+    fail(
+        "function-translate-module-visibility",
+        "function_translate children must remain private; found "
+        + location(function_translate_relative, function_translate_source, match.start()),
+    )
+
+capability_source = read_source(function_translate_capability_relative)
+capability_production_source = capability_source.split("#[cfg(test)]", 1)[0]
+capability_production_code = rust_code_only(capability_production_source)
+dto_source = read_source(function_translate_dto_relative)
+dto_production_source = dto_source.split("#[cfg(test)]", 1)[0]
+dto_production_code = rust_code_only(dto_production_source)
+
+pinned_opcode_relative = "src/runtime/binary_object/pinned_opcodes.rs"
+pinned_opcode_source = read_source(pinned_opcode_relative)
+pinned_opcode_production_source = pinned_opcode_source.split("#[cfg(test)]", 1)[0]
+pinned_descriptor_pattern = re.compile(
+    r"PinnedOpcodeInfo[ \t\n]*::[ \t\n]*new[ \t\n]*\("
+    r"[ \t\n]*\"([^\"]+)\"[ \t\n]*,[ \t\n]*(\d+)"
+    r"[ \t\n]*,[ \t\n]*(\d+)[ \t\n]*,[ \t\n]*(\d+)"
+    r"[ \t\n]*,[ \t\n]*OpcodeFormat[ \t\n]*::[ \t\n]*"
+    r"([A-Za-z_][A-Za-z0-9_]*)[ \t\n]*\)"
+)
+pinned_descriptors = [
+    (name, int(size), int(n_pop), int(n_push), operand_format)
+    for name, size, n_pop, n_push, operand_format in pinned_descriptor_pattern.findall(
+        pinned_opcode_production_source
+    )
+]
+if len(pinned_descriptors) != 244:
+    fail(
+        "function-translate-registry-descriptor",
+        "the pinned descriptor table must retain exactly 244 ordered entries; "
+        f"found {len(pinned_descriptors)}",
+    )
+
+registry_row_pattern = re.compile(
+    r"(?m)^[ \t]*row![ \t]*\([ \t]*(\d+)[ \t]*,[ \t]*"
+    r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*,[ \t]*"
+    r"(Blocked|ScalarOnly|OrdinaryOnly|Shared)[ \t]*,[ \t]*"
+    r"([^,\n]+)[ \t]*\)[ \t]*,[ \t]*$"
+)
+registry_rows = [
+    (int(raw), operand_format, audience, " ".join(detail.split()))
+    for raw, operand_format, audience, detail in registry_row_pattern.findall(
+        capability_production_source
+    )
+]
+registry_raws = [raw for raw, _, _, _ in registry_rows]
+if registry_raws != list(range(244)):
+    fail(
+        "function-translate-registry-raw",
+        "the capability registry must contain one contiguous raw-indexed row for each opcode 0 through 243; "
+        f"found {registry_raws}",
+    )
+if len(pinned_descriptors) == 244:
+    format_mismatches = [
+        (raw, operand_format, pinned_descriptors[raw][4])
+        for raw, operand_format, _, _ in registry_rows
+        if raw >= len(pinned_descriptors)
+        or operand_format != pinned_descriptors[raw][4]
+    ]
+    if format_mismatches:
+        fail(
+            "function-translate-registry-descriptor",
+            "each raw-indexed capability row must retain the operand format of its pinned descriptor; "
+            f"found {format_mismatches}",
+        )
+
+registry_audience_counts = {
+    audience: sum(row_audience == audience for _, _, row_audience, _ in registry_rows)
+    for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
+}
+expected_registry_audience_counts = dict(
+    zip(("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (172, 14, 42, 16))
+)
+if registry_audience_counts != expected_registry_audience_counts:
+    fail(
+        "function-translate-registry-audience",
+        "the centralized registry must preserve the exact pre-refactor physical cohorts; "
+        f"found {registry_audience_counts}",
+    )
+
+expected_admitted_registry: dict[int, tuple[str, str]] = {}
+
+
+def expect_admitted(audience: str, recipe: str, raws: tuple[int, ...]) -> None:
+    for raw in raws:
+        if raw in expected_admitted_registry:
+            fail(
+                "function-translate-registry-policy",
+                f"internal gate expectation names admitted raw opcode {raw} twice",
+            )
+        expected_admitted_registry[raw] = (audience, recipe)
+
+
+expect_admitted("Shared", "Recipe::PushI32", (1, *range(178, 189)))
+expect_admitted("Shared", "Recipe::PushConstant", (2, 189))
+expect_admitted("Shared", "Recipe::Return", (40,))
+expect_admitted("Shared", "Recipe::SetLocal", (203,))
+expect_admitted("ScalarOnly", "Recipe::PushAtom", (4,))
+expect_admitted("ScalarOnly", "Recipe::PushUndefined", (6,))
+expect_admitted("ScalarOnly", "Recipe::PushNull", (7,))
+expect_admitted("ScalarOnly", "Recipe::PushFalse", (9,))
+expect_admitted("ScalarOnly", "Recipe::PushTrue", (10,))
+expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Neg)", (138,))
+expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Plus)", (139,))
+expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Dec)", (140,))
+expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::Inc)", (141,))
+expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::BitNot)", (147,))
+expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::LogicalNot)", (148,))
+expect_admitted("ScalarOnly", "Recipe::Unary(FunctionUnaryOp::TypeOf)", (149,))
+expect_admitted("ScalarOnly", "Recipe::PushBigIntI32", (176,))
+expect_admitted("ScalarOnly", "Recipe::PushEmptyString", (191,))
+expect_admitted("OrdinaryOnly", "Recipe::GetLocal", (85, 192, 195, 196, 197, 198))
+expect_admitted("OrdinaryOnly", "Recipe::PutLocal", (86, 193, 199, 200, 201, 202))
+expect_admitted("OrdinaryOnly", "Recipe::SetLocal", (87, 194, 204, 205, 206))
+expect_admitted("OrdinaryOnly", "Recipe::GetArgument", (88, 207, 208, 209, 210))
+expect_admitted("OrdinaryOnly", "Recipe::PutArgument", (89, 211, 212, 213, 214))
+expect_admitted("OrdinaryOnly", "Recipe::SetArgument", (90, 215, 216, 217, 218))
+expect_admitted("OrdinaryOnly", "Recipe::IfFalse", (104, 232))
+expect_admitted("OrdinaryOnly", "Recipe::Goto", (106, 234, 235))
+expect_admitted("OrdinaryOnly", "Recipe::Div", (153,))
+expect_admitted("OrdinaryOnly", "Recipe::Add", (155,))
+expect_admitted("OrdinaryOnly", "Recipe::Sub", (156,))
+expect_admitted("OrdinaryOnly", "Recipe::GreaterThan", (163,))
+expect_admitted("OrdinaryOnly", "Recipe::StrictEqual", (169,))
+found_admitted_registry = {
+    raw: (audience, detail)
+    for raw, _, audience, detail in registry_rows
+    if audience != "Blocked"
+}
+if found_admitted_registry != expected_admitted_registry:
+    fail(
+        "function-translate-registry-policy",
+        "the registry must preserve every admitted raw opcode, audience, and semantic recipe; "
+        f"found {found_admitted_registry}",
+    )
+
+blocker_count_tokens = """
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 StackManipulation 19
+    Invocation 11 Completion 2 Exception 2 EvalOrModule 3 Binding 7 Property 16
+    ObjectConstruction 15 LexicalEnvironment 25 ControlFlow 6 DynamicScope 9
+    Iteration 11 Suspension 5 Operator 21 Specialized 9
+""".split()
+expected_blocker_counts = dict(
+    zip(blocker_count_tokens[::2], map(int, blocker_count_tokens[1::2]))
+)
+found_blocker_counts = {
+    blocker: sum(
+        audience == "Blocked" and detail == blocker
+        for _, _, audience, detail in registry_rows
+    )
+    for blocker in expected_blocker_counts
+}
+unexpected_blockers = sorted(
+    {
+        detail
+        for _, _, audience, detail in registry_rows
+        if audience == "Blocked" and detail not in expected_blocker_counts
+    }
+)
+if found_blocker_counts != expected_blocker_counts or unexpected_blockers:
+    fail(
+        "function-translate-registry-blockers",
+        "the blocked frontier must retain all 18 typed categories and their exact counts; "
+        f"found {found_blocker_counts} with unexpected {unexpected_blockers}",
+    )
+
+dto_blocker_code, _, _ = unique_braced_item(
+    dto_production_code,
+    re.compile(
+        r"\bpub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
+        r"[ \t\n]*::[ \t\n]*binary_object[ \t\n]*\)[ \t\n]+enum"
+        r"[ \t\n]+TranslationBlocker[ \t\n]*\{"
+    ),
+    "function-translate-dto-shape",
+    "TranslationBlocker enum",
+)
+if enum_variant_names(dto_blocker_code) != list(expected_blocker_counts):
+    fail(
+        "function-translate-dto-shape",
+        "TranslationBlocker must retain the 18 reviewed ordered categories; "
+        f"found {enum_variant_names(dto_blocker_code)}",
+    )
+
+dto_forbidden = re.compile(
+    r"\b(?:FunctionId|ImageAtom|PinnedAtomId|PinnedOpcode|NativeAtomRef|"
+    r"NativeCodePlan|NativeInstruction|NativeOperands|WireString|ImageCode|"
+    r"ImageInstructionSpan|ImageRelocation|byte_pc|native_pc|operand_pc|"
+    r"target_pc|source_pc|Runtime|Context|RuntimeError|Instruction|JsString|"
+    r"Value|Vm|VmHost|RawValue|Heap|HeapObject|ObjectRef|UnlinkedFunction)\b|"
+    r"\b(?:raw(?:_opcode)?|opcode_(?:raw|byte)|(?:atom|function|image|instruction)_id)"
+    r"[ \t\n]*:"
+)
+for match in dto_forbidden.finditer(dto_production_code):
+    fail(
+        "function-translate-dto-representation",
+        "sanitized translation DTOs must not retain native PCs, image identities, wire strings, or executable runtime types; found "
+        + location(function_translate_dto_relative, dto_source, match.start()),
+    )
+
+forbidden_dto_traits = {
+    "AtomStringSpelling": {"Eq", "Hash", "PartialEq"},
+    "AtomOperandValue": {"Eq", "Hash", "PartialEq"},
+    "AtomOperand": {"Eq", "Hash", "PartialEq"},
+    "FunctionOp": {"Eq", "Hash", "PartialEq"},
+    "FunctionInstruction": {"Debug", "Eq", "Hash", "PartialEq"},
+    "FunctionCode": {"Debug", "Default", "Eq", "Hash", "PartialEq"},
+    "OperationDiagnostic": {"Debug", "Hash"},
+}
+dto_attribute_pattern = re.compile(
+    r"(?P<attributes>(?:#[ \t\n]*\[[^]]*\][ \t\n]*)+)"
+    r"(?:pub(?:[ \t\n]*\([^)]*\))?[ \t\n]+)?(?:enum|struct)"
+    r"[ \t\n]+(?P<name>" + "|".join(forbidden_dto_traits) + r")\b"
+)
+for item in dto_attribute_pattern.finditer(dto_production_code):
+    name = item.group("name")
+    leaked = forbidden_dto_traits[name] & set(
+        re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", item.group("attributes"))
+    )
+    if leaked:
+        fail(
+            "function-translate-dto-representation",
+            f"{name} must not derive representation-revealing traits {sorted(leaked)}",
+        )
+for name, traits in forbidden_dto_traits.items():
+    for trait in traits:
+        if re.search(
+            rf"\bimpl\b[^{{;]*\b(?:fmt[ \t\n]*::[ \t\n]*)?{trait}\b[^{{;]*\bfor[ \t\n]+{name}\b",
+            dto_production_code,
+        ):
+            fail(
+                "function-translate-dto-representation",
+                f"{name} must not implement representation-revealing trait {trait}",
+            )
+
+translate_special_case_pattern = re.compile(
+    r"(?i:\btest262\b|\bfixture(?:_[A-Za-z0-9_]+)?\b|"
+    r"\b(?:source|input|bytes)_[A-Za-z0-9_]*(?:hash|digest|sha_?(?:1|256|512))\b)|"
+    r"\b(?:input|bytes)[ \t\n]*(?:\.[A-Za-z_][A-Za-z0-9_]*[ \t\n]*\([^;\n]*\))*"
+    r"\.[ \t\n]*(?:contains|starts_with|ends_with|windows)[ \t\n]*\("
+)
+for relative, source in (
+    (function_translate_relative, function_translate_production_source),
+    (function_translate_capability_relative, capability_production_source),
+    (function_translate_dto_relative, dto_production_source),
+):
+    special_case = translate_special_case_pattern.search(source)
+    if special_case is not None:
+        fail(
+            "function-translate-special-casing",
+            "function translation must not admit by Test262 path, fixture identity, source bytes, or digest; found "
+            + location(relative, source, special_case.start()),
+        )
+
+translate_native_item, translate_native_start, translate_native_end = unique_braced_item(
+    function_translate_production_code,
+    re.compile(r"\bfn[ \t\n]+translate_native_plan\b[^{};]*\{"),
+    "function-translate-control-flow",
+    "native-plan translation function",
+)
+translate_lower_item, _, _ = unique_braced_item(
+    function_translate_production_code,
+    re.compile(r"\bfn[ \t\n]+lower_operation\b[^{};]*\{"),
+    "function-translate-semantic-dispatch",
+    "recipe-based semantic lowering function",
+)
+translate_target_item, _, _ = unique_braced_item(
+    function_translate_production_code,
+    re.compile(r"\bfn[ \t\n]+operation_for_target\b[^{};]*\{"),
+    "function-translate-atom-order",
+    "target-filtered operand materializer",
+)
+normalized_translate_target = " ".join(translate_target_item.split())
+if (
+    normalized_translate_target.count(
+        "if target.accepts(audience) { lower_operation(recipe, operands) } else { Ok(PendingOperation::Ready(FunctionOp::OutsideTarget)) }"
+    )
+    != 1
+):
+    fail(
+        "function-translate-atom-order",
+        "target audience rejection must precede all operand materialization",
+    )
+if re.search(
+    r"\b(?:OperationDiagnostic|opcode|diagnostic|mnemonic)\b|\.[ \t\n]*name[ \t\n]*\(",
+    translate_lower_item,
+):
+    fail(
+        "function-translate-semantic-dispatch",
+        "semantic lowering must dispatch only on typed recipes and operands, never opcode names or diagnostics",
+    )
+opcode_name_uses = list(
+    re.finditer(r"\bopcode[ \t\n]*\.[ \t\n]*name[ \t\n]*\(", function_translate_production_code)
+)
+if len(opcode_name_uses) != 2 or any(
+    not (translate_native_start <= match.start() < translate_native_end)
+    for match in opcode_name_uses
+):
+    fail(
+        "function-translate-diagnostic-boundary",
+        "opcode.name() may appear only in the two compatibility-diagnostic constructions inside translate_native_plan",
+    )
+normalized_translate_native = " ".join(translate_native_item.split())
+diagnostic_fragments = (
+    "FunctionTranslateError::registry_drift( opcode.name(), expected_shape, descriptor_shape, decoded_shape, )",
+    "let diagnostic = OperationDiagnostic::new(opcode.name(), expected_shape);",
+)
+if any(normalized_translate_native.count(fragment) != 1 for fragment in diagnostic_fragments):
+    fail(
+        "function-translate-diagnostic-boundary",
+        "the opcode mnemonic may feed only registry-drift and rejection-text diagnostics",
+    )
+
+branch_fragments = (
+    "source_to_output.push(output_index);",
+    "PendingOperation::IfFalse(target) => { FunctionOp::IfFalse(resolve_target(&source_to_output, target)?) }",
+    "PendingOperation::Goto(target) => { FunctionOp::Goto(resolve_target(&source_to_output, target)?) }",
+)
+if any(normalized_translate_native.count(fragment) != 1 for fragment in branch_fragments):
+    fail(
+        "function-translate-control-flow",
+        "translation must retain one source-to-output map and resolve both branch kinds through it in the second pass",
+    )
+resolve_target_item, _, _ = unique_braced_item(
+    function_translate_production_code,
+    re.compile(r"\bfn[ \t\n]+resolve_target\b[^{};]*\{"),
+    "function-translate-control-flow",
+    "sanitized branch-target resolver",
+)
+normalized_resolve_target = " ".join(resolve_target_item.split())
+if not all(
+    normalized_resolve_target.count(fragment) == 1
+    for fragment in (
+        "source_to_output .get(target_instruction as usize)",
+        ".copied()",
+        ".ok_or_else(FunctionTranslateError::invalid_branch_target)",
+    )
+):
+    fail(
+        "function-translate-control-flow",
+        "branch targets must remain bounds-checked instruction indexes in the sanitized output map",
+    )
+
+translate_atom_item, _, _ = unique_braced_item(
+    function_translate_production_code,
+    re.compile(r"\bfn[ \t\n]+project_atom\b[^{};]*\{"),
+    "function-translate-atom-order",
+    "borrowed semantic atom projection",
+)
+if re.search(
+    r"\b(?:Vec|Box|String)[ \t\n]*(?:::|<)|\b(?:try_reserve|reserve|collect|"
+    r"to_owned|to_vec|into_boxed_slice)[ \t\n]*\(",
+    translate_atom_item,
+):
+    fail(
+        "function-translate-atom-order",
+        "atom translation must remain allocation-free so scalar rejection and OOM ordering stay unchanged",
+    )
+translate_atom_classes = re.findall(
+    r"NativeAtomClass[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+    translate_atom_item,
+)
+if translate_atom_classes != ["Null", "Index", "String", "Private", "Symbol"]:
+    fail(
+        "function-translate-atom-order",
+        "borrowed atom projection must preserve all five semantic identity classes in order; "
+        f"found {translate_atom_classes}",
+    )
 
 ordinary_leaf_relative = "src/runtime/binary_object/ordinary_leaf.rs"
 ordinary_leaf_source = read_source(ordinary_leaf_relative)
@@ -1438,7 +1849,7 @@ expected_ordinary_top_level_items = [
     for entry in """
     struct:RootFunctionConstantSelector struct:OrdinaryLeafMetadataDraft
     enum:DetachedPrimitive enum:OrdinaryLeafOp struct:OrdinaryLeafDraft
-    enum:OrdinaryLeafReadError struct:AdmissionLimits enum:PendingOp
+    enum:OrdinaryLeafReadError struct:AdmissionLimits
     """.split()
 ]
 if ordinary_top_level_items != expected_ordinary_top_level_items:
@@ -1460,10 +1871,10 @@ ordinary_top_level_functions = [
 ]
 expected_ordinary_top_level_functions = """
     decode_trusted_ordinary_leaf admit_image preflight_constants project_primitive
-    copy_wire_string copy_bigint lower_code lower_instruction lower_constant
-    lower_local lower_argument resolve_ir_target unadmitted classify_image_error
-    classify_atom_error classify_wire_error classify_data_error
-    classify_envelope_error classify_code_error
+    copy_wire_string copy_bigint lower_code lower_operation lower_constant lower_local
+    lower_argument validate_ir_target unsupported_operation classify_translation_error
+    unadmitted classify_image_error classify_atom_error classify_wire_error
+    classify_data_error classify_envelope_error classify_code_error
 """.split()
 if ordinary_top_level_functions != expected_ordinary_top_level_functions:
     fail(
@@ -1472,37 +1883,110 @@ if ordinary_top_level_functions != expected_ordinary_top_level_functions:
         f"found {ordinary_top_level_functions}",
     )
 
-ordinary_semantic_seals = [
-    ("metadata and capability admission", "admit_image", "46926b64842e1f2bfbc9370460acd543bf5c3094c144d9eea101284addf6b714"),
-    ("bit-preserving primitive projection", "project_primitive", "220a79708a4dbc884702539886354f8cacfef8e77c0035db07f431deeb5c4f96"),
-    ("typed CFG lowering", "lower_code", "e1482effa77cb82d1b1b01f55a28edc40e8f9efbabe0552ae55e76c8ebda8b2a"),
-    ("native-operation lowering", "lower_instruction", "579e3589d165285af0c254b02fa006963125aacd48b7f5b5b5b30a292a8e4e78"),
+ordinary_lower_code, _, _ = unique_braced_item(
+    ordinary_leaf_production_code,
+    re.compile(r"\bfn[ \t\n]+lower_code\b[^{};]*\{"),
+    "ordinary-leaf-translated-code",
+    "sanitized ordinary code consumer",
+)
+ordinary_lower_operation, _, _ = unique_braced_item(
+    ordinary_leaf_production_code,
+    re.compile(r"\bfn[ \t\n]+lower_operation\b[^{};]*\{"),
+    "ordinary-leaf-translated-code",
+    "sanitized ordinary operation lowering",
+)
+ordinary_operation_variants = re.findall(
+    r"FunctionOp[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+    ordinary_lower_operation,
+)
+expected_ordinary_operation_variants = [
+    "PushI32",
+    "PushConstant",
+    "GetLocal",
+    "PutLocal",
+    "SetLocal",
+    "GetArgument",
+    "PutArgument",
+    "SetArgument",
+    "Add",
+    "Sub",
+    "Div",
+    "GreaterThan",
+    "StrictEqual",
+    "IfFalse",
+    "Goto",
+    "Return",
 ]
-for description, function_name, expected_hash in ordinary_semantic_seals:
-    item_code, _, _ = unique_braced_item(
-        ordinary_leaf_production_code,
-        re.compile(
-            rf"(?m)^[ \t]*(?:{ordinary_visibility}[ \t\n]+)?fn"
-            rf"[ \t\n]+{function_name}\b[^{{}};]*\{{"
-        ),
-        "ordinary-leaf-semantic-seal",
-        description,
+if ordinary_operation_variants != expected_ordinary_operation_variants:
+    fail(
+        "ordinary-leaf-translated-code",
+        "ordinary_leaf must map the sanitized ordinary operation cohort one-for-one; "
+        f"found {ordinary_operation_variants}",
     )
-    if item_code and normalized_code_sha256(item_code) != expected_hash:
+if (
+    len(re.findall(r"\binstruction[ \t\n]*\.[ \t\n]*supports_ordinary[ \t\n]*\(", ordinary_lower_code)) != 1
+    or len(re.findall(r"\binstruction[ \t\n]*\.[ \t\n]*operation[ \t\n]*\(", ordinary_lower_code)) != 1
+    or re.search(r"\b(?:NativeCodePlan|NativeOperands|PinnedOpcode|opcode)\b", ordinary_lower_code)
+    or re.search(r"\b(?:OperationDiagnostic|diagnostic|mnemonic)\b", ordinary_lower_operation)
+):
+    fail(
+        "ordinary-leaf-translated-code",
+        "ordinary_leaf must filter the sanitized audience before typed lowering and must not consult native opcodes or diagnostics while lowering",
+    )
+
+ordinary_unsupported_item, unsupported_start, unsupported_end = unique_braced_item(
+    ordinary_leaf_production_code,
+    re.compile(r"\bfn[ \t\n]+unsupported_operation\b[^{};]*\{"),
+    "function-translate-diagnostic-boundary",
+    "ordinary rejection-text formatter",
+)
+if ordinary_unsupported_item and (
+    len(re.findall(r"\bdiagnostic[ \t\n]*\.[ \t\n]*mnemonic[ \t\n]*\(", ordinary_unsupported_item)) != 1
+    or len(re.findall(r"\bdiagnostic[ \t\n]*\.[ \t\n]*operand_shape[ \t\n]*\(", ordinary_unsupported_item)) != 1
+    or len(re.findall(r"\bOrdinaryLeafReadError[ \t\n]*::[ \t\n]*Unadmitted\b", ordinary_unsupported_item)) != 1
+):
+    fail(
+        "function-translate-diagnostic-boundary",
+        "the compatibility diagnostic may be consumed only to format an ordinary-leaf Unadmitted rejection",
+    )
+ordinary_rejection_diagnostics = list(
+    re.finditer(r"\.[ \t\n]*rejection_diagnostic[ \t\n]*\(", ordinary_leaf_production_code)
+)
+normalized_ordinary_lower_code = " ".join(ordinary_lower_code.split())
+if (
+    len(ordinary_rejection_diagnostics) != 1
+    or normalized_ordinary_lower_code.count(
+        "return Err(unsupported_operation(instruction.rejection_diagnostic()));"
+    )
+    != 1
+):
+    fail(
+        "function-translate-diagnostic-boundary",
+        "ordinary code may read one compatibility diagnostic only in the !supports_ordinary rejection branch",
+    )
+for accessor in ("mnemonic", "operand_shape"):
+    accessor_uses = list(
+        re.finditer(rf"\.[ \t\n]*{accessor}[ \t\n]*\(", ordinary_leaf_production_code)
+    )
+    if (
+        len(accessor_uses) != 1
+        or not (unsupported_start <= accessor_uses[0].start() < unsupported_end)
+    ):
         fail(
-            "ordinary-leaf-semantic-seal",
-            f"ordinary_leaf {description} drifted from its reviewed normalized implementation",
+            "function-translate-diagnostic-boundary",
+            "diagnostic mnemonic and operand shape may be read only by the ordinary rejection-text formatter",
         )
 
 ordinary_raw_dependency = re.search(
-    r"\b(?:ImageAtom|PinnedAtomId|NativeAtomRef|ImageCode|ImageInstructionSpan|ImageRelocation)\b|"
+    r"\b(?:ImageAtom|PinnedAtomId|PinnedOpcode|NativeAtomRef|NativeCodePlan|"
+    r"NativeInstruction|NativeOperands|ImageCode|ImageInstructionSpan|ImageRelocation)\b|"
     r"\.[ \t\n]*(?:as_bytes|atom_relocations)[ \t\n]*\(",
     ordinary_leaf_production_code,
 )
 if ordinary_raw_dependency is not None:
     fail(
         "ordinary-leaf-native-plan-boundary",
-        "ordinary-leaf admission must consume only the typed native-plan and authenticated image APIs, never raw atom identities, code bytes, or relocation sidecars; found "
+        "ordinary-leaf admission must consume only sanitized function DTOs and authenticated image APIs, never native plans, raw atom identities, code bytes, or relocation sidecars; found "
         + location(
             ordinary_leaf_relative,
             ordinary_leaf_source,
@@ -1584,29 +2068,25 @@ scalar_unary_impl_code, scalar_unary_impl_start, scalar_unary_impl_end = unique_
     "scalar-unary-operation-shape",
     "private ScalarUnaryOp implementation",
 )
-expected_scalar_unary_impl_source = """
-    impl ScalarUnaryOp {
-        fn from_native(name: &str, operands: &NativeOperands<'_>) -> Option<Self> {
-            match (name, operands) {
-                ("neg", NativeOperands::None) => Some(Self::Neg),
-                ("plus", NativeOperands::None) => Some(Self::Plus),
-                ("dec", NativeOperands::None) => Some(Self::Dec),
-                ("inc", NativeOperands::None) => Some(Self::Inc),
-                ("not", NativeOperands::None) => Some(Self::BitNot),
-                ("lnot", NativeOperands::None) => Some(Self::LogicalNot),
-                ("typeof", NativeOperands::None) => Some(Self::TypeOf),
-                _ => None,
-            }
-        }
-    }
-"""
-if scalar_unary_impl_code and (
-    " ".join(scalar_script_source[scalar_unary_impl_start:scalar_unary_impl_end].split())
-    != " ".join(expected_scalar_unary_impl_source.split())
-):
+scalar_unary_pairs = re.findall(
+    r"FunctionUnaryOp[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)"
+    r"[ \t\n]*=>[ \t\n]*Self[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+    scalar_unary_impl_code,
+)
+expected_scalar_unary_pairs = [
+    ("Neg", "Neg"),
+    ("Plus", "Plus"),
+    ("Dec", "Dec"),
+    ("Inc", "Inc"),
+    ("BitNot", "BitNot"),
+    ("LogicalNot", "LogicalNot"),
+    ("TypeOf", "TypeOf"),
+]
+if scalar_unary_pairs != expected_scalar_unary_pairs:
     fail(
         "scalar-unary-operation-shape",
-        "ScalarUnaryOp must map only the seven exact operand-free native-plan opcode identities",
+        "ScalarUnaryOp must map the seven sanitized unary operations one-for-one; "
+        f"found {scalar_unary_pairs}",
     )
 
 scalar_string_draft_pattern = re.compile(
@@ -1683,111 +2163,33 @@ if scalar_decoder_code:
 
 scalar_opcode_declarations = re.findall(
     r"(?m)^[ \t]*const[ \t]+(OP_[A-Z0-9_]+)\b",
-    scalar_script_code,
+    scalar_script_code.split("#[cfg(test)]", 1)[0],
 )
-scalar_opcode_entries = re.findall(
-    r"(?m)^[ \t]*const[ \t]+(OP_[A-Z0-9_]+)[ \t]*:[ \t]*u8[ \t]*=[ \t]*(0x[0-9a-fA-F]+)[ \t]*;[ \t]*$",
-    scalar_script_code,
-)
-scalar_opcode_constants = {name: int(raw, 16) for name, raw in scalar_opcode_entries}
-expected_scalar_opcode_constants = {
-    "OP_PUSH_I32": 0x01,
-    "OP_PUSH_CONST": 0x02,
-    "OP_PUSH_ATOM_VALUE": 0x04,
-    "OP_UNDEFINED": 0x06,
-    "OP_NULL": 0x07,
-    "OP_PUSH_FALSE": 0x09,
-    "OP_PUSH_TRUE": 0x0A,
-    "OP_RETURN": 0x28,
-    "OP_NEG": 0x8A,
-    "OP_PLUS": 0x8B,
-    "OP_DEC": 0x8C,
-    "OP_INC": 0x8D,
-    "OP_BIT_NOT": 0x93,
-    "OP_LOGICAL_NOT": 0x94,
-    "OP_TYPEOF": 0x95,
-    "OP_PUSH_BIGINT_I32": 0xB0,
-    "OP_PUSH_MINUS1": 0xB2,
-    "OP_PUSH_0": 0xB3,
-    "OP_PUSH_7": 0xBA,
-    "OP_PUSH_I8": 0xBB,
-    "OP_PUSH_I16": 0xBC,
-    "OP_PUSH_CONST8": 0xBD,
-    "OP_PUSH_EMPTY_STRING": 0xBF,
-    "OP_SET_LOC0": 0xCB,
-    "OP_GOTO8": 0xEA,
-}
-if not is_full_binary_inventory:
-    # The self-test fixture intentionally strips cfg(test), which now owns
-    # every raw opcode spelling after production moved to typed native plans.
-    expected_scalar_opcode_constants = {}
-if (
-    sorted(scalar_opcode_declarations) != sorted(expected_scalar_opcode_constants)
-    or len(scalar_opcode_declarations) != len(expected_scalar_opcode_constants)
-    or len(scalar_opcode_entries) != len(expected_scalar_opcode_constants)
-    or scalar_opcode_constants != expected_scalar_opcode_constants
-):
+if scalar_opcode_declarations:
     fail(
         "scalar-script-opcode-set",
-        "scalar-script admission must define each reviewed scalar push, all seven unary operations, set_loc0, and return opcode exactly once; "
-        f"found declarations {scalar_opcode_declarations} and exact entries {scalar_opcode_entries}",
+        "scalar-script production admission must not retain raw opcode constants after translation centralization; "
+        f"found {scalar_opcode_declarations}",
     )
-
-if is_full_binary_inventory:
-    pinned_opcode_relative = "src/runtime/binary_object/pinned_opcodes.rs"
-    pinned_opcode_code = binary_code_cache[root / pinned_opcode_relative]
-    pinned_descriptor_pattern = re.compile(
-        r"PinnedOpcodeInfo[ \t\n]*::[ \t\n]*new[ \t\n]*\("
-        r"[ \t\n]*,[ \t\n]*(\d+)[ \t\n]*,[ \t\n]*(\d+)"
-        r"[ \t\n]*,[ \t\n]*(\d+)[ \t\n]*,[ \t\n]*OpcodeFormat"
-        r"[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)[ \t\n]*\)"
-    )
-    pinned_descriptors = [
-        (int(size), int(n_pop), int(n_push), opcode_format)
-        for size, n_pop, n_push, opcode_format in pinned_descriptor_pattern.findall(
-            pinned_opcode_code.split("#[cfg(test)]", 1)[0]
-        )
-    ]
-    expected_unary_descriptors = {
-        0x8A: (1, 1, 1, "None"),
-        0x8B: (1, 1, 1, "None"),
-        0x8C: (1, 1, 1, "None"),
-        0x8D: (1, 1, 1, "None"),
-        0x93: (1, 1, 1, "None"),
-        0x94: (1, 1, 1, "None"),
-        0x95: (1, 1, 1, "None"),
-    }
-    found_unary_descriptors = {
-        opcode: pinned_descriptors[opcode]
-        for opcode in expected_unary_descriptors
-        if opcode < len(pinned_descriptors)
-    }
-    if (
-        len(pinned_descriptors) != 244
-        or found_unary_descriptors != expected_unary_descriptors
-    ):
-        fail(
-            "scalar-unary-opcode-descriptor",
-            "the seven admitted unary bytes must retain their exact one-byte, pop-one, push-one, operand-free pinned descriptors; "
-            f"found {found_unary_descriptors}",
-        )
 
 scalar_push_pattern = re.compile(
-    rf"{scalar_noncopy_derive}[ \t\n]*enum[ \t\n]+ScalarPush"
+    r"#[ \t\n]*\[[ \t\n]*derive[ \t\n]*\([ \t\n]*Clone[ \t\n]*,"
+    r"[ \t\n]*Debug[ \t\n]*\)[ \t\n]*\][ \t\n]*enum[ \t\n]+ScalarPush"
     r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
     r"[ \t\n]*Direct[ \t\n]*\([ \t\n]*ScalarValueDraft[ \t\n]*\)"
     r"[ \t\n]*,[ \t\n]*Constant[ \t\n]*\([ \t\n]*u32[ \t\n]*\)"
-    r"[ \t\n]*,[ \t\n]*AtomValue[ \t\n]*\([ \t\n]*NativeAtomRef"
+    r"[ \t\n]*,[ \t\n]*AtomValue[ \t\n]*\([ \t\n]*AtomOperand"
     r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\)[ \t\n]*,?[ \t\n]*\}"
 )
 if len(scalar_push_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-push-shape",
-        "ScalarPush must retain only a direct draft, constant index, or sealed native atom reference",
+        "ScalarPush must retain only a direct draft, constant index, or sanitized atom operand",
     )
 
 scalar_sequence_pattern = re.compile(
-    rf"{scalar_noncopy_derive}[ \t\n]*struct[ \t\n]+ScalarSequence"
+    r"#[ \t\n]*\[[ \t\n]*derive[ \t\n]*\([ \t\n]*Clone[ \t\n]*,"
+    r"[ \t\n]*Debug[ \t\n]*\)[ \t\n]*\][ \t\n]*struct[ \t\n]+ScalarSequence"
     r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
     r"[ \t\n]*push[ \t\n]*:[ \t\n]*ScalarPush"
     r"[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*,"
@@ -1798,7 +2200,7 @@ scalar_sequence_pattern = re.compile(
 if len(scalar_sequence_pattern.findall(scalar_script_code)) != 1:
     fail(
         "scalar-script-sequence-shape",
-        "ScalarSequence must retain one sealed value push and one owned ordered unary-operation slice",
+        "ScalarSequence must retain one sanitized value push and one owned ordered unary-operation slice",
     )
 
 scalar_copy_pattern = re.compile(
@@ -1815,52 +2217,42 @@ if scalar_copy_pattern.search(scalar_script_code):
         "the scalar draft, push, and sequence discriminators must not regain Copy semantics around owned BigInt bytes",
     )
 
-scalar_native_decoder_seals = [
-    (
-        "typed scalar sequence decoder",
-        re.compile(r"\bfn[ \t\n]+decode_scalar_sequence\b[^{};]*\{"),
-        "9a15ff4d50eeeb3e5aba95ca4342fc9ea70256660fc47996f587a83c3e1d2b6a",
-    ),
-    (
-        "typed scalar push decoder",
-        re.compile(r"\bfn[ \t\n]+decode_scalar_push\b[^{};]*\{"),
-        "6774bdbfeceb646bebc7973de20b9c54b2ec6c43215f9689adbc13af8e3aaaab",
-    ),
-    (
-        "typed direct-scalar decoder",
-        re.compile(r"\bfn[ \t\n]+decode_direct_scalar_push\b[^{};]*\{"),
-        "1186787a1f3db58a3ffca9381e931c1e77368295a15025f45291d06266a279f6",
-    ),
-    (
-        "typed direct-Int32 decoder",
-        re.compile(r"\bfn[ \t\n]+decode_direct_int32_push\b[^{};]*\{"),
-        "25dd514dabcd269dc45229a1636732f2e4457a4931208905ab3b102d71348ac3",
-    ),
-]
-for description, pattern, expected_hash in scalar_native_decoder_seals:
-    item_code, item_start, item_end = unique_braced_item(
-        scalar_script_code,
-        pattern,
-        "scalar-script-native-plan-decoder",
-        description,
+scalar_sequence_code, _, _ = unique_braced_item(
+    scalar_script_code,
+    re.compile(r"\bfn[ \t\n]+decode_scalar_sequence\b[^{};]*\{"),
+    "scalar-script-translated-code",
+    "sanitized scalar sequence decoder",
+)
+normalized_scalar_sequence = " ".join(scalar_sequence_code.split())
+scalar_sequence_fragments = (
+    ".any(|instruction| !instruction.supports_scalar())",
+    "!matches!(set_completion.operation(), FunctionOp::SetLocal(0))",
+    "!matches!(return_value.operation(), FunctionOp::Return)",
+    "let FunctionOp::Unary(operation) = instruction.operation() else",
+    "unary_ops.push(ScalarUnaryOp::from_translated(*operation));",
+    ".and_then(|instruction| decode_scalar_push(instruction.into_operation()))",
+)
+if (
+    any(normalized_scalar_sequence.count(fragment) != 1 for fragment in scalar_sequence_fragments)
+    or re.search(r"\b(?:NativeCodePlan|NativeOperands|PinnedOpcode|opcode|diagnostic|mnemonic)\b", scalar_sequence_code)
+    or re.search(r"\bunary_ops[ \t\n]*\.[ \t\n]*(?:dedup|insert|last|reverse|sort)\b", scalar_sequence_code)
+):
+    fail(
+        "scalar-script-translated-code",
+        "scalar sequence admission must filter sanitized audiences, preserve set-local-zero/return and unary order, and consume the owned push without native or diagnostic dispatch",
     )
-    item_source = scalar_script_source[item_start:item_end] if item_start >= 0 else ""
-    if item_code and normalized_code_sha256(item_source) != expected_hash:
-        fail(
-            "scalar-script-native-plan-decoder",
-            f"scalar_script {description} drifted from its reviewed typed native-plan implementation",
-        )
 
 scalar_native_production_code = scalar_script_code.split("#[cfg(test)]", 1)[0]
 raw_scalar_decoder_dependency = re.search(
-    r"\b(?:ImageCode|ImageInstructionSpan|ImageRelocation)\b|"
+    r"\b(?:ImageAtom|PinnedAtomId|PinnedOpcode|NativeAtomRef|NativeCodePlan|"
+    r"NativeInstruction|NativeOperands|ImageCode|ImageInstructionSpan|ImageRelocation)\b|"
     r"\.[ \t\n]*(?:as_bytes|atom_relocations)[ \t\n]*\(",
     scalar_native_production_code,
 )
 if raw_scalar_decoder_dependency is not None:
     fail(
         "scalar-script-native-plan-decoder",
-        "scalar admission must consume only typed native-plan operands, never archival code bytes or relocation sidecars; found "
+        "scalar admission must consume only sanitized function DTOs, never native plans, raw atom identities, archival code bytes, or relocation sidecars; found "
         + location(
             scalar_script_relative,
             scalar_script_source,
@@ -2001,14 +2393,13 @@ expected_scalar_top_level_functions = [
     "admit_image",
     "project_atom_string",
     "project_atom_string_spelling",
-    "classify_native_plan_error",
+    "classify_translation_error",
     "copy_wire_string",
     "copy_utf16",
     "copy_bigint_bytes",
     "decode_scalar_sequence",
     "decode_scalar_push",
     "decode_direct_scalar_push",
-    "decode_direct_int32_push",
     "unadmitted",
     "classify_image_error",
     "classify_atom_error",
@@ -2063,6 +2454,7 @@ if scalar_macro_invocations != [
     "format",
     "matches",
     "matches",
+    "matches",
     "format",
     "format",
 ]:
@@ -2095,77 +2487,66 @@ for match in re.finditer(r"\bReaderMode[ \t\n]*::[ \t\n]*Strict\b", scalar_scrip
         + location(scalar_script_relative, scalar_script_source, match.start()),
     )
 
-scalar_admission_item_pattern = re.compile(
-    r"\bfn[ \t\n]+admit_image[ \t\n]*\([^{};]*\)"
-    r"[ \t\n]*->[^{;]+\{",
-    re.DOTALL,
-)
-scalar_admission_code, scalar_admission_start, scalar_admission_end = unique_braced_item(
+scalar_admission_code, _, _ = unique_braced_item(
     scalar_production_code,
     re.compile(r"\bfn[ \t\n]+admit_image\b[^{};]*\{"),
-    "scalar-script-native-plan-admission",
-    "typed native-plan scalar admission function",
+    "scalar-script-translated-admission",
+    "sanitized scalar admission function",
 )
-scalar_admission_source = (
-    scalar_script_source[scalar_admission_start:scalar_admission_end]
-    if scalar_admission_start >= 0
-    else ""
+normalized_scalar_admission = " ".join(scalar_admission_code.split())
+scalar_admission_fragments = (
+    "let translated = translate_function(image, root, TranslationTarget::Scalar) .map_err(classify_translation_error)?;",
+    "let Some(sequence) = decode_scalar_sequence(translated)? else",
+    "if !matches!(&sequence.push, ScalarPush::AtomValue(_)) && image.input_atom_slot_count() != 0",
+    "let ScalarSequence { push, unary_ops } = sequence;",
+    "let value = match (push, function.constants())",
+    "(ScalarPush::AtomValue(atom), []) => project_atom_string(image, atom)?",
+    "}; Ok((value, unary_ops))",
 )
-if scalar_admission_code and normalized_code_sha256(scalar_admission_source) != (
-    "afe68b7b5f408939cbe3c0dfd1f95c015a671b7a57b7553aee2039881c71a5d2"
+scalar_admission_offsets = [
+    normalized_scalar_admission.find(fragment) for fragment in scalar_admission_fragments
+]
+if (
+    any(offset < 0 for offset in scalar_admission_offsets)
+    or scalar_admission_offsets != sorted(scalar_admission_offsets)
+    or any(normalized_scalar_admission.count(fragment) != 1 for fragment in scalar_admission_fragments)
+    or re.search(r"\breturn[ \t\n]+Ok[ \t\n]*\(", scalar_admission_code)
 ):
     fail(
-        "scalar-script-native-plan-admission",
-        "admit_image drifted from the reviewed single-function metadata, typed native-plan, atom provenance, constant pairing, and final tuple flow",
+        "scalar-script-translated-admission",
+        "scalar admission must translate once, validate the scalar shape and atom-table boundary, pair constants, then project an admitted atom before returning",
     )
 
 normalized_scalar_production = " ".join(scalar_production_code.split())
-expected_scalar_native_facade_import = " ".join(
+expected_scalar_translate_import = " ".join(
     rust_code_only(
         """
-        use super::bytecode_image::{
-            BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError, ModuleLimits,
-            NativeAtomClass, NativeAtomRef, NativeCodePlan, NativeOperands, decode_bytecode_image_body,
-            decode_native_code_plan,
+        use super::function_translate::{
+            AtomOperand, AtomOperandClass, FunctionCode, FunctionOp, FunctionTranslateError,
+            FunctionUnaryOp, TranslationTarget, translate_function,
         };
         """
     ).split()
 )
-if normalized_scalar_production.count(expected_scalar_native_facade_import) != 1:
+if normalized_scalar_production.count(expected_scalar_translate_import) != 1:
     fail(
-        "native-plan-consumer-set",
-        "scalar_script must import exactly the reviewed archive decoder and native-plan semantic facade",
+        "scalar-script-translated-import",
+        "scalar_script must import exactly the reviewed sanitized translation facade",
     )
 direct_native_plan_import = re.search(
-    r"\bbytecode_image[ \t\n]*::[ \t\n]*native_plan\b",
+    r"\b(?:bytecode_image[ \t\n]*::[ \t\n]*native_plan|NativeAtomClass|"
+    r"NativeAtomRef|NativeCodePlan|NativeInstruction|NativeOperands|PinnedOpcode)\b",
     scalar_production_code,
 )
 if direct_native_plan_import is not None:
     fail(
         "native-plan-consumer-set",
-        "scalar_script must consume native-plan semantics only through the reviewed bytecode_image facade; found "
+        "scalar_script must consume only sanitized translation semantics, never the native plan or pinned opcode catalog; found "
         + location(
             scalar_script_relative,
             scalar_script_source,
             direct_native_plan_import.start(),
         ),
-    )
-
-native_plan_consumer_fragments = (
-    "decode_native_code_plan(image, root).map_err(|error|",
-    "let outside_scalar_shape = error.is_label_target_error();",
-    "classify_native_plan_error(error, outside_scalar_shape)",
-    "let Some(sequence) = decode_scalar_sequence(&native_plan)? else",
-    "if !matches!(&sequence.push, ScalarPush::AtomValue(_)) && image.input_atom_slot_count() != 0",
-    "(ScalarPush::AtomValue(atom), []) => project_atom_string(image, atom)?",
-)
-if any(
-    normalized_scalar_production.count(fragment) != 1
-    for fragment in native_plan_consumer_fragments
-):
-    fail(
-        "scalar-script-native-plan-admission",
-        "scalar admission must have one direct typed-plan construction, label-error classification, sequence decode, atom-table boundary, and atom projection flow",
     )
 if re.findall(
     r"\bWireValue[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
@@ -2175,48 +2556,21 @@ if re.findall(
         "scalar-script-constant-pairing",
         "the scalar-script path may name only the reviewed Float64, BigInt, and String pool variants",
     )
-if re.search(r"\b(?:ImageAtom|PinnedAtomId|NativePlanError)\b", scalar_production_code):
+if re.search(
+    r"\b(?:ImageAtom|PinnedAtomId|NativePlanError|OperationDiagnostic)\b|"
+    r"\.[ \t\n]*(?:rejection_diagnostic|mnemonic|operand_shape)[ \t\n]*\(",
+    scalar_production_code,
+):
     fail(
-        "scalar-script-native-plan-admission",
-        "the scalar consumer may use only the sealed facade and inferred native-plan diagnostic, never raw atom identities or the private error type",
+        "scalar-script-translated-admission",
+        "the scalar consumer may use only sanitized semantic operands and translation errors, never raw atom identities, private native-plan errors, or compatibility diagnostics",
     )
 
-native_atom_consumer_seals = [
-    (
-        "sealed atom class/provenance consumer",
-        re.compile(r"\bfn[ \t\n]+project_atom_string\b[^{};]*\{"),
-        "012c8449d3486977a6efba2f12c7eb08012fa9987aad80a6b90ea7c64f67e209",
-    ),
-    (
-        "ordinary String spelling consumer",
-        re.compile(r"\bfn[ \t\n]+project_atom_string_spelling\b[^{};]*\{"),
-        "72496307dfee8e1825ea88480abb5f7a1872bc5123e9e013d3e2c84c312a96c7",
-    ),
-    (
-        "native-plan error classifier",
-        re.compile(r"\bfn[ \t\n]+classify_native_plan_error\b[^{};]*\{"),
-        "72296c8005cc98127dd490f5321112d4a390361330ea5fd7a432c167e480076c",
-    ),
-]
-for description, pattern, expected_hash in native_atom_consumer_seals:
-    item_code, item_start, item_end = unique_braced_item(
-        scalar_production_code,
-        pattern,
-        "scalar-native-atom-consumer",
-        description,
-    )
-    item_source = scalar_script_source[item_start:item_end] if item_start >= 0 else ""
-    if item_code and normalized_code_sha256(item_source) != expected_hash:
-        fail(
-            "scalar-native-atom-consumer",
-            f"scalar_script {description} drifted from its reviewed implementation",
-        )
-
-native_atom_classes = re.findall(
-    r"\bNativeAtomClass[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
+scalar_atom_classes = re.findall(
+    r"\bAtomOperandClass[ \t\n]*::[ \t\n]*([A-Za-z_][A-Za-z0-9_]*)",
     scalar_production_code,
 )
-native_atom_accessor_counts = {
+scalar_atom_accessor_counts = {
     accessor: len(
         re.findall(
             rf"\batom[ \t\n]*\.[ \t\n]*{accessor}[ \t\n]*\(",
@@ -2226,28 +2580,92 @@ native_atom_accessor_counts = {
     for accessor in (
         "originates_from_input_atom_table",
         "class",
-        "index",
-        "manifest_string",
-        "dynamic_string",
-        "identity_description",
+        "index_value",
+        "string_utf16_len",
+        "string_utf16_units",
     )
 }
+
+scalar_atom_projection_code, _, _ = unique_braced_item(
+    scalar_production_code,
+    re.compile(r"\bfn[ \t\n]+project_atom_string\b[^{};]*\{"),
+    "scalar-native-atom-consumer",
+    "sanitized atom class and provenance consumer",
+)
+normalized_atom_projection = " ".join(scalar_atom_projection_code.split())
+atom_projection_fragments = (
+    "0 if atom.originates_from_input_atom_table() =>",
+    "1 if !atom.originates_from_input_atom_table() =>",
+    "AtomOperandClass::Null => unadmitted(",
+    "AtomOperandClass::Private => unadmitted(",
+    "AtomOperandClass::Symbol => unadmitted(",
+    ".index_value() .map(ScalarValueDraft::IntegerAtomString)",
+    "AtomOperandClass::String => project_atom_string_spelling(atom)",
+)
+if any(
+    normalized_atom_projection.count(fragment) != 1
+    for fragment in atom_projection_fragments
+):
+    fail(
+        "scalar-native-atom-consumer",
+        "scalar atom admission must retain input-slot provenance and reject Null/Private/Symbol before Index/String projection",
+    )
 if (
-    native_atom_classes != ["Null", "Private", "Symbol", "Index", "String"]
-    or native_atom_accessor_counts
+    scalar_atom_classes != ["Null", "Private", "Symbol", "Index", "String"]
+    or scalar_atom_accessor_counts
     != {
         "originates_from_input_atom_table": 2,
         "class": 1,
-        "index": 1,
-        "manifest_string": 1,
-        "dynamic_string": 1,
-        "identity_description": 0,
+        "index_value": 1,
+        "string_utf16_len": 1,
+        "string_utf16_units": 1,
     }
 ):
     fail(
         "scalar-native-atom-consumer",
-        "scalar admission must preserve the exact input-slot provenance and Null/Private/Symbol/Index/String identity-class boundary; "
-        f"found classes {native_atom_classes} and accessors {native_atom_accessor_counts}",
+        "scalar admission must preserve the exact sanitized input-slot provenance and Null/Private/Symbol/Index/String identity-class boundary; "
+        f"found classes {scalar_atom_classes} and accessors {scalar_atom_accessor_counts}",
+    )
+
+scalar_atom_spelling_code, _, _ = unique_braced_item(
+    scalar_production_code,
+    re.compile(r"\bfn[ \t\n]+project_atom_string_spelling\b[^{};]*\{"),
+    "scalar-native-atom-consumer",
+    "sanitized atom String spelling consumer",
+)
+normalized_atom_spelling = " ".join(scalar_atom_spelling_code.split())
+atom_spelling_fragments = (
+    "let Some(length) = atom.string_utf16_len() else",
+    "let Some(units) = atom.string_utf16_units() else",
+    "copy_utf16(units, length).map(ScalarValueDraft::AtomString)",
+)
+atom_spelling_offsets = [
+    normalized_atom_spelling.find(fragment) for fragment in atom_spelling_fragments
+]
+if (
+    any(offset < 0 for offset in atom_spelling_offsets)
+    or atom_spelling_offsets != sorted(atom_spelling_offsets)
+    or any(normalized_atom_spelling.count(fragment) != 1 for fragment in atom_spelling_fragments)
+):
+    fail(
+        "scalar-native-atom-consumer",
+        "atom String admission must inspect the sealed UTF-16 length and iterator before the single fallible scalar copy",
+    )
+
+scalar_translation_error_code, _, _ = unique_braced_item(
+    scalar_production_code,
+    re.compile(r"\bfn[ \t\n]+classify_translation_error\b[^{};]*\{"),
+    "scalar-script-translated-admission",
+    "translation error classifier",
+)
+normalized_translation_error = " ".join(scalar_translation_error_code.split())
+if (
+    normalized_translation_error.count("if error.is_label_target_error()") != 1
+    or normalized_translation_error.count("ScalarScriptReadError::Unadmitted(") != 1
+):
+    fail(
+        "scalar-script-translated-admission",
+        "invalid translated labels must remain an ordinary scalar-cohort rejection",
     )
 
 consumer_relative = "src/runtime/binary_object_publish.rs"
@@ -4511,6 +4929,7 @@ trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 
 fixture=$tmp_dir/fixture
 mkdir -p "$fixture/src/runtime/binary_object/bytecode_image/decode" \
+    "$fixture/src/runtime/binary_object/function_translate" \
     "$fixture/src/runtime/binary_object/graph"
 printf '%s\n' 'pub mod runtime;' > "$fixture/src/lib.rs"
 printf '%s\n' 'mod binary_object;' > "$fixture/src/runtime.rs"
@@ -4526,6 +4945,7 @@ printf '%s\n' \
     'mod atoms;' \
     'mod code;' \
     'mod function_envelope;' \
+    'mod function_translate;' \
     'mod bytecode_image;' \
     'mod graph;' \
     'mod pinned_atoms;' \
@@ -4537,6 +4957,12 @@ printf '%s\n' \
     'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
     'pub(super) use ordinary_leaf::{DetachedPrimitive, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafReadError, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
+cp -- "$repository_root/src/runtime/binary_object/function_translate/mod.rs" \
+    "$fixture/src/runtime/binary_object/function_translate/mod.rs"
+cp -- "$repository_root/src/runtime/binary_object/function_translate/capability.rs" \
+    "$fixture/src/runtime/binary_object/function_translate/capability.rs"
+cp -- "$repository_root/src/runtime/binary_object/function_translate/dto.rs" \
+    "$fixture/src/runtime/binary_object/function_translate/dto.rs"
 python3 - \
     "$repository_root/src/runtime/binary_object/scalar_script.rs" \
     "$fixture/src/runtime/binary_object/scalar_script.rs" <<'PY_FIXTURE'
@@ -4601,6 +5027,8 @@ printf '%s\n' \
     > "$fixture/src/runtime/binary_object/bytecode_image/mod.rs"
 cp -- "$repository_root/src/runtime/binary_object/bytecode_image/native_plan.rs" \
     "$fixture/src/runtime/binary_object/bytecode_image/native_plan.rs"
+cp -- "$repository_root/src/runtime/binary_object/pinned_opcodes.rs" \
+    "$fixture/src/runtime/binary_object/pinned_opcodes.rs"
 printf '%s\n' \
     'pub(in crate::runtime::binary_object) fn decode_bytecode_image_body() {}' \
     > "$fixture/src/runtime/binary_object/bytecode_image/decode/mod.rs"
@@ -4954,6 +5382,15 @@ PY
     fi
 }
 
+expect_full_rewrite_table() {
+    local label diagnostic relative before after
+    while IFS='|' read -r label diagnostic relative before after; do
+        [[ -n $label ]] || continue
+        expect_full_rewrite_rejected "$label" "$diagnostic" "$relative" \
+            "$(printf '%b' "$before")" "$(printf '%b' "$after")"
+    done
+}
+
 expect_rejected vm-dependency forbidden-vm-dependency \
     src/runtime/binary_object/atoms.rs \
     'use crate::vm::Completion;'
@@ -5202,21 +5639,10 @@ expect_rejected ordinary-private-helper ordinary-leaf-helper-set \
 expect_rejected ordinary-raw-code-dependency ordinary-leaf-native-plan-boundary \
     src/runtime/binary_object/ordinary_leaf.rs \
     'fn leak_raw_code(_: &ImageCode) {}'
-expect_rejected ordinary-test262-path ordinary-leaf-special-casing \
-    src/runtime/binary_object/ordinary_leaf.rs \
-    '// Test262 fixture language/statements/for/ordinary-leaf.js'
 expect_rewrite_rejected ordinary-input-prefix-dispatch ordinary-leaf-special-casing \
     src/runtime/binary_object/ordinary_leaf.rs \
     '    if input.len() > MAX_INPUT_BYTES {' \
     '    if input.starts_with(&[0x05, 0x00]) || input.len() > MAX_INPUT_BYTES {'
-expect_rewrite_rejected ordinary-cfg-op-remap ordinary-leaf-semantic-seal \
-    src/runtime/binary_object/ordinary_leaf.rs \
-    '("add", NativeOperands::None) => ready(OrdinaryLeafOp::Add),' \
-    '("add", NativeOperands::None) => ready(OrdinaryLeafOp::Sub),'
-expect_rewrite_rejected ordinary-cfg-target-collapse ordinary-leaf-semantic-seal \
-    src/runtime/binary_object/ordinary_leaf.rs \
-    'OrdinaryLeafOp::IfFalse(resolve_ir_target(&source_to_ir, target)?)' \
-    'OrdinaryLeafOp::IfFalse(0)'
 expect_rewrite_rejected ordinary-verifier-strip-bypass ordinary-leaf-verifier-role \
     src/runtime/bytecode_publish.rs \
     '                        || !metadata.strip_variable_debug' \
@@ -5237,113 +5663,66 @@ expect_rewrite_rejected ordinary-public-api-pending-broadening ordinary-leaf-pub
     src/runtime/context.rs \
     $'            Ok(function) => Ok(function),\n            Err(RuntimeError::Engine(error))\n                if NativeErrorKind::from_javascript_error(error.kind()).is_some() =>' \
     $'            Ok(function) => Ok(function),\n            Err(RuntimeError::Engine(error))\n                if true || NativeErrorKind::from_javascript_error(error.kind()).is_some() =>'
-expect_rewrite_rejected scalar-draft-raw-c-forgery scalar-script-draft-shape \
-    src/runtime/binary_object/scalar_script.rs \
-    $'pub(in crate::runtime) enum ScalarValueDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    EmptyString,\n    ConstantString(ScalarStringDraft),\n    AtomString(ScalarStringDraft),\n    IntegerAtomString(u32),\n}' \
-    $'enum FloatDraft { Float(f64) }\nconst _FLOAT_DRAFT_FORGERY: &CStr = cr#""\n#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarValueDraft {\n    Undefined,\n    Null,\n    Bool(bool),\n    Int(i32),\n    Float64Bits(u64),\n    BigIntI32(i32),\n    BigIntBytes(Box<[u8]>),\n    EmptyString,\n    ConstantString(ScalarStringDraft),\n    AtomString(ScalarStringDraft),\n    IntegerAtomString(u32),\n}\n""#;'
 expect_rewrite_rejected scalar-draft-copy-regression scalar-script-draft-shape \
     src/runtime/binary_object/scalar_script.rs \
     $'#[derive(Clone, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarValueDraft' \
     $'#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(in crate::runtime) enum ScalarValueDraft'
-expect_rewrite_rejected scalar-unary-dto-reorder scalar-unary-operation-shape \
-    src/runtime/binary_object/scalar_script.rs \
-    $'    Neg,\n    Plus,\n    Dec,\n    Inc,\n    BitNot,\n    LogicalNot,\n    TypeOf,' \
-    $'    Plus,\n    Neg,\n    Dec,\n    Inc,\n    BitNot,\n    LogicalNot,\n    TypeOf,'
 expect_rewrite_rejected scalar-unary-chain-storage scalar-script-sequence-shape \
     src/runtime/binary_object/scalar_script.rs \
     '    unary_ops: Box<[ScalarUnaryOp]>,' \
     '    unary_ops: Vec<ScalarUnaryOp>,'
-expect_rewrite_rejected scalar-push-copy-regression scalar-script-push-shape \
-    src/runtime/binary_object/scalar_script.rs \
-    $'#[derive(Clone, Debug, Eq, PartialEq)]\nenum ScalarPush' \
-    $'#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum ScalarPush'
-expect_rewrite_rejected scalar-string-copy-regression scalar-script-draft-shape \
-    src/runtime/binary_object/scalar_script.rs \
-    'pub(in crate::runtime) struct ScalarStringDraft(Box<[u16]>);' \
-    '#[derive(Clone, Copy)] pub(in crate::runtime) struct ScalarStringDraft(Box<[u16]>);'
 expect_rejected scalar-opcode-set-widening scalar-script-opcode-set \
     src/runtime/binary_object/scalar_script.rs \
     'const OP_PUSH_THIS: u8 = 0x08;'
-expect_full_rewrite_rejected scalar-goto8-opcode-drift scalar-script-opcode-set \
-    src/runtime/binary_object/scalar_script.rs \
-    $'    const OP_GOTO8: u8 = 0xea;\n\n    const RETURN_42: [u8; 25]' \
-    $'    const OP_GOTO8: u8 = 0xeb;\n\n    const RETURN_42: [u8; 25]'
 expect_rewrite_rejected scalar-unary-name-widening scalar-unary-operation-shape \
     src/runtime/binary_object/scalar_script.rs \
-    $'            ("typeof", NativeOperands::None) => Some(Self::TypeOf),\n            _ => None,' \
-    $'            ("typeof", NativeOperands::None) => Some(Self::TypeOf),\n            ("void", NativeOperands::None) => Some(Self::TypeOf),\n            _ => None,'
-expect_full_rewrite_rejected scalar-unary-descriptor-size scalar-unary-opcode-descriptor \
-    src/runtime/binary_object/pinned_opcodes.rs \
-    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
-    'PinnedOpcodeInfo::new("neg", 2, 1, 1, OpcodeFormat::None),'
-expect_full_rewrite_rejected scalar-unary-descriptor-pop scalar-unary-opcode-descriptor \
-    src/runtime/binary_object/pinned_opcodes.rs \
-    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
-    'PinnedOpcodeInfo::new("neg", 1, 0, 1, OpcodeFormat::None),'
-expect_full_rewrite_rejected scalar-unary-descriptor-push scalar-unary-opcode-descriptor \
-    src/runtime/binary_object/pinned_opcodes.rs \
-    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
-    'PinnedOpcodeInfo::new("neg", 1, 1, 2, OpcodeFormat::None),'
-expect_full_rewrite_rejected scalar-unary-descriptor-format scalar-unary-opcode-descriptor \
-    src/runtime/binary_object/pinned_opcodes.rs \
-    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::None),' \
-    'PinnedOpcodeInfo::new("neg", 1, 1, 1, OpcodeFormat::U8),'
-expect_rewrite_rejected scalar-const8-index-forgery scalar-script-native-plan-decoder \
+    '            FunctionUnaryOp::TypeOf => Self::TypeOf,' \
+    $'            FunctionUnaryOp::TypeOf => Self::TypeOf,\n            FunctionUnaryOp::Neg => Self::TypeOf,'
+expect_rejected translate-extra-module function-translate-module-set \
+    src/runtime/binary_object/function_translate/escape.rs 'fn escape() {}'
+expect_full_rewrite_table <<'TRANSLATE_CANARIES'
+translate-registry-raw-drift|function-translate-registry-raw|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Add),|    row!(154, None, OrdinaryOnly, Recipe::Add),
+translate-registry-format-drift|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Add),|    row!(155, I32, OrdinaryOnly, Recipe::Add),
+translate-registry-policy-swap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(152, None, Blocked, Operator),\n    row!(153, None, OrdinaryOnly, Recipe::Div),|    row!(152, None, OrdinaryOnly, Recipe::Div),\n    row!(153, None, Blocked, Operator),
+translate-registry-recipe-remap|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(155, None, OrdinaryOnly, Recipe::Add),|    row!(155, None, OrdinaryOnly, Recipe::Sub),
+translate-registry-blocker-drift|function-translate-registry-blockers|src/runtime/binary_object/function_translate/capability.rs|    row!(5, Atom, Blocked, ValueConstruction),|    row!(5, Atom, Blocked, Property),
+translate-native-plan-second-consumer|native-plan-consumer-set|src/runtime/binary_object/scalar_script.rs|use std::fmt;|use super::bytecode_image::NativeCodePlan;\nuse std::fmt;
+translate-dto-function-id-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    function_id: FunctionId,\n    from_input_atom_table: bool,
+translate-dto-wire-string-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    wire: WireString,\n    from_input_atom_table: bool,
+translate-dto-raw-opcode-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    raw_opcode: u8,\n    from_input_atom_table: bool,
+translate-dto-partial-eq|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone, Copy)]\npub(in crate::runtime::binary_object) struct AtomOperand|#[derive(Clone, Copy, PartialEq)]\npub(in crate::runtime::binary_object) struct AtomOperand
+translate-dto-cfg-partial-eq|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone, Copy)]\npub(in crate::runtime::binary_object) struct AtomOperand|#[cfg_attr(not(test), derive(PartialEq))]\n#[derive(Clone, Copy)]\npub(in crate::runtime::binary_object) struct AtomOperand
+translate-dto-hash|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone, Copy)]\npub(in crate::runtime::binary_object) struct AtomOperand|#[derive(Clone, Copy, Hash)]\npub(in crate::runtime::binary_object) struct AtomOperand
+translate-code-debug|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone)]\npub(in crate::runtime::binary_object) struct FunctionCode|#[derive(Clone, Debug)]\npub(in crate::runtime::binary_object) struct FunctionCode
+translate-code-default|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|#[derive(Clone)]\npub(in crate::runtime::binary_object) struct FunctionCode|#[derive(Clone, Default)]\npub(in crate::runtime::binary_object) struct FunctionCode
+translate-diagnostic-semantic-dispatch|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|    let ready =|    let _ = OperationDiagnostic::new("forbidden", OperandShape::None);\n    let ready =
+translate-diagnostic-extra-access|function-translate-diagnostic-boundary|src/runtime/binary_object/ordinary_leaf.rs|        if !instruction.supports_ordinary() {|        let _ = instruction.rejection_diagnostic();\n        if !instruction.supports_ordinary() {
+translate-branch-map-collapse|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|        source_to_output.push(output_index);|        source_to_output.push(0);
+translate-branch-target-collapse|function-translate-control-flow|src/runtime/binary_object/function_translate/mod.rs|FunctionOp::IfFalse(resolve_target(&source_to_output, target)?)|FunctionOp::IfFalse(0)
+translate-target-filter-bypass|function-translate-atom-order|src/runtime/binary_object/function_translate/mod.rs|    if target.accepts(audience) {|    if true {
+translate-atom-allocation|function-translate-atom-order|src/runtime/binary_object/function_translate/mod.rs|    let from_input_atom_table = atom.originates_from_input_atom_table();|    let _scratch = Vec::<u8>::new();\n    let from_input_atom_table = atom.originates_from_input_atom_table();
+translate-source-hash-dispatch|function-translate-special-casing|src/runtime/binary_object/function_translate/mod.rs|    let ready =|    let source_hash = 0_u64;\n    let ready =
+TRANSLATE_CANARIES
+expect_rewrite_rejected scalar-unary-chain-fold scalar-script-translated-code \
     src/runtime/binary_object/scalar_script.rs \
-    'Some(ScalarPush::Constant(u32::from(*index)))' \
-    'Some(ScalarPush::Constant(0))'
-expect_rewrite_rejected scalar-fclosure8-substitution scalar-script-native-plan-decoder \
+    '        unary_ops.push(ScalarUnaryOp::from_translated(*operation));' \
+    '        if unary_ops.last() != Some(&ScalarUnaryOp::from_translated(*operation)) { unary_ops.push(ScalarUnaryOp::from_translated(*operation)); }'
+expect_rewrite_rejected scalar-unary-chain-reorder scalar-script-translated-code \
     src/runtime/binary_object/scalar_script.rs \
-    '("push_const8", NativeOperands::Const8(index))' \
-    '("fclosure8", NativeOperands::Const8(index))'
-expect_rewrite_rejected scalar-unary-chain-fold scalar-script-native-plan-decoder \
+    '        unary_ops.push(ScalarUnaryOp::from_translated(*operation));' \
+    '        unary_ops.insert(0, ScalarUnaryOp::from_translated(*operation));'
+expect_rewrite_rejected scalar-completion-slot-drift scalar-script-translated-code \
     src/runtime/binary_object/scalar_script.rs \
-    '        unary_ops.push(operation);' \
-    '        if unary_ops.last() != Some(&operation) { unary_ops.push(operation); }'
-expect_rewrite_rejected scalar-unary-chain-reorder scalar-script-native-plan-decoder \
+    'FunctionOp::SetLocal(0)' \
+    'FunctionOp::SetLocal(1)'
+expect_rewrite_rejected scalar-return-kind-drift scalar-script-translated-code \
     src/runtime/binary_object/scalar_script.rs \
-    '        unary_ops.push(operation);' \
-    '        unary_ops.insert(0, operation);'
-expect_rewrite_rejected scalar-completion-slot-drift scalar-script-native-plan-decoder \
-    src/runtime/binary_object/scalar_script.rs \
-    '("set_loc0", NativeOperands::NoneLoc(0))' \
-    '("set_loc0", NativeOperands::NoneLoc(1))'
-expect_rewrite_rejected scalar-return-kind-drift scalar-script-native-plan-decoder \
-    src/runtime/binary_object/scalar_script.rs \
-    '("return", NativeOperands::None)' \
-    '("return_undef", NativeOperands::None)'
-expect_rewrite_rejected scalar-bigint-plus-early-rejection scalar-script-native-plan-admission \
+    'FunctionOp::Return)' \
+    'FunctionOp::OutsideTarget)'
+expect_rewrite_rejected scalar-post-projection-early-rejection scalar-script-translated-admission \
     src/runtime/binary_object/scalar_script.rs \
     '    Ok((value, unary_ops))' \
-    $'    if matches!(&value, ScalarValueDraft::BigIntI32(_) | ScalarValueDraft::BigIntBytes(_)) && unary_ops.contains(&ScalarUnaryOp::Plus) { return unadmitted("BigInt unary plus is not admitted"); }\n    Ok((value, unary_ops))'
-expect_rewrite_rejected scalar-constant-index-widening scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
-    '        (ScalarPush::Constant(_), [constant]) => match constant.as_wire() {'
-expect_rewrite_rejected scalar-constant-extra-pool scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    '        (ScalarPush::Constant(0), [constant]) => match constant.as_wire() {' \
-    '        (ScalarPush::Constant(0), [constant, ..]) => match constant.as_wire() {'
-expect_rewrite_rejected scalar-constant-wrong-type scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    'Ok(WireValue::Float64Bits(bits))' \
-    'Ok(WireValue::Int32(bits))'
-expect_rewrite_rejected scalar-constant-wrong-type-comment-forgery scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    'Ok(WireValue::Float64Bits(bits))' \
-    'Ok(WireValue::Int32(bits)) /* WireValue::Float64Bits */'
-expect_rewrite_rejected scalar-constant-string-opening scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    'ScalarValueDraft::ConstantString(copy_wire_string(value)?)' \
-    'ScalarValueDraft::EmptyString'
-expect_rewrite_rejected scalar-constant-wildcard-primitive scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    $'            Ok(_) => {\n                return unadmitted("scalar constant is not a Float64, BigInt, or String value");\n            }' \
-    '            Ok(_) => ScalarValueDraft::BigIntBytes(Box::default()),'
-expect_rewrite_rejected scalar-bigint-truncated-copy scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    'ScalarValueDraft::BigIntBytes(copy_bigint_bytes(bytes)?)' \
-    'ScalarValueDraft::BigIntBytes(copy_bigint_bytes(&bytes[..1])?)'
+    $'    if false { return unadmitted("early rejection"); }\n    Ok((value, unary_ops))'
 expect_rewrite_rejected scalar-bigint-infallible-copy scalar-script-bigint-copy \
     src/runtime/binary_object/scalar_script.rs \
     'copy.try_reserve_exact(bytes.len())' \
@@ -5352,49 +5731,22 @@ expect_rewrite_rejected scalar-string-utf8-misdecode scalar-script-string-copy \
     src/runtime/binary_object/scalar_script.rs \
     'copy_utf16(bytes.iter().copied().map(u16::from), bytes.len())' \
     'copy_utf16(String::from_utf8_lossy(bytes).encode_utf16(), bytes.len())'
-expect_rewrite_rejected scalar-direct-with-pool scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    '        (ScalarPush::Direct(value), []) => value,' \
-    '        (ScalarPush::Direct(value), [_]) => value,'
-expect_rewrite_rejected scalar-constant-pairing-bypass scalar-script-native-plan-admission \
+expect_rewrite_rejected scalar-constant-pairing-bypass scalar-script-translated-admission \
     src/runtime/binary_object/scalar_script.rs \
     '    let value = match (push, function.constants()) {' \
     $'    let value = ScalarValueDraft::Float64Bits(0);\n    let _reviewed_pair = match (push, function.constants()) {'
-expect_rejected scalar-float-evidence-alias scalar-script-constant-pairing \
-    src/runtime/binary_object/scalar_script.rs \
-    'use WireValue::Float64Bits as AdmittedFloat;'
-expect_rewrite_rejected scalar-input-atom-slot-widening scalar-script-native-plan-admission \
+expect_rewrite_rejected scalar-input-atom-slot-widening scalar-script-translated-admission \
     src/runtime/binary_object/scalar_script.rs \
     'image.input_atom_slot_count() != 0' \
     'image.input_atom_slot_count() != 2'
-expect_rewrite_rejected scalar-input-atom-slot-comment-forgery scalar-script-native-plan-admission \
+expect_rewrite_rejected scalar-admission-early-success scalar-script-translated-admission \
     src/runtime/binary_object/scalar_script.rs \
-    'image.input_atom_slot_count() != 0' \
-    'false /* image.input_atom_slot_count() != 0 */'
-expect_rewrite_rejected scalar-admission-early-success scalar-script-native-plan-admission \
+    '    let translated = translate_function(image, root, TranslationTarget::Scalar)' \
+    '    return Ok((ScalarValueDraft::EmptyString, Box::default())); let translated = translate_function(image, root, TranslationTarget::Scalar)'
+expect_rewrite_rejected scalar-label-error-bypass scalar-script-translated-admission \
     src/runtime/binary_object/scalar_script.rs \
-    '    let native_plan = decode_native_code_plan(image, root).map_err(|error| {' \
-    '    return Ok((ScalarValueDraft::EmptyString, Box::default())); let native_plan = decode_native_code_plan(image, root).map_err(|error| {'
-expect_rewrite_rejected scalar-admission-image-shadow scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    '    let native_plan = decode_native_code_plan(image, root).map_err(|error| {' \
-    '    let image = image; let native_plan = decode_native_code_plan(image, root).map_err(|error| {'
-expect_rewrite_rejected scalar-admission-envelope-shadow scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    '    let native_plan = decode_native_code_plan(image, root).map_err(|error| {' \
-    '    let envelope = function.envelope(); let native_plan = decode_native_code_plan(image, root).map_err(|error| {'
-expect_rewrite_rejected scalar-admission-dead-envelope scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    '    let envelope = function.envelope();' \
-    '    if false { let envelope = function.envelope(); }'
-expect_rewrite_rejected scalar-label-error-bypass scalar-script-native-plan-admission \
-    src/runtime/binary_object/scalar_script.rs \
-    '        let outside_scalar_shape = error.is_label_target_error();' \
-    '        let outside_scalar_shape = false;'
-expect_rewrite_rejected scalar-label-classifier-collapse scalar-native-atom-consumer \
-    src/runtime/binary_object/scalar_script.rs \
-    '    if outside_scalar_shape {' \
-    '    if false && outside_scalar_shape {'
+    '    if error.is_label_target_error() {' \
+    '    if false && error.is_label_target_error() {'
 expect_rewrite_rejected scalar-input-origin-zero-bypass scalar-native-atom-consumer \
     src/runtime/binary_object/scalar_script.rs \
     '        0 if atom.originates_from_input_atom_table() => {' \
@@ -5405,12 +5757,12 @@ expect_rewrite_rejected scalar-input-origin-one-bypass scalar-native-atom-consum
     '        1 if false && !atom.originates_from_input_atom_table() => {'
 expect_rewrite_rejected scalar-private-identity-admission scalar-native-atom-consumer \
     src/runtime/binary_object/scalar_script.rs \
-    '        NativeAtomClass::Private => unadmitted("private atom is not a String value"),' \
-    '        NativeAtomClass::Private => project_atom_string_spelling(atom),'
+    '        AtomOperandClass::Private => unadmitted("private atom is not a String value"),' \
+    '        AtomOperandClass::Private => project_atom_string_spelling(atom),'
 expect_rewrite_rejected scalar-symbol-identity-admission scalar-native-atom-consumer \
     src/runtime/binary_object/scalar_script.rs \
-    '        NativeAtomClass::Symbol => unadmitted("symbol atom is not a String value"),' \
-    '        NativeAtomClass::Symbol => project_atom_string_spelling(atom),'
+    '        AtomOperandClass::Symbol => unadmitted("symbol atom is not a String value"),' \
+    '        AtomOperandClass::Symbol => project_atom_string_spelling(atom),'
 expect_rewrite_rejected scalar-index-identity-collapse scalar-native-atom-consumer \
     src/runtime/binary_object/scalar_script.rs \
     '            .map(ScalarValueDraft::IntegerAtomString)' \
@@ -5426,21 +5778,9 @@ expect_rewrite_rejected scalar-unary-visibility-widening scalar-unary-operation-
     src/runtime/binary_object/scalar_script.rs \
     'pub(in crate::runtime) enum ScalarUnaryOp {' \
     'pub(crate) enum ScalarUnaryOp {'
-expect_rejected scalar-source-include forbidden-source-include \
-    src/runtime/binary_object/scalar_script.rs \
-    'include!("scalar_unary_escape.rs");'
-expect_rejected scalar-private-module scalar-script-top-level-item-set \
-    src/runtime/binary_object/scalar_script.rs \
-    'mod scalar_unary_escape;'
-expect_rejected scalar-private-trait scalar-script-top-level-item-set \
-    src/runtime/binary_object/scalar_script.rs \
-    'trait ScalarUnaryEscape {}'
 expect_rejected scalar-helper-escape scalar-script-helper-set \
     src/runtime/binary_object/scalar_script.rs \
     'fn admit_unary_without_sidecars() {}'
-expect_rejected scalar-macro-escape scalar-script-macro-set \
-    src/runtime/binary_object/scalar_script.rs \
-    'scalar_unary_escape!();'
 expect_rewrite_rejected consumer-publication-visibility-widening binary-object-consumer-publication \
     src/runtime/binary_object_publish.rs \
     '    pub(super) fn read_trusted_scalar_script_in_realm(' \

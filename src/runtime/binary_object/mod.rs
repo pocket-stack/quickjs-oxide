@@ -16,6 +16,9 @@ mod code;
 mod function_envelope;
 
 #[allow(dead_code)]
+mod function_translate;
+
+#[allow(dead_code)]
 mod bytecode_image;
 
 #[allow(dead_code)]

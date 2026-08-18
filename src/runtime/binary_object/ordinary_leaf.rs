@@ -10,10 +10,14 @@ use std::fmt;
 
 use super::bytecode_image::{
     BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError, ModuleLimits,
-    NativeCodePlan, NativeOperands, decode_bytecode_image_body, decode_native_code_plan,
+    decode_bytecode_image_body,
 };
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits, FunctionKind};
+use super::function_translate::{
+    FunctionCode, FunctionOp, FunctionTranslateError, OperationDiagnostic, TranslationTarget,
+    translate_function,
+};
 use super::graph::decode::DecodeError;
 use super::graph::model::{
     ArrayBufferLayoutError, GraphError, GraphLimits, TypedArrayLayoutError, WireValue,
@@ -389,24 +393,10 @@ fn admit_image(
         strip_variable_debug: true,
     };
     let constants = preflight_constants(target.constants())?;
-    let plan = decode_native_code_plan(image, target_id).map_err(|error| {
-        if error.is_label_target_error() {
-            OrdinaryLeafReadError::Unadmitted(
-                "ordinary-leaf control flow has an invalid native label target".into(),
-            )
-        } else {
-            let message = error.to_string();
-            if message.is_empty() {
-                OrdinaryLeafReadError::Internal(
-                    "ordinary-leaf native plan failed without a diagnostic".into(),
-                )
-            } else {
-                OrdinaryLeafReadError::Internal(message)
-            }
-        }
-    })?;
+    let translated = translate_function(image, target_id, TranslationTarget::Ordinary)
+        .map_err(classify_translation_error)?;
     let code = lower_code(
-        &plan,
+        &translated,
         metadata.argument_count,
         metadata.local_count,
         constants.len(),
@@ -474,202 +464,142 @@ fn copy_bigint(bytes: &[u8]) -> Result<Box<[u8]>, OrdinaryLeafReadError> {
     Ok(copy.into_boxed_slice())
 }
 
-enum PendingOp {
-    Ready(OrdinaryLeafOp),
-    IfFalse(u32),
-    Goto(u32),
-}
-
 fn lower_code(
-    plan: &NativeCodePlan<'_>,
+    code: &FunctionCode<'_>,
     argument_count: u16,
     local_count: u16,
     constant_count: usize,
 ) -> Result<Box<[OrdinaryLeafOp]>, OrdinaryLeafReadError> {
-    let mut source_to_ir = Vec::new();
-    source_to_ir
-        .try_reserve_exact(plan.instructions().len())
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(code.instructions().len())
         .map_err(|_| {
             OrdinaryLeafReadError::Internal(
-                "could not allocate the ordinary-leaf instruction map".into(),
+                "could not allocate the resolved ordinary-leaf code".into(),
             )
         })?;
-    let mut pending = Vec::new();
-    pending
-        .try_reserve_exact(plan.instructions().len())
-        .map_err(|_| {
-            OrdinaryLeafReadError::Internal(
-                "could not allocate the ordinary-leaf instruction draft".into(),
-            )
-        })?;
-
-    for instruction in plan.instructions() {
-        let ir_index = u32::try_from(pending.len()).map_err(|_| {
-            OrdinaryLeafReadError::Resource(
-                "ordinary-leaf instruction count exceeds the draft index space".into(),
-            )
-        })?;
-        source_to_ir.push(ir_index);
-        pending.push(lower_instruction(
-            instruction.opcode().name(),
-            instruction.operands(),
+    for instruction in code.instructions() {
+        if !instruction.supports_ordinary() {
+            return Err(unsupported_operation(instruction.rejection_diagnostic()));
+        }
+        output.push(lower_operation(
+            instruction.operation(),
             argument_count,
             local_count,
             constant_count,
+            code.instructions().len(),
         )?);
-    }
-
-    let mut output = Vec::new();
-    output.try_reserve_exact(pending.len()).map_err(|_| {
-        OrdinaryLeafReadError::Internal("could not allocate the resolved ordinary-leaf code".into())
-    })?;
-    for operation in pending {
-        output.push(match operation {
-            PendingOp::Ready(operation) => operation,
-            PendingOp::IfFalse(target) => {
-                OrdinaryLeafOp::IfFalse(resolve_ir_target(&source_to_ir, target)?)
-            }
-            PendingOp::Goto(target) => {
-                OrdinaryLeafOp::Goto(resolve_ir_target(&source_to_ir, target)?)
-            }
-        });
     }
     Ok(output.into_boxed_slice())
 }
 
-fn lower_instruction(
-    name: &str,
-    operands: &NativeOperands<'_>,
+fn lower_operation(
+    operation: &FunctionOp<'_>,
     argument_count: u16,
     local_count: u16,
     constant_count: usize,
-) -> Result<PendingOp, OrdinaryLeafReadError> {
-    let ready = |operation| Ok(PendingOp::Ready(operation));
-    match (name, operands) {
-        ("push_i32", NativeOperands::I32(value)) => ready(OrdinaryLeafOp::PushI32(*value)),
-        (
-            "push_minus1" | "push_0" | "push_1" | "push_2" | "push_3" | "push_4" | "push_5"
-            | "push_6" | "push_7",
-            NativeOperands::NoneInt(value),
-        ) => ready(OrdinaryLeafOp::PushI32(*value)),
-        ("push_i8", NativeOperands::I8(value)) => ready(OrdinaryLeafOp::PushI32(i32::from(*value))),
-        ("push_i16", NativeOperands::I16(value)) => {
-            ready(OrdinaryLeafOp::PushI32(i32::from(*value)))
-        }
-        ("push_const", NativeOperands::Const(index)) => lower_constant(*index, constant_count),
-        ("push_const8", NativeOperands::Const8(index)) => {
-            lower_constant(u32::from(*index), constant_count)
-        }
-        ("get_loc", NativeOperands::Loc(index)) => {
-            lower_local(*index, local_count, OrdinaryLeafOp::GetLocal)
-        }
-        ("get_loc8", NativeOperands::Loc8(index)) => {
-            lower_local(u16::from(*index), local_count, OrdinaryLeafOp::GetLocal)
-        }
-        ("get_loc0" | "get_loc1" | "get_loc2" | "get_loc3", NativeOperands::NoneLoc(index)) => {
-            lower_local(*index, local_count, OrdinaryLeafOp::GetLocal)
-        }
-        ("put_loc", NativeOperands::Loc(index)) => {
-            lower_local(*index, local_count, OrdinaryLeafOp::PutLocal)
-        }
-        ("put_loc8", NativeOperands::Loc8(index)) => {
-            lower_local(u16::from(*index), local_count, OrdinaryLeafOp::PutLocal)
-        }
-        ("put_loc0" | "put_loc1" | "put_loc2" | "put_loc3", NativeOperands::NoneLoc(index)) => {
-            lower_local(*index, local_count, OrdinaryLeafOp::PutLocal)
-        }
-        ("set_loc", NativeOperands::Loc(index)) => {
-            lower_local(*index, local_count, OrdinaryLeafOp::SetLocal)
-        }
-        ("set_loc8", NativeOperands::Loc8(index)) => {
-            lower_local(u16::from(*index), local_count, OrdinaryLeafOp::SetLocal)
-        }
-        ("set_loc0" | "set_loc1" | "set_loc2" | "set_loc3", NativeOperands::NoneLoc(index)) => {
-            lower_local(*index, local_count, OrdinaryLeafOp::SetLocal)
-        }
-        ("get_arg", NativeOperands::Arg(index)) => {
+    instruction_count: usize,
+) -> Result<OrdinaryLeafOp, OrdinaryLeafReadError> {
+    match operation {
+        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),
+        FunctionOp::PushConstant(index) => lower_constant(*index, constant_count),
+        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::GetLocal),
+        FunctionOp::PutLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::PutLocal),
+        FunctionOp::SetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::SetLocal),
+        FunctionOp::GetArgument(index) => {
             lower_argument(*index, argument_count, OrdinaryLeafOp::GetArgument)
         }
-        ("get_arg0" | "get_arg1" | "get_arg2" | "get_arg3", NativeOperands::NoneArg(index)) => {
-            lower_argument(*index, argument_count, OrdinaryLeafOp::GetArgument)
-        }
-        ("put_arg", NativeOperands::Arg(index)) => {
+        FunctionOp::PutArgument(index) => {
             lower_argument(*index, argument_count, OrdinaryLeafOp::PutArgument)
         }
-        ("put_arg0" | "put_arg1" | "put_arg2" | "put_arg3", NativeOperands::NoneArg(index)) => {
-            lower_argument(*index, argument_count, OrdinaryLeafOp::PutArgument)
-        }
-        ("set_arg", NativeOperands::Arg(index)) => {
+        FunctionOp::SetArgument(index) => {
             lower_argument(*index, argument_count, OrdinaryLeafOp::SetArgument)
         }
-        ("set_arg0" | "set_arg1" | "set_arg2" | "set_arg3", NativeOperands::NoneArg(index)) => {
-            lower_argument(*index, argument_count, OrdinaryLeafOp::SetArgument)
+        FunctionOp::Add => Ok(OrdinaryLeafOp::Add),
+        FunctionOp::Sub => Ok(OrdinaryLeafOp::Sub),
+        FunctionOp::Div => Ok(OrdinaryLeafOp::Div),
+        FunctionOp::GreaterThan => Ok(OrdinaryLeafOp::GreaterThan),
+        FunctionOp::StrictEqual => Ok(OrdinaryLeafOp::StrictEqual),
+        FunctionOp::IfFalse(target) => {
+            validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfFalse)
         }
-        ("add", NativeOperands::None) => ready(OrdinaryLeafOp::Add),
-        ("sub", NativeOperands::None) => ready(OrdinaryLeafOp::Sub),
-        ("div", NativeOperands::None) => ready(OrdinaryLeafOp::Div),
-        ("gt", NativeOperands::None) => ready(OrdinaryLeafOp::GreaterThan),
-        ("strict_eq", NativeOperands::None) => ready(OrdinaryLeafOp::StrictEqual),
-        ("if_false", NativeOperands::Label(label)) => {
-            Ok(PendingOp::IfFalse(label.target_instruction()))
+        FunctionOp::Goto(target) => {
+            validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto)
         }
-        ("if_false8", NativeOperands::Label8(label)) => {
-            Ok(PendingOp::IfFalse(label.target_instruction()))
-        }
-        ("goto", NativeOperands::Label(label)) => Ok(PendingOp::Goto(label.target_instruction())),
-        ("goto8", NativeOperands::Label8(label)) => Ok(PendingOp::Goto(label.target_instruction())),
-        ("goto16", NativeOperands::Label16(label)) => {
-            Ok(PendingOp::Goto(label.target_instruction()))
-        }
-        ("return", NativeOperands::None) => ready(OrdinaryLeafOp::Return),
-        _ => unadmitted(&format!(
-            "native operation {name} with {:?} operands is outside the first ordinary-leaf cohort",
-            operands.format()
+        FunctionOp::Return => Ok(OrdinaryLeafOp::Return),
+        _ => Err(OrdinaryLeafReadError::Internal(
+            "ordinary-capable translated operation has no ordinary-leaf lowering".into(),
         )),
     }
 }
 
-fn lower_constant(index: u32, constant_count: usize) -> Result<PendingOp, OrdinaryLeafReadError> {
+fn lower_constant(
+    index: u32,
+    constant_count: usize,
+) -> Result<OrdinaryLeafOp, OrdinaryLeafReadError> {
     if (index as usize) >= constant_count {
         return unadmitted("ordinary-leaf constant operand is outside the constant pool");
     }
-    Ok(PendingOp::Ready(OrdinaryLeafOp::PushConst(index)))
+    Ok(OrdinaryLeafOp::PushConst(index))
 }
 
 fn lower_local(
     index: u16,
     local_count: u16,
     operation: impl FnOnce(u16) -> OrdinaryLeafOp,
-) -> Result<PendingOp, OrdinaryLeafReadError> {
+) -> Result<OrdinaryLeafOp, OrdinaryLeafReadError> {
     if index >= local_count {
         return unadmitted("ordinary-leaf local operand is outside the local slot table");
     }
-    Ok(PendingOp::Ready(operation(index)))
+    Ok(operation(index))
 }
 
 fn lower_argument(
     index: u16,
     argument_count: u16,
     operation: impl FnOnce(u16) -> OrdinaryLeafOp,
-) -> Result<PendingOp, OrdinaryLeafReadError> {
+) -> Result<OrdinaryLeafOp, OrdinaryLeafReadError> {
     if index >= argument_count {
         return unadmitted("ordinary-leaf argument operand is outside the argument slot table");
     }
-    Ok(PendingOp::Ready(operation(index)))
+    Ok(operation(index))
 }
 
-fn resolve_ir_target(
-    source_to_ir: &[u32],
+fn validate_ir_target(
     target_instruction: u32,
+    instruction_count: usize,
 ) -> Result<u32, OrdinaryLeafReadError> {
-    source_to_ir
-        .get(target_instruction as usize)
-        .copied()
-        .ok_or_else(|| {
-            OrdinaryLeafReadError::Internal(
-                "authenticated native label did not resolve in the instruction map".into(),
-            )
-        })
+    if (target_instruction as usize) < instruction_count {
+        Ok(target_instruction)
+    } else {
+        Err(OrdinaryLeafReadError::Internal(
+            "authenticated native label did not resolve in the instruction map".into(),
+        ))
+    }
+}
+
+fn unsupported_operation(diagnostic: OperationDiagnostic) -> OrdinaryLeafReadError {
+    OrdinaryLeafReadError::Unadmitted(format!(
+        "native operation {} with {:?} operands is outside the first ordinary-leaf cohort",
+        diagnostic.mnemonic(),
+        diagnostic.operand_shape()
+    ))
+}
+
+fn classify_translation_error(error: FunctionTranslateError) -> OrdinaryLeafReadError {
+    if error.is_label_target_error() {
+        return OrdinaryLeafReadError::Unadmitted(
+            "ordinary-leaf control flow has an invalid native label target".into(),
+        );
+    }
+    let message = error.to_string();
+    if message.is_empty() {
+        OrdinaryLeafReadError::Internal(
+            "ordinary-leaf native plan failed without a diagnostic".into(),
+        )
+    } else {
+        OrdinaryLeafReadError::Internal(message)
+    }
 }
 
 fn unadmitted<T>(message: &str) -> Result<T, OrdinaryLeafReadError> {
@@ -886,13 +816,8 @@ mod tests {
         decode_trusted_ordinary_leaf(input, RootFunctionConstantSelector::from_zero_based(0))
     }
 
-    fn lower_ready(name: &str, operands: NativeOperands<'_>) -> OrdinaryLeafOp {
-        match lower_instruction(name, &operands, 4, 4, 4).unwrap() {
-            PendingOp::Ready(operation) => operation,
-            PendingOp::IfFalse(_) | PendingOp::Goto(_) => {
-                panic!("test expected a non-branch operation")
-            }
-        }
+    fn lower_ready(operation: FunctionOp<'_>) -> OrdinaryLeafOp {
+        lower_operation(&operation, 4, 4, 4, 8).unwrap()
     }
 
     fn encode_primitive(value: &WireValue) -> Vec<u8> {
@@ -1004,135 +929,43 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_every_admitted_non_label_operand_width_by_name_and_format() {
+    fn lowers_every_sanitized_ordinary_operation_without_consulting_diagnostics() {
         let cases = [
             (
-                "push_i32",
-                NativeOperands::I32(i32::MIN),
+                FunctionOp::PushI32(i32::MIN),
                 OrdinaryLeafOp::PushI32(i32::MIN),
             ),
-            (
-                "push_minus1",
-                NativeOperands::NoneInt(-1),
-                OrdinaryLeafOp::PushI32(-1),
-            ),
-            (
-                "push_i8",
-                NativeOperands::I8(i8::MIN),
-                OrdinaryLeafOp::PushI32(i32::from(i8::MIN)),
-            ),
-            (
-                "push_i16",
-                NativeOperands::I16(i16::MIN),
-                OrdinaryLeafOp::PushI32(i32::from(i16::MIN)),
-            ),
-            (
-                "push_const",
-                NativeOperands::Const(3),
-                OrdinaryLeafOp::PushConst(3),
-            ),
-            (
-                "push_const8",
-                NativeOperands::Const8(2),
-                OrdinaryLeafOp::PushConst(2),
-            ),
-            (
-                "get_loc",
-                NativeOperands::Loc(3),
-                OrdinaryLeafOp::GetLocal(3),
-            ),
-            (
-                "get_loc8",
-                NativeOperands::Loc8(2),
-                OrdinaryLeafOp::GetLocal(2),
-            ),
-            (
-                "get_loc1",
-                NativeOperands::NoneLoc(1),
-                OrdinaryLeafOp::GetLocal(1),
-            ),
-            (
-                "put_loc",
-                NativeOperands::Loc(3),
-                OrdinaryLeafOp::PutLocal(3),
-            ),
-            (
-                "put_loc8",
-                NativeOperands::Loc8(2),
-                OrdinaryLeafOp::PutLocal(2),
-            ),
-            (
-                "put_loc1",
-                NativeOperands::NoneLoc(1),
-                OrdinaryLeafOp::PutLocal(1),
-            ),
-            (
-                "set_loc",
-                NativeOperands::Loc(3),
-                OrdinaryLeafOp::SetLocal(3),
-            ),
-            (
-                "set_loc8",
-                NativeOperands::Loc8(2),
-                OrdinaryLeafOp::SetLocal(2),
-            ),
-            (
-                "set_loc1",
-                NativeOperands::NoneLoc(1),
-                OrdinaryLeafOp::SetLocal(1),
-            ),
-            (
-                "get_arg",
-                NativeOperands::Arg(3),
-                OrdinaryLeafOp::GetArgument(3),
-            ),
-            (
-                "get_arg1",
-                NativeOperands::NoneArg(1),
-                OrdinaryLeafOp::GetArgument(1),
-            ),
-            (
-                "put_arg",
-                NativeOperands::Arg(3),
-                OrdinaryLeafOp::PutArgument(3),
-            ),
-            (
-                "put_arg1",
-                NativeOperands::NoneArg(1),
-                OrdinaryLeafOp::PutArgument(1),
-            ),
-            (
-                "set_arg",
-                NativeOperands::Arg(3),
-                OrdinaryLeafOp::SetArgument(3),
-            ),
-            (
-                "set_arg1",
-                NativeOperands::NoneArg(1),
-                OrdinaryLeafOp::SetArgument(1),
-            ),
-            ("add", NativeOperands::None, OrdinaryLeafOp::Add),
-            ("sub", NativeOperands::None, OrdinaryLeafOp::Sub),
-            ("div", NativeOperands::None, OrdinaryLeafOp::Div),
-            ("gt", NativeOperands::None, OrdinaryLeafOp::GreaterThan),
-            (
-                "strict_eq",
-                NativeOperands::None,
-                OrdinaryLeafOp::StrictEqual,
-            ),
-            ("return", NativeOperands::None, OrdinaryLeafOp::Return),
+            (FunctionOp::PushConstant(3), OrdinaryLeafOp::PushConst(3)),
+            (FunctionOp::GetLocal(3), OrdinaryLeafOp::GetLocal(3)),
+            (FunctionOp::PutLocal(2), OrdinaryLeafOp::PutLocal(2)),
+            (FunctionOp::SetLocal(1), OrdinaryLeafOp::SetLocal(1)),
+            (FunctionOp::GetArgument(3), OrdinaryLeafOp::GetArgument(3)),
+            (FunctionOp::PutArgument(2), OrdinaryLeafOp::PutArgument(2)),
+            (FunctionOp::SetArgument(1), OrdinaryLeafOp::SetArgument(1)),
+            (FunctionOp::Add, OrdinaryLeafOp::Add),
+            (FunctionOp::Sub, OrdinaryLeafOp::Sub),
+            (FunctionOp::Div, OrdinaryLeafOp::Div),
+            (FunctionOp::GreaterThan, OrdinaryLeafOp::GreaterThan),
+            (FunctionOp::StrictEqual, OrdinaryLeafOp::StrictEqual),
+            (FunctionOp::IfFalse(7), OrdinaryLeafOp::IfFalse(7)),
+            (FunctionOp::Goto(0), OrdinaryLeafOp::Goto(0)),
+            (FunctionOp::Return, OrdinaryLeafOp::Return),
         ];
-        for (name, operands, expected) in cases {
-            assert_eq!(lower_ready(name, operands), expected);
+        for (operation, expected) in cases {
+            assert_eq!(lower_ready(operation), expected);
         }
 
         assert!(matches!(
-            lower_instruction("push_i32", &NativeOperands::U32(1), 4, 4, 4),
+            lower_operation(&FunctionOp::PushConstant(4), 4, 4, 4, 8,),
             Err(OrdinaryLeafReadError::Unadmitted(_))
         ));
         assert!(matches!(
-            lower_instruction("get_loc", &NativeOperands::Loc8(1), 4, 4, 4),
+            lower_operation(&FunctionOp::GetLocal(4), 4, 4, 4, 8,),
             Err(OrdinaryLeafReadError::Unadmitted(_))
+        ));
+        assert!(matches!(
+            lower_operation(&FunctionOp::Goto(8), 4, 4, 4, 8,),
+            Err(OrdinaryLeafReadError::Internal(_))
         ));
     }
 
@@ -1269,10 +1102,23 @@ mod tests {
     fn rejects_outside_opcodes_operands_and_native_cfg_targets() {
         let mut unsupported_opcode = oracle();
         unsupported_opcode[72] = 0x98; // mul in place of add
-        assert!(matches!(
+        assert_eq!(
             decode(&unsupported_opcode),
-            Err(OrdinaryLeafReadError::Unadmitted(_))
-        ));
+            Err(OrdinaryLeafReadError::Unadmitted(
+                "native operation mul with None operands is outside the first ordinary-leaf cohort"
+                    .into()
+            ))
+        );
+
+        let mut scalar_only_opcode = oracle();
+        scalar_only_opcode[72] = 0x8a; // neg is translated, but is not ordinary-leaf capable
+        assert_eq!(
+            decode(&scalar_only_opcode),
+            Err(OrdinaryLeafReadError::Unadmitted(
+                "native operation neg with None operands is outside the first ordinary-leaf cohort"
+                    .into()
+            ))
+        );
 
         let mut constant_out_of_bounds = oracle();
         constant_out_of_bounds[56] = 0x02;

@@ -8,11 +8,14 @@ use std::fmt;
 
 use super::bytecode_image::{
     BytecodeImage, BytecodeImageError, BytecodeImageLimits, ImageAtomError, ModuleLimits,
-    NativeAtomClass, NativeAtomRef, NativeCodePlan, NativeOperands, decode_bytecode_image_body,
-    decode_native_code_plan,
+    decode_bytecode_image_body,
 };
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits};
+use super::function_translate::{
+    AtomOperand, AtomOperandClass, FunctionCode, FunctionOp, FunctionTranslateError,
+    FunctionUnaryOp, TranslationTarget, translate_function,
+};
 use super::graph::decode::DecodeError;
 use super::graph::model::{
     ArrayBufferLayoutError, GraphError, GraphLimits, TypedArrayLayoutError, WireValue,
@@ -54,16 +57,15 @@ pub(in crate::runtime) enum ScalarUnaryOp {
 }
 
 impl ScalarUnaryOp {
-    fn from_native(name: &str, operands: &NativeOperands<'_>) -> Option<Self> {
-        match (name, operands) {
-            ("neg", NativeOperands::None) => Some(Self::Neg),
-            ("plus", NativeOperands::None) => Some(Self::Plus),
-            ("dec", NativeOperands::None) => Some(Self::Dec),
-            ("inc", NativeOperands::None) => Some(Self::Inc),
-            ("not", NativeOperands::None) => Some(Self::BitNot),
-            ("lnot", NativeOperands::None) => Some(Self::LogicalNot),
-            ("typeof", NativeOperands::None) => Some(Self::TypeOf),
-            _ => None,
+    const fn from_translated(operation: FunctionUnaryOp) -> Self {
+        match operation {
+            FunctionUnaryOp::Neg => Self::Neg,
+            FunctionUnaryOp::Plus => Self::Plus,
+            FunctionUnaryOp::Dec => Self::Dec,
+            FunctionUnaryOp::Inc => Self::Inc,
+            FunctionUnaryOp::BitNot => Self::BitNot,
+            FunctionUnaryOp::LogicalNot => Self::LogicalNot,
+            FunctionUnaryOp::TypeOf => Self::TypeOf,
         }
     }
 }
@@ -80,14 +82,14 @@ impl ScalarStringDraft {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 enum ScalarPush<'image> {
     Direct(ScalarValueDraft),
     Constant(u32),
-    AtomValue(NativeAtomRef<'image>),
+    AtomValue(AtomOperand<'image>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct ScalarSequence<'image> {
     push: ScalarPush<'image>,
     unary_ops: Box<[ScalarUnaryOp]>,
@@ -255,11 +257,9 @@ fn admit_image(
         return unadmitted("completion-local metadata is outside the admitted shape");
     }
 
-    let native_plan = decode_native_code_plan(image, root).map_err(|error| {
-        let outside_scalar_shape = error.is_label_target_error();
-        classify_native_plan_error(error, outside_scalar_shape)
-    })?;
-    let Some(sequence) = decode_scalar_sequence(&native_plan)? else {
+    let translated = translate_function(image, root, TranslationTarget::Scalar)
+        .map_err(classify_translation_error)?;
+    let Some(sequence) = decode_scalar_sequence(translated)? else {
         return unadmitted("native payload opcode sequence is outside the admitted shape");
     };
     if !matches!(&sequence.push, ScalarPush::AtomValue(_)) && image.input_atom_slot_count() != 0 {
@@ -302,7 +302,7 @@ fn admit_image(
 
 fn project_atom_string(
     image: &BytecodeImage,
-    atom: NativeAtomRef<'_>,
+    atom: AtomOperand<'_>,
 ) -> Result<ScalarValueDraft, ScalarScriptReadError> {
     match image.input_atom_slot_count() {
         0 if atom.originates_from_input_atom_table() => {
@@ -325,41 +325,39 @@ fn project_atom_string(
     }
 
     match atom.class() {
-        NativeAtomClass::Null => unadmitted("null atom is not a String value"),
-        NativeAtomClass::Private => unadmitted("private atom is not a String value"),
-        NativeAtomClass::Symbol => unadmitted("symbol atom is not a String value"),
-        NativeAtomClass::Index => atom
-            .index()
+        AtomOperandClass::Null => unadmitted("null atom is not a String value"),
+        AtomOperandClass::Private => unadmitted("private atom is not a String value"),
+        AtomOperandClass::Symbol => unadmitted("symbol atom is not a String value"),
+        AtomOperandClass::Index => atom
+            .index_value()
             .map(ScalarValueDraft::IntegerAtomString)
             .ok_or_else(|| {
                 ScalarScriptReadError::Internal(
                     "Index atom projection contained no integer value".into(),
                 )
             }),
-        NativeAtomClass::String => project_atom_string_spelling(atom),
+        AtomOperandClass::String => project_atom_string_spelling(atom),
     }
 }
 
 fn project_atom_string_spelling(
-    atom: NativeAtomRef<'_>,
+    atom: AtomOperand<'_>,
 ) -> Result<ScalarValueDraft, ScalarScriptReadError> {
-    if let Some(value) = atom.manifest_string() {
-        return copy_utf16(value.encode_utf16(), value.encode_utf16().count())
-            .map(ScalarValueDraft::AtomString);
-    }
-    if let Some(value) = atom.dynamic_string() {
-        return copy_wire_string(value).map(ScalarValueDraft::AtomString);
-    }
-    Err(ScalarScriptReadError::Internal(
-        "String atom projection contained no spelling".into(),
-    ))
+    let Some(length) = atom.string_utf16_len() else {
+        return Err(ScalarScriptReadError::Internal(
+            "String atom projection contained no spelling".into(),
+        ));
+    };
+    let Some(units) = atom.string_utf16_units() else {
+        return Err(ScalarScriptReadError::Internal(
+            "String atom projection contained no spelling".into(),
+        ));
+    };
+    copy_utf16(units, length).map(ScalarValueDraft::AtomString)
 }
 
-fn classify_native_plan_error(
-    error: impl fmt::Display,
-    outside_scalar_shape: bool,
-) -> ScalarScriptReadError {
-    if outside_scalar_shape {
+fn classify_translation_error(error: FunctionTranslateError) -> ScalarScriptReadError {
+    if error.is_label_target_error() {
         return ScalarScriptReadError::Unadmitted(
             "native payload opcode sequence is outside the admitted shape".into(),
         );
@@ -408,26 +406,25 @@ fn copy_bigint_bytes(bytes: &[u8]) -> Result<Box<[u8]>, ScalarScriptReadError> {
     Ok(copy.into_boxed_slice())
 }
 
-/// Decode the release-pinned scalar sequence from the authenticated native
-/// operand plan without consulting archival code bytes or scanner sidecars.
+/// Decode the release-pinned scalar sequence from sanitized translated code.
 fn decode_scalar_sequence<'image>(
-    plan: &NativeCodePlan<'image>,
+    code: FunctionCode<'image>,
 ) -> Result<Option<ScalarSequence<'image>>, ScalarScriptReadError> {
-    let [push, unary_instructions @ .., set_completion, return_value] = plan.instructions() else {
+    let [push, unary_instructions @ .., set_completion, return_value] = code.instructions() else {
         return Ok(None);
     };
-    if !matches!(
-        (set_completion.opcode().name(), set_completion.operands()),
-        ("set_loc0", NativeOperands::NoneLoc(0))
-    ) || !matches!(
-        (return_value.opcode().name(), return_value.operands()),
-        ("return", NativeOperands::None)
-    ) {
+    if code
+        .instructions()
+        .iter()
+        .any(|instruction| !instruction.supports_scalar())
+        || !matches!(set_completion.operation(), FunctionOp::SetLocal(0))
+        || !matches!(return_value.operation(), FunctionOp::Return)
+    {
         return Ok(None);
     }
-    let Some(push) = decode_scalar_push(push.opcode().name(), push.operands()) else {
+    if !is_scalar_push(push.operation()) {
         return Ok(None);
-    };
+    }
 
     let mut unary_ops = Vec::new();
     unary_ops
@@ -438,13 +435,21 @@ fn decode_scalar_sequence<'image>(
             )
         })?;
     for instruction in unary_instructions {
-        let Some(operation) =
-            ScalarUnaryOp::from_native(instruction.opcode().name(), instruction.operands())
-        else {
+        let FunctionOp::Unary(operation) = instruction.operation() else {
             return Ok(None);
         };
-        unary_ops.push(operation);
+        unary_ops.push(ScalarUnaryOp::from_translated(*operation));
     }
+
+    let mut instructions = code.into_instructions().into_vec().into_iter();
+    let push = instructions
+        .next()
+        .and_then(|instruction| decode_scalar_push(instruction.into_operation()))
+        .ok_or_else(|| {
+            ScalarScriptReadError::Internal(
+                "validated scalar push disappeared during sanitized translation".into(),
+            )
+        })?;
 
     Ok(Some(ScalarSequence {
         push,
@@ -452,55 +457,39 @@ fn decode_scalar_sequence<'image>(
     }))
 }
 
-/// Classify one typed release-pinned scalar push. Any later instructions are
+/// Classify one translated scalar push. Any later instructions are
 /// authenticated independently as the unary-operation chain.
-fn decode_scalar_push<'image>(
-    name: &str,
-    operands: &NativeOperands<'image>,
-) -> Option<ScalarPush<'image>> {
-    match (name, operands) {
-        ("push_atom_value", NativeOperands::Atom(atom)) => Some(ScalarPush::AtomValue(*atom)),
-        ("push_const8", NativeOperands::Const8(index)) => {
-            Some(ScalarPush::Constant(u32::from(*index)))
-        }
-        ("push_const", NativeOperands::Const(index)) => Some(ScalarPush::Constant(*index)),
-        _ => decode_direct_scalar_push(name, operands).map(ScalarPush::Direct),
+const fn is_scalar_push(operation: &FunctionOp<'_>) -> bool {
+    matches!(
+        operation,
+        FunctionOp::PushAtom(_)
+            | FunctionOp::PushConstant(_)
+            | FunctionOp::PushUndefined
+            | FunctionOp::PushNull
+            | FunctionOp::PushBool(_)
+            | FunctionOp::PushBigIntI32(_)
+            | FunctionOp::PushEmptyString
+            | FunctionOp::PushI32(_)
+    )
+}
+
+fn decode_scalar_push<'image>(operation: FunctionOp<'image>) -> Option<ScalarPush<'image>> {
+    match operation {
+        FunctionOp::PushAtom(atom) => Some(ScalarPush::AtomValue(atom)),
+        FunctionOp::PushConstant(index) => Some(ScalarPush::Constant(index)),
+        _ => decode_direct_scalar_push(operation).map(ScalarPush::Direct),
     }
 }
 
-/// Decode the release-pinned atom-free scalar opcode cohort.
-fn decode_direct_scalar_push(
-    name: &str,
-    operands: &NativeOperands<'_>,
-) -> Option<ScalarValueDraft> {
-    match (name, operands) {
-        ("undefined", NativeOperands::None) => Some(ScalarValueDraft::Undefined),
-        ("null", NativeOperands::None) => Some(ScalarValueDraft::Null),
-        ("push_false", NativeOperands::None) => Some(ScalarValueDraft::Bool(false)),
-        ("push_true", NativeOperands::None) => Some(ScalarValueDraft::Bool(true)),
-        ("push_bigint_i32", NativeOperands::I32(value)) => {
-            Some(ScalarValueDraft::BigIntI32(*value))
-        }
-        ("push_empty_string", NativeOperands::None) => Some(ScalarValueDraft::EmptyString),
-        _ => decode_direct_int32_push(name, operands).map(ScalarValueDraft::Int),
-    }
-}
-
-/// Decode the complete release-pinned direct Int32 opcode family.
-///
-/// QuickJS canonicalizes source literals to the shortest spelling, but its
-/// bytecode reader also accepts wider spellings for the same value. The native
-/// plan has already normalized each width to its signed semantic operand.
-fn decode_direct_int32_push(name: &str, operands: &NativeOperands<'_>) -> Option<i32> {
-    match (name, operands) {
-        (
-            "push_minus1" | "push_0" | "push_1" | "push_2" | "push_3" | "push_4" | "push_5"
-            | "push_6" | "push_7",
-            NativeOperands::NoneInt(value),
-        ) => Some(*value),
-        ("push_i8", NativeOperands::I8(value)) => Some(i32::from(*value)),
-        ("push_i16", NativeOperands::I16(value)) => Some(i32::from(*value)),
-        ("push_i32", NativeOperands::I32(value)) => Some(*value),
+/// Decode the translated atom-free scalar opcode cohort.
+fn decode_direct_scalar_push(operation: FunctionOp<'_>) -> Option<ScalarValueDraft> {
+    match operation {
+        FunctionOp::PushUndefined => Some(ScalarValueDraft::Undefined),
+        FunctionOp::PushNull => Some(ScalarValueDraft::Null),
+        FunctionOp::PushBool(value) => Some(ScalarValueDraft::Bool(value)),
+        FunctionOp::PushBigIntI32(value) => Some(ScalarValueDraft::BigIntI32(value)),
+        FunctionOp::PushEmptyString => Some(ScalarValueDraft::EmptyString),
+        FunctionOp::PushI32(value) => Some(ScalarValueDraft::Int(value)),
         _ => None,
     }
 }
@@ -706,7 +695,10 @@ mod tests {
     const OP_BIT_NOT: u8 = 0x93;
     const OP_LOGICAL_NOT: u8 = 0x94;
     const OP_TYPEOF: u8 = 0x95;
+    const OP_SET_LOC: u8 = 0x57;
+    const OP_SET_LOC8: u8 = 0xc2;
     const OP_SET_LOC0: u8 = 0xcb;
+    const OP_SET_LOC1: u8 = 0xcc;
     const OP_GOTO8: u8 = 0xea;
 
     const RETURN_42: [u8; 25] = [
@@ -1020,6 +1012,59 @@ mod tests {
                 Err(ScalarScriptReadError::Unadmitted(_))
             ));
         }
+    }
+
+    #[test]
+    fn string_atom_copy_stays_after_shape_slot_and_constant_checks() {
+        let two_atom_operands = scalar_with_code(&[
+            OP_PUSH_ATOM_VALUE,
+            50,
+            0,
+            0,
+            0,
+            OP_PUSH_ATOM_VALUE,
+            50,
+            0,
+            0,
+            0,
+            OP_SET_LOC0,
+            OP_RETURN,
+        ]);
+        assert_eq!(
+            decode_trusted_scalar_script(&two_atom_operands),
+            Err(ScalarScriptReadError::Unadmitted(
+                "native payload opcode sequence is outside the admitted shape".into()
+            ))
+        );
+
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_unused_atom_slot(
+                50,
+                &[u16::from(b'x')],
+                false,
+            )),
+            Err(ScalarScriptReadError::Unadmitted(
+                "bytecode image's sole input atom slot is not the function's sole atom operand"
+                    .into()
+            ))
+        );
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_two_atom_slots()),
+            Err(ScalarScriptReadError::Unadmitted(
+                "bytecode image contains 2 input atom slots instead of at most one".into()
+            ))
+        );
+
+        let string_entry = string_constant_entry(&[u16::from(b'x')], false);
+        assert_eq!(
+            decode_trusted_scalar_script(&scalar_with_constants(
+                &[OP_PUSH_ATOM_VALUE, 50, 0, 0, 0, OP_SET_LOC0, OP_RETURN],
+                &[&string_entry],
+            )),
+            Err(ScalarScriptReadError::Unadmitted(
+                "atom-value scalar opcode carries a function constant".into()
+            ))
+        );
     }
 
     #[test]
@@ -1410,6 +1455,19 @@ mod tests {
             decode_trusted_scalar_script(&scalar_with_code(&[0x08, OP_SET_LOC0, OP_RETURN])),
             Err(ScalarScriptReadError::Unadmitted(_))
         ));
+
+        // Semantic normalization must not make alternate physical encodings
+        // of completion-local zero part of the scalar opcode table.
+        for code in [
+            &[OP_PUSH_0, OP_SET_LOC, 0, 0, OP_RETURN][..],
+            &[OP_PUSH_0, OP_SET_LOC8, 0, OP_RETURN],
+            &[OP_PUSH_0, OP_SET_LOC1, OP_RETURN],
+        ] {
+            assert!(matches!(
+                decode_trusted_scalar_script(&scalar_with_code(code)),
+                Err(ScalarScriptReadError::Unadmitted(_))
+            ));
+        }
 
         // QuickJS's object reader advances over label operands without
         // validating their targets. The generic native plan validates them,

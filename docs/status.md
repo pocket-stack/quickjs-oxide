@@ -180,14 +180,17 @@ and in-range instruction-boundary targets. Raw `ImageAtom`/`PinnedAtomId`
 identities and native code bytes never enter its DTOs: atoms become sealed
 semantic class, index, spelling, and input-table-provenance projections. The
 stage imports no engine `Instruction`, heap/VM type, or runtime
-`JsString`/`Value`. A narrow `bytecode_image` facade supplies those typed DTOs
-to the scalar and ordinary-leaf admission bridges. The scalar path no longer
-owns a duplicate native byte, width, instruction-sidecar, or atom-relocation
-decoder, and the detached single-atom projection path has been retired. The
-plan remains a runtime-independent archive representation; only the separate
-publication bridge creates executable instructions. This adds no source
-syntax, Feature Parity claim, or Test262 metric change, and a general
-FunctionBytecode execution bridge remains later work.
+`JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
+the plan's sole production consumer. It checks all 244 pinned descriptor
+formats, preserves the existing scalar and ordinary physical cohorts, and
+projects only sanitized semantic DTOs to those admission bridges. The scalar
+policy remains 30 opcodes, the ordinary policy 58, and their union 72 (172
+blocked, 14 scalar-only, 42 ordinary-only, and 16 shared registry rows).
+The scalar and ordinary paths no longer own duplicate opcode-name lowering
+tables. The plan and translation remain runtime-independent archive stages;
+only the separate publication bridge creates executable instructions. This
+refactor adds no public API, admitted opcode, source syntax, or Feature Parity
+claim.
 A bounded `FunctionRecordPrefix` layer now reads and canonically writes the
 fixed FunctionBytecode body after tag 12: flags, frame metadata, locals,
 closures, scanned code, and optional debug bytes. It stops immediately before
@@ -369,11 +372,11 @@ same vector through `Context::read_trusted_ordinary_function`, maps every target
 to an IR instruction index, and exercises both branches through the dedicated
 verified publication path.
 
-A fresh full R3fj run certifies that the ordinary-leaf feature leaves the
-complete classified result vector unchanged: 79,982 full passes, 80,032
-eligible variants, and 102,037 total variants. Its additional primary evidence
-is the pinned C bytecode differential, Rust execution tests, and boundary
-gates.
+The authenticated R3fj receipt still pins the preceding ordinary-leaf feature
+source and is source-stale for this translation-only architecture tree. Its
+79,982 full passes, 80,032 eligible variants, and 102,037 total variants remain
+the current published metrics, not a fresh certification of this source. The
+profile, public APIs, and admitted physical cohorts are unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
