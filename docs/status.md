@@ -340,13 +340,11 @@ Postfix update operations, reference/local mutation, `delete`, `void`, `await`,
 and Object, Private, or Symbol inputs remain outside this scalar-only cohort.
 This is the last scalar-specific admission milestone; the next bytecode step is
 general FunctionBytecode translation rather than another shape-specific path.
-The current authenticated R3fj receipt certifies the scalar-unary semantic
-milestone at 79,982 full passes, 80,032 eligible variants, and 102,037 total
-variants. Its engine-source fingerprint is intentionally stale for the later
-archive-only native-plan refactors in this tree; an unchanged vector is the
-expected result, not yet a fresh certification of this source. The
-scalar-unary frontier's additional primary evidence is the pinned C
-bytecode/identity differential plus Rust execution and boundary gates.
+A fresh full R3fj run certifies that the archive-only native-plan refactors
+leave the complete classified result vector unchanged: 79,982 full passes,
+80,032 eligible variants, and 102,037 total variants. The scalar-unary
+frontier's additional primary evidence is the pinned C bytecode/identity
+differential plus Rust execution and boundary gates.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
