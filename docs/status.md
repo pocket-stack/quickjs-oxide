@@ -372,11 +372,11 @@ same vector through `Context::read_trusted_ordinary_function`, maps every target
 to an IR instruction index, and exercises both branches through the dedicated
 verified publication path.
 
-The authenticated R3fj receipt still pins the preceding ordinary-leaf feature
-source and is source-stale for this translation-only architecture tree. Its
-79,982 full passes, 80,032 eligible variants, and 102,037 total variants remain
-the current published metrics, not a fresh certification of this source. The
-profile, public APIs, and admitted physical cohorts are unchanged.
+A fresh full R3fj run now authenticates this translation-only architecture
+tree: all 102,037 classified outcomes are byte-for-byte unchanged after
+normalizing the source fingerprint, with 79,982 full passes among 80,032
+eligible variants. The profile, public APIs, and admitted physical cohorts are
+unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
