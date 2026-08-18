@@ -369,13 +369,11 @@ same vector through `Context::read_trusted_ordinary_function`, maps every target
 to an IR instruction index, and exercises both branches through the dedicated
 verified publication path.
 
-The authenticated R3fj receipt remains pinned to the preceding native-plan
-source and is source-stale for this ordinary-leaf feature tree. Its 79,982 full
-passes, 80,032 eligible variants, and 102,037 total variants remain the current
-published metrics, not a fresh certification of this source. The Test262
-profile is unchanged and an unchanged classified vector is expected, but only
-a fresh full run can certify it. Current primary evidence for this feature is
-the pinned C bytecode differential, Rust execution tests, and boundary gates.
+A fresh full R3fj run certifies that the ordinary-leaf feature leaves the
+complete classified result vector unchanged: 79,982 full passes, 80,032
+eligible variants, and 102,037 total variants. Its additional primary evidence
+is the pinned C bytecode differential, Rust execution tests, and boundary
+gates.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
