@@ -485,21 +485,19 @@ oracle-manifest SHA-256 is
 `e77e56c7401d45d99705d017222202102b65f46824c668333972c17bf4d4254b`.
 
 The latest full R3fj receipt, from exact-source GitHub Actions run
-`32219821115`, authenticates the prior Stage 3B source
-`67fb048c76552e413fcd46b785f96b0529faa99a`
+`32282081045`, authenticates Stage 3C source
+`b0e78c10d15a881c772f1f9dc64d44f5bfceb235`
 with engine fingerprint
-`6154e006c5f2da41b183617ce609c2dafeaf154bff31a1fec026755e74e557db`.
-Artifact `9353967023` records the 102,050-line TSV as
-`7d4db430a789d7fd0911fcccd8783087b79dc36669f90b14e7d9a2b6491bda28`
+`1819135460c1a4c31d07455b2608a8af06447bcf4e3ad9fa3e955cc0ad1123fa`.
+Artifact `9376853796` records the 102,050-line TSV as
+`57f61fa93566d7942c79a20dff3c39706a0af9ada85f8762f827db6eb6b75e31`
 and the 102,039-line JSONL as
-`167602e97f8670ef3bf2f61a21b3613392e76c9adc2e7ffdbf05d3731a5b41a0`.
+`8187be1f040d259240ec04bc6b6bed823355aa720f3ea78f746e919544bae54b`.
 All 102,037 classified outcomes are byte-for-byte unchanged after normalizing
 the source fingerprint, with 79,982 full passes among 80,032 eligible variants;
 the refreshed 6,844-pass focused TSV and JSONL are also byte-identical on
-replay. That receipt is source-stale for Stage 3C and is not evidence for the
-new source fingerprint. Stage 3C changes neither the Test262 profile nor the
-published metrics, so the baseline above remains 79,982 full passes among
-80,032 eligible variants until the next exact-source receipt refresh.
+replay. Stage 3C changes neither the Test262 profile nor the published metrics,
+so the baseline above remains unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
