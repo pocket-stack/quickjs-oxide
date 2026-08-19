@@ -1458,17 +1458,23 @@ expected_recipe_variants = """
     PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
     PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
     SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
-    Goto Call Return ReturnUndefined
+    Goto Call Construct CallMethod ArrayFrom Return ReturnUndefined
 """.split()
-if (
-    enum_variant_names(recipe_code) != expected_recipe_variants
-    or re.search(r"\bCall[ \t\n]*\(", recipe_code)
-    or len(re.findall(r"\bCall[ \t\n]*,", recipe_code)) != 1
+invocation_variant_names = ("Call", "Construct", "CallMethod", "ArrayFrom")
+recipe_invocation_shapes = {
+    name: (
+        len(re.findall(rf"\b{name}[ \t\n]*,", recipe_code)),
+        bool(re.search(rf"\b{name}[ \t\n]*[({{]", recipe_code)),
+    )
+    for name in invocation_variant_names
+}
+if enum_variant_names(recipe_code) != expected_recipe_variants or any(
+    recipe_invocation_shapes[name] != (1, False) for name in invocation_variant_names
 ):
     fail(
         "function-translate-recipe-shape",
-        "Recipe must retain the exact reviewed inventory with one unit plain-Call recipe; "
-        f"found {enum_variant_names(recipe_code)}",
+        "Recipe must retain the exact reviewed inventory with unit Call, Construct, CallMethod, and ArrayFrom recipes; "
+        f"found {enum_variant_names(recipe_code)} with invocation shapes {recipe_invocation_shapes}",
     )
 
 dto_function_op_code, _, _ = unique_braced_item(
@@ -1483,20 +1489,28 @@ expected_function_op_variants = """
     Blocked OutsideTarget PushI32 PushConstant PushAtom PushUndefined PushNull
     PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
     PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
-    IfTrue Goto Call Return ReturnUndefined
+    IfTrue Goto Call Construct CallMethod ArrayFrom Return ReturnUndefined
 """.split()
-function_call_payloads = [
-    " ".join(payload.split())
-    for payload in re.findall(r"\bCall[ \t\n]*\(([^()]*)\)[ \t\n]*,", dto_function_op_code)
-]
+function_invocation_payloads = {
+    name: [
+        " ".join(payload.split())
+        for payload in re.findall(
+            rf"\b{name}[ \t\n]*\(([^()]*)\)[ \t\n]*,", dto_function_op_code
+        )
+    ]
+    for name in invocation_variant_names
+}
 if (
     enum_variant_names(dto_function_op_code) != expected_function_op_variants
-    or function_call_payloads != ["u16"]
+    or any(
+        function_invocation_payloads[name] != ["u16"]
+        for name in invocation_variant_names
+    )
 ):
     fail(
         "function-translate-dto-shape",
-        "FunctionOp must retain the exact reviewed inventory with Call(u16); "
-        f"found {enum_variant_names(dto_function_op_code)} with Call payloads {function_call_payloads}",
+        "FunctionOp must retain the exact reviewed inventory with u16 invocation payloads; "
+        f"found {enum_variant_names(dto_function_op_code)} with invocation payloads {function_invocation_payloads}",
     )
 
 pinned_opcode_relative = "src/runtime/binary_object/pinned_opcodes.rs"
@@ -1560,7 +1574,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (123, 1, 91, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (120, 1, 94, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1569,11 +1583,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 120, 121)
+    or derived_registry_counts != (30, 123, 124)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact final stage-two physical cohorts; "
+        "the centralized registry must preserve the exact final stage-three-A physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1628,6 +1642,9 @@ expect_admitted("OrdinaryOnly", "Recipe::IfFalse", (104, 232))
 expect_admitted("OrdinaryOnly", "Recipe::IfTrue", (105, 233))
 expect_admitted("OrdinaryOnly", "Recipe::Goto", (106, 234, 235))
 expect_admitted("OrdinaryOnly", "Recipe::Call", (34, 236, 237, 238, 239))
+expect_admitted("OrdinaryOnly", "Recipe::Construct", (33,))
+expect_admitted("OrdinaryOnly", "Recipe::CallMethod", (36,))
+expect_admitted("OrdinaryOnly", "Recipe::ArrayFrom", (38,))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
 expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
 for raw, operation in (
@@ -1657,7 +1674,13 @@ if found_admitted_registry != expected_admitted_registry:
     )
 
 expected_stage_boundaries = {
+    33: (("call_constructor", 3, 2, 1, "NPop"), "OrdinaryOnly", "Recipe::Construct"),
     34: (("call", 3, 1, 1, "NPop"), "OrdinaryOnly", "Recipe::Call"),
+    35: (("tail_call", 3, 1, 0, "NPop"), "Blocked", "Invocation"),
+    36: (("call_method", 3, 2, 1, "NPop"), "OrdinaryOnly", "Recipe::CallMethod"),
+    37: (("tail_call_method", 3, 2, 0, "NPop"), "Blocked", "Invocation"),
+    38: (("array_from", 3, 0, 1, "NPop"), "OrdinaryOnly", "Recipe::ArrayFrom"),
+    39: (("apply", 3, 3, 1, "U16"), "Blocked", "Invocation"),
     41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
     236: (("call0", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     237: (("call1", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
@@ -1672,7 +1695,7 @@ found_stage_boundaries = {
 if found_stage_boundaries != expected_stage_boundaries:
     fail(
         "function-translate-stage-boundary",
-        "zero-stack return-undefined and admitted plain calls must retain their pinned descriptor and policy rows; "
+        "reviewed invocation, zero-stack return-undefined, and plain-call boundaries must retain their pinned descriptors and policy rows; "
         f"found {found_stage_boundaries}",
     )
 
@@ -1709,8 +1732,43 @@ if found_stage_two_plain_call_rows != stage_two_plain_call_rows:
         f"found {found_stage_two_plain_call_rows}",
     )
 
+stage_three_a_invocation_rows = (
+    (33, "NPop", "Recipe::Construct"),
+    (36, "NPop", "Recipe::CallMethod"),
+    (38, "NPop", "Recipe::ArrayFrom"),
+)
+stage_three_a_recipe_names = {detail for _, _, detail in stage_three_a_invocation_rows}
+found_stage_three_a_invocation_rows = tuple(
+    (raw, operand_format, detail)
+    for raw, operand_format, audience, detail in registry_rows
+    if audience == "OrdinaryOnly" and detail in stage_three_a_recipe_names
+)
+if found_stage_three_a_invocation_rows != stage_three_a_invocation_rows:
+    fail(
+        "function-translate-stage-three-a-set",
+        "stage three A must admit exactly Construct raw 33, CallMethod raw 36, and ArrayFrom raw 38 with NPop operands; "
+        f"found {found_stage_three_a_invocation_rows}",
+    )
+
+stage_three_a_blocked_rows = (
+    (35, "NPop", "Invocation"),
+    (37, "NPop", "Invocation"),
+    (39, "U16", "Invocation"),
+)
+found_stage_three_a_blocked_rows = tuple(
+    (raw, registry_rows[raw][1], registry_rows[raw][3])
+    for raw, _, _ in stage_three_a_blocked_rows
+    if registry_rows[raw][2] == "Blocked"
+)
+if found_stage_three_a_blocked_rows != stage_three_a_blocked_rows:
+    fail(
+        "function-translate-stage-three-a-frontier",
+        "tail-call raws 35 and 37 plus apply raw 39 must remain blocked in Invocation; "
+        f"found {found_stage_three_a_blocked_rows}",
+    )
+
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 6 Completion 1
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 3 Completion 1
     Exception 2 EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
     Operator 4 Specialized 4
@@ -1984,16 +2042,19 @@ Recipe::Goto @ NativeOperands::Label(label) @ Ok(PendingExpansion::one( PendingO
 Recipe::Goto @ NativeOperands::Label8(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
 Recipe::Goto @ NativeOperands::Label16(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
 Recipe::Call @ NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argument_count) @ ready(FunctionOp::Call(*argument_count))
+Recipe::Construct @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::Construct(*argument_count)) }
+Recipe::CallMethod @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::CallMethod(*argument_count)) }
+Recipe::ArrayFrom @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::ArrayFrom(*argument_count)) }
 Recipe::Return @ NativeOperands::None @ ready(FunctionOp::Return)
 Recipe::ReturnUndefined @ NativeOperands::None @ ready(FunctionOp::ReturnUndefined)
 """.strip().splitlines()
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 43 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 46 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain all 43 reviewed Recipe/operand arms and each exact normalized RHS payload expression; "
+        "lower_operation must retain all 46 reviewed Recipe/operand arms and each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
 stack_expansion_pattern = re.compile(
@@ -2225,20 +2286,29 @@ ordinary_leaf_op_code, _, _ = unique_braced_item(
 expected_ordinary_leaf_op_variants = """
     PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
     Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
-    SetArgument Binary Predicate IfFalse IfTrue Goto Call Return ReturnUndefined
+    SetArgument Binary Predicate IfFalse IfTrue Goto Call Construct CallMethod
+    ArrayFrom Return ReturnUndefined
 """.split()
-ordinary_call_payloads = [
-    " ".join(payload.split())
-    for payload in re.findall(r"\bCall[ \t\n]*\(([^()]*)\)[ \t\n]*,", ordinary_leaf_op_code)
-]
+ordinary_invocation_payloads = {
+    name: [
+        " ".join(payload.split())
+        for payload in re.findall(
+            rf"\b{name}[ \t\n]*\(([^()]*)\)[ \t\n]*,", ordinary_leaf_op_code
+        )
+    ]
+    for name in invocation_variant_names
+}
 if (
     enum_variant_names(ordinary_leaf_op_code) != expected_ordinary_leaf_op_variants
-    or ordinary_call_payloads != ["u16"]
+    or any(
+        ordinary_invocation_payloads[name] != ["u16"]
+        for name in invocation_variant_names
+    )
 ):
     fail(
         "ordinary-leaf-operation-shape",
-        "OrdinaryLeafOp must retain the exact reviewed inventory with Call(u16); "
-        f"found {enum_variant_names(ordinary_leaf_op_code)} with Call payloads {ordinary_call_payloads}",
+        "OrdinaryLeafOp must retain the exact reviewed inventory with u16 invocation payloads; "
+        f"found {enum_variant_names(ordinary_leaf_op_code)} with invocation payloads {ordinary_invocation_payloads}",
     )
 
 ordinary_top_level_functions = [
@@ -2301,6 +2371,9 @@ FunctionOp::IfFalse(target) @ { validate_ir_target(*target, instruction_count).m
 FunctionOp::IfTrue(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfTrue) }
 FunctionOp::Goto(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto) }
 FunctionOp::Call(argument_count) @ Ok(OrdinaryLeafOp::Call(*argument_count))
+FunctionOp::Construct(argument_count) @ Ok(OrdinaryLeafOp::Construct(*argument_count))
+FunctionOp::CallMethod(argument_count) @ Ok(OrdinaryLeafOp::CallMethod(*argument_count))
+FunctionOp::ArrayFrom(element_count) @ Ok(OrdinaryLeafOp::ArrayFrom(*element_count))
 FunctionOp::Return @ Ok(OrdinaryLeafOp::Return)
 FunctionOp::ReturnUndefined @ Ok(OrdinaryLeafOp::ReturnUndefined)
 """.strip().splitlines()
@@ -2309,7 +2382,7 @@ found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionO
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 25 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 28 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
@@ -3658,7 +3731,7 @@ if consumer_exists:
         PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
         GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto Call
-        Return ReturnUndefined
+        Construct CallMethod ArrayFrom Return ReturnUndefined
     """.split()
     found_publisher_arms = rustfmt_match_arms(
         ordinary_instruction_lowering, "OrdinaryLeafOp::"
@@ -3705,6 +3778,9 @@ OrdinaryLeafOp::IfFalse(target) @ Instruction::IfFalse(target)
 OrdinaryLeafOp::IfTrue(target) @ Instruction::IfTrue(target)
 OrdinaryLeafOp::Goto(target) @ Instruction::Goto(target)
 OrdinaryLeafOp::Call(argument_count) @ Instruction::Call(argument_count)
+OrdinaryLeafOp::Construct(argument_count) @ Instruction::Construct(argument_count)
+OrdinaryLeafOp::CallMethod(argument_count) @ Instruction::CallMethod(argument_count)
+OrdinaryLeafOp::ArrayFrom(element_count) @ Instruction::ArrayFrom(element_count)
 OrdinaryLeafOp::Return @ Instruction::Return
 OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
 """.strip().splitlines()
@@ -3739,7 +3815,7 @@ OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 25
+        len(found_publisher_arms) != 28
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -6320,6 +6396,10 @@ translate-call-registry-raw|function-translate-registry-raw|src/runtime/binary_o
 translate-call-registry-npop-format|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(34, NPop, OrdinaryOnly, Recipe::Call),|    row!(34, NPopX, OrdinaryOnly, Recipe::Call),
 translate-call0-registry-npopx-format|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(236, NPopX, OrdinaryOnly, Recipe::Call),|    row!(236, NPop, OrdinaryOnly, Recipe::Call),
 translate-call-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(34, NPop, OrdinaryOnly, Recipe::Call),|    row!(34, NPop, Shared, Recipe::Call),
+stage3a-construct-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(33, NPop, OrdinaryOnly, Recipe::Construct),|    row!(33, NPop, Shared, Recipe::Construct),
+stage3a-tail-call-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(35, NPop, Blocked, Invocation),|    row!(35, NPop, OrdinaryOnly, Recipe::Construct),
+stage3a-tail-call-method-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(37, NPop, Blocked, Invocation),|    row!(37, NPop, OrdinaryOnly, Recipe::CallMethod),
+stage3a-apply-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(39, U16, Blocked, Invocation),|    row!(39, U16, OrdinaryOnly, Recipe::ArrayFrom),
 translate-recipe-call-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Call,|    Call(u16),
 translate-dto-call-payload|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Call(u16),|    Call(u32),
 ordinary-call-dto-payload|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Call(u16),|    Call(u32),
@@ -6358,10 +6438,13 @@ ordinary-return-undefined-remap|ordinary-leaf-consumer-lowering|src/runtime/bina
 ordinary-handoff-push-i32-payload|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(-*value)),
 ordinary-handoff-get-local-remap|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::GetLocal),|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::PutLocal),
 ordinary-handoff-call-argc|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(argument_count.saturating_add(1))),
+stage3a-ordinary-array-from-count-minus-one|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(*element_count)),|        FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(element_count.saturating_sub(1))),
+stage3a-ordinary-call-method-to-call|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::CallMethod(*argument_count)),|        FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),
 ordinary-publisher-get-local-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index),|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index.saturating_add(1)),
 ordinary-publisher-call-argc|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count.saturating_add(1)),
 ordinary-publisher-call-method|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::CallMethod(argument_count),
 ordinary-publisher-call-push-undefined|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(_argument_count) => Instruction::Undefined,
+stage3a-publisher-array-from-wrong-op|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::ArrayFrom(element_count),|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::Construct(element_count),
 ordinary-synthetic-index-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            let index = *next_synthetic_index;|            let index = next_synthetic_index.saturating_add(1);
 ordinary-synthetic-bigint-coercion|ordinary-leaf-consumer-publication|src/runtime/binary_object_publish.rs|                    Value::BigInt(JsBigInt::from(*value)),|                    Value::BigInt(JsBigInt::from(value.unsigned_abs())),
 TRANSLATE_CANARIES
@@ -6389,6 +6472,14 @@ expect_full_rewrite_rejected translate-call-argc-minus-one \
     function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
     '        ) => ready(FunctionOp::Call(*argument_count)),' \
     '        ) => ready(FunctionOp::Call(argument_count.saturating_sub(1))),'
+expect_full_rewrite_rejected stage3a-translate-construct-argc-plus-one \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(*argument_count))\n        }' \
+    $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(argument_count.saturating_add(1)))\n        }'
+expect_full_rewrite_rejected stage3a-translate-construct-call-method-swap \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(*argument_count))\n        }\n        (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::CallMethod(*argument_count))\n        }' \
+    $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::CallMethod(*argument_count))\n        }\n        (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(*argument_count))\n        }'
 expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
     ordinary-leaf-engine-semantics src/vm.rs \
     '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \

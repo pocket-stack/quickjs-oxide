@@ -51,6 +51,9 @@ pub(super) enum Recipe {
     IfTrue,
     Goto,
     Call,
+    Construct,
+    CallMethod,
+    ArrayFrom,
     Return,
     ReturnUndefined,
 }
@@ -99,7 +102,7 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 123 Blocked, 1 ScalarOnly, 91 OrdinaryOnly,
+/// Counts are locked by tests: 120 Blocked, 1 ScalarOnly, 94 OrdinaryOnly,
 /// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
@@ -136,12 +139,12 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(30, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Rot3Right)),
     row!(31, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Rot4Left))),
     row!(32, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Rot5Left)),
-    row!(33, NPop, Blocked, Invocation),
+    row!(33, NPop, OrdinaryOnly, Recipe::Construct),
     row!(34, NPop, OrdinaryOnly, Recipe::Call),
     row!(35, NPop, Blocked, Invocation),
-    row!(36, NPop, Blocked, Invocation),
+    row!(36, NPop, OrdinaryOnly, Recipe::CallMethod),
     row!(37, NPop, Blocked, Invocation),
-    row!(38, NPop, Blocked, Invocation),
+    row!(38, NPop, OrdinaryOnly, Recipe::ArrayFrom),
     row!(39, U16, Blocked, Invocation),
     row!(40, None, Shared, Recipe::Return),
     row!(41, None, OrdinaryOnly, Recipe::ReturnUndefined),
@@ -420,11 +423,11 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (123, 1, 91, 29)
+            (120, 1, 94, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 120);
-        assert_eq!(scalar_only + ordinary_only + shared, 121);
+        assert_eq!(ordinary_only + shared, 123);
+        assert_eq!(scalar_only + ordinary_only + shared, 124);
     }
 
     #[test]
@@ -504,6 +507,29 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_non_tail_invocation_addition_is_the_exact_reviewed_three_row_set() {
+        const INVOCATION_ROWS: [(u8, Recipe); 3] = [
+            (33, Recipe::Construct),
+            (36, Recipe::CallMethod),
+            (38, Recipe::ArrayFrom),
+        ];
+
+        for (raw, expected_recipe) in INVOCATION_ROWS {
+            let row = CAPABILITY_REGISTRY[usize::from(raw)];
+            assert_eq!(row.raw, raw);
+            assert_eq!(row.expected_format, OpcodeFormat::NPop);
+            assert_eq!(row.policy, CapabilityPolicy::OrdinaryOnly(expected_recipe));
+        }
+
+        for raw in [35, 37, 39] {
+            assert!(matches!(
+                CAPABILITY_REGISTRY[raw].policy,
+                CapabilityPolicy::Blocked(TranslationBlocker::Invocation)
+            ));
+        }
+    }
+
+    #[test]
     fn blocked_frontier_has_stable_typed_category_counts() {
         let mut counts = [0_usize; 17];
         for row in CAPABILITY_REGISTRY {
@@ -533,8 +559,8 @@ mod tests {
         }
         assert_eq!(
             counts,
-            [1, 8, 2, 6, 1, 2, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]
+            [1, 8, 2, 3, 1, 2, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]
         );
-        assert_eq!(counts.into_iter().sum::<usize>(), 123);
+        assert_eq!(counts.into_iter().sum::<usize>(), 120);
     }
 }

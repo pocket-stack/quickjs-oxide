@@ -168,6 +168,9 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     IfTrue(u32),
     Goto(u32),
     Call(u16),
+    Construct(u16),
+    CallMethod(u16),
+    ArrayFrom(u16),
     Return,
     ReturnUndefined,
 }
@@ -656,6 +659,9 @@ fn lower_operation(
             validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto)
         }
         FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),
+        FunctionOp::Construct(argument_count) => Ok(OrdinaryLeafOp::Construct(*argument_count)),
+        FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::CallMethod(*argument_count)),
+        FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(*element_count)),
         FunctionOp::Return => Ok(OrdinaryLeafOp::Return),
         FunctionOp::ReturnUndefined => Ok(OrdinaryLeafOp::ReturnUndefined),
         _ => Err(OrdinaryLeafReadError::Internal(
@@ -1124,6 +1130,26 @@ mod tests {
                 lower_ready(FunctionOp::Call(argument_count)),
                 OrdinaryLeafOp::Call(argument_count)
             );
+        }
+    }
+
+    #[test]
+    fn non_tail_invocation_operands_reach_the_ordinary_dto_unchanged() {
+        for (operation, expected) in [
+            (
+                FunctionOp::Construct(65_535),
+                OrdinaryLeafOp::Construct(65_535),
+            ),
+            (
+                FunctionOp::CallMethod(65_535),
+                OrdinaryLeafOp::CallMethod(65_535),
+            ),
+            (
+                FunctionOp::ArrayFrom(65_535),
+                OrdinaryLeafOp::ArrayFrom(65_535),
+            ),
+        ] {
+            assert_eq!(lower_ready(operation), expected);
         }
     }
 

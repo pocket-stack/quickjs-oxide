@@ -102,6 +102,21 @@ static const OrdinaryExpansionCase ordinary_expansion_cases[] = {
       220, UINT64_C(0x6cc8033fc7dc4a7c),
       { 0x0243, 1, { 2, 0, 2, 2, 0, 0, 0, 158, 2 }, 62 } },
 };
+static const OrdinaryExpansionCase ordinary_invocation_cases[] = {
+    { "invocation-constructor",
+      "(function constructor(F,a,b){'use strict';return new F(a,b);})",
+      60, UINT64_C(0xaf44ae48a662bc59),
+      { 0x0243, 1, { 3, 0, 3, 4, 0, 0, 0, 8, 3 }, 52 } },
+    { "invocation-method",
+      "(function method(receiver,a,b){'use strict';"
+      "return receiver.m(a,b)+0;})",
+      75, UINT64_C(0xd5d8a3b7afa95547),
+      { 0x0243, 1, { 3, 0, 3, 4, 0, 0, 0, 14, 3 }, 61 } },
+    { "invocation-arrays",
+      "(function arrays(a,b,c){'use strict';return [[],[a,b,c]];})",
+      72, UINT64_C(0xfe60d3e92788d870),
+      { 0x0243, 1, { 3, 0, 3, 4, 0, 0, 0, 13, 3 }, 59 } },
+};
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -111,6 +126,41 @@ static const uint8_t ordinary_expansion_atom_free_raws[] = {
 };
 static const uint8_t ordinary_expansion_call_raws[] = {
     34, 236, 237, 238, 239,
+};
+static const uint8_t ordinary_invocation_raws[] = { 33, 36, 38 };
+static const uint8_t ordinary_invocation_natural_admission_raws[] = { 33, 38 };
+static const uint8_t ordinary_invocation_manual_admission_raws[] = { 36 };
+static const uint8_t ordinary_invocation_deferred_raws[] = { 35, 37, 39 };
+
+static const uint8_t ordinary_manual_constructor_wire[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x02, 0x00,
+    0x02, 0x04, 0x00, 0x00, 0x00, 0x08, 0x02, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xcf,
+    0xd0, 0xb4, 0xb5, 0x21, 0x02, 0x00, 0x28,
+};
+static const uint8_t ordinary_manual_method_wire[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x02, 0x00,
+    0x02, 0x03, 0x00, 0x00, 0x00, 0x08, 0x02, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xcf,
+    0xd0, 0xbb, 0x2a, 0x24, 0x01, 0x00, 0x28,
+};
+static const uint8_t ordinary_manual_array_from_zero_wire[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x26, 0x00, 0x00,
+    0x28,
+};
+static const uint8_t ordinary_manual_array_from_multi_wire[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x07,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xb4, 0xb5, 0xb6,
+    0x26, 0x03, 0x00, 0x28,
 };
 typedef struct OrdinaryStackCase {
     const char *name;
@@ -141,6 +191,21 @@ static const OrdinaryStackCase ordinary_stack_cases[] = {
 
 _Static_assert(sizeof(ordinary_expansion_atom_free_raws) == 57, "57 atom-free rows");
 _Static_assert(sizeof(ordinary_expansion_call_raws) == 5, "five plain-call rows");
+_Static_assert(sizeof(ordinary_invocation_cases) /
+                   sizeof(ordinary_invocation_cases[0]) == 3,
+               "three compiler-natural invocation cases");
+_Static_assert(sizeof(ordinary_invocation_raws) == 3,
+               "three Stage3A invocation rows");
+_Static_assert(sizeof(ordinary_invocation_deferred_raws) == 3,
+               "three deferred invocation rows");
+_Static_assert(sizeof(ordinary_manual_constructor_wire) == 55,
+               "manual constructor wire must remain 55 bytes");
+_Static_assert(sizeof(ordinary_manual_method_wire) == 55,
+               "manual method wire must remain 55 bytes");
+_Static_assert(sizeof(ordinary_manual_array_from_zero_wire) == 25,
+               "manual empty array_from wire must remain 25 bytes");
+_Static_assert(sizeof(ordinary_manual_array_from_multi_wire) == 28,
+               "manual multi array_from wire must remain 28 bytes");
 _Static_assert(sizeof(ordinary_stack_cases) / sizeof(ordinary_stack_cases[0]) == 17,
                "17 rare stack rows");
 static const uint8_t scalar_prefix[] = {
@@ -3418,9 +3483,9 @@ cleanup:
 
 static size_t ordinary_opcode_size(uint8_t raw) {
     switch (raw) {
-    case 34: case 88:
+    case 33: case 34: case 36: case 38: case 88:
         return 3;
-    case 105: case 176:
+    case 62: case 105: case 176:
         return 5;
     case 187: case 189: case 232: case 233:
         return 2;
@@ -3769,7 +3834,8 @@ static int ordinary_compile_load_case(JSContext *compile_context,
                                       JSContext *eval_context,
                                       const OrdinaryExpansionCase *test,
                                       JSValue *function,
-                                      uint8_t union_raws[256]) {
+                                      uint8_t union_raws[256],
+                                      uint8_t target_raw) {
     JSValue compiled = JS_UNDEFINED;
     JSValue loaded = JS_UNDEFINED;
     uint8_t *wire = NULL;
@@ -3799,7 +3865,11 @@ static int ordinary_compile_load_case(JSContext *compile_context,
         ordinary_wire_child_metadata(wire, wire_size, &child) ||
         !ordinary_metadata_equal(&child, &test->child) ||
         ordinary_collect_opcodes(wire + child.code_offset,
-                                 child.fields[ORD_CODE], case_raws)) {
+                                 child.fields[ORD_CODE], case_raws) ||
+        (target_raw != 0 &&
+         (!case_raws[target_raw] ||
+          case_raws[33] + case_raws[36] + case_raws[38] != 1)) ||
+        (target_raw == 36 && !case_raws[62])) {
         fprintf(stderr, "%s ordinary BC5 wire/metadata/opcodes drifted\n",
                 test->label);
         goto cleanup;
@@ -3915,6 +3985,689 @@ static int ordinary_expect_i32_call(JSContext *context,
     return status;
 }
 
+static int ordinary_load_manual_invocation(
+    JSContext *context, const char *label, const uint8_t *wire,
+    size_t wire_size, uint64_t expected_hash,
+    const OrdinaryFunctionMetadata *expected_metadata,
+    uint8_t target_raw, JSValue *function) {
+    JSValue loaded = JS_UNDEFINED;
+    uint8_t *rewritten = NULL;
+    size_t rewritten_size = 0;
+    OrdinaryFunctionMetadata child = { 0 };
+    uint8_t raws[256] = { 0 };
+    char raw_label[96];
+    int status = -1;
+
+    if (ordinary_fnv1a64(wire, wire_size) != expected_hash ||
+        ordinary_wire_child_metadata(wire, wire_size, &child) ||
+        !ordinary_metadata_equal(&child, expected_metadata) ||
+        ordinary_collect_opcodes(wire + child.code_offset,
+                                 child.fields[ORD_CODE], raws) ||
+        !raws[target_raw] || raws[33] + raws[36] + raws[38] != 1 ||
+        raws[35] || raws[37] || raws[39] ||
+        (target_raw == 36 && raws[62])) {
+        fprintf(stderr, "%s manual invocation wire drifted\n", label);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, wire, wire_size, JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(context, "manual invocation read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != wire_size ||
+        memcmp(rewritten, wire, wire_size) != 0) {
+        if (!rewritten)
+            report_exception(context, "manual invocation rewrite failed");
+        else
+            fprintf(stderr, "%s manual invocation rewrite drifted\n", label);
+        goto cleanup;
+    }
+    *function = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(*function) ||
+        !JS_IsFunction(context, *function)) {
+        report_exception(context, "manual invocation root evaluation failed");
+        *function = JS_UNDEFINED;
+        goto cleanup;
+    }
+    printf("ordinary-invocation-manual-%s-wire-size=%zu\n", label,
+           wire_size);
+    printf("ordinary-invocation-manual-%s-wire-fnv1a64=%016" PRIx64 "\n",
+           label, ordinary_fnv1a64(wire, wire_size));
+    printf("ordinary-invocation-manual-%s-wire-hex=", label);
+    for (size_t index = 0; index < wire_size; index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    printf("ordinary-invocation-manual-%s-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu\n",
+           label, child.flags, child.js_mode, child.fields[ORD_ARGS],
+           child.fields[ORD_VARS], child.fields[ORD_DEFINED_ARGS],
+           child.fields[ORD_STACK], child.fields[ORD_VAR_REFS],
+           child.fields[ORD_CLOSURES], child.fields[ORD_CPOOL],
+           child.fields[ORD_CODE], child.fields[ORD_LOCALS],
+           child.code_offset);
+    snprintf(raw_label, sizeof(raw_label),
+             "ordinary-invocation-manual-%s-child-raw", label);
+    ordinary_print_raw_set(raw_label, raws);
+    printf("ordinary-invocation-manual-%s-rewrite=identity\n", label);
+    printf("ordinary-invocation-manual-%s-fresh-root=Function\n", label);
+    status = 0;
+
+cleanup:
+    if (rewritten)
+        js_free(context, rewritten);
+    JS_FreeValue(context, loaded);
+    return status;
+}
+
+static int ordinary_eval_manual_array_from(
+    JSContext *context, const char *label, const uint8_t *wire,
+    size_t wire_size, uint64_t expected_hash, uint8_t expected_stack,
+    uint8_t expected_code_size, JSValue *array) {
+    JSValue loaded = JS_UNDEFINED;
+    uint8_t *rewritten = NULL;
+    size_t rewritten_size = 0;
+    uint8_t raws[256] = { 0 };
+    char raw_label[104];
+    int status = -1;
+
+    if (wire_size != (size_t)21 + expected_code_size ||
+        ordinary_fnv1a64(wire, wire_size) != expected_hash ||
+        wire[11] != expected_stack || wire[14] != 0 ||
+        wire[15] != expected_code_size ||
+        ordinary_collect_opcodes(wire + 21, expected_code_size, raws) ||
+        !raws[38] || raws[33] || raws[36] || raws[35] || raws[37] ||
+        raws[39]) {
+        fprintf(stderr, "%s manual array_from wire drifted\n", label);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, wire, wire_size, JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(context, "manual array_from read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != wire_size ||
+        memcmp(rewritten, wire, wire_size) != 0) {
+        if (!rewritten)
+            report_exception(context, "manual array_from rewrite failed");
+        else
+            fprintf(stderr, "%s manual array_from rewrite drifted\n", label);
+        goto cleanup;
+    }
+    *array = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(*array) || JS_IsArray(context, *array) != 1) {
+        report_exception(context, "manual array_from evaluation failed");
+        *array = JS_UNDEFINED;
+        goto cleanup;
+    }
+    printf("ordinary-invocation-manual-array-from-%s-wire-size=%zu\n",
+           label, wire_size);
+    printf("ordinary-invocation-manual-array-from-%s-wire-fnv1a64="
+           "%016" PRIx64 "\n", label, ordinary_fnv1a64(wire, wire_size));
+    printf("ordinary-invocation-manual-array-from-%s-wire-hex=", label);
+    for (size_t index = 0; index < wire_size; index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    printf("ordinary-invocation-manual-array-from-%s-root-metadata="
+           "flags:0200,js_mode:0,args:0,vars:1,defined_args:0,stack:%u,"
+           "var_refs:0,closures:0,cpool:0,code:%u,locals:1,"
+           "code_offset:21\n", label, expected_stack, expected_code_size);
+    snprintf(raw_label, sizeof(raw_label),
+             "ordinary-invocation-manual-array-from-%s-root-raw", label);
+    ordinary_print_raw_set(raw_label, raws);
+    printf("ordinary-invocation-manual-array-from-%s-rewrite=identity\n",
+           label);
+    printf("ordinary-invocation-manual-array-from-%s-fresh-eval=Array\n",
+           label);
+    status = 0;
+
+cleanup:
+    if (rewritten)
+        js_free(context, rewritten);
+    JS_FreeValue(context, loaded);
+    return status;
+}
+
+static int ordinary_expect_constructor_result(
+    JSContext *context, JSValueConst result, JSValueConst new_target,
+    int expected_kind, int expected_order) {
+    JSValue prototype = JS_UNDEFINED;
+    JSValue expected_prototype = JS_UNDEFINED;
+    JSValue kind = JS_UNDEFINED;
+    JSValue order = JS_UNDEFINED;
+    JSValue value = JS_UNDEFINED;
+    int matches = 0;
+
+    if (!JS_IsObject(result))
+        goto cleanup;
+    prototype = JS_GetPrototype(context, result);
+    expected_prototype = JS_GetPropertyStr(context, new_target, "prototype");
+    kind = JS_GetPropertyStr(context, result, "newTargetKind");
+    order = JS_GetPropertyStr(context, result, "argOrder");
+    value = JS_GetPropertyStr(context, result, "result");
+    if (JS_IsException(prototype) || JS_IsException(expected_prototype) ||
+        JS_IsException(kind) || JS_IsException(order) ||
+        JS_IsException(value)) {
+        report_exception(context, "constructor observation failed");
+        goto cleanup;
+    }
+    matches = JS_VALUE_GET_PTR(prototype) ==
+                  JS_VALUE_GET_PTR(expected_prototype) &&
+              JS_VALUE_GET_TAG(kind) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(kind) == expected_kind &&
+              JS_VALUE_GET_TAG(order) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(order) == expected_order &&
+              JS_VALUE_GET_TAG(value) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(value) == 42;
+cleanup:
+    JS_FreeValue(context, value);
+    JS_FreeValue(context, order);
+    JS_FreeValue(context, kind);
+    JS_FreeValue(context, expected_prototype);
+    JS_FreeValue(context, prototype);
+    return matches ? 0 : -1;
+}
+
+static JSValue ordinary_method_receiver = JS_UNDEFINED;
+static int ordinary_method_call_count;
+
+static JSValue ordinary_method_sink(JSContext *context,
+                                    JSValueConst this_value,
+                                    int argc, JSValueConst *argv) {
+    static const int expected_args[] = { 20, 22 };
+    JSValue base = JS_UNDEFINED;
+    int sum = 0;
+
+    if (ordinary_method_call_count != 0 ||
+        !JS_IsObject(this_value) ||
+        JS_VALUE_GET_PTR(this_value) !=
+            JS_VALUE_GET_PTR(ordinary_method_receiver) ||
+        argc != 2)
+        return ordinary_callback_error(context,
+                                       "method receiver or argc drifted");
+    for (int index = 0; index < argc; index++) {
+        if (JS_VALUE_GET_TAG(argv[index]) != JS_TAG_INT ||
+            JS_VALUE_GET_INT(argv[index]) !=
+                expected_args[index])
+            return ordinary_callback_error(context,
+                                           "method argument order drifted");
+        sum += JS_VALUE_GET_INT(argv[index]);
+    }
+    base = JS_GetPropertyStr(context, this_value, "base");
+    if (JS_IsException(base))
+        return base;
+    if (JS_VALUE_GET_TAG(base) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(base) != 7) {
+        JS_FreeValue(context, base);
+        return ordinary_callback_error(context, "method base drifted");
+    }
+    sum += JS_VALUE_GET_INT(base);
+    JS_FreeValue(context, base);
+    ordinary_method_call_count++;
+    return JS_NewInt32(context, sum);
+}
+
+typedef struct OrdinaryArrayBundle {
+    JSValue empty;
+    JSValue multi;
+} OrdinaryArrayBundle;
+
+static int ordinary_expect_array_bundle(JSContext *context,
+                                        JSValueConst value,
+                                        OrdinaryArrayBundle *bundle) {
+    JSValue outer_length = JS_UNDEFINED;
+    JSValue empty_length = JS_UNDEFINED;
+    JSValue multi_length = JS_UNDEFINED;
+    JSValue elements[3] = { JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED };
+    int matches = 0;
+
+    bundle->empty = JS_UNDEFINED;
+    bundle->multi = JS_UNDEFINED;
+    if (JS_IsArray(context, value) != 1)
+        goto cleanup;
+    outer_length = JS_GetPropertyStr(context, value, "length");
+    bundle->empty = JS_GetPropertyUint32(context, value, 0);
+    bundle->multi = JS_GetPropertyUint32(context, value, 1);
+    if (JS_IsException(outer_length) || JS_IsException(bundle->empty) ||
+        JS_IsException(bundle->multi) ||
+        JS_IsArray(context, bundle->empty) != 1 ||
+        JS_IsArray(context, bundle->multi) != 1)
+        goto cleanup;
+    empty_length = JS_GetPropertyStr(context, bundle->empty, "length");
+    multi_length = JS_GetPropertyStr(context, bundle->multi, "length");
+    for (uint32_t index = 0; index < 3; index++)
+        elements[index] = JS_GetPropertyUint32(context, bundle->multi,
+                                               index);
+    matches = JS_VALUE_GET_TAG(outer_length) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(outer_length) == 2 &&
+              JS_VALUE_GET_TAG(empty_length) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(empty_length) == 0 &&
+              JS_VALUE_GET_TAG(multi_length) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(multi_length) == 3;
+    for (int index = 0; matches && index < 3; index++)
+        matches = JS_VALUE_GET_TAG(elements[index]) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(elements[index]) == index + 1;
+cleanup:
+    for (size_t index = 0; index < 3; index++)
+        JS_FreeValue(context, elements[index]);
+    JS_FreeValue(context, multi_length);
+    JS_FreeValue(context, empty_length);
+    JS_FreeValue(context, outer_length);
+    return matches ? 0 : -1;
+}
+
+static int ordinary_expect_flat_array(JSContext *context,
+                                      JSValueConst value,
+                                      const int *expected,
+                                      size_t expected_count) {
+    JSValue length = JS_UNDEFINED;
+    JSValue element = JS_UNDEFINED;
+    int matches = JS_IsArray(context, value) == 1;
+
+    if (!matches)
+        return -1;
+    length = JS_GetPropertyStr(context, value, "length");
+    matches = JS_VALUE_GET_TAG(length) == JS_TAG_INT &&
+              JS_VALUE_GET_INT(length) == (int)expected_count;
+    for (size_t index = 0; matches && index < expected_count; index++) {
+        element = JS_GetPropertyUint32(context, value, (uint32_t)index);
+        matches = JS_VALUE_GET_TAG(element) == JS_TAG_INT &&
+                  JS_VALUE_GET_INT(element) == expected[index];
+        JS_FreeValue(context, element);
+        element = JS_UNDEFINED;
+    }
+    JS_FreeValue(context, length);
+    return matches ? 0 : -1;
+}
+
+static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
+    enum { CONSTRUCTOR_CASE, METHOD_CASE, ARRAYS_CASE };
+    static const uint8_t case_targets[] = { 33, 36, 38 };
+    static const OrdinaryFunctionMetadata manual_constructor_metadata = {
+        0x0243, 1, { 2, 0, 2, 4, 0, 0, 0, 8, 2 }, 47,
+    };
+    static const OrdinaryFunctionMetadata manual_method_metadata = {
+        0x0243, 1, { 2, 0, 2, 3, 0, 0, 0, 8, 2 }, 47,
+    };
+    static const char constructor_observer_source[] =
+        "(function(){"
+        "function Target(a,b){"
+        "this.newTargetKind=new.target===Target?1:"
+        "new.target===NewTarget?2:0;"
+        "this.argOrder=a*10+b;this.result=42;}"
+        "function NewTarget(){}return [Target,NewTarget];})()";
+    static const char strict_method_source[] =
+        "(function(value){'use strict';"
+        "var receiver=globalThis.__stage3aMethodReceiver;"
+        "receiver.seenThis=this===receiver;"
+        "receiver.seenArgc=arguments.length;"
+        "receiver.seenValue=value;"
+        "receiver.seenOrder=arguments.length*100+value;"
+        "return this.base+value;})";
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue functions[3] = { JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED };
+    JSValue manual_constructor = JS_UNDEFINED;
+    JSValue manual_method = JS_UNDEFINED;
+    JSValue constructors = JS_UNDEFINED;
+    JSValue target = JS_UNDEFINED;
+    JSValue new_target = JS_UNDEFINED;
+    JSValue natural_result = JS_UNDEFINED;
+    JSValue manual_result = JS_UNDEFINED;
+    JSValue receiver = JS_UNDEFINED;
+    JSValue method = JS_UNDEFINED;
+    JSValue strict_method = JS_UNDEFINED;
+    JSValue global = JS_UNDEFINED;
+    JSValue method_seen_this = JS_UNDEFINED;
+    JSValue method_seen_argc = JS_UNDEFINED;
+    JSValue method_seen_value = JS_UNDEFINED;
+    JSValue method_seen_order = JS_UNDEFINED;
+    JSValue manual_empty_array = JS_UNDEFINED;
+    JSValue manual_multi_array = JS_UNDEFINED;
+    JSValue array_results[2] = { JS_UNDEFINED, JS_UNDEFINED };
+    OrdinaryArrayBundle bundles[2] = {
+        { JS_UNDEFINED, JS_UNDEFINED },
+        { JS_UNDEFINED, JS_UNDEFINED },
+    };
+    uint8_t compiler_raws[256] = { 0 };
+    uint8_t invocation_raws[256] = { 0 };
+    uint8_t natural_admission_raws[256] = { 0 };
+    uint8_t manual_admission_raws[256] = { 0 };
+    uint8_t deferred_raws[256] = { 0 };
+    uint8_t atom_free_raws[256] = { 0 };
+    uint8_t plain_call_raws[256] = { 0 };
+    size_t compiler_raw_count = 0;
+    size_t compiler_target_count = 0;
+    int status = -1;
+
+    if (ordinary_build_raw_set("ordinary invocation raws",
+                               ordinary_invocation_raws,
+                               sizeof(ordinary_invocation_raws),
+                               invocation_raws) ||
+        ordinary_build_raw_set("ordinary invocation natural admission raws",
+                               ordinary_invocation_natural_admission_raws,
+                               sizeof(ordinary_invocation_natural_admission_raws),
+                               natural_admission_raws) ||
+        ordinary_build_raw_set("ordinary invocation manual admission raws",
+                               ordinary_invocation_manual_admission_raws,
+                               sizeof(ordinary_invocation_manual_admission_raws),
+                               manual_admission_raws) ||
+        ordinary_build_raw_set("ordinary invocation deferred raws",
+                               ordinary_invocation_deferred_raws,
+                               sizeof(ordinary_invocation_deferred_raws),
+                               deferred_raws) ||
+        ordinary_build_raw_set("ordinary atom-free raws",
+                               ordinary_expansion_atom_free_raws,
+                               sizeof(ordinary_expansion_atom_free_raws),
+                               atom_free_raws) ||
+        ordinary_build_raw_set("ordinary plain-call raws",
+                               ordinary_expansion_call_raws,
+                               sizeof(ordinary_expansion_call_raws),
+                               plain_call_raws))
+        goto cleanup;
+    for (unsigned raw = 0; raw < 256; raw++) {
+        if ((invocation_raws[raw] !=
+             (natural_admission_raws[raw] | manual_admission_raws[raw])) ||
+            (natural_admission_raws[raw] && manual_admission_raws[raw]) ||
+            (invocation_raws[raw] && deferred_raws[raw]) ||
+            ((invocation_raws[raw] || deferred_raws[raw]) &&
+             (atom_free_raws[raw] || plain_call_raws[raw]))) {
+            fputs("ordinary invocation raw cohorts overlap or drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+    }
+    runtime = JS_NewRuntime();
+    context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!context) {
+        fputs("ordinary invocation fresh runtime allocation failed\n", stderr);
+        goto cleanup;
+    }
+    for (size_t index = 0;
+         index < sizeof(ordinary_invocation_cases) /
+                     sizeof(ordinary_invocation_cases[0]); index++) {
+        if (ordinary_compile_load_case(compile_context, context,
+                                       &ordinary_invocation_cases[index],
+                                       &functions[index], compiler_raws,
+                                       case_targets[index]))
+            goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++) {
+        compiler_raw_count += compiler_raws[raw] != 0;
+        compiler_target_count += compiler_raws[raw] && invocation_raws[raw];
+        if (compiler_raws[raw] && deferred_raws[raw]) {
+            fputs("ordinary invocation natural cases emitted deferred raw\n",
+                  stderr);
+            goto cleanup;
+        }
+    }
+    if (compiler_raw_count != 11 || compiler_target_count != 3 ||
+        !compiler_raws[62]) {
+        fputs("ordinary invocation compiler discovery drifted\n", stderr);
+        goto cleanup;
+    }
+    puts("ordinary-invocation-evidence="
+         "compiler-natural-write-read-write-fresh-runtime");
+    puts("ordinary-invocation-compiler-natural-count=3");
+    ordinary_print_raw_set("ordinary-invocation-compiler-natural-raw",
+                           invocation_raws);
+    puts("ordinary-invocation-compiler-union-count=11");
+    ordinary_print_raw_set("ordinary-invocation-compiler-union-raw",
+                           compiler_raws);
+    puts("ordinary-invocation-natural-full-admission-count=2");
+    ordinary_print_raw_set("ordinary-invocation-natural-full-admission-raw",
+                           natural_admission_raws);
+    puts("ordinary-invocation-natural-full-admission-status="
+         "upstream-evidence-for-rust-admission");
+    puts("ordinary-invocation-method-natural-property-producer="
+         "raw62-get_field2-blocked");
+    puts("ordinary-invocation-method-public-provenance="
+         "authenticated-manual-wire-property-free-synthetic-stack");
+    puts("ordinary-invocation-public-admission-count=3");
+    ordinary_print_raw_set("ordinary-invocation-public-admission-raw",
+                           invocation_raws);
+    puts("ordinary-invocation-deferred-status=blocked-pending");
+    ordinary_print_raw_set("ordinary-invocation-deferred-raw",
+                           deferred_raws);
+    puts("ordinary-invocation-deferred-detail="
+         "raw35-tail_call,raw37-tail_call_method,raw39-apply");
+
+    if (ordinary_load_manual_invocation(
+            context, "constructor", ordinary_manual_constructor_wire,
+            sizeof(ordinary_manual_constructor_wire),
+            UINT64_C(0xc30527b59bccdaa3),
+            &manual_constructor_metadata, 33, &manual_constructor) ||
+        ordinary_load_manual_invocation(
+            context, "method", ordinary_manual_method_wire,
+            sizeof(ordinary_manual_method_wire),
+            UINT64_C(0xd751b6fb94500c22), &manual_method_metadata,
+            36, &manual_method) ||
+        ordinary_eval_manual_array_from(
+            context, "zero", ordinary_manual_array_from_zero_wire,
+            sizeof(ordinary_manual_array_from_zero_wire),
+            UINT64_C(0x98bf03482102917a), 1, 4,
+            &manual_empty_array) ||
+        ordinary_eval_manual_array_from(
+            context, "multi", ordinary_manual_array_from_multi_wire,
+            sizeof(ordinary_manual_array_from_multi_wire),
+            UINT64_C(0xf0741b4abade33ab), 3, 7,
+            &manual_multi_array))
+        goto cleanup;
+    {
+        static const int expected_multi[] = { 1, 2, 3 };
+        if (ordinary_expect_flat_array(context, manual_empty_array,
+                                       NULL, 0) ||
+            ordinary_expect_flat_array(context, manual_multi_array,
+                                       expected_multi, 3) ||
+            JS_VALUE_GET_PTR(manual_empty_array) ==
+                JS_VALUE_GET_PTR(manual_multi_array)) {
+            fputs("manual array_from values or identity drifted\n", stderr);
+            goto cleanup;
+        }
+    }
+    puts("ordinary-invocation-manual-array-from-values="
+         "zero:[],multi:[1,2,3],identity:distinct");
+
+    constructors = JS_Eval(context, constructor_observer_source,
+                           strlen(constructor_observer_source),
+                           "constructor-observer.js", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(constructors) ||
+        JS_IsArray(context, constructors) != 1) {
+        report_exception(context, "constructor observer setup failed");
+        constructors = JS_UNDEFINED;
+        goto cleanup;
+    }
+    target = JS_GetPropertyUint32(context, constructors, 0);
+    new_target = JS_GetPropertyUint32(context, constructors, 1);
+    if (JS_IsException(target) || JS_IsException(new_target) ||
+        !JS_IsConstructor(context, target) ||
+        !JS_IsConstructor(context, new_target) ||
+        JS_VALUE_GET_PTR(target) == JS_VALUE_GET_PTR(new_target)) {
+        report_exception(context, "constructor observer functions failed");
+        goto cleanup;
+    }
+    {
+        JSValue arguments[3] = {
+            target, JS_NewInt32(context, 3), JS_NewInt32(context, 4),
+        };
+        natural_result = JS_Call(context, functions[CONSTRUCTOR_CASE],
+                                 JS_UNDEFINED, 3, arguments);
+        JS_FreeValue(context, arguments[2]);
+        JS_FreeValue(context, arguments[1]);
+    }
+    if (JS_IsException(natural_result) ||
+        ordinary_expect_constructor_result(context, natural_result, target,
+                                           1, 34)) {
+        report_exception(context, "natural constructor execution failed");
+        goto cleanup;
+    }
+    {
+        JSValueConst arguments[2] = { target, new_target };
+        manual_result = JS_Call(context, manual_constructor, JS_UNDEFINED,
+                                2, arguments);
+    }
+    if (JS_IsException(manual_result) ||
+        ordinary_expect_constructor_result(context, manual_result,
+                                           new_target, 2, 12)) {
+        report_exception(context, "manual constructor execution failed");
+        goto cleanup;
+    }
+    puts("ordinary-invocation-constructor-natural="
+         "new-target:same,args:3,4,order:34,result:42");
+    puts("ordinary-invocation-constructor-manual="
+         "new-target:distinct,args:1,2,order:12,result:42,"
+         "prototype:new-target");
+
+    receiver = JS_NewObject(context);
+    method = JS_NewCFunction(context, ordinary_method_sink,
+                             "ordinaryMethodSink", 2);
+    global = JS_GetGlobalObject(context);
+    if (JS_IsException(receiver) || JS_IsException(method) ||
+        JS_IsException(global) ||
+        JS_SetPropertyStr(context, receiver, "base",
+                          JS_NewInt32(context, 7)) < 0 ||
+        JS_SetPropertyStr(context, receiver, "m",
+                          JS_DupValue(context, method)) < 0 ||
+        JS_SetPropertyStr(context, global, "__stage3aMethodReceiver",
+                          JS_DupValue(context, receiver)) < 0) {
+        report_exception(context, "method observer setup failed");
+        goto cleanup;
+    }
+    strict_method = JS_Eval(context, strict_method_source,
+                            strlen(strict_method_source),
+                            "strict-method-observer.js",
+                            JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(strict_method) ||
+        !JS_IsFunction(context, strict_method)) {
+        report_exception(context, "strict method observer compile failed");
+        strict_method = JS_UNDEFINED;
+        goto cleanup;
+    }
+    ordinary_method_receiver = receiver;
+    ordinary_method_call_count = 0;
+    {
+        JSValue arguments[3] = {
+            receiver, JS_NewInt32(context, 20), JS_NewInt32(context, 22),
+        };
+        if (ordinary_expect_call(context, functions[METHOD_CASE], 3,
+                                 arguments, ORDINARY_CALL_INT, 49,
+                                 "natural method execution")) {
+            JS_FreeValue(context, arguments[2]);
+            JS_FreeValue(context, arguments[1]);
+            goto cleanup;
+        }
+        JS_FreeValue(context, arguments[2]);
+        JS_FreeValue(context, arguments[1]);
+    }
+    {
+        JSValueConst arguments[2] = { receiver, strict_method };
+        if (ordinary_expect_call(context, manual_method, 2, arguments,
+                                 ORDINARY_CALL_INT, 49,
+                                 "manual method execution"))
+            goto cleanup;
+    }
+    method_seen_this = JS_GetPropertyStr(context, receiver, "seenThis");
+    method_seen_argc = JS_GetPropertyStr(context, receiver, "seenArgc");
+    method_seen_value = JS_GetPropertyStr(context, receiver, "seenValue");
+    method_seen_order = JS_GetPropertyStr(context, receiver, "seenOrder");
+    if (ordinary_method_call_count != 1 ||
+        JS_VALUE_GET_TAG(method_seen_this) != JS_TAG_BOOL ||
+        JS_VALUE_GET_BOOL(method_seen_this) != 1 ||
+        JS_VALUE_GET_TAG(method_seen_argc) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(method_seen_argc) != 1 ||
+        JS_VALUE_GET_TAG(method_seen_value) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(method_seen_value) != 42 ||
+        JS_VALUE_GET_TAG(method_seen_order) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(method_seen_order) != 142) {
+        fputs("method observation sequence drifted\n", stderr);
+        goto cleanup;
+    }
+    puts("ordinary-invocation-method-natural="
+         "strict-receiver:identity,argc:2,args:20,22,result:49");
+    puts("ordinary-invocation-method-manual="
+         "strict-receiver:identity,argc:1,args:42,result:49,"
+         "producer:property-free-synthetic-stack");
+    puts("ordinary-invocation-method-order=natural,manual");
+
+    for (size_t call = 0; call < 2; call++) {
+        JSValue arguments[3] = {
+            JS_NewInt32(context, 1), JS_NewInt32(context, 2),
+            JS_NewInt32(context, 3),
+        };
+        array_results[call] = JS_Call(context, functions[ARRAYS_CASE],
+                                      JS_UNDEFINED, 3, arguments);
+        for (size_t index = 0; index < 3; index++)
+            JS_FreeValue(context, arguments[index]);
+        if (JS_IsException(array_results[call]) ||
+            ordinary_expect_array_bundle(context, array_results[call],
+                                         &bundles[call])) {
+            report_exception(context, "array_from execution failed");
+            goto cleanup;
+        }
+    }
+    if (JS_VALUE_GET_PTR(array_results[0]) ==
+            JS_VALUE_GET_PTR(array_results[1]) ||
+        JS_VALUE_GET_PTR(bundles[0].empty) ==
+            JS_VALUE_GET_PTR(bundles[1].empty) ||
+        JS_VALUE_GET_PTR(bundles[0].multi) ==
+            JS_VALUE_GET_PTR(bundles[1].multi) ||
+        JS_VALUE_GET_PTR(bundles[0].empty) ==
+            JS_VALUE_GET_PTR(bundles[0].multi)) {
+        fputs("array_from fresh identity drifted\n", stderr);
+        goto cleanup;
+    }
+    puts("ordinary-invocation-array-from-empty=length:0");
+    puts("ordinary-invocation-array-from-multi=length:3,values:1,2,3");
+    puts("ordinary-invocation-array-from-fresh-identity="
+         "outer:distinct,empty:distinct,multi:distinct");
+    puts("ordinary-invocation-oracle=passed");
+    status = 0;
+
+cleanup:
+    ordinary_method_receiver = JS_UNDEFINED;
+    if (context) {
+        JS_FreeValue(context, manual_multi_array);
+        JS_FreeValue(context, manual_empty_array);
+        for (size_t index = 0; index < 2; index++) {
+            JS_FreeValue(context, bundles[index].multi);
+            JS_FreeValue(context, bundles[index].empty);
+            JS_FreeValue(context, array_results[index]);
+        }
+        JS_FreeValue(context, method_seen_order);
+        JS_FreeValue(context, method_seen_value);
+        JS_FreeValue(context, method_seen_argc);
+        JS_FreeValue(context, method_seen_this);
+        JS_FreeValue(context, global);
+        JS_FreeValue(context, strict_method);
+        JS_FreeValue(context, method);
+        JS_FreeValue(context, receiver);
+        JS_FreeValue(context, manual_result);
+        JS_FreeValue(context, natural_result);
+        JS_FreeValue(context, new_target);
+        JS_FreeValue(context, target);
+        JS_FreeValue(context, constructors);
+        JS_FreeValue(context, manual_method);
+        JS_FreeValue(context, manual_constructor);
+        for (size_t index = 0; index < 3; index++)
+            JS_FreeValue(context, functions[index]);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    return status;
+}
+
 static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
     static const char unary_binary_sequence[] =
         "-6,6,7,6,-7,false,number,18,0,216,48,0,0,"
@@ -3982,7 +4735,7 @@ static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
                      sizeof(ordinary_expansion_cases[0]); index++) {
         if (ordinary_compile_load_case(compile_context, context,
                                        &ordinary_expansion_cases[index],
-                                       &functions[index], compiler_raws))
+                                       &functions[index], compiler_raws, 0))
             goto cleanup;
     }
     for (unsigned raw = 0; raw < 256; raw++) {
@@ -4256,6 +5009,8 @@ int main(void) {
     if (expect_ordinary_leaf())
         goto cleanup;
     if (expect_ordinary_expansion_cohort(compile_context))
+        goto cleanup;
+    if (expect_ordinary_invocation_cohort(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",

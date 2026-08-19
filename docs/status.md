@@ -83,7 +83,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   control flow, direct `return_undef`, and exactly the five plain-call physical
   rows through a distinct verified publication role. Raw 34 `call` carries its
   `NPop` argument count, while raw 236-239 `call0`-`call3` carry their implicit
-  `NPopX` counts; all publish as `Call(argc)` with an undefined receiver
+  `NPopX` counts; all publish as `Call(argc)` with an undefined receiver.
+  Stage 3A additionally admits raw 33 `call_constructor`, raw 36 `call_method`,
+  and raw 38 `array_from`, preserving each `NPop` count through a distinct
+  typed instruction.
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -187,11 +190,12 @@ stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
 formats and projects only sanitized semantic DTOs to those admission bridges.
-The scalar policy remains 30 opcodes; the stage-two ordinary policy is 120,
-and their union is 121 (123 blocked, one scalar-only, 91 ordinary-only, and 29
-shared registry rows). The reviewed stage-one 57-row atom-free set is unchanged;
-stage two adds exactly raw 34 and 236-239. The blocked frontier retains its 17
-typed categories, with six rows now remaining in `Invocation`.
+The scalar policy remains 30 opcodes; the stage-3A ordinary policy is 123,
+and their union is 124 (120 blocked, one scalar-only, 94 ordinary-only, and 29
+shared registry rows). The reviewed stage-one 57-row atom-free set and stage-two
+five-row plain-call set are unchanged; stage 3A adds exactly raw 33, 36, and 38.
+The blocked frontier retains its 17 typed categories, with three rows now
+remaining in `Invocation`.
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
@@ -369,7 +373,14 @@ expanded output positions. Stage two admits exactly raw 34 `call` (`NPop`) and
 raw 236-239 `call0`-`call3` (`NPopX`) as plain calls. Their operand is the
 argument count itself, never count plus one: the callee and those arguments are
 consumed, the receiver is `undefined`, source argument/callback order is
-preserved, and one return value is produced.
+preserved, and one return value is produced. Stage 3A admits three non-tail
+invocation operations without widening that plain-call contract. Raw 33
+`call_constructor` preserves distinct constructor and `newTarget` values plus
+the ordered arguments; raw 36 `call_method` preserves the original receiver for
+strict methods; raw 38 `array_from` preserves element order and creates a fresh
+Array on every execution. Their `u16` operand is passed through unchanged at
+each translation and publication boundary. Tail calls at raw 35 and 37 and
+`apply` at raw 39 remain blocked pending their distinct semantics.
 
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
@@ -393,13 +404,31 @@ atom-free fixture independently locks `Call(0)` through `Call(4)`, strict
 also proves recoverable non-callable `TypeError`, clean pending-exception retry,
 typed-verifier underflow and declared-`max_stack` rejection without heap, atom,
 or pending-state publication, and a branch target landing on `Call` across an
-existing multi-instruction expansion.
+existing multi-instruction expansion. Stage-3A public Rust vectors additionally
+lock constructor/`newTarget` separation, allocated-result prototype identity
+from `newTarget.prototype`, and argument order; exact strict-method receiver
+identity; ordered zero- and three-element fresh Arrays; recoverable invocation
+exceptions; verifier rollback; and a branch target landing on `CallMethod`
+after an existing multi-instruction expansion.
 
-A fresh full R3fj run now authenticates the stage-two ordinary-opcode tree:
-all 102,037 classified outcomes are byte-for-byte unchanged after normalizing
+The pinned stage-3A C oracle compiler-naturally emits the exact target raws 33,
+36, and 38, with compiler union 17, 33, 36, 38, 40, 62, 155, 179, and
+207-209, then locks whole-wire identity across read/write and fresh-runtime
+execution. The natural constructor and Array cases are fully within the
+admitted cohort. The natural method case also needs blocked property opcode raw
+62, so public `CallMethod` evidence instead uses an authenticated property-free
+manual child. Manual execution proves a constructor distinct from `newTarget`,
+ordered arguments, and result prototype from `newTarget.prototype`; exact
+strict-method receiver identity, argument count/order, and result; and distinct
+empty and `[1, 2, 3]` Arrays with stable element order. Raw 35, 37, and 39 are
+present only as an explicit deferred, blocked-pending frontier.
+
+The current full R3fj receipt authenticates the stage-two ordinary-opcode tree:
+all 102,037 classified outcomes were byte-for-byte unchanged after normalizing
 the source fingerprint, with 79,982 full passes among 80,032 eligible variants.
-No Test262 profile or metric changed, so the published baseline above remains
-unchanged.
+That receipt predates the stage-3A source and is therefore source-stale for raw
+33, 36, and 38; it does not authenticate stage 3A. No Test262 profile or metric
+changed, so the published baseline above remains unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and

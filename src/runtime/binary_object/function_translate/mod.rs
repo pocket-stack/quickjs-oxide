@@ -501,6 +501,15 @@ fn lower_operation<'image>(
             Recipe::Call,
             NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argument_count),
         ) => ready(FunctionOp::Call(*argument_count)),
+        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {
+            ready(FunctionOp::Construct(*argument_count))
+        }
+        (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {
+            ready(FunctionOp::CallMethod(*argument_count))
+        }
+        (Recipe::ArrayFrom, NativeOperands::NPop(argument_count)) => {
+            ready(FunctionOp::ArrayFrom(*argument_count))
+        }
         (Recipe::Return, NativeOperands::None) => ready(FunctionOp::Return),
         (Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),
         _ => Err(FunctionTranslateError::registry_drift(
@@ -600,6 +609,25 @@ mod tests {
                 operations.next(),
                 Some(PendingOperation::Ready(FunctionOp::Call(argument_count)))
                     if argument_count == expected
+            ));
+            assert!(operations.next().is_none());
+        }
+    }
+
+    #[test]
+    fn non_tail_invocation_lowering_preserves_the_npop_operand() {
+        for recipe in [Recipe::Construct, Recipe::CallMethod, Recipe::ArrayFrom] {
+            let expansion = lower_operation(recipe, &NativeOperands::NPop(65_535)).unwrap();
+            assert_eq!(expansion.len(), 1);
+            let mut operations = expansion.into_operations();
+            let Some(PendingOperation::Ready(actual)) = operations.next() else {
+                panic!("invocation recipe produced a non-ready operation");
+            };
+            assert!(matches!(
+                (recipe, actual),
+                (Recipe::Construct, FunctionOp::Construct(65_535))
+                    | (Recipe::CallMethod, FunctionOp::CallMethod(65_535))
+                    | (Recipe::ArrayFrom, FunctionOp::ArrayFrom(65_535))
             ));
             assert!(operations.next().is_none());
         }

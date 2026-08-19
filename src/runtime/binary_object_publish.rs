@@ -379,6 +379,9 @@ fn lower_ordinary_leaf_op(
         OrdinaryLeafOp::IfTrue(target) => Instruction::IfTrue(target),
         OrdinaryLeafOp::Goto(target) => Instruction::Goto(target),
         OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),
+        OrdinaryLeafOp::Construct(argument_count) => Instruction::Construct(argument_count),
+        OrdinaryLeafOp::CallMethod(argument_count) => Instruction::CallMethod(argument_count),
+        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::ArrayFrom(element_count),
         OrdinaryLeafOp::Return => Instruction::Return,
         OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,
     };
@@ -595,6 +598,31 @@ mod tests {
                     &mut next_synthetic_index,
                 ),
                 Ok(Instruction::Call(actual)) if actual == argument_count
+            ));
+            assert_eq!(next_synthetic_index, 0);
+        }
+    }
+
+    #[test]
+    fn ordinary_non_tail_invocation_publishes_the_unchanged_operand() {
+        for operation in [
+            OrdinaryLeafOp::Construct(65_535),
+            OrdinaryLeafOp::CallMethod(65_535),
+            OrdinaryLeafOp::ArrayFrom(65_535),
+        ] {
+            let expected = match operation {
+                OrdinaryLeafOp::Construct(_) => 0,
+                OrdinaryLeafOp::CallMethod(_) => 1,
+                OrdinaryLeafOp::ArrayFrom(_) => 2,
+                _ => unreachable!("test matrix contains only invocation operations"),
+            };
+            let mut next_synthetic_index = 0;
+            let actual = lower_ordinary_leaf_op(operation, &mut next_synthetic_index).unwrap();
+            assert!(matches!(
+                (expected, actual),
+                (0, Instruction::Construct(65_535))
+                    | (1, Instruction::CallMethod(65_535))
+                    | (2, Instruction::ArrayFrom(65_535))
             ));
             assert_eq!(next_synthetic_index, 0);
         }

@@ -377,6 +377,9 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     IfTrue(u32),
     Goto(u32),
     Call(u16),
+    Construct(u16),
+    CallMethod(u16),
+    ArrayFrom(u16),
     Return,
     ReturnUndefined,
 }
