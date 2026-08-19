@@ -423,12 +423,11 @@ strict-method receiver identity, argument count/order, and result; and distinct
 empty and `[1, 2, 3]` Arrays with stable element order. Raw 35, 37, and 39 are
 present only as an explicit deferred, blocked-pending frontier.
 
-The current full R3fj receipt authenticates the stage-two ordinary-opcode tree:
-all 102,037 classified outcomes were byte-for-byte unchanged after normalizing
-the source fingerprint, with 79,982 full passes among 80,032 eligible variants.
-That receipt predates the stage-3A source and is therefore source-stale for raw
-33, 36, and 38; it does not authenticate stage 3A. No Test262 profile or metric
-changed, so the published baseline above remains unchanged.
+A fresh full R3fj receipt authenticates the stage-3A ordinary-opcode tree: all
+102,037 classified outcomes were byte-for-byte unchanged after normalizing the
+source fingerprint, with 79,982 full passes among 80,032 eligible variants. No
+Test262 profile or metric changed, so the published baseline above remains
+unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
