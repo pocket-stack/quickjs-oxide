@@ -379,8 +379,12 @@ fn lower_ordinary_leaf_op(
         OrdinaryLeafOp::IfTrue(target) => Instruction::IfTrue(target),
         OrdinaryLeafOp::Goto(target) => Instruction::Goto(target),
         OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),
+        OrdinaryLeafOp::TailCall(argument_count) => Instruction::TailCall(argument_count),
         OrdinaryLeafOp::Construct(argument_count) => Instruction::Construct(argument_count),
         OrdinaryLeafOp::CallMethod(argument_count) => Instruction::CallMethod(argument_count),
+        OrdinaryLeafOp::TailCallMethod(argument_count) => {
+            Instruction::TailCallMethod(argument_count)
+        }
         OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::ArrayFrom(element_count),
         OrdinaryLeafOp::Apply(kind) => Instruction::Apply(match kind {
             OrdinaryLeafApplyKind::Call => ApplyKind::Call,
@@ -627,6 +631,23 @@ mod tests {
                 (0, Instruction::Construct(65_535))
                     | (1, Instruction::CallMethod(65_535))
                     | (2, Instruction::ArrayFrom(65_535))
+            ));
+            assert_eq!(next_synthetic_index, 0);
+        }
+    }
+
+    #[test]
+    fn ordinary_tail_invocation_publishes_one_for_one_with_the_unchanged_operand() {
+        for (operation, expected_method) in [
+            (OrdinaryLeafOp::TailCall(u16::MAX), false),
+            (OrdinaryLeafOp::TailCallMethod(u16::MAX), true),
+        ] {
+            let mut next_synthetic_index = 0;
+            let actual = lower_ordinary_leaf_op(operation, &mut next_synthetic_index).unwrap();
+            assert!(matches!(
+                (expected_method, actual),
+                (false, Instruction::TailCall(u16::MAX))
+                    | (true, Instruction::TailCallMethod(u16::MAX))
             ));
             assert_eq!(next_synthetic_index, 0);
         }

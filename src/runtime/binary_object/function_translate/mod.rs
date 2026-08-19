@@ -520,11 +520,17 @@ fn lower_operation<'image>(
             Recipe::Call,
             NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argument_count),
         ) => ready(FunctionOp::Call(*argument_count)),
+        (Recipe::TailCall, NativeOperands::NPop(argument_count)) => {
+            ready(FunctionOp::TailCall(*argument_count))
+        }
         (Recipe::Construct, NativeOperands::NPop(argument_count)) => {
             ready(FunctionOp::Construct(*argument_count))
         }
         (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {
             ready(FunctionOp::CallMethod(*argument_count))
+        }
+        (Recipe::TailCallMethod, NativeOperands::NPop(argument_count)) => {
+            ready(FunctionOp::TailCallMethod(*argument_count))
         }
         (Recipe::ArrayFrom, NativeOperands::NPop(argument_count)) => {
             ready(FunctionOp::ArrayFrom(*argument_count))
@@ -656,6 +662,25 @@ mod tests {
                 (Recipe::Construct, FunctionOp::Construct(65_535))
                     | (Recipe::CallMethod, FunctionOp::CallMethod(65_535))
                     | (Recipe::ArrayFrom, FunctionOp::ArrayFrom(65_535))
+            ));
+            assert!(operations.next().is_none());
+        }
+    }
+
+    #[test]
+    fn tail_invocation_lowering_preserves_the_npop_operand_and_kind() {
+        for (recipe, expected_method) in [(Recipe::TailCall, false), (Recipe::TailCallMethod, true)]
+        {
+            let expansion = lower_operation(recipe, &NativeOperands::NPop(u16::MAX)).unwrap();
+            assert_eq!(expansion.len(), 1);
+            let mut operations = expansion.into_operations();
+            let Some(PendingOperation::Ready(actual)) = operations.next() else {
+                panic!("tail invocation recipe produced a non-ready operation");
+            };
+            assert!(matches!(
+                (expected_method, actual),
+                (false, FunctionOp::TailCall(u16::MAX))
+                    | (true, FunctionOp::TailCallMethod(u16::MAX))
             ));
             assert!(operations.next().is_none());
         }

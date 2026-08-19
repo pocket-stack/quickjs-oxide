@@ -651,6 +651,9 @@ pub enum Instruction {
     /// Promise/job/module-cache protocol.
     Import,
     Call(u16),
+    /// QuickJS `OP_tail_call`: call with an undefined receiver and use the
+    /// resulting completion as the completion of the current frame.
+    TailCall(u16),
     /// QuickJS `OP_eval`: a syntactic direct-eval call site. The runtime first
     /// compares the resolved callee with the executing realm's original
     /// `%eval%`; a replacement callee falls back to an ordinary call with an
@@ -662,6 +665,8 @@ pub enum Instruction {
         environment: u16,
     },
     CallMethod(u16),
+    /// Receiver-preserving counterpart of [`Instruction::TailCall`].
+    TailCallMethod(u16),
     /// QuickJS `OP_call_constructor`: `func new.target args -> result`.
     Construct(u16),
     /// Authenticate the two stack operands prepared for a derived-constructor
@@ -822,7 +827,9 @@ impl Instruction {
             Self::Call(argument_count) | Self::Eval { argument_count, .. } => {
                 (*argument_count as usize + 1, 1)
             }
+            Self::TailCall(argument_count) => (*argument_count as usize + 1, 0),
             Self::CallMethod(argument_count) => (*argument_count as usize + 2, 1),
+            Self::TailCallMethod(argument_count) => (*argument_count as usize + 2, 0),
             Self::Construct(argument_count) | Self::ConstructSuper(argument_count) => {
                 (*argument_count as usize + 2, 1)
             }
@@ -1555,7 +1562,11 @@ pub(crate) fn verify_parts(
 
         if matches!(
             instruction,
-            Instruction::Return | Instruction::ReturnUndefined | Instruction::ReturnDerived(_)
+            Instruction::TailCall(_)
+                | Instruction::TailCallMethod(_)
+                | Instruction::Return
+                | Instruction::ReturnUndefined
+                | Instruction::ReturnDerived(_)
         ) && state
             .regions
             .iter()
@@ -1573,7 +1584,9 @@ pub(crate) fn verify_parts(
             // value and abandon the rest of the frame stack. In particular,
             // `return` and `throw` inside a switch leave its discriminant
             // below that value rather than emitting synthetic cleanup.
-            Instruction::Return
+            Instruction::TailCall(_)
+            | Instruction::TailCallMethod(_)
+            | Instruction::Return
             | Instruction::ReturnUndefined
             | Instruction::ReturnDerived(_)
             | Instruction::Throw
@@ -2084,6 +2097,92 @@ mod tests {
             undersized_rest.verify().unwrap_err().message(),
             "declared maximum stack is smaller than required"
         );
+    }
+
+    #[test]
+    fn verifier_models_tail_invocations_as_terminal_zero_result_operations() {
+        for (code, maximum) in [
+            (
+                vec![
+                    Instruction::Undefined,
+                    Instruction::PushI32(1),
+                    Instruction::PushI32(2),
+                    Instruction::TailCall(2),
+                    // Terminal tail invocation makes this underflowing
+                    // instruction unreachable.
+                    Instruction::Drop,
+                ],
+                3,
+            ),
+            (
+                vec![
+                    Instruction::PushI32(9),
+                    Instruction::Undefined,
+                    Instruction::PushI32(1),
+                    Instruction::PushI32(2),
+                    Instruction::TailCallMethod(2),
+                    Instruction::Drop,
+                ],
+                4,
+            ),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code,
+                constants: vec![],
+                local_count: 0,
+                max_stack: maximum,
+            };
+            assert_eq!(function.verify().unwrap().max_stack, maximum);
+        }
+
+        for instruction in [Instruction::TailCall(0), Instruction::TailCallMethod(0)] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![instruction],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 0,
+            };
+            assert_eq!(
+                function.verify().unwrap_err().message(),
+                "bytecode stack underflow"
+            );
+        }
+
+        let undersized = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Undefined,
+                Instruction::PushI32(1),
+                Instruction::PushI32(2),
+                Instruction::TailCall(2),
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        assert_eq!(
+            undersized.verify().unwrap_err().message(),
+            "declared maximum stack is smaller than required"
+        );
+
+        for instruction in [
+            Instruction::TailCall(u16::MAX),
+            Instruction::TailCallMethod(u16::MAX),
+        ] {
+            let function = BytecodeFunction {
+                name: None,
+                code: vec![instruction],
+                constants: vec![],
+                local_count: 0,
+                max_stack: 0,
+            };
+            assert_eq!(
+                function.verify().unwrap_err().message(),
+                "bytecode stack underflow"
+            );
+        }
     }
 
     #[test]

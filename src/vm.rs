@@ -774,6 +774,8 @@ struct DetachedHost<'a> {
     function: &'a BytecodeFunction,
     locals: Vec<DetachedLocal>,
     #[cfg(test)]
+    backtrace_values: Vec<Value>,
+    #[cfg(test)]
     captured_local_reuse_preparations: usize,
     #[cfg(test)]
     iterator_start_record: Option<(Value, Value)>,
@@ -873,6 +875,8 @@ impl<'a> DetachedHost<'a> {
             locals: (0..function.local_count)
                 .map(|_| DetachedLocal::Initialized(Value::Undefined))
                 .collect(),
+            #[cfg(test)]
+            backtrace_values: Vec::new(),
             #[cfg(test)]
             captured_local_reuse_preparations: 0,
             #[cfg(test)]
@@ -985,7 +989,9 @@ impl VmHost for DetachedHost<'_> {
         Ok(())
     }
 
-    fn ensure_backtrace(&mut self, _value: &Value) -> Result<(), Error> {
+    fn ensure_backtrace(&mut self, value: &Value) -> Result<(), Error> {
+        #[cfg(test)]
+        self.backtrace_values.push(value.clone());
         Ok(())
     }
 
@@ -3042,6 +3048,11 @@ impl VmActivation {
                 let function = self.pop()?;
                 host.call(function, Value::Undefined, arguments)?
             }
+            Instruction::TailCall(argument_count) => {
+                let arguments = self.take_call_arguments(*argument_count, 1)?;
+                let function = self.pop()?;
+                return host.call(function, Value::Undefined, arguments).map(Some);
+            }
             Instruction::Eval {
                 argument_count,
                 environment,
@@ -3055,6 +3066,12 @@ impl VmActivation {
                 let function = self.pop()?;
                 let receiver = self.pop()?;
                 host.call(function, receiver, arguments)?
+            }
+            Instruction::TailCallMethod(argument_count) => {
+                let arguments = self.take_call_arguments(*argument_count, 2)?;
+                let function = self.pop()?;
+                let receiver = self.pop()?;
+                return host.call(function, receiver, arguments).map(Some);
             }
             Instruction::Construct(argument_count)
             | Instruction::ConstructSuper(argument_count) => {
@@ -3450,8 +3467,10 @@ impl VmActivation {
                 instruction,
                 Instruction::Import
                     | Instruction::Call(_)
+                    | Instruction::TailCall(_)
                     | Instruction::Eval { .. }
                     | Instruction::CallMethod(_)
+                    | Instruction::TailCallMethod(_)
                     | Instruction::Construct(_)
                     | Instruction::ConstructSuper(_)
                     | Instruction::InitDerivedConstructor
@@ -4443,8 +4462,10 @@ impl VmActivation {
             }
             Instruction::Import
             | Instruction::Call(_)
+            | Instruction::TailCall(_)
             | Instruction::Eval { .. }
             | Instruction::CallMethod(_)
+            | Instruction::TailCallMethod(_)
             | Instruction::Construct(_)
             | Instruction::ConstructSuper(_)
             | Instruction::InitDerivedConstructor
@@ -5860,6 +5881,118 @@ mod tests {
             max_stack: 2,
         };
         assert_eq!(Vm::new().execute(&function).unwrap(), Value::Int(2));
+    }
+
+    #[test]
+    fn tail_invocations_complete_the_frame_with_exact_call_operands() {
+        let plain = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(10),
+                Instruction::PushI32(11),
+                Instruction::PushI32(12),
+                Instruction::TailCall(2),
+                Instruction::PushI32(-1),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 3,
+        };
+        plain.verify().unwrap();
+        let mut host = DetachedHost::new(&plain);
+        host.call_results
+            .push_back(Ok(Completion::Return(Value::Int(42))));
+        assert_eq!(
+            CallFrame::new(3).execute(&plain.code, &mut host).unwrap(),
+            Completion::Return(Value::Int(42))
+        );
+        assert_eq!(
+            host.call_inputs,
+            [(
+                Value::Int(10),
+                Value::Undefined,
+                vec![Value::Int(11), Value::Int(12)]
+            )]
+        );
+
+        let method = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::PushI32(20),
+                Instruction::PushI32(21),
+                Instruction::PushI32(22),
+                Instruction::PushI32(23),
+                Instruction::TailCallMethod(2),
+                Instruction::PushI32(-1),
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 4,
+        };
+        method.verify().unwrap();
+        let mut host = DetachedHost::new(&method);
+        host.call_results
+            .push_back(Ok(Completion::Return(Value::Int(43))));
+        assert_eq!(
+            CallFrame::new(4).execute(&method.code, &mut host).unwrap(),
+            Completion::Return(Value::Int(43))
+        );
+        assert_eq!(
+            host.call_inputs,
+            [(
+                Value::Int(21),
+                Value::Int(20),
+                vec![Value::Int(22), Value::Int(23)]
+            )]
+        );
+    }
+
+    #[test]
+    fn tail_invocation_throws_use_the_activation_backtrace_and_catch_path() {
+        let caught = BytecodeFunction {
+            name: None,
+            code: vec![
+                Instruction::Catch(4),
+                Instruction::PushI32(7),
+                Instruction::TailCall(0),
+                Instruction::Drop,
+                Instruction::Return,
+            ],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 2,
+        };
+        caught.verify().unwrap();
+        let mut host = DetachedHost::new(&caught);
+        host.call_results
+            .push_back(Ok(Completion::Throw(Value::Int(77))));
+        assert_eq!(
+            CallFrame::new(2).execute(&caught.code, &mut host).unwrap(),
+            Completion::Return(Value::Int(77))
+        );
+        assert_eq!(host.backtrace_values, [Value::Int(77)]);
+        assert_eq!(host.captured_local_reuse_preparations, 1);
+
+        let uncaught = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::PushI32(8), Instruction::TailCall(0)],
+            constants: vec![],
+            local_count: 0,
+            max_stack: 1,
+        };
+        uncaught.verify().unwrap();
+        let mut host = DetachedHost::new(&uncaught);
+        host.call_results
+            .push_back(Ok(Completion::Throw(Value::Int(88))));
+        assert_eq!(
+            CallFrame::new(1)
+                .execute(&uncaught.code, &mut host)
+                .unwrap(),
+            Completion::Throw(Value::Int(88))
+        );
+        assert_eq!(host.backtrace_values, [Value::Int(88)]);
     }
 
     #[test]

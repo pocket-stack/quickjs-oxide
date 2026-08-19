@@ -1697,7 +1697,12 @@ pub(crate) fn validate_derived_constructor_bytecode_layout(
                     return Err("derived return targets another local");
                 }
             }
-            Instruction::Return | Instruction::ReturnUndefined if derived => {
+            Instruction::TailCall(_)
+            | Instruction::TailCallMethod(_)
+            | Instruction::Return
+            | Instruction::ReturnUndefined
+                if derived =>
+            {
                 return Err("derived constructor contains an ordinary return");
             }
             _ => {}
@@ -27756,7 +27761,12 @@ mod tests {
             Ok(()),
         );
 
-        for ordinary_return in [Instruction::Return, Instruction::ReturnUndefined] {
+        for ordinary_return in [
+            Instruction::TailCall(0),
+            Instruction::TailCallMethod(0),
+            Instruction::Return,
+            Instruction::ReturnUndefined,
+        ] {
             let forged = [
                 Instruction::PushActiveFunction,
                 Instruction::PutLocal(1),

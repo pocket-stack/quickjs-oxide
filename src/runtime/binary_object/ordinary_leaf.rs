@@ -168,8 +168,10 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     IfTrue(u32),
     Goto(u32),
     Call(u16),
+    TailCall(u16),
     Construct(u16),
     CallMethod(u16),
+    TailCallMethod(u16),
     ArrayFrom(u16),
     Apply(OrdinaryLeafApplyKind),
     Return,
@@ -666,8 +668,12 @@ fn lower_operation(
             validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto)
         }
         FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),
+        FunctionOp::TailCall(argument_count) => Ok(OrdinaryLeafOp::TailCall(*argument_count)),
         FunctionOp::Construct(argument_count) => Ok(OrdinaryLeafOp::Construct(*argument_count)),
         FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::CallMethod(*argument_count)),
+        FunctionOp::TailCallMethod(argument_count) => {
+            Ok(OrdinaryLeafOp::TailCallMethod(*argument_count))
+        }
         FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(*element_count)),
         FunctionOp::Apply(kind) => Ok(OrdinaryLeafOp::Apply(match kind {
             FunctionApplyKind::Call => OrdinaryLeafApplyKind::Call,
@@ -1161,6 +1167,22 @@ mod tests {
             (
                 FunctionOp::ArrayFrom(65_535),
                 OrdinaryLeafOp::ArrayFrom(65_535),
+            ),
+        ] {
+            assert_eq!(lower_ready(operation), expected);
+        }
+    }
+
+    #[test]
+    fn tail_invocation_operands_reach_the_ordinary_dto_unchanged() {
+        for (operation, expected) in [
+            (
+                FunctionOp::TailCall(u16::MAX),
+                OrdinaryLeafOp::TailCall(u16::MAX),
+            ),
+            (
+                FunctionOp::TailCallMethod(u16::MAX),
+                OrdinaryLeafOp::TailCallMethod(u16::MAX),
             ),
         ] {
             assert_eq!(lower_ready(operation), expected);

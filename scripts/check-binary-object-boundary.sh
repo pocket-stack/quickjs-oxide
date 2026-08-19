@@ -131,6 +131,17 @@ def normalized_code_sha256(code: str) -> str:
     return hashlib.sha256(" ".join(code.split()).encode("utf-8")).hexdigest()
 
 
+def require_normalized_code_sha256(
+    code_name: str,
+    description: str,
+    code: str,
+    expected: str,
+) -> None:
+    found = normalized_code_sha256(code)
+    if found != expected:
+        fail(code_name, f"{description}; normalized code sha256 {found}")
+
+
 def require_ordered_fragments(
     code_name: str,
     description: str,
@@ -1477,9 +1488,12 @@ expected_recipe_variants = """
     PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
     PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
     SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
-    Goto Call Construct CallMethod ArrayFrom Apply Return ReturnUndefined
+    Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
+    ReturnUndefined
 """.split()
-counted_invocation_variant_names = ("Call", "Construct", "CallMethod", "ArrayFrom")
+counted_invocation_variant_names = (
+    "Call", "TailCall", "Construct", "CallMethod", "TailCallMethod", "ArrayFrom"
+)
 invocation_variant_names = (*counted_invocation_variant_names, "Apply")
 recipe_invocation_shapes = {
     name: (
@@ -1493,7 +1507,7 @@ if enum_variant_names(recipe_code) != expected_recipe_variants or any(
 ):
     fail(
         "function-translate-recipe-shape",
-        "Recipe must retain the exact reviewed inventory with unit Call, Construct, CallMethod, ArrayFrom, and Apply recipes; "
+        "Recipe must retain the exact reviewed inventory with unit invocation recipes, including distinct terminal TailCall and TailCallMethod recipes; "
         f"found {enum_variant_names(recipe_code)} with invocation shapes {recipe_invocation_shapes}",
     )
 
@@ -1509,7 +1523,8 @@ expected_function_op_variants = """
     Blocked OutsideTarget PushI32 PushConstant PushAtom PushUndefined PushNull
     PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
     PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
-    IfTrue Goto Call Construct CallMethod ArrayFrom Apply Return ReturnUndefined
+    IfTrue Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply
+    Return ReturnUndefined
 """.split()
 function_invocation_payloads = {
     name: [
@@ -1528,7 +1543,7 @@ if (
 ):
     fail(
         "function-translate-dto-shape",
-        "FunctionOp must retain the exact reviewed inventory with counted u16 payloads and a typed Apply kind; "
+        "FunctionOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads and a typed Apply kind; "
         f"found {enum_variant_names(dto_function_op_code)} with invocation payloads {function_invocation_payloads}",
     )
 
@@ -1610,7 +1625,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (119, 1, 95, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (117, 1, 97, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1619,11 +1634,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 124, 125)
+    or derived_registry_counts != (30, 126, 127)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact final stage-three-B physical cohorts; "
+        "the centralized registry must preserve the exact final stage-three-C physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1678,8 +1693,10 @@ expect_admitted("OrdinaryOnly", "Recipe::IfFalse", (104, 232))
 expect_admitted("OrdinaryOnly", "Recipe::IfTrue", (105, 233))
 expect_admitted("OrdinaryOnly", "Recipe::Goto", (106, 234, 235))
 expect_admitted("OrdinaryOnly", "Recipe::Call", (34, 236, 237, 238, 239))
+expect_admitted("OrdinaryOnly", "Recipe::TailCall", (35,))
 expect_admitted("OrdinaryOnly", "Recipe::Construct", (33,))
 expect_admitted("OrdinaryOnly", "Recipe::CallMethod", (36,))
+expect_admitted("OrdinaryOnly", "Recipe::TailCallMethod", (37,))
 expect_admitted("OrdinaryOnly", "Recipe::ArrayFrom", (38,))
 expect_admitted("OrdinaryOnly", "Recipe::Apply", (39,))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
@@ -1713,9 +1730,9 @@ if found_admitted_registry != expected_admitted_registry:
 expected_stage_boundaries = {
     33: (("call_constructor", 3, 2, 1, "NPop"), "OrdinaryOnly", "Recipe::Construct"),
     34: (("call", 3, 1, 1, "NPop"), "OrdinaryOnly", "Recipe::Call"),
-    35: (("tail_call", 3, 1, 0, "NPop"), "Blocked", "Invocation"),
+    35: (("tail_call", 3, 1, 0, "NPop"), "OrdinaryOnly", "Recipe::TailCall"),
     36: (("call_method", 3, 2, 1, "NPop"), "OrdinaryOnly", "Recipe::CallMethod"),
-    37: (("tail_call_method", 3, 2, 0, "NPop"), "Blocked", "Invocation"),
+    37: (("tail_call_method", 3, 2, 0, "NPop"), "OrdinaryOnly", "Recipe::TailCallMethod"),
     38: (("array_from", 3, 0, 1, "NPop"), "OrdinaryOnly", "Recipe::ArrayFrom"),
     39: (("apply", 3, 3, 1, "U16"), "OrdinaryOnly", "Recipe::Apply"),
     41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
@@ -1800,25 +1817,25 @@ if found_stage_three_b_apply_rows != stage_three_b_apply_rows:
         f"found {found_stage_three_b_apply_rows}",
     )
 
-stage_three_b_blocked_rows = (
-    (35, "NPop", "Invocation"),
-    (37, "NPop", "Invocation"),
+stage_three_c_tail_rows = (
+    (35, "NPop", "Recipe::TailCall"),
+    (37, "NPop", "Recipe::TailCallMethod"),
 )
-found_stage_three_b_blocked_rows = tuple(
+found_stage_three_c_tail_rows = tuple(
     (raw, registry_rows[raw][1], registry_rows[raw][3])
-    for raw, _, _ in stage_three_b_blocked_rows
-    if registry_rows[raw][2] == "Blocked"
+    for raw, _, _ in stage_three_c_tail_rows
+    if registry_rows[raw][2] == "OrdinaryOnly"
 )
-if found_stage_three_b_blocked_rows != stage_three_b_blocked_rows:
+if found_stage_three_c_tail_rows != stage_three_c_tail_rows:
     fail(
-        "function-translate-stage-three-b-frontier",
-        "tail-call raws 35 and 37 must remain blocked in Invocation after apply admission; "
-        f"found {found_stage_three_b_blocked_rows}",
+        "function-translate-stage-three-c-set",
+        "stage three C must admit exactly raw 35 TailCall and raw 37 TailCallMethod as distinct OrdinaryOnly NPop recipes; "
+        f"found {found_stage_three_c_tail_rows}",
     )
 
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 2 Completion 1
-    Exception 2 EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Completion 1 Exception 2
+    EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
     Operator 4 Specialized 4
 """.split()
@@ -1842,8 +1859,24 @@ unexpected_blockers = sorted(
 if found_blocker_counts != expected_blocker_counts or unexpected_blockers:
     fail(
         "function-translate-registry-blockers",
-        "the blocked frontier must retain all 17 nonempty typed categories and their exact counts; "
+        "the blocked frontier must retain all 16 nonempty typed categories and their exact counts, with the retired Invocation bucket absent; "
         f"found {found_blocker_counts} with unexpected {unexpected_blockers}",
+    )
+blocked_registry_mapping = "\n".join(
+    f"{raw}:{detail}"
+    for raw, _, audience, detail in registry_rows
+    if audience == "Blocked"
+)
+blocked_registry_mapping_hash = hashlib.sha256(
+    blocked_registry_mapping.encode("utf-8")
+).hexdigest()
+if blocked_registry_mapping_hash != (
+    "a5ccb0e0e9bc4d4122a251498e2ec2fc03552acfce4570eb9439dc0f1ac48998"
+):
+    fail(
+        "function-translate-registry-blockers",
+        "every blocked raw opcode must retain its reviewed typed blocker, not only the aggregate category counts; "
+        f"mapping sha256 {blocked_registry_mapping_hash}",
     )
 
 dto_blocker_code, _, _ = unique_braced_item(
@@ -1859,7 +1892,7 @@ dto_blocker_code, _, _ = unique_braced_item(
 if enum_variant_names(dto_blocker_code) != list(expected_blocker_counts):
     fail(
         "function-translate-dto-shape",
-        "TranslationBlocker must retain the 17 reviewed ordered categories and no retired empty bucket; "
+        "TranslationBlocker must retain the 16 reviewed ordered nonempty categories and no retired Invocation bucket; "
         f"found {enum_variant_names(dto_blocker_code)}",
     )
 
@@ -2053,6 +2086,12 @@ if (
         "target audience rejection must precede all operand materialization",
     )
 normalized_translate_lower = " ".join(translate_lower_item.split())
+require_normalized_code_sha256(
+    "function-translate-semantic-dispatch",
+    "lower_operation must remain one alias-free typed Recipe/operand match with its unique ready publisher",
+    translate_lower_item,
+    "5136fa76a337a87545c9c66939d61563b07d9e163fc85e9e682db06612da077c",
+)
 if normalized_translate_lower.count(
     "let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));"
 ) != 1:
@@ -2110,8 +2149,10 @@ Recipe::Goto @ NativeOperands::Label(label) @ Ok(PendingExpansion::one( PendingO
 Recipe::Goto @ NativeOperands::Label8(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
 Recipe::Goto @ NativeOperands::Label16(label) @ Ok(PendingExpansion::one( PendingOperation::Goto(label.target_instruction()), ))
 Recipe::Call @ NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argument_count) @ ready(FunctionOp::Call(*argument_count))
+Recipe::TailCall @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::TailCall(*argument_count)) }
 Recipe::Construct @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::Construct(*argument_count)) }
 Recipe::CallMethod @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::CallMethod(*argument_count)) }
+Recipe::TailCallMethod @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::TailCallMethod(*argument_count)) }
 Recipe::ArrayFrom @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::ArrayFrom(*argument_count)) }
 Recipe::Apply @ NativeOperands::U16(0) @ { ready(FunctionOp::Apply(FunctionApplyKind::Call)) }
 Recipe::Apply @ NativeOperands::U16(1) @ { ready(FunctionOp::Apply(FunctionApplyKind::Construct)) }
@@ -2122,10 +2163,10 @@ Recipe::ReturnUndefined @ NativeOperands::None @ ready(FunctionOp::ReturnUndefin
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 49 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 51 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain all 49 reviewed Recipe/operand arms and each exact normalized RHS payload expression; "
+        "lower_operation must retain all 51 reviewed Recipe/operand arms, including one-step tail invocations, and each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
 apply_magic_error_contracts = (
@@ -2379,8 +2420,8 @@ ordinary_leaf_op_code, _, _ = unique_braced_item(
 expected_ordinary_leaf_op_variants = """
     PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
     Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
-    SetArgument Binary Predicate IfFalse IfTrue Goto Call Construct CallMethod
-    ArrayFrom Apply Return ReturnUndefined
+    SetArgument Binary Predicate IfFalse IfTrue Goto Call TailCall Construct
+    CallMethod TailCallMethod ArrayFrom Apply Return ReturnUndefined
 """.split()
 ordinary_invocation_payloads = {
     name: [
@@ -2399,7 +2440,7 @@ if (
 ):
     fail(
         "ordinary-leaf-operation-shape",
-        "OrdinaryLeafOp must retain the exact reviewed inventory with counted u16 payloads and a typed Apply kind; "
+        "OrdinaryLeafOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads and a typed Apply kind; "
         f"found {enum_variant_names(ordinary_leaf_op_code)} with invocation payloads {ordinary_invocation_payloads}",
     )
 
@@ -2455,6 +2496,12 @@ ordinary_lower_operation, _, _ = unique_braced_item(
     "ordinary-leaf-translated-code",
     "sanitized ordinary operation lowering",
 )
+require_normalized_code_sha256(
+    "ordinary-leaf-translated-code",
+    "ordinary lower_operation must remain one alias-free exhaustive typed handoff",
+    ordinary_lower_operation,
+    "679c41bc20dedf12fd79b7fa1b8006e90241198f5c093ac899a850d5d768e76d",
+)
 ordinary_handoff_rows = """
 FunctionOp::PushI32(value) @ Ok(OrdinaryLeafOp::PushI32(*value))
 FunctionOp::PushConstant(index) @ lower_constant(*index, constant_count)
@@ -2479,8 +2526,10 @@ FunctionOp::IfFalse(target) @ { validate_ir_target(*target, instruction_count).m
 FunctionOp::IfTrue(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::IfTrue) }
 FunctionOp::Goto(target) @ { validate_ir_target(*target, instruction_count).map(OrdinaryLeafOp::Goto) }
 FunctionOp::Call(argument_count) @ Ok(OrdinaryLeafOp::Call(*argument_count))
+FunctionOp::TailCall(argument_count) @ Ok(OrdinaryLeafOp::TailCall(*argument_count))
 FunctionOp::Construct(argument_count) @ Ok(OrdinaryLeafOp::Construct(*argument_count))
 FunctionOp::CallMethod(argument_count) @ Ok(OrdinaryLeafOp::CallMethod(*argument_count))
+FunctionOp::TailCallMethod(argument_count) @ { Ok(OrdinaryLeafOp::TailCallMethod(*argument_count)) }
 FunctionOp::ArrayFrom(element_count) @ Ok(OrdinaryLeafOp::ArrayFrom(*element_count))
 FunctionOp::Apply(kind) @ Ok(OrdinaryLeafOp::Apply(match kind { FunctionApplyKind::Call => OrdinaryLeafApplyKind::Call, FunctionApplyKind::Construct => OrdinaryLeafApplyKind::Construct, }))
 FunctionOp::Return @ Ok(OrdinaryLeafOp::Return)
@@ -2491,7 +2540,7 @@ found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionO
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 29 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 31 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
@@ -3843,6 +3892,12 @@ if consumer_exists:
         "ordinary-leaf-consumer-lowering",
         "typed instruction lowering",
     )
+    require_normalized_code_sha256(
+        "ordinary-leaf-consumer-lowering",
+        "lower_ordinary_leaf_op must remain one alias-free exhaustive typed publisher match",
+        ordinary_instruction_lowering,
+        "687360cc5735fbad927341ee897f3c34f76965af853a1b95af178317ffe46711",
+    )
     detached_variants = re.findall(
         r"\bDetachedPrimitive[ \t\n]*::[ \t\n]*(\w+)",
         ordinary_detached_lowering,
@@ -3871,8 +3926,9 @@ if consumer_exists:
     expected_published_variants = """
         PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
-        GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto Call
-        Construct CallMethod ArrayFrom Apply Return ReturnUndefined
+        GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto
+        Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
+        ReturnUndefined
     """.split()
     found_publisher_arms = rustfmt_match_arms(
         ordinary_instruction_lowering, "OrdinaryLeafOp::"
@@ -3919,8 +3975,10 @@ OrdinaryLeafOp::IfFalse(target) @ Instruction::IfFalse(target)
 OrdinaryLeafOp::IfTrue(target) @ Instruction::IfTrue(target)
 OrdinaryLeafOp::Goto(target) @ Instruction::Goto(target)
 OrdinaryLeafOp::Call(argument_count) @ Instruction::Call(argument_count)
+OrdinaryLeafOp::TailCall(argument_count) @ Instruction::TailCall(argument_count)
 OrdinaryLeafOp::Construct(argument_count) @ Instruction::Construct(argument_count)
 OrdinaryLeafOp::CallMethod(argument_count) @ Instruction::CallMethod(argument_count)
+OrdinaryLeafOp::TailCallMethod(argument_count) @ { Instruction::TailCallMethod(argument_count) }
 OrdinaryLeafOp::ArrayFrom(element_count) @ Instruction::ArrayFrom(element_count)
 OrdinaryLeafOp::Apply(kind) @ Instruction::Apply(match kind { OrdinaryLeafApplyKind::Call => ApplyKind::Call, OrdinaryLeafApplyKind::Construct => ApplyKind::Construct, })
 OrdinaryLeafOp::Return @ Instruction::Return
@@ -3957,7 +4015,7 @@ OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 29
+        len(found_publisher_arms) != 31
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -4261,7 +4319,9 @@ if trusted_read_finish_code and normalized_code_sha256(
         "trusted bytecode reads must convert only JavaScript-visible errors into pending exceptions and preserve Unsupported/Internal directly",
     )
 
-bytecode_code = rust_code_only(read_source("src/bytecode.rs"))
+bytecode_source = read_source("src/bytecode.rs")
+bytecode_code = rust_code_only(bytecode_source)
+bytecode_production_code = bytecode_code.split("#[cfg(test)]\nmod tests", 1)[0]
 vm_code = rust_code_only(read_source("src/vm.rs"))
 value_code = rust_code_only(read_source("src/value.rs"))
 atom_code = rust_code_only(read_source("src/atom.rs"))
@@ -4286,6 +4346,27 @@ if normalized_bytecode.count("| Self::ReturnUndefined | Self::ThrowRedeclaration
     fail(
         "ordinary-leaf-engine-semantics",
         "ReturnUndefined must remain a zero-pop, zero-push terminal instruction",
+    )
+instruction_code, _, _ = unique_braced_item(
+    bytecode_production_code,
+    re.compile(r"\bpub[ \t\n]+enum[ \t\n]+Instruction[ \t\n]*\{"),
+    "stage3c-instruction-shape",
+    "engine Instruction enum",
+)
+tail_instruction_payloads = {
+    name: [
+        " ".join(payload.split())
+        for payload in re.findall(
+            rf"\b{name}[ \t\n]*\(([^()]*)\)[ \t\n]*,", instruction_code
+        )
+    ]
+    for name in ("TailCall", "TailCallMethod")
+}
+if tail_instruction_payloads != {"TailCall": ["u16"], "TailCallMethod": ["u16"]}:
+    fail(
+        "stage3c-instruction-shape",
+        "Instruction must retain distinct TailCall(u16) and TailCallMethod(u16) terminal payloads; "
+        f"found {tail_instruction_payloads}",
     )
 predicate_requirements = {
     "IsUndefinedOrNull": ("matches!(value, Value::Undefined | Value::Null)", False),
@@ -4417,6 +4498,220 @@ if not (root / ".boundary-self-test").is_file():
     )
     if bytecode_code.count("Self::Apply(_) | Self::ApplySuper => (3, 1),") != 1:
         fail("stage3b-apply-stack", "Apply must retain its exact three-pop/one-push verifier effect")
+
+    tail_stack_effects = (
+        "Self::TailCall(argument_count) => (*argument_count as usize + 1, 0),",
+        "Self::TailCallMethod(argument_count) => (*argument_count as usize + 2, 0),",
+    )
+    stack_effect_item = stage3b_function(
+        "src/bytecode.rs", "stack_effect", "stage3c-tail-verifier"
+    )
+    require_normalized_code_sha256(
+        "stage3c-tail-verifier",
+        "Instruction::stack_effect must remain the reviewed alias-free exhaustive stack model",
+        stack_effect_item,
+        "e6a359ccac0100898fe2b81222e8725b9164f594b90907585832ff090b5a5fbc",
+    )
+    normalized_stack_effect = " ".join(stack_effect_item.split())
+    if any(normalized_stack_effect.count(fragment) != 1 for fragment in tail_stack_effects):
+        fail(
+            "stage3c-tail-verifier",
+            "TailCall and TailCallMethod must preserve argc+1/argc+2 pops and zero pushes",
+        )
+
+    verify_parts_item = stage3b_function(
+        "src/bytecode.rs", "verify_parts", "stage3c-tail-verifier"
+    )
+    normalized_verify_parts = " ".join(verify_parts_item.split())
+    verifier_terminal_guard = (
+        "if matches!( instruction, Instruction::TailCall(_) | "
+        "Instruction::TailCallMethod(_) | Instruction::Return | "
+        "Instruction::ReturnUndefined | Instruction::ReturnDerived(_) ) && state"
+    )
+    verifier_terminal_offset = normalized_verify_parts.find(verifier_terminal_guard)
+    if verifier_terminal_offset < 0:
+        fail(
+            "stage3c-tail-verifier",
+            "the reviewed terminal verifier corridor is missing",
+        )
+    else:
+        require_normalized_code_sha256(
+            "stage3c-tail-verifier",
+            "the iterator guard, maximum-depth check, terminal dispatch, and successor enqueue corridor must remain alias-free and ordered",
+            normalized_verify_parts[verifier_terminal_offset:],
+            "5f18313dcb4ee5192b9fc3a53c76e1fe7e63bfba3eb3e5761033ecf5ad694370",
+        )
+    tail_terminal_prefix = "Instruction::TailCall(_) | Instruction::TailCallMethod(_)"
+    tail_terminal_dispatch = (
+        "Instruction::TailCall(_) | Instruction::TailCallMethod(_) | "
+        "Instruction::Return | Instruction::ReturnUndefined | "
+        "Instruction::ReturnDerived(_) | Instruction::Throw | Instruction::Ret => {}"
+    )
+    if (
+        normalized_verify_parts.count(tail_terminal_prefix) != 2
+        or normalized_verify_parts.count(tail_terminal_dispatch) != 1
+        or normalized_verify_parts.count("enqueue_target(") != 4
+        or normalized_verify_parts.count("enqueue_fallthrough(") != 4
+    ):
+        fail(
+            "stage3c-tail-verifier",
+            "both tail invocation instructions must be terminal verifier nodes and must not enqueue fallthrough",
+        )
+
+    take_call_arguments_item = stage3b_function(
+        "src/vm.rs", "take_call_arguments", "stage3c-tail-vm"
+    )
+    require_normalized_code_sha256(
+        "stage3c-tail-vm",
+        "take_call_arguments must retain the exact checked suffix split without argument or fixed-value shadowing",
+        take_call_arguments_item,
+        "e8f523f68ef01df927a8761c6dc92ddafb0471fadee17ab9ead81f71d50287f4",
+    )
+
+    call_dispatch_item = stage3b_function(
+        "src/vm.rs", "execute_call_instruction", "stage3c-tail-vm"
+    )
+    require_normalized_code_sha256(
+        "stage3c-tail-vm",
+        "execute_call_instruction must retain its alias-free exhaustive call-family dispatch",
+        call_dispatch_item,
+        "f6b13bdb02ab06e2177beba9cd3bda2f626c6baa97fa09420cbfa2459ef5a97d",
+    )
+    tail_call_arm = unique_braced_item(
+        call_dispatch_item,
+        re.compile(
+            r"\bInstruction[ \t\n]*::[ \t\n]*TailCall[ \t\n]*\("
+            r"[ \t\n]*argument_count[ \t\n]*\)[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "stage3c-tail-vm",
+        "TailCall VM arm",
+    )[0]
+    tail_method_arm = unique_braced_item(
+        call_dispatch_item,
+        re.compile(
+            r"\bInstruction[ \t\n]*::[ \t\n]*TailCallMethod[ \t\n]*\("
+            r"[ \t\n]*argument_count[ \t\n]*\)[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "stage3c-tail-vm",
+        "TailCallMethod VM arm",
+    )[0]
+    expected_tail_call_arm = (
+        "Instruction::TailCall(argument_count) => { "
+        "let arguments = self.take_call_arguments(*argument_count, 1)?; "
+        "let function = self.pop()?; "
+        "return host.call(function, Value::Undefined, arguments).map(Some); }"
+    )
+    expected_tail_method_arm = (
+        "Instruction::TailCallMethod(argument_count) => { "
+        "let arguments = self.take_call_arguments(*argument_count, 2)?; "
+        "let function = self.pop()?; let receiver = self.pop()?; "
+        "return host.call(function, receiver, arguments).map(Some); }"
+    )
+    if (
+        " ".join(tail_call_arm.split()) != expected_tail_call_arm
+        or " ".join(tail_method_arm.split()) != expected_tail_method_arm
+    ):
+        fail(
+            "stage3c-tail-vm",
+            "tail VM dispatch must preserve undefined/plain and receiver/function/method argument order, then return the host completion directly",
+        )
+
+    activation_execute_item = unique_braced_item(
+        vm_code,
+        re.compile(
+            r"\bfn[ \t\n]+execute[ \t\n]*\([^{};]*\)[ \t\n]*->[ \t\n]*"
+            r"Result[ \t\n]*<[ \t\n]*Completion[ \t\n]*,[ \t\n]*Error"
+            r"[ \t\n]*>[ \t\n]*\{"
+        ),
+        "stage3c-tail-completion",
+        "execute-to-completion activation driver",
+    )[0]
+    require_normalized_code_sha256(
+        "stage3c-tail-completion",
+        "the execute-to-completion driver must retain its unique Return terminal and Throw raise flow",
+        activation_execute_item,
+        "65d316cc1950e983ffc111de71f62e9f9cabb1833acddf93a0980b554df62368",
+    )
+    require_ordered_fragments(
+        "stage3c-tail-completion",
+        "tail Return must finish the current frame while Throw still enters the current activation raise path",
+        activation_execute_item,
+        (
+            "Ok(InterpreterExit::Complete(Completion::Return(value))) => { return Ok(Completion::Return(value)); }",
+            "Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,",
+            "Err(error) if NativeErrorKind::from_javascript_error(error.kind()).is_some() => { host.materialize_error(error)? }",
+            "if let Some(completion) = self.raise(raised, host, code.len())? { return Ok(completion); }",
+        ),
+    )
+    activation_run_item = unique_braced_item(
+        vm_code,
+        re.compile(
+            r"\bfn[ \t\n]+run[ \t\n]*\([^{};]*\)[ \t\n]*->[ \t\n]*"
+            r"Result[ \t\n]*<[ \t\n]*VmExit[ \t\n]*,[ \t\n]*Error"
+            r"[ \t\n]*>[ \t\n]*\{"
+        ),
+        "stage3c-tail-completion",
+        "suspendable activation driver",
+    )[0]
+    require_normalized_code_sha256(
+        "stage3c-tail-completion",
+        "the suspendable driver must retain its unique Return terminal and Throw raise flow",
+        activation_run_item,
+        "53668ef453a43fc676e96f2c6f01c017f3f336df4bba96674562e77361e0f63e",
+    )
+    raise_item = stage3b_function("src/vm.rs", "raise", "stage3c-tail-completion")
+    require_normalized_code_sha256(
+        "stage3c-tail-completion",
+        "raise must retain one backtrace-first catch/iterator unwind loop without guarded bypasses",
+        raise_item,
+        "52a25a382122f09433bd29178885bc10c38222aee15f0d5482def7b15b45caab",
+    )
+    require_ordered_fragments(
+        "stage3c-tail-completion",
+        "tail Throw must retain backtrace attachment, catch transfer, and iterator unwind on the same activation",
+        raise_item,
+        (
+            "host.ensure_backtrace(&value)?;",
+            "let Some(region) = self.regions.pop() else { return Ok(Some(Completion::Throw(value))); };",
+            "VmUnwindRegion::Catch { target, stack_depth, } => {",
+            "host.prepare_captured_local_reuse()?;",
+            "self.stack.truncate(stack_depth);",
+            "self.stack.push(value);",
+            "self.pc = checked_target(",
+            "return Ok(None);",
+            "VmUnwindRegion::Iterator { record_base, enabled, .. } => {",
+            "match host.iterator_close(iterator, true)? {",
+        ),
+    )
+
+    execute_inner_item = stage3b_function(
+        "src/vm.rs", "execute_inner", "stage3c-tail-vm"
+    )
+    normalized_execute_inner = " ".join(execute_inner_item.split())
+    call_route = (
+        "if matches!( instruction, Instruction::Import | Instruction::Call(_) | "
+        "Instruction::TailCall(_) | Instruction::Eval { .. } | "
+        "Instruction::CallMethod(_) | Instruction::TailCallMethod(_) | "
+        "Instruction::Construct(_) | Instruction::ConstructSuper(_) | "
+        "Instruction::InitDerivedConstructor | Instruction::Apply(_) | "
+        "Instruction::ApplySuper | Instruction::ApplyEval { .. } ) { "
+        "if let Some(completion) = self.execute_call_instruction(instruction, host)? { "
+        "return Ok(InterpreterExit::Complete(completion)); } continue; }"
+    )
+    call_route_offset = normalized_execute_inner.find(call_route)
+    if call_route_offset < 0 or normalized_execute_inner.count(call_route) != 1:
+        fail(
+            "stage3c-tail-vm",
+            "execute_inner must route the complete call family, including both tail variants, exactly once",
+        )
+    else:
+        call_route_end = call_route_offset + len(call_route)
+        require_normalized_code_sha256(
+            "stage3c-tail-vm",
+            "the execute_inner prefix through call-family routing must not intercept, alias, or remove tail completion",
+            normalized_execute_inner[:call_route_end],
+            "e425f4d42ef9a3a7b6552994a6f7da31009e70451f5b48e3312581929a54e54c",
+        )
 
     # Each row pins a compact, semantic ordering contract rather than a brittle
     # whole-function digest. Full-source rewrite canaries exercise the key rows.
@@ -4766,6 +5061,231 @@ if not (root / ".boundary-self-test").is_file():
             "stage3b-runtime-evidence",
             "Stage3B must retain its canonical/noncanonical, ordering, raw propagation, realm, native-family, Proxy, stack, and branch regression matrix; "
             f"missing {missing_stage3b_tests}, drifted {drifted_stage3b_tests}",
+        )
+
+    stage3c_test_module_contracts = (
+        ("src/runtime.rs", ";"),
+        ("src/vm.rs", "{"),
+        ("src/bytecode.rs", "{"),
+        ("src/runtime/binary_object/function_translate/mod.rs", "{"),
+        ("src/runtime/binary_object/ordinary_leaf.rs", "{"),
+        ("src/runtime/binary_object_publish.rs", "{"),
+        ("src/runtime/binary_object/function_translate/capability.rs", "{"),
+    )
+    test_module_pattern = re.compile(
+        r"(?m)(?P<attributes>(?:^[ \t]*#[ \t]*\[[^]\n]*\][ \t]*\n)*)"
+        r"^[ \t]*mod[ \t]+tests[ \t]*(?P<form>;|\{)"
+    )
+    drifted_stage3c_test_modules = []
+    for relative, expected_form in stage3c_test_module_contracts:
+        code = stage3b_code(relative)
+        declarations = [
+            declaration
+            for declaration in test_module_pattern.finditer(code)
+            if code[:declaration.start()].count("{")
+            == code[:declaration.start()].count("}")
+        ]
+        if (
+            len(declarations) != 1
+            or " ".join(declarations[0].group("attributes").split()) != "#[cfg(test)]"
+            or declarations[0].group("form") != expected_form
+        ):
+            drifted_stage3c_test_modules.append(relative)
+
+    stage3c_required_test_sources = {
+        "src/runtime/tests.rs",
+        "src/vm.rs",
+        "src/bytecode.rs",
+        "src/runtime/binary_object/function_translate/mod.rs",
+        "src/runtime/binary_object/ordinary_leaf.rs",
+        "src/runtime/binary_object_publish.rs",
+        "src/runtime/binary_object/function_translate/capability.rs",
+    }
+    for relative in stage3c_required_test_sources:
+        if re.search(
+            r"(?m)^[ \t]*#![ \t]*\[[ \t]*(?:cfg|cfg_attr)\b",
+            stage3b_code(relative),
+        ):
+            drifted_stage3c_test_modules.append(relative)
+    if drifted_stage3c_test_modules:
+        fail(
+            "stage3c-runtime-evidence",
+            "every required Stage3C test module must retain exactly #[cfg(test)] and no outer or inner cfg/cfg_attr exclusion; "
+            f"drifted {sorted(set(drifted_stage3c_test_modules))}",
+        )
+
+    stage3c_test_contracts = (
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "registry_locks_the_current_physical_cohorts",
+            (
+                "(blocked, scalar_only, ordinary_only, shared), (117, 1, 97, 29)",
+                "assert_eq!(ordinary_only + shared, 126);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 127);",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "ordinary_invocation_addition_is_the_exact_reviewed_six_row_set",
+            (
+                "(35, OpcodeFormat::NPop, Recipe::TailCall)",
+                "(37, OpcodeFormat::NPop, Recipe::TailCallMethod)",
+                "CapabilityPolicy::OrdinaryOnly(expected_recipe)",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "blocked_frontier_has_stable_typed_category_counts",
+            (
+                "let mut counts = [0_usize; 16];",
+                "assert!(counts.into_iter().all(|count| count != 0));",
+                "assert_eq!(counts.into_iter().sum::<usize>(), 117);",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/mod.rs",
+            "tail_invocation_lowering_preserves_the_npop_operand_and_kind",
+            (
+                "NativeOperands::NPop(u16::MAX)",
+                "(false, FunctionOp::TailCall(u16::MAX))",
+                "(true, FunctionOp::TailCallMethod(u16::MAX))",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "tail_invocation_operands_reach_the_ordinary_dto_unchanged",
+            (
+                "FunctionOp::TailCall(u16::MAX)",
+                "OrdinaryLeafOp::TailCall(u16::MAX)",
+                "OrdinaryLeafOp::TailCallMethod(u16::MAX)",
+            ),
+        ),
+        (
+            "src/runtime/binary_object_publish.rs",
+            "ordinary_tail_invocation_publishes_one_for_one_with_the_unchanged_operand",
+            (
+                "OrdinaryLeafOp::TailCall(u16::MAX)",
+                "Instruction::TailCall(u16::MAX)",
+                "Instruction::TailCallMethod(u16::MAX)",
+                "assert_eq!(next_synthetic_index, 0);",
+            ),
+        ),
+        (
+            "src/bytecode.rs",
+            "verifier_models_tail_invocations_as_terminal_zero_result_operations",
+            (
+                "Instruction::TailCall(2)",
+                "Instruction::TailCallMethod(2)",
+                "for instruction in [Instruction::TailCall(0), Instruction::TailCallMethod(0)]",
+                "Instruction::TailCall(u16::MAX)",
+                "Instruction::TailCallMethod(u16::MAX)",
+            ),
+        ),
+        (
+            "src/vm.rs",
+            "tail_invocations_complete_the_frame_with_exact_call_operands",
+            (
+                "Completion::Return(Value::Int(42))",
+                "Value::Undefined, vec![Value::Int(11), Value::Int(12)]",
+                "Value::Int(21), Value::Int(20), vec![Value::Int(22), Value::Int(23)]",
+            ),
+        ),
+        (
+            "src/vm.rs",
+            "tail_invocation_throws_use_the_activation_backtrace_and_catch_path",
+            (
+                "Completion::Throw(Value::Int(77))",
+                "assert_eq!(host.backtrace_values, [Value::Int(77)]);",
+                "assert_eq!(host.captured_local_reuse_preparations, 1);",
+                "Completion::Throw(Value::Int(88))",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics",
+            (
+                "assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_BC5.len(), 57);",
+                "0x8ff9_d2c1_0c7e_2228",
+                "assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_METHOD_BC5.len(), 62);",
+                "0xe87d_54c0_a2a1_40ca",
+                "Instruction::TailCall(2)",
+                "Instruction::TailCallMethod(2)",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_tail_invocation_failures_are_recoverable",
+            (
+                "vec![Value::Int(0), Value::Int(1), Value::Int(2)]",
+                "vec![Value::Null, Value::Int(0), Value::Int(1), Value::Int(2)]",
+                "Err(RuntimeError::Exception)",
+                "Value::Int(42)",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_tail_verification_rolls_back_heap_and_atoms",
+            (
+                "quickjs_ordinary_three_argument_with_code(&[0x23, 0xff, 0xff], 0)",
+                "quickjs_ordinary_four_argument_with_code(&[0x25, 0xff, 0xff], 0)",
+                "assert_eq!(runtime.heap_counts(), baseline",
+                "assert_eq!(runtime.test_atom_count(), baseline_atoms",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "published_tail_call_uses_backtrace_and_current_activation_catch_semantics",
+            (
+                "Instruction::TailCall(0)",
+                "let stack = own_stack_string(&runtime, &error).to_utf8_lossy();",
+                "Instruction::Catch(4)",
+                "Value::Int(17)",
+            ),
+        ),
+    )
+    stage3c_test_body_hashes = {
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "2568beb0960dcc373e0c0385d2a6382cf8576752fe8c8797a4187b169c9485e0",
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_invocation_addition_is_the_exact_reviewed_six_row_set"): "0bd25bc945bde404ea911c720491e06a0d58c7257683347372b6c74843d3afc2",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "e3a64e644a8a92e36f822a8476ff38bba2656b7d4b6c53e9a13522840e614f13",
+        ("src/runtime/binary_object/function_translate/mod.rs", "tail_invocation_lowering_preserves_the_npop_operand_and_kind"): "f9a36b2d07545f80276edce3e1e7f3e1baaa56fcdfd82996a857be1958acccd2",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "tail_invocation_operands_reach_the_ordinary_dto_unchanged"): "fd78ceeb26a50bc988ebb4fdece4f4417b89abd31bbfe0edae6480899e8c1ecc",
+        ("src/runtime/binary_object_publish.rs", "ordinary_tail_invocation_publishes_one_for_one_with_the_unchanged_operand"): "7277c89d2d824c8bfe59cecc5ed5fdbf4e68f0368b719794d3072df7782bc94e",
+        ("src/bytecode.rs", "verifier_models_tail_invocations_as_terminal_zero_result_operations"): "c9e3ab6c07492a5e74e91c689b8f70ef324b74ffce9321e92460fc356fe2af07",
+        ("src/vm.rs", "tail_invocations_complete_the_frame_with_exact_call_operands"): "08a72d3c502b9610b9efa10dcdca4bbcfec90d7ffcd76ded373e97f8e8982dac",
+        ("src/vm.rs", "tail_invocation_throws_use_the_activation_backtrace_and_catch_path"): "b04b8f4116f8988c79c8ed41f6825f996fd15225fd871a6d44708d7e9c344fae",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics"): "4b972572d236f13acf54b98365cd4c8ad52bd86e5a9dc97cbb67b727a8540562",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_tail_invocation_failures_are_recoverable"): "0640226781baa7b22b4a68b2c1d0929ee1c60e09c347c1ebd9f23ed21bfd6235",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_tail_verification_rolls_back_heap_and_atoms"): "e089f00738beddf2de2926d27f59850eb34b4a806184177deb9922228a0cc767",
+        ("src/runtime/tests.rs", "published_tail_call_uses_backtrace_and_current_activation_catch_semantics"): "46a75e60a1f007a7b626bc0579aeb7435911a47199bf0accc0a2c5dfa4e7cd06",
+    }
+    missing_stage3c_tests = []
+    drifted_stage3c_tests = []
+    for relative, name, anchors in stage3c_test_contracts:
+        code = stage3b_code(relative)
+        declarations = list(re.finditer(
+            rf"(?P<attributes>(?:#[ \t\n]*\[[^]]*\][ \t\n]*)*)"
+            rf"\bfn[ \t\n]+{re.escape(name)}[ \t\n]*\(",
+            code,
+        ))
+        if (
+            len(declarations) != 1
+            or " ".join(declarations[0].group("attributes").split()) != "#[test]"
+        ):
+            missing_stage3c_tests.append(f"{relative}::{name}")
+            continue
+        item = stage3b_function(relative, name, "stage3c-runtime-evidence")
+        normalized_item = " ".join(item.split())
+        if (
+            any(anchor not in normalized_item for anchor in anchors)
+            or normalized_code_sha256(item)
+            != stage3c_test_body_hashes.get((relative, name))
+        ):
+            drifted_stage3c_tests.append(f"{relative}::{name}")
+    if missing_stage3c_tests or drifted_stage3c_tests:
+        fail(
+            "stage3c-runtime-evidence",
+            "Stage3C tests must retain exact #[test] attributes and the typed-chain, BC5, verifier, operand-order, completion, catch, backtrace, unwind, recovery, and rollback evidence; "
+            f"missing {missing_stage3c_tests}, drifted {drifted_stage3c_tests}",
         )
 
 src_root = root / "src"
@@ -6983,18 +7503,21 @@ translate-call-registry-npop-format|function-translate-registry-descriptor|src/r
 translate-call0-registry-npopx-format|function-translate-registry-descriptor|src/runtime/binary_object/function_translate/capability.rs|    row!(236, NPopX, OrdinaryOnly, Recipe::Call),|    row!(236, NPop, OrdinaryOnly, Recipe::Call),
 translate-call-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(34, NPop, OrdinaryOnly, Recipe::Call),|    row!(34, NPop, Shared, Recipe::Call),
 stage3a-construct-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(33, NPop, OrdinaryOnly, Recipe::Construct),|    row!(33, NPop, Shared, Recipe::Construct),
-stage3a-tail-call-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(35, NPop, Blocked, Invocation),|    row!(35, NPop, OrdinaryOnly, Recipe::Construct),
-stage3a-tail-call-method-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(37, NPop, Blocked, Invocation),|    row!(37, NPop, OrdinaryOnly, Recipe::CallMethod),
-stage3b-apply-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(39, U16, OrdinaryOnly, Recipe::Apply),|    row!(39, U16, Blocked, Invocation),
+stage3c-tail-call-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(35, NPop, OrdinaryOnly, Recipe::TailCall),|    row!(35, NPop, Blocked, Completion),
+stage3c-tail-call-method-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(37, NPop, OrdinaryOnly, Recipe::TailCallMethod),|    row!(37, NPop, Blocked, Completion),
+stage3b-apply-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(39, U16, OrdinaryOnly, Recipe::Apply),|    row!(39, U16, Blocked, Completion),
 stage3b-apply-recipe-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Apply,\n    Return,|    Apply(u16),\n    Return,
 translate-recipe-call-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Call,|    Call(u16),
+stage3c-tail-call-recipe-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Call,\n    TailCall,\n    Construct,|    Call,\n    TailCall(u16),\n    Construct,
 translate-dto-call-payload|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Call(u16),|    Call(u32),
+stage3c-function-tail-call-payload|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Call(u16),\n    TailCall(u16),\n    Construct(u16),|    Call(u16),\n    TailCall(u32),\n    Construct(u16),
 stage3b-function-apply-raw-payload|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Apply(FunctionApplyKind),|    Apply(u16),
 stage3b-function-apply-kind-widening|function-translate-apply-kind|src/runtime/binary_object/function_translate/dto.rs|pub(in crate::runtime::binary_object) enum FunctionApplyKind {\n    Call,\n    Construct,\n}|pub(in crate::runtime::binary_object) enum FunctionApplyKind {\n    Call,\n    Construct,\n    Raw(u16),\n}
 ordinary-call-dto-payload|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Call(u16),|    Call(u32),
+stage3c-ordinary-tail-method-payload|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    CallMethod(u16),\n    TailCallMethod(u16),\n    ArrayFrom(u16),|    CallMethod(u16),\n    TailCallMethod(u32),\n    ArrayFrom(u16),
 stage3b-ordinary-apply-raw-payload|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Apply(OrdinaryLeafApplyKind),|    Apply(u16),
 stage3b-ordinary-apply-kind-widening|ordinary-leaf-apply-kind|src/runtime/binary_object/ordinary_leaf.rs|pub(in crate::runtime) enum OrdinaryLeafApplyKind {\n    Call,\n    Construct,\n}|pub(in crate::runtime) enum OrdinaryLeafApplyKind {\n    Call,\n    Construct,\n    Raw(u16),\n}
-translate-blocker-bucket-revival|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    FunctionGraph,\n    Invocation,|    FunctionGraph,\n    StackManipulation,\n    Invocation,
+translate-blocker-bucket-revival|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    FunctionGraph,\n    Completion,|    FunctionGraph,\n    Invocation,\n    Completion,
 translate-native-plan-second-consumer|native-plan-consumer-set|src/runtime/binary_object/scalar_script.rs|use std::fmt;|use super::bytecode_image::NativeCodePlan;\nuse std::fmt;
 translate-dto-function-id-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    function_id: FunctionId,\n    from_input_atom_table: bool,
 translate-dto-wire-string-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    wire: WireString,\n    from_input_atom_table: bool,
@@ -7029,6 +7552,8 @@ ordinary-return-undefined-remap|ordinary-leaf-consumer-lowering|src/runtime/bina
 ordinary-handoff-push-i32-payload|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),|        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(-*value)),
 ordinary-handoff-get-local-remap|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::GetLocal),|        FunctionOp::GetLocal(index) => lower_local(*index, local_count, OrdinaryLeafOp::PutLocal),
 ordinary-handoff-call-argc|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(argument_count.saturating_add(1))),
+stage3c-ordinary-tail-call-to-call|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::TailCall(argument_count) => Ok(OrdinaryLeafOp::TailCall(*argument_count)),|        FunctionOp::TailCall(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),
+stage3c-ordinary-tail-method-argc|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|            Ok(OrdinaryLeafOp::TailCallMethod(*argument_count))|            Ok(OrdinaryLeafOp::TailCallMethod(argument_count.saturating_add(1)))
 stage3a-ordinary-array-from-count-minus-one|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(*element_count)),|        FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(element_count.saturating_sub(1))),
 stage3a-ordinary-call-method-to-call|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::CallMethod(*argument_count)),|        FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),
 stage3b-ordinary-apply-kind-swap|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|            FunctionApplyKind::Call => OrdinaryLeafApplyKind::Call,|            FunctionApplyKind::Call => OrdinaryLeafApplyKind::Construct,
@@ -7036,6 +7561,8 @@ ordinary-publisher-get-local-offset|ordinary-leaf-consumer-lowering|src/runtime/
 ordinary-publisher-call-argc|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count.saturating_add(1)),
 ordinary-publisher-call-method|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::CallMethod(argument_count),
 ordinary-publisher-call-push-undefined|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(_argument_count) => Instruction::Undefined,
+stage3c-publisher-tail-call-to-call|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::TailCall(argument_count) => Instruction::TailCall(argument_count),|        OrdinaryLeafOp::TailCall(argument_count) => Instruction::Call(argument_count),
+stage3c-publisher-tail-method-to-method-call|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            Instruction::TailCallMethod(argument_count)|            Instruction::CallMethod(argument_count)
 stage3a-publisher-array-from-wrong-op|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::ArrayFrom(element_count),|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::Construct(element_count),
 stage3b-publisher-apply-kind-swap|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            OrdinaryLeafApplyKind::Call => ApplyKind::Call,|            OrdinaryLeafApplyKind::Call => ApplyKind::Construct,
 ordinary-synthetic-index-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            let index = *next_synthetic_index;|            let index = next_synthetic_index.saturating_add(1);
@@ -7073,6 +7600,14 @@ expect_full_rewrite_rejected stage3a-translate-construct-call-method-swap \
     function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
     $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(*argument_count))\n        }\n        (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::CallMethod(*argument_count))\n        }' \
     $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::CallMethod(*argument_count))\n        }\n        (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(*argument_count))\n        }'
+expect_full_rewrite_rejected stage3c-translate-tail-call-to-call \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    $'        (Recipe::TailCall, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::TailCall(*argument_count))\n        }' \
+    $'        (Recipe::TailCall, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Call(*argument_count))\n        }'
+expect_full_rewrite_rejected stage3c-translate-tail-method-to-call-return \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    $'        (Recipe::TailCallMethod, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::TailCallMethod(*argument_count))\n        }' \
+    $'        (Recipe::TailCallMethod, NativeOperands::NPop(argument_count)) => {\n            Ok(PendingExpansion::two(\n                PendingOperation::Ready(FunctionOp::CallMethod(*argument_count)),\n                PendingOperation::Ready(FunctionOp::Return),\n            ))\n        }'
 expect_full_rewrite_rejected stage3b-translate-apply-zero-kind \
     function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
     '            ready(FunctionOp::Apply(FunctionApplyKind::Call))' \
@@ -7169,6 +7704,91 @@ expect_full_rewrite_rejected stage3b-native-prototype-payload \
     stage3b-native-prototype-family src/runtime/intrinsics/array_buffer.rs \
     '        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {' \
     '        self.prototype_from_constructor_value(realm, &Value::Undefined, |fallback_realm| {'
+expect_full_rewrite_table <<'STAGE3C_CANARIES'
+stage3c-instruction-tail-payload|stage3c-instruction-shape|src/bytecode.rs|    TailCall(u16),|    TailCall(u32),
+stage3c-tail-call-stack-effect|stage3c-tail-verifier|src/bytecode.rs|            Self::TailCall(argument_count) => (*argument_count as usize + 1, 0),|            Self::TailCall(argument_count) => (*argument_count as usize + 1, 1),
+stage3c-tail-method-stack-effect|stage3c-tail-verifier|src/bytecode.rs|            Self::TailCallMethod(argument_count) => (*argument_count as usize + 2, 0),|            Self::TailCallMethod(argument_count) => (*argument_count as usize + 1, 0),
+stage3c-tail-plain-receiver|stage3c-tail-vm|src/vm.rs|                return host.call(function, Value::Undefined, arguments).map(Some);|                return host.call(function, Value::Null, arguments).map(Some);
+stage3c-tail-method-pop-order|stage3c-tail-vm|src/vm.rs|                let function = self.pop()?;\n                let receiver = self.pop()?;\n                return host.call(function, receiver, arguments).map(Some);|                let receiver = self.pop()?;\n                let function = self.pop()?;\n                return host.call(function, receiver, arguments).map(Some);
+stage3c-tail-early-frame-clear|stage3c-tail-vm|src/vm.rs|                let function = self.pop()?;\n                return host.call(function, Value::Undefined, arguments).map(Some);|                let function = self.pop()?;\n                self.stack.clear();\n                return host.call(function, Value::Undefined, arguments).map(Some);
+stage3c-tail-return-not-terminal|stage3c-tail-completion|src/vm.rs|                Ok(InterpreterExit::Complete(Completion::Return(value))) => {\n                    return Ok(Completion::Return(value));\n                }\n                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,|                Ok(InterpreterExit::Complete(Completion::Return(value))) => value,\n                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,
+stage3c-tail-throw-skips-backtrace|stage3c-tail-completion|src/vm.rs|        host.ensure_backtrace(&value)?;\n        loop {|        loop {
+stage3c-runtime-evidence-not-ignored|stage3c-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {|#[test]\n#[ignore = "gate mutation"]\nfn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {
+stage3c-vm-evidence-not-cfg-excluded|stage3c-runtime-evidence|src/vm.rs|    #[test]\n    fn tail_invocation_throws_use_the_activation_backtrace_and_catch_path() {|    #[cfg(any())]\n    #[test]\n    fn tail_invocation_throws_use_the_activation_backtrace_and_catch_path() {
+stage3c-translate-evidence-not-cfg-ignored|stage3c-runtime-evidence|src/runtime/binary_object/function_translate/mod.rs|    #[test]\n    fn tail_invocation_lowering_preserves_the_npop_operand_and_kind() {|    #[cfg_attr(test, ignore)]\n    #[test]\n    fn tail_invocation_lowering_preserves_the_npop_operand_and_kind() {
+STAGE3C_CANARIES
+expect_full_rewrite_rejected stage3c-tail-terminal-fallthrough \
+    stage3c-tail-verifier src/bytecode.rs \
+    $'            Instruction::TailCall(_)\n            | Instruction::TailCallMethod(_)\n            | Instruction::Return\n            | Instruction::ReturnUndefined\n            | Instruction::ReturnDerived(_)\n            | Instruction::Throw\n            | Instruction::Ret => {}' \
+    $'            Instruction::Return\n            | Instruction::ReturnUndefined\n            | Instruction::ReturnDerived(_)\n            | Instruction::Throw\n            | Instruction::Ret => {}'
+expect_full_rewrite_rejected stage3c-blocker-mapping-swap \
+    function-translate-registry-blockers \
+    src/runtime/binary_object/function_translate/capability.rs \
+    $'    row!(3, Const, Blocked, FunctionGraph),\n    row!(4, Atom, ScalarOnly, Recipe::PushAtom),\n    row!(5, Atom, Blocked, ValueConstruction),' \
+    $'    row!(3, Const, Blocked, ValueConstruction),\n    row!(4, Atom, ScalarOnly, Recipe::PushAtom),\n    row!(5, Atom, Blocked, FunctionGraph),'
+expect_full_rewrite_rejected stage3c-translate-ready-shadow \
+    function-translate-semantic-dispatch \
+    src/runtime/binary_object/function_translate/mod.rs \
+    $'    let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));\n    match (recipe, operands) {' \
+    $'    let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));\n    let ready = |operation| {\n        let operation = match operation {\n            FunctionOp::TailCall(argument_count) => FunctionOp::Call(argument_count),\n            FunctionOp::TailCallMethod(argument_count) => FunctionOp::CallMethod(argument_count),\n            operation => operation,\n        };\n        Ok(PendingExpansion::one(PendingOperation::Ready(operation)))\n    };\n    match (recipe, operands) {'
+expect_full_rewrite_rejected stage3c-ordinary-guarded-tail-bypass \
+    ordinary-leaf-translated-code \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    $'    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
+    $'    if matches!(operation, FunctionOp::TailCall(0)) {\n        return Ok(OrdinaryLeafOp::Call(0));\n    }\n    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
+expect_full_rewrite_rejected stage3c-publisher-alias-tail-bypass \
+    ordinary-leaf-consumer-lowering \
+    src/runtime/binary_object_publish.rs \
+    $'    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
+    $'    use OrdinaryLeafOp as O;\n    if let O::TailCall(argument_count) = &operation {\n        return Ok(Instruction::Call(*argument_count));\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
+expect_full_rewrite_rejected stage3c-stack-effect-guarded-bypass \
+    stage3c-tail-verifier src/bytecode.rs \
+    $'    pub const fn stack_effect(&self) -> (usize, usize) {\n        match self {' \
+    $'    pub const fn stack_effect(&self) -> (usize, usize) {\n        if let Self::TailCall(0) | Self::TailCallMethod(0) = self {\n            return (1, 1);\n        }\n        match self {'
+expect_full_rewrite_rejected stage3c-verifier-alias-fallthrough \
+    stage3c-tail-verifier src/bytecode.rs \
+    $'        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;\n        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses' \
+    $'        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;\n        use Instruction as I;\n        if let I::TailCall(_) | I::TailCallMethod(_) = instruction {\n            enqueue_fallthrough(\n                &mut worklist,\n                pc,\n                VerificationState {\n                    depth: next_depth,\n                    regions: next_regions.clone(),\n                    return_addresses: next_return_addresses.clone(),\n                    super_call_bases: next_super_call_bases.clone(),\n                },\n                code.len(),\n            )?;\n        }\n        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses'
+expect_full_rewrite_rejected stage3c-call-arguments-shadow \
+    stage3c-tail-vm src/vm.rs \
+    $'    ) -> Result<Vec<Value>, Error> {\n        let argument_count = usize::from(argument_count);' \
+    $'    ) -> Result<Vec<Value>, Error> {\n        let argument_count = 0;\n        let argument_count = usize::from(argument_count);'
+expect_full_rewrite_rejected stage3c-call-arguments-drop \
+    stage3c-tail-vm src/vm.rs \
+    $'        let start = self.stack.len() - argument_count;\n        Ok(self.stack.split_off(start))' \
+    $'        let start = self.stack.len() - argument_count;\n        let mut arguments = self.stack.split_off(start);\n        arguments.pop();\n        Ok(arguments)'
+expect_full_rewrite_rejected stage3c-call-dispatch-alias-bypass \
+    stage3c-tail-vm src/vm.rs \
+    $'    ) -> Result<Option<Completion>, Error> {\n        let completion = match instruction {\n            Instruction::Import => {' \
+    $'    ) -> Result<Option<Completion>, Error> {\n        use Instruction as I;\n        let completion = match instruction {\n            I::TailCall(argument_count) if *argument_count == 0 => {\n                let _ = self.pop()?;\n                return host.call(Value::Undefined, Value::Null, Vec::new()).map(Some);\n            }\n            Instruction::Import => {'
+expect_full_rewrite_rejected stage3c-execute-inner-tail-intercept \
+    stage3c-tail-vm src/vm.rs \
+    $'            if matches!(\n                instruction,\n                Instruction::Import\n                    | Instruction::Call(_)' \
+    $'            use Instruction as I;\n            if matches!(instruction, I::TailCall(_) | I::TailCallMethod(_)) {\n                return Ok(InterpreterExit::Complete(Completion::Return(Value::Undefined)));\n            }\n\n            if matches!(\n                instruction,\n                Instruction::Import\n                    | Instruction::Call(_)'
+expect_full_rewrite_rejected stage3c-execute-alias-return-bypass \
+    stage3c-tail-completion src/vm.rs \
+    $'    ) -> Result<Completion, Error> {\n        loop {\n            let raised = match self.execute_inner(code, host) {' \
+    $'    ) -> Result<Completion, Error> {\n        use Completion as C;\n        loop {\n            let raised = match self.execute_inner(code, host) {\n                Ok(InterpreterExit::Complete(C::Return(value))) if matches!(&value, Value::Undefined) => {\n                    self.pc = self.pc.saturating_add(1);\n                    continue;\n                }'
+expect_full_rewrite_rejected stage3c-run-throw-bypass \
+    stage3c-tail-completion src/vm.rs \
+    $'                Ok(InterpreterExit::Complete(Completion::Return(value))) => {\n                    return Ok(VmExit::Complete(Completion::Return(value)));\n                }\n                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,' \
+    $'                Ok(InterpreterExit::Complete(Completion::Return(value))) => {\n                    return Ok(VmExit::Complete(Completion::Return(value)));\n                }\n                Ok(InterpreterExit::Complete(Completion::Throw(value)))\n                    if matches!(&value, Value::Undefined) => {\n                        return Ok(VmExit::Complete(Completion::Throw(value)));\n                    }\n                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,'
+expect_full_rewrite_rejected stage3c-raise-guarded-bypass \
+    stage3c-tail-completion src/vm.rs \
+    $'    ) -> Result<Option<Completion>, Error> {\n        host.ensure_backtrace(&value)?;\n        loop {' \
+    $'    ) -> Result<Option<Completion>, Error> {\n        if matches!(value, Value::Undefined) {\n            return Ok(Some(Completion::Throw(value)));\n        }\n        host.ensure_backtrace(&value)?;\n        loop {'
+expect_full_rewrite_rejected stage3c-required-module-cfg-excluded \
+    stage3c-runtime-evidence src/vm.rs \
+    $'#[cfg(test)]\nmod tests {' \
+    $'#[cfg(any())]\n#[cfg(test)]\nmod tests {'
+expect_full_rewrite_rejected stage3c-required-module-inner-cfg-excluded \
+    stage3c-runtime-evidence src/runtime/tests.rs \
+    'use crate::JsBigInt;' \
+    $'#![cfg(any())]\n\nuse crate::JsBigInt;'
+expect_full_rewrite_rejected stage3c-required-test-macro-shadow \
+    stage3c-runtime-evidence src/runtime/tests.rs \
+    $'fn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {\n    assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_BC5.len(), 57);' \
+    $'fn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {\n    macro_rules! assert_eq { ($($tokens:tt)*) => {}; }\n    assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_BC5.len(), 57);'
 expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
     ordinary-leaf-engine-semantics src/vm.rs \
     '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \
