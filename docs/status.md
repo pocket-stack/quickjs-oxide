@@ -452,13 +452,19 @@ direct validation and the full oracle gate. The source SHA-256 is
 transcript SHA-256 is
 `d666c4eafdc9f8431b02892f68fac3751f0b51f0bc563146fb91eadd758d241a`.
 
-The checked-in full R3fj receipt still authenticates the stage-3A
-ordinary-opcode tree: all 102,037 classified outcomes were byte-for-byte
-unchanged after normalizing that source fingerprint, with 79,982 full passes
-among 80,032 eligible variants. Its source fingerprint predates Stage 3B and is
-therefore intentionally source-stale until a post-commit full rerun. No Test262
-profile or metric changed in this implementation step, so the published
-baseline above remains unchanged.
+A fresh full R3fj receipt from exact-source GitHub Actions run `32219821115`
+authenticates Stage 3B source `67fb048c76552e413fcd46b785f96b0529faa99a`
+with engine fingerprint
+`6154e006c5f2da41b183617ce609c2dafeaf154bff31a1fec026755e74e557db`.
+Artifact `9353967023` records the 102,050-line TSV as
+`7d4db430a789d7fd0911fcccd8783087b79dc36669f90b14e7d9a2b6491bda28`
+and the 102,039-line JSONL as
+`167602e97f8670ef3bf2f61a21b3613392e76c9adc2e7ffdbf05d3731a5b41a0`.
+All 102,037 classified outcomes are byte-for-byte unchanged after normalizing
+the source fingerprint, with 79,982 full passes among 80,032 eligible variants;
+the refreshed 6,844-pass focused TSV and JSONL are also byte-identical on
+replay. No Test262 profile or metric changed, so the published baseline above
+remains unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and
