@@ -135,6 +135,14 @@ static const OrdinaryExpansionCase ordinary_apply_cases[] = {
       65, UINT64_C(0x135c326513baafe6),
       { 0x0243, 1, { 3, 0, 3, 5, 0, 0, 0, 14, 3 }, 51 } },
 };
+static const uint8_t ordinary_throw_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x01, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0xcf, 0x30,
+};
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -248,6 +256,8 @@ _Static_assert(sizeof(ordinary_invocation_cases) /
 _Static_assert(sizeof(ordinary_apply_cases) /
                    sizeof(ordinary_apply_cases[0]) == 2,
                "two compiler-natural apply cases");
+_Static_assert(sizeof(ordinary_throw_bytecode) == 45,
+               "ordinary throw oracle must retain its pinned 45-byte wire");
 _Static_assert(sizeof(ordinary_invocation_raws) == 6,
                "six admitted invocation rows");
 _Static_assert(sizeof(ordinary_manual_constructor_wire) == 55,
@@ -5306,6 +5316,290 @@ cleanup:
     return status;
 }
 
+static int ordinary_expect_uncaught_throw_identity(
+    JSContext *context, JSValueConst function, JSValueConst value,
+    const char *label, int expect_new_stack) {
+    JSAtom stack_atom = JS_ATOM_NULL;
+    JSValue argument = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    JSValue exception = JS_UNDEFINED;
+    int stack_before = 0;
+    int stack_after = 0;
+    int status = -1;
+
+    if (expect_new_stack) {
+        stack_atom = JS_NewAtom(context, "stack");
+        if (stack_atom == JS_ATOM_NULL)
+            goto cleanup;
+        stack_before = JS_GetOwnProperty(context, NULL, value, stack_atom);
+        if (stack_before != 0) {
+            fprintf(stderr, "%s Error already had an own stack\n", label);
+            goto cleanup;
+        }
+    }
+    argument = JS_DupValue(context, value);
+    result = JS_Call(context, function, JS_UNDEFINED, 1, &argument);
+    JS_FreeValue(context, argument);
+    argument = JS_UNDEFINED;
+    if (!JS_IsException(result) || !JS_HasException(context)) {
+        fprintf(stderr, "%s did not publish a pending exception\n", label);
+        goto cleanup;
+    }
+    if (expect_new_stack) {
+        stack_after = JS_GetOwnProperty(context, NULL, value, stack_atom);
+        if (stack_after != 1 || !JS_HasException(context)) {
+            fprintf(stderr, "%s Error backtrace timing drifted\n", label);
+            goto cleanup;
+        }
+    }
+    exception = JS_GetException(context);
+    if (JS_HasException(context) ||
+        JS_StrictEq(context, exception, value) != 1) {
+        fprintf(stderr, "%s exception identity or pending clear drifted\n",
+                label);
+        goto cleanup;
+    }
+    status = 0;
+
+cleanup:
+    if (JS_HasException(context)) {
+        JSValue pending = JS_GetException(context);
+        JS_FreeValue(context, pending);
+    }
+    JS_FreeValue(context, exception);
+    JS_FreeValue(context, result);
+    JS_FreeValue(context, argument);
+    JS_FreeAtom(context, stack_atom);
+    return status;
+}
+
+static int expect_ordinary_throw_completion(JSContext *compile_context) {
+    static const char source[] =
+        "(function(a){'use strict';throw a;})";
+    static const char semantic_source[] =
+        "(function(){"
+        "function ok(v,m){if(!v)throw Error(m);}"
+        "function own(o,p){return Object.prototype.hasOwnProperty.call(o,p);}"
+        "var original={kind:'original'},caught;"
+        "try{__stage3dThrow(73);}catch(e){caught=e;}"
+        "ok(caught===73,'caller catch int identity');caught=void 0;"
+        "try{__stage3dThrow(original);ok(false,'throw returned');}"
+        "catch(e){caught=e;}"
+        "ok(caught===original,'caller catch identity');"
+        "var error=new Error('stage3d-backtrace');delete error.stack;"
+        "ok(!own(error,'stack'),'Error started with stack');caught=void 0;"
+        "try{__stage3dThrow(error);}catch(e){caught=e;}"
+        "ok(caught===error&&own(error,'stack')&&"
+        "String(error.stack).indexOf('at <anonymous>')>=0,"
+        "'Error backtrace before catch');"
+        "var close={kind:'close'},log=[];"
+        "var iterable={};iterable[Symbol.iterator]=function(){return {"
+        "next:function(){return {value:1,done:false};},"
+        "return:function(){log.push('return');throw close;}};};"
+        "try{for(var item of iterable){log.push('body');"
+        "__stage3dThrow(original);log.push('after-throw');}}"
+        "catch(e){log.push(e===original?'catch-original':'catch-other');}"
+        "ok(log.join(',')==='body,return,catch-original',"
+        "'iterator close ordering or replacement');"
+        "return 42;})()";
+    static const OrdinaryFunctionMetadata expected_metadata = {
+        0x0243, 1, { 1, 0, 1, 1, 0, 0, 0, 2, 1 }, 43,
+    };
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue compiled = JS_UNDEFINED;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue function = JS_UNDEFINED;
+    JSValue integer = JS_UNDEFINED;
+    JSValue object = JS_UNDEFINED;
+    JSValue error = JS_UNDEFINED;
+    JSValue global = JS_UNDEFINED;
+    JSValue semantic_result = JS_UNDEFINED;
+    uint8_t *wire = NULL;
+    uint8_t *rewritten = NULL;
+    size_t wire_size = 0;
+    size_t rewritten_size = 0;
+    OrdinaryFunctionMetadata child = { 0 };
+    uint8_t raws[256] = { 0 };
+    uint8_t terminal_raw = 0;
+    size_t raw_count = 0;
+    int status = -1;
+
+    compiled = JS_Eval(compile_context, source, strlen(source),
+                       "ordinary-throw",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context, "ordinary throw compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    wire = JS_WriteObject(compile_context, &wire_size, compiled,
+                          JS_WRITE_OBJ_BYTECODE);
+    if (!wire) {
+        report_exception(compile_context, "ordinary throw write failed");
+        goto cleanup;
+    }
+    if (wire_size != sizeof(ordinary_throw_bytecode) ||
+        memcmp(wire, ordinary_throw_bytecode, wire_size) != 0 ||
+        ordinary_fnv1a64(wire, wire_size) !=
+            UINT64_C(0x73cf217e06c5fee2) ||
+        ordinary_wire_child_metadata(wire, wire_size, &child) ||
+        !ordinary_metadata_equal(&child, &expected_metadata) ||
+        ordinary_collect_opcodes(wire + child.code_offset,
+                                 child.fields[ORD_CODE], raws) ||
+        ordinary_terminal_opcode(wire + child.code_offset,
+                                 child.fields[ORD_CODE], &terminal_raw)) {
+        fputs("ordinary throw BC5 wire/metadata/opcodes drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        raw_count += raws[raw] != 0;
+    if (raw_count != 2 || !raws[48] || !raws[207] || raws[40] ||
+        raws[41] || terminal_raw != 48) {
+        fputs("ordinary throw opcode set or terminal drifted\n", stderr);
+        goto cleanup;
+    }
+
+    runtime = JS_NewRuntime();
+    context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!context) {
+        fputs("ordinary throw fresh runtime allocation failed\n", stderr);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, wire, wire_size,
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(context, "ordinary throw read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != wire_size ||
+        memcmp(rewritten, wire, wire_size) != 0) {
+        if (!rewritten)
+            report_exception(context, "ordinary throw rewrite failed");
+        else
+            fputs("ordinary throw rewrite drifted\n", stderr);
+        goto cleanup;
+    }
+    function = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(function) || !JS_IsFunction(context, function)) {
+        report_exception(context, "ordinary throw root evaluation failed");
+        function = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    integer = JS_NewInt32(context, 73);
+    object = JS_NewObject(context);
+    error = JS_NewError(context);
+    if (JS_IsException(object) || JS_IsException(error) ||
+        ordinary_expect_uncaught_throw_identity(
+            context, function, integer, "ordinary throw int", 0) ||
+        ordinary_expect_uncaught_throw_identity(
+            context, function, object, "ordinary throw object", 0) ||
+        ordinary_expect_uncaught_throw_identity(
+            context, function, error, "ordinary throw Error", 1))
+        goto cleanup;
+
+    global = JS_GetGlobalObject(context);
+    if (JS_IsException(global) ||
+        JS_SetPropertyStr(context, global, "__stage3dThrow",
+                          JS_DupValue(context, function)) < 0) {
+        report_exception(context, "ordinary throw publication failed");
+        goto cleanup;
+    }
+    semantic_result = JS_Eval(context, semantic_source,
+                              strlen(semantic_source),
+                              "ordinary-throw-semantic.js",
+                              JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(semantic_result) || JS_HasException(context) ||
+        JS_VALUE_GET_TAG(semantic_result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(semantic_result) != 42) {
+        report_exception(context, "ordinary throw semantic oracle failed");
+        semantic_result = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    puts("ordinary-throw-evidence="
+         "compiler-natural-write-read-write-fresh-runtime");
+    puts("ordinary-throw-source-hex="
+         "2866756e6374696f6e2861297b2775736520737472696374273b7468726f7720"
+         "613b7d29");
+    puts("ordinary-throw-compile-mode=global-compile-only,strip-debug");
+    printf("ordinary-throw-wire-size=%zu\n", wire_size);
+    printf("ordinary-throw-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(wire, wire_size));
+    puts("ordinary-throw-wire-sha256="
+         "b7998b9678635e7e0a4eb2e465b683d168395adc7f156f733c25521907e3c8a8");
+    fputs("ordinary-throw-wire-hex=", stdout);
+    for (size_t index = 0; index < wire_size; index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    printf("ordinary-throw-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu\n",
+           child.flags, child.js_mode, child.fields[ORD_ARGS],
+           child.fields[ORD_VARS], child.fields[ORD_DEFINED_ARGS],
+           child.fields[ORD_STACK], child.fields[ORD_VAR_REFS],
+           child.fields[ORD_CLOSURES], child.fields[ORD_CPOOL],
+           child.fields[ORD_CODE], child.fields[ORD_LOCALS],
+           child.code_offset);
+    puts("ordinary-throw-child-code-hex=cf30");
+    puts("ordinary-throw-child-code-raw=207,48");
+    ordinary_print_raw_set("ordinary-throw-child-raw", raws);
+    puts("ordinary-throw-terminal=raw48,stack:1->0,no-return");
+    puts("ordinary-throw-rewrite=identity");
+    puts("ordinary-throw-fresh-root=Function");
+    puts("ordinary-throw-uncaught-c-api="
+         "int,object,Error:JS_EXCEPTION,GetException-original-identity");
+    puts("ordinary-throw-pending="
+         "GetException-clears;caller-catch-clears");
+    puts("ordinary-throw-error-backtrace="
+         "missing-own-stack-before,own-stack-before-catch");
+    puts("ordinary-throw-caller-catch="
+         "int,object,Error:original-identity;terminal-no-return");
+    puts("ordinary-throw-iterator-close="
+         "body,return,catch-original;close-throw-does-not-replace-original");
+    puts("ordinary-throw-admitted-count=1");
+    puts("ordinary-throw-admitted-raw=48");
+    puts("ordinary-throw-deferred-count=2");
+    puts("ordinary-throw-deferred-raw=49,177");
+    puts("ordinary-throw-deferred-detail="
+         "raw49:throw_error-atom_u8-exception-blocked;"
+         "raw177:nop-specialized-blocked");
+    puts("ordinary-throw-oracle=passed");
+    status = 0;
+
+cleanup:
+    if (rewritten && context)
+        js_free(context, rewritten);
+    if (context) {
+        if (JS_HasException(context)) {
+            JSValue pending = JS_GetException(context);
+            JS_FreeValue(context, pending);
+        }
+        JS_FreeValue(context, semantic_result);
+        JS_FreeValue(context, global);
+        JS_FreeValue(context, error);
+        JS_FreeValue(context, object);
+        JS_FreeValue(context, integer);
+        JS_FreeValue(context, function);
+        JS_FreeValue(context, loaded);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    if (wire)
+        js_free(compile_context, wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
 static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
     static const char unary_binary_sequence[] =
         "-6,6,7,6,-7,false,number,18,0,216,48,0,0,"
@@ -5649,6 +5943,8 @@ int main(void) {
     if (expect_ordinary_expansion_cohort(compile_context))
         goto cleanup;
     if (expect_ordinary_invocation_cohort(compile_context))
+        goto cleanup;
+    if (expect_ordinary_throw_completion(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",

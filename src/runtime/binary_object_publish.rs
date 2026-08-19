@@ -392,6 +392,7 @@ fn lower_ordinary_leaf_op(
         }),
         OrdinaryLeafOp::Return => Instruction::Return,
         OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,
+        OrdinaryLeafOp::Throw => Instruction::Throw,
     };
     Ok(instruction)
 }
@@ -594,6 +595,7 @@ mod tests {
             Instruction::TypeOf
         ));
         assert!(matches!(lower(OrdinaryLeafOp::Return), Instruction::Return));
+        assert!(matches!(lower(OrdinaryLeafOp::Throw), Instruction::Throw));
     }
 
     #[test]

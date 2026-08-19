@@ -395,6 +395,7 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     Apply(FunctionApplyKind),
     Return,
     ReturnUndefined,
+    Throw,
 }
 
 /// Compatibility-only rejection descriptor without an opcode byte or source location.

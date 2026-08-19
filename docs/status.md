@@ -90,7 +90,10 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   `Call`/`Construct` kind: only canonical `U16` magic 0 and 1 cross the archive
   boundary, while 2 and 65,535 are rejected before publication. Stage 3C
   admits raw 35 `tail_call` and raw 37 `tail_call_method` as distinct terminal
-  `NPop` instructions with their argument counts preserved end to end.
+  `NPop` instructions with their argument counts preserved end to end. Stage
+  3D admits operand-free raw 48 `throw` as an explicit terminal completion,
+  preserving the thrown value through the typed archive/publication chain into
+  the engine's existing `Instruction::Throw` path.
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -194,14 +197,16 @@ stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
 formats and projects only sanitized semantic DTOs to those admission bridges.
-The scalar policy remains 30 opcodes; the stage-3C ordinary policy is 126,
-and their union is 127 (117 blocked, one scalar-only, 97 ordinary-only, and 29
+The scalar policy remains 30 opcodes; the stage-3D ordinary policy is 127,
+and their union is 128 (116 blocked, one scalar-only, 98 ordinary-only, and 29
 shared registry rows). The reviewed stage-one 57-row atom-free set, stage-two
 five-row plain-call set, and stage-3A raw 33, 36, and 38 set are unchanged;
 stage 3B adds exactly raw 39 `apply`, and stage 3C adds exactly raw 35
-`tail_call` and raw 37 `tail_call_method`. Their now-empty `Invocation` blocker
-is removed; the blocked frontier retains 16 typed categories, each with at
-least one row.
+`tail_call` and raw 37 `tail_call_method`; stage 3D adds exactly raw 48
+`throw`. Raw 47 `return_async`, raw 49 `throw_error`, and raw 177 `nop` remain
+blocked. The now-empty `Invocation` blocker is removed; the blocked frontier
+retains 16 typed categories, each with at least one row, and the `Exception`
+bucket now contains the single deferred raw 49 row.
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
@@ -405,6 +410,19 @@ call path and immediately makes its returned completion the current frame's
 completion. A normal return therefore exits the frame without executing a
 following instruction, while a throw still attaches the current activation's
 backtrace and follows its catch and iterator-unwind regions before escaping.
+Stage 3D admits explicit raw 48 `throw` without widening that invocation
+cohort. Its `None` operand is preserved as the exact unit variants
+`Recipe::Throw`, `FunctionOp::Throw`, and `OrdinaryLeafOp::Throw` before the
+publisher emits `Instruction::Throw`. The verifier consumes one value,
+produces none, and enqueues no fallthrough, so unreachable instructions after
+the throw do not weaken its terminal completion. The existing VM pops that
+same value into `Completion::Throw`; `execute` then routes it through `raise`,
+which attaches an Error backtrace before transferring to a catch or closing an
+active iterator. Iterator-close failure cannot replace the original pending
+throw. An uncaught completion reaches the existing Context pending-exception
+slot with primitive or object identity intact. This milestone changes no VM
+instruction, unwind algorithm, or public API; it admits one pinned archive
+opcode into the already implemented exception path.
 
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
@@ -450,6 +468,15 @@ undefined plain-call receiver, exact strict-method receiver, argument order,
 immediate frame completion, recoverable non-callable errors, verifier underflow
 and declared maximum rejection with heap/atom rollback, and the existing
 activation's backtrace, catch, and unwind behavior.
+Stage-3D Rust evidence uses the compiler-natural strict 45-byte BC5 function
+(FNV-1a-64 `73cf217e06c5fee2`) whose child begins at offset 43, has flags
+`0x0243`, one argument, no variables or constants, maximum stack one, and exact
+code `cf30` (`GetArg(0), Throw`). It locks byte-exact metadata and publication,
+integer, ordinary-object, and Error identity, pending-exception clearing and
+retry, backtrace attachment before a caller catch, iterator close before that
+catch without exception replacement, direct terminal behavior, a reindexed
+branch landing on `Throw`, verifier underflow/declared-maximum rejection, and
+transactional heap/atom rollback.
 
 The pinned stage-3A C oracle compiler-naturally emits the exact target raws 33,
 36, and 38, with compiler union 17, 33, 36, 38, 40, 62, 155, 179, and
@@ -475,14 +502,23 @@ property-free manual wire. Fresh-runtime read/write and execution prove both
 terminal layouts have no trailing return, exact receiver and argument order,
 non-callable error order, thrown callee/getter identity through catch, retained
 callee-to-tail backtraces, and pinned QuickJS `InternalError: stack overflow`
-under recursive raw 35 and 37 calls rather than PTC. Strict C11 produced a
-byte-identical 1,363-line transcript; all 19 authenticated oracles pass both
+under recursive raw 35 and 37 calls rather than PTC. Stage 3D
+adds the exact compiler-natural strict 45-byte raw-48 wire, FNV-1a-64
+`73cf217e06c5fee2`, SHA-256
+`b7998b9678635e7e0a4eb2e465b683d168395adc7f156f733c25521907e3c8a8`,
+and child metadata/code `flags:0243`, one argument, stack one, no constants,
+offset 43, and `cf30`. Fresh-runtime read/write identity and execution prove
+C-API pending-exception clearing, integer/object/Error identity, Error
+backtrace attachment before catch, terminal no-return behavior, and iterator
+close ordering that preserves the original exception. Raw 49 `throw_error`
+and raw 177 `nop` remain explicitly deferred. Strict C11 produced a
+byte-identical 1,388-line transcript; all 19 authenticated oracles pass both
 direct validation and the full oracle gate. The source SHA-256 is
-`23cc36144db7be2f0586d40d3459d34175ce7b6954923f34030afda4adf6b7cb`, the
+`e865893d3a835a191a93292cce4a413b8d60d35e48f1eee599d1dad7da30a792`, the
 transcript SHA-256 is
-`abd63653571c29dbf79bc8e5e3f72c1983b96b0083f38d5578825bfe0c70ea50`, and the
+`f5d7a18a80ec8b303a29c10c30726545ed12708b739b8bba66f74c158945ab42`, and the
 oracle-manifest SHA-256 is
-`e77e56c7401d45d99705d017222202102b65f46824c668333972c17bf4d4254b`.
+`f9484ee886c0e9ebd5ec037e083eb2eb6fe1857b7914846815a6ea3fc34d3094`.
 
 The latest full R3fj receipt, from exact-source GitHub Actions run
 `32282081045`, authenticates Stage 3C source
@@ -496,8 +532,12 @@ and the 102,039-line JSONL as
 All 102,037 classified outcomes are byte-for-byte unchanged after normalizing
 the source fingerprint, with 79,982 full passes among 80,032 eligible variants;
 the refreshed 6,844-pass focused TSV and JSONL are also byte-identical on
-replay. Stage 3C changes neither the Test262 profile nor the published metrics,
-so the baseline above remains unchanged.
+replay. This R3fj receipt authenticates the Stage 3C source only and is
+source-stale for Stage 3D; it does not certify raw48 admission or the Stage3D
+Rust/C evidence. Stage 3D changes neither the Test262 profile nor the published
+metrics, so the baseline above deliberately remains the last authenticated
+R3fj result until a new exact-source receipt is promoted.
+
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and

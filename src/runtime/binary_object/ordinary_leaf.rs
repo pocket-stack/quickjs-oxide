@@ -176,6 +176,7 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     Apply(OrdinaryLeafApplyKind),
     Return,
     ReturnUndefined,
+    Throw,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -681,6 +682,7 @@ fn lower_operation(
         })),
         FunctionOp::Return => Ok(OrdinaryLeafOp::Return),
         FunctionOp::ReturnUndefined => Ok(OrdinaryLeafOp::ReturnUndefined),
+        FunctionOp::Throw => Ok(OrdinaryLeafOp::Throw),
         _ => Err(OrdinaryLeafReadError::Internal(
             "ordinary-capable translated operation has no ordinary-leaf lowering".into(),
         )),
@@ -1124,6 +1126,7 @@ mod tests {
             (FunctionOp::Goto(0), OrdinaryLeafOp::Goto(0)),
             (FunctionOp::Return, OrdinaryLeafOp::Return),
             (FunctionOp::ReturnUndefined, OrdinaryLeafOp::ReturnUndefined),
+            (FunctionOp::Throw, OrdinaryLeafOp::Throw),
         ];
         for (operation, expected) in cases {
             assert_eq!(lower_ready(operation), expected);

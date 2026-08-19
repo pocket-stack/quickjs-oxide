@@ -158,6 +158,35 @@ def require_ordered_fragments(
         fail(code_name, description)
 
 
+def require_normalized_corridor_sha256(
+    code_name: str,
+    description: str,
+    code: str,
+    start_fragment: str,
+    end_fragment: str,
+    expected: str,
+) -> None:
+    normalized = " ".join(code.split())
+    if (
+        normalized.count(start_fragment) != 1
+        or normalized.count(end_fragment) != 1
+    ):
+        fail(code_name, description)
+        return
+    start = normalized.find(start_fragment)
+    end_start = normalized.find(end_fragment, start)
+    if end_start < start:
+        fail(code_name, description)
+        return
+    corridor = normalized[start:end_start + len(end_fragment)]
+    require_normalized_code_sha256(
+        code_name,
+        description,
+        corridor,
+        expected,
+    )
+
+
 def unique_braced_item(
     code: str,
     pattern: re.Pattern[str],
@@ -1489,7 +1518,7 @@ expected_recipe_variants = """
     PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
     SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
     Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
-    ReturnUndefined
+    ReturnUndefined Throw
 """.split()
 counted_invocation_variant_names = (
     "Call", "TailCall", "Construct", "CallMethod", "TailCallMethod", "ArrayFrom"
@@ -1507,7 +1536,7 @@ if enum_variant_names(recipe_code) != expected_recipe_variants or any(
 ):
     fail(
         "function-translate-recipe-shape",
-        "Recipe must retain the exact reviewed inventory with unit invocation recipes, including distinct terminal TailCall and TailCallMethod recipes; "
+        "Recipe must retain the exact reviewed inventory with unit invocation recipes and explicit terminal completions; "
         f"found {enum_variant_names(recipe_code)} with invocation shapes {recipe_invocation_shapes}",
     )
 
@@ -1524,7 +1553,7 @@ expected_function_op_variants = """
     PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
     PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
     IfTrue Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply
-    Return ReturnUndefined
+    Return ReturnUndefined Throw
 """.split()
 function_invocation_payloads = {
     name: [
@@ -1543,7 +1572,7 @@ if (
 ):
     fail(
         "function-translate-dto-shape",
-        "FunctionOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads and a typed Apply kind; "
+        "FunctionOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads, a typed Apply kind, and an operand-free Throw completion; "
         f"found {enum_variant_names(dto_function_op_code)} with invocation payloads {function_invocation_payloads}",
     )
 
@@ -1625,7 +1654,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (117, 1, 97, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (116, 1, 98, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1634,11 +1663,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 126, 127)
+    or derived_registry_counts != (30, 127, 128)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact final stage-three-C physical cohorts; "
+        "the centralized registry must preserve the exact final stage-three-D physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1699,6 +1728,7 @@ expect_admitted("OrdinaryOnly", "Recipe::CallMethod", (36,))
 expect_admitted("OrdinaryOnly", "Recipe::TailCallMethod", (37,))
 expect_admitted("OrdinaryOnly", "Recipe::ArrayFrom", (38,))
 expect_admitted("OrdinaryOnly", "Recipe::Apply", (39,))
+expect_admitted("OrdinaryOnly", "Recipe::Throw", (48,))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
 expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
 for raw, operation in (
@@ -1736,6 +1766,7 @@ expected_stage_boundaries = {
     38: (("array_from", 3, 0, 1, "NPop"), "OrdinaryOnly", "Recipe::ArrayFrom"),
     39: (("apply", 3, 3, 1, "U16"), "OrdinaryOnly", "Recipe::Apply"),
     41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
+    48: (("throw", 1, 1, 0, "None"), "OrdinaryOnly", "Recipe::Throw"),
     236: (("call0", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     237: (("call1", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     238: (("call2", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
@@ -1749,7 +1780,7 @@ found_stage_boundaries = {
 if found_stage_boundaries != expected_stage_boundaries:
     fail(
         "function-translate-stage-boundary",
-        "reviewed invocation, zero-stack return-undefined, and plain-call boundaries must retain their pinned descriptors and policy rows; "
+        "reviewed invocation, return-undefined, explicit-throw, and plain-call boundaries must retain their pinned descriptors and policy rows; "
         f"found {found_stage_boundaries}",
     )
 
@@ -1833,8 +1864,38 @@ if found_stage_three_c_tail_rows != stage_three_c_tail_rows:
         f"found {found_stage_three_c_tail_rows}",
     )
 
+stage_three_d_throw_rows = ((48, "None", "Recipe::Throw"),)
+found_stage_three_d_throw_rows = tuple(
+    (raw, registry_rows[raw][1], registry_rows[raw][3])
+    for raw, _, _ in stage_three_d_throw_rows
+    if registry_rows[raw][2] == "OrdinaryOnly"
+)
+if found_stage_three_d_throw_rows != stage_three_d_throw_rows:
+    fail(
+        "function-translate-stage-three-d-set",
+        "stage three D must admit exactly operand-free raw 48 Throw as an OrdinaryOnly recipe; "
+        f"found {found_stage_three_d_throw_rows}",
+    )
+
+stage_three_d_deferred_rows = {
+    47: (("return_async", 1, 1, 0, "None"), "Blocked", "Completion"),
+    49: (("throw_error", 6, 0, 0, "AtomU8"), "Blocked", "Exception"),
+    177: (("nop", 1, 0, 0, "None"), "Blocked", "Specialized"),
+}
+found_stage_three_d_deferred_rows = {
+    raw: (pinned_descriptors[raw], registry_rows[raw][2], registry_rows[raw][3])
+    for raw in stage_three_d_deferred_rows
+    if raw < len(pinned_descriptors) and raw < len(registry_rows)
+}
+if found_stage_three_d_deferred_rows != stage_three_d_deferred_rows:
+    fail(
+        "function-translate-stage-three-d-set",
+        "raw 47 return_async, raw 49 throw_error, and raw 177 nop must remain outside the Stage3D admission; "
+        f"found {found_stage_three_d_deferred_rows}",
+    )
+
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Completion 1 Exception 2
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Completion 1 Exception 1
     EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
     Operator 4 Specialized 4
@@ -1871,7 +1932,7 @@ blocked_registry_mapping_hash = hashlib.sha256(
     blocked_registry_mapping.encode("utf-8")
 ).hexdigest()
 if blocked_registry_mapping_hash != (
-    "a5ccb0e0e9bc4d4122a251498e2ec2fc03552acfce4570eb9439dc0f1ac48998"
+    "e1fb1848ddadca183b7102485ed17db4f09353094882a1056b396961b9d78f2e"
 ):
     fail(
         "function-translate-registry-blockers",
@@ -2090,7 +2151,7 @@ require_normalized_code_sha256(
     "function-translate-semantic-dispatch",
     "lower_operation must remain one alias-free typed Recipe/operand match with its unique ready publisher",
     translate_lower_item,
-    "5136fa76a337a87545c9c66939d61563b07d9e163fc85e9e682db06612da077c",
+    "c5d6ff084b20d9486c1c6db089aff26cc58ce15220fa8308304947589fc25f3f",
 )
 if normalized_translate_lower.count(
     "let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));"
@@ -2159,14 +2220,15 @@ Recipe::Apply @ NativeOperands::U16(1) @ { ready(FunctionOp::Apply(FunctionApply
 Recipe::Apply @ NativeOperands::U16(magic) @ { Err(FunctionTranslateError::non_canonical_apply_magic(*magic)) }
 Recipe::Return @ NativeOperands::None @ ready(FunctionOp::Return)
 Recipe::ReturnUndefined @ NativeOperands::None @ ready(FunctionOp::ReturnUndefined)
+Recipe::Throw @ NativeOperands::None @ ready(FunctionOp::Throw)
 """.strip().splitlines()
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 51 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 52 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain all 51 reviewed Recipe/operand arms, including one-step tail invocations, and each exact normalized RHS payload expression; "
+        "lower_operation must retain all 52 reviewed Recipe/operand arms, including terminal tail invocations and explicit throw, with each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
 apply_magic_error_contracts = (
@@ -2421,7 +2483,7 @@ expected_ordinary_leaf_op_variants = """
     PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
     Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
     SetArgument Binary Predicate IfFalse IfTrue Goto Call TailCall Construct
-    CallMethod TailCallMethod ArrayFrom Apply Return ReturnUndefined
+    CallMethod TailCallMethod ArrayFrom Apply Return ReturnUndefined Throw
 """.split()
 ordinary_invocation_payloads = {
     name: [
@@ -2440,7 +2502,7 @@ if (
 ):
     fail(
         "ordinary-leaf-operation-shape",
-        "OrdinaryLeafOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads and a typed Apply kind; "
+        "OrdinaryLeafOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads, a typed Apply kind, and operand-free Throw; "
         f"found {enum_variant_names(ordinary_leaf_op_code)} with invocation payloads {ordinary_invocation_payloads}",
     )
 
@@ -2500,7 +2562,7 @@ require_normalized_code_sha256(
     "ordinary-leaf-translated-code",
     "ordinary lower_operation must remain one alias-free exhaustive typed handoff",
     ordinary_lower_operation,
-    "679c41bc20dedf12fd79b7fa1b8006e90241198f5c093ac899a850d5d768e76d",
+    "27e3c712eb23b64fd54c18c2e66d2a7f7f6931cc32c644d4b66374df361e676f",
 )
 ordinary_handoff_rows = """
 FunctionOp::PushI32(value) @ Ok(OrdinaryLeafOp::PushI32(*value))
@@ -2534,13 +2596,14 @@ FunctionOp::ArrayFrom(element_count) @ Ok(OrdinaryLeafOp::ArrayFrom(*element_cou
 FunctionOp::Apply(kind) @ Ok(OrdinaryLeafOp::Apply(match kind { FunctionApplyKind::Call => OrdinaryLeafApplyKind::Call, FunctionApplyKind::Construct => OrdinaryLeafApplyKind::Construct, }))
 FunctionOp::Return @ Ok(OrdinaryLeafOp::Return)
 FunctionOp::ReturnUndefined @ Ok(OrdinaryLeafOp::ReturnUndefined)
+FunctionOp::Throw @ Ok(OrdinaryLeafOp::Throw)
 """.strip().splitlines()
 expected_ordinary_handoff = [tuple(row.split(" @ ", 1)) for row in ordinary_handoff_rows]
 found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionOp::")
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 31 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 32 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
@@ -3896,7 +3959,7 @@ if consumer_exists:
         "ordinary-leaf-consumer-lowering",
         "lower_ordinary_leaf_op must remain one alias-free exhaustive typed publisher match",
         ordinary_instruction_lowering,
-        "687360cc5735fbad927341ee897f3c34f76965af853a1b95af178317ffe46711",
+        "114ddd7f4bf6ac082a84f64263fcfb47e982f39c1d25c2882111496f05f98567",
     )
     detached_variants = re.findall(
         r"\bDetachedPrimitive[ \t\n]*::[ \t\n]*(\w+)",
@@ -3928,7 +3991,7 @@ if consumer_exists:
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
         GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto
         Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
-        ReturnUndefined
+        ReturnUndefined Throw
     """.split()
     found_publisher_arms = rustfmt_match_arms(
         ordinary_instruction_lowering, "OrdinaryLeafOp::"
@@ -3983,6 +4046,7 @@ OrdinaryLeafOp::ArrayFrom(element_count) @ Instruction::ArrayFrom(element_count)
 OrdinaryLeafOp::Apply(kind) @ Instruction::Apply(match kind { OrdinaryLeafApplyKind::Call => ApplyKind::Call, OrdinaryLeafApplyKind::Construct => ApplyKind::Construct, })
 OrdinaryLeafOp::Return @ Instruction::Return
 OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
+OrdinaryLeafOp::Throw @ Instruction::Throw
 """.strip().splitlines()
     excluded_publisher_arms = {
         *(f"OrdinaryLeafOp::{family}(operation)" for family in publisher_families),
@@ -4015,7 +4079,7 @@ OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 31
+        len(found_publisher_arms) != 32
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -4368,6 +4432,14 @@ if tail_instruction_payloads != {"TailCall": ["u16"], "TailCallMethod": ["u16"]}
         "Instruction must retain distinct TailCall(u16) and TailCallMethod(u16) terminal payloads; "
         f"found {tail_instruction_payloads}",
     )
+if (
+    enum_variant_names(instruction_code).count("Throw") != 1
+    or re.search(r"\bThrow[ \t\n]*[({]", instruction_code)
+):
+    fail(
+        "stage3d-instruction-shape",
+        "Instruction must retain exactly one operand-free Throw completion",
+    )
 predicate_requirements = {
     "IsUndefinedOrNull": ("matches!(value, Value::Undefined | Value::Null)", False),
     "IsUndefined": ("matches!(value, Value::Undefined)", False),
@@ -4712,6 +4784,385 @@ if not (root / ".boundary-self-test").is_file():
             normalized_execute_inner[:call_route_end],
             "e425f4d42ef9a3a7b6552994a6f7da31009e70451f5b48e3312581929a54e54c",
         )
+
+    # Raw 48 is admitted by one physical registry row and must stay on the
+    # ordinary target all the way through the sanitized instruction DTO. Seal
+    # the small accessors and the two translation corridors so an alias cannot
+    # preserve the visible Throw arms while bypassing them before publication.
+    capability_relative = "src/runtime/binary_object/function_translate/capability.rs"
+    capability_code = stage3b_code(capability_relative)
+    capability_row_new = stage3b_function(
+        capability_relative, "new", "stage3d-throw-capability-route"
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-capability-route",
+        "CapabilityRow::new must preserve the raw, format, and policy fields without rewriting raw48",
+        capability_row_new,
+        "9e4be6620a97b5136ea400f536be3db0ef7f5cd95c74279dc30969278e19b4fc",
+    )
+    capability_row_macro = unique_braced_item(
+        capability_code,
+        re.compile(r"\bmacro_rules[ \t\n]*![ \t\n]*row[ \t\n]*\{"),
+        "stage3d-throw-capability-route",
+        "capability row macro",
+    )[0]
+    require_normalized_code_sha256(
+        "stage3d-throw-capability-route",
+        "the capability row macro must construct the declared audience and recipe directly",
+        capability_row_macro,
+        "96eac354655d5c9e47c266be4e31d6d1cbfbecc36fe70083bc90e1a59210a59b",
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-capability-route",
+        "row_for must select only the physical raw opcode's registry row",
+        stage3b_function(
+            capability_relative, "row_for", "stage3d-throw-capability-route"
+        ),
+        "e05d664bfc0b3bdd581c293111a0a81440e7227aa75b46baab209c061ce3f131",
+    )
+
+    dto_relative = "src/runtime/binary_object/function_translate/dto.rs"
+    for name, description, expected_hash in (
+        (
+            "includes_ordinary",
+            "ordinary audience membership must remain OrdinaryOnly or Shared",
+            "eac985e03d25991731ee08d4964ed8f621886bd9e6d6783dde9f117075346be8",
+        ),
+        (
+            "supports_ordinary",
+            "FunctionInstruction must consult its retained audience for ordinary admission",
+            "d0f6a6a6678edbe91a19fdf00d9deab39d21d203fd38f57590b4d41abe8d8d8f",
+        ),
+        (
+            "operation",
+            "FunctionInstruction must expose the retained typed operation without substitution",
+            "903997a7bf00f7594ba961f08a431af59ad1bd42ca678390d39944b8b8c11c0a",
+        ),
+        (
+            "instructions",
+            "FunctionCode must expose its retained instruction sequence without filtering",
+            "ae989b36159707bc008c1f1b7144b6c0c0b11497ce8b80046157d5a22db99378",
+        ),
+    ):
+        require_normalized_code_sha256(
+            "stage3d-throw-translation-route",
+            description,
+            stage3b_function(dto_relative, name, "stage3d-throw-translation-route"),
+            expected_hash,
+        )
+
+    translate_relative = "src/runtime/binary_object/function_translate/mod.rs"
+    translate_code = stage3b_code(translate_relative)
+    require_normalized_code_sha256(
+        "stage3d-throw-translation-route",
+        "TranslationTarget must delegate ordinary admission to the retained audience",
+        stage3b_function(
+            translate_relative, "accepts", "stage3d-throw-translation-route"
+        ),
+        "90579d0e77fd5b936444117085b9b1bb8246364a9f8bc3878c95d7e3e271d16c",
+    )
+    pending_expansion_impl = unique_braced_item(
+        translate_code,
+        re.compile(
+            r"\bimpl[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]+"
+            r"PendingExpansion[ \t\n]*<[ \t\n]*'image[ \t\n]*>[ \t\n]*\{"
+        ),
+        "stage3d-throw-translation-route",
+        "PendingExpansion implementation",
+    )[0]
+    require_normalized_code_sha256(
+        "stage3d-throw-translation-route",
+        "PendingExpansion must retain each ready operation exactly once and in order",
+        pending_expansion_impl,
+        "9f43f69140aababa9f85f6845ce991b6133a52693feb7dbb83177e98e3c6001e",
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-translation-route",
+        "operation_for_target must lower admitted ordinary operations and reject outside-target aliases",
+        stage3b_function(
+            translate_relative,
+            "operation_for_target",
+            "stage3d-throw-translation-route",
+        ),
+        "124ecc9366407ebfa14448710b3795c2ee74137aea4f099076fdd13e0b32aec1",
+    )
+    translate_native_plan_item = stage3b_function(
+        translate_relative, "translate_native_plan", "stage3d-throw-translation-route"
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-translation-route",
+        "translate_native_plan must preserve the physical row, target audience, ready operation, and final FunctionCode without a post-lowering remap",
+        translate_native_plan_item,
+        "fe149677e125ffef44ebac61b8b9799eff3166eafd7efa93e086b84571eb9867",
+    )
+    require_normalized_corridor_sha256(
+        "stage3d-throw-translation-route",
+        "translate_native_plan must carry the physical row through its audience expansion into pending code",
+        translate_native_plan_item,
+        "let row = row_for(opcode);",
+        "pending.push(PendingInstruction { audience, diagnostic, expansion, });",
+        "de451567beafe6477081e0466f2cdc2b1cb302b8a8202130ef53226509f39524",
+    )
+    require_normalized_corridor_sha256(
+        "stage3d-throw-translation-route",
+        "translate_native_plan must publish every ready operation through FunctionInstruction::new without remapping",
+        translate_native_plan_item,
+        "for instruction in pending {",
+        "output.push(FunctionInstruction::new( instruction.audience, instruction.diagnostic, operation, ));",
+        "154a0d0ab86cab0cb75aebcc4bb31e8cd6e7b8015e02a4f61dd32eadf17842ae",
+    )
+
+    ordinary_relative = "src/runtime/binary_object/ordinary_leaf.rs"
+    require_normalized_code_sha256(
+        "stage3d-throw-ordinary-route",
+        "ordinary lower_code must require ordinary audience support and lower every typed operation once",
+        stage3b_function(ordinary_relative, "lower_code", "stage3d-throw-ordinary-route"),
+        "ecbf05b23a58bf70ae9074c637ad4a8361fca1209be10413665bde00a8934797",
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-ordinary-route",
+        "OrdinaryLeafDraft::into_parts must retain metadata, constants, and code without substitution",
+        stage3b_function(ordinary_relative, "into_parts", "stage3d-throw-ordinary-route"),
+        "cb258f4d808ff5458a2be60fe0050ebc734736ec811b2232f9ff6c031e7e1cf9",
+    )
+
+    # Stage3D does not introduce a second exception engine. Raw 48 must lower
+    # to the engine's existing operand-free Throw instruction, whose verifier,
+    # activation driver, unwind path, and public pending slot are locked here.
+    if normalized_stack_effect.count("| Self::Throw => (1, 0),") != 1:
+        fail(
+            "stage3d-throw-verifier",
+            "Throw must consume exactly one value and produce no fallthrough value",
+        )
+    require_normalized_code_sha256(
+        "stage3d-throw-verifier",
+        "the full typed verifier must keep Throw terminal without a guarded or aliased fallthrough path",
+        verify_parts_item,
+        "9b3038291ee06873f7b2aaadb61ac884f0d601aefd21e7ea6858d5ee0e746ac1",
+    )
+    if normalized_verify_parts.count(tail_terminal_dispatch) != 1:
+        fail(
+            "stage3d-throw-verifier",
+            "Throw must remain in the unique terminal verifier arm",
+        )
+
+    execute_hot_item = stage3b_function(
+        "src/vm.rs", "execute_hot_instruction", "stage3d-throw-completion"
+    )
+    throw_vm_arm = unique_braced_item(
+        execute_hot_item,
+        re.compile(
+            r"\bInstruction[ \t\n]*::[ \t\n]*Throw[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "stage3d-throw-completion",
+        "VM Throw dispatch arm",
+    )[0]
+    if " ".join(throw_vm_arm.split()) != (
+        "Instruction::Throw => { return self.pop().map(|value| "
+        "Some(Completion::Throw(value))); }"
+    ):
+        fail(
+            "stage3d-throw-completion",
+            "VM Throw must pop the original value directly into Completion::Throw",
+        )
+    require_normalized_code_sha256(
+        "stage3d-throw-critical-route",
+        "execute_inner must carry raw48 from fetch through the hot dispatcher without a guarded completion alias",
+        execute_inner_item,
+        "fa323bad632c685546d3efadbe860a77f540b1066559744ea23c333958036358",
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-critical-route",
+        "execute_hot_instruction must enter its unique match before handling Throw and retain the exact dispatch body",
+        execute_hot_item,
+        "142ca9c32855a4e2b3e0290ef69830faf68929c5b1e35e8291973b3559bd4f19",
+    )
+    execute_published_item = stage3b_function(
+        "src/vm.rs", "execute_published", "stage3d-throw-critical-route"
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-critical-route",
+        "execute_published must return the activation's Completion directly without post-processing Throw",
+        execute_published_item,
+        "b2743fde8341d22bb2592d3810e10030ecce6f812befe9be150a80ccd982a0a7",
+    )
+
+    runtime_vm_host_relative = "src/runtime/vm_host.rs"
+    execute_bytecode_callable_item = stage3b_function(
+        runtime_vm_host_relative,
+        "execute_bytecode_callable",
+        "stage3d-throw-critical-route",
+    )
+    require_normalized_corridor_sha256(
+        "stage3d-throw-critical-route",
+        "the module-link bytecode bridge must finish its frame and return execute_published without completion remapping",
+        execute_bytecode_callable_item,
+        "if is_module_link_entry {",
+        "return result.map_err(RuntimeError::Engine);",
+        "cc840e26ee0461e8d8951e15459568f47c87e2c5f21e32bc878f38a314c0b57a",
+    )
+    require_normalized_corridor_sha256(
+        "stage3d-throw-critical-route",
+        "the normal bytecode bridge must finish its frame and return execute_published without completion remapping",
+        execute_bytecode_callable_item,
+        "FunctionKind::Normal => {}",
+        "result.map_err(RuntimeError::Engine) }",
+        "4c6141e7e3aaabf76b78abf7274c2db6864a7feb516ed02c56bac8ebf6af2b60",
+    )
+    call_internal_item = stage3b_function(
+        "src/runtime/native_dispatch.rs",
+        "call_internal",
+        "stage3d-throw-critical-route",
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-critical-route",
+        "call_internal must preserve the callable completion before, during, and after forwarded-frame cleanup",
+        call_internal_item,
+        "a94d89cf8db9fb9658f867c9d6af1115c979e571165ff953909d0dbb86e74714",
+    )
+    require_normalized_corridor_sha256(
+        "stage3d-throw-critical-route",
+        "call_internal must preserve the callable completion across forwarded-frame cleanup",
+        call_internal_item,
+        "let result = (|| loop {",
+        "frame_error.map_or(result, Err)",
+        "3177d4ccf8210565de65aa1534e23c483ae98e25c5b527055b70386d44307735",
+    )
+
+    for relative, name, description, expected_hash in (
+        (
+            runtime_vm_host_relative,
+            "call",
+            "RuntimeVmHost::call must forward nested callable completions without remapping Throw before caller catch",
+            "c1970423cb9f5a75f26e5c309dcc724ee92f74bd48a6e8d24311a3fc94bb6a14",
+        ),
+        (
+            "src/runtime/internal_methods.rs",
+            "call_value_internal",
+            "call_value_internal must preserve callable and Proxy completions for the current activation",
+            "d7564209dc646e4a18641690161eefba207110f7a244377489a96510bb9d66b5",
+        ),
+        (
+            "src/runtime/context.rs",
+            "call",
+            "Context::call must pass call_internal's completion directly to finish_completion",
+            "bf80579858f0ce24fdb44408eb43a1b3a7263bba07ef972026a22a2b1ff0fa89",
+        ),
+        (
+            runtime_vm_host_relative,
+            "ensure_backtrace",
+            "RuntimeVmHost::ensure_backtrace must delegate explicit Throw values to the runtime backtrace hook",
+            "532bdb791b4b0a3e0d4bc1b8bd9658a5c58e321bf864c3786684bbb22006b0d2",
+        ),
+        (
+            runtime_vm_host_relative,
+            "iterator_close",
+            "RuntimeVmHost::iterator_close must retain getter, call, pending-exception, and result precedence",
+            "242106effd28c2885dd94c0cdbb4f85312b650291dc97d7593ff028e83c02aae",
+        ),
+    ):
+        require_normalized_code_sha256(
+            "stage3d-throw-critical-route",
+            description,
+            stage3b_function(relative, name, "stage3d-throw-critical-route"),
+            expected_hash,
+        )
+    require_normalized_code_sha256(
+        "stage3d-throw-completion",
+        "execute must route every Throw completion through the current activation's raise path",
+        activation_execute_item,
+        "65d316cc1950e983ffc111de71f62e9f9cabb1833acddf93a0980b554df62368",
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-completion",
+        "the suspendable activation driver must share the same Throw raise path",
+        activation_run_item,
+        "53668ef453a43fc676e96f2c6f01c017f3f336df4bba96674562e77361e0f63e",
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-completion",
+        "raise must attach backtraces before ordered catch and iterator unwinding",
+        raise_item,
+        "52a25a382122f09433bd29178885bc10c38222aee15f0d5482def7b15b45caab",
+    )
+    require_ordered_fragments(
+        "stage3d-throw-completion",
+        "explicit Throw must attach a backtrace, prefer the innermost catch/iterator region order, and preserve the original value across iterator close",
+        raise_item,
+        (
+            "host.ensure_backtrace(&value)?;",
+            "let Some(region) = self.regions.pop() else { return Ok(Some(Completion::Throw(value))); };",
+            "match region {",
+            "VmUnwindRegion::Catch { target, stack_depth, } => {",
+            "self.stack.push(value);",
+            "VmUnwindRegion::Iterator { record_base, enabled, .. } => {",
+            "match host.iterator_close(iterator, true)? {",
+            "IteratorCloseOutcome::Closed | IteratorCloseOutcome::Throw(_) => {}",
+        ),
+    )
+
+    for name, description, expected_hash in (
+        (
+            "set_pending_exception",
+            "the pending-exception writer must retain the original value as an owned runtime root",
+            "128c592e4525a60a1bd79dffff836195d8269c54be97a7f17cb98bc5a00a14f8",
+        ),
+        (
+            "take_pending_exception",
+            "the pending-exception reader must take and reconstruct the owned original value",
+            "8b9051265509db89853144e02a180da15b0851f4d6fbe13bce2b8f3b5743d6de",
+        ),
+        (
+            "has_pending_exception",
+            "the pending-exception observer must report the actual pending slot",
+            "1812d935455fea3c9027d72b60c252701cc783baa4433a1364050ea4b42e4956",
+        ),
+    ):
+        require_normalized_code_sha256(
+            "stage3d-throw-pending",
+            description,
+            stage3b_function("src/runtime.rs", name, "stage3d-throw-pending"),
+            expected_hash,
+        )
+    for name, description, expected_hash in (
+        (
+            "has_exception",
+            "Context::has_exception must observe the runtime pending slot directly",
+            "81a8f856db04b94fd5dd58141a1ed0763d3132fc3ebe3d19dec1645e5367de77",
+        ),
+        (
+            "take_exception",
+            "Context::take_exception must return the value taken from the runtime pending slot",
+            "691d43e5f989578873bf0ae60896055ed031a9c031c4e4ed74cb908e172bd626",
+        ),
+    ):
+        require_normalized_code_sha256(
+            "stage3d-throw-pending",
+            description,
+            stage3b_function("src/runtime/context.rs", name, "stage3d-throw-pending"),
+            expected_hash,
+        )
+
+    finish_completion_item = stage3b_function(
+        "src/runtime/context.rs", "finish_completion", "stage3d-throw-pending"
+    )
+    require_normalized_code_sha256(
+        "stage3d-throw-pending",
+        "the public Context completion bridge must retain the original thrown value in the pending-exception slot",
+        finish_completion_item,
+        "d2e99ad914f05e1e7d81e0d909d480fae797df41f295a0a7abf806f1ea57ebc9",
+    )
+    require_ordered_fragments(
+        "stage3d-throw-pending",
+        "Completion::Throw must become the pending exception before RuntimeError::Exception is returned",
+        finish_completion_item,
+        (
+            "Completion::Return(value) => Ok(value),",
+            "Completion::Throw(value) => {",
+            "self.runtime.set_pending_exception(value)?;",
+            "Err(RuntimeError::Exception)",
+        ),
+    )
 
     # Each row pins a compact, semantic ordering contract rather than a brittle
     # whole-function digest. Full-source rewrite canaries exercise the key rows.
@@ -5119,9 +5570,9 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "registry_locks_the_current_physical_cohorts",
             (
-                "(blocked, scalar_only, ordinary_only, shared), (117, 1, 97, 29)",
-                "assert_eq!(ordinary_only + shared, 126);",
-                "assert_eq!(scalar_only + ordinary_only + shared, 127);",
+                "(blocked, scalar_only, ordinary_only, shared), (116, 1, 98, 29)",
+                "assert_eq!(ordinary_only + shared, 127);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 128);",
             ),
         ),
         (
@@ -5139,7 +5590,7 @@ if not (root / ".boundary-self-test").is_file():
             (
                 "let mut counts = [0_usize; 16];",
                 "assert!(counts.into_iter().all(|count| count != 0));",
-                "assert_eq!(counts.into_iter().sum::<usize>(), 117);",
+                "assert_eq!(counts.into_iter().sum::<usize>(), 116);",
             ),
         ),
         (
@@ -5244,9 +5695,9 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3c_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "2568beb0960dcc373e0c0385d2a6382cf8576752fe8c8797a4187b169c9485e0",
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "9cbd512b90bf58b4233210467a51faf7515a0ec2149417e5200e07b0984e158c",
         ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_invocation_addition_is_the_exact_reviewed_six_row_set"): "0bd25bc945bde404ea911c720491e06a0d58c7257683347372b6c74843d3afc2",
-        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "e3a64e644a8a92e36f822a8476ff38bba2656b7d4b6c53e9a13522840e614f13",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "da000b9bc773cfa940be3af11b75360c7e61f60fb67d40af64d37a0637c59b41",
         ("src/runtime/binary_object/function_translate/mod.rs", "tail_invocation_lowering_preserves_the_npop_operand_and_kind"): "f9a36b2d07545f80276edce3e1e7f3e1baaa56fcdfd82996a857be1958acccd2",
         ("src/runtime/binary_object/ordinary_leaf.rs", "tail_invocation_operands_reach_the_ordinary_dto_unchanged"): "fd78ceeb26a50bc988ebb4fdece4f4417b89abd31bbfe0edae6480899e8c1ecc",
         ("src/runtime/binary_object_publish.rs", "ordinary_tail_invocation_publishes_one_for_one_with_the_unchanged_operand"): "7277c89d2d824c8bfe59cecc5ed5fdbf4e68f0368b719794d3072df7782bc94e",
@@ -5286,6 +5737,355 @@ if not (root / ".boundary-self-test").is_file():
             "stage3c-runtime-evidence",
             "Stage3C tests must retain exact #[test] attributes and the typed-chain, BC5, verifier, operand-order, completion, catch, backtrace, unwind, recovery, and rollback evidence; "
             f"missing {missing_stage3c_tests}, drifted {drifted_stage3c_tests}",
+        )
+
+    stage3d_runtime_tests_code = stage3b_code("src/runtime/tests.rs")
+    stage3d_throw_wire_matches = list(re.finditer(
+        r"\bconst[ \t\n]+QUICKJS_ORDINARY_THROW_BC5[ \t\n]*:"
+        r"[ \t\n]*&[ \t\n]*\[[ \t\n]*u8[ \t\n]*\][ \t\n]*="
+        r"[ \t\n]*&[ \t\n]*\[(?P<body>[^]]*)\][ \t\n]*;",
+        stage3d_runtime_tests_code,
+    ))
+    stage3d_throw_wire = b""
+    if len(stage3d_throw_wire_matches) != 1:
+        fail(
+            "stage3d-runtime-evidence",
+            "the Rust runtime evidence must retain exactly one literal QUICKJS_ORDINARY_THROW_BC5 wire",
+        )
+    else:
+        wire_body = stage3d_throw_wire_matches[0].group("body")
+        wire_tokens = re.findall(r"0x[0-9A-Fa-f]+|[0-9]+", wire_body)
+        wire_residue = re.sub(r"0x[0-9A-Fa-f]+|[0-9]+|[\s,]", "", wire_body)
+        try:
+            stage3d_throw_wire = bytes(int(token, 0) for token in wire_tokens)
+        except ValueError:
+            wire_residue = "invalid-byte"
+        fnv = 0xCBF29CE484222325
+        for byte in stage3d_throw_wire:
+            fnv ^= byte
+            fnv = (fnv * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+        if (
+            wire_residue
+            or len(stage3d_throw_wire) != 45
+            or fnv != 0x73CF217E06C5FEE2
+            or hashlib.sha256(stage3d_throw_wire).hexdigest()
+            != "b7998b9678635e7e0a4eb2e465b683d168395adc7f156f733c25521907e3c8a8"
+            or stage3d_throw_wire[-2:] != bytes((0xCF, 0x30))
+        ):
+            fail(
+                "stage3d-runtime-evidence",
+                "the Rust raw48 fixture must remain the exact 45-byte cf30 wire with its frozen FNV-1a-64 and SHA-256",
+            )
+
+    stage3d_test_contracts = (
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "ordinary_explicit_throw_is_the_only_reviewed_exception_completion",
+            (
+                "CAPABILITY_REGISTRY[48].policy",
+                "CapabilityPolicy::OrdinaryOnly(Recipe::Throw)",
+                "CAPABILITY_REGISTRY[47].policy",
+                "CAPABILITY_REGISTRY[49].policy",
+                "CAPABILITY_REGISTRY[177].policy",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/mod.rs",
+            "explicit_throw_lowering_is_typed_and_operand_free",
+            (
+                "lower_operation(Recipe::Throw, &NativeOperands::None).unwrap()",
+                "Some(PendingOperation::Ready(FunctionOp::Throw))",
+                "assert!(operations.next().is_none());",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "lowers_representative_sanitized_operations_without_consulting_diagnostics",
+            ("(FunctionOp::Throw, OrdinaryLeafOp::Throw)",),
+        ),
+        (
+            "src/runtime/binary_object_publish.rs",
+            "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering",
+            (
+                "lower(OrdinaryLeafOp::Throw)",
+                "Instruction::Throw",
+            ),
+        ),
+        (
+            "src/bytecode.rs",
+            "verifier_allows_terminal_completion_to_abandon_switch_values",
+            (
+                "for completion in [Instruction::Return, Instruction::Throw]",
+                "assert_eq!(function.verify().unwrap().max_stack, 2);",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_throw_uses_the_exact_wire_metadata_and_value_identity",
+            (
+                "assert_eq!(QUICKJS_ORDINARY_THROW_BC5.len(), 45);",
+                "0x73cf_217e_06c5_fee2",
+                "[Instruction::GetArg(0), Instruction::Throw]",
+                "snapshot.metadata.function_kind, FunctionKind::Normal",
+                "Some(Value::Object(object.clone()))",
+                "Some(Value::Int(42))",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_throw_reenters_caller_catch_backtrace_and_iterator_close",
+            (
+                "eval_with_filename(",
+                "Value::Bool(true)",
+                "let stack = own_stack_string(&runtime, &error).to_utf8_lossy();",
+                "JsString::from_static(",
+                "assert!(!context.has_exception());",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_throw_is_terminal_and_branch_targetable",
+            (
+                "quickjs_ordinary_one_argument_with_code(&[0xcf, 0x30, 0x0e], 1)",
+                "Instruction::Throw, Instruction::Drop",
+                "quickjs_ordinary_one_argument_with_code(&[0xcf, 0xea, 0x02, 0xb4, 0x30], 1)",
+                "Instruction::Goto(3)",
+                "Some(Value::Object(object))",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_throw_verification_rejects_transactionally_and_retries",
+            (
+                "quickjs_ordinary_one_argument_with_code(code, max_stack)",
+                "assert_eq!(runtime.heap_counts(), baseline",
+                "assert_eq!(runtime.test_atom_count(), baseline_atoms",
+                "read_trusted_ordinary_function(QUICKJS_ORDINARY_THROW_BC5, 0)",
+                "Some(Value::Int(42))",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally",
+            (
+                "async_function[28] |= 1 << 2;",
+                "generator[26] |= 1 << 4;",
+                "derived[26] |= 1 << 2;",
+                "&image[43..], [0xcf, 0x30]",
+                ".read_trusted_ordinary_function(&image, 0)",
+                "assert_eq!(runtime.heap_counts(), baseline",
+                "read_trusted_ordinary_function(QUICKJS_ORDINARY_THROW_BC5, 0)",
+                "Some(Value::Int(42))",
+            ),
+        ),
+    )
+    stage3d_test_body_hashes = {
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_explicit_throw_is_the_only_reviewed_exception_completion"): "1fc5457f180e996bd38df49a94b8fcdbda6b2ef01bdb8ac4cd7d1cec7383f08d",
+        ("src/runtime/binary_object/function_translate/mod.rs", "explicit_throw_lowering_is_typed_and_operand_free"): "5d6d1b5266a7b7682c26a39d8b54c4b9f450670feb7dc917e89427293f92b9a9",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "f0b9cd78bd3502077caefd2a9fdeba82fe06a35f5ace794be883ac118d7b3b93",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5be98ae103a1ab281177f2e1e4c6b2ce88a5e2a54954e7d3fae56e8b8bc63827",
+        ("src/bytecode.rs", "verifier_allows_terminal_completion_to_abandon_switch_values"): "7fdb137db6ab6bedd70a5ea42b6b267ab3d1eb027ea6467e25b430ebf365b4a6",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_uses_the_exact_wire_metadata_and_value_identity"): "f3df4f2957a2d447ff0f0c1af7c0cb74eb03017dda72210b1349f16d4dceccfb",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_reenters_caller_catch_backtrace_and_iterator_close"): "71ae492da72febf0aae78f64edd2980b70982f2d0799981b4e06d336a03eaa87",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_is_terminal_and_branch_targetable"): "54f139dbfa37ab0fc7b8e6f2ae09a9246d61fd2ebffdb055d86c3ccdcd1067ef",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_verification_rejects_transactionally_and_retries"): "a84862beab3d71440a66f2fd35e7dfaabe35d668b1ae51831376636b7d1cd156",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally"): "5c92b46b6a9c05b16802f6ff26de4fef8e5ad509e6e15763f46d62e2f9dc8d27",
+    }
+    stage3d_inline_test_files = {
+        relative
+        for relative, _, _ in stage3d_test_contracts
+        if relative != "src/runtime/tests.rs"
+    }
+    stage3d_test_parent_bounds: dict[str, tuple[int, int]] = {}
+    for relative in stage3d_inline_test_files:
+        code = stage3b_code(relative)
+        modules = list(re.finditer(
+            r"(?P<attributes>(?:#[ \t\n]*\[[^]]*\][ \t\n]*)*)"
+            r"\bmod[ \t\n]+tests[ \t\n]*\{",
+            code,
+        ))
+        if (
+            len(modules) != 1
+            or " ".join(modules[0].group("attributes").split()) != "#[cfg(test)]"
+        ):
+            fail(
+                "stage3d-runtime-evidence",
+                f"{relative} must retain one direct, unconditional #[cfg(test)] tests module",
+            )
+            continue
+        _, module_start, module_end = braced_item_from_match(
+            code,
+            modules[0],
+            "stage3d-runtime-evidence",
+            f"{relative} direct tests module",
+        )
+        stage3d_test_parent_bounds[relative] = (module_start, module_end)
+
+    assertion_shadow = re.compile(
+        r"\bmacro_rules[ \t\n]*![ \t\n]*(?:r#)?(?:assert|assert_eq|assert_ne|matches|panic)\b"
+        r"|^[ \t]*use[ \t]+[^;]*\b(?:r#)?(?:assert|assert_eq|assert_ne|matches|panic)\b[^;]*;",
+        re.MULTILINE,
+    )
+    for relative in stage3d_inline_test_files | {"src/runtime/tests.rs"}:
+        if assertion_shadow.search(stage3b_code(relative)):
+            fail(
+                "stage3d-runtime-evidence",
+                f"{relative} must not shadow or import the assertion macros used by Stage3D evidence",
+            )
+
+    missing_stage3d_tests = []
+    drifted_stage3d_tests = []
+    for relative, name, anchors in stage3d_test_contracts:
+        code = stage3b_code(relative)
+        declarations = list(re.finditer(
+            rf"(?P<attributes>(?:#[ \t\n]*\[[^]]*\][ \t\n]*)*)"
+            rf"\bfn[ \t\n]+{re.escape(name)}[ \t\n]*\(",
+            code,
+        ))
+        if (
+            len(declarations) != 1
+            or " ".join(declarations[0].group("attributes").split()) != "#[test]"
+        ):
+            missing_stage3d_tests.append(f"{relative}::{name}")
+            continue
+        declaration_offset = declarations[0].start()
+        declaration_depth = (
+            code[:declaration_offset].count("{")
+            - code[:declaration_offset].count("}")
+        )
+        if relative == "src/runtime/tests.rs":
+            direct_parent = declaration_depth == 0
+        else:
+            parent_bounds = stage3d_test_parent_bounds.get(relative)
+            direct_parent = (
+                parent_bounds is not None
+                and parent_bounds[0] < declaration_offset < parent_bounds[1]
+                and declaration_depth == 1
+            )
+        if not direct_parent:
+            missing_stage3d_tests.append(f"{relative}::{name} (nested)")
+            continue
+        item = stage3b_function(relative, name, "stage3d-runtime-evidence")
+        normalized_item = " ".join(item.split())
+        if (
+            any(anchor not in normalized_item for anchor in anchors)
+            or normalized_code_sha256(item)
+            != stage3d_test_body_hashes.get((relative, name))
+        ):
+            drifted_stage3d_tests.append(f"{relative}::{name}")
+    if missing_stage3d_tests or drifted_stage3d_tests:
+        fail(
+            "stage3d-runtime-evidence",
+            "Stage3D tests must remain unconditional #[test] functions with the exact raw48 wire, typed chain, terminal verifier, identity, pending, catch, backtrace, iterator-close, recovery, and rollback evidence; "
+            f"missing {missing_stage3d_tests}, drifted {drifted_stage3d_tests}",
+        )
+
+    stage3d_c_evidence_hashes = {
+        "tests/fixtures/function_bytecode_wire.c": "e865893d3a835a191a93292cce4a413b8d60d35e48f1eee599d1dad7da30a792",
+        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt": "f5d7a18a80ec8b303a29c10c30726545ed12708b739b8bba66f74c158945ab42",
+        "dev-support/quickjs-c-oracles.tsv": "f9484ee886c0e9ebd5ec037e083eb2eb6fe1857b7914846815a6ea3fc34d3094",
+    }
+    stage3d_c_sources: dict[str, str] = {}
+    for relative, expected_hash in stage3d_c_evidence_hashes.items():
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            fail("stage3d-c-oracle", f"{relative} must remain a regular authenticated file")
+            continue
+        payload = path.read_bytes()
+        found_hash = hashlib.sha256(payload).hexdigest()
+        if found_hash != expected_hash:
+            fail(
+                "stage3d-c-oracle",
+                f"{relative} drifted from its frozen Stage3D sha256; found {found_hash}",
+            )
+        stage3d_c_sources[relative] = payload.decode("utf-8")
+
+    stage3d_c_source = stage3d_c_sources.get(
+        "tests/fixtures/function_bytecode_wire.c", ""
+    )
+    if (
+        stage3d_c_source.count(
+            "static int expect_ordinary_throw_completion(JSContext *compile_context)"
+        ) != 1
+        or stage3d_c_source.count(
+            "if (expect_ordinary_throw_completion(compile_context))"
+        ) != 1
+        or stage3d_c_source.count("static const uint8_t ordinary_throw_bytecode[]")
+        != 1
+    ):
+        fail(
+            "stage3d-c-oracle",
+            "the authenticated C oracle must define, call, and execute exactly one ordinary raw48 completion case",
+        )
+    stage3d_c_transcript = stage3d_c_sources.get(
+        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt", ""
+    )
+    stage3d_c_transcript_contract = (
+        "ordinary-throw-wire-size=45",
+        "ordinary-throw-wire-fnv1a64=73cf217e06c5fee2",
+        "ordinary-throw-wire-sha256=b7998b9678635e7e0a4eb2e465b683d168395adc7f156f733c25521907e3c8a8",
+        "ordinary-throw-child-metadata=flags:0243,js_mode:1,args:1,vars:0,defined_args:1,stack:1,var_refs:0,closures:0,cpool:0,code:2,locals:1,code_offset:43",
+        "ordinary-throw-child-code-hex=cf30",
+        "ordinary-throw-child-code-raw=207,48",
+        "ordinary-throw-terminal=raw48,stack:1->0,no-return",
+        "ordinary-throw-caller-catch=int,object,Error:original-identity;terminal-no-return",
+        "ordinary-throw-iterator-close=body,return,catch-original;close-throw-does-not-replace-original",
+        "ordinary-throw-deferred-raw=49,177",
+        "ordinary-throw-oracle=passed",
+    )
+    if any(
+        stage3d_c_transcript.count(f"{line}\n") != 1
+        for line in stage3d_c_transcript_contract
+    ):
+        fail(
+            "stage3d-c-oracle",
+            "the frozen C transcript must retain the exact 45-byte wire, metadata, terminal, identity, backtrace, iterator-close, and deferred-row evidence",
+        )
+
+    stage3d_status = read_source("docs/status.md")
+    for description, start_fragment, end_fragment, expected_hash in (
+        (
+            "the status document must retain the exact explicit-throw typed path and no-VM-change boundary",
+            "Stage 3D admits explicit raw 48",
+            "already implemented exception path.",
+            "9f1793c230bff05e3d1c8ea6e8e80b9dbe4ec64815a7fe684ffe4e58959e0f22",
+        ),
+        (
+            "the status document must retain the exact Rust raw48 identity, backtrace, iterator-close, terminal, and rollback evidence",
+            "Stage-3D Rust evidence uses",
+            "transactional heap/atom rollback.",
+            "8342c0f2e2b880cc8f0c668680db1521ca400a8cae2d837a261ed785fe6d3c09",
+        ),
+        (
+            "the status document must retain the authenticated 45-byte C wire and source/transcript/manifest hashes",
+            "Stage 3D adds the exact compiler-natural strict 45-byte raw-48 wire",
+            "`f9484ee886c0e9ebd5ec037e083eb2eb6fe1857b7914846815a6ea3fc34d3094`.",
+            "b48d3ad1f479c558fdb0699af9f40792fbdbda98bf69d717fbaefe5103639449",
+        ),
+    ):
+        require_normalized_corridor_sha256(
+            "stage3d-status",
+            description,
+            stage3d_status,
+            start_fragment,
+            end_fragment,
+            expected_hash,
+        )
+    stage3d_receipt_paragraphs = [
+        paragraph
+        for paragraph in re.split(r"\n[ \t]*\n", stage3d_status)
+        if "The latest full R3fj receipt" in paragraph
+    ]
+    if (
+        len(stage3d_receipt_paragraphs) != 1
+        or normalized_code_sha256(stage3d_receipt_paragraphs[0])
+        != "6f9e2f12c36e45adb52322e0b450a1ccdea0c7680d9cf176c651d6c70c91f49a"
+        or "source-stale for Stage 3D" not in stage3d_receipt_paragraphs[0]
+        or "does not certify raw48 admission or the Stage3D" not in stage3d_receipt_paragraphs[0]
+    ):
+        fail(
+            "stage3d-status",
+            "the complete R3fj paragraph must remain source-stale for Stage3D, retain unchanged metrics, and end at its blank-line boundary without a contrary certification",
         )
 
 src_root = root / "src"
@@ -7162,12 +7962,22 @@ expect_full_rewrite_rejected() {
     local relative=$3
     local before=$4
     local after=$5
+    local before2=${6-}
+    local after2=${7-}
     local case_root=$tmp_dir/$label
     local output=$case_root.output
 
     mkdir -p "$case_root"
     cp -R "$repository_root/src" "$case_root/src"
-    python3 - "$case_root/$relative" "$before" "$after" <<'PY'
+    mkdir -p "$case_root/tests/fixtures" "$case_root/dev-support" "$case_root/docs"
+    cp -- "$repository_root/tests/fixtures/function_bytecode_wire.c" \
+        "$case_root/tests/fixtures/function_bytecode_wire.c"
+    cp -- "$repository_root/tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt" \
+        "$case_root/tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt"
+    cp -- "$repository_root/dev-support/quickjs-c-oracles.tsv" \
+        "$case_root/dev-support/quickjs-c-oracles.tsv"
+    cp -- "$repository_root/docs/status.md" "$case_root/docs/status.md"
+    python3 - "$case_root/$relative" "$before" "$after" "$before2" "$after2" <<'PY'
 from pathlib import Path
 import sys
 
@@ -7177,7 +7987,14 @@ after = sys.argv[3]
 source = path.read_text(encoding="utf-8")
 if source.count(before) != 1:
     raise SystemExit(f"full rewrite canary expected one occurrence of {before!r}")
-path.write_text(source.replace(before, after), encoding="utf-8")
+source = source.replace(before, after)
+before2 = sys.argv[4]
+after2 = sys.argv[5]
+if before2:
+    if source.count(before2) != 1:
+        raise SystemExit(f"full rewrite canary expected one occurrence of {before2!r}")
+    source = source.replace(before2, after2)
+path.write_text(source, encoding="utf-8")
 PY
     if "$script_dir/check-binary-object-boundary.sh" --scan-only "$case_root" \
         > "$output" 2>&1; then
@@ -7789,6 +8606,149 @@ expect_full_rewrite_rejected stage3c-required-test-macro-shadow \
     stage3c-runtime-evidence src/runtime/tests.rs \
     $'fn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {\n    assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_BC5.len(), 57);' \
     $'fn trusted_quickjs_ordinary_tail_invocations_use_exact_bc5_wires_and_semantics() {\n    macro_rules! assert_eq { ($($tokens:tt)*) => {}; }\n    assert_eq!(QUICKJS_ORDINARY_TAIL_CALL_BC5.len(), 57);'
+expect_full_rewrite_table <<'STAGE3D_CANARIES'
+stage3d-raw48-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(48, None, OrdinaryOnly, Recipe::Throw),|    row!(48, None, Shared, Recipe::Throw),
+stage3d-raw47-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(47, None, Blocked, Completion),|    row!(47, None, OrdinaryOnly, Recipe::Throw),
+stage3d-raw49-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(49, AtomU8, Blocked, Exception),|    row!(49, AtomU8, OrdinaryOnly, Recipe::Throw),
+stage3d-raw177-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, Blocked, Specialized),|    row!(177, None, OrdinaryOnly, Recipe::Throw),
+stage3d-translate-throw-to-return|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Throw),|        (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Return),
+stage3d-ordinary-throw-to-return|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Throw => Ok(OrdinaryLeafOp::Throw),|        FunctionOp::Throw => Ok(OrdinaryLeafOp::Return),
+stage3d-publisher-throw-to-return|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Throw => Instruction::Throw,|        OrdinaryLeafOp::Throw => Instruction::Return,
+stage3d-runtime-evidence-ignored|stage3d-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_throw_uses_the_exact_wire_metadata_and_value_identity() {|#[test]\n#[ignore = "gate mutation"]\nfn trusted_quickjs_ordinary_throw_uses_the_exact_wire_metadata_and_value_identity() {
+stage3d-runtime-evidence-cfg-excluded|stage3d-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_throw_reenters_caller_catch_backtrace_and_iterator_close() {|#[cfg(any())]\n#[test]\nfn trusted_quickjs_ordinary_throw_reenters_caller_catch_backtrace_and_iterator_close() {
+stage3d-runtime-evidence-early-return|stage3d-runtime-evidence|src/runtime/tests.rs|fn trusted_quickjs_ordinary_throw_is_terminal_and_branch_targetable() {\n    let runtime = Runtime::new();|fn trusted_quickjs_ordinary_throw_is_terminal_and_branch_targetable() {\n    return;\n    let runtime = Runtime::new();
+stage3d-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_throw_completion(compile_context))|    if (0 && expect_ordinary_throw_completion(compile_context))
+STAGE3D_CANARIES
+expect_full_rewrite_rejected stage3d-vm-throw-to-return \
+    stage3d-throw-completion src/vm.rs \
+    '                return self.pop().map(|value| Some(Completion::Throw(value)));' \
+    '                return self.pop().map(|value| Some(Completion::Return(value)));'
+expect_full_rewrite_rejected stage3d-translate-helper-bypass \
+    function-translate-semantic-dispatch \
+    src/runtime/binary_object/function_translate/mod.rs \
+    $'    let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));\n    match (recipe, operands) {' \
+    $'    let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));\n    if matches!(recipe, Recipe::Throw) {\n        return ready(FunctionOp::Return);\n    }\n    match (recipe, operands) {'
+expect_full_rewrite_rejected stage3d-translate-post-lowering-remap \
+    stage3d-throw-translation-route \
+    src/runtime/binary_object/function_translate/mod.rs \
+    '    Ok(FunctionCode::new(output.into_boxed_slice()))' \
+    $'    let output = output\n        .into_iter()\n        .map(|instruction| {\n            let diagnostic = instruction.rejection_diagnostic();\n            let operation = match instruction.into_operation() {\n                FunctionOp::Throw => FunctionOp::Return,\n                operation => operation,\n            };\n            FunctionInstruction::new(InstructionAudience::OrdinaryOnly, diagnostic, operation)\n        })\n        .collect::<Vec<_>>();\n    Ok(FunctionCode::new(output.into_boxed_slice()))'
+expect_full_rewrite_rejected stage3d-ordinary-helper-bypass \
+    ordinary-leaf-translated-code \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    $'    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
+    $'    if matches!(operation, FunctionOp::Throw) {\n        return Ok(OrdinaryLeafOp::Return);\n    }\n    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
+expect_full_rewrite_rejected stage3d-publisher-helper-bypass \
+    ordinary-leaf-consumer-lowering \
+    src/runtime/binary_object_publish.rs \
+    $'    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
+    $'    if matches!(&operation, OrdinaryLeafOp::Throw) {\n        return Ok(Instruction::Return);\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
+expect_full_rewrite_rejected stage3d-throw-stack-effect-drift \
+    stage3d-throw-verifier src/bytecode.rs \
+    '            | Self::Throw => (1, 0),' \
+    '            | Self::Throw => (1, 1),'
+expect_full_rewrite_rejected stage3d-throw-verifier-fallthrough \
+    stage3d-throw-verifier src/bytecode.rs \
+    $'        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;\n        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses' \
+    $'        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;\n        if matches!(instruction, Instruction::Throw) {\n            enqueue_fallthrough(\n                &mut worklist,\n                pc,\n                VerificationState {\n                    depth: next_depth,\n                    regions: next_regions.clone(),\n                    return_addresses: next_return_addresses.clone(),\n                    super_call_bases: next_super_call_bases.clone(),\n                },\n                code.len(),\n            )?;\n        }\n        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses'
+expect_full_rewrite_rejected stage3d-execute-throw-bypass \
+    stage3d-throw-completion src/vm.rs \
+    $'                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,\n                Ok(InterpreterExit::Suspend(_)) =>' \
+    $'                Ok(InterpreterExit::Complete(Completion::Throw(value)))\n                    if matches!(&value, Value::Undefined) => {\n                        return Ok(Completion::Return(value));\n                    }\n                Ok(InterpreterExit::Complete(Completion::Throw(value))) => value,\n                Ok(InterpreterExit::Suspend(_)) =>'
+expect_full_rewrite_rejected stage3d-raise-bypass \
+    stage3d-throw-completion src/vm.rs \
+    $'    ) -> Result<Option<Completion>, Error> {\n        host.ensure_backtrace(&value)?;\n        loop {' \
+    $'    ) -> Result<Option<Completion>, Error> {\n        if matches!(value, Value::Undefined) {\n            return Ok(Some(Completion::Throw(value)));\n        }\n        host.ensure_backtrace(&value)?;\n        loop {'
+expect_full_rewrite_rejected stage3d-execute-inner-post-route-throw-return \
+    stage3d-throw-critical-route src/vm.rs \
+    '            if let Some(completion) = self.execute_hot_instruction(code, instruction, host)? {' \
+    $'            if matches!(instruction, Instruction::Throw) {\n                return Ok(InterpreterExit::Complete(Completion::Return(Value::Undefined)));\n            }\n            if let Some(completion) = self.execute_hot_instruction(code, instruction, host)? {'
+expect_full_rewrite_rejected stage3d-execute-hot-entry-throw-return \
+    stage3d-throw-critical-route src/vm.rs \
+    $'    ) -> Result<Option<Completion>, Error> {\n        match instruction {\n            Instruction::Nop => {}' \
+    $'    ) -> Result<Option<Completion>, Error> {\n        if matches!(instruction, Instruction::Throw) {\n            return self.pop().map(|value| Some(Completion::Return(value)));\n        }\n        match instruction {\n            Instruction::Nop => {}'
+expect_full_rewrite_rejected stage3d-execute-published-throw-return \
+    stage3d-throw-critical-route src/vm.rs \
+    $'        )\n        .execute(code, host)\n    }' \
+    $'        )\n        .execute(code, host)\n        .map(|completion| match completion {\n            Completion::Throw(value) => Completion::Return(value),\n            completion => completion,\n        })\n    }'
+expect_full_rewrite_rejected stage3d-bytecode-normal-bridge-throw-return \
+    stage3d-throw-critical-route src/runtime/vm_host.rs \
+    $'        let result = Vm::new().execute_published(input, &mut host);\n        active_frame.finish()?;\n        result.map_err(RuntimeError::Engine)\n    }\n}' \
+    $'        let result = Vm::new().execute_published(input, &mut host);\n        active_frame.finish()?;\n        result\n            .map(|completion| match completion {\n                Completion::Throw(value) => Completion::Return(value),\n                completion => completion,\n            })\n            .map_err(RuntimeError::Engine)\n    }\n}'
+expect_full_rewrite_rejected stage3d-bytecode-module-bridge-throw-return \
+    stage3d-throw-critical-route src/runtime/vm_host.rs \
+    '            return result.map_err(RuntimeError::Engine);' \
+    $'            return result\n                .map(|completion| match completion {\n                    Completion::Throw(value) => Completion::Return(value),\n                    completion => completion,\n                })\n                .map_err(RuntimeError::Engine);'
+expect_full_rewrite_rejected stage3d-call-internal-cleanup-throw-return \
+    stage3d-throw-critical-route src/runtime/native_dispatch.rs \
+    '        frame_error.map_or(result, Err)' \
+    $'        frame_error.map_or(result, Err).map(|completion| match completion {\n            Completion::Throw(value) => Completion::Return(value),\n            completion => completion,\n        })'
+expect_full_rewrite_rejected stage3d-vm-host-call-throw-return \
+    stage3d-throw-critical-route src/runtime/vm_host.rs \
+    $'        self.runtime\n            .call_value_internal(self.current_realm, function, this_value, &arguments)\n            .map_err(runtime_error_to_vm_error)' \
+    $'        self.runtime\n            .call_value_internal(self.current_realm, function, this_value, &arguments)\n            .map(|completion| match completion {\n                Completion::Throw(value) => Completion::Return(value),\n                completion => completion,\n            })\n            .map_err(runtime_error_to_vm_error)'
+expect_full_rewrite_rejected stage3d-call-value-throw-return \
+    stage3d-throw-critical-route src/runtime/internal_methods.rs \
+    $'            DirectCallTarget::Callable(callable) => {\n                self.call_internal(caller_realm, &callable, this_value, arguments)\n            }' \
+    $'            DirectCallTarget::Callable(callable) => self\n                .call_internal(caller_realm, &callable, this_value, arguments)\n                .map(|completion| match completion {\n                    Completion::Throw(value) => Completion::Return(value),\n                    completion => completion,\n                }),'
+expect_full_rewrite_rejected stage3d-context-call-throw-return \
+    stage3d-throw-critical-route src/runtime/context.rs \
+    $'        let completion = self\n            .runtime\n            .call_internal(self.realm, callable, this_value, arguments)?;\n        self.finish_completion(completion)' \
+    $'        let completion = self\n            .runtime\n            .call_internal(self.realm, callable, this_value, arguments)?;\n        let completion = match completion {\n            Completion::Throw(value) => Completion::Return(value),\n            completion => completion,\n        };\n        self.finish_completion(completion)'
+expect_full_rewrite_rejected stage3d-backtrace-hook-noop \
+    stage3d-throw-critical-route src/runtime/vm_host.rs \
+    $'    fn ensure_backtrace(&mut self, value: &Value) -> Result<(), Error> {\n        self.runtime' \
+    $'    fn ensure_backtrace(&mut self, value: &Value) -> Result<(), Error> {\n        let _ = value;\n        return Ok(());\n        self.runtime'
+expect_full_rewrite_rejected stage3d-iterator-close-hook-noop \
+    stage3d-throw-critical-route src/runtime/vm_host.rs \
+    $'    ) -> Result<IteratorCloseOutcome, Error> {\n        let return_key = self' \
+    $'    ) -> Result<IteratorCloseOutcome, Error> {\n        return Ok(IteratorCloseOutcome::Closed);\n        let return_key = self'
+expect_full_rewrite_rejected stage3d-pending-writer-noop \
+    stage3d-throw-pending src/runtime.rs \
+    $'    fn set_pending_exception(&self, value: Value) -> Result<(), RuntimeError> {\n        let _operation = self.operation();' \
+    $'    fn set_pending_exception(&self, value: Value) -> Result<(), RuntimeError> {\n        let _ = value;\n        return Ok(());\n        let _operation = self.operation();'
+expect_full_rewrite_rejected stage3d-pending-reader-noop \
+    stage3d-throw-pending src/runtime.rs \
+    $'    fn take_pending_exception(&self) -> Result<Option<Value>, RuntimeError> {\n        let _operation = self.operation();' \
+    $'    fn take_pending_exception(&self) -> Result<Option<Value>, RuntimeError> {\n        return Ok(None);\n        let _operation = self.operation();'
+expect_full_rewrite_rejected stage3d-pending-observer-false \
+    stage3d-throw-pending src/runtime.rs \
+    $'    fn has_pending_exception(&self) -> bool {\n        let _operation = self.operation();\n        self.0.state.borrow().pending_exception.is_some()\n    }' \
+    $'    fn has_pending_exception(&self) -> bool {\n        false\n    }'
+expect_full_rewrite_rejected stage3d-rust-raw48-wire-alias \
+    stage3d-runtime-evidence src/runtime/tests.rs \
+    $'    0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x01, 0x00, 0x00, 0xcf, 0x30,\n];' \
+    $'    0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x01, 0x00, 0x00, 0xcf, 0x2f,\n];'
+expect_full_rewrite_rejected stage3d-nonordinary-metadata-test-ignored \
+    stage3d-runtime-evidence src/runtime/tests.rs \
+    $'#[test]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {' \
+    $'#[test]\n#[ignore = "gate mutation"]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {'
+expect_full_rewrite_rejected stage3d-runtime-module-assert-eq-shadow \
+    stage3d-runtime-evidence src/runtime/tests.rs \
+    'use crate::JsBigInt;' \
+    $'use crate::JsBigInt;\n\nmacro_rules! assert_eq { ($($tokens:tt)*) => {}; }'
+expect_full_rewrite_rejected stage3d-runtime-module-assert-shadow \
+    stage3d-runtime-evidence src/runtime/tests.rs \
+    'use crate::JsBigInt;' \
+    $'use crate::JsBigInt;\n\nmacro_rules! assert { ($($tokens:tt)*) => {}; }'
+expect_full_rewrite_rejected stage3d-runtime-module-raw-assert-eq-shadow \
+    stage3d-runtime-evidence src/runtime/tests.rs \
+    'use crate::JsBigInt;' \
+    $'use crate::JsBigInt;\n\nmacro_rules! r#assert_eq { ($($tokens:tt)*) => {}; }'
+expect_full_rewrite_rejected stage3d-runtime-test-nested-cfg \
+    stage3d-runtime-evidence src/runtime/tests.rs \
+    $'#[test]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {' \
+    $'#[cfg(any())]\nmod disabled_raw48_metadata {\n#[test]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {' \
+    $'    assert!(!context.has_exception());\n}\n\n#[test]\nfn trusted_quickjs_ordinary_non_tail_invocations_preserve_stack_contracts() {' \
+    $'    assert!(!context.has_exception());\n}\n}\n\n#[test]\nfn trusted_quickjs_ordinary_non_tail_invocations_preserve_stack_contracts() {'
+expect_full_rewrite_rejected stage3d-status-source-stale-erased \
+    stage3d-status docs/status.md \
+    'source-stale for Stage 3D; it does not certify raw48 admission or the Stage3D' \
+    'source-current for Stage 3D; it now certifies raw48 admission and the Stage3D'
+expect_full_rewrite_rejected stage3d-status-source-current-appended \
+    stage3d-status docs/status.md \
+    $'R3fj result until a new exact-source receipt is promoted.\n\nThe same oracle pins' \
+    $'R3fj result until a new exact-source receipt is promoted.\nStage 3D is now source-current and certified.\n\nThe same oracle pins'
 expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
     ordinary-leaf-engine-semantics src/vm.rs \
     '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \

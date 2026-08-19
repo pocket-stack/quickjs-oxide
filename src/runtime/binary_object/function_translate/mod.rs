@@ -546,6 +546,7 @@ fn lower_operation<'image>(
         }
         (Recipe::Return, NativeOperands::None) => ready(FunctionOp::Return),
         (Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),
+        (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Throw),
         _ => Err(FunctionTranslateError::registry_drift(
             "translated operation",
             operand_shape(operands.format()),
@@ -684,6 +685,18 @@ mod tests {
             ));
             assert!(operations.next().is_none());
         }
+    }
+
+    #[test]
+    fn explicit_throw_lowering_is_typed_and_operand_free() {
+        let expansion = lower_operation(Recipe::Throw, &NativeOperands::None).unwrap();
+        assert_eq!(expansion.len(), 1);
+        let mut operations = expansion.into_operations();
+        assert!(matches!(
+            operations.next(),
+            Some(PendingOperation::Ready(FunctionOp::Throw))
+        ));
+        assert!(operations.next().is_none());
     }
 
     #[test]
