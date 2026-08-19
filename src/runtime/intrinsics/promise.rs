@@ -509,7 +509,7 @@ impl Runtime {
     fn new_promise_capability(
         &self,
         realm: ContextId,
-        constructor: Option<&CallableRef>,
+        constructor: Option<&ConstructorRef>,
     ) -> Result<NativeConversion<RootedPromiseCapability>, RuntimeError> {
         let Some(constructor) = constructor else {
             return Ok(NativeConversion::Value(
@@ -525,7 +525,7 @@ impl Runtime {
                 PromiseCapabilityExecutorData::default(),
             ),
         )?;
-        let completion = self.construct_internal(
+        let completion = self.construct_constructor_internal(
             realm,
             constructor,
             constructor,
@@ -607,30 +607,10 @@ impl Runtime {
         realm: ContextId,
         new_target: Value,
     ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let Value::Object(new_target) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "Promise constructor new.target was not an object",
-            ));
-        };
-        let key = self.intern_property_key("prototype")?;
-        match self.get_property_in_realm(realm, &new_target, &key)? {
-            Completion::Return(Value::Object(prototype)) => Ok(NativeConversion::Value(prototype)),
-            Completion::Return(_) => {
-                let new_target = self.callable_from_value(Value::Object(new_target))?;
-                let fallback_realm = match self.function_realm(realm, &new_target)? {
-                    NativeConversion::Value(realm) => realm,
-                    NativeConversion::Throw(value) => {
-                        return Ok(NativeConversion::Throw(value));
-                    }
-                };
-                let prototype = self.promise_realm_data(fallback_realm)?.prototype;
-                Ok(NativeConversion::Value(ObjectRef::from_borrowed_handle(
-                    self.clone(),
-                    prototype,
-                )?))
-            }
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
+        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
+            let prototype = self.promise_realm_data(fallback_realm)?.prototype;
+            Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
+        })
     }
 
     pub(in crate::runtime) fn call_promise_native(
@@ -1019,7 +999,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         promise: &ObjectRef,
-    ) -> Result<NativeConversion<Option<CallableRef>>, RuntimeError> {
+    ) -> Result<NativeConversion<Option<ConstructorRef>>, RuntimeError> {
         let constructor_key = self.intern_property_key("constructor")?;
         let constructor = match self.get_property_in_realm(realm, promise, &constructor_key)? {
             Completion::Return(value) => value,

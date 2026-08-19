@@ -338,7 +338,7 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let new_target = explicit_new_target.unwrap_or_else(|| target.clone());
-        self.construct_internal(realm, &target, &new_target, &forwarded)
+        self.construct_constructor_internal(realm, &target, &new_target, &forwarded)
     }
 
     fn call_reflect_define_property(

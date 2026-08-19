@@ -57,7 +57,7 @@ impl Runtime {
             flags.try_concat(&JsString::from_static("y"))?
         };
 
-        let splitter = match self.construct_internal(
+        let splitter = match self.construct_constructor_internal(
             realm,
             &constructor,
             &constructor,

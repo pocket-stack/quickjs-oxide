@@ -48,7 +48,7 @@ impl Runtime {
             NativeConversion::Value(value) => value,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        let matcher = match self.construct_internal(
+        let matcher = match self.construct_constructor_internal(
             realm,
             &constructor,
             &constructor,

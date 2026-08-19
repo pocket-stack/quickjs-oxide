@@ -18,9 +18,9 @@ use capability::{Recipe, operand_shape, row_for};
 use dto::InstructionAudience;
 
 pub(in crate::runtime::binary_object) use dto::{
-    AtomOperand, AtomOperandClass, FunctionBinaryOp, FunctionCode, FunctionInstruction, FunctionOp,
-    FunctionPredicateOp, FunctionStackOp, FunctionUnaryOp, OperandShape, OperationDiagnostic,
-    TranslationBlocker,
+    AtomOperand, AtomOperandClass, FunctionApplyKind, FunctionBinaryOp, FunctionCode,
+    FunctionInstruction, FunctionOp, FunctionPredicateOp, FunctionStackOp, FunctionUnaryOp,
+    OperandShape, OperationDiagnostic, TranslationBlocker,
 };
 
 /// Selects which unchanged public cohort may materialize translated operands.
@@ -55,6 +55,7 @@ enum FunctionTranslateErrorKind {
     InstructionCountOverflow,
     InvalidBranchTarget,
     AtomProjectionInvariant,
+    NonCanonicalApplyMagic(u16),
 }
 
 /// Translation failure without structured native PCs, opcode bytes, or image IDs.
@@ -114,6 +115,12 @@ impl FunctionTranslateError {
         }
     }
 
+    fn non_canonical_apply_magic(magic: u16) -> Self {
+        Self {
+            kind: FunctionTranslateErrorKind::NonCanonicalApplyMagic(magic),
+        }
+    }
+
     #[must_use]
     pub(in crate::runtime::binary_object) const fn is_label_target_error(&self) -> bool {
         matches!(
@@ -122,6 +129,14 @@ impl FunctionTranslateError {
                 label_target: true,
                 ..
             }
+        )
+    }
+
+    #[must_use]
+    pub(in crate::runtime::binary_object) const fn is_unadmitted_operand_error(&self) -> bool {
+        matches!(
+            self.kind,
+            FunctionTranslateErrorKind::NonCanonicalApplyMagic(_)
         )
     }
 }
@@ -152,6 +167,10 @@ impl fmt::Display for FunctionTranslateError {
             FunctionTranslateErrorKind::AtomProjectionInvariant => {
                 formatter.write_str("String atom projection contained no spelling")
             }
+            FunctionTranslateErrorKind::NonCanonicalApplyMagic(magic) => write!(
+                formatter,
+                "apply operand must be canonical 0 (call) or 1 (construct), found {magic}"
+            ),
         }
     }
 }
@@ -510,6 +529,15 @@ fn lower_operation<'image>(
         (Recipe::ArrayFrom, NativeOperands::NPop(argument_count)) => {
             ready(FunctionOp::ArrayFrom(*argument_count))
         }
+        (Recipe::Apply, NativeOperands::U16(0)) => {
+            ready(FunctionOp::Apply(FunctionApplyKind::Call))
+        }
+        (Recipe::Apply, NativeOperands::U16(1)) => {
+            ready(FunctionOp::Apply(FunctionApplyKind::Construct))
+        }
+        (Recipe::Apply, NativeOperands::U16(magic)) => {
+            Err(FunctionTranslateError::non_canonical_apply_magic(*magic))
+        }
         (Recipe::Return, NativeOperands::None) => ready(FunctionOp::Return),
         (Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),
         _ => Err(FunctionTranslateError::registry_drift(
@@ -630,6 +658,32 @@ mod tests {
                     | (Recipe::ArrayFrom, FunctionOp::ArrayFrom(65_535))
             ));
             assert!(operations.next().is_none());
+        }
+    }
+
+    #[test]
+    fn apply_lowering_accepts_only_the_two_canonical_magic_values() {
+        for (magic, expected) in [
+            (0, FunctionApplyKind::Call),
+            (1, FunctionApplyKind::Construct),
+        ] {
+            let expansion = lower_operation(Recipe::Apply, &NativeOperands::U16(magic)).unwrap();
+            assert_eq!(expansion.len(), 1);
+            assert!(matches!(
+                expansion.into_operations().next(),
+                Some(PendingOperation::Ready(FunctionOp::Apply(actual))) if actual == expected
+            ));
+        }
+
+        for magic in [2, u16::MAX] {
+            let Err(error) = lower_operation(Recipe::Apply, &NativeOperands::U16(magic)) else {
+                panic!("noncanonical apply magic was admitted");
+            };
+            assert!(error.is_unadmitted_operand_error());
+            assert_eq!(
+                error.to_string(),
+                format!("apply operand must be canonical 0 (call) or 1 (construct), found {magic}")
+            );
         }
     }
 

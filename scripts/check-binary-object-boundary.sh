@@ -21,6 +21,8 @@ scan_root() {
 
     root=$(CDPATH='' cd -- "$candidate_root" && pwd)
     python3 - "$root" <<'PY'
+from __future__ import annotations
+
 from pathlib import Path
 import hashlib
 import re
@@ -127,6 +129,22 @@ def location(relative: str, source: str, offset: int) -> str:
 
 def normalized_code_sha256(code: str) -> str:
     return hashlib.sha256(" ".join(code.split()).encode("utf-8")).hexdigest()
+
+
+def require_ordered_fragments(
+    code_name: str,
+    description: str,
+    code: str,
+    fragments: tuple[str, ...],
+) -> None:
+    normalized = " ".join(code.split())
+    offsets = [normalized.find(fragment) for fragment in fragments]
+    if (
+        any(offset < 0 for offset in offsets)
+        or offsets != sorted(offsets)
+        or any(normalized.count(fragment) != 1 for fragment in fragments)
+    ):
+        fail(code_name, description)
 
 
 def unique_braced_item(
@@ -300,6 +318,7 @@ ordinary_facade_pattern = re.compile(
 ordinary_facades = list(ordinary_facade_pattern.finditer(binary_root_code))
 expected_ordinary_facade_names = {
     "DetachedPrimitive",
+    "OrdinaryLeafApplyKind",
     "OrdinaryLeafBinaryOp",
     "OrdinaryLeafDraft",
     "OrdinaryLeafMetadataDraft",
@@ -422,8 +441,8 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/function_envelope/model.rs": 117,
     "src/runtime/binary_object/function_envelope/prefix.rs": 11,
     "src/runtime/binary_object/function_translate/capability.rs": 10,
-    "src/runtime/binary_object/function_translate/dto.rs": 40,
-    "src/runtime/binary_object/function_translate/mod.rs": 5,
+    "src/runtime/binary_object/function_translate/dto.rs": 41,
+    "src/runtime/binary_object/function_translate/mod.rs": 6,
     "src/runtime/binary_object/graph/arena.rs": 19,
     "src/runtime/binary_object/graph/decode.rs": 28,
     "src/runtime/binary_object/graph/encode.rs": 4,
@@ -432,7 +451,7 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/graph/sab_transport.rs": 38,
     "src/runtime/binary_object/graph/write_state.rs": 21,
     "src/runtime/binary_object/mod.rs": 2,
-    "src/runtime/binary_object/ordinary_leaf.rs": 27,
+    "src/runtime/binary_object/ordinary_leaf.rs": 28,
     "src/runtime/binary_object/pinned_atoms.rs": 9,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
@@ -448,10 +467,10 @@ expected_fixture_visible_counts = {
     "src/runtime/binary_object/graph/decode.rs": 1,
     "src/runtime/binary_object/graph/sab_transport.rs": 29,
     "src/runtime/binary_object/function_translate/capability.rs": 10,
-    "src/runtime/binary_object/function_translate/dto.rs": 40,
-    "src/runtime/binary_object/function_translate/mod.rs": 5,
+    "src/runtime/binary_object/function_translate/dto.rs": 41,
+    "src/runtime/binary_object/function_translate/mod.rs": 6,
     "src/runtime/binary_object/mod.rs": 2,
-    "src/runtime/binary_object/ordinary_leaf.rs": 27,
+    "src/runtime/binary_object/ordinary_leaf.rs": 28,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
     "src/runtime/binary_object/scalar_script.rs": 6,
@@ -1458,9 +1477,10 @@ expected_recipe_variants = """
     PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
     PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
     SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
-    Goto Call Construct CallMethod ArrayFrom Return ReturnUndefined
+    Goto Call Construct CallMethod ArrayFrom Apply Return ReturnUndefined
 """.split()
-invocation_variant_names = ("Call", "Construct", "CallMethod", "ArrayFrom")
+counted_invocation_variant_names = ("Call", "Construct", "CallMethod", "ArrayFrom")
+invocation_variant_names = (*counted_invocation_variant_names, "Apply")
 recipe_invocation_shapes = {
     name: (
         len(re.findall(rf"\b{name}[ \t\n]*,", recipe_code)),
@@ -1473,7 +1493,7 @@ if enum_variant_names(recipe_code) != expected_recipe_variants or any(
 ):
     fail(
         "function-translate-recipe-shape",
-        "Recipe must retain the exact reviewed inventory with unit Call, Construct, CallMethod, and ArrayFrom recipes; "
+        "Recipe must retain the exact reviewed inventory with unit Call, Construct, CallMethod, ArrayFrom, and Apply recipes; "
         f"found {enum_variant_names(recipe_code)} with invocation shapes {recipe_invocation_shapes}",
     )
 
@@ -1489,7 +1509,7 @@ expected_function_op_variants = """
     Blocked OutsideTarget PushI32 PushConstant PushAtom PushUndefined PushNull
     PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
     PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
-    IfTrue Goto Call Construct CallMethod ArrayFrom Return ReturnUndefined
+    IfTrue Goto Call Construct CallMethod ArrayFrom Apply Return ReturnUndefined
 """.split()
 function_invocation_payloads = {
     name: [
@@ -1502,15 +1522,31 @@ function_invocation_payloads = {
 }
 if (
     enum_variant_names(dto_function_op_code) != expected_function_op_variants
-    or any(
-        function_invocation_payloads[name] != ["u16"]
-        for name in invocation_variant_names
-    )
+    or any(function_invocation_payloads[name] != ["u16"]
+           for name in counted_invocation_variant_names)
+    or function_invocation_payloads["Apply"] != ["FunctionApplyKind"]
 ):
     fail(
         "function-translate-dto-shape",
-        "FunctionOp must retain the exact reviewed inventory with u16 invocation payloads; "
+        "FunctionOp must retain the exact reviewed inventory with counted u16 payloads and a typed Apply kind; "
         f"found {enum_variant_names(dto_function_op_code)} with invocation payloads {function_invocation_payloads}",
+    )
+
+dto_apply_kind_code, _, _ = unique_braced_item(
+    dto_production_code,
+    re.compile(
+        r"\bpub[ \t\n]*\([ \t\n]*in[ \t\n]+crate[ \t\n]*::[ \t\n]*runtime"
+        r"[ \t\n]*::[ \t\n]*binary_object[ \t\n]*\)[ \t\n]+enum"
+        r"[ \t\n]+FunctionApplyKind[ \t\n]*\{"
+    ),
+    "function-translate-apply-kind",
+    "typed sanitized apply kind",
+)
+if enum_variant_names(dto_apply_kind_code) != ["Call", "Construct"]:
+    fail(
+        "function-translate-apply-kind",
+        "FunctionApplyKind must expose only canonical call and construct semantics; "
+        f"found {enum_variant_names(dto_apply_kind_code)}",
     )
 
 pinned_opcode_relative = "src/runtime/binary_object/pinned_opcodes.rs"
@@ -1574,7 +1610,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (120, 1, 94, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (119, 1, 95, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1583,11 +1619,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 123, 124)
+    or derived_registry_counts != (30, 124, 125)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact final stage-three-A physical cohorts; "
+        "the centralized registry must preserve the exact final stage-three-B physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1645,6 +1681,7 @@ expect_admitted("OrdinaryOnly", "Recipe::Call", (34, 236, 237, 238, 239))
 expect_admitted("OrdinaryOnly", "Recipe::Construct", (33,))
 expect_admitted("OrdinaryOnly", "Recipe::CallMethod", (36,))
 expect_admitted("OrdinaryOnly", "Recipe::ArrayFrom", (38,))
+expect_admitted("OrdinaryOnly", "Recipe::Apply", (39,))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
 expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
 for raw, operation in (
@@ -1680,7 +1717,7 @@ expected_stage_boundaries = {
     36: (("call_method", 3, 2, 1, "NPop"), "OrdinaryOnly", "Recipe::CallMethod"),
     37: (("tail_call_method", 3, 2, 0, "NPop"), "Blocked", "Invocation"),
     38: (("array_from", 3, 0, 1, "NPop"), "OrdinaryOnly", "Recipe::ArrayFrom"),
-    39: (("apply", 3, 3, 1, "U16"), "Blocked", "Invocation"),
+    39: (("apply", 3, 3, 1, "U16"), "OrdinaryOnly", "Recipe::Apply"),
     41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
     236: (("call0", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     237: (("call1", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
@@ -1750,25 +1787,37 @@ if found_stage_three_a_invocation_rows != stage_three_a_invocation_rows:
         f"found {found_stage_three_a_invocation_rows}",
     )
 
-stage_three_a_blocked_rows = (
+stage_three_b_apply_rows = ((39, "U16", "Recipe::Apply"),)
+found_stage_three_b_apply_rows = tuple(
+    (raw, registry_rows[raw][1], registry_rows[raw][3])
+    for raw, _, _ in stage_three_b_apply_rows
+    if registry_rows[raw][2] == "OrdinaryOnly"
+)
+if found_stage_three_b_apply_rows != stage_three_b_apply_rows:
+    fail(
+        "function-translate-stage-three-b-set",
+        "stage three B must admit exactly raw 39 apply with its U16 operand and typed Apply recipe; "
+        f"found {found_stage_three_b_apply_rows}",
+    )
+
+stage_three_b_blocked_rows = (
     (35, "NPop", "Invocation"),
     (37, "NPop", "Invocation"),
-    (39, "U16", "Invocation"),
 )
-found_stage_three_a_blocked_rows = tuple(
+found_stage_three_b_blocked_rows = tuple(
     (raw, registry_rows[raw][1], registry_rows[raw][3])
-    for raw, _, _ in stage_three_a_blocked_rows
+    for raw, _, _ in stage_three_b_blocked_rows
     if registry_rows[raw][2] == "Blocked"
 )
-if found_stage_three_a_blocked_rows != stage_three_a_blocked_rows:
+if found_stage_three_b_blocked_rows != stage_three_b_blocked_rows:
     fail(
-        "function-translate-stage-three-a-frontier",
-        "tail-call raws 35 and 37 plus apply raw 39 must remain blocked in Invocation; "
-        f"found {found_stage_three_a_blocked_rows}",
+        "function-translate-stage-three-b-frontier",
+        "tail-call raws 35 and 37 must remain blocked in Invocation after apply admission; "
+        f"found {found_stage_three_b_blocked_rows}",
     )
 
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 3 Completion 1
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Invocation 2 Completion 1
     Exception 2 EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
     Operator 4 Specialized 4
@@ -1916,6 +1965,25 @@ translate_lower_item, _, _ = unique_braced_item(
     "function-translate-semantic-dispatch",
     "recipe-based semantic lowering function",
 )
+translate_error_kind_code, _, _ = unique_braced_item(
+    function_translate_production_code,
+    re.compile(r"\benum[ \t\n]+FunctionTranslateErrorKind[ \t\n]*\{"),
+    "function-translate-apply-admission",
+    "translation error kind",
+)
+if enum_variant_names(translate_error_kind_code) != [
+    "NativePlan",
+    "RegistryDrift",
+    "AllocationFailed",
+    "InstructionCountOverflow",
+    "InvalidBranchTarget",
+    "AtomProjectionInvariant",
+    "NonCanonicalApplyMagic",
+]:
+    fail(
+        "function-translate-apply-admission",
+        "translation errors must retain the dedicated noncanonical-apply operand class",
+    )
 translate_target_item, _, _ = unique_braced_item(
     function_translate_production_code,
     re.compile(r"\bfn[ \t\n]+operation_for_target\b[^{};]*\{"),
@@ -2045,18 +2113,43 @@ Recipe::Call @ NativeOperands::NPop(argument_count) | NativeOperands::NPopX(argu
 Recipe::Construct @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::Construct(*argument_count)) }
 Recipe::CallMethod @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::CallMethod(*argument_count)) }
 Recipe::ArrayFrom @ NativeOperands::NPop(argument_count) @ { ready(FunctionOp::ArrayFrom(*argument_count)) }
+Recipe::Apply @ NativeOperands::U16(0) @ { ready(FunctionOp::Apply(FunctionApplyKind::Call)) }
+Recipe::Apply @ NativeOperands::U16(1) @ { ready(FunctionOp::Apply(FunctionApplyKind::Construct)) }
+Recipe::Apply @ NativeOperands::U16(magic) @ { Err(FunctionTranslateError::non_canonical_apply_magic(*magic)) }
 Recipe::Return @ NativeOperands::None @ ready(FunctionOp::Return)
 Recipe::ReturnUndefined @ NativeOperands::None @ ready(FunctionOp::ReturnUndefined)
 """.strip().splitlines()
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 46 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 49 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain all 46 reviewed Recipe/operand arms and each exact normalized RHS payload expression; "
+        "lower_operation must retain all 49 reviewed Recipe/operand arms and each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
+apply_magic_error_contracts = (
+    (
+        "non_canonical_apply_magic",
+        "fn non_canonical_apply_magic(magic: u16) -> Self { Self { kind: FunctionTranslateErrorKind::NonCanonicalApplyMagic(magic), } }",
+    ),
+    (
+        "is_unadmitted_operand_error",
+        "fn is_unadmitted_operand_error(&self) -> bool { matches!( self.kind, FunctionTranslateErrorKind::NonCanonicalApplyMagic(_) ) }",
+    ),
+)
+for function_name, expected in apply_magic_error_contracts:
+    item, _, _ = unique_braced_item(
+        function_translate_code,
+        re.compile(rf"\bfn[ \t\n]+{function_name}\b[^{{}};]*\{{"),
+        "function-translate-apply-admission",
+        function_name,
+    )
+    if " ".join(item.split()) != expected:
+        fail(
+            "function-translate-apply-admission",
+            f"{function_name} must retain the exact noncanonical-Apply error classification",
+        )
 stack_expansion_pattern = re.compile(
     r"\(Recipe::Stack\(capability::StackRecipe::(\w+)\), NativeOperands::None\)"
     r" => \{ Ok\(PendingExpansion::(two|three|four)\((.*?)\)\) \}"
@@ -2235,7 +2328,7 @@ expected_ordinary_visible_items = [
         struct:OrdinaryLeafMetadataDraft fn:argument_count fn:defined_argument_count
         fn:local_count fn:max_stack fn:is_strict fn:has_simple_parameter_list
         fn:has_prototype fn:allows_new_target fn:allows_arguments fn:strip_variable_debug
-        enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafStackOp
+        enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafApplyKind enum:OrdinaryLeafStackOp
         enum:OrdinaryLeafUnaryOp enum:OrdinaryLeafBinaryOp enum:OrdinaryLeafPredicateOp
         struct:OrdinaryLeafDraft fn:metadata fn:constants fn:code fn:into_parts
         enum:OrdinaryLeafReadError
@@ -2265,7 +2358,7 @@ expected_ordinary_top_level_items = [
     tuple(entry.split(":", 1))
     for entry in """
     struct:RootFunctionConstantSelector struct:OrdinaryLeafMetadataDraft
-    enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafStackOp
+    enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafApplyKind enum:OrdinaryLeafStackOp
     enum:OrdinaryLeafUnaryOp enum:OrdinaryLeafBinaryOp enum:OrdinaryLeafPredicateOp
     struct:OrdinaryLeafDraft enum:OrdinaryLeafReadError struct:AdmissionLimits
     """.split()
@@ -2287,7 +2380,7 @@ expected_ordinary_leaf_op_variants = """
     PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
     Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
     SetArgument Binary Predicate IfFalse IfTrue Goto Call Construct CallMethod
-    ArrayFrom Return ReturnUndefined
+    ArrayFrom Apply Return ReturnUndefined
 """.split()
 ordinary_invocation_payloads = {
     name: [
@@ -2300,15 +2393,30 @@ ordinary_invocation_payloads = {
 }
 if (
     enum_variant_names(ordinary_leaf_op_code) != expected_ordinary_leaf_op_variants
-    or any(
-        ordinary_invocation_payloads[name] != ["u16"]
-        for name in invocation_variant_names
-    )
+    or any(ordinary_invocation_payloads[name] != ["u16"]
+           for name in counted_invocation_variant_names)
+    or ordinary_invocation_payloads["Apply"] != ["OrdinaryLeafApplyKind"]
 ):
     fail(
         "ordinary-leaf-operation-shape",
-        "OrdinaryLeafOp must retain the exact reviewed inventory with u16 invocation payloads; "
+        "OrdinaryLeafOp must retain the exact reviewed inventory with counted u16 payloads and a typed Apply kind; "
         f"found {enum_variant_names(ordinary_leaf_op_code)} with invocation payloads {ordinary_invocation_payloads}",
+    )
+
+ordinary_apply_kind_code, _, _ = unique_braced_item(
+    ordinary_leaf_production_code,
+    re.compile(
+        ordinary_visibility
+        + r"[ \t\n]+enum[ \t\n]+OrdinaryLeafApplyKind[ \t\n]*\{"
+    ),
+    "ordinary-leaf-apply-kind",
+    "owned ordinary apply kind",
+)
+if enum_variant_names(ordinary_apply_kind_code) != ["Call", "Construct"]:
+    fail(
+        "ordinary-leaf-apply-kind",
+        "OrdinaryLeafApplyKind must expose only call and construct semantics; "
+        f"found {enum_variant_names(ordinary_apply_kind_code)}",
     )
 
 ordinary_top_level_functions = [
@@ -2374,6 +2482,7 @@ FunctionOp::Call(argument_count) @ Ok(OrdinaryLeafOp::Call(*argument_count))
 FunctionOp::Construct(argument_count) @ Ok(OrdinaryLeafOp::Construct(*argument_count))
 FunctionOp::CallMethod(argument_count) @ Ok(OrdinaryLeafOp::CallMethod(*argument_count))
 FunctionOp::ArrayFrom(element_count) @ Ok(OrdinaryLeafOp::ArrayFrom(*element_count))
+FunctionOp::Apply(kind) @ Ok(OrdinaryLeafOp::Apply(match kind { FunctionApplyKind::Call => OrdinaryLeafApplyKind::Call, FunctionApplyKind::Construct => OrdinaryLeafApplyKind::Construct, }))
 FunctionOp::Return @ Ok(OrdinaryLeafOp::Return)
 FunctionOp::ReturnUndefined @ Ok(OrdinaryLeafOp::ReturnUndefined)
 """.strip().splitlines()
@@ -2382,7 +2491,7 @@ found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionO
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 28 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 29 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
@@ -2402,6 +2511,37 @@ ordinary_unsupported_item, unsupported_start, unsupported_end = unique_braced_it
     "function-translate-diagnostic-boundary",
     "ordinary rejection-text formatter",
 )
+ordinary_translate_error_classifier, _, _ = unique_braced_item(
+    ordinary_leaf_production_code,
+    re.compile(r"\bfn[ \t\n]+classify_translation_error\b[^{};]*\{"),
+    "ordinary-leaf-apply-admission",
+    "ordinary translation-error classifier",
+)
+normalized_translate_error_classifier = " ".join(
+    ordinary_translate_error_classifier.split()
+)
+apply_admission_fragments = (
+    "if error.is_label_target_error() { return OrdinaryLeafReadError::Unadmitted(",
+    "if error.is_unadmitted_operand_error() { return OrdinaryLeafReadError::Unadmitted(error.to_string()); }",
+    "let message = error.to_string();",
+    "OrdinaryLeafReadError::Internal(message)",
+)
+apply_admission_offsets = [
+    normalized_translate_error_classifier.find(fragment)
+    for fragment in apply_admission_fragments
+]
+if (
+    any(offset < 0 for offset in apply_admission_offsets)
+    or apply_admission_offsets != sorted(apply_admission_offsets)
+    or any(
+        normalized_translate_error_classifier.count(fragment) != 1
+        for fragment in apply_admission_fragments
+    )
+):
+    fail(
+        "ordinary-leaf-apply-admission",
+        "noncanonical apply operands must become Unadmitted before draft publication while internal translation failures remain Internal",
+    )
 if ordinary_unsupported_item and (
     len(re.findall(r"\bdiagnostic[ \t\n]*\.[ \t\n]*mnemonic[ \t\n]*\(", ordinary_unsupported_item)) != 1
     or len(re.findall(r"\bdiagnostic[ \t\n]*\.[ \t\n]*operand_shape[ \t\n]*\(", ordinary_unsupported_item)) != 1
@@ -3282,6 +3422,7 @@ if consumer_exists:
         ]
         expected_consumer_facade_names = expected_scalar_facade_names | {
             "DetachedPrimitive",
+            "OrdinaryLeafApplyKind",
             "OrdinaryLeafBinaryOp",
             "OrdinaryLeafOp",
             "OrdinaryLeafPredicateOp",
@@ -3731,7 +3872,7 @@ if consumer_exists:
         PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
         GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto Call
-        Construct CallMethod ArrayFrom Return ReturnUndefined
+        Construct CallMethod ArrayFrom Apply Return ReturnUndefined
     """.split()
     found_publisher_arms = rustfmt_match_arms(
         ordinary_instruction_lowering, "OrdinaryLeafOp::"
@@ -3781,6 +3922,7 @@ OrdinaryLeafOp::Call(argument_count) @ Instruction::Call(argument_count)
 OrdinaryLeafOp::Construct(argument_count) @ Instruction::Construct(argument_count)
 OrdinaryLeafOp::CallMethod(argument_count) @ Instruction::CallMethod(argument_count)
 OrdinaryLeafOp::ArrayFrom(element_count) @ Instruction::ArrayFrom(element_count)
+OrdinaryLeafOp::Apply(kind) @ Instruction::Apply(match kind { OrdinaryLeafApplyKind::Call => ApplyKind::Call, OrdinaryLeafApplyKind::Construct => ApplyKind::Construct, })
 OrdinaryLeafOp::Return @ Instruction::Return
 OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
 """.strip().splitlines()
@@ -3815,7 +3957,7 @@ OrdinaryLeafOp::ReturnUndefined @ Instruction::ReturnUndefined
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 28
+        len(found_publisher_arms) != 29
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -4183,6 +4325,449 @@ if " ".join(return_undefined_arm.split()).count(
         "ReturnUndefined must complete directly with undefined without reading the operand stack",
     )
 
+# The self-test fixture exercises codec isolation with deliberately tiny engine
+# stubs. Full-source mutation canaries and the real tree carry no marker and
+# therefore must satisfy every Stage3B runtime invariant below.
+if not (root / ".boundary-self-test").is_file():
+    stage3b_sources = {
+        "src/runtime.rs": runtime_code,
+        "src/vm.rs": vm_code,
+        "src/bytecode.rs": bytecode_code,
+        "src/runtime/context.rs": context_code,
+    }
+    stage3b_items: dict[tuple[str, str], str] = {}
+
+    def stage3b_code(relative: str) -> str:
+        if relative not in stage3b_sources:
+            stage3b_sources[relative] = rust_code_only(read_source(relative))
+        return stage3b_sources[relative]
+
+    def stage3b_function(relative: str, name: str, diagnostic: str) -> str:
+        key = (relative, name)
+        if key not in stage3b_items:
+            stage3b_items[key] = unique_braced_item(
+                stage3b_code(relative),
+                re.compile(rf"\bfn[ \t\n]+{re.escape(name)}\b[^{{}};]*\{{"),
+                diagnostic,
+                f"{relative}::{name}",
+            )[0]
+        return stage3b_items[key]
+
+    if len(re.findall(
+        r"\bstruct[ \t\n]+ConstructorRef[ \t\n]*\([ \t\n]*ObjectRef[ \t\n]*\)[ \t\n]*;",
+        runtime_code,
+    )) != 1:
+        fail("stage3b-constructor-capability", "ConstructorRef must remain the private [[Construct]] capability")
+
+    construct_new_target_code = unique_braced_item(
+        runtime_code,
+        re.compile(r"\benum[ \t\n]+ConstructNewTarget[ \t\n]*\{"),
+        "stage3b-new-target-capability",
+        "validated-or-raw newTarget carrier",
+    )[0]
+    construct_new_target_payloads = {
+        name: [" ".join(value.split()) for value in re.findall(
+            rf"\b{name}[ \t\n]*\(([^()]*)\)[ \t\n]*,", construct_new_target_code
+        )]
+        for name in ("Validated", "Raw")
+    }
+    if (
+        enum_variant_names(construct_new_target_code) != ["Validated", "Raw"]
+        or construct_new_target_payloads != {"Validated": ["ConstructorRef"], "Raw": ["Value"]}
+    ):
+        fail(
+            "stage3b-new-target-capability",
+            f"ConstructNewTarget must remain Validated(ConstructorRef) or Raw(Value); found {construct_new_target_payloads}",
+        )
+
+    constructor_from_value = stage3b_function(
+        "src/runtime.rs", "constructor_from_value", "stage3b-constructor-capability"
+    )
+    normalized_constructor_from_value = " ".join(constructor_from_value.split())
+    if (
+        "Result<NativeConversion<ConstructorRef>, RuntimeError>" not in normalized_constructor_from_value
+        or normalized_constructor_from_value.count("object_data.is_constructor") != 1
+        or normalized_constructor_from_value.count("ConstructorRef::from_validated_object(object)") != 1
+        or re.search(r"\b(?:CallableRef|is_callable|as_callable|callable_from_value)\b", constructor_from_value)
+    ):
+        fail(
+            "stage3b-constructor-capability",
+            "constructor conversion must validate only [[Construct]], without CallableRef narrowing",
+        )
+
+    vm_apply_arm = unique_braced_item(
+        vm_code,
+        re.compile(
+            r"\bInstruction[ \t\n]*::[ \t\n]*Apply[ \t\n]*\([ \t\n]*kind"
+            r"[ \t\n]*\)[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "stage3b-apply-stack",
+        "VM Apply dispatch arm",
+    )[0]
+    require_ordered_fragments(
+        "stage3b-apply-stack",
+        "Apply must pop list, receiver-or-newTarget, and function before one typed host call",
+        vm_apply_arm,
+        (
+            "let argument_array = self.pop()?;",
+            "let this_or_new_target = self.pop()?;",
+            "let function = self.pop()?;",
+            "host.apply(function, this_or_new_target, argument_array, *kind)?",
+        ),
+    )
+    if bytecode_code.count("Self::Apply(_) | Self::ApplySuper => (3, 1),") != 1:
+        fail("stage3b-apply-stack", "Apply must retain its exact three-pop/one-push verifier effect")
+
+    # Each row pins a compact, semantic ordering contract rather than a brittle
+    # whole-function digest. Full-source rewrite canaries exercise the key rows.
+    stage3b_ordered_contracts = (
+        ("stage3b-validated-construction", "src/runtime.rs", "construct_internal", (
+            "constructor: &CallableRef, new_target: &CallableRef,",
+            "if !constructor.belongs_to(self) {",
+            "if !self.is_constructor(constructor.as_object())? {",
+            "if !new_target.belongs_to(self) {",
+            "if !self.is_constructor(new_target.as_object())? {",
+            "let constructor = ConstructorRef::from_validated_callable(constructor);",
+            "let new_target = ConstructorRef::from_validated_callable(new_target);",
+            "self.construct_constructor_internal(caller_realm, &constructor, &new_target, arguments)",
+        )),
+        ("stage3b-raw-construction", "src/runtime.rs", "construct_internal_with_new_target", (
+            "constructor: &ConstructorRef, new_target: ConstructNewTarget,",
+            "match &new_target { ConstructNewTarget::Validated(new_target) =>",
+            "ConstructNewTarget::Raw(new_target) => { self.validate_value_domain(new_target,",
+            "if !self.is_constructor(constructor.as_object())? {",
+            "if self.is_proxy_object(constructor.as_object())? { return self.construct_proxy(caller_realm, &constructor, new_target, &arguments); }",
+            "let callable = self.as_callable(constructor.as_object())?",
+            "CallableExecution::Bound",
+            "new_target.retarget_bound_identity(&constructor, &target);",
+            "constructor = ConstructorRef::from_validated_callable(&target);",
+            "CallableExecution::Native",
+            "let execution_realm = if target.uses_calling_realm() { caller_realm } else { realm };",
+            "return self.construct_native_function( &callable, execution_realm, target, min_readable_args, new_target.value(), &arguments, );",
+            "CallableExecution::Bytecode",
+            "ConstructorKind::Derived",
+            "Value::Undefined, new_target.value(), &arguments,",
+            "let raw_new_target = new_target.value();",
+            "self.create_from_constructor_value(caller_realm, &raw_new_target)?",
+            "this_value.clone(), raw_new_target, &arguments,",
+            "CallableExecution::Proxy",
+        )),
+        ("stage3b-raw-construction", "src/runtime.rs", "construct_value_with_raw_new_target_internal", (
+            "let constructor = match self.constructor_from_value(caller_realm, function)?",
+            "self.construct_constructor_with_raw_new_target_internal( caller_realm, &constructor, new_target, arguments, )",
+        )),
+        ("stage3b-raw-construction", "src/runtime.rs", "construct_callable_with_raw_new_target_internal", (
+            "constructor_from_value(caller_realm, Value::Object(constructor.as_object().clone()))?",
+            "self.construct_constructor_with_raw_new_target_internal( caller_realm, &constructor, new_target, arguments, )",
+        )),
+        ("stage3b-raw-construction", "src/runtime.rs", "construct_constructor_with_raw_new_target_internal", (
+            "self.construct_internal_with_new_target( caller_realm, constructor, ConstructNewTarget::Raw(new_target), arguments, )",
+        )),
+        ("stage3b-validated-construction", "src/runtime.rs", "construct_constructor_internal", (
+            "self.construct_internal_with_new_target( caller_realm, constructor, ConstructNewTarget::Validated(new_target.clone()), arguments, )",
+        )),
+        ("stage3b-apply-order", "src/runtime/vm_host.rs", "apply", (
+            "let callable = self .runtime .callable_from_value(function.clone())",
+            "if matches!(argument_array, Value::Undefined | Value::Null) {",
+            ".call_internal(self.current_realm, &callable, this_or_new_target, &[])",
+            "let arguments = match self.build_argument_list(argument_array)? {",
+            "match kind {",
+            "ApplyKind::Call => self .runtime .call_internal( self.current_realm, &callable, this_or_new_target, &arguments, )",
+            "ApplyKind::Construct => self .runtime .construct_callable_with_raw_new_target_internal( self.current_realm, &callable, this_or_new_target, &arguments, )",
+        )),
+        ("stage3b-function-realm", "src/runtime/internal_methods.rs", "function_realm_from_value", (
+            "self.0.state.borrow().heap.context(caller_realm)?;",
+            "let Value::Object(object) = value else { return Ok(NativeConversion::Value(caller_realm)); };",
+            "if !object.belongs_to(self) {",
+            "self.function_realm_object_impl(Some(caller_realm), object.clone(), true)",
+        )),
+        ("stage3b-function-realm", "src/runtime/internal_methods.rs", "function_realm_object_impl", (
+            "ObjectPayload::NativeFunction { data, .. } if data.realm.is_some() =>",
+            "if allow_non_function && data.target.uses_calling_realm() {",
+            "ObjectPayload::BytecodeFunction",
+            "ObjectPayload::BoundFunction { target, .. } =>",
+            "ObjectPayload::Proxy(data) =>",
+            "if is_revoked {",
+            "if allow_non_function {",
+        )),
+        ("stage3b-constructor-prototype", "src/runtime.rs", "constructor_prototype_source", (
+            "if matches!(new_target, Value::Undefined) {",
+            "let prototype = match self.get_value_property_in_realm( caller_realm, new_target.clone(), &prototype_key, )? {",
+            "if let Value::Object(prototype) = prototype {",
+            "self.function_realm_from_value(caller_realm, new_target) .map(|result| match result {",
+            "NativeConversion::Value(realm) => { NativeConversion::Value(ConstructorPrototypeSource::Realm(realm)) }",
+        )),
+        ("stage3b-constructor-prototype", "src/runtime.rs", "prototype_from_constructor_value", (
+            "match self.constructor_prototype_source(caller_realm, new_target)? {",
+            "ConstructorPrototypeSource::Explicit(prototype)",
+            "ConstructorPrototypeSource::Realm(realm)",
+            "fallback(realm).map(NativeConversion::Value)",
+            "NativeConversion::Throw(value) => Ok(NativeConversion::Throw(value))",
+        )),
+        ("stage3b-proxy-call-order", "src/runtime/internal_methods.rs", "call_proxy", (
+            "let data = self .proxy_snapshot_if_any(&current)?",
+            "if data.is_revoked {",
+            "let rooted = self.root_proxy_snapshot(&current, data)?;",
+            "let method = match self.internal_get(",
+            "if !rooted.data.is_callable {",
+            "if matches!(method, Value::Undefined | Value::Null) {",
+            "if self.is_proxy_object(&rooted.target)? {",
+            "current = rooted.target.clone();",
+            "depth = depth.saturating_add(1);",
+            "continue;",
+            "return self.call_value_internal( realm, Value::Object(rooted.target.clone()), this_value, arguments, );",
+            "let argument_array = self.new_array_from_values(realm, arguments.to_vec())?;",
+            "let method = match self.direct_call_target_from_value(method) {",
+            "&[ Value::Object(rooted.target.clone()), this_value, Value::Object(argument_array), ],",
+        )),
+        ("stage3b-proxy-construct-order", "src/runtime/internal_methods.rs", "construct_proxy", (
+            "proxy: &ConstructorRef, new_target: ConstructNewTarget,",
+            "let data = self.proxy_snapshot_if_any(current.as_object())?",
+            "if data.is_revoked {",
+            "let rooted = self.root_proxy_snapshot(current.as_object(), data)?;",
+            "let method = match self.internal_get(",
+            "let target = match self.constructor_from_value(realm, Value::Object(rooted.target.clone()))?",
+            "if matches!(method, Value::Undefined | Value::Null) {",
+            "if self.is_proxy_object(target.as_object())? {",
+            "current = target;",
+            "depth = depth.saturating_add(1);",
+            "continue;",
+            ".construct_internal_with_new_target(realm, &target, new_target, arguments);",
+            "let argument_array = self.new_array_from_values(realm, arguments.to_vec())?;",
+            "let method = match self.direct_call_target_from_value(method) {",
+            "let result = self.call_proxy_trap(",
+            "&[ Value::Object(rooted.target.clone()), Value::Object(argument_array), new_target.value(), ],",
+            "return match result {",
+        )),
+        ("stage3b-public-construction", "src/runtime/context.rs", "construct_with_new_target", (
+            "constructor: &CallableRef",
+            "new_target: &CallableRef",
+            ".construct_internal(self.realm, constructor, new_target, arguments)",
+        )),
+        ("stage3b-public-construction", "src/runtime/intrinsics/reflect.rs", "call_reflect_construct", (
+            "let explicit_new_target = if arguments.actual_arg_count > 2 {",
+            "self.constructor_from_value(realm, value)?",
+            "let forwarded = match self.build_array_like_argument_list(",
+            "let target = match self.constructor_from_value(realm, target_value)?",
+            "let new_target = explicit_new_target.unwrap_or_else(|| target.clone());",
+            "self.construct_constructor_internal(realm, &target, &new_target, &forwarded)",
+        )),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array_buffer/typed_array/species.rs", "typed_array_create_from_constructor_arguments", (
+            "if !self.is_constructor(&object)? {",
+            "let constructor = match self.constructor_from_value(realm, Value::Object(object))?",
+            "let target = match self.construct_constructor_internal( realm, &constructor, &constructor, arguments, )? {",
+        )),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array.rs", "array_from_result", (
+            "let constructor = match self.constructor_from_value(realm, constructor)?",
+            "let arguments = length.into_iter().collect::<Vec<_>>();",
+            "return self.construct_constructor_internal( realm, &constructor, &constructor, &arguments, );",
+        )),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array.rs", "call_array_of", (
+            "let constructor = match self.constructor_from_value(realm, this_value)?",
+            "match self.construct_constructor_internal( realm, &constructor, &constructor, &[Self::array_length_value(length)], )? {",
+        )),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array.rs", "array_species_create", (
+            "let constructor = match self.constructor_from_value(realm, constructor)?",
+            "self.construct_constructor_internal( realm, &constructor, &constructor, &[Value::number(length as f64)], )",
+        )),
+    )
+    for diagnostic, relative, function_name, fragments in stage3b_ordered_contracts:
+        require_ordered_fragments(
+            diagnostic,
+            f"{relative}::{function_name} must retain its reviewed Stage3B branch order",
+            stage3b_function(relative, function_name, diagnostic),
+            fragments,
+        )
+
+    construct_dispatch = stage3b_function(
+        "src/runtime.rs", "construct_internal_with_new_target", "stage3b-raw-construction"
+    )
+    normalized_construct_dispatch = " ".join(construct_dispatch.split())
+    if (
+        normalized_construct_dispatch.count("new_target.value()") != 3
+        or normalized_construct_dispatch.count("let raw_new_target") != 1
+    ):
+        fail("stage3b-raw-construction", "native, derived, and base paths must preserve one raw newTarget flow")
+
+    apply_host = stage3b_function("src/runtime/vm_host.rs", "apply", "stage3b-apply-order")
+    if " ".join(apply_host.split()).count("build_argument_list(") != 1:
+        fail("stage3b-apply-order", "Apply must build a nonnull argument list exactly once")
+
+    realm_object_impl = stage3b_function(
+        "src/runtime/internal_methods.rs", "function_realm_object_impl", "stage3b-function-realm"
+    )
+    if " ".join(realm_object_impl.split()).count(
+        "object = ObjectRef::from_borrowed_handle(self.clone(), target)?;"
+    ) != 2:
+        fail("stage3b-function-realm", "bound and Proxy realm traversal must each advance to their target")
+
+    prototype_helper = stage3b_function(
+        "src/runtime.rs", "prototype_from_constructor_value", "stage3b-constructor-prototype"
+    )
+    if re.search(r"\b(?:CallableRef|callable_from_value|as_callable)\b", prototype_helper):
+        fail("stage3b-constructor-prototype", "prototype fallback must consume raw newTarget")
+
+    native_borrowed_prototype_consumers = (
+        ("src/runtime.rs", "create_from_constructor_value"),
+        ("src/runtime/intrinsics/array.rs", "create_array_from_constructor"),
+    )
+    native_owned_prototype_consumers = (
+        ("src/runtime.rs", "call_function_constructor"),
+        ("src/runtime.rs", "call_primitive_constructor"),
+        ("src/runtime/intrinsics/array_buffer.rs", "array_buffer_prototype_from_new_target"),
+        ("src/runtime/intrinsics/error.rs", "call_error_constructor"),
+        ("src/runtime/intrinsics/iterator.rs", "iterator_prototype_from_new_target"),
+        ("src/runtime/intrinsics/map.rs", "map_prototype_from_new_target"),
+        ("src/runtime/intrinsics/promise.rs", "promise_prototype_from_new_target"),
+        ("src/runtime/intrinsics/set.rs", "set_prototype_from_new_target"),
+        ("src/runtime/intrinsics/shared_array_buffer.rs", "shared_array_buffer_prototype_from_new_target"),
+        ("src/runtime/intrinsics/weak_collection.rs", "weak_collection_prototype_from_new_target"),
+        ("src/runtime/intrinsics/weak_ref.rs", "weak_intrinsic_prototype_from_new_target"),
+        ("src/runtime/intrinsics/array_buffer/data_view.rs", "data_view_prototype_from_new_target"),
+        ("src/runtime/intrinsics/array_buffer/typed_array.rs", "typed_array_prototype_from_new_target"),
+        ("src/runtime/intrinsics/date/constructor.rs", "date_prototype_from_new_target"),
+        ("src/runtime/intrinsics/regexp/constructor.rs", "allocate_regexp_from_new_target"),
+    )
+    native_prototype_consumers = (
+        *((relative, function_name, "new_target") for relative, function_name in native_borrowed_prototype_consumers),
+        *((relative, function_name, "&new_target") for relative, function_name in native_owned_prototype_consumers),
+    )
+    for relative, function_name, new_target_argument in native_prototype_consumers:
+        item = stage3b_function(relative, function_name, "stage3b-native-prototype-family")
+        if (
+            " ".join(item.split()).count("prototype_from_constructor_value(") != 1
+            or " ".join(item.split()).count(f", {new_target_argument},") != 1
+            or re.search(r"\b(?:CallableRef|callable_from_value)\b", item)
+        ):
+            fail("stage3b-native-prototype-family", f"{relative}::{function_name} bypasses the raw helper payload")
+
+    constructor_only_items = (
+        ("stage3b-proxy-construct-order", "src/runtime/internal_methods.rs", "construct_proxy"),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array_buffer/typed_array/species.rs", "typed_array_create_from_constructor_arguments"),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array.rs", "array_from_result"),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array.rs", "call_array_of"),
+        ("stage3b-species-constructor", "src/runtime/intrinsics/array.rs", "array_species_create"),
+    )
+    for diagnostic, relative, function_name in constructor_only_items:
+        if re.search(
+            r"\b(?:CallableRef|callable_from_value|as_callable)\b",
+            stage3b_function(relative, function_name, diagnostic),
+        ):
+            fail(diagnostic, f"{relative}::{function_name} must preserve constructor-only capability")
+
+    context_construct = stage3b_function(
+        "src/runtime/context.rs", "construct_with_new_target", "stage3b-public-construction"
+    )
+    if "raw_new_target" in " ".join(context_construct.split()):
+        fail("stage3b-public-construction", "Context must not expose the raw VM construction seam")
+
+    species_functions = (
+        ("src/runtime/intrinsics/array_buffer.rs", "array_buffer_species_constructor", True),
+        ("src/runtime/intrinsics/shared_array_buffer.rs", "shared_array_buffer_species_constructor", True),
+        ("src/runtime/intrinsics/promise.rs", "promise_species_constructor", True),
+        ("src/runtime/intrinsics/regexp/constructor.rs", "regexp_species_constructor", False),
+    )
+    for relative, function_name, wraps_option in species_functions:
+        item = stage3b_function(relative, function_name, "stage3b-species-constructor")
+        normalized_item = " ".join(item.split())
+        if (
+            "ConstructorRef" not in normalized_item
+            or normalized_item.count("constructor_from_value(") != 1
+            or (
+                wraps_option
+                and normalized_item.count(
+                    "NativeConversion::Value(constructor) => NativeConversion::Value(Some(constructor))"
+                ) != 1
+            )
+            or re.search(r"\b(?:CallableRef|callable_from_value|as_callable)\b", item)
+        ):
+            fail("stage3b-species-constructor", f"{relative}::{function_name} narrows species capability")
+
+    stage3b_runtime_test_contracts = (
+        ("trusted_quickjs_ordinary_apply_admits_only_canonical_typed_kinds", (
+            "for (magic, expected_kind) in [(0, ApplyKind::Call), (1, ApplyKind::Construct)] {",
+            "for magic in [2_u16, u16::MAX] {",
+            "assert_eq!(runtime.heap_counts(), baseline);",
+        )),
+        ("trusted_quickjs_ordinary_apply_preserves_object_list_call_and_construct_semantics", (
+            "&[target, receiver, list]",
+            "&[constructor, new_target.clone(), list]",
+            "context.get_property(&instance, &sum).unwrap()",
+        )),
+        ("trusted_quickjs_ordinary_apply_nullish_lists_use_raw_receiver_for_both_kinds", (
+            "assert!(!runtime.is_constructor(target_object).unwrap());",
+            "for magic in [0_u8, 1] {",
+            "for argument_array in [Value::Null, Value::Undefined] {",
+        )),
+        ("trusted_quickjs_ordinary_apply_preserves_error_order_realm_and_pending_identity", (
+            "native_error_prototypes[NativeErrorKind::Type.index()]",
+            "caller.take_exception().unwrap().unwrap()",
+            "&[target, receiver.clone(), Value::Null]",
+        )),
+        ("trusted_quickjs_ordinary_apply_raw_prototype_get_preserves_order_and_receiver", (
+            "Value::Int(17), empty.clone()",
+            "context.take_exception().unwrap().unwrap()",
+            "Some(context.object_prototype().unwrap())",
+        )),
+        ("trusted_quickjs_ordinary_apply_construct_preserves_raw_new_target_across_dispatch", (
+            "NativeFunctionId::ConstructorProbe",
+            "set_constructor_bit(native.as_object(), true)",
+            "Value::Int(17), empty.clone()",
+        )),
+        ("construct_only_proxy_and_new_target_do_not_require_call_capability", (
+            "runtime.as_callable(&proxy).unwrap().is_none()",
+            "VmHost::construct(",
+            "runtime.set_constructor_bit(&new_target, true)",
+        )),
+        ("trusted_quickjs_ordinary_apply_raw_calling_realm_functions_fall_back_to_the_caller", (
+            "execute_pending_job_with_context()",
+            "Some(caller.realm)",
+            "runtime.set_constructor_bit(&revoke_object, false)",
+        )),
+        ("trusted_quickjs_ordinary_apply_raw_native_constructors_use_class_fallbacks", (
+            "NativeFunctionId::ArrayConstructor",
+            "for (label, constructor_source, arguments_source) in cases {",
+            "Some(expected_prototype)",
+        )),
+        ("trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets", (
+            "const UNDERFLOW: &str",
+            "for (label, code, max_stack, expected) in [",
+            "Instruction::Goto(9)",
+            "Instruction::Apply(ApplyKind::Call)",
+        )),
+    )
+    runtime_tests_code = rust_code_only(read_source("src/runtime/tests.rs"))
+    missing_stage3b_tests = []
+    for name, _ in stage3b_runtime_test_contracts:
+        declarations = list(re.finditer(
+            rf"\bfn[ \t\n]+{name}[ \t\n]*\(", runtime_tests_code
+        ))
+        if len(declarations) != 1:
+            missing_stage3b_tests.append(name)
+            continue
+        declaration = declarations[0]
+        previous_item_end = runtime_tests_code.rfind("}", 0, declaration.start()) + 1
+        attributes = runtime_tests_code[previous_item_end:declaration.start()]
+        if " ".join(attributes.split()) != "#[test]":
+            missing_stage3b_tests.append(name)
+    drifted_stage3b_tests = []
+    for name, anchors in stage3b_runtime_test_contracts:
+        item = stage3b_function("src/runtime/tests.rs", name, "stage3b-runtime-evidence")
+        normalized_item = " ".join(item.split())
+        if any(anchor not in normalized_item for anchor in anchors):
+            drifted_stage3b_tests.append(name)
+    if (
+        missing_stage3b_tests
+        or drifted_stage3b_tests
+        or runtime_tests_code.count("for magic in [2_u16, u16::MAX]") != 1
+        or function_translate_code.count("for magic in [2, u16::MAX]") != 1
+    ):
+        fail(
+            "stage3b-runtime-evidence",
+            "Stage3B must retain its canonical/noncanonical, ordering, raw propagation, realm, native-family, Proxy, stack, and branch regression matrix; "
+            f"missing {missing_stage3b_tests}, drifted {drifted_stage3b_tests}",
+        )
+
 src_root = root / "src"
 if src_root.is_symlink() or not src_root.is_dir():
     fail("missing-source", "src must be a regular directory")
@@ -4193,7 +4778,7 @@ else:
 facade_name_pattern = re.compile(
     r"\b(?:ScalarValueDraft|ScalarUnaryOp|ScalarScriptReadError|ScalarStringDraft|"
     r"decode_trusted_scalar_script|DetachedPrimitive|OrdinaryLeafDraft|"
-    r"OrdinaryLeafMetadataDraft|OrdinaryLeafOp|OrdinaryLeafReadError|"
+    r"OrdinaryLeafApplyKind|OrdinaryLeafMetadataDraft|OrdinaryLeafOp|OrdinaryLeafReadError|"
     r"RootFunctionConstantSelector|decode_trusted_ordinary_leaf)\b"
 )
 for path in production_sources:
@@ -5633,6 +6218,7 @@ fixture=$tmp_dir/fixture
 mkdir -p "$fixture/src/runtime/binary_object/bytecode_image/decode" \
     "$fixture/src/runtime/binary_object/function_translate" \
     "$fixture/src/runtime/binary_object/graph"
+printf '%s\n' 'generated boundary self-test fixture' > "$fixture/.boundary-self-test"
 printf '%s\n' 'pub mod runtime;' > "$fixture/src/lib.rs"
 printf '%s\n' 'mod binary_object;' > "$fixture/src/runtime.rs"
 cp -- "$repository_root/src/bytecode.rs" "$fixture/src/bytecode.rs"
@@ -5657,7 +6243,7 @@ printf '%s\n' \
     'mod scalar_script;' \
     'mod wire;' \
     'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
-    'pub(super) use ordinary_leaf::{DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafPredicateOp, OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
+    'pub(super) use ordinary_leaf::{DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafPredicateOp, OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 cp -- "$repository_root/src/runtime/binary_object/function_translate/mod.rs" \
     "$fixture/src/runtime/binary_object/function_translate/mod.rs"
@@ -6326,8 +6912,8 @@ expect_rewrite_rejected scalar-facade-wider-visibility scalar-script-facade-shap
     'pub(crate) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};'
 expect_rewrite_rejected ordinary-facade-extra-type ordinary-leaf-facade-shape \
     src/runtime/binary_object/mod.rs \
-    'DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafDraft,' \
-    'BytecodeImage, DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafDraft,'
+    'DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp, OrdinaryLeafDraft,' \
+    'BytecodeImage, DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp, OrdinaryLeafDraft,'
 expect_rewrite_rejected ordinary-facade-wider-visibility ordinary-leaf-facade-shape \
     src/runtime/binary_object/mod.rs \
     'pub(super) use ordinary_leaf::{' \
@@ -6399,10 +6985,15 @@ translate-call-registry-audience|function-translate-registry-audience|src/runtim
 stage3a-construct-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(33, NPop, OrdinaryOnly, Recipe::Construct),|    row!(33, NPop, Shared, Recipe::Construct),
 stage3a-tail-call-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(35, NPop, Blocked, Invocation),|    row!(35, NPop, OrdinaryOnly, Recipe::Construct),
 stage3a-tail-call-method-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(37, NPop, Blocked, Invocation),|    row!(37, NPop, OrdinaryOnly, Recipe::CallMethod),
-stage3a-apply-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(39, U16, Blocked, Invocation),|    row!(39, U16, OrdinaryOnly, Recipe::ArrayFrom),
+stage3b-apply-registry-audience|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(39, U16, OrdinaryOnly, Recipe::Apply),|    row!(39, U16, Blocked, Invocation),
+stage3b-apply-recipe-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Apply,\n    Return,|    Apply(u16),\n    Return,
 translate-recipe-call-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Call,|    Call(u16),
 translate-dto-call-payload|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Call(u16),|    Call(u32),
+stage3b-function-apply-raw-payload|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Apply(FunctionApplyKind),|    Apply(u16),
+stage3b-function-apply-kind-widening|function-translate-apply-kind|src/runtime/binary_object/function_translate/dto.rs|pub(in crate::runtime::binary_object) enum FunctionApplyKind {\n    Call,\n    Construct,\n}|pub(in crate::runtime::binary_object) enum FunctionApplyKind {\n    Call,\n    Construct,\n    Raw(u16),\n}
 ordinary-call-dto-payload|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Call(u16),|    Call(u32),
+stage3b-ordinary-apply-raw-payload|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Apply(OrdinaryLeafApplyKind),|    Apply(u16),
+stage3b-ordinary-apply-kind-widening|ordinary-leaf-apply-kind|src/runtime/binary_object/ordinary_leaf.rs|pub(in crate::runtime) enum OrdinaryLeafApplyKind {\n    Call,\n    Construct,\n}|pub(in crate::runtime) enum OrdinaryLeafApplyKind {\n    Call,\n    Construct,\n    Raw(u16),\n}
 translate-blocker-bucket-revival|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    FunctionGraph,\n    Invocation,|    FunctionGraph,\n    StackManipulation,\n    Invocation,
 translate-native-plan-second-consumer|native-plan-consumer-set|src/runtime/binary_object/scalar_script.rs|use std::fmt;|use super::bytecode_image::NativeCodePlan;\nuse std::fmt;
 translate-dto-function-id-leak|function-translate-dto-representation|src/runtime/binary_object/function_translate/dto.rs|    value: AtomOperandValue<'image>,\n    from_input_atom_table: bool,|    value: AtomOperandValue<'image>,\n    function_id: FunctionId,\n    from_input_atom_table: bool,
@@ -6440,11 +7031,13 @@ ordinary-handoff-get-local-remap|ordinary-leaf-translated-code|src/runtime/binar
 ordinary-handoff-call-argc|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),|        FunctionOp::Call(argument_count) => Ok(OrdinaryLeafOp::Call(argument_count.saturating_add(1))),
 stage3a-ordinary-array-from-count-minus-one|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(*element_count)),|        FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(element_count.saturating_sub(1))),
 stage3a-ordinary-call-method-to-call|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::CallMethod(*argument_count)),|        FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::Call(*argument_count)),
+stage3b-ordinary-apply-kind-swap|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|            FunctionApplyKind::Call => OrdinaryLeafApplyKind::Call,|            FunctionApplyKind::Call => OrdinaryLeafApplyKind::Construct,
 ordinary-publisher-get-local-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index),|        OrdinaryLeafOp::GetLocal(index) => Instruction::GetLocal(index.saturating_add(1)),
 ordinary-publisher-call-argc|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count.saturating_add(1)),
 ordinary-publisher-call-method|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(argument_count) => Instruction::CallMethod(argument_count),
 ordinary-publisher-call-push-undefined|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Call(argument_count) => Instruction::Call(argument_count),|        OrdinaryLeafOp::Call(_argument_count) => Instruction::Undefined,
 stage3a-publisher-array-from-wrong-op|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::ArrayFrom(element_count),|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::Construct(element_count),
+stage3b-publisher-apply-kind-swap|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            OrdinaryLeafApplyKind::Call => ApplyKind::Call,|            OrdinaryLeafApplyKind::Call => ApplyKind::Construct,
 ordinary-synthetic-index-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            let index = *next_synthetic_index;|            let index = next_synthetic_index.saturating_add(1);
 ordinary-synthetic-bigint-coercion|ordinary-leaf-consumer-publication|src/runtime/binary_object_publish.rs|                    Value::BigInt(JsBigInt::from(*value)),|                    Value::BigInt(JsBigInt::from(value.unsigned_abs())),
 TRANSLATE_CANARIES
@@ -6480,6 +7073,102 @@ expect_full_rewrite_rejected stage3a-translate-construct-call-method-swap \
     function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
     $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(*argument_count))\n        }\n        (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::CallMethod(*argument_count))\n        }' \
     $'        (Recipe::Construct, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::CallMethod(*argument_count))\n        }\n        (Recipe::CallMethod, NativeOperands::NPop(argument_count)) => {\n            ready(FunctionOp::Construct(*argument_count))\n        }'
+expect_full_rewrite_rejected stage3b-translate-apply-zero-kind \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    '            ready(FunctionOp::Apply(FunctionApplyKind::Call))' \
+    '            ready(FunctionOp::Apply(FunctionApplyKind::Construct))'
+expect_full_rewrite_rejected stage3b-translate-apply-noncanonical-admission \
+    function-translate-semantic-dispatch src/runtime/binary_object/function_translate/mod.rs \
+    '            Err(FunctionTranslateError::non_canonical_apply_magic(*magic))' \
+    '            ready(FunctionOp::Apply(FunctionApplyKind::Call))'
+expect_full_rewrite_rejected stage3b-apply-error-classification \
+    ordinary-leaf-apply-admission src/runtime/binary_object/ordinary_leaf.rs \
+    '    if error.is_unadmitted_operand_error() {' \
+    '    if false && error.is_unadmitted_operand_error() {'
+expect_full_rewrite_rejected stage3b-apply-stack-effect \
+    stage3b-apply-stack src/bytecode.rs \
+    '            Self::Apply(_) | Self::ApplySuper => (3, 1),' \
+    '            Self::Apply(_) | Self::ApplySuper => (2, 1),'
+expect_full_rewrite_rejected stage3b-nullish-apply-bypass \
+    stage3b-apply-order src/runtime/vm_host.rs \
+    '        if matches!(argument_array, Value::Undefined | Value::Null) {' \
+    '        if false && matches!(argument_array, Value::Undefined | Value::Null) {'
+expect_full_rewrite_rejected stage3b-raw-new-target-collapse \
+    stage3b-raw-construction src/runtime.rs \
+    '            ConstructNewTarget::Raw(new_target) => {' \
+    '            ConstructNewTarget::Validated(new_target) => {'
+expect_full_rewrite_rejected stage3b-constructor-callable-narrowing \
+    stage3b-constructor-capability src/runtime.rs \
+    '            object_data.is_constructor' \
+    '            object_data.is_constructor && object_data.is_callable'
+expect_full_rewrite_rejected stage3b-bound-new-target-retarget \
+    stage3b-raw-construction src/runtime.rs \
+    '                    new_target.retarget_bound_identity(&constructor, &target);' \
+    '                    let _ = (&new_target, &constructor, &target);'
+expect_full_rewrite_rejected stage3b-proxy-before-callable \
+    stage3b-raw-construction src/runtime.rs \
+    '            if self.is_proxy_object(constructor.as_object())? {' \
+    '            if false && self.is_proxy_object(constructor.as_object())? {'
+expect_full_rewrite_rejected stage3b-function-realm-fallback \
+    stage3b-constructor-prototype src/runtime.rs \
+    '        self.function_realm_from_value(caller_realm, new_target)' \
+    '        Ok(NativeConversion::Value(caller_realm))'
+expect_full_rewrite_rejected stage3b-native-prototype-helper-bypass \
+    stage3b-native-prototype-family src/runtime/intrinsics/array_buffer.rs \
+    '        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {' \
+    '        self.constructor_prototype_source(realm, &new_target).map(|_| |fallback_realm| {'
+expect_full_rewrite_rejected stage3b-proxy-call-layer-capability \
+    stage3b-proxy-call-order src/runtime/internal_methods.rs \
+    '            if !rooted.data.is_callable {' \
+    '            if false && !rooted.data.is_callable {'
+expect_full_rewrite_rejected stage3b-proxy-construct-callable-narrowing \
+    stage3b-proxy-construct-order src/runtime/internal_methods.rs \
+    '                match self.constructor_from_value(realm, Value::Object(rooted.target.clone()))? {' \
+    '                match self.callable_from_value(Value::Object(rooted.target.clone())) {'
+expect_full_rewrite_rejected stage3b-public-raw-construction-leak \
+    stage3b-public-construction src/runtime/context.rs \
+    '            .construct_internal(self.realm, constructor, new_target, arguments)' \
+    '            .construct_value_with_raw_new_target_internal(self.realm, Value::Object(constructor.as_object().clone()), Value::Object(new_target.as_object().clone()), arguments)'
+expect_full_rewrite_rejected stage3b-species-callable-narrowing \
+    stage3b-species-constructor src/runtime/intrinsics/promise.rs \
+    '    ) -> Result<NativeConversion<Option<ConstructorRef>>, RuntimeError> {' \
+    '    ) -> Result<NativeConversion<Option<CallableRef>>, RuntimeError> {'
+expect_full_rewrite_table <<'STAGE3B_PAYLOAD_CANARIES'
+stage3b-noncanonical-error-constructor|function-translate-apply-admission|src/runtime/binary_object/function_translate/mod.rs|            kind: FunctionTranslateErrorKind::NonCanonicalApplyMagic(magic),|            kind: FunctionTranslateErrorKind::AllocationFailed,
+stage3b-noncanonical-error-classifier|function-translate-apply-admission|src/runtime/binary_object/function_translate/mod.rs|    pub(in crate::runtime::binary_object) const fn is_unadmitted_operand_error(&self) -> bool {\n        matches!(|    pub(in crate::runtime::binary_object) const fn is_unadmitted_operand_error(&self) -> bool {\n        false && matches!(
+stage3b-apply-call-payload|stage3b-apply-order|src/runtime/vm_host.rs|            ApplyKind::Call => self\n                .runtime\n                .call_internal(\n                    self.current_realm,\n                    &callable,\n                    this_or_new_target,\n                    &arguments,\n                )|            ApplyKind::Call => self\n                .runtime\n                .call_internal(\n                    self.current_realm,\n                    &callable,\n                    Value::Undefined,\n                    &arguments,\n                )
+stage3b-apply-construct-payload|stage3b-apply-order|src/runtime/vm_host.rs|                    this_or_new_target,\n                    &arguments,\n                )\n                .map_err(runtime_error_to_vm_error),\n        }|                    Value::Undefined,\n                    &[],\n                )\n                .map_err(runtime_error_to_vm_error),\n        }
+stage3b-raw-wrapper-payload|stage3b-raw-construction|src/runtime.rs|            ConstructNewTarget::Raw(new_target),|            ConstructNewTarget::Raw(Value::Undefined),
+stage3b-validated-wrapper-payload|stage3b-validated-construction|src/runtime.rs|            ConstructNewTarget::Validated(new_target.clone()),|            ConstructNewTarget::Validated(constructor.clone()),
+stage3b-wrapper-arguments|stage3b-raw-construction|src/runtime.rs|            ConstructNewTarget::Raw(new_target),\n            arguments,|            ConstructNewTarget::Raw(new_target),\n            &[],
+stage3b-native-new-target-payload|stage3b-raw-construction|src/runtime.rs|                        min_readable_args,\n                        new_target.value(),\n                        &arguments,|                        min_readable_args,\n                        Value::Undefined,\n                        &arguments,
+stage3b-base-new-target-shadow|stage3b-raw-construction|src/runtime.rs|                    let raw_new_target = new_target.value();|                    let raw_new_target = new_target.value();\n                    let raw_new_target = Value::Undefined;
+stage3b-prototype-get-receiver|stage3b-constructor-prototype|src/runtime.rs|            caller_realm,\n            new_target.clone(),\n            &prototype_key,|            caller_realm,\n            Value::Undefined,\n            &prototype_key,
+stage3b-prototype-realm-map|stage3b-constructor-prototype|src/runtime.rs|                NativeConversion::Value(realm) => {\n                    NativeConversion::Value(ConstructorPrototypeSource::Realm(realm))|                NativeConversion::Value(_realm) => {\n                    NativeConversion::Value(ConstructorPrototypeSource::Realm(caller_realm))
+stage3b-function-realm-bound-progress|stage3b-function-realm|src/runtime/internal_methods.rs|                ObjectPayload::BoundFunction { target, .. } => {\n                    let target = *target;\n                    drop(state);\n                    object = ObjectRef::from_borrowed_handle(self.clone(), target)?;|                ObjectPayload::BoundFunction { target, .. } => {\n                    let target = *target;\n                    drop(state);\n                    let _ = target;\n                    object = object.clone();
+stage3b-proxy-call-progress|stage3b-proxy-call-order|src/runtime/internal_methods.rs|                if self.is_proxy_object(&rooted.target)? {\n                    current = rooted.target.clone();|                if self.is_proxy_object(&rooted.target)? {\n                    current = current.clone();
+stage3b-proxy-construct-progress|stage3b-proxy-construct-order|src/runtime/internal_methods.rs|                    current = target;|                    current = current.clone();
+stage3b-proxy-call-fallback-payload|stage3b-proxy-call-order|src/runtime/internal_methods.rs|                    Value::Object(rooted.target.clone()),\n                    this_value,\n                    arguments,|                    Value::Object(rooted.target.clone()),\n                    Value::Undefined,\n                    &[],
+stage3b-proxy-call-trap-payload|stage3b-proxy-call-order|src/runtime/internal_methods.rs|                    Value::Object(rooted.target.clone()),\n                    this_value,\n                    Value::Object(argument_array),|                    Value::Object(rooted.handler.clone()),\n                    Value::Undefined,\n                    Value::Object(argument_array),
+stage3b-proxy-construct-trap-payload|stage3b-proxy-construct-order|src/runtime/internal_methods.rs|                    Value::Object(rooted.target.clone()),\n                    Value::Object(argument_array),\n                    new_target.value(),|                    Value::Object(rooted.handler.clone()),\n                    Value::Object(argument_array),\n                    Value::Undefined,
+stage3b-array-from-capability|stage3b-species-constructor|src/runtime/intrinsics/array.rs|            let arguments = length.into_iter().collect::<Vec<_>>();|            let _ = self.callable_from_value(Value::Object(constructor.as_object().clone()))?;\n            let arguments = length.into_iter().collect::<Vec<_>>();
+stage3b-array-of-capability|stage3b-species-constructor|src/runtime/intrinsics/array.rs|            match self.construct_constructor_internal(\n                realm,\n                &constructor,|            let _ = self.callable_from_value(Value::Object(constructor.as_object().clone()))?;\n            match self.construct_constructor_internal(\n                realm,\n                &constructor,
+stage3b-array-species-capability|stage3b-species-constructor|src/runtime/intrinsics/array.rs|        self.construct_constructor_internal(\n            realm,\n            &constructor,\n            &constructor,\n            &[Value::number(length as f64)],|        let _ = self.callable_from_value(Value::Object(constructor.as_object().clone()))?;\n        self.construct_constructor_internal(\n            realm,\n            &constructor,\n            &constructor,\n            &[Value::number(length as f64)],
+stage3b-species-return-payload|stage3b-species-constructor|src/runtime/intrinsics/promise.rs|                NativeConversion::Value(constructor) => NativeConversion::Value(Some(constructor)),|                NativeConversion::Value(_constructor) => NativeConversion::Value(None),
+stage3b-typed-species-arguments|stage3b-species-constructor|src/runtime/intrinsics/array_buffer/typed_array/species.rs|            &constructor,\n            &constructor,\n            arguments,|            &constructor,\n            &constructor,\n            &[],
+stage3b-runtime-evidence-not-ignored|stage3b-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {|#[test]\n#[ignore = "gate mutation"]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {
+stage3b-runtime-evidence-prefix-not-ignored|stage3b-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {|#[ignore = "gate mutation"]\n#[test]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {
+stage3b-runtime-evidence-cfg-not-ignored|stage3b-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {|#[cfg_attr(test, ignore)]\n#[test]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {
+stage3b-runtime-evidence-not-cfg-excluded|stage3b-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {|#[cfg(any())]\n#[test]\nfn trusted_quickjs_ordinary_apply_verifies_stack_and_reindexed_branch_targets() {
+STAGE3B_PAYLOAD_CANARIES
+expect_full_rewrite_rejected stage3b-apply-nullish-prework \
+    stage3b-apply-order src/runtime/vm_host.rs \
+    $'        if matches!(argument_array, Value::Undefined | Value::Null) {\n            return self' \
+    $'        if matches!(argument_array, Value::Undefined | Value::Null) {\n            let _ = self.build_argument_list(Value::Undefined)?;\n            return self'
+expect_full_rewrite_rejected stage3b-native-prototype-payload \
+    stage3b-native-prototype-family src/runtime/intrinsics/array_buffer.rs \
+    '        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {' \
+    '        self.prototype_from_constructor_value(realm, &Value::Undefined, |fallback_realm| {'
 expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
     ordinary-leaf-engine-semantics src/vm.rs \
     '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \

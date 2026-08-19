@@ -311,28 +311,19 @@ impl Runtime {
     fn create_array_from_constructor(
         &self,
         caller_realm: ContextId,
-        new_target: &CallableRef,
+        new_target: &Value,
     ) -> Result<Completion, RuntimeError> {
-        let prototype_key = self.intern_property_key("prototype")?;
-        let prototype = match self.internal_get(
-            caller_realm,
-            new_target.as_object(),
-            &prototype_key,
-            Value::Object(new_target.as_object().clone()),
-        )? {
-            Completion::Return(value) => value,
-            Completion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let prototype = if let Value::Object(prototype) = prototype {
-            prototype
-        } else {
-            let realm = match self.function_realm(caller_realm, new_target)? {
-                NativeConversion::Value(realm) => realm,
+        let prototype =
+            match self.prototype_from_constructor_value(caller_realm, new_target, |realm| {
+                let array_prototype = self.0.state.borrow().heap.context(realm)?.array_prototype;
+                Ok(ObjectRef::from_borrowed_handle(
+                    self.clone(),
+                    array_prototype,
+                )?)
+            })? {
+                NativeConversion::Value(prototype) => prototype,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
-            let array_prototype = self.0.state.borrow().heap.context(realm)?.array_prototype;
-            ObjectRef::from_borrowed_handle(self.clone(), array_prototype)?
-        };
         Ok(Completion::Return(Value::Object(
             self.new_empty_array_with_prototype(&prototype)?,
         )))
@@ -798,20 +789,11 @@ impl Runtime {
         invocation: NativeInvocation,
         arguments: &NativeArguments,
     ) -> Result<Completion, RuntimeError> {
-        let NativeInvocation::Construct { mut new_target } = invocation else {
+        let NativeInvocation::Construct { new_target } = invocation else {
             return Err(RuntimeError::Invariant(
                 "Array constructor did not receive constructor-or-function invocation",
             ));
         };
-        if matches!(new_target, Value::Undefined) {
-            new_target = Value::Object(self.active_function()?);
-        }
-        let Value::Object(new_target) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "Array constructor new.target was not an object",
-            ));
-        };
-        let new_target = self.callable_from_value(Value::Object(new_target))?;
         let array = match self.create_array_from_constructor(realm, &new_target)? {
             Completion::Return(Value::Object(array)) => array,
             Completion::Return(_) => {
@@ -1252,9 +1234,17 @@ impl Runtime {
         if let Value::Object(object) = &constructor
             && self.is_constructor(object)?
         {
-            let constructor = self.callable_from_value(constructor)?;
+            let constructor = match self.constructor_from_value(realm, constructor)? {
+                NativeConversion::Value(constructor) => constructor,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
             let arguments = length.into_iter().collect::<Vec<_>>();
-            return self.construct_internal(realm, &constructor, &constructor, &arguments);
+            return self.construct_constructor_internal(
+                realm,
+                &constructor,
+                &constructor,
+                &arguments,
+            );
         }
         let array = self.new_array(realm)?;
         if let Some(length) = length {
@@ -1333,8 +1323,11 @@ impl Runtime {
         let result = if let Value::Object(object) = &this_value
             && self.is_constructor(object)?
         {
-            let constructor = self.callable_from_value(this_value)?;
-            match self.construct_internal(
+            let constructor = match self.constructor_from_value(realm, this_value)? {
+                NativeConversion::Value(constructor) => constructor,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+            match self.construct_constructor_internal(
                 realm,
                 &constructor,
                 &constructor,
@@ -1903,10 +1896,7 @@ impl Runtime {
         if let Value::Object(object) = &constructor
             && self.is_constructor(object)?
         {
-            let callable = self.as_callable(object)?.ok_or(RuntimeError::Invariant(
-                "constructable Array constructor value was not callable",
-            ))?;
-            let constructor_realm = match self.function_realm(realm, &callable)? {
+            let constructor_realm = match self.function_realm_from_value(realm, &constructor)? {
                 NativeConversion::Value(realm) => realm,
                 NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
@@ -1943,11 +1933,16 @@ impl Runtime {
             );
         }
 
-        let callable = match self.constructor_from_value(realm, constructor)? {
-            NativeConversion::Value(callable) => callable,
+        let constructor = match self.constructor_from_value(realm, constructor)? {
+            NativeConversion::Value(constructor) => constructor,
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
-        self.construct_internal(realm, &callable, &callable, &[Value::number(length as f64)])
+        self.construct_constructor_internal(
+            realm,
+            &constructor,
+            &constructor,
+            &[Value::number(length as f64)],
+        )
     }
 
     pub(in crate::runtime) fn call_array_prototype_reduce(

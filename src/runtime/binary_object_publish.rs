@@ -6,14 +6,14 @@
 //! transactional publication paths.
 
 use super::binary_object::{
-    DetachedPrimitive, OrdinaryLeafBinaryOp, OrdinaryLeafOp, OrdinaryLeafPredicateOp,
-    OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector,
-    ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft,
-    decode_trusted_ordinary_leaf, decode_trusted_scalar_script,
+    DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp, OrdinaryLeafOp,
+    OrdinaryLeafPredicateOp, OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp,
+    RootFunctionConstantSelector, ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp,
+    ScalarValueDraft, decode_trusted_ordinary_leaf, decode_trusted_scalar_script,
 };
 use super::{Runtime, RuntimeError};
 use crate::bigint::JsBigInt;
-use crate::bytecode::Instruction;
+use crate::bytecode::{ApplyKind, Instruction};
 use crate::error::{Error, ErrorKind};
 use crate::function::{FunctionBytecodeRef, UnlinkedConstant, UnlinkedFunction};
 use crate::heap::{ConstructorKind, ContextId, FunctionKind, FunctionMetadata};
@@ -382,6 +382,10 @@ fn lower_ordinary_leaf_op(
         OrdinaryLeafOp::Construct(argument_count) => Instruction::Construct(argument_count),
         OrdinaryLeafOp::CallMethod(argument_count) => Instruction::CallMethod(argument_count),
         OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::ArrayFrom(element_count),
+        OrdinaryLeafOp::Apply(kind) => Instruction::Apply(match kind {
+            OrdinaryLeafApplyKind::Call => ApplyKind::Call,
+            OrdinaryLeafApplyKind::Construct => ApplyKind::Construct,
+        }),
         OrdinaryLeafOp::Return => Instruction::Return,
         OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,
     };
@@ -623,6 +627,27 @@ mod tests {
                 (0, Instruction::Construct(65_535))
                     | (1, Instruction::CallMethod(65_535))
                     | (2, Instruction::ArrayFrom(65_535))
+            ));
+            assert_eq!(next_synthetic_index, 0);
+        }
+    }
+
+    #[test]
+    fn ordinary_apply_publishes_the_typed_kind() {
+        for (operation, expected) in [
+            (
+                OrdinaryLeafOp::Apply(OrdinaryLeafApplyKind::Call),
+                ApplyKind::Call,
+            ),
+            (
+                OrdinaryLeafOp::Apply(OrdinaryLeafApplyKind::Construct),
+                ApplyKind::Construct,
+            ),
+        ] {
+            let mut next_synthetic_index = 0;
+            assert!(matches!(
+                lower_ordinary_leaf_op(operation, &mut next_synthetic_index),
+                Ok(Instruction::Apply(actual)) if actual == expected
             ));
             assert_eq!(next_synthetic_index, 0);
         }

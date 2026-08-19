@@ -166,8 +166,16 @@ impl Runtime {
                 self.new_not_constructor_error(realm, &Value::Object(object))?,
             ));
         }
-        let constructor = self.callable_from_value(Value::Object(object))?;
-        let target = match self.construct_internal(realm, &constructor, &constructor, arguments)? {
+        let constructor = match self.constructor_from_value(realm, Value::Object(object))? {
+            NativeConversion::Value(constructor) => constructor,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
+        };
+        let target = match self.construct_constructor_internal(
+            realm,
+            &constructor,
+            &constructor,
+            arguments,
+        )? {
             Completion::Return(Value::Object(value)) => value,
             Completion::Return(_) => {
                 return Ok(NativeConversion::Throw(self.new_native_error(

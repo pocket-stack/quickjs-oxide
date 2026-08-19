@@ -120,7 +120,7 @@ impl Runtime {
         &self,
         callable: &CallableRef,
     ) -> Result<ContextId, RuntimeError> {
-        match self.function_realm_impl(None, callable)? {
+        match self.function_realm_object_impl(None, callable.as_object().clone(), false)? {
             NativeConversion::Value(realm) => Ok(realm),
             NativeConversion::Throw(_) => Err(RuntimeError::Invariant(
                 "raw callable realm lookup produced a JavaScript throw",
@@ -137,23 +137,50 @@ impl Runtime {
         caller_realm: ContextId,
         callable: &CallableRef,
     ) -> Result<NativeConversion<ContextId>, RuntimeError> {
-        self.function_realm_impl(Some(caller_realm), callable)
+        self.function_realm_object_impl(Some(caller_realm), callable.as_object().clone(), false)
     }
 
-    fn function_realm_impl(
+    /// Raw-value form of QuickJS `JS_GetFunctionRealm`. Non-functions and
+    /// primitives fall back to the current realm; Proxy and bound wrappers are
+    /// still traversed so revocation and nested function realms remain
+    /// observable after a `newTarget.prototype` lookup.
+    pub(in crate::runtime) fn function_realm_from_value(
+        &self,
+        caller_realm: ContextId,
+        value: &Value,
+    ) -> Result<NativeConversion<ContextId>, RuntimeError> {
+        self.0.state.borrow().heap.context(caller_realm)?;
+        let Value::Object(object) = value else {
+            return Ok(NativeConversion::Value(caller_realm));
+        };
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("function realm value"));
+        }
+        self.function_realm_object_impl(Some(caller_realm), object.clone(), true)
+    }
+
+    fn function_realm_object_impl(
         &self,
         caller_realm: Option<ContextId>,
-        callable: &CallableRef,
+        object: ObjectRef,
+        allow_non_function: bool,
     ) -> Result<NativeConversion<ContextId>, RuntimeError> {
-        if !callable.belongs_to(self) {
-            return Err(RuntimeError::WrongRuntime("callable"));
+        if !object.belongs_to(self) {
+            return Err(RuntimeError::WrongRuntime("function realm object"));
         }
-        let mut callable = callable.clone();
+        let mut object = object;
         loop {
             let state = self.0.state.borrow();
-            let object = state.heap.object(callable.as_object().object_id())?;
-            match &object.payload {
+            let object_data = state.heap.object(object.object_id())?;
+            match &object_data.payload {
                 ObjectPayload::NativeFunction { data, .. } if data.realm.is_some() => {
+                    if allow_non_function && data.target.uses_calling_realm() {
+                        let realm = caller_realm.ok_or(RuntimeError::Invariant(
+                            "raw function realm lookup had no fallback realm",
+                        ))?;
+                        state.heap.context(realm)?;
+                        return Ok(NativeConversion::Value(realm));
+                    }
                     let realm = data
                         .realm
                         .expect("guard proved native function has a defining realm");
@@ -168,8 +195,7 @@ impl Runtime {
                 ObjectPayload::BoundFunction { target, .. } => {
                     let target = *target;
                     drop(state);
-                    let target = ObjectRef::from_borrowed_handle(self.clone(), target)?;
-                    callable = CallableRef::from_validated_object(target);
+                    object = ObjectRef::from_borrowed_handle(self.clone(), target)?;
                 }
                 ObjectPayload::Proxy(data) => {
                     let is_revoked = data.is_revoked;
@@ -184,8 +210,7 @@ impl Runtime {
                             ))),
                         };
                     }
-                    let target = ObjectRef::from_borrowed_handle(self.clone(), target)?;
-                    callable = CallableRef::from_validated_object(target);
+                    object = ObjectRef::from_borrowed_handle(self.clone(), target)?;
                 }
                 ObjectPayload::NativeFunction { .. } => {
                     return Err(RuntimeError::Invariant(
@@ -225,6 +250,12 @@ impl Runtime {
                 | ObjectPayload::RegExpStringIterator { .. }
                 | ObjectPayload::Generator { .. }
                 | ObjectPayload::AsyncGenerator(_) => {
+                    if allow_non_function {
+                        let realm = caller_realm.ok_or(RuntimeError::Invariant(
+                            "raw function realm lookup had no fallback realm",
+                        ))?;
+                        return Ok(NativeConversion::Value(realm));
+                    }
                     return Err(RuntimeError::Engine(Error::new(
                         ErrorKind::Type,
                         "not a function",
@@ -1643,78 +1674,205 @@ impl Runtime {
         this_value: Value,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
-        let (rooted, method) = match self.proxy_method(realm, proxy, "apply")? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        // Pinned QuickJS performs the observable handler.apply Get before this
-        // cached callability check.
-        if !rooted.data.is_callable {
+        if self.proxy_method_stack_would_overflow() {
             return Ok(Completion::Throw(self.new_native_error(
                 realm,
-                NativeErrorKind::Type,
-                "not a function",
+                NativeErrorKind::Internal,
+                "stack overflow",
             )?));
         }
-        let target = self
-            .as_callable(&rooted.target)?
-            .ok_or(RuntimeError::Invariant(
-                "callable Proxy target lost its [[Call]] capability",
-            ))?;
-        let Some(method) = method else {
-            return self.call_internal(realm, &target, this_value, arguments);
-        };
-        let argument_array = self.new_array_from_values(realm, arguments.to_vec())?;
-        self.call_proxy_trap(
-            realm,
-            &rooted,
-            &method,
-            &[
-                Value::Object(rooted.target.clone()),
-                this_value,
-                Value::Object(argument_array),
-            ],
-        )
+        let _stack_guard = ProxyMethodStackGuard::enter(self);
+        let key = self.intern_property_key("apply")?;
+        let chain_limit = self.proxy_method_chain_limit("apply");
+        let mut current = proxy.clone();
+        let mut depth = 0_usize;
+
+        loop {
+            if chain_limit.is_some_and(|limit| depth == limit) {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "stack overflow",
+                )?));
+            }
+            let data = self
+                .proxy_snapshot_if_any(&current)?
+                .ok_or(RuntimeError::Invariant(
+                    "Proxy call dispatch reached an ordinary object",
+                ))?;
+            if data.is_revoked {
+                return match self.proxy_revoked_throw(realm)? {
+                    NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+                    NativeConversion::Value(()) => Err(RuntimeError::Invariant(
+                        "revoked Proxy call returned a value",
+                    )),
+                };
+            }
+            let rooted = self.root_proxy_snapshot(&current, data)?;
+            let method = match self.internal_get(
+                realm,
+                &rooted.handler,
+                &key,
+                Value::Object(rooted.handler.clone()),
+            )? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+
+            // Pinned js_proxy_call checks this layer's cached [[Call]] bit
+            // after the observable trap Get and before a missing-trap
+            // fallback reaches another Proxy layer.
+            if !rooted.data.is_callable {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "not a function",
+                )?));
+            }
+            if matches!(method, Value::Undefined | Value::Null) {
+                if self.is_proxy_object(&rooted.target)? {
+                    current = rooted.target.clone();
+                    depth = depth.saturating_add(1);
+                    continue;
+                }
+                return self.call_value_internal(
+                    realm,
+                    Value::Object(rooted.target.clone()),
+                    this_value,
+                    arguments,
+                );
+            }
+
+            // Upstream builds the trap argv Array before JS_Call validates
+            // the method's callability.
+            let argument_array = self.new_array_from_values(realm, arguments.to_vec())?;
+            let method = match self.direct_call_target_from_value(method) {
+                Ok(method) => method,
+                Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Type => {
+                    return Ok(Completion::Throw(self.new_native_error_from_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        &error,
+                    )?));
+                }
+                Err(error) => return Err(error),
+            };
+            return self.call_proxy_trap(
+                realm,
+                &rooted,
+                &method,
+                &[
+                    Value::Object(rooted.target.clone()),
+                    this_value,
+                    Value::Object(argument_array),
+                ],
+            );
+        }
     }
 
     pub(in crate::runtime) fn construct_proxy(
         &self,
         realm: ContextId,
-        proxy: &CallableRef,
-        new_target: &CallableRef,
+        proxy: &ConstructorRef,
+        new_target: ConstructNewTarget,
         arguments: &[Value],
     ) -> Result<Completion, RuntimeError> {
-        let (rooted, method) = match self.proxy_method(realm, proxy.as_object(), "construct")? {
-            NativeConversion::Value(value) => value,
-            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-        };
-        let target =
-            match self.constructor_from_value(realm, Value::Object(rooted.target.clone()))? {
-                NativeConversion::Value(value) => value,
-                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
-            };
-        let Some(method) = method else {
-            return self.construct_internal(realm, &target, new_target, arguments);
-        };
-        let argument_array = self.new_array_from_values(realm, arguments.to_vec())?;
-        let result = self.call_proxy_trap(
-            realm,
-            &rooted,
-            &method,
-            &[
-                Value::Object(rooted.target.clone()),
-                Value::Object(argument_array),
-                Value::Object(new_target.as_object().clone()),
-            ],
-        )?;
-        match result {
-            Completion::Return(value @ Value::Object(_)) => Ok(Completion::Return(value)),
-            Completion::Return(_) => Ok(Completion::Throw(self.new_native_error(
+        if self.proxy_method_stack_would_overflow() {
+            return Ok(Completion::Throw(self.new_native_error(
                 realm,
-                NativeErrorKind::Type,
-                "not an object",
-            )?)),
-            Completion::Throw(value) => Ok(Completion::Throw(value)),
+                NativeErrorKind::Internal,
+                "stack overflow",
+            )?));
+        }
+        let _stack_guard = ProxyMethodStackGuard::enter(self);
+        let key = self.intern_property_key("construct")?;
+        let chain_limit = self.proxy_method_chain_limit("construct");
+        let mut current = proxy.clone();
+        let mut depth = 0_usize;
+
+        loop {
+            if chain_limit.is_some_and(|limit| depth == limit) {
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Internal,
+                    "stack overflow",
+                )?));
+            }
+            let data =
+                self.proxy_snapshot_if_any(current.as_object())?
+                    .ok_or(RuntimeError::Invariant(
+                        "Proxy construct dispatch reached an ordinary object",
+                    ))?;
+            if data.is_revoked {
+                return match self.proxy_revoked_throw(realm)? {
+                    NativeConversion::Throw(value) => Ok(Completion::Throw(value)),
+                    NativeConversion::Value(()) => Err(RuntimeError::Invariant(
+                        "revoked Proxy construct returned a value",
+                    )),
+                };
+            }
+            let rooted = self.root_proxy_snapshot(current.as_object(), data)?;
+            let method = match self.internal_get(
+                realm,
+                &rooted.handler,
+                &key,
+                Value::Object(rooted.handler.clone()),
+            )? {
+                Completion::Return(value) => value,
+                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+            };
+
+            // Pinned js_proxy_call_constructor checks this layer's immediate
+            // target after the observable trap Get and before a missing-trap
+            // fallback reaches another Proxy layer.
+            let target =
+                match self.constructor_from_value(realm, Value::Object(rooted.target.clone()))? {
+                    NativeConversion::Value(value) => value,
+                    NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+                };
+            if matches!(method, Value::Undefined | Value::Null) {
+                if self.is_proxy_object(target.as_object())? {
+                    current = target;
+                    depth = depth.saturating_add(1);
+                    continue;
+                }
+                return self
+                    .construct_internal_with_new_target(realm, &target, new_target, arguments);
+            }
+
+            // Upstream allocates the trap argv Array before JS_Call validates
+            // trap callability, so keep the raw method until this point.
+            let argument_array = self.new_array_from_values(realm, arguments.to_vec())?;
+            let method = match self.direct_call_target_from_value(method) {
+                Ok(method) => method,
+                Err(RuntimeError::Engine(error)) if error.kind() == ErrorKind::Type => {
+                    return Ok(Completion::Throw(self.new_native_error_from_error(
+                        realm,
+                        NativeErrorKind::Type,
+                        &error,
+                    )?));
+                }
+                Err(error) => return Err(error),
+            };
+            let result = self.call_proxy_trap(
+                realm,
+                &rooted,
+                &method,
+                &[
+                    Value::Object(rooted.target.clone()),
+                    Value::Object(argument_array),
+                    new_target.value(),
+                ],
+            )?;
+            return match result {
+                Completion::Return(value @ Value::Object(_)) => Ok(Completion::Return(value)),
+                Completion::Return(_) => Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "not an object",
+                )?)),
+                Completion::Throw(value) => Ok(Completion::Throw(value)),
+            };
         }
     }
 }

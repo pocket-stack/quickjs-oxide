@@ -1057,16 +1057,9 @@ impl Runtime {
             ));
         };
         let active = self.active_function()?;
-        if let Value::Object(new_target) = &new_target
-            && new_target != &active
-        {
-            let new_target = self.callable_from_value(Value::Object(new_target.clone()))?;
-            return self.create_from_constructor(realm, &new_target);
-        }
-        if !matches!(new_target, Value::Undefined | Value::Object(_)) {
-            return Err(RuntimeError::Invariant(
-                "Object constructor new.target was neither undefined nor an object",
-            ));
+        let is_active = matches!(&new_target, Value::Object(object) if object == &active);
+        if !matches!(new_target, Value::Undefined) && !is_active {
+            return self.create_from_constructor_value(realm, &new_target);
         }
         let argument = arguments.readable.first().ok_or(RuntimeError::Invariant(
             "Object constructor argv was not padded",

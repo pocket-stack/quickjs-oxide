@@ -104,41 +104,26 @@ impl Runtime {
         if matches!(new_target, Value::Undefined) {
             new_target = Value::Object(self.active_function()?);
         }
-        let Value::Object(new_target_object) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "Error constructor new.target was neither undefined nor an object",
-            ));
-        };
-        let new_target_callable =
-            self.callable_from_value(Value::Object(new_target_object.clone()))?;
-        let prototype_key = self.intern_property_key("prototype")?;
         let prototype =
-            match self.get_property_in_realm(realm, &new_target_object, &prototype_key)? {
-                Completion::Return(Value::Object(prototype)) => prototype,
-                Completion::Return(_) => {
-                    let fallback_realm = match self.function_realm(realm, &new_target_callable)? {
-                        NativeConversion::Value(realm) => realm,
-                        NativeConversion::Throw(value) => {
-                            return Ok(Completion::Throw(value));
+            match self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
+                let prototype = {
+                    let state = self.0.state.borrow();
+                    let context = state.heap.context(fallback_realm)?;
+                    match kind {
+                        ErrorConstructorKind::Error => context
+                            .error_prototype
+                            .ok_or(RuntimeError::Invariant("realm has no Error prototype"))?,
+                        ErrorConstructorKind::Native(kind) => {
+                            context.native_error_prototypes[kind.index()].ok_or(
+                                RuntimeError::Invariant("realm has no native Error prototype"),
+                            )?
                         }
-                    };
-                    let prototype = {
-                        let state = self.0.state.borrow();
-                        let context = state.heap.context(fallback_realm)?;
-                        match kind {
-                            ErrorConstructorKind::Error => context
-                                .error_prototype
-                                .ok_or(RuntimeError::Invariant("realm has no Error prototype"))?,
-                            ErrorConstructorKind::Native(kind) => {
-                                context.native_error_prototypes[kind.index()].ok_or(
-                                    RuntimeError::Invariant("realm has no native Error prototype"),
-                                )?
-                            }
-                        }
-                    };
-                    ObjectRef::from_borrowed_handle(self.clone(), prototype)?
-                }
-                Completion::Throw(value) => return Ok(Completion::Throw(value)),
+                    }
+                };
+                Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
+            })? {
+                NativeConversion::Value(prototype) => prototype,
+                NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
             };
         let object = self.new_error_object(&prototype)?;
 

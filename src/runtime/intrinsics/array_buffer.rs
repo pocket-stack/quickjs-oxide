@@ -522,7 +522,7 @@ impl Runtime {
             NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
         };
         let target = if let Some(constructor) = species {
-            match self.construct_internal(
+            match self.construct_constructor_internal(
                 realm,
                 &constructor,
                 &constructor,
@@ -708,7 +708,7 @@ impl Runtime {
         &self,
         realm: ContextId,
         object: &ObjectRef,
-    ) -> Result<NativeConversion<Option<CallableRef>>, RuntimeError> {
+    ) -> Result<NativeConversion<Option<ConstructorRef>>, RuntimeError> {
         let constructor_key = self.intern_property_key("constructor")?;
         let constructor = match self.get_property_in_realm(realm, object, &constructor_key)? {
             Completion::Return(value) => value,
@@ -749,29 +749,9 @@ impl Runtime {
         realm: ContextId,
         new_target: Value,
     ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let Value::Object(new_target_object) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "ArrayBuffer constructor new.target was not an object",
-            ));
-        };
-        let prototype_key = self.intern_property_key("prototype")?;
-        match self.get_property_in_realm(realm, &new_target_object, &prototype_key)? {
-            Completion::Return(Value::Object(prototype)) => Ok(NativeConversion::Value(prototype)),
-            Completion::Return(_) => {
-                let new_target_callable =
-                    self.callable_from_value(Value::Object(new_target_object))?;
-                let fallback_realm = match self.function_realm(realm, &new_target_callable)? {
-                    NativeConversion::Value(realm) => realm,
-                    NativeConversion::Throw(value) => {
-                        return Ok(NativeConversion::Throw(value));
-                    }
-                };
-                Ok(NativeConversion::Value(
-                    self.array_buffer_default_prototype(fallback_realm)?,
-                ))
-            }
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
+        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
+            self.array_buffer_default_prototype(fallback_realm)
+        })
     }
 
     fn array_buffer_default_prototype(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {

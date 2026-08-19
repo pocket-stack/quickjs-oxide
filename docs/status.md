@@ -86,7 +86,9 @@ The exact profile, inputs, summary, line counts, and report hashes live in
   `NPopX` counts; all publish as `Call(argc)` with an undefined receiver.
   Stage 3A additionally admits raw 33 `call_constructor`, raw 36 `call_method`,
   and raw 38 `array_from`, preserving each `NPop` count through a distinct
-  typed instruction.
+  typed instruction. Stage 3B admits raw 39 `apply` through a typed
+  `Call`/`Construct` kind: only canonical `U16` magic 0 and 1 cross the archive
+  boundary, while 2 and 65,535 are rejected before publication.
 
 The public API and Test262 runner now report the same engine diagnostics.
 Detached public bytecode/VM execution has been retired, the Test262 runner
@@ -190,12 +192,12 @@ stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
 formats and projects only sanitized semantic DTOs to those admission bridges.
-The scalar policy remains 30 opcodes; the stage-3A ordinary policy is 123,
-and their union is 124 (120 blocked, one scalar-only, 94 ordinary-only, and 29
-shared registry rows). The reviewed stage-one 57-row atom-free set and stage-two
-five-row plain-call set are unchanged; stage 3A adds exactly raw 33, 36, and 38.
-The blocked frontier retains its 17 typed categories, with three rows now
-remaining in `Invocation`.
+The scalar policy remains 30 opcodes; the stage-3B ordinary policy is 124,
+and their union is 125 (119 blocked, one scalar-only, 95 ordinary-only, and 29
+shared registry rows). The reviewed stage-one 57-row atom-free set, stage-two
+five-row plain-call set, and stage-3A raw 33, 36, and 38 set are unchanged;
+stage 3B adds exactly raw 39 `apply`. The blocked frontier retains its 17 typed
+categories, with two tail-call rows remaining in `Invocation`.
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
@@ -379,8 +381,17 @@ invocation operations without widening that plain-call contract. Raw 33
 the ordered arguments; raw 36 `call_method` preserves the original receiver for
 strict methods; raw 38 `array_from` preserves element order and creates a fresh
 Array on every execution. Their `u16` operand is passed through unchanged at
-each translation and publication boundary. Tail calls at raw 35 and 37 and
-`apply` at raw 39 remain blocked pending their distinct semantics.
+each translation and publication boundary. Stage 3B adds raw 39 `apply`, whose
+three stack inputs produce one result. Its raw `U16` magic becomes a typed
+`Call` for 0 or `Construct` for 1 through the translation, ordinary-draft, and
+publisher boundaries; every other value, including 2 and 65,535, is
+`Unadmitted` before heap, atom, pending-exception, or bytecode publication.
+Pinned QuickJS checks function callability first. A null or undefined argument
+list then takes an ordinary zero-argument call for either magic, using the raw
+second operand as `this` and leaving `new.target` undefined. A non-null list is
+built before constructor capability is checked, and construct mode forwards
+the raw second operand as `newTarget`. Tail calls at raw 35 and 37 remain the
+two blocked `Invocation` rows.
 
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
@@ -409,7 +420,14 @@ lock constructor/`newTarget` separation, allocated-result prototype identity
 from `newTarget.prototype`, and argument order; exact strict-method receiver
 identity; ordered zero- and three-element fresh Arrays; recoverable invocation
 exceptions; verifier rollback; and a branch target landing on `CallMethod`
-after an existing multi-instruction expansion.
+after an existing multi-instruction expansion. Stage-3B Rust vectors add exact
+typed magic 0/1 admission and prepublication rejection of 2/65,535; dense call
+and construct lists; both nullish-list shortcuts; poisoned-list and constructor
+error order; raw primitive, ordinary-object, callable, bound, native, base,
+derived, and Proxy `newTarget` propagation; calling-realm and native-family
+prototype fallback; construct-only Proxy/species behavior without callable
+narrowing; recoverable pending state; three-pop/one-push verification; and a
+reindexed branch landing directly on `Apply`.
 
 The pinned stage-3A C oracle compiler-naturally emits the exact target raws 33,
 36, and 38, with compiler union 17, 33, 36, 38, 40, 62, 155, 179, and
@@ -420,14 +438,27 @@ admitted cohort. The natural method case also needs blocked property opcode raw
 manual child. Manual execution proves a constructor distinct from `newTarget`,
 ordered arguments, and result prototype from `newTarget.prototype`; exact
 strict-method receiver identity, argument count/order, and result; and distinct
-empty and `[1, 2, 3]` Arrays with stable element order. Raw 35, 37, and 39 are
-present only as an explicit deferred, blocked-pending frontier.
+empty and `[1, 2, 3]` Arrays with stable element order. At that milestone, raw
+35, 37, and 39 were the explicit deferred frontier; Stage 3B moves only raw 39.
 
-A fresh full R3fj receipt authenticates the stage-3A ordinary-opcode tree: all
-102,037 classified outcomes were byte-for-byte unchanged after normalizing the
-source fingerprint, with 79,982 full passes among 80,032 eligible variants. No
-Test262 profile or metric changed, so the published baseline above remains
-unchanged.
+The pinned Stage-3B C oracle adds compiler-natural magic-0 and magic-1 `apply`
+wires and four compiler-authenticated 58-byte property-free manual wires for
+magic 0, 1, 2, and 65,535. Fresh-runtime read/write and execution lock nullish
+ordinary calls, dense call/construct behavior, raw `newTarget`, callability and
+list-building order, and construct-only Proxy trap order. Strict C11 produced a
+byte-identical 1,328-line transcript; all 19 authenticated oracles pass both
+direct validation and the full oracle gate. The source SHA-256 is
+`67832294937f7792c2254a5cc91d51cff48a7b149b975eac518dbf11a399b7e2` and the
+transcript SHA-256 is
+`d666c4eafdc9f8431b02892f68fac3751f0b51f0bc563146fb91eadd758d241a`.
+
+The checked-in full R3fj receipt still authenticates the stage-3A
+ordinary-opcode tree: all 102,037 classified outcomes were byte-for-byte
+unchanged after normalizing that source fingerprint, with 79,982 full passes
+among 80,032 eligible variants. Its source fingerprint predates Stage 3B and is
+therefore intentionally source-stale until a post-commit full rerun. No Test262
+profile or metric changed in this implementation step, so the published
+baseline above remains unchanged.
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
 invalid-atom inputs, `InternalError` for an oversized string declaration and

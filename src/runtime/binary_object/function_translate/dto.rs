@@ -348,6 +348,17 @@ pub(in crate::runtime::binary_object) enum FunctionPredicateOp {
     TypeOfIsFunction,
 }
 
+/// Canonical semantic subset of QuickJS's raw `OP_apply` magic operand.
+///
+/// The pinned compiler emits only zero for a call and one for construction.
+/// Keeping that distinction typed prevents malformed raw values from crossing
+/// the archive translation boundary or being normalized by parity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime::binary_object) enum FunctionApplyKind {
+    Call,
+    Construct,
+}
+
 /// One sanitized semantic instruction.
 #[derive(Clone, Debug)]
 pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
@@ -380,6 +391,7 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     Construct(u16),
     CallMethod(u16),
     ArrayFrom(u16),
+    Apply(FunctionApplyKind),
     Return,
     ReturnUndefined,
 }

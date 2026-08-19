@@ -15,9 +15,9 @@ use super::bytecode_image::{
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits, FunctionKind};
 use super::function_translate::{
-    FunctionBinaryOp, FunctionCode, FunctionOp, FunctionPredicateOp, FunctionStackOp,
-    FunctionTranslateError, FunctionUnaryOp, OperationDiagnostic, TranslationTarget,
-    translate_function,
+    FunctionApplyKind, FunctionBinaryOp, FunctionCode, FunctionOp, FunctionPredicateOp,
+    FunctionStackOp, FunctionTranslateError, FunctionUnaryOp, OperationDiagnostic,
+    TranslationTarget, translate_function,
 };
 use super::graph::decode::DecodeError;
 use super::graph::model::{
@@ -171,8 +171,15 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     Construct(u16),
     CallMethod(u16),
     ArrayFrom(u16),
+    Apply(OrdinaryLeafApplyKind),
     Return,
     ReturnUndefined,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::runtime) enum OrdinaryLeafApplyKind {
+    Call,
+    Construct,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -662,6 +669,10 @@ fn lower_operation(
         FunctionOp::Construct(argument_count) => Ok(OrdinaryLeafOp::Construct(*argument_count)),
         FunctionOp::CallMethod(argument_count) => Ok(OrdinaryLeafOp::CallMethod(*argument_count)),
         FunctionOp::ArrayFrom(element_count) => Ok(OrdinaryLeafOp::ArrayFrom(*element_count)),
+        FunctionOp::Apply(kind) => Ok(OrdinaryLeafOp::Apply(match kind {
+            FunctionApplyKind::Call => OrdinaryLeafApplyKind::Call,
+            FunctionApplyKind::Construct => OrdinaryLeafApplyKind::Construct,
+        })),
         FunctionOp::Return => Ok(OrdinaryLeafOp::Return),
         FunctionOp::ReturnUndefined => Ok(OrdinaryLeafOp::ReturnUndefined),
         _ => Err(OrdinaryLeafReadError::Internal(
@@ -728,6 +739,9 @@ fn classify_translation_error(error: FunctionTranslateError) -> OrdinaryLeafRead
         return OrdinaryLeafReadError::Unadmitted(
             "ordinary-leaf control flow has an invalid native label target".into(),
         );
+    }
+    if error.is_unadmitted_operand_error() {
+        return OrdinaryLeafReadError::Unadmitted(error.to_string());
     }
     let message = error.to_string();
     if message.is_empty() {
@@ -1147,6 +1161,22 @@ mod tests {
             (
                 FunctionOp::ArrayFrom(65_535),
                 OrdinaryLeafOp::ArrayFrom(65_535),
+            ),
+        ] {
+            assert_eq!(lower_ready(operation), expected);
+        }
+    }
+
+    #[test]
+    fn apply_kind_reaches_the_ordinary_dto_without_raw_magic() {
+        for (operation, expected) in [
+            (
+                FunctionOp::Apply(FunctionApplyKind::Call),
+                OrdinaryLeafOp::Apply(OrdinaryLeafApplyKind::Call),
+            ),
+            (
+                FunctionOp::Apply(FunctionApplyKind::Construct),
+                OrdinaryLeafOp::Apply(OrdinaryLeafApplyKind::Construct),
             ),
         ] {
             assert_eq!(lower_ready(operation), expected);

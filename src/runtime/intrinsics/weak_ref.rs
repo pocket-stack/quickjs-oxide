@@ -163,30 +163,10 @@ impl Runtime {
         new_target: Value,
         kind: WeakIntrinsicKind,
     ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let Value::Object(new_target) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "weak intrinsic constructor new.target was not an object",
-            ));
-        };
-        let key = self.intern_property_key("prototype")?;
-        match self.get_property_in_realm(realm, &new_target, &key)? {
-            Completion::Return(Value::Object(prototype)) => Ok(NativeConversion::Value(prototype)),
-            Completion::Return(_) => {
-                let callable = self.callable_from_value(Value::Object(new_target))?;
-                let fallback_realm = match self.function_realm(realm, &callable)? {
-                    NativeConversion::Value(realm) => realm,
-                    NativeConversion::Throw(value) => {
-                        return Ok(NativeConversion::Throw(value));
-                    }
-                };
-                let prototype = self.weak_intrinsic_prototype(fallback_realm, kind)?;
-                Ok(NativeConversion::Value(ObjectRef::from_borrowed_handle(
-                    self.clone(),
-                    prototype,
-                )?))
-            }
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
+        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
+            let prototype = self.weak_intrinsic_prototype(fallback_realm, kind)?;
+            Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
+        })
     }
 
     fn weak_target_key(

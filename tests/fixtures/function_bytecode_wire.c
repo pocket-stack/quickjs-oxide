@@ -117,6 +117,16 @@ static const OrdinaryExpansionCase ordinary_invocation_cases[] = {
       72, UINT64_C(0xfe60d3e92788d870),
       { 0x0243, 1, { 3, 0, 3, 4, 0, 0, 0, 13, 3 }, 59 } },
 };
+static const OrdinaryExpansionCase ordinary_apply_cases[] = {
+    { "invocation-apply-call",
+      "(function(f,t,a){'use strict';return f(...a);})",
+      65, UINT64_C(0x2b4c9b53812d0f4e),
+      { 0x0243, 1, { 3, 0, 3, 4, 0, 0, 0, 14, 3 }, 51 } },
+    { "invocation-apply-construct",
+      "(function(f,t,a){'use strict';return new f(...a);})",
+      65, UINT64_C(0x135c326513baafe6),
+      { 0x0243, 1, { 3, 0, 3, 5, 0, 0, 0, 14, 3 }, 51 } },
+};
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -127,10 +137,12 @@ static const uint8_t ordinary_expansion_atom_free_raws[] = {
 static const uint8_t ordinary_expansion_call_raws[] = {
     34, 236, 237, 238, 239,
 };
-static const uint8_t ordinary_invocation_raws[] = { 33, 36, 38 };
-static const uint8_t ordinary_invocation_natural_admission_raws[] = { 33, 38 };
+static const uint8_t ordinary_invocation_raws[] = { 33, 36, 38, 39 };
+static const uint8_t ordinary_invocation_natural_admission_raws[] = {
+    33, 38, 39,
+};
 static const uint8_t ordinary_invocation_manual_admission_raws[] = { 36 };
-static const uint8_t ordinary_invocation_deferred_raws[] = { 35, 37, 39 };
+static const uint8_t ordinary_invocation_deferred_raws[] = { 35, 37 };
 
 static const uint8_t ordinary_manual_constructor_wire[] = {
     0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
@@ -161,6 +173,28 @@ static const uint8_t ordinary_manual_array_from_multi_wire[] = {
     0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x07,
     0x01, 0x00, 0x00, 0x00, 0x00, 0xb4, 0xb5, 0xb6,
     0x26, 0x03, 0x00, 0x28,
+};
+static const uint8_t ordinary_manual_apply_base_wire[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x03, 0x00,
+    0x03, 0x01, 0x00, 0x00, 0x00, 0x02, 0x03, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0xcf, 0x28,
+};
+
+typedef struct OrdinaryApplyWireCase {
+    const char *label;
+    uint16_t magic;
+    uint64_t wire_fnv1a64;
+} OrdinaryApplyWireCase;
+
+static const OrdinaryApplyWireCase ordinary_apply_wire_cases[] = {
+    { "magic-0", 0, UINT64_C(0xa714563baa016e71) },
+    { "magic-1", 1, UINT64_C(0x9e6acb3ba5195496) },
+    { "magic-2", 2, UINT64_C(0x95c1a03ba031dddb) },
+    { "magic-65535", UINT16_MAX, UINT64_C(0xb3e08339fdccd583) },
 };
 typedef struct OrdinaryStackCase {
     const char *name;
@@ -194,10 +228,13 @@ _Static_assert(sizeof(ordinary_expansion_call_raws) == 5, "five plain-call rows"
 _Static_assert(sizeof(ordinary_invocation_cases) /
                    sizeof(ordinary_invocation_cases[0]) == 3,
                "three compiler-natural invocation cases");
-_Static_assert(sizeof(ordinary_invocation_raws) == 3,
-               "three Stage3A invocation rows");
-_Static_assert(sizeof(ordinary_invocation_deferred_raws) == 3,
-               "three deferred invocation rows");
+_Static_assert(sizeof(ordinary_apply_cases) /
+                   sizeof(ordinary_apply_cases[0]) == 2,
+               "two compiler-natural apply cases");
+_Static_assert(sizeof(ordinary_invocation_raws) == 4,
+               "four admitted invocation rows");
+_Static_assert(sizeof(ordinary_invocation_deferred_raws) == 2,
+               "two deferred invocation rows");
 _Static_assert(sizeof(ordinary_manual_constructor_wire) == 55,
                "manual constructor wire must remain 55 bytes");
 _Static_assert(sizeof(ordinary_manual_method_wire) == 55,
@@ -206,6 +243,11 @@ _Static_assert(sizeof(ordinary_manual_array_from_zero_wire) == 25,
                "manual empty array_from wire must remain 25 bytes");
 _Static_assert(sizeof(ordinary_manual_array_from_multi_wire) == 28,
                "manual multi array_from wire must remain 28 bytes");
+_Static_assert(sizeof(ordinary_manual_apply_base_wire) == 53,
+               "manual apply base wire must remain 53 bytes");
+_Static_assert(sizeof(ordinary_apply_wire_cases) /
+                   sizeof(ordinary_apply_wire_cases[0]) == 4,
+               "four manual apply magic rows");
 _Static_assert(sizeof(ordinary_stack_cases) / sizeof(ordinary_stack_cases[0]) == 17,
                "17 rare stack rows");
 static const uint8_t scalar_prefix[] = {
@@ -3483,7 +3525,7 @@ cleanup:
 
 static size_t ordinary_opcode_size(uint8_t raw) {
     switch (raw) {
-    case 33: case 34: case 36: case 38: case 88:
+    case 33: case 34: case 36: case 38: case 39: case 88:
         return 3;
     case 62: case 105: case 176:
         return 5;
@@ -3866,9 +3908,12 @@ static int ordinary_compile_load_case(JSContext *compile_context,
         !ordinary_metadata_equal(&child, &test->child) ||
         ordinary_collect_opcodes(wire + child.code_offset,
                                  child.fields[ORD_CODE], case_raws) ||
-        (target_raw != 0 &&
-         (!case_raws[target_raw] ||
-          case_raws[33] + case_raws[36] + case_raws[38] != 1)) ||
+        (target_raw != 0 && !case_raws[target_raw]) ||
+        (target_raw == 39 &&
+         (case_raws[33] || case_raws[36] || !case_raws[38])) ||
+        (target_raw != 0 && target_raw != 39 &&
+         case_raws[33] + case_raws[36] + case_raws[38] +
+                 case_raws[39] != 1) ||
         (target_raw == 36 && !case_raws[62])) {
         fprintf(stderr, "%s ordinary BC5 wire/metadata/opcodes drifted\n",
                 test->label);
@@ -4139,6 +4184,178 @@ cleanup:
     return status;
 }
 
+#define ORDINARY_APPLY_CODE_OFFSET 51
+#define ORDINARY_APPLY_CODE_SIZE 7
+#define ORDINARY_APPLY_WIRE_SIZE \
+    (ORDINARY_APPLY_CODE_OFFSET + ORDINARY_APPLY_CODE_SIZE)
+
+static int ordinary_expect_manual_apply_base(JSContext *compile_context) {
+    static const char source[] =
+        "(function(a,b,c){'use strict';return a})";
+    JSValue compiled = JS_UNDEFINED;
+    uint8_t *wire = NULL;
+    size_t wire_size = 0;
+    int status = -1;
+
+    compiled = JS_Eval(compile_context, source, strlen(source),
+                       "ordinary-apply-base",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context, "manual apply base compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    wire = JS_WriteObject(compile_context, &wire_size, compiled,
+                          JS_WRITE_OBJ_BYTECODE);
+    if (!wire) {
+        report_exception(compile_context, "manual apply base write failed");
+        goto cleanup;
+    }
+    if (wire_size != sizeof(ordinary_manual_apply_base_wire) ||
+        memcmp(wire, ordinary_manual_apply_base_wire, wire_size) != 0 ||
+        ordinary_fnv1a64(wire, wire_size) !=
+            UINT64_C(0xa891be862c468350)) {
+        fputs("manual apply base compiler wire drifted\n", stderr);
+        goto cleanup;
+    }
+    printf("ordinary-invocation-manual-apply-base-wire-size=%zu\n",
+           wire_size);
+    printf("ordinary-invocation-manual-apply-base-wire-fnv1a64="
+           "%016" PRIx64 "\n", ordinary_fnv1a64(wire, wire_size));
+    fputs("ordinary-invocation-manual-apply-base-wire-hex=", stdout);
+    for (size_t index = 0; index < wire_size; index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    puts("ordinary-invocation-manual-apply-base-provenance="
+         "compiler-natural-strict-anonymous-three-argument");
+    puts("ordinary-invocation-manual-apply-base-transform="
+         "replace-code-at-51,get_arg0,get_arg1,get_arg2,raw39-u16,return");
+    status = 0;
+
+cleanup:
+    if (wire)
+        js_free(compile_context, wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
+static int ordinary_build_manual_apply_wire(
+    uint16_t magic, uint8_t wire[ORDINARY_APPLY_WIRE_SIZE]) {
+    static const uint8_t code[] = {
+        0xcf, 0xd0, 0xd1, 0x27, 0x00, 0x00, 0x28,
+    };
+
+    if (ordinary_fnv1a64(ordinary_manual_apply_base_wire,
+                         sizeof(ordinary_manual_apply_base_wire)) !=
+        UINT64_C(0xa891be862c468350))
+        return -1;
+    memcpy(wire, ordinary_manual_apply_base_wire,
+           ORDINARY_APPLY_CODE_OFFSET);
+    wire[33] = 3; /* max_stack_size */
+    wire[37] = ORDINARY_APPLY_CODE_SIZE;
+    memcpy(wire + ORDINARY_APPLY_CODE_OFFSET, code, sizeof(code));
+    wire[ORDINARY_APPLY_CODE_OFFSET + 4] = (uint8_t)magic;
+    wire[ORDINARY_APPLY_CODE_OFFSET + 5] = (uint8_t)(magic >> 8);
+    return 0;
+}
+
+static int ordinary_load_manual_apply(
+    JSContext *context, const OrdinaryApplyWireCase *test,
+    JSValue *function) {
+    static const OrdinaryFunctionMetadata expected_metadata = {
+        0x0243, 1, { 3, 0, 3, 3, 0, 0, 0, 7, 3 }, 51,
+    };
+    uint8_t wire[ORDINARY_APPLY_WIRE_SIZE];
+    OrdinaryFunctionMetadata child = { 0 };
+    uint8_t raws[256] = { 0 };
+    JSValue loaded = JS_UNDEFINED;
+    uint8_t *rewritten = NULL;
+    size_t rewritten_size = 0;
+    char raw_label[112];
+    size_t raw_count = 0;
+    int status = -1;
+
+    if (!test || ordinary_build_manual_apply_wire(test->magic, wire) ||
+        ordinary_fnv1a64(wire, sizeof(wire)) != test->wire_fnv1a64 ||
+        ordinary_wire_child_metadata(wire, sizeof(wire), &child) ||
+        !ordinary_metadata_equal(&child, &expected_metadata) ||
+        ordinary_collect_opcodes(wire + child.code_offset,
+                                 child.fields[ORD_CODE], raws)) {
+        fputs("manual apply wire construction drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        raw_count += raws[raw] != 0;
+    if (raw_count != 5 || !raws[39] || !raws[40] || !raws[207] ||
+        !raws[208] || !raws[209] || raws[33] || raws[35] || raws[36] ||
+        raws[37] || raws[38]) {
+        fputs("manual apply opcode set drifted\n", stderr);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, wire, sizeof(wire),
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(context, "manual apply read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != sizeof(wire) ||
+        memcmp(rewritten, wire, sizeof(wire)) != 0) {
+        if (!rewritten)
+            report_exception(context, "manual apply rewrite failed");
+        else
+            fputs("manual apply rewrite drifted\n", stderr);
+        goto cleanup;
+    }
+    *function = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(*function) ||
+        !JS_IsFunction(context, *function)) {
+        report_exception(context, "manual apply root evaluation failed");
+        *function = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    printf("ordinary-invocation-manual-apply-%s-wire-size=%zu\n",
+           test->label, sizeof(wire));
+    printf("ordinary-invocation-manual-apply-%s-wire-fnv1a64="
+           "%016" PRIx64 "\n", test->label,
+           ordinary_fnv1a64(wire, sizeof(wire)));
+    printf("ordinary-invocation-manual-apply-%s-wire-hex=", test->label);
+    for (size_t index = 0; index < sizeof(wire); index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    printf("ordinary-invocation-manual-apply-%s-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu\n",
+           test->label, child.flags, child.js_mode, child.fields[ORD_ARGS],
+           child.fields[ORD_VARS], child.fields[ORD_DEFINED_ARGS],
+           child.fields[ORD_STACK], child.fields[ORD_VAR_REFS],
+           child.fields[ORD_CLOSURES], child.fields[ORD_CPOOL],
+           child.fields[ORD_CODE], child.fields[ORD_LOCALS],
+           child.code_offset);
+    snprintf(raw_label, sizeof(raw_label),
+             "ordinary-invocation-manual-apply-%s-child-raw",
+             test->label);
+    ordinary_print_raw_set(raw_label, raws);
+    printf("ordinary-invocation-manual-apply-%s-rewrite=identity\n",
+           test->label);
+    printf("ordinary-invocation-manual-apply-%s-fresh-root=Function\n",
+           test->label);
+    status = 0;
+
+cleanup:
+    if (rewritten)
+        js_free(context, rewritten);
+    JS_FreeValue(context, loaded);
+    return status;
+}
+
 static int ordinary_expect_constructor_result(
     JSContext *context, JSValueConst result, JSValueConst new_target,
     int expected_kind, int expected_order) {
@@ -4293,6 +4510,7 @@ static int ordinary_expect_flat_array(JSContext *context,
 
 static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
     enum { CONSTRUCTOR_CASE, METHOD_CASE, ARRAYS_CASE };
+    enum { APPLY_CALL_CASE, APPLY_CONSTRUCT_CASE };
     static const uint8_t case_targets[] = { 33, 36, 38 };
     static const OrdinaryFunctionMetadata manual_constructor_metadata = {
         0x0243, 1, { 2, 0, 2, 4, 0, 0, 0, 8, 2 }, 47,
@@ -4315,9 +4533,77 @@ static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
         "receiver.seenValue=value;"
         "receiver.seenOrder=arguments.length*100+value;"
         "return this.base+value;})";
+    static const char apply_semantic_source[] =
+        "(function(){"
+        "function ok(v,m){if(!v)throw Error(m);}"
+        "function sameLog(log,want){"
+        "return log.length===want.length&&"
+        "log.every((v,i)=>v===want[i]);}"
+        "var expected;"
+        "function Call(a,b){'use strict';return {"
+        "receiver:this===expected,argc:arguments.length,"
+        "order:arguments.length?a*10+b:0,"
+        "noNewTarget:new.target===void 0};}"
+        "function Target(a,b){this.rawNewTarget=new.target===expected;"
+        "this.argc=arguments.length;this.order=a*10+b;}"
+        "function checkCall(r,argc,order){ok(r.receiver&&r.argc===argc&&"
+        "r.order===order&&r.noNewTarget,'call observation');}"
+        "function checkCtor(r,proto,argc,order){"
+        "ok(Object.getPrototypeOf(r)===proto&&r.rawNewTarget&&"
+        "r.argc===argc&&r.order===order,'construct observation');}"
+        "var dense=[4,2],raw={};var r,e;"
+        "expected=void 0;"
+        "checkCall(__stage3bNaturalApply0(Call,0,dense),2,42);"
+        "expected=Target;"
+        "checkCtor(__stage3bNaturalApply1(Target,0,dense),"
+        "Target.prototype,2,42);"
+        "expected=raw;"
+        "[__stage3bApply0,__stage3bApply1].forEach(function(apply){"
+        "[null,void 0].forEach(function(args){"
+        "checkCall(apply(Call,raw,args),0,0);});});"
+        "expected=17;checkCall(__stage3bApply0(Call,17,dense),2,42);"
+        "checkCall(__stage3bApply2(Call,17,dense),2,42);"
+        "try{__stage3bApply2(Call,raw,null);}catch(x){e=x;}"
+        "ok(e instanceof TypeError&&e.message==='not a object',"
+        "'magic 2 nullish');e=void 0;"
+        "expected=raw;checkCall(__stage3bApplyMax(Call,raw,void 0),0,0);"
+        "expected=17;r=__stage3bApply1(Target,17,dense);"
+        "checkCtor(r,Object.prototype,2,42);"
+        "var ordinaryProto={},ordinary={prototype:ordinaryProto};"
+        "expected=ordinary;r=__stage3bApply1(Target,ordinary,dense);"
+        "checkCtor(r,ordinaryProto,2,42);"
+        "function NewTarget(){}expected=NewTarget;"
+        "r=__stage3bApply1(Target,NewTarget,dense);"
+        "checkCtor(r,NewTarget.prototype,2,42);"
+        "r=__stage3bApplyMax(Target,NewTarget,dense);"
+        "checkCtor(r,NewTarget.prototype,2,42);"
+        "var log=[];var poison={get length(){"
+        "log.push('poison-length');throw Error('poison length');}};"
+        "try{__stage3bApply1(7,raw,poison);}catch(x){e=x;}"
+        "ok(e instanceof TypeError&&e.message==='not a function'&&"
+        "log.length===0,'callability order');e=void 0;"
+        "var list={get length(){log.push('length');return 2;},"
+        "get 0(){log.push('0');return 2;},"
+        "get 1(){log.push('1');return 1;}};"
+        "var Arrow=(a,b)=>a+b;"
+        "try{__stage3bApply1(Arrow,ordinary,list);}catch(x){e=x;}"
+        "ok(e instanceof TypeError&&sameLog(log,['length','0','1']),"
+        "'constructor order');e=void 0;log.length=0;"
+        "var proxy=new Proxy(class ConstructOnly{}, {"
+        "construct:function(target,args,newTarget){log.push('construct');"
+        "return {rawNewTarget:newTarget===expected,argc:args.length,"
+        "order:args[0]*10+args[1]};}});"
+        "expected=ordinary;r=__stage3bApply1(proxy,ordinary,list);"
+        "checkCtor(r,Object.prototype,2,21);"
+        "ok(sameLog(log,['length','0','1','construct']),'proxy order');"
+        "return 42;})()";
     JSRuntime *runtime = NULL;
     JSContext *context = NULL;
     JSValue functions[3] = { JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED };
+    JSValue apply_functions[2] = { JS_UNDEFINED, JS_UNDEFINED };
+    JSValue manual_apply_functions[4] = {
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+    };
     JSValue manual_constructor = JS_UNDEFINED;
     JSValue manual_method = JS_UNDEFINED;
     JSValue constructors = JS_UNDEFINED;
@@ -4335,6 +4621,7 @@ static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
     JSValue method_seen_order = JS_UNDEFINED;
     JSValue manual_empty_array = JS_UNDEFINED;
     JSValue manual_multi_array = JS_UNDEFINED;
+    JSValue apply_semantic_result = JS_UNDEFINED;
     JSValue array_results[2] = { JS_UNDEFINED, JS_UNDEFINED };
     OrdinaryArrayBundle bundles[2] = {
         { JS_UNDEFINED, JS_UNDEFINED },
@@ -4403,6 +4690,15 @@ static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
                                        case_targets[index]))
             goto cleanup;
     }
+    for (size_t index = 0;
+         index < sizeof(ordinary_apply_cases) /
+                     sizeof(ordinary_apply_cases[0]); index++) {
+        if (ordinary_compile_load_case(compile_context, context,
+                                       &ordinary_apply_cases[index],
+                                       &apply_functions[index],
+                                       compiler_raws, 39))
+            goto cleanup;
+    }
     for (unsigned raw = 0; raw < 256; raw++) {
         compiler_raw_count += compiler_raws[raw] != 0;
         compiler_target_count += compiler_raws[raw] && invocation_raws[raw];
@@ -4412,20 +4708,21 @@ static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
             goto cleanup;
         }
     }
-    if (compiler_raw_count != 11 || compiler_target_count != 3 ||
+    if (compiler_raw_count != 17 || compiler_target_count != 4 ||
         !compiler_raws[62]) {
         fputs("ordinary invocation compiler discovery drifted\n", stderr);
         goto cleanup;
     }
     puts("ordinary-invocation-evidence="
          "compiler-natural-write-read-write-fresh-runtime");
-    puts("ordinary-invocation-compiler-natural-count=3");
+    puts("ordinary-invocation-compiler-natural-case-count=5");
+    puts("ordinary-invocation-compiler-natural-raw-count=4");
     ordinary_print_raw_set("ordinary-invocation-compiler-natural-raw",
                            invocation_raws);
-    puts("ordinary-invocation-compiler-union-count=11");
+    puts("ordinary-invocation-compiler-union-count=17");
     ordinary_print_raw_set("ordinary-invocation-compiler-union-raw",
                            compiler_raws);
-    puts("ordinary-invocation-natural-full-admission-count=2");
+    puts("ordinary-invocation-natural-full-admission-count=3");
     ordinary_print_raw_set("ordinary-invocation-natural-full-admission-raw",
                            natural_admission_raws);
     puts("ordinary-invocation-natural-full-admission-status="
@@ -4434,16 +4731,20 @@ static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
          "raw62-get_field2-blocked");
     puts("ordinary-invocation-method-public-provenance="
          "authenticated-manual-wire-property-free-synthetic-stack");
-    puts("ordinary-invocation-public-admission-count=3");
+    puts("ordinary-invocation-public-admission-count=4");
     ordinary_print_raw_set("ordinary-invocation-public-admission-raw",
                            invocation_raws);
     puts("ordinary-invocation-deferred-status=blocked-pending");
     ordinary_print_raw_set("ordinary-invocation-deferred-raw",
                            deferred_raws);
     puts("ordinary-invocation-deferred-detail="
-         "raw35-tail_call,raw37-tail_call_method,raw39-apply");
+         "raw35-tail_call,raw37-tail_call_method");
+    puts("ordinary-invocation-apply-operand-policy="
+         "rust-admitted:0,1;rust-unadmitted:2,65535;"
+         "upstream-mechanically-executable:u16");
 
-    if (ordinary_load_manual_invocation(
+    if (ordinary_expect_manual_apply_base(compile_context) ||
+        ordinary_load_manual_invocation(
             context, "constructor", ordinary_manual_constructor_wire,
             sizeof(ordinary_manual_constructor_wire),
             UINT64_C(0xc30527b59bccdaa3),
@@ -4464,6 +4765,14 @@ static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
             UINT64_C(0xf0741b4abade33ab), 3, 7,
             &manual_multi_array))
         goto cleanup;
+    for (size_t index = 0;
+         index < sizeof(ordinary_apply_wire_cases) /
+                     sizeof(ordinary_apply_wire_cases[0]); index++) {
+        if (ordinary_load_manual_apply(
+                context, &ordinary_apply_wire_cases[index],
+                &manual_apply_functions[index]))
+            goto cleanup;
+    }
     {
         static const int expected_multi[] = { 1, 2, 3 };
         if (ordinary_expect_flat_array(context, manual_empty_array,
@@ -4631,12 +4940,74 @@ static int expect_ordinary_invocation_cohort(JSContext *compile_context) {
     puts("ordinary-invocation-array-from-multi=length:3,values:1,2,3");
     puts("ordinary-invocation-array-from-fresh-identity="
          "outer:distinct,empty:distinct,multi:distinct");
+
+    if (JS_SetPropertyStr(context, global, "__stage3bNaturalApply0",
+                          JS_DupValue(context,
+                                      apply_functions[APPLY_CALL_CASE])) < 0 ||
+        JS_SetPropertyStr(context, global, "__stage3bNaturalApply1",
+                          JS_DupValue(context,
+                                      apply_functions[APPLY_CONSTRUCT_CASE])) < 0 ||
+        JS_SetPropertyStr(context, global, "__stage3bApply0",
+                          JS_DupValue(context,
+                                      manual_apply_functions[0])) < 0 ||
+        JS_SetPropertyStr(context, global, "__stage3bApply1",
+                          JS_DupValue(context,
+                                      manual_apply_functions[1])) < 0 ||
+        JS_SetPropertyStr(context, global, "__stage3bApply2",
+                          JS_DupValue(context,
+                                      manual_apply_functions[2])) < 0 ||
+        JS_SetPropertyStr(context, global, "__stage3bApplyMax",
+                          JS_DupValue(context,
+                                      manual_apply_functions[3])) < 0) {
+        report_exception(context, "apply oracle publication failed");
+        goto cleanup;
+    }
+    apply_semantic_result = JS_Eval(
+        context, apply_semantic_source, strlen(apply_semantic_source),
+        "apply-semantic-oracle.js", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(apply_semantic_result) ||
+        JS_VALUE_GET_TAG(apply_semantic_result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(apply_semantic_result) != 42) {
+        report_exception(context, "apply semantic oracle failed");
+        goto cleanup;
+    }
+    puts("ordinary-invocation-apply-natural-call="
+         "magic:0,receiver:undefined,argc:2,order:42,new.target:undefined");
+    puts("ordinary-invocation-apply-natural-construct="
+         "magic:1,new-target:same,argc:2,order:42,prototype:target");
+    puts("ordinary-invocation-apply-nullish-shortcut="
+         "magic:0,1;array:null,undefined;receiver:raw-object;"
+         "argc:0;new.target:undefined");
+    puts("ordinary-invocation-apply-dense-call="
+         "magic:0,receiver:raw-int-17,argc:2,order:42");
+    puts("ordinary-invocation-apply-noncanonical-even="
+         "magic:2,upstream:call,receiver:raw-int-17,argc:2,order:42,"
+         "rust:unadmitted");
+    puts("ordinary-invocation-apply-noncanonical-nullish="
+         "magic:2,null:TypeError-not-a-object;"
+         "magic:65535,undefined:ordinary-call");
+    puts("ordinary-invocation-apply-construct-raw-new-target="
+         "magic:1;primitive:accepted-default-prototype;"
+         "ordinary-object:accepted-own-prototype;"
+         "callable:accepted-own-prototype;prevalidation:none");
+    puts("ordinary-invocation-apply-noncanonical-odd="
+         "magic:65535,upstream:construct,callable-new-target,"
+         "argc:2,order:42,rust:unadmitted");
+    puts("ordinary-invocation-apply-error-order-callability="
+         "not-function-before-poison-length,log:empty");
+    puts("ordinary-invocation-apply-error-order-constructor="
+         "build-list:length,0,1;then:not-constructor-TypeError");
+    puts("ordinary-invocation-apply-construct-only-proxy="
+         "build-list:length,0,1;trap:construct;raw-new-target:ordinary;"
+         "argc:2,order:21");
+    puts("ordinary-invocation-apply-oracle=passed");
     puts("ordinary-invocation-oracle=passed");
     status = 0;
 
 cleanup:
     ordinary_method_receiver = JS_UNDEFINED;
     if (context) {
+        JS_FreeValue(context, apply_semantic_result);
         JS_FreeValue(context, manual_multi_array);
         JS_FreeValue(context, manual_empty_array);
         for (size_t index = 0; index < 2; index++) {
@@ -4659,6 +5030,10 @@ cleanup:
         JS_FreeValue(context, constructors);
         JS_FreeValue(context, manual_method);
         JS_FreeValue(context, manual_constructor);
+        for (size_t index = 0; index < 4; index++)
+            JS_FreeValue(context, manual_apply_functions[index]);
+        for (size_t index = 0; index < 2; index++)
+            JS_FreeValue(context, apply_functions[index]);
         for (size_t index = 0; index < 3; index++)
             JS_FreeValue(context, functions[index]);
         JS_FreeContext(context);

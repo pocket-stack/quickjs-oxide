@@ -4066,13 +4066,20 @@ impl VmHost for RuntimeVmHost {
         argument_array: Value,
         kind: ApplyKind,
     ) -> Result<Completion, Error> {
-        // Pinned QuickJS's js_function_apply checks callability before
-        // build_arg_list for both magic values. Constructor capability and
-        // newTarget validation deliberately remain after list construction.
+        // Pinned QuickJS's js_function_apply checks callability before its
+        // nullish-list shortcut and build_arg_list for both magic values.
+        // Constructor capability deliberately remains after list construction;
+        // constructor-mode newTarget is forwarded as the untouched raw value.
         let callable = self
             .runtime
             .callable_from_value(function.clone())
             .map_err(runtime_error_to_vm_error)?;
+        if matches!(argument_array, Value::Undefined | Value::Null) {
+            return self
+                .runtime
+                .call_internal(self.current_realm, &callable, this_or_new_target, &[])
+                .map_err(runtime_error_to_vm_error);
+        }
         let arguments = match self.build_argument_list(argument_array)? {
             ArgumentListOutcome::Values(arguments) => arguments,
             ArgumentListOutcome::Throw(value) => return Ok(Completion::Throw(value)),
@@ -4089,9 +4096,9 @@ impl VmHost for RuntimeVmHost {
                 .map_err(runtime_error_to_vm_error),
             ApplyKind::Construct => self
                 .runtime
-                .construct_value_internal(
+                .construct_callable_with_raw_new_target_internal(
                     self.current_realm,
-                    function,
+                    &callable,
                     this_or_new_target,
                     &arguments,
                 )
@@ -4140,7 +4147,12 @@ impl VmHost for RuntimeVmHost {
         arguments: Vec<Value>,
     ) -> Result<Completion, Error> {
         self.runtime
-            .construct_value_internal(self.current_realm, function, new_target, &arguments)
+            .construct_value_with_raw_new_target_internal(
+                self.current_realm,
+                function,
+                new_target,
+                &arguments,
+            )
             .map_err(runtime_error_to_vm_error)
     }
 
@@ -4179,7 +4191,7 @@ impl VmHost for RuntimeVmHost {
             .map(|binding| read_frame_binding(&self.runtime, binding))
             .collect::<Result<Vec<_>, _>>()?;
         self.runtime
-            .construct_value_internal(
+            .construct_value_with_raw_new_target_internal(
                 self.current_realm,
                 super_constructor,
                 new_target,
@@ -5032,7 +5044,11 @@ mod tests {
         let mut context = runtime.new_context();
         let base = eval_object(
             &mut context,
-            "(function Base(a, b) { this.sum = a + b; this.count = arguments.length; })",
+            "(function Base(a, b) { \
+                this.sum = a + b; \
+                this.count = arguments.length; \
+                this.rawNewTarget = new.target; \
+            })",
         );
         let active = eval_object(&mut context, "(function Derived() {})");
         assert!(runtime.set_prototype_of(&active, Some(&base)).unwrap());
@@ -5047,7 +5063,7 @@ mod tests {
             FrameBinding::Direct(Value::Int(999)),
         ];
         let Completion::Return(Value::Object(instance)) = host
-            .init_derived_constructor(active.clone(), Value::Object(active.clone()))
+            .init_derived_constructor(active.clone(), Value::Int(17))
             .unwrap()
         else {
             panic!("default derived initialization did not construct an Object")
@@ -5063,15 +5079,14 @@ mod tests {
             context.get_property(&instance, &count).unwrap(),
             Value::Int(2)
         );
-
-        let prototype = runtime.intern_property_key("prototype").unwrap();
-        let Value::Object(active_prototype) = context.get_property(&active, &prototype).unwrap()
-        else {
-            panic!("new.target did not expose an Object prototype")
-        };
+        let raw_new_target = runtime.intern_property_key("rawNewTarget").unwrap();
+        assert_eq!(
+            context.get_property(&instance, &raw_new_target).unwrap(),
+            Value::Int(17)
+        );
         assert_eq!(
             runtime.get_prototype_of(&instance).unwrap(),
-            Some(active_prototype)
+            Some(context.object_prototype().unwrap())
         );
     }
 

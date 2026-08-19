@@ -25,12 +25,10 @@ impl Runtime {
         &self,
         realm: ContextId,
         regexp: &ObjectRef,
-    ) -> Result<NativeConversion<CallableRef>, RuntimeError> {
+    ) -> Result<NativeConversion<ConstructorRef>, RuntimeError> {
         let default_id = self.regexp_realm_data(realm)?.constructor;
         let default = ObjectRef::from_borrowed_handle(self.clone(), default_id)?;
-        let default = self.as_callable(&default)?.ok_or(RuntimeError::Invariant(
-            "realm RegExp constructor root was not callable",
-        ))?;
+        let default = ConstructorRef::from_validated_object(default);
 
         let constructor_key = self.intern_property_key("constructor")?;
         let constructor = match self.get_property_in_realm(realm, regexp, &constructor_key)? {
@@ -272,30 +270,17 @@ impl Runtime {
         caller_realm: ContextId,
         new_target: Value,
     ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let Value::Object(new_target_object) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "RegExp constructor new.target was not an object",
-            ));
+        let prototype = match self.prototype_from_constructor_value(
+            caller_realm,
+            &new_target,
+            |fallback_realm| {
+                let prototype = self.regexp_realm_data(fallback_realm)?.prototype;
+                Ok(ObjectRef::from_borrowed_handle(self.clone(), prototype)?)
+            },
+        )? {
+            NativeConversion::Value(prototype) => prototype,
+            NativeConversion::Throw(value) => return Ok(NativeConversion::Throw(value)),
         };
-        let prototype_key = self.intern_property_key("prototype")?;
-        let prototype =
-            match self.get_property_in_realm(caller_realm, &new_target_object, &prototype_key)? {
-                Completion::Return(Value::Object(prototype)) => prototype,
-                Completion::Return(_) => {
-                    // GetFunctionRealm is intentionally delayed until after the
-                    // observable prototype Get returned a non-object.
-                    let callable = self.callable_from_value(Value::Object(new_target_object))?;
-                    let fallback_realm = match self.function_realm(caller_realm, &callable)? {
-                        NativeConversion::Value(realm) => realm,
-                        NativeConversion::Throw(value) => {
-                            return Ok(NativeConversion::Throw(value));
-                        }
-                    };
-                    let prototype = self.regexp_realm_data(fallback_realm)?.prototype;
-                    ObjectRef::from_borrowed_handle(self.clone(), prototype)?
-                }
-                Completion::Throw(value) => return Ok(NativeConversion::Throw(value)),
-            };
         Ok(NativeConversion::Value(
             self.new_uninitialized_regexp(&prototype)?,
         ))

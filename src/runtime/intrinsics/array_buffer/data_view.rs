@@ -648,29 +648,9 @@ impl Runtime {
         realm: ContextId,
         new_target: Value,
     ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let Value::Object(new_target_object) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "DataView constructor new.target was not an object",
-            ));
-        };
-        let prototype_key = self.intern_property_key("prototype")?;
-        match self.get_property_in_realm(realm, &new_target_object, &prototype_key)? {
-            Completion::Return(Value::Object(prototype)) => Ok(NativeConversion::Value(prototype)),
-            Completion::Return(_) => {
-                let new_target_callable =
-                    self.callable_from_value(Value::Object(new_target_object))?;
-                let fallback_realm = match self.function_realm(realm, &new_target_callable)? {
-                    NativeConversion::Value(realm) => realm,
-                    NativeConversion::Throw(value) => {
-                        return Ok(NativeConversion::Throw(value));
-                    }
-                };
-                Ok(NativeConversion::Value(
-                    self.data_view_default_prototype(fallback_realm)?,
-                ))
-            }
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
+        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
+            self.data_view_default_prototype(fallback_realm)
+        })
     }
 
     fn data_view_default_prototype(&self, realm: ContextId) -> Result<ObjectRef, RuntimeError> {

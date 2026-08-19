@@ -1349,28 +1349,9 @@ impl Runtime {
         new_target: Value,
         element: TypedArrayElementKind,
     ) -> Result<NativeConversion<ObjectRef>, RuntimeError> {
-        let Value::Object(new_target_object) = new_target else {
-            return Err(RuntimeError::Invariant(
-                "TypedArray constructor new.target was not an object",
-            ));
-        };
-        let prototype_key = self.intern_property_key("prototype")?;
-        match self.get_property_in_realm(realm, &new_target_object, &prototype_key)? {
-            Completion::Return(Value::Object(prototype)) => Ok(NativeConversion::Value(prototype)),
-            Completion::Return(_) => {
-                let new_target = self.callable_from_value(Value::Object(new_target_object))?;
-                let fallback_realm = match self.function_realm(realm, &new_target)? {
-                    NativeConversion::Value(value) => value,
-                    NativeConversion::Throw(value) => {
-                        return Ok(NativeConversion::Throw(value));
-                    }
-                };
-                Ok(NativeConversion::Value(
-                    self.typed_array_default_prototype(fallback_realm, element)?,
-                ))
-            }
-            Completion::Throw(value) => Ok(NativeConversion::Throw(value)),
-        }
+        self.prototype_from_constructor_value(realm, &new_target, |fallback_realm| {
+            self.typed_array_default_prototype(fallback_realm, element)
+        })
     }
 
     fn typed_array_default_prototype(
