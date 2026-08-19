@@ -6074,18 +6074,224 @@ if not (root / ".boundary-self-test").is_file():
     stage3d_receipt_paragraphs = [
         paragraph
         for paragraph in re.split(r"\n[ \t]*\n", stage3d_status)
-        if "The latest full R3fj receipt" in paragraph
+        if "The latest full R3fj execution" in paragraph
     ]
-    if (
-        len(stage3d_receipt_paragraphs) != 1
-        or normalized_code_sha256(stage3d_receipt_paragraphs[0])
-        != "6f9e2f12c36e45adb52322e0b450a1ccdea0c7680d9cf176c651d6c70c91f49a"
-        or "source-stale for Stage 3D" not in stage3d_receipt_paragraphs[0]
-        or "does not certify raw48 admission or the Stage3D" not in stage3d_receipt_paragraphs[0]
+    stage3d_receipt_config = read_source("dev-support/test262/current.conf")
+    stage3d_receipt_values: dict[str, str] = {}
+    for line_number, line in enumerate(stage3d_receipt_config.splitlines(), 1):
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if (
+            separator != "="
+            or not re.fullmatch(r"[a-z][a-z0-9_]*", key)
+            or not value
+        ):
+            fail(
+                "stage3d-status",
+                f"dev-support/test262/current.conf:{line_number} is not a canonical key=value receipt field",
+            )
+            continue
+        if key in stage3d_receipt_values:
+            fail(
+                "stage3d-status",
+                f"dev-support/test262/current.conf repeats receipt field {key}",
+            )
+            continue
+        stage3d_receipt_values[key] = value
+
+    stage3d_receipt_metrics = {
+        "milestone": "r3fj",
+        "focused_variants": "6844",
+        "focused_eligible": "6844",
+        "focused_runnable": "6844",
+        "focused_passes": "6844",
+        "focused_tsv_lines": "6857",
+        "focused_jsonl_lines": "6846",
+        "focused_summary": "pass=6844",
+        "full_variants": "102037",
+        "full_eligible": "80032",
+        "full_runnable": "80032",
+        "full_passes": "79982",
+        "full_tsv_lines": "102050",
+        "full_jsonl_lines": "102039",
+        "full_summary": "fail-parse=7 fail-runtime=43 pass=79982 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=847 unsupported-module=121 unsupported-negative-provenance=2562",
+    }
+    drifted_stage3d_receipt_metrics = {
+        key: stage3d_receipt_values.get(key)
+        for key, expected in stage3d_receipt_metrics.items()
+        if stage3d_receipt_values.get(key) != expected
+    }
+    if drifted_stage3d_receipt_metrics:
+        fail(
+            "stage3d-status",
+            "the promoted Stage3D receipt must retain the exact unchanged R3fj focused/full metrics; "
+            f"found {drifted_stage3d_receipt_metrics}",
+        )
+
+    stage3d_receipt_hex_fields = {
+        "engine_semantics_source": 40,
+        "engine_semantics_sha256": 64,
+        "full_tsv_sha256": 64,
+        "full_jsonl_sha256": 64,
+    }
+    invalid_stage3d_receipt_fields = {
+        key: stage3d_receipt_values.get(key)
+        for key, width in stage3d_receipt_hex_fields.items()
+        if not re.fullmatch(
+            rf"[0-9a-f]{{{width}}}", stage3d_receipt_values.get(key, "")
+        )
+    }
+    if invalid_stage3d_receipt_fields:
+        fail(
+            "stage3d-status",
+            "the promoted Stage3D receipt source, fingerprint, and full-report hashes must be canonical current.conf fields; "
+            f"found {invalid_stage3d_receipt_fields}",
+        )
+
+    if len(stage3d_receipt_paragraphs) != 1:
+        fail(
+            "stage3d-status",
+            "the status document must contain exactly one promoted Stage3D R3fj receipt paragraph with a blank-line boundary",
+        )
+    elif not invalid_stage3d_receipt_fields and not drifted_stage3d_receipt_metrics:
+        stage3d_receipt_offset = stage3d_status.find(stage3d_receipt_paragraphs[0])
+        stage3d_receipt_prefix = stage3d_status[:stage3d_receipt_offset]
+        stage3d_receipt_in_html_comment = (
+            stage3d_receipt_prefix.rfind("<!--")
+            > stage3d_receipt_prefix.rfind("-->")
+        )
+        stage3d_receipt_is_indented_code = any(
+            re.match(r"(?:[ ]{4,}|\t)", line)
+            for line in stage3d_receipt_paragraphs[0].splitlines()
+            if line
+        )
+        active_stage3d_fence: tuple[str, int] | None = None
+        for line in stage3d_receipt_prefix.splitlines():
+            fence = re.match(
+                r"^[ ]{0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$", line
+            )
+            if fence is None:
+                continue
+            marker = fence.group("marker")
+            tail = fence.group("tail")
+            if active_stage3d_fence is None:
+                if marker[0] != "`" or "`" not in tail:
+                    active_stage3d_fence = (marker[0], len(marker))
+            elif (
+                marker[0] == active_stage3d_fence[0]
+                and len(marker) >= active_stage3d_fence[1]
+                and not tail.strip()
+            ):
+                active_stage3d_fence = None
+
+        stage3d_html_stack: list[tuple[str, bool]] = []
+        stage3d_void_html_tags = {
+            "area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr",
+        }
+        for tag_match in re.finditer(
+            r"<(?P<closing>/)?(?P<tag>[A-Za-z][A-Za-z0-9:-]*)(?P<attrs>[^<>]*)>",
+            stage3d_receipt_prefix,
+        ):
+            tag = tag_match.group("tag").lower()
+            attrs = tag_match.group("attrs")
+            if tag_match.group("closing"):
+                for index in range(len(stage3d_html_stack) - 1, -1, -1):
+                    if stage3d_html_stack[index][0] == tag:
+                        del stage3d_html_stack[index:]
+                        break
+                continue
+            if attrs.rstrip().endswith("/") or tag in stage3d_void_html_tags:
+                continue
+            concealed = (
+                any(entry[1] for entry in stage3d_html_stack)
+                or tag in {"code", "details", "pre", "script", "style", "template"}
+                or re.search(r"(?:^|[ \t])hidden(?:[ \t=]|$)", attrs, re.IGNORECASE)
+                is not None
+                or re.search(
+                    r"(?:display[ \t]*:[ \t]*none|visibility[ \t]*:[ \t]*hidden|aria-hidden[ \t]*=[ \t]*['\"]?true)",
+                    attrs,
+                    re.IGNORECASE,
+                )
+                is not None
+            )
+            stage3d_html_stack.append((tag, concealed))
+        stage3d_receipt_in_concealed_html = any(
+            entry[1] for entry in stage3d_html_stack
+        )
+        if (
+            stage3d_receipt_in_html_comment
+            or stage3d_receipt_is_indented_code
+            or active_stage3d_fence is not None
+            or stage3d_receipt_in_concealed_html
+        ):
+            fail(
+                "stage3d-status",
+                "the promoted Stage3D R3fj receipt paragraph must remain rendered prose, not a comment, code block, or concealed HTML descendant",
+            )
+
+        stage3d_receipt_provenance = {
+            "run": "32298418735",
+            "artifact": "9382740586",
+            "artifact_sha256": "804ee9b2769d5608b241bc4bdcf0ad5a4daf7d3aeb6c6ef8561a9b77a7c3cc54",
+            "stage3c_run": "32287492488",
+            "stage3c_artifact": "9378830330",
+        }
+        source = re.escape(stage3d_receipt_values["engine_semantics_source"])
+        fingerprint = re.escape(stage3d_receipt_values["engine_semantics_sha256"])
+        full_tsv_hash = re.escape(stage3d_receipt_values["full_tsv_sha256"])
+        full_jsonl_hash = re.escape(stage3d_receipt_values["full_jsonl_sha256"])
+        focused_passes = f'{int(stage3d_receipt_values["focused_passes"]):,}'
+        full_variants = f'{int(stage3d_receipt_values["full_variants"]):,}'
+        full_eligible = f'{int(stage3d_receipt_values["full_eligible"]):,}'
+        full_passes = f'{int(stage3d_receipt_values["full_passes"]):,}'
+        full_tsv_lines = f'{int(stage3d_receipt_values["full_tsv_lines"]):,}'
+        full_jsonl_lines = f'{int(stage3d_receipt_values["full_jsonl_lines"]):,}'
+        receipt_pattern = re.compile(
+            rf"The latest full R3fj execution, exact-source GitHub Actions run `{stage3d_receipt_provenance['run']}`, "
+            rf"authenticates Stage 3D source `{source}` with engine fingerprint `{fingerprint}`\. "
+            rf"The run reached only the expected stale-receipt checksum failure, while its "
+            rf"always-upload artifact `{stage3d_receipt_provenance['artifact']}` \(SHA-256 "
+            rf"`{stage3d_receipt_provenance['artifact_sha256']}`\) records the "
+            rf"{full_tsv_lines}-line TSV as `{full_tsv_hash}` and the {full_jsonl_lines}-line JSONL as "
+            rf"`{full_jsonl_hash}`\. After replacing the single Stage 3D fingerprint occurrence "
+            rf"in each full receipt with the Stage 3C fingerprint, both files are byte-for-byte "
+            rf"identical to authenticated Stage 3C run `{stage3d_receipt_provenance['stage3c_run']}`, "
+            rf"artifact `{stage3d_receipt_provenance['stage3c_artifact']}`: "
+            rf"all {full_variants} classified outcomes, {full_passes} full passes, and {full_eligible} eligible variants "
+            rf"are unchanged\. The refreshed {focused_passes}-pass focused TSV and JSONL are likewise "
+            rf"byte-identical on exact-source replay\. This promoted receipt therefore covers "
+            rf"the Stage 3D raw-48 admission and its Rust/C evidence without changing the "
+            rf"Test262 profile or the published metrics above\."
+        )
+        normalized_receipt_paragraph = " ".join(
+            stage3d_receipt_paragraphs[0].split()
+        )
+        if receipt_pattern.fullmatch(normalized_receipt_paragraph) is None:
+            fail(
+                "stage3d-status",
+                "the complete promoted Stage3D R3fj paragraph must match current.conf source, fingerprint, full-report hashes, exact unchanged metrics, and its blank-line boundary",
+            )
+
+    normalized_stage3d_status = " ".join(stage3d_status.split())
+    stage3d_contrary_claims = (
+        r"\b(?:source[- ]stale|stale)[ \t]+for[ \t]+Stage[ \t]*3D\b",
+        r"\b(?:does[ \t]+not|cannot)[ \t]+(?:certify|cover|authenticate)[ \t]+(?:the[ \t]+)?(?:raw[- ]?48|Stage[ \t]*3D)\b",
+        r"\bStage[ \t]*3D\b[^.]{0,80}\b(?:is|remains)[ \t]+(?:source[- ]stale|stale|uncertified|unauthenticated|not[ \t]+authenticated|not[ \t]+certified)\b",
+        r"\bStage[ \t]*3D\b[ \t]+(?:is|remains)[ \t]+(?:uncovered|not[ \t]+covered)\b",
+        r"\bStage[ \t]*3D\b[^.]{0,80}\bhas[ \t]+(?:not[ \t]+been|yet[ \t]+to[ \t]+be)[ \t]+(?:authenticated|certified|covered)\b",
+        r"\bonly[ \t]+Stage[ \t]*3C\b[^.]{0,100}\b(?:is|was|has[ \t]+been)[ \t]+(?:authenticated|certified|covered)\b[^.]{0,100}\b(?:this[ \t]+)?receipt\b",
+        r"\b(?:this[ \t]+)?receipt\b[^.]{0,80}\b(?:authenticates|certifies|covers)[ \t]+only[ \t]+Stage[ \t]*3C\b",
+        r"\b(?:this[ \t]+)?receipt\b[ \t]+only[ \t]+(?:authenticates|certifies|covers)[ \t]+Stage[ \t]*3C\b",
+    )
+    if any(
+        re.search(pattern, normalized_stage3d_status, re.IGNORECASE)
+        for pattern in stage3d_contrary_claims
     ):
         fail(
             "stage3d-status",
-            "the complete R3fj paragraph must remain source-stale for Stage3D, retain unchanged metrics, and end at its blank-line boundary without a contrary certification",
+            "the promoted Stage3D receipt must not be contradicted by an appended stale, uncertified, or uncovered claim",
         )
 
 src_root = root / "src"
@@ -7969,13 +8175,15 @@ expect_full_rewrite_rejected() {
 
     mkdir -p "$case_root"
     cp -R "$repository_root/src" "$case_root/src"
-    mkdir -p "$case_root/tests/fixtures" "$case_root/dev-support" "$case_root/docs"
+    mkdir -p "$case_root/tests/fixtures" "$case_root/dev-support/test262" "$case_root/docs"
     cp -- "$repository_root/tests/fixtures/function_bytecode_wire.c" \
         "$case_root/tests/fixtures/function_bytecode_wire.c"
     cp -- "$repository_root/tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt" \
         "$case_root/tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt"
     cp -- "$repository_root/dev-support/quickjs-c-oracles.tsv" \
         "$case_root/dev-support/quickjs-c-oracles.tsv"
+    cp -- "$repository_root/dev-support/test262/current.conf" \
+        "$case_root/dev-support/test262/current.conf"
     cp -- "$repository_root/docs/status.md" "$case_root/docs/status.md"
     python3 - "$case_root/$relative" "$before" "$after" "$before2" "$after2" <<'PY'
 from pathlib import Path
@@ -8741,14 +8949,131 @@ expect_full_rewrite_rejected stage3d-runtime-test-nested-cfg \
     $'#[cfg(any())]\nmod disabled_raw48_metadata {\n#[test]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {' \
     $'    assert!(!context.has_exception());\n}\n\n#[test]\nfn trusted_quickjs_ordinary_non_tail_invocations_preserve_stack_contracts() {' \
     $'    assert!(!context.has_exception());\n}\n}\n\n#[test]\nfn trusted_quickjs_ordinary_non_tail_invocations_preserve_stack_contracts() {'
-expect_full_rewrite_rejected stage3d-status-source-stale-erased \
+expect_full_rewrite_rejected stage3d-status-current-certification-erased \
     stage3d-status docs/status.md \
-    'source-stale for Stage 3D; it does not certify raw48 admission or the Stage3D' \
-    'source-current for Stage 3D; it now certifies raw48 admission and the Stage3D'
-expect_full_rewrite_rejected stage3d-status-source-current-appended \
+    'This promoted receipt therefore covers' \
+    'This promoted receipt merely describes'
+expect_full_rewrite_rejected stage3d-status-provenance-tampered \
     stage3d-status docs/status.md \
-    $'R3fj result until a new exact-source receipt is promoted.\n\nThe same oracle pins' \
-    $'R3fj result until a new exact-source receipt is promoted.\nStage 3D is now source-current and certified.\n\nThe same oracle pins'
+    'exact-source GitHub Actions run `32298418735`' \
+    'exact-source GitHub Actions run `32298418736`'
+stage3d_current_fingerprint=$(
+    sed -n 's/^engine_semantics_sha256=//p' \
+        "$repository_root/dev-support/test262/current.conf"
+)
+stage3d_current_source=$(
+    sed -n 's/^engine_semantics_source=//p' \
+        "$repository_root/dev-support/test262/current.conf"
+)
+stage3d_current_full_tsv=$(
+    sed -n 's/^full_tsv_sha256=//p' \
+        "$repository_root/dev-support/test262/current.conf"
+)
+stage3d_current_full_jsonl=$(
+    sed -n 's/^full_jsonl_sha256=//p' \
+        "$repository_root/dev-support/test262/current.conf"
+)
+[[ $stage3d_current_fingerprint =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3D receipt canary requires one canonical current.conf fingerprint"
+[[ $stage3d_current_source =~ ^[0-9a-f]{40}$ ]] \
+    || die "Stage3D receipt canary requires one canonical current.conf source"
+[[ $stage3d_current_full_tsv =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3D receipt canary requires one canonical current.conf full TSV hash"
+[[ $stage3d_current_full_jsonl =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3D receipt canary requires one canonical current.conf full JSONL hash"
+tamper_stage3d_receipt_hex() {
+    local value=$1
+    if [[ ${value:0:1} == 0 ]]; then
+        printf '1%s' "${value:1}"
+    else
+        printf '0%s' "${value:1}"
+    fi
+}
+stage3d_tampered_source=$(tamper_stage3d_receipt_hex "$stage3d_current_source")
+stage3d_tampered_fingerprint=$(tamper_stage3d_receipt_hex "$stage3d_current_fingerprint")
+stage3d_tampered_full_tsv=$(tamper_stage3d_receipt_hex "$stage3d_current_full_tsv")
+stage3d_tampered_full_jsonl=$(tamper_stage3d_receipt_hex "$stage3d_current_full_jsonl")
+expect_full_rewrite_rejected stage3d-status-current-source-tampered \
+    stage3d-status docs/status.md \
+    "$stage3d_current_source" \
+    "$stage3d_tampered_source"
+expect_full_rewrite_rejected stage3d-status-current-fingerprint-tampered \
+    stage3d-status docs/status.md \
+    "$stage3d_current_fingerprint" \
+    "$stage3d_tampered_fingerprint"
+expect_full_rewrite_rejected stage3d-status-current-full-tsv-tampered \
+    stage3d-status docs/status.md \
+    "$stage3d_current_full_tsv" \
+    "$stage3d_tampered_full_tsv"
+expect_full_rewrite_rejected stage3d-status-current-full-jsonl-tampered \
+    stage3d-status docs/status.md \
+    "$stage3d_current_full_jsonl" \
+    "$stage3d_tampered_full_jsonl"
+expect_full_rewrite_rejected stage3d-status-receipt-boundary-erased \
+    stage3d-status docs/status.md \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-stale-contradiction-appended \
+    stage3d-status docs/status.md \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\nThis R3fj receipt is source-stale for Stage 3D.\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-unauthenticated-contradiction-appended \
+    stage3d-status docs/status.md \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\nStage 3D has yet to be authenticated.\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-stage3c-only-contradiction-appended \
+    stage3d-status docs/status.md \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\nOnly Stage 3C is authenticated by this receipt.\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-not-authenticated-contradiction-appended \
+    stage3d-status docs/status.md \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\nStage 3D is not authenticated.\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-receipt-stage3c-only-contradiction-appended \
+    stage3d-status docs/status.md \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\nThis receipt only authenticates Stage 3C.\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-html-comment-wrapper \
+    stage3d-status docs/status.md \
+    'The latest full R3fj execution' \
+    $'<!--\n\nThe latest full R3fj execution' \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\n-->\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-fenced-code-wrapper \
+    stage3d-status docs/status.md \
+    'The latest full R3fj execution' \
+    $'```text\n\nThe latest full R3fj execution' \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\n```\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3d-status-hidden-html-wrapper \
+    stage3d-status docs/status.md \
+    'The latest full R3fj execution' \
+    $'<div hidden>\n\nThe latest full R3fj execution' \
+    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
+    $'Test262 profile or the published metrics above.\n\n</div>\n\nThe same oracle pins'
+stage3d_status_receipt_paragraph=$(
+    awk '
+        found && /^[[:space:]]*$/ { exit }
+        /The latest full R3fj execution/ { found = 1 }
+        found { print }
+    ' "$repository_root/docs/status.md"
+)
+[[ $stage3d_status_receipt_paragraph == *'This promoted receipt therefore covers'* ]] \
+    || die "Stage3D indented-code canary could not locate the promoted receipt"
+stage3d_status_indented_receipt=$(printf '%s\n' \
+    "$stage3d_status_receipt_paragraph" | sed 's/^/    /')
+expect_full_rewrite_rejected stage3d-status-indented-code-wrapper \
+    stage3d-status docs/status.md \
+    "$stage3d_status_receipt_paragraph" \
+    "$stage3d_status_indented_receipt"
+expect_full_rewrite_rejected stage3d-status-focused-lines-drift \
+    stage3d-status dev-support/test262/current.conf \
+    'focused_tsv_lines=6857' \
+    'focused_tsv_lines=6858'
+expect_full_rewrite_rejected stage3d-status-focused-summary-drift \
+    stage3d-status dev-support/test262/current.conf \
+    'focused_summary=pass=6844' \
+    'focused_summary=pass=6843 fail-runtime=1'
 expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
     ordinary-leaf-engine-semantics src/vm.rs \
     '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \

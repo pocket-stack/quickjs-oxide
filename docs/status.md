@@ -520,23 +520,25 @@ transcript SHA-256 is
 oracle-manifest SHA-256 is
 `f9484ee886c0e9ebd5ec037e083eb2eb6fe1857b7914846815a6ea3fc34d3094`.
 
-The latest full R3fj receipt, from exact-source GitHub Actions run
-`32282081045`, authenticates Stage 3C source
-`b0e78c10d15a881c772f1f9dc64d44f5bfceb235`
+The latest full R3fj execution, exact-source GitHub Actions run `32298418735`,
+authenticates Stage 3D source `bdbd722aa8284b7d366b8abdedd2b515b04efe20`
 with engine fingerprint
-`1819135460c1a4c31d07455b2608a8af06447bcf4e3ad9fa3e955cc0ad1123fa`.
-Artifact `9376853796` records the 102,050-line TSV as
-`57f61fa93566d7942c79a20dff3c39706a0af9ada85f8762f827db6eb6b75e31`
+`6376ef04e073ad87b00f809c9f9090adf4a70ad39d89649490fd00f53d0686a1`.
+The run reached only the expected stale-receipt checksum failure, while its
+always-upload artifact `9382740586` (SHA-256
+`804ee9b2769d5608b241bc4bdcf0ad5a4daf7d3aeb6c6ef8561a9b77a7c3cc54`)
+records the 102,050-line TSV as
+`14695f2ef5197a676a53de44f2f0b4bb7d7ac76781c4f9b937cfea5fbf72ec04`
 and the 102,039-line JSONL as
-`8187be1f040d259240ec04bc6b6bed823355aa720f3ea78f746e919544bae54b`.
-All 102,037 classified outcomes are byte-for-byte unchanged after normalizing
-the source fingerprint, with 79,982 full passes among 80,032 eligible variants;
-the refreshed 6,844-pass focused TSV and JSONL are also byte-identical on
-replay. This R3fj receipt authenticates the Stage 3C source only and is
-source-stale for Stage 3D; it does not certify raw48 admission or the Stage3D
-Rust/C evidence. Stage 3D changes neither the Test262 profile nor the published
-metrics, so the baseline above deliberately remains the last authenticated
-R3fj result until a new exact-source receipt is promoted.
+`ac12389ab3c3fcb0197359994c64a21a7775da470630467a29f86de39b63c086`.
+After replacing the single Stage 3D fingerprint occurrence in each full
+receipt with the Stage 3C fingerprint, both files are byte-for-byte identical
+to authenticated Stage 3C run `32287492488`, artifact `9378830330`: all
+102,037 classified outcomes, 79,982 full passes, and 80,032 eligible variants
+are unchanged. The refreshed 6,844-pass focused TSV and JSONL are likewise
+byte-identical on exact-source replay. This promoted receipt therefore covers
+the Stage 3D raw-48 admission and its Rust/C evidence without changing the
+Test262 profile or the published metrics above.
 
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
