@@ -130,7 +130,8 @@ pub enum Instruction {
     /// the top of the stack from a string constant, without consuming it.
     SetName(u32),
     /// QuickJS `OP_throw_error atom JS_THROW_VAR_RO` for a strict immutable
-    /// function-expression name. Consumes the attempted value and terminates.
+    /// binding. It consumes no stack value and terminates, abandoning the
+    /// complete frame stack on the exception path.
     ThrowReadOnly(u32),
     /// QuickJS `OP_throw_error atom JS_THROW_VAR_REDECL`: throw the eval-time
     /// SyntaxError used for a `var`/function declaration which crosses an
@@ -717,6 +718,7 @@ impl Instruction {
             | Self::Gosub(_)
             | Self::ReturnUndefined
             | Self::ThrowRedeclaration(_)
+            | Self::ThrowReadOnly(_)
             | Self::ThrowIteratorMissingThrow
             | Self::SetLocalUninitialized(_)
             | Self::CloseLocal(_)
@@ -851,7 +853,6 @@ impl Instruction {
             | Self::InitializeDerivedVarRef(_)
             | Self::PutVar(_)
             | Self::PutVarInit(_)
-            | Self::ThrowReadOnly(_)
             | Self::DropCatch
             | Self::DropGosub
             | Self::IfFalse(_)
@@ -3454,6 +3455,15 @@ mod tests {
             max_stack: 2,
         };
         assert_eq!(postfix_readonly.verify().unwrap().max_stack, 2);
+
+        let empty_stack_readonly = BytecodeFunction {
+            name: None,
+            code: vec![Instruction::ThrowReadOnly(0)],
+            constants: vec![Value::String(JsString::from_static("binding"))],
+            local_count: 0,
+            max_stack: 0,
+        };
+        assert_eq!(empty_stack_readonly.verify().unwrap().max_stack, 0);
     }
 
     #[test]

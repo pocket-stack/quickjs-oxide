@@ -79,7 +79,6 @@ pub(in crate::runtime::binary_object) enum TranslationBlocker {
     ValueConstruction,
     FunctionGraph,
     Completion,
-    Exception,
     EvalOrModule,
     Binding,
     Property,
@@ -396,6 +395,7 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     Return,
     ReturnUndefined,
     Throw,
+    ThrowReadOnly(AtomOperand<'image>),
 }
 
 /// Compatibility-only rejection descriptor without an opcode byte or source location.

@@ -143,6 +143,24 @@ static const uint8_t ordinary_throw_bytecode[] = {
     0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00,
     0x01, 0x00, 0x00, 0xcf, 0x30,
 };
+static const uint8_t ordinary_throw_error_natural_bytecode[] = {
+    0x05, 0x01, 0x02, 0x78, 0x0c, 0x00, 0x02, 0x00,
+    0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+    0x01, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbe,
+    0x00, 0xcb, 0x28, 0x0c, 0x43, 0x02, 0x01, 0x00,
+    0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x0d,
+    0x01, 0x00, 0x00, 0x00, 0xb0, 0x5e, 0x00, 0x00,
+    0xb3, 0xc7, 0xb4, 0x11, 0x31, 0xf3, 0x00, 0x00,
+    0x00, 0x00,
+};
+static const uint8_t ordinary_throw_error_bytecode[] = {
+    0x05, 0x01, 0x02, 0x78, 0x0c, 0x00, 0x02, 0x00,
+    0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+    0x01, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0xbe,
+    0x00, 0xcb, 0x28, 0x0c, 0x43, 0x02, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06,
+    0x00, 0x31, 0xf3, 0x00, 0x00, 0x00, 0x00,
+};
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -258,6 +276,10 @@ _Static_assert(sizeof(ordinary_apply_cases) /
                "two compiler-natural apply cases");
 _Static_assert(sizeof(ordinary_throw_bytecode) == 45,
                "ordinary throw oracle must retain its pinned 45-byte wire");
+_Static_assert(sizeof(ordinary_throw_error_natural_bytecode) == 58,
+               "natural throw_error oracle must retain its pinned 58-byte wire");
+_Static_assert(sizeof(ordinary_throw_error_bytecode) == 47,
+               "manual throw_error oracle must retain its pinned 47-byte wire");
 _Static_assert(sizeof(ordinary_invocation_raws) == 6,
                "six admitted invocation rows");
 _Static_assert(sizeof(ordinary_manual_constructor_wire) == 55,
@@ -3553,7 +3575,10 @@ cleanup:
 static size_t ordinary_opcode_size(uint8_t raw) {
     switch (raw) {
     case 33: case 34: case 35: case 36: case 37: case 38: case 39: case 88:
+    case 94:
         return 3;
+    case 49:
+        return 6;
     case 62: case 105: case 176:
         return 5;
     case 187: case 189: case 232: case 233:
@@ -5567,11 +5592,9 @@ static int expect_ordinary_throw_completion(JSContext *compile_context) {
          "body,return,catch-original;close-throw-does-not-replace-original");
     puts("ordinary-throw-admitted-count=1");
     puts("ordinary-throw-admitted-raw=48");
-    puts("ordinary-throw-deferred-count=2");
-    puts("ordinary-throw-deferred-raw=49,177");
-    puts("ordinary-throw-deferred-detail="
-         "raw49:throw_error-atom_u8-exception-blocked;"
-         "raw177:nop-specialized-blocked");
+    puts("ordinary-throw-deferred-count=1");
+    puts("ordinary-throw-deferred-raw=177");
+    puts("ordinary-throw-deferred-detail=raw177:nop-specialized-blocked");
     puts("ordinary-throw-oracle=passed");
     status = 0;
 
@@ -5596,6 +5619,572 @@ cleanup:
         JS_FreeRuntime(runtime);
     if (wire)
         js_free(compile_context, wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
+static int ordinary_expect_throw_error_wire(
+    const uint8_t *wire, size_t wire_size, const char *label,
+    const char *expected_class, const char *expected_message) {
+    JSRuntime *runtime = NULL;
+    JSContext *context = NULL;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue function = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    JSValue exception = JS_UNDEFINED;
+    uint8_t *rewritten = NULL;
+    size_t rewritten_size = 0;
+    int status = -1;
+
+    runtime = JS_NewRuntime();
+    context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!context) {
+        fprintf(stderr, "%s fresh runtime allocation failed\n", label);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(context, wire, wire_size, JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(context, "throw_error wire read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != wire_size ||
+        memcmp(rewritten, wire, wire_size) != 0) {
+        if (!rewritten)
+            report_exception(context, "throw_error wire rewrite failed");
+        else
+            fprintf(stderr, "%s rewrite drifted\n", label);
+        goto cleanup;
+    }
+    function = JS_EvalFunction(context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(function) || !JS_IsFunction(context, function)) {
+        report_exception(context, "throw_error root evaluation failed");
+        function = JS_UNDEFINED;
+        goto cleanup;
+    }
+    result = JS_Call(context, function, JS_UNDEFINED, 0, NULL);
+    if (!JS_IsException(result) || !JS_HasException(context)) {
+        fprintf(stderr, "%s returned instead of publishing an exception\n",
+                label);
+        goto cleanup;
+    }
+    exception = JS_GetException(context);
+    if (JS_HasException(context) ||
+        expect_exception_fields(context, label, exception,
+                                expected_class, expected_message))
+        goto cleanup;
+    status = 0;
+
+cleanup:
+    if (context && JS_HasException(context)) {
+        JSValue pending = JS_GetException(context);
+        JS_FreeValue(context, pending);
+    }
+    if (rewritten && context)
+        js_free(context, rewritten);
+    if (context) {
+        JS_FreeValue(context, exception);
+        JS_FreeValue(context, result);
+        JS_FreeValue(context, function);
+        JS_FreeValue(context, loaded);
+        JS_FreeContext(context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    return status;
+}
+
+static int ordinary_expect_throw_error_call(
+    JSContext *caller_context, JSValueConst function,
+    JSValueConst defining_type_error, JSValueConst caller_type_error,
+    const char *expected_message, const char *label) {
+    JSValue result = JS_UNDEFINED;
+    JSValue exception = JS_UNDEFINED;
+    JSValue stack = JS_UNDEFINED;
+    JSAtom stack_atom = JS_ATOM_NULL;
+    const char *stack_text = NULL;
+    int defining_instance;
+    int caller_instance;
+    int status = -1;
+
+    result = JS_Call(caller_context, function, JS_UNDEFINED, 0, NULL);
+    if (!JS_IsException(result) || !JS_HasException(caller_context)) {
+        fprintf(stderr, "%s returned instead of publishing an exception\n",
+                label);
+        goto cleanup;
+    }
+    exception = JS_GetException(caller_context);
+    if (JS_HasException(caller_context) ||
+        expect_exception_fields(caller_context, label, exception,
+                                "TypeError", expected_message))
+        goto cleanup;
+    defining_instance = JS_IsInstanceOf(caller_context, exception,
+                                        defining_type_error);
+    caller_instance = JS_IsInstanceOf(caller_context, exception,
+                                      caller_type_error);
+    if (defining_instance != 1 || caller_instance != 0) {
+        fprintf(stderr, "%s Error realm drifted\n", label);
+        goto cleanup;
+    }
+    stack_atom = JS_NewAtom(caller_context, "stack");
+    if (stack_atom == JS_ATOM_NULL ||
+        JS_GetOwnProperty(caller_context, NULL, exception, stack_atom) != 1) {
+        fprintf(stderr, "%s did not attach an own backtrace\n", label);
+        goto cleanup;
+    }
+    stack = JS_GetProperty(caller_context, exception, stack_atom);
+    if (JS_IsException(stack)) {
+        report_exception(caller_context, "throw_error stack read failed");
+        stack = JS_UNDEFINED;
+        goto cleanup;
+    }
+    stack_text = JS_ToCString(caller_context, stack);
+    if (!stack_text || !strstr(stack_text, "at <anonymous>")) {
+        fprintf(stderr, "%s backtrace lost its anonymous frame\n", label);
+        goto cleanup;
+    }
+    status = 0;
+
+cleanup:
+    if (caller_context && JS_HasException(caller_context)) {
+        JSValue pending = JS_GetException(caller_context);
+        JS_FreeValue(caller_context, pending);
+    }
+    if (stack_text)
+        JS_FreeCString(caller_context, stack_text);
+    JS_FreeAtom(caller_context, stack_atom);
+    JS_FreeValue(caller_context, stack);
+    JS_FreeValue(caller_context, exception);
+    JS_FreeValue(caller_context, result);
+    return status;
+}
+
+static int expect_ordinary_throw_error_completion(JSContext *compile_context) {
+    static const char natural_source[] =
+        "(function(){'use strict';const x=0;x=1;})";
+    static const char semantic_source[] =
+        "(function(){"
+        "function ok(v,m){if(!v)throw Error(m);}"
+        "var caught,reached=false;"
+        "try{__stage3eThrowError();reached=true;}catch(e){caught=e;}"
+        "ok(!reached,'throw_error returned');"
+        "ok(caught instanceof __stage3eDefiningTypeError,"
+        "'defining realm TypeError');"
+        "ok(!(caught instanceof TypeError),'caller realm TypeError');"
+        "ok(caught.name==='TypeError'&&"
+        "caught.message===\"'\\u00e9' is read-only\","
+        "'Unicode read-only message');"
+        "ok(Object.prototype.hasOwnProperty.call(caught,'stack')&&"
+        "String(caught.stack).indexOf('at <anonymous>')>=0,"
+        "'throw_error backtrace');"
+        "return 42;})()";
+    static const OrdinaryFunctionMetadata expected_natural_metadata = {
+        0x0243, 1, { 0, 1, 0, 2, 0, 0, 0, 13, 1 }, 45,
+    };
+    static const OrdinaryFunctionMetadata expected_manual_metadata = {
+        0x0243, 1, { 0, 0, 0, 0, 0, 0, 0, 6, 0 }, 41,
+    };
+    static const char expected_x_message[] = "'x' is read-only";
+    static const char expected_unicode_message[] =
+        "'\xc3\xa9' is read-only";
+    JSValue compiled = JS_UNDEFINED;
+    JSRuntime *runtime = NULL;
+    JSContext *defining_context = NULL;
+    JSContext *caller_context = NULL;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue function = JS_UNDEFINED;
+    JSValue unicode_loaded = JS_UNDEFINED;
+    JSValue unicode_function = JS_UNDEFINED;
+    JSValue defining_global = JS_UNDEFINED;
+    JSValue caller_global = JS_UNDEFINED;
+    JSValue defining_type_error = JS_UNDEFINED;
+    JSValue caller_type_error = JS_UNDEFINED;
+    JSValue semantic_result = JS_UNDEFINED;
+    uint8_t *natural_wire = NULL;
+    uint8_t *rewritten = NULL;
+    uint8_t *unicode_rewritten = NULL;
+    size_t natural_wire_size = 0;
+    size_t rewritten_size = 0;
+    size_t unicode_rewritten_size = 0;
+    OrdinaryFunctionMetadata natural_child = { 0 };
+    OrdinaryFunctionMetadata manual_child = { 0 };
+    uint8_t natural_raws[256] = { 0 };
+    uint8_t manual_raws[256] = { 0 };
+    uint8_t natural_terminal = 0;
+    uint8_t manual_terminal = 0;
+    uint8_t unicode_wire[sizeof(ordinary_throw_error_bytecode)];
+    uint8_t subtype_one_wire[sizeof(ordinary_throw_error_bytecode)];
+    uint8_t subtype_max_wire[sizeof(ordinary_throw_error_bytecode)];
+    size_t natural_raw_count = 0;
+    size_t manual_raw_count = 0;
+    int status = -1;
+
+    compiled = JS_Eval(compile_context, natural_source,
+                       strlen(natural_source), "ordinary-throw-error",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context,
+                         "natural throw_error compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    natural_wire = JS_WriteObject(compile_context, &natural_wire_size,
+                                  compiled, JS_WRITE_OBJ_BYTECODE);
+    if (!natural_wire) {
+        report_exception(compile_context, "natural throw_error write failed");
+        goto cleanup;
+    }
+    if (natural_wire_size != sizeof(ordinary_throw_error_natural_bytecode) ||
+        memcmp(natural_wire, ordinary_throw_error_natural_bytecode,
+               natural_wire_size) != 0 ||
+        ordinary_fnv1a64(natural_wire, natural_wire_size) !=
+            UINT64_C(0x026914eda60a481f) ||
+        ordinary_wire_child_metadata(natural_wire, natural_wire_size,
+                                     &natural_child) ||
+        !ordinary_metadata_equal(&natural_child,
+                                 &expected_natural_metadata) ||
+        natural_wire[44] != 0xb0 ||
+        ordinary_collect_opcodes(natural_wire + natural_child.code_offset,
+                                 natural_child.fields[ORD_CODE],
+                                 natural_raws) ||
+        ordinary_terminal_opcode(natural_wire + natural_child.code_offset,
+                                 natural_child.fields[ORD_CODE],
+                                 &natural_terminal)) {
+        fputs("natural throw_error wire/metadata/opcodes drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        natural_raw_count += natural_raws[raw] != 0;
+    if (natural_raw_count != 6 || !natural_raws[17] ||
+        !natural_raws[49] || !natural_raws[94] ||
+        !natural_raws[179] || !natural_raws[180] ||
+        !natural_raws[199] || natural_terminal != 49) {
+        fputs("natural throw_error opcode set or terminal drifted\n", stderr);
+        goto cleanup;
+    }
+    if (ordinary_expect_throw_error_wire(
+            natural_wire, natural_wire_size, "natural throw_error",
+            "TypeError", expected_x_message))
+        goto cleanup;
+
+    if (ordinary_fnv1a64(ordinary_throw_error_bytecode,
+                         sizeof(ordinary_throw_error_bytecode)) !=
+            UINT64_C(0xb4c1126c283093af) ||
+        ordinary_wire_child_metadata(ordinary_throw_error_bytecode,
+                                     sizeof(ordinary_throw_error_bytecode),
+                                     &manual_child) ||
+        !ordinary_metadata_equal(&manual_child,
+                                 &expected_manual_metadata) ||
+        ordinary_collect_opcodes(
+            ordinary_throw_error_bytecode + manual_child.code_offset,
+            manual_child.fields[ORD_CODE], manual_raws) ||
+        ordinary_terminal_opcode(
+            ordinary_throw_error_bytecode + manual_child.code_offset,
+            manual_child.fields[ORD_CODE], &manual_terminal)) {
+        fputs("manual throw_error wire/metadata/opcodes drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        manual_raw_count += manual_raws[raw] != 0;
+    if (manual_raw_count != 1 || !manual_raws[49] ||
+        manual_terminal != 49) {
+        fputs("manual throw_error opcode set or terminal drifted\n", stderr);
+        goto cleanup;
+    }
+
+    runtime = JS_NewRuntime();
+    defining_context = runtime ? JS_NewContext(runtime) : NULL;
+    caller_context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!defining_context || !caller_context) {
+        fputs("throw_error realm allocation failed\n", stderr);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(defining_context, ordinary_throw_error_bytecode,
+                           sizeof(ordinary_throw_error_bytecode),
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(defining_context, "manual throw_error read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(defining_context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten ||
+        rewritten_size != sizeof(ordinary_throw_error_bytecode) ||
+        memcmp(rewritten, ordinary_throw_error_bytecode,
+               rewritten_size) != 0) {
+        if (!rewritten)
+            report_exception(defining_context,
+                             "manual throw_error rewrite failed");
+        else
+            fputs("manual throw_error rewrite drifted\n", stderr);
+        goto cleanup;
+    }
+    function = JS_EvalFunction(defining_context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(function) ||
+        !JS_IsFunction(defining_context, function)) {
+        report_exception(defining_context,
+                         "manual throw_error root evaluation failed");
+        function = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    defining_global = JS_GetGlobalObject(defining_context);
+    caller_global = JS_GetGlobalObject(caller_context);
+    defining_type_error = JS_GetPropertyStr(defining_context,
+                                            defining_global, "TypeError");
+    caller_type_error = JS_GetPropertyStr(caller_context,
+                                          caller_global, "TypeError");
+    if (JS_IsException(defining_global) || JS_IsException(caller_global) ||
+        JS_IsException(defining_type_error) ||
+        JS_IsException(caller_type_error) ||
+        !JS_IsFunction(defining_context, defining_type_error) ||
+        !JS_IsFunction(caller_context, caller_type_error)) {
+        report_exception(caller_context,
+                         "throw_error realm constructor setup failed");
+        goto cleanup;
+    }
+    if (ordinary_expect_throw_error_call(
+            caller_context, function, defining_type_error,
+            caller_type_error, expected_x_message,
+            "manual throw_error subtype 0"))
+        goto cleanup;
+
+    memcpy(unicode_wire, ordinary_throw_error_bytecode,
+           sizeof(unicode_wire));
+    unicode_wire[3] = 0xe9;
+    if (ordinary_fnv1a64(unicode_wire, sizeof(unicode_wire)) !=
+        UINT64_C(0xb733634a7dff678e)) {
+        fputs("Unicode throw_error wire drifted\n", stderr);
+        goto cleanup;
+    }
+    unicode_loaded = JS_ReadObject(defining_context, unicode_wire,
+                                   sizeof(unicode_wire),
+                                   JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(unicode_loaded)) {
+        report_exception(defining_context, "Unicode throw_error read failed");
+        unicode_loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    unicode_rewritten = JS_WriteObject(defining_context,
+                                       &unicode_rewritten_size,
+                                       unicode_loaded,
+                                       JS_WRITE_OBJ_BYTECODE);
+    if (!unicode_rewritten || unicode_rewritten_size != sizeof(unicode_wire) ||
+        memcmp(unicode_rewritten, unicode_wire, sizeof(unicode_wire)) != 0) {
+        if (!unicode_rewritten)
+            report_exception(defining_context,
+                             "Unicode throw_error rewrite failed");
+        else
+            fputs("Unicode throw_error rewrite drifted\n", stderr);
+        goto cleanup;
+    }
+    unicode_function = JS_EvalFunction(defining_context, unicode_loaded);
+    unicode_loaded = JS_UNDEFINED;
+    if (JS_IsException(unicode_function) ||
+        !JS_IsFunction(defining_context, unicode_function)) {
+        report_exception(defining_context,
+                         "Unicode throw_error root evaluation failed");
+        unicode_function = JS_UNDEFINED;
+        goto cleanup;
+    }
+    if (ordinary_expect_throw_error_call(
+            caller_context, unicode_function, defining_type_error,
+            caller_type_error, expected_unicode_message,
+            "Unicode throw_error subtype 0"))
+        goto cleanup;
+
+    if (JS_SetPropertyStr(caller_context, caller_global,
+                          "__stage3eThrowError",
+                          JS_DupValue(caller_context,
+                                      unicode_function)) < 0 ||
+        JS_SetPropertyStr(caller_context, caller_global,
+                          "__stage3eDefiningTypeError",
+                          JS_DupValue(caller_context,
+                                      defining_type_error)) < 0) {
+        report_exception(caller_context,
+                         "throw_error caller publication failed");
+        goto cleanup;
+    }
+    semantic_result = JS_Eval(caller_context, semantic_source,
+                              strlen(semantic_source),
+                              "ordinary-throw-error-semantic.js",
+                              JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(semantic_result) ||
+        JS_HasException(caller_context) ||
+        JS_VALUE_GET_TAG(semantic_result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(semantic_result) != 42) {
+        report_exception(caller_context,
+                         "throw_error caller catch oracle failed");
+        semantic_result = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    memcpy(subtype_one_wire, ordinary_throw_error_bytecode,
+           sizeof(subtype_one_wire));
+    memcpy(subtype_max_wire, ordinary_throw_error_bytecode,
+           sizeof(subtype_max_wire));
+    subtype_one_wire[sizeof(subtype_one_wire) - 1] = 1;
+    subtype_max_wire[sizeof(subtype_max_wire) - 1] = UINT8_MAX;
+    if (ordinary_expect_throw_error_wire(
+            subtype_one_wire, sizeof(subtype_one_wire),
+            "throw_error subtype 1", "SyntaxError",
+            "redeclaration of 'x'") ||
+        ordinary_expect_throw_error_wire(
+            subtype_max_wire, sizeof(subtype_max_wire),
+            "throw_error subtype 255", "InternalError",
+            "invalid throw var type 255"))
+        goto cleanup;
+
+    puts("ordinary-throw-error-evidence="
+         "compiler-natural-plus-mechanically-derived-property-free-wire");
+    puts("ordinary-throw-error-natural-source-hex="
+         "2866756e6374696f6e28297b2775736520737472696374273b636f6e737420"
+         "783d303b783d313b7d29");
+    puts("ordinary-throw-error-natural-compile-mode="
+         "global-compile-only,strip-debug");
+    printf("ordinary-throw-error-natural-wire-size=%zu\n",
+           natural_wire_size);
+    printf("ordinary-throw-error-natural-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(natural_wire, natural_wire_size));
+    puts("ordinary-throw-error-natural-wire-sha256="
+         "a07b3f39a5e3929af4899a07686e91324e4ee9c54b729f518813eaa4a1875199");
+    fputs("ordinary-throw-error-natural-wire-hex=", stdout);
+    for (size_t index = 0; index < natural_wire_size; index++)
+        printf("%02x", natural_wire[index]);
+    putchar('\n');
+    printf("ordinary-throw-error-natural-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu\n",
+           natural_child.flags, natural_child.js_mode,
+           natural_child.fields[ORD_ARGS], natural_child.fields[ORD_VARS],
+           natural_child.fields[ORD_DEFINED_ARGS],
+           natural_child.fields[ORD_STACK],
+           natural_child.fields[ORD_VAR_REFS],
+           natural_child.fields[ORD_CLOSURES],
+           natural_child.fields[ORD_CPOOL],
+           natural_child.fields[ORD_CODE],
+           natural_child.fields[ORD_LOCALS], natural_child.code_offset);
+    puts("ordinary-throw-error-natural-local-flags=b0");
+    puts("ordinary-throw-error-natural-child-code-hex="
+         "5e0000b3c7b41131f300000000");
+    ordinary_print_raw_set("ordinary-throw-error-natural-child-raw",
+                           natural_raws);
+    puts("ordinary-throw-error-natural-terminal=raw49/subtype0,stack:0->0,no-return");
+    puts("ordinary-throw-error-natural-rewrite=identity,fresh-runtime-exec:TypeError");
+    puts("ordinary-throw-error-natural-provenance="
+         "strict-const-assignment;source-only-for-Rust-admission");
+    puts("ordinary-throw-error-natural-ordinary-cohort-exclusion="
+         "lexical-vars:1,locals:1,local-flags:b0,raw94:set_loc_uninitialized");
+
+    printf("ordinary-throw-error-wire-size=%zu\n",
+           sizeof(ordinary_throw_error_bytecode));
+    printf("ordinary-throw-error-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(ordinary_throw_error_bytecode,
+                            sizeof(ordinary_throw_error_bytecode)));
+    puts("ordinary-throw-error-wire-sha256="
+         "d05cabd4c18598b024f66eab8fd723c412fc5a469325b26fca5042507dea3ee8");
+    fputs("ordinary-throw-error-wire-hex=", stdout);
+    for (size_t index = 0;
+         index < sizeof(ordinary_throw_error_bytecode); index++)
+        printf("%02x", ordinary_throw_error_bytecode[index]);
+    putchar('\n');
+    printf("ordinary-throw-error-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu\n",
+           manual_child.flags, manual_child.js_mode,
+           manual_child.fields[ORD_ARGS], manual_child.fields[ORD_VARS],
+           manual_child.fields[ORD_DEFINED_ARGS],
+           manual_child.fields[ORD_STACK],
+           manual_child.fields[ORD_VAR_REFS],
+           manual_child.fields[ORD_CLOSURES],
+           manual_child.fields[ORD_CPOOL], manual_child.fields[ORD_CODE],
+           manual_child.fields[ORD_LOCALS], manual_child.code_offset);
+    puts("ordinary-throw-error-child-code-hex=31f300000000");
+    ordinary_print_raw_set("ordinary-throw-error-child-raw", manual_raws);
+    puts("ordinary-throw-error-terminal=raw49/subtype0,stack:0->0,no-return");
+    puts("ordinary-throw-error-derivation="
+         "natural58:vars1->0,stack2->0,code13->6,locals1->0;"
+         "remove-local-record:000000b0;"
+         "remove-code-prefix:5e0000b3c7b411;retain-atom-slot:x-and-raw49");
+    puts("ordinary-throw-error-property-free="
+         "args:0,vars:0,var_refs:0,closures:0,cpool:0,locals:0,stack:0");
+    puts("ordinary-throw-error-rewrite=identity,fresh-root:Function");
+    puts("ordinary-throw-error-empty-stack="
+         "metadata-max-stack:0;raw49:0->0;TypeError-not-underflow");
+    puts("ordinary-throw-error-subtype0="
+         "TypeError:'x'-is-read-only;terminal-no-return");
+    puts("ordinary-throw-error-unicode-wire="
+         "atom:x->U+00E9;size:47;rewrite:identity;"
+         "fnv1a64:b733634a7dff678e;"
+         "sha256:8228fdf15ff5551e6e14bac89e91d606c2aba6fe5d7ded834c309830842fd324");
+    puts("ordinary-throw-error-unicode-message="
+         "TypeError:'U+00E9'-is-read-only;utf8-hex:27c3a92720697320726561642d6f6e6c79");
+    puts("ordinary-throw-error-realm="
+         "defining-TypeError:true;caller-TypeError:false");
+    puts("ordinary-throw-error-backtrace="
+         "own-stack-before-catch;anonymous-frame-present");
+    puts("ordinary-throw-error-pending="
+         "direct-call-publishes;GetException-clears;caller-catch-clears");
+    puts("ordinary-throw-error-caller-catch="
+         "Unicode-TypeError:defining-realm;terminal-no-return;result:42");
+    puts("ordinary-throw-error-subtype1="
+         "fresh-read-write-exec:SyntaxError:redeclaration-of-x;Rust:Unadmitted");
+    puts("ordinary-throw-error-subtype255="
+         "fresh-read-write-exec:InternalError:invalid-throw-var-type-255;Rust:Unadmitted");
+    puts("ordinary-throw-error-rust-admission="
+         "raw49/subtype0-only;subtype1-255:Unadmitted");
+    puts("ordinary-exception-admitted-count=2");
+    puts("ordinary-exception-admitted-raw=48,49");
+    puts("ordinary-exception-deferred-count=1");
+    puts("ordinary-exception-deferred-raw=177");
+    puts("ordinary-exception-deferred-detail="
+         "raw177:nop-specialized-blocked");
+    puts("ordinary-throw-error-oracle=passed");
+    status = 0;
+
+cleanup:
+    if (unicode_rewritten && defining_context)
+        js_free(defining_context, unicode_rewritten);
+    if (rewritten && defining_context)
+        js_free(defining_context, rewritten);
+    if (caller_context) {
+        if (JS_HasException(caller_context)) {
+            JSValue pending = JS_GetException(caller_context);
+            JS_FreeValue(caller_context, pending);
+        }
+        JS_FreeValue(caller_context, semantic_result);
+        JS_FreeValue(caller_context, caller_type_error);
+        JS_FreeValue(caller_context, caller_global);
+        JS_FreeContext(caller_context);
+    }
+    if (defining_context) {
+        if (JS_HasException(defining_context)) {
+            JSValue pending = JS_GetException(defining_context);
+            JS_FreeValue(defining_context, pending);
+        }
+        JS_FreeValue(defining_context, defining_type_error);
+        JS_FreeValue(defining_context, defining_global);
+        JS_FreeValue(defining_context, unicode_function);
+        JS_FreeValue(defining_context, unicode_loaded);
+        JS_FreeValue(defining_context, function);
+        JS_FreeValue(defining_context, loaded);
+        JS_FreeContext(defining_context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    if (natural_wire)
+        js_free(compile_context, natural_wire);
     JS_FreeValue(compile_context, compiled);
     return status;
 }
@@ -5945,6 +6534,8 @@ int main(void) {
     if (expect_ordinary_invocation_cohort(compile_context))
         goto cleanup;
     if (expect_ordinary_throw_completion(compile_context))
+        goto cleanup;
+    if (expect_ordinary_throw_error_completion(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",

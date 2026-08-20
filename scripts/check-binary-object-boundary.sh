@@ -27,6 +27,7 @@ from pathlib import Path
 import hashlib
 import re
 import sys
+import tomllib
 
 
 root = Path(sys.argv[1])
@@ -234,12 +235,55 @@ def rustfmt_match_arms(item: str, prefix: str) -> list[tuple[str, str]]:
     ]
 
 
+if not (root / ".boundary-self-test").is_file():
+    cargo_source = read_source("Cargo.toml")
+    try:
+        cargo_manifest = tomllib.loads(cargo_source)
+    except tomllib.TOMLDecodeError as error:
+        fail("stage3e-test-target", f"Cargo.toml must remain valid TOML: {error}")
+        cargo_manifest = {}
+    if cargo_manifest.get("lib") != {
+        "name": "quickjs_oxide",
+        "path": "src/lib.rs",
+    }:
+        fail(
+            "stage3e-test-target",
+            "Cargo.toml [lib] must remain the exact src/lib.rs test target with no test/harness disable or path reroute",
+        )
+
 lib_source = read_source("src/lib.rs")
+lib_code = rust_code_only(lib_source)
+if not (root / ".boundary-self-test").is_file():
+    require_normalized_code_sha256(
+        "stage3e-runtime-evidence",
+        "src/lib.rs must retain its exact crate/test routing without macro-use, path, include, or glob-import indirection",
+        lib_code,
+        "b3af80b7d2571f798e5408f959193827175248db16c9fbf137c423ca0523551d",
+    )
 for match in re.finditer(r"\bbinary_object\b", lib_source):
     fail(
         "public-lib-boundary",
         "src/lib.rs must not name binary_object; found "
         + location("src/lib.rs", lib_source, match.start()),
+    )
+if re.search(
+    r"(?m)^[ \t]*#![ \t]*\[[ \t]*(?:cfg|cfg_attr)\b",
+    lib_code,
+):
+    fail(
+        "stage3e-runtime-evidence",
+        "src/lib.rs must not conditionally exclude the crate or its unit-test target with an inner cfg/cfg_attr",
+    )
+assertion_shadow_pattern = re.compile(
+    r"\bmacro_rules[ \t\n]*![ \t\n]*(?:r#)?(?:assert|assert_eq|assert_ne|matches|panic)\b"
+    r"|^[ \t]*(?:(?:pub(?:[ \t]*\([^)]*\))?)[ \t]+)?use[ \t]+[^;]*"
+    r"\b(?:r#)?(?:assert|assert_eq|assert_ne|matches|panic)\b[^;]*;",
+    re.MULTILINE,
+)
+if assertion_shadow_pattern.search(lib_code):
+    fail(
+        "stage3e-runtime-evidence",
+        "src/lib.rs must not shadow or import the assertion macros used by Stage3E unit-test evidence",
     )
 
 runtime_source = read_source("src/runtime.rs")
@@ -357,6 +401,7 @@ ordinary_facade_pattern = re.compile(
 )
 ordinary_facades = list(ordinary_facade_pattern.finditer(binary_root_code))
 expected_ordinary_facade_names = {
+    "DetachedAtomName",
     "DetachedPrimitive",
     "OrdinaryLeafApplyKind",
     "OrdinaryLeafBinaryOp",
@@ -491,7 +536,7 @@ expected_binary_visible_counts = {
     "src/runtime/binary_object/graph/sab_transport.rs": 38,
     "src/runtime/binary_object/graph/write_state.rs": 21,
     "src/runtime/binary_object/mod.rs": 2,
-    "src/runtime/binary_object/ordinary_leaf.rs": 28,
+    "src/runtime/binary_object/ordinary_leaf.rs": 30,
     "src/runtime/binary_object/pinned_atoms.rs": 9,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
@@ -510,7 +555,7 @@ expected_fixture_visible_counts = {
     "src/runtime/binary_object/function_translate/dto.rs": 41,
     "src/runtime/binary_object/function_translate/mod.rs": 6,
     "src/runtime/binary_object/mod.rs": 2,
-    "src/runtime/binary_object/ordinary_leaf.rs": 28,
+    "src/runtime/binary_object/ordinary_leaf.rs": 30,
     "src/runtime/binary_object/pinned_opcodes.rs": 23,
     "src/runtime/binary_object/read_cursor.rs": 2,
     "src/runtime/binary_object/scalar_script.rs": 6,
@@ -1518,7 +1563,7 @@ expected_recipe_variants = """
     PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
     SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
     Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
-    ReturnUndefined Throw
+    ReturnUndefined Throw ThrowReadOnly
 """.split()
 counted_invocation_variant_names = (
     "Call", "TailCall", "Construct", "CallMethod", "TailCallMethod", "ArrayFrom"
@@ -1553,7 +1598,7 @@ expected_function_op_variants = """
     PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
     PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
     IfTrue Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply
-    Return ReturnUndefined Throw
+    Return ReturnUndefined Throw ThrowReadOnly
 """.split()
 function_invocation_payloads = {
     name: [
@@ -1574,6 +1619,18 @@ if (
         "function-translate-dto-shape",
         "FunctionOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads, a typed Apply kind, and an operand-free Throw completion; "
         f"found {enum_variant_names(dto_function_op_code)} with invocation payloads {function_invocation_payloads}",
+    )
+function_throw_read_only_payloads = [
+    " ".join(payload.split())
+    for payload in re.findall(
+        r"\bThrowReadOnly[ \t\n]*\(([^()]*)\)[ \t\n]*,",
+        dto_function_op_code,
+    )
+]
+if function_throw_read_only_payloads != ["AtomOperand<'image>"]:
+    fail(
+        "function-translate-dto-shape",
+        "FunctionOp::ThrowReadOnly must retain exactly one borrowed sanitized AtomOperand payload",
     )
 
 dto_apply_kind_code, _, _ = unique_braced_item(
@@ -1654,7 +1711,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (116, 1, 98, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (115, 1, 99, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1663,11 +1720,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 127, 128)
+    or derived_registry_counts != (30, 128, 129)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact final stage-three-D physical cohorts; "
+        "the centralized registry must preserve the exact final stage-three-E physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1729,6 +1786,7 @@ expect_admitted("OrdinaryOnly", "Recipe::TailCallMethod", (37,))
 expect_admitted("OrdinaryOnly", "Recipe::ArrayFrom", (38,))
 expect_admitted("OrdinaryOnly", "Recipe::Apply", (39,))
 expect_admitted("OrdinaryOnly", "Recipe::Throw", (48,))
+expect_admitted("OrdinaryOnly", "Recipe::ThrowReadOnly", (49,))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
 expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
 for raw, operation in (
@@ -1767,6 +1825,7 @@ expected_stage_boundaries = {
     39: (("apply", 3, 3, 1, "U16"), "OrdinaryOnly", "Recipe::Apply"),
     41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
     48: (("throw", 1, 1, 0, "None"), "OrdinaryOnly", "Recipe::Throw"),
+    49: (("throw_error", 6, 0, 0, "AtomU8"), "OrdinaryOnly", "Recipe::ThrowReadOnly"),
     236: (("call0", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     237: (("call1", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     238: (("call2", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
@@ -1877,25 +1936,37 @@ if found_stage_three_d_throw_rows != stage_three_d_throw_rows:
         f"found {found_stage_three_d_throw_rows}",
     )
 
-stage_three_d_deferred_rows = {
+stage_three_e_throw_error_rows = ((49, "AtomU8", "Recipe::ThrowReadOnly"),)
+found_stage_three_e_throw_error_rows = tuple(
+    (raw, registry_rows[raw][1], registry_rows[raw][3])
+    for raw, _, _ in stage_three_e_throw_error_rows
+    if registry_rows[raw][2] == "OrdinaryOnly"
+)
+if found_stage_three_e_throw_error_rows != stage_three_e_throw_error_rows:
+    fail(
+        "function-translate-stage-three-e-set",
+        "stage three E must admit exactly raw 49 throw_error through its AtomU8 subtype-checked ThrowReadOnly recipe; "
+        f"found {found_stage_three_e_throw_error_rows}",
+    )
+
+stage_three_e_deferred_rows = {
     47: (("return_async", 1, 1, 0, "None"), "Blocked", "Completion"),
-    49: (("throw_error", 6, 0, 0, "AtomU8"), "Blocked", "Exception"),
     177: (("nop", 1, 0, 0, "None"), "Blocked", "Specialized"),
 }
-found_stage_three_d_deferred_rows = {
+found_stage_three_e_deferred_rows = {
     raw: (pinned_descriptors[raw], registry_rows[raw][2], registry_rows[raw][3])
-    for raw in stage_three_d_deferred_rows
+    for raw in stage_three_e_deferred_rows
     if raw < len(pinned_descriptors) and raw < len(registry_rows)
 }
-if found_stage_three_d_deferred_rows != stage_three_d_deferred_rows:
+if found_stage_three_e_deferred_rows != stage_three_e_deferred_rows:
     fail(
-        "function-translate-stage-three-d-set",
-        "raw 47 return_async, raw 49 throw_error, and raw 177 nop must remain outside the Stage3D admission; "
-        f"found {found_stage_three_d_deferred_rows}",
+        "function-translate-stage-three-e-set",
+        "raw 47 return_async and raw 177 nop must remain outside the Stage3E admission; "
+        f"found {found_stage_three_e_deferred_rows}",
     )
 
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Completion 1 Exception 1
+    InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Completion 1
     EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
     Operator 4 Specialized 4
@@ -1920,7 +1991,7 @@ unexpected_blockers = sorted(
 if found_blocker_counts != expected_blocker_counts or unexpected_blockers:
     fail(
         "function-translate-registry-blockers",
-        "the blocked frontier must retain all 16 nonempty typed categories and their exact counts, with the retired Invocation bucket absent; "
+        "the blocked frontier must retain all 15 nonempty typed categories and their exact counts, with the retired Invocation and Exception buckets absent; "
         f"found {found_blocker_counts} with unexpected {unexpected_blockers}",
     )
 blocked_registry_mapping = "\n".join(
@@ -1932,7 +2003,7 @@ blocked_registry_mapping_hash = hashlib.sha256(
     blocked_registry_mapping.encode("utf-8")
 ).hexdigest()
 if blocked_registry_mapping_hash != (
-    "e1fb1848ddadca183b7102485ed17db4f09353094882a1056b396961b9d78f2e"
+    "8563b87ec06c9ebae6f01e26e57e6ffa08cd4aa6a30b355324a0450c9257328c"
 ):
     fail(
         "function-translate-registry-blockers",
@@ -1953,7 +2024,7 @@ dto_blocker_code, _, _ = unique_braced_item(
 if enum_variant_names(dto_blocker_code) != list(expected_blocker_counts):
     fail(
         "function-translate-dto-shape",
-        "TranslationBlocker must retain the 16 reviewed ordered nonempty categories and no retired Invocation bucket; "
+        "TranslationBlocker must retain the 15 reviewed ordered nonempty categories and no retired Invocation or Exception bucket; "
         f"found {enum_variant_names(dto_blocker_code)}",
     )
 
@@ -2073,10 +2144,11 @@ if enum_variant_names(translate_error_kind_code) != [
     "InvalidBranchTarget",
     "AtomProjectionInvariant",
     "NonCanonicalApplyMagic",
+    "UnadmittedThrowErrorSubtype",
 ]:
     fail(
         "function-translate-apply-admission",
-        "translation errors must retain the dedicated noncanonical-apply operand class",
+        "translation errors must retain dedicated noncanonical-Apply and throw_error-subtype operand classes",
     )
 translate_target_item, _, _ = unique_braced_item(
     function_translate_production_code,
@@ -2151,7 +2223,7 @@ require_normalized_code_sha256(
     "function-translate-semantic-dispatch",
     "lower_operation must remain one alias-free typed Recipe/operand match with its unique ready publisher",
     translate_lower_item,
-    "c5d6ff084b20d9486c1c6db089aff26cc58ce15220fa8308304947589fc25f3f",
+    "eaf2c8d42c8c5be1a0ebdb3110ab92f91b247c668bb8acc48bc0507b3681c3f2",
 )
 if normalized_translate_lower.count(
     "let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));"
@@ -2221,14 +2293,16 @@ Recipe::Apply @ NativeOperands::U16(magic) @ { Err(FunctionTranslateError::non_c
 Recipe::Return @ NativeOperands::None @ ready(FunctionOp::Return)
 Recipe::ReturnUndefined @ NativeOperands::None @ ready(FunctionOp::ReturnUndefined)
 Recipe::Throw @ NativeOperands::None @ ready(FunctionOp::Throw)
+Recipe::ThrowReadOnly @ NativeOperands::AtomU8 { atom, value: 0 } @ { ready(FunctionOp::ThrowReadOnly(project_atom(*atom)?)) }
+Recipe::ThrowReadOnly @ NativeOperands::AtomU8 { value, .. } @ Err( FunctionTranslateError::unadmitted_throw_error_subtype(*value), )
 """.strip().splitlines()
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 52 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 54 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain all 52 reviewed Recipe/operand arms, including terminal tail invocations and explicit throw, with each exact normalized RHS payload expression; "
+        "lower_operation must retain all 54 reviewed Recipe/operand arms, including terminal tail invocations, explicit throw, and subtype-0 ThrowReadOnly, with each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
 apply_magic_error_contracts = (
@@ -2237,8 +2311,12 @@ apply_magic_error_contracts = (
         "fn non_canonical_apply_magic(magic: u16) -> Self { Self { kind: FunctionTranslateErrorKind::NonCanonicalApplyMagic(magic), } }",
     ),
     (
+        "unadmitted_throw_error_subtype",
+        "fn unadmitted_throw_error_subtype(subtype: u8) -> Self { Self { kind: FunctionTranslateErrorKind::UnadmittedThrowErrorSubtype(subtype), } }",
+    ),
+    (
         "is_unadmitted_operand_error",
-        "fn is_unadmitted_operand_error(&self) -> bool { matches!( self.kind, FunctionTranslateErrorKind::NonCanonicalApplyMagic(_) ) }",
+        "fn is_unadmitted_operand_error(&self) -> bool { matches!( self.kind, FunctionTranslateErrorKind::NonCanonicalApplyMagic(_) | FunctionTranslateErrorKind::UnadmittedThrowErrorSubtype(_) ) }",
     ),
 )
 for function_name, expected in apply_magic_error_contracts:
@@ -2251,7 +2329,7 @@ for function_name, expected in apply_magic_error_contracts:
     if " ".join(item.split()) != expected:
         fail(
             "function-translate-apply-admission",
-            f"{function_name} must retain the exact noncanonical-Apply error classification",
+            f"{function_name} must retain the exact noncanonical-Apply and throw_error-subtype error classification",
         )
 stack_expansion_pattern = re.compile(
     r"\(Recipe::Stack\(capability::StackRecipe::(\w+)\), NativeOperands::None\)"
@@ -2378,6 +2456,12 @@ translate_atom_item, _, _ = unique_braced_item(
     "function-translate-atom-order",
     "borrowed semantic atom projection",
 )
+require_normalized_code_sha256(
+    "function-translate-atom-order",
+    "project_atom must preserve String spelling and input-table provenance without allocation or class aliasing",
+    translate_atom_item,
+    "b61b799820c1c462fc2000f1ecd8b9e0698446da2e9b70f0bbb9f13de099b58c",
+)
 if re.search(
     r"\b(?:Vec|Box|String)[ \t\n]*(?:::|<)|\b(?:try_reserve|reserve|collect|"
     r"to_owned|to_vec|into_boxed_slice)[ \t\n]*\(",
@@ -2431,7 +2515,8 @@ expected_ordinary_visible_items = [
         struct:OrdinaryLeafMetadataDraft fn:argument_count fn:defined_argument_count
         fn:local_count fn:max_stack fn:is_strict fn:has_simple_parameter_list
         fn:has_prototype fn:allows_new_target fn:allows_arguments fn:strip_variable_debug
-        enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafApplyKind enum:OrdinaryLeafStackOp
+        enum:DetachedPrimitive struct:DetachedAtomName fn:into_units
+        enum:OrdinaryLeafOp enum:OrdinaryLeafApplyKind enum:OrdinaryLeafStackOp
         enum:OrdinaryLeafUnaryOp enum:OrdinaryLeafBinaryOp enum:OrdinaryLeafPredicateOp
         struct:OrdinaryLeafDraft fn:metadata fn:constants fn:code fn:into_parts
         enum:OrdinaryLeafReadError
@@ -2461,9 +2546,11 @@ expected_ordinary_top_level_items = [
     tuple(entry.split(":", 1))
     for entry in """
     struct:RootFunctionConstantSelector struct:OrdinaryLeafMetadataDraft
-    enum:DetachedPrimitive enum:OrdinaryLeafOp enum:OrdinaryLeafApplyKind enum:OrdinaryLeafStackOp
+    enum:DetachedPrimitive struct:DetachedAtomName enum:OrdinaryLeafOp
+    enum:OrdinaryLeafApplyKind enum:OrdinaryLeafStackOp
     enum:OrdinaryLeafUnaryOp enum:OrdinaryLeafBinaryOp enum:OrdinaryLeafPredicateOp
     struct:OrdinaryLeafDraft enum:OrdinaryLeafReadError struct:AdmissionLimits
+    struct:InputAtomLedger
     """.split()
 ]
 if ordinary_top_level_items != expected_ordinary_top_level_items:
@@ -2483,7 +2570,7 @@ expected_ordinary_leaf_op_variants = """
     PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
     Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
     SetArgument Binary Predicate IfFalse IfTrue Goto Call TailCall Construct
-    CallMethod TailCallMethod ArrayFrom Apply Return ReturnUndefined Throw
+    CallMethod TailCallMethod ArrayFrom Apply Return ReturnUndefined Throw ThrowReadOnly
 """.split()
 ordinary_invocation_payloads = {
     name: [
@@ -2504,6 +2591,18 @@ if (
         "ordinary-leaf-operation-shape",
         "OrdinaryLeafOp must retain the exact reviewed inventory with distinct counted u16 invocation payloads, a typed Apply kind, and operand-free Throw; "
         f"found {enum_variant_names(ordinary_leaf_op_code)} with invocation payloads {ordinary_invocation_payloads}",
+    )
+ordinary_throw_read_only_payloads = [
+    " ".join(payload.split())
+    for payload in re.findall(
+        r"\bThrowReadOnly[ \t\n]*\(([^()]*)\)[ \t\n]*,",
+        ordinary_leaf_op_code,
+    )
+]
+if ordinary_throw_read_only_payloads != ["DetachedAtomName"]:
+    fail(
+        "ordinary-leaf-operation-shape",
+        "OrdinaryLeafOp::ThrowReadOnly must retain exactly one owned DetachedAtomName payload",
     )
 
 ordinary_apply_kind_code, _, _ = unique_braced_item(
@@ -2534,7 +2633,7 @@ ordinary_top_level_functions = [
 ]
 expected_ordinary_top_level_functions = """
     decode_trusted_ordinary_leaf admit_image preflight_constants project_primitive
-    copy_wire_string copy_bigint lower_code lower_operation lower_constant lower_local
+    copy_wire_string copy_bigint lower_code lower_operation copy_read_only_name lower_constant lower_local
     lower_argument validate_ir_target unsupported_operation classify_translation_error
     unadmitted classify_image_error classify_atom_error classify_wire_error
     classify_data_error classify_envelope_error classify_code_error
@@ -2562,7 +2661,7 @@ require_normalized_code_sha256(
     "ordinary-leaf-translated-code",
     "ordinary lower_operation must remain one alias-free exhaustive typed handoff",
     ordinary_lower_operation,
-    "27e3c712eb23b64fd54c18c2e66d2a7f7f6931cc32c644d4b66374df361e676f",
+    "e8e5f90946126c85f1acd3531bfb7ed7646972ffabd89f320461cd9e511b844b",
 )
 ordinary_handoff_rows = """
 FunctionOp::PushI32(value) @ Ok(OrdinaryLeafOp::PushI32(*value))
@@ -2597,18 +2696,19 @@ FunctionOp::Apply(kind) @ Ok(OrdinaryLeafOp::Apply(match kind { FunctionApplyKin
 FunctionOp::Return @ Ok(OrdinaryLeafOp::Return)
 FunctionOp::ReturnUndefined @ Ok(OrdinaryLeafOp::ReturnUndefined)
 FunctionOp::Throw @ Ok(OrdinaryLeafOp::Throw)
+FunctionOp::ThrowReadOnly(atom) @ { copy_read_only_name(atom).map(OrdinaryLeafOp::ThrowReadOnly) }
 """.strip().splitlines()
 expected_ordinary_handoff = [tuple(row.split(" @ ", 1)) for row in ordinary_handoff_rows]
 found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionOp::")
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 32 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 33 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
     len(re.findall(r"\binstruction[ \t\n]*\.[ \t\n]*supports_ordinary[ \t\n]*\(", ordinary_lower_code)) != 1
-    or len(re.findall(r"\binstruction[ \t\n]*\.[ \t\n]*operation[ \t\n]*\(", ordinary_lower_code)) != 1
+    or len(re.findall(r"\binstruction[ \t\n]*\.[ \t\n]*operation[ \t\n]*\(", ordinary_lower_code)) != 2
     or re.search(r"\b(?:NativeCodePlan|NativeOperands|PinnedOpcode|opcode)\b", ordinary_lower_code)
     or re.search(r"\b(?:OperationDiagnostic|diagnostic|mnemonic)\b", ordinary_lower_operation)
 ):
@@ -3959,7 +4059,7 @@ if consumer_exists:
         "ordinary-leaf-consumer-lowering",
         "lower_ordinary_leaf_op must remain one alias-free exhaustive typed publisher match",
         ordinary_instruction_lowering,
-        "114ddd7f4bf6ac082a84f64263fcfb47e982f39c1d25c2882111496f05f98567",
+        "0cfc718f9385f6509dbd8f355d0fa320c0b2853cbef818b826ee2a09d680d17f",
     )
     detached_variants = re.findall(
         r"\bDetachedPrimitive[ \t\n]*::[ \t\n]*(\w+)",
@@ -3991,7 +4091,7 @@ if consumer_exists:
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
         GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto
         Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
-        ReturnUndefined Throw
+        ReturnUndefined Throw ThrowReadOnly
     """.split()
     found_publisher_arms = rustfmt_match_arms(
         ordinary_instruction_lowering, "OrdinaryLeafOp::"
@@ -4051,6 +4151,7 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
     excluded_publisher_arms = {
         *(f"OrdinaryLeafOp::{family}(operation)" for family in publisher_families),
         "OrdinaryLeafOp::PushBigIntI32(_) | OrdinaryLeafOp::PushEmptyString",
+        "OrdinaryLeafOp::ThrowReadOnly(_)",
     }
     found_publisher_direct = [
         arm for arm in found_publisher_arms if arm[0] not in excluded_publisher_arms
@@ -4070,6 +4171,18 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
         "synthetic constant index arm",
     )
     normalized_synthetic_index = " ".join(synthetic_index_arm.split())
+    throw_read_only_publisher_arm, _, _ = unique_braced_item(
+        ordinary_instruction_lowering,
+        re.compile(
+            r"OrdinaryLeafOp[ \t\n]*::[ \t\n]*ThrowReadOnly"
+            r"[ \t\n]*\([^)]*\)[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "ordinary-leaf-consumer-lowering",
+        "ThrowReadOnly synthetic constant index arm",
+    )
+    normalized_throw_read_only_publisher = " ".join(
+        throw_read_only_publisher_arm.split()
+    )
     synthetic_index_fragments = (
         "let index = *next_synthetic_index;",
         "*next_synthetic_index = next_synthetic_index.checked_add(1)",
@@ -4079,7 +4192,7 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 32
+        len(found_publisher_arms) != 33
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -4089,6 +4202,13 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
         )
         )
         or normalized_instruction_lowering.count("Instruction::PushConst(index)") != 2
+        or normalized_throw_read_only_publisher != (
+            "OrdinaryLeafOp::ThrowReadOnly(_) => { "
+            "let index = *next_synthetic_index; "
+            "*next_synthetic_index = next_synthetic_index.checked_add(1).ok_or_else(|| { "
+            "RuntimeError::Engine(Error::internal( , )) })?; "
+            "Instruction::ThrowReadOnly(index) }"
+        )
         or (
             any(offset < 0 for offset in synthetic_index_offsets)
             or synthetic_index_offsets != sorted(synthetic_index_offsets)
@@ -4582,7 +4702,7 @@ if not (root / ".boundary-self-test").is_file():
         "stage3c-tail-verifier",
         "Instruction::stack_effect must remain the reviewed alias-free exhaustive stack model",
         stack_effect_item,
-        "e6a359ccac0100898fe2b81222e8725b9164f594b90907585832ff090b5a5fbc",
+        "a6b0111cc4ec1e4316e8206d6cd75ccc66d7e910c248015b02de358894454538",
     )
     normalized_stack_effect = " ".join(stack_effect_item.split())
     if any(normalized_stack_effect.count(fragment) != 1 for fragment in tail_stack_effects):
@@ -4917,13 +5037,59 @@ if not (root / ".boundary-self-test").is_file():
         "stage3d-throw-ordinary-route",
         "ordinary lower_code must require ordinary audience support and lower every typed operation once",
         stage3b_function(ordinary_relative, "lower_code", "stage3d-throw-ordinary-route"),
-        "ecbf05b23a58bf70ae9074c637ad4a8361fca1209be10413665bde00a8934797",
+        "5c2e66a4e1b7e5a3714807930a532a92a7fd0972deeb50b0ffd29c15b029bffb",
     )
     require_normalized_code_sha256(
         "stage3d-throw-ordinary-route",
         "OrdinaryLeafDraft::into_parts must retain metadata, constants, and code without substitution",
         stage3b_function(ordinary_relative, "into_parts", "stage3d-throw-ordinary-route"),
         "cb258f4d808ff5458a2be60fe0050ebc734736ec811b2232f9ff6c031e7e1cf9",
+    )
+    require_normalized_code_sha256(
+        "stage3e-read-only-ordinary-route",
+        "admit_image must pass the authenticated input-atom slot count into the typed ordinary lowering without bypass",
+        stage3b_function(ordinary_relative, "admit_image", "stage3e-read-only-ordinary-route"),
+        "afec36c89046ac4ddb822a58c95bb6d1f8683ce6cedfea0b2718c4d9bf4434ae",
+    )
+    input_atom_ledger_impl = unique_braced_item(
+        stage3b_code(ordinary_relative),
+        re.compile(r"\bimpl[ \t\n]+InputAtomLedger[ \t\n]*\{"),
+        "stage3e-read-only-atom-ledger",
+        "InputAtomLedger implementation",
+    )[0]
+    require_normalized_code_sha256(
+        "stage3e-read-only-atom-ledger",
+        "the input-atom ledger must admit at most one slot, require any declared slot to be consumed by raw49, and preserve provenance",
+        input_atom_ledger_impl,
+        "3b2000fa311f9de95eca3794884907f8b565f2cad4f52b2a2ce0369226799057",
+    )
+    detached_atom_name_impl = unique_braced_item(
+        stage3b_code(ordinary_relative),
+        re.compile(r"\bimpl[ \t\n]+DetachedAtomName[ \t\n]*\{"),
+        "stage3e-read-only-atom-ledger",
+        "DetachedAtomName implementation",
+    )[0]
+    require_normalized_code_sha256(
+        "stage3e-read-only-atom-ledger",
+        "DetachedAtomName must release only its owned UTF-16 units into publication",
+        detached_atom_name_impl,
+        "fd37c0c33e81d7c70073a4b7ceececc409aaad32680ab4384f294f49507147b9",
+    )
+    require_normalized_code_sha256(
+        "stage3e-read-only-atom-ledger",
+        "copy_read_only_name must admit only String atoms and preserve every UTF-16 unit in an owned payload",
+        stage3b_function(ordinary_relative, "copy_read_only_name", "stage3e-read-only-atom-ledger"),
+        "b5f7bc69b10a77a23b94db94558816a972c477459aab01c2939368eab2d7e8e0",
+    )
+    require_normalized_code_sha256(
+        "stage3e-read-only-publication",
+        "the ordinary publisher must synthesize exactly one verified String constant per ThrowReadOnly and publish its matching typed index before verification",
+        stage3b_function(
+            consumer_relative,
+            "read_trusted_ordinary_function_in_realm",
+            "stage3e-read-only-publication",
+        ),
+        "2dc6e6c5e3a7a1d14c7b79c20dfc7cdb53412b4ee28c9f6fddfc4eec7670ba5d",
     )
 
     # Stage3D does not introduce a second exception engine. Raw 48 must lower
@@ -4945,6 +5111,17 @@ if not (root / ".boundary-self-test").is_file():
             "stage3d-throw-verifier",
             "Throw must remain in the unique terminal verifier arm",
         )
+    if (
+        normalized_stack_effect.count("| Self::ThrowReadOnly(_)") != 1
+        or "Self::ThrowReadOnly(_) => (1, 0)" in normalized_stack_effect
+        or normalized_verify_parts.count(
+            "Instruction::ThrowReadOnly(_) | Instruction::ThrowRedeclaration(_) | Instruction::ThrowDeleteSuper | Instruction::ThrowIteratorMissingThrow => {}"
+        ) != 1
+    ):
+        fail(
+            "stage3e-read-only-verifier",
+            "ThrowReadOnly must remain a zero-pop, zero-push terminal verifier node with no fallthrough",
+        )
 
     execute_hot_item = stage3b_function(
         "src/vm.rs", "execute_hot_instruction", "stage3d-throw-completion"
@@ -4965,6 +5142,23 @@ if not (root / ".boundary-self-test").is_file():
             "stage3d-throw-completion",
             "VM Throw must pop the original value directly into Completion::Throw",
         )
+    throw_read_only_vm_arm = unique_braced_item(
+        execute_hot_item,
+        re.compile(
+            r"\bInstruction[ \t\n]*::[ \t\n]*ThrowReadOnly[ \t\n]*\("
+            r"[ \t\n]*index[ \t\n]*\)[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "stage3e-read-only-completion",
+        "VM ThrowReadOnly dispatch arm",
+    )[0]
+    if " ".join(throw_read_only_vm_arm.split()) != (
+        "Instruction::ThrowReadOnly(index) => { "
+        "return Err(host.read_only_error(*index)?); }"
+    ):
+        fail(
+            "stage3e-read-only-completion",
+            "VM ThrowReadOnly must call the read-only error hook directly without popping or returning",
+        )
     require_normalized_code_sha256(
         "stage3d-throw-critical-route",
         "execute_inner must carry raw48 from fetch through the hot dispatcher without a guarded completion alias",
@@ -4975,7 +5169,7 @@ if not (root / ".boundary-self-test").is_file():
         "stage3d-throw-critical-route",
         "execute_hot_instruction must enter its unique match before handling Throw and retain the exact dispatch body",
         execute_hot_item,
-        "142ca9c32855a4e2b3e0290ef69830faf68929c5b1e35e8291973b3559bd4f19",
+        "7798feedb7ce69c76c65bf9b7effd4cb80491f6db9ce28c9d1d51b0c51e3db48",
     )
     execute_published_item = stage3b_function(
         "src/vm.rs", "execute_published", "stage3d-throw-critical-route"
@@ -5059,6 +5253,18 @@ if not (root / ".boundary-self-test").is_file():
             "iterator_close",
             "RuntimeVmHost::iterator_close must retain getter, call, pending-exception, and result precedence",
             "242106effd28c2885dd94c0cdbb4f85312b650291dc97d7593ff028e83c02aae",
+        ),
+        (
+            runtime_vm_host_relative,
+            "read_only_error",
+            "RuntimeVmHost::read_only_error must resolve the verified String constant and build the native TypeError in the bytecode realm",
+            "b6f792f0992f3b857dc97f0521470557b22593cf86c61f1c079152245ad39f7e",
+        ),
+        (
+            runtime_vm_host_relative,
+            "materialize_error",
+            "RuntimeVmHost::materialize_error must allocate the native TypeError in the current defining realm before the existing raise path",
+            "46fe1d5c192e13c6d1e2f4ae69b6ab04c0b56b0187387c09d2e25a0dab7a0a1f",
         ),
     ):
         require_normalized_code_sha256(
@@ -5570,9 +5776,9 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "registry_locks_the_current_physical_cohorts",
             (
-                "(blocked, scalar_only, ordinary_only, shared), (116, 1, 98, 29)",
-                "assert_eq!(ordinary_only + shared, 127);",
-                "assert_eq!(scalar_only + ordinary_only + shared, 128);",
+                "(blocked, scalar_only, ordinary_only, shared), (115, 1, 99, 29)",
+                "assert_eq!(ordinary_only + shared, 128);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 129);",
             ),
         ),
         (
@@ -5588,9 +5794,9 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "blocked_frontier_has_stable_typed_category_counts",
             (
-                "let mut counts = [0_usize; 16];",
+                "let mut counts = [0_usize; 15];",
                 "assert!(counts.into_iter().all(|count| count != 0));",
-                "assert_eq!(counts.into_iter().sum::<usize>(), 116);",
+                "assert_eq!(counts.into_iter().sum::<usize>(), 115);",
             ),
         ),
         (
@@ -5695,9 +5901,9 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3c_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "9cbd512b90bf58b4233210467a51faf7515a0ec2149417e5200e07b0984e158c",
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "33b69fe28b540584117985b1b47d9674086d59622d26d7ed2e08b6b8d61ccb60",
         ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_invocation_addition_is_the_exact_reviewed_six_row_set"): "0bd25bc945bde404ea911c720491e06a0d58c7257683347372b6c74843d3afc2",
-        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "da000b9bc773cfa940be3af11b75360c7e61f60fb67d40af64d37a0637c59b41",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "b939823b58a56c4d2112a82f684ca576de662d6279603318f09af287958fc574",
         ("src/runtime/binary_object/function_translate/mod.rs", "tail_invocation_lowering_preserves_the_npop_operand_and_kind"): "f9a36b2d07545f80276edce3e1e7f3e1baaa56fcdfd82996a857be1958acccd2",
         ("src/runtime/binary_object/ordinary_leaf.rs", "tail_invocation_operands_reach_the_ordinary_dto_unchanged"): "fd78ceeb26a50bc988ebb4fdece4f4417b89abd31bbfe0edae6480899e8c1ecc",
         ("src/runtime/binary_object_publish.rs", "ordinary_tail_invocation_publishes_one_for_one_with_the_unchanged_operand"): "7277c89d2d824c8bfe59cecc5ed5fdbf4e68f0368b719794d3072df7782bc94e",
@@ -5777,15 +5983,128 @@ if not (root / ".boundary-self-test").is_file():
                 "the Rust raw48 fixture must remain the exact 45-byte cf30 wire with its frozen FNV-1a-64 and SHA-256",
             )
 
+    def stage3e_fnv1a64(payload: bytes) -> int:
+        value = 0xCBF29CE484222325
+        for byte in payload:
+            value ^= byte
+            value = (value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+        return value
+
+    def stage3e_byte_array(source: str, name: str) -> bytes:
+        matches = list(re.finditer(
+            rf"\bconst[ \t\n]+{re.escape(name)}[ \t\n]*:"
+            r"[ \t\n]*&[ \t\n]*\[[ \t\n]*u8[ \t\n]*\][ \t\n]*="
+            r"[ \t\n]*&[ \t\n]*\[(?P<body>[^]]*)\][ \t\n]*;",
+            source,
+        ))
+        if len(matches) != 1:
+            fail(
+                "stage3e-runtime-evidence",
+                f"the Rust runtime evidence must retain exactly one literal {name} wire",
+            )
+            return b""
+        body = matches[0].group("body")
+        tokens = re.findall(r"0x[0-9A-Fa-f]+|[0-9]+", body)
+        residue = re.sub(r"0x[0-9A-Fa-f]+|[0-9]+|[\s,]", "", body)
+        if residue:
+            fail(
+                "stage3e-runtime-evidence",
+                f"{name} must contain only literal byte tokens",
+            )
+            return b""
+        try:
+            return bytes(int(token, 0) for token in tokens)
+        except ValueError:
+            fail("stage3e-runtime-evidence", f"{name} contains an invalid byte")
+            return b""
+
+    def stage3e_concat_hex(source: str, name: str) -> bytes:
+        matches = list(re.finditer(
+            rf"\bconst[ \t\n]+{re.escape(name)}[ \t\n]*:[^=;]+="
+            r"[ \t\n]*concat![ \t\n]*\((?P<body>.*?)\)[ \t\n]*;",
+            source,
+            re.DOTALL,
+        ))
+        if len(matches) != 1:
+            fail(
+                "stage3e-runtime-evidence",
+                f"the archive evidence must retain exactly one {name} concat wire",
+            )
+            return b""
+        body = matches[0].group("body")
+        chunks = re.findall(r'"([0-9A-Fa-f]*)"', body)
+        residue = re.sub(r'"[0-9A-Fa-f]*"|[\s,]', "", body)
+        joined = "".join(chunks)
+        if residue or len(joined) % 2:
+            fail(
+                "stage3e-runtime-evidence",
+                f"{name} must contain only an even-length literal hex concat",
+            )
+            return b""
+        try:
+            return bytes.fromhex(joined)
+        except ValueError:
+            fail("stage3e-runtime-evidence", f"{name} contains invalid hex")
+            return b""
+
+    stage3e_runtime_source = read_source("src/runtime/tests.rs")
+    stage3e_ordinary_source = read_source(
+        "src/runtime/binary_object/ordinary_leaf.rs"
+    )
+    stage3e_manual_wire = stage3e_byte_array(
+        stage3e_runtime_source, "QUICKJS_ORDINARY_READ_ONLY_BC5"
+    )
+    stage3e_natural_wire = stage3e_byte_array(
+        stage3e_runtime_source, "QUICKJS_NATURAL_READ_ONLY_BC5"
+    )
+    stage3e_manual_hex_wire = stage3e_concat_hex(
+        stage3e_ordinary_source, "READ_ONLY_LEAF_HEX"
+    )
+    stage3e_natural_hex_wire = stage3e_concat_hex(
+        stage3e_ordinary_source, "NATURAL_READ_ONLY_LEAF_HEX"
+    )
+    stage3e_wire_contracts = (
+        (
+            "manual raw49",
+            stage3e_manual_wire,
+            stage3e_manual_hex_wire,
+            47,
+            0xB4C1126C283093AF,
+            "d05cabd4c18598b024f66eab8fd723c412fc5a469325b26fca5042507dea3ee8",
+            bytes.fromhex("31f300000000"),
+        ),
+        (
+            "natural raw49 origin",
+            stage3e_natural_wire,
+            stage3e_natural_hex_wire,
+            58,
+            0x026914EDA60A481F,
+            "a07b3f39a5e3929af4899a07686e91324e4ee9c54b729f518813eaa4a1875199",
+            bytes.fromhex("5e0000b3c7b41131f300000000"),
+        ),
+    )
+    for label, runtime_wire, archive_wire, size, fnv, sha256, child_code in stage3e_wire_contracts:
+        if (
+            runtime_wire != archive_wire
+            or len(runtime_wire) != size
+            or stage3e_fnv1a64(runtime_wire) != fnv
+            or hashlib.sha256(runtime_wire).hexdigest() != sha256
+            or not runtime_wire.endswith(child_code)
+        ):
+            fail(
+                "stage3e-runtime-evidence",
+                f"the Rust {label} fixture must retain its exact byte identity, FNV-1a-64, SHA-256, and child code",
+            )
+
     stage3d_test_contracts = (
         (
             "src/runtime/binary_object/function_translate/capability.rs",
-            "ordinary_explicit_throw_is_the_only_reviewed_exception_completion",
+            "ordinary_throw_rows_are_the_exact_reviewed_completion_set",
             (
                 "CAPABILITY_REGISTRY[48].policy",
                 "CapabilityPolicy::OrdinaryOnly(Recipe::Throw)",
                 "CAPABILITY_REGISTRY[47].policy",
-                "CAPABILITY_REGISTRY[49].policy",
+                "CapabilityPolicy::OrdinaryOnly(Recipe::ThrowReadOnly)",
                 "CAPABILITY_REGISTRY[177].policy",
             ),
         ),
@@ -5880,7 +6199,7 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3d_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_explicit_throw_is_the_only_reviewed_exception_completion"): "1fc5457f180e996bd38df49a94b8fcdbda6b2ef01bdb8ac4cd7d1cec7383f08d",
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_throw_rows_are_the_exact_reviewed_completion_set"): "060acee50f7f8b36292f04a085daa7b6a6123dece220725a439136f27fe9dcd8",
         ("src/runtime/binary_object/function_translate/mod.rs", "explicit_throw_lowering_is_typed_and_operand_free"): "5d6d1b5266a7b7682c26a39d8b54c4b9f450670feb7dc917e89427293f92b9a9",
         ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "f0b9cd78bd3502077caefd2a9fdeba82fe06a35f5ace794be883ac118d7b3b93",
         ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5be98ae103a1ab281177f2e1e4c6b2ce88a5e2a54954e7d3fae56e8b8bc63827",
@@ -5921,11 +6240,7 @@ if not (root / ".boundary-self-test").is_file():
         )
         stage3d_test_parent_bounds[relative] = (module_start, module_end)
 
-    assertion_shadow = re.compile(
-        r"\bmacro_rules[ \t\n]*![ \t\n]*(?:r#)?(?:assert|assert_eq|assert_ne|matches|panic)\b"
-        r"|^[ \t]*use[ \t]+[^;]*\b(?:r#)?(?:assert|assert_eq|assert_ne|matches|panic)\b[^;]*;",
-        re.MULTILINE,
-    )
+    assertion_shadow = assertion_shadow_pattern
     for relative in stage3d_inline_test_files | {"src/runtime/tests.rs"}:
         if assertion_shadow.search(stage3b_code(relative)):
             fail(
@@ -5980,10 +6295,185 @@ if not (root / ".boundary-self-test").is_file():
             f"missing {missing_stage3d_tests}, drifted {drifted_stage3d_tests}",
         )
 
+    stage3e_test_contracts = (
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "ordinary_throw_rows_are_the_exact_reviewed_completion_set",
+            (
+                "CAPABILITY_REGISTRY[48].policy",
+                "CapabilityPolicy::OrdinaryOnly(Recipe::Throw)",
+                "CAPABILITY_REGISTRY[49].policy",
+                "CapabilityPolicy::OrdinaryOnly(Recipe::ThrowReadOnly)",
+                "CAPABILITY_REGISTRY[177].policy",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "lowers_property_free_read_only_with_owned_input_atom_spelling",
+            (
+                "assert_eq!(object.len(), 47);",
+                "assert_eq!(draft.metadata().max_stack(), 0);",
+                "[OrdinaryLeafOp::ThrowReadOnly(name)]",
+                "name.0.as_ref()",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "read_only_rejects_other_subtypes_non_string_atoms_and_atom_table_drift",
+            (
+                "for subtype in [1, 2, 3, 4, 5, u8::MAX]",
+                "object[46] = subtype;",
+                "object[42..46].copy_from_slice(&raw_atom.to_le_bytes());",
+                "unused[39] = 1;",
+                "multiple[1] = 2;",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "read_only_accepts_only_string_names_under_zero_or_one_slot_provenance",
+            (
+                "predefined[1] = 0;",
+                "predefined[40..44].copy_from_slice(&50_u32.to_le_bytes());",
+                "manifest_alias.splice(2..4",
+                "decimal_alias.splice(2..4",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "natural_read_only_wire_remains_outside_the_nonlexical_leaf_cohort",
+            (
+                "assert_eq!(object.len(), 58);",
+                "Err(OrdinaryLeafReadError::Unadmitted(_))",
+            ),
+        ),
+        (
+            "src/bytecode.rs",
+            "verifier_rejects_bad_constants_and_stack_joins",
+            (
+                "Instruction::PostInc, Instruction::ThrowReadOnly(0)",
+                "let empty_stack_readonly = BytecodeFunction",
+                "code: vec![Instruction::ThrowReadOnly(0)]",
+                "assert_eq!(empty_stack_readonly.verify().unwrap().max_stack, 0);",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error",
+            (
+                "assert_eq!(QUICKJS_ORDINARY_READ_ONLY_BC5.len(), 47);",
+                "0xb4c1_126c_2830_93af",
+                "[Instruction::ThrowReadOnly(0)]",
+                "snapshot.metadata.max_stack, 0",
+                "[BytecodeConstant::Value(RawValue::String(name))]",
+                "Err(RuntimeError::Exception)",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_read_only_reenters_catch_and_resets_pending_state",
+            (
+                "read_trusted_ordinary_function(QUICKJS_ORDINARY_READ_ONLY_BC5, 0)",
+                "context .define_own_property(",
+                "assert!(!context.has_exception());",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_read_only_uses_bytecode_realm_and_attaches_backtrace",
+            (
+                "let mut defining = runtime.new_context();",
+                "let mut caller = runtime.new_context();",
+                "runtime.get_prototype_of(&error).unwrap()",
+                "own_stack_string(&runtime, &error)",
+                "assert!(!caller.has_exception());",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_read_only_preserves_wide_lone_surrogate_name_units",
+            (
+                "image.splice(2..4, [0x05, 0x41, 0x00, 0x00, 0xd8]);",
+                ".utf16_units() .collect::<Vec<_>>()",
+                "0xd800",
+                "assert!(!context.has_exception());",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_read_only_rejections_are_transactional_and_retryable",
+            (
+                "subtype_one[46] = 1;",
+                "subtype_max[46] = u8::MAX;",
+                "unused_atom[39] = 1;",
+                "multiple_atoms[1] = 2;",
+                "non_string[42..46].copy_from_slice(&0x8000_002a_u32.to_le_bytes());",
+                "QUICKJS_NATURAL_READ_ONLY_BC5.to_vec()",
+                "assert_eq!(runtime.heap_counts(), baseline",
+                "assert_eq!(runtime.test_atom_count(), baseline_atoms",
+            ),
+        ),
+    )
+    stage3e_test_body_hashes = {
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_throw_rows_are_the_exact_reviewed_completion_set"): "060acee50f7f8b36292f04a085daa7b6a6123dece220725a439136f27fe9dcd8",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_property_free_read_only_with_owned_input_atom_spelling"): "bc88a01461e1c7a8fc3d05e716510a81eb95b464dc48165b863b86928f970172",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "read_only_rejects_other_subtypes_non_string_atoms_and_atom_table_drift"): "e03485e5228e1e346c83d40e2285f09283f71c94f53542af394c04a1e6b4b7aa",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "read_only_accepts_only_string_names_under_zero_or_one_slot_provenance"): "2c730d38b8a09aa20b2ba20add47bde755090f23a8599e8516e964352f32eff2",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "natural_read_only_wire_remains_outside_the_nonlexical_leaf_cohort"): "b50006a970fd18ce24274af96ee39394e04ae06bf27fa988682dcc3b1480741d",
+        ("src/bytecode.rs", "verifier_rejects_bad_constants_and_stack_joins"): "dae9279e19da751453eaec47b74b470d0ee627b0e2a03a1c8fae7c5405907aef",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error"): "29f9c54b5ccffea7e9bf100206ccaf0a99b2f4afe8d2ff887ad99b5b11989493",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_read_only_reenters_catch_and_resets_pending_state"): "756aa7b8180452d3786a16f1c2534135381e1bd4931458060ff3a5b2b6f39098",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_read_only_uses_bytecode_realm_and_attaches_backtrace"): "fd9907b3f5987005582a5376b4305bf68cd74513bd1e46ffd59bd2933495d4d6",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_read_only_preserves_wide_lone_surrogate_name_units"): "8e220ef941cc43fa3d487827a94b1298047fd7cea6082df622788d4081b47110",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_read_only_rejections_are_transactional_and_retryable"): "a896b877f9b5b0d49ed423701344c738937e055112695c1b264aea9ec729995a",
+    }
+    missing_stage3e_tests = []
+    drifted_stage3e_tests = []
+    for relative, name, anchors in stage3e_test_contracts:
+        code = stage3b_code(relative)
+        declarations = list(re.finditer(
+            rf"(?P<attributes>(?:#[ \t\n]*\[[^]]*\][ \t\n]*)*)"
+            rf"\bfn[ \t\n]+{re.escape(name)}[ \t\n]*\(",
+            code,
+        ))
+        if (
+            len(declarations) != 1
+            or " ".join(declarations[0].group("attributes").split()) != "#[test]"
+        ):
+            missing_stage3e_tests.append(f"{relative}::{name}")
+            continue
+        declaration_offset = declarations[0].start()
+        declaration_depth = code[:declaration_offset].count("{") - code[:declaration_offset].count("}")
+        if relative == "src/runtime/tests.rs":
+            direct_parent = declaration_depth == 0
+        else:
+            parent_bounds = stage3d_test_parent_bounds.get(relative)
+            direct_parent = (
+                parent_bounds is not None
+                and parent_bounds[0] < declaration_offset < parent_bounds[1]
+                and declaration_depth == 1
+            )
+        if not direct_parent:
+            missing_stage3e_tests.append(f"{relative}::{name} (nested)")
+            continue
+        item = stage3b_function(relative, name, "stage3e-runtime-evidence")
+        normalized_item = " ".join(item.split())
+        if (
+            any(anchor not in normalized_item for anchor in anchors)
+            or normalized_code_sha256(item)
+            != stage3e_test_body_hashes.get((relative, name))
+        ):
+            drifted_stage3e_tests.append(f"{relative}::{name}")
+    if missing_stage3e_tests or drifted_stage3e_tests:
+        fail(
+            "stage3e-runtime-evidence",
+            "Stage3E tests must remain unconditional direct-parent #[test] functions with exact raw49 wires, subtype/atom provenance, synthetic String, zero-stack terminal, realm, backtrace, pending, catch, retry, and rollback evidence; "
+            f"missing {missing_stage3e_tests}, drifted {drifted_stage3e_tests}",
+        )
+
     stage3d_c_evidence_hashes = {
-        "tests/fixtures/function_bytecode_wire.c": "e865893d3a835a191a93292cce4a413b8d60d35e48f1eee599d1dad7da30a792",
-        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt": "f5d7a18a80ec8b303a29c10c30726545ed12708b739b8bba66f74c158945ab42",
-        "dev-support/quickjs-c-oracles.tsv": "f9484ee886c0e9ebd5ec037e083eb2eb6fe1857b7914846815a6ea3fc34d3094",
+        "tests/fixtures/function_bytecode_wire.c": "2489185bc2dbe4383a770836ce81f3fd49f4148557e74562b77c58d7b58cc30f",
+        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt": "127b07ba0f3e8503d7e6f49a3dcbe9609cae917a6aee67a7c3e7d77a43ac1418",
+        "dev-support/quickjs-c-oracles.tsv": "d9f58447a7b1f36fad3edb1d7633953127f215eb81b0360077c10bb33ce8f99f",
     }
     stage3d_c_sources: dict[str, str] = {}
     for relative, expected_hash in stage3d_c_evidence_hashes.items():
@@ -5996,7 +6486,7 @@ if not (root / ".boundary-self-test").is_file():
         if found_hash != expected_hash:
             fail(
                 "stage3d-c-oracle",
-                f"{relative} drifted from its frozen Stage3D sha256; found {found_hash}",
+                f"{relative} drifted from its frozen Stage3E sha256; found {found_hash}",
             )
         stage3d_c_sources[relative] = payload.decode("utf-8")
 
@@ -6012,10 +6502,22 @@ if not (root / ".boundary-self-test").is_file():
         ) != 1
         or stage3d_c_source.count("static const uint8_t ordinary_throw_bytecode[]")
         != 1
+        or stage3d_c_source.count(
+            "static int expect_ordinary_throw_error_completion(JSContext *compile_context)"
+        ) != 1
+        or stage3d_c_source.count(
+            "if (expect_ordinary_throw_error_completion(compile_context))"
+        ) != 1
+        or stage3d_c_source.count(
+            "static const uint8_t ordinary_throw_error_natural_bytecode[]"
+        ) != 1
+        or stage3d_c_source.count(
+            "static const uint8_t ordinary_throw_error_bytecode[]"
+        ) != 1
     ):
         fail(
             "stage3d-c-oracle",
-            "the authenticated C oracle must define, call, and execute exactly one ordinary raw48 completion case",
+            "the authenticated C oracle must define, call, and execute exactly one raw48 and one raw49 completion case with distinct natural/manual raw49 wires",
         )
     stage3d_c_transcript = stage3d_c_sources.get(
         "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt", ""
@@ -6030,7 +6532,7 @@ if not (root / ".boundary-self-test").is_file():
         "ordinary-throw-terminal=raw48,stack:1->0,no-return",
         "ordinary-throw-caller-catch=int,object,Error:original-identity;terminal-no-return",
         "ordinary-throw-iterator-close=body,return,catch-original;close-throw-does-not-replace-original",
-        "ordinary-throw-deferred-raw=49,177",
+        "ordinary-throw-deferred-raw=177",
         "ordinary-throw-oracle=passed",
     )
     if any(
@@ -6039,7 +6541,42 @@ if not (root / ".boundary-self-test").is_file():
     ):
         fail(
             "stage3d-c-oracle",
-            "the frozen C transcript must retain the exact 45-byte wire, metadata, terminal, identity, backtrace, iterator-close, and deferred-row evidence",
+            "the frozen C transcript must retain the exact raw48 wire, metadata, terminal, identity, backtrace, iterator-close, and current deferred-row evidence",
+        )
+    stage3e_c_transcript_contract = (
+        "ordinary-throw-error-natural-wire-size=58",
+        "ordinary-throw-error-natural-wire-fnv1a64=026914eda60a481f",
+        "ordinary-throw-error-natural-wire-sha256=a07b3f39a5e3929af4899a07686e91324e4ee9c54b729f518813eaa4a1875199",
+        "ordinary-throw-error-natural-child-code-hex=5e0000b3c7b41131f300000000",
+        "ordinary-throw-error-natural-terminal=raw49/subtype0,stack:0->0,no-return",
+        "ordinary-throw-error-natural-ordinary-cohort-exclusion=lexical-vars:1,locals:1,local-flags:b0,raw94:set_loc_uninitialized",
+        "ordinary-throw-error-wire-size=47",
+        "ordinary-throw-error-wire-fnv1a64=b4c1126c283093af",
+        "ordinary-throw-error-wire-sha256=d05cabd4c18598b024f66eab8fd723c412fc5a469325b26fca5042507dea3ee8",
+        "ordinary-throw-error-child-metadata=flags:0243,js_mode:1,args:0,vars:0,defined_args:0,stack:0,var_refs:0,closures:0,cpool:0,code:6,locals:0,code_offset:41",
+        "ordinary-throw-error-child-code-hex=31f300000000",
+        "ordinary-throw-error-child-raw=49",
+        "ordinary-throw-error-terminal=raw49/subtype0,stack:0->0,no-return",
+        "ordinary-throw-error-empty-stack=metadata-max-stack:0;raw49:0->0;TypeError-not-underflow",
+        "ordinary-throw-error-unicode-wire=atom:x->U+00E9;size:47;rewrite:identity;fnv1a64:b733634a7dff678e;sha256:8228fdf15ff5551e6e14bac89e91d606c2aba6fe5d7ded834c309830842fd324",
+        "ordinary-throw-error-realm=defining-TypeError:true;caller-TypeError:false",
+        "ordinary-throw-error-backtrace=own-stack-before-catch;anonymous-frame-present",
+        "ordinary-throw-error-pending=direct-call-publishes;GetException-clears;caller-catch-clears",
+        "ordinary-throw-error-caller-catch=Unicode-TypeError:defining-realm;terminal-no-return;result:42",
+        "ordinary-throw-error-subtype1=fresh-read-write-exec:SyntaxError:redeclaration-of-x;Rust:Unadmitted",
+        "ordinary-throw-error-subtype255=fresh-read-write-exec:InternalError:invalid-throw-var-type-255;Rust:Unadmitted",
+        "ordinary-throw-error-rust-admission=raw49/subtype0-only;subtype1-255:Unadmitted",
+        "ordinary-exception-admitted-raw=48,49",
+        "ordinary-exception-deferred-raw=177",
+        "ordinary-throw-error-oracle=passed",
+    )
+    if any(
+        stage3d_c_transcript.count(f"{line}\n") != 1
+        for line in stage3e_c_transcript_contract
+    ):
+        fail(
+            "stage3e-c-oracle",
+            "the frozen C transcript must retain both raw49 wire identities, subtype-0 terminal semantics, realm/backtrace/pending/catch evidence, subtype rejection contrast, and raw177 deferral",
         )
 
     stage3d_status = read_source("docs/status.md")
@@ -6057,10 +6594,28 @@ if not (root / ".boundary-self-test").is_file():
             "8342c0f2e2b880cc8f0c668680db1521ca400a8cae2d837a261ed785fe6d3c09",
         ),
         (
-            "the status document must retain the authenticated 45-byte C wire and source/transcript/manifest hashes",
+            "the status document must retain the authenticated raw48/raw49 C wires and Stage3E source/transcript/manifest hashes",
             "Stage 3D adds the exact compiler-natural strict 45-byte raw-48 wire",
-            "`f9484ee886c0e9ebd5ec037e083eb2eb6fe1857b7914846815a6ea3fc34d3094`.",
-            "b48d3ad1f479c558fdb0699af9f40792fbdbda98bf69d717fbaefe5103639449",
+            "`d9f58447a7b1f36fad3edb1d7633953127f215eb81b0360077c10bb33ce8f99f`.",
+            "68033f5db42e6c57c94e12ab84d30c7c0ad8989ddf764e607715b5e412897325",
+        ),
+        (
+            "the status document must retain the exact Stage3E typed atom/synthetic-constant path and no-new-VM boundary",
+            "Stage 3E admits raw 49 only as the typed chain",
+            "public API, source syntax, Test262 admission, or Feature Parity claim.",
+            "f9772990f611da10923dded7873f94c581ae82c6c3cc5517daeb76e9b0fba341",
+        ),
+        (
+            "the status document must retain the exact Stage3E natural/manual wire, atom provenance, terminal, realm, pending, catch, and rollback evidence",
+            "Stage-3E Rust evidence distinguishes",
+            "transactional retry after every rejected form.",
+            "b52a229d39453fd9ef6abee7039e873cf14c9c42266e82c883850d7c612761c4",
+        ),
+        (
+            "the status document must retain the exact Stage3E source-stale receipt boundary and unchanged metrics claim",
+            "For Stage 3E, that R3fj receipt is source-stale",
+            "receipt promotion.",
+            "a8031b060cb0fa86f1185cb96c5e079c7d3dd5897d1607a420b386ffc6cbdb83",
         ),
     ):
         require_normalized_corridor_sha256(
@@ -6076,6 +6631,39 @@ if not (root / ".boundary-self-test").is_file():
         for paragraph in re.split(r"\n[ \t]*\n", stage3d_status)
         if "The latest full R3fj execution" in paragraph
     ]
+    stage3e_stale_receipt_paragraphs = [
+        paragraph
+        for paragraph in re.split(r"\n[ \t]*\n", stage3d_status)
+        if "For Stage 3E" in paragraph and "source-stale" in paragraph
+    ]
+    if len(stage3e_stale_receipt_paragraphs) != 1:
+        fail(
+            "stage3e-status",
+            "the status document must contain exactly one rendered Stage3E source-stale receipt paragraph with a blank-line boundary",
+        )
+    normalized_stage3e_status = " ".join(stage3d_status.split())
+    if (
+        re.search(r"\bsource[- ]current[ \t]+for[ \t]+Stage[ \t]*3E\b", normalized_stage3e_status, re.IGNORECASE)
+        or re.search(
+            r"\b(?:receipt|R3fj)\b[^.]{0,100}\b(?:authenticates|certifies|covers)[ \t]+(?:the[ \t]+)?(?:Stage[ \t]*3E|raw[- ]?49)\b",
+            normalized_stage3e_status,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:Stage[ \t]*3E|raw[- ]?49)\b[^.]{0,100}\bsource[- ]current\b",
+            normalized_stage3e_status,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:Stage[ \t]*3E|raw[- ]?49)\b[^.]{0,100}\b(?:authenticated|certified|covered)\b[ \t]+(?:by|under)[ \t]+(?:this[ \t]+|the[ \t]+)?(?:receipt|R3fj)\b",
+            normalized_stage3e_status,
+            re.IGNORECASE,
+        )
+    ):
+        fail(
+            "stage3e-status",
+            "the Stage3D R3fj receipt must remain explicitly source-stale and non-authenticating for Stage3E",
+        )
     stage3d_receipt_config = read_source("dev-support/test262/current.conf")
     stage3d_receipt_values: dict[str, str] = {}
     for line_number, line in enumerate(stage3d_receipt_config.splitlines(), 1):
@@ -6301,9 +6889,39 @@ if src_root.is_symlink() or not src_root.is_dir():
 else:
     production_sources = sorted(src_root.rglob("*.rs"))
 
+allowed_assertion_namespace_imports = {
+    "use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};",
+    "use std::panic::{self, AssertUnwindSafe};",
+}
+for path in production_sources:
+    if path.is_symlink() or not path.is_file():
+        continue
+    relative = path.relative_to(root).as_posix()
+    code = rust_code_only(path.read_text(encoding="utf-8"))
+    if re.search(
+        r"\bmacro_rules[ \t\n]*![ \t\n]*(?:r#)?(?:assert|assert_eq|assert_ne|matches|panic)\b",
+        code,
+    ):
+        fail(
+            "stage3e-runtime-evidence",
+            f"{relative} must not define an assertion macro that can enter Stage3E test scope",
+        )
+    for statement in re.findall(
+        r"(?ms)^[ \t]*(?:(?:pub(?:[ \t]*\([^)]*\))?)[ \t]+)?use\b.*?;",
+        code,
+    ):
+        if (
+            assertion_shadow_pattern.search(statement)
+            and " ".join(statement.split()) not in allowed_assertion_namespace_imports
+        ):
+            fail(
+                "stage3e-runtime-evidence",
+                f"{relative} must not import an assertion macro that can shadow Stage3E test evidence",
+            )
+
 facade_name_pattern = re.compile(
     r"\b(?:ScalarValueDraft|ScalarUnaryOp|ScalarScriptReadError|ScalarStringDraft|"
-    r"decode_trusted_scalar_script|DetachedPrimitive|OrdinaryLeafDraft|"
+    r"decode_trusted_scalar_script|DetachedAtomName|DetachedPrimitive|OrdinaryLeafDraft|"
     r"OrdinaryLeafApplyKind|OrdinaryLeafMetadataDraft|OrdinaryLeafOp|OrdinaryLeafReadError|"
     r"RootFunctionConstantSelector|decode_trusted_ordinary_leaf)\b"
 )
@@ -7769,7 +8387,7 @@ printf '%s\n' \
     'mod scalar_script;' \
     'mod wire;' \
     'pub(super) use scalar_script::{ScalarScriptReadError, ScalarStringDraft, ScalarUnaryOp, ScalarValueDraft, decode_trusted_scalar_script};' \
-    'pub(super) use ordinary_leaf::{DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafPredicateOp, OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
+    'pub(super) use ordinary_leaf::{DetachedAtomName, DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp, OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafPredicateOp, OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector, decode_trusted_ordinary_leaf};' \
     > "$fixture/src/runtime/binary_object/mod.rs"
 cp -- "$repository_root/src/runtime/binary_object/function_translate/mod.rs" \
     "$fixture/src/runtime/binary_object/function_translate/mod.rs"
@@ -8170,12 +8788,15 @@ expect_full_rewrite_rejected() {
     local after=$5
     local before2=${6-}
     local after2=${7-}
+    local added_relative=${8-}
+    local added_source=${9-}
     local case_root=$tmp_dir/$label
     local output=$case_root.output
 
     mkdir -p "$case_root"
     cp -R "$repository_root/src" "$case_root/src"
     mkdir -p "$case_root/tests/fixtures" "$case_root/dev-support/test262" "$case_root/docs"
+    cp -- "$repository_root/Cargo.toml" "$case_root/Cargo.toml"
     cp -- "$repository_root/tests/fixtures/function_bytecode_wire.c" \
         "$case_root/tests/fixtures/function_bytecode_wire.c"
     cp -- "$repository_root/tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt" \
@@ -8185,7 +8806,8 @@ expect_full_rewrite_rejected() {
     cp -- "$repository_root/dev-support/test262/current.conf" \
         "$case_root/dev-support/test262/current.conf"
     cp -- "$repository_root/docs/status.md" "$case_root/docs/status.md"
-    python3 - "$case_root/$relative" "$before" "$after" "$before2" "$after2" <<'PY'
+    python3 - "$case_root/$relative" "$before" "$after" "$before2" "$after2" \
+        "$case_root" "$added_relative" "$added_source" <<'PY'
 from pathlib import Path
 import sys
 
@@ -8203,6 +8825,14 @@ if before2:
         raise SystemExit(f"full rewrite canary expected one occurrence of {before2!r}")
     source = source.replace(before2, after2)
 path.write_text(source, encoding="utf-8")
+case_root = Path(sys.argv[6])
+added_relative = sys.argv[7]
+if added_relative:
+    added_path = case_root / added_relative
+    if added_path.exists():
+        raise SystemExit(f"full rewrite canary added path already exists: {added_relative!r}")
+    added_path.parent.mkdir(parents=True, exist_ok=True)
+    added_path.write_text(sys.argv[8], encoding="utf-8")
 PY
     if "$script_dir/check-binary-object-boundary.sh" --scan-only "$case_root" \
         > "$output" 2>&1; then
@@ -8590,7 +9220,7 @@ stage3c-publisher-tail-call-to-call|ordinary-leaf-consumer-lowering|src/runtime/
 stage3c-publisher-tail-method-to-method-call|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            Instruction::TailCallMethod(argument_count)|            Instruction::CallMethod(argument_count)
 stage3a-publisher-array-from-wrong-op|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::ArrayFrom(element_count),|        OrdinaryLeafOp::ArrayFrom(element_count) => Instruction::Construct(element_count),
 stage3b-publisher-apply-kind-swap|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            OrdinaryLeafApplyKind::Call => ApplyKind::Call,|            OrdinaryLeafApplyKind::Call => ApplyKind::Construct,
-ordinary-synthetic-index-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            let index = *next_synthetic_index;|            let index = next_synthetic_index.saturating_add(1);
+ordinary-synthetic-index-offset|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            Instruction::PushConst(index)|            Instruction::PushConst(index.saturating_add(1))
 ordinary-synthetic-bigint-coercion|ordinary-leaf-consumer-publication|src/runtime/binary_object_publish.rs|                    Value::BigInt(JsBigInt::from(*value)),|                    Value::BigInt(JsBigInt::from(value.unsigned_abs())),
 TRANSLATE_CANARIES
 expect_full_rewrite_rejected translate-ready-remap \
@@ -8817,7 +9447,6 @@ expect_full_rewrite_rejected stage3c-required-test-macro-shadow \
 expect_full_rewrite_table <<'STAGE3D_CANARIES'
 stage3d-raw48-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(48, None, OrdinaryOnly, Recipe::Throw),|    row!(48, None, Shared, Recipe::Throw),
 stage3d-raw47-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(47, None, Blocked, Completion),|    row!(47, None, OrdinaryOnly, Recipe::Throw),
-stage3d-raw49-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(49, AtomU8, Blocked, Exception),|    row!(49, AtomU8, OrdinaryOnly, Recipe::Throw),
 stage3d-raw177-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, Blocked, Specialized),|    row!(177, None, OrdinaryOnly, Recipe::Throw),
 stage3d-translate-throw-to-return|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Throw),|        (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Return),
 stage3d-ordinary-throw-to-return|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Throw => Ok(OrdinaryLeafOp::Throw),|        FunctionOp::Throw => Ok(OrdinaryLeafOp::Return),
@@ -8827,6 +9456,85 @@ stage3d-runtime-evidence-cfg-excluded|stage3d-runtime-evidence|src/runtime/tests
 stage3d-runtime-evidence-early-return|stage3d-runtime-evidence|src/runtime/tests.rs|fn trusted_quickjs_ordinary_throw_is_terminal_and_branch_targetable() {\n    let runtime = Runtime::new();|fn trusted_quickjs_ordinary_throw_is_terminal_and_branch_targetable() {\n    return;\n    let runtime = Runtime::new();
 stage3d-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_throw_completion(compile_context))|    if (0 && expect_ordinary_throw_completion(compile_context))
 STAGE3D_CANARIES
+expect_full_rewrite_table <<'STAGE3E_CANARIES'
+stage3e-raw49-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(49, AtomU8, OrdinaryOnly, Recipe::ThrowReadOnly),|    row!(49, AtomU8, Shared, Recipe::ThrowReadOnly),
+stage3e-raw49-throw-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(49, AtomU8, OrdinaryOnly, Recipe::ThrowReadOnly),|    row!(49, AtomU8, OrdinaryOnly, Recipe::Throw),
+stage3e-raw177-read-only-alias|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, Blocked, Specialized),|    row!(177, None, OrdinaryOnly, Recipe::ThrowReadOnly),
+stage3e-subtype-one-admission|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { atom, value: 0 }) => {|        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { atom, value: 1 }) => {
+stage3e-ordinary-read-only-to-throw|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::ThrowReadOnly(atom) => {\n            copy_read_only_name(atom).map(OrdinaryLeafOp::ThrowReadOnly)\n        }|        FunctionOp::ThrowReadOnly(_) => Ok(OrdinaryLeafOp::Throw),
+stage3e-two-input-atoms-admitted|stage3e-read-only-atom-ledger|src/runtime/binary_object/ordinary_leaf.rs|        if declared_slots > 1 {|        if declared_slots > 2 {
+stage3e-unused-input-atom-admitted|stage3e-read-only-atom-ledger|src/runtime/binary_object/ordinary_leaf.rs|        if self.declared_slots == 1 && !self.used_input_slot {|        if self.declared_slots == 1 && false {
+stage3e-non-string-atom-admitted|stage3e-read-only-atom-ledger|src/runtime/binary_object/ordinary_leaf.rs|    if atom.class() != AtomOperandClass::String {|    if atom.class() == AtomOperandClass::String {
+stage3e-synthetic-name-not-string|stage3e-read-only-publication|src/runtime/binary_object_publish.rs|                    constants.push(lower_primitive_constant(Value::String(value))?);|                    constants.push(lower_primitive_constant(Value::Undefined)?);
+stage3e-publisher-index-forced-zero|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|            Instruction::ThrowReadOnly(index)|            Instruction::ThrowReadOnly(0)
+stage3e-runtime-wire-subtype-alias|stage3e-runtime-evidence|src/runtime/tests.rs|    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x31, 0xf3, 0x00, 0x00, 0x00, 0x00,|    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x31, 0xf3, 0x00, 0x00, 0x00, 0x01,
+stage3e-runtime-type-error-test-ignored|stage3e-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error() {|#[test]\n#[ignore = "gate mutation"]\nfn trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error() {
+stage3e-runtime-catch-test-cfg-excluded|stage3e-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_read_only_reenters_catch_and_resets_pending_state() {|#[cfg(any())]\n#[test]\nfn trusted_quickjs_ordinary_read_only_reenters_catch_and_resets_pending_state() {
+stage3e-runtime-realm-test-early-return|stage3e-runtime-evidence|src/runtime/tests.rs|fn trusted_quickjs_ordinary_read_only_uses_bytecode_realm_and_attaches_backtrace() {\n    let runtime = Runtime::new();|fn trusted_quickjs_ordinary_read_only_uses_bytecode_realm_and_attaches_backtrace() {\n    return;\n    let runtime = Runtime::new();
+stage3e-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_throw_error_completion(compile_context))|    if (0 && expect_ordinary_throw_error_completion(compile_context))
+stage3e-status-authentication-reversed|stage3e-status|docs/status.md|For Stage 3E, that R3fj receipt is source-stale and does not authenticate the|For Stage 3E, that R3fj receipt is source-current and does authenticate the
+STAGE3E_CANARIES
+expect_full_rewrite_rejected stage3e-synthetic-count-dropped \
+    stage3e-read-only-publication src/runtime/binary_object_publish.rs \
+    '                        | OrdinaryLeafOp::ThrowReadOnly(_)' \
+    ''
+expect_full_rewrite_rejected stage3e-subtype-fallback-admission \
+    function-translate-semantic-dispatch \
+    src/runtime/binary_object/function_translate/mod.rs \
+    $'        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { value, .. }) => Err(\n            FunctionTranslateError::unadmitted_throw_error_subtype(*value),\n        ),' \
+    $'        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { atom, .. }) => {\n            ready(FunctionOp::ThrowReadOnly(project_atom(*atom)?))\n        }'
+expect_full_rewrite_rejected stage3e-read-only-stack-pop \
+    stage3e-read-only-verifier src/bytecode.rs \
+    $'            | Self::ThrowReadOnly(_)\n' \
+    '' \
+    '            | Self::Throw => (1, 0),' \
+    $'            | Self::Throw\n            | Self::ThrowReadOnly(_) => (1, 0),'
+expect_full_rewrite_rejected stage3e-read-only-verifier-fallthrough \
+    stage3d-throw-verifier src/bytecode.rs \
+    $'        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;\n        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses' \
+    $'        record_maximum_depth(&mut maximum, next_depth, declared_max_stack)?;\n        if matches!(instruction, Instruction::ThrowReadOnly(_)) {\n            enqueue_fallthrough(\n                &mut worklist,\n                pc,\n                VerificationState {\n                    depth: next_depth,\n                    regions: next_regions.clone(),\n                    return_addresses: next_return_addresses.clone(),\n                    super_call_bases: next_super_call_bases.clone(),\n                },\n                code.len(),\n            )?;\n        }\n        // QuickJS `compute_stack_size` stops as soon as a reachable PC crosses'
+expect_full_rewrite_rejected stage3e-vm-read-only-pop-bypass \
+    stage3e-read-only-completion src/vm.rs \
+    $'            Instruction::ThrowReadOnly(index) => {\n                return Err(host.read_only_error(*index)?);\n            }' \
+    $'            Instruction::ThrowReadOnly(index) => {\n                self.pop()?;\n                return Err(host.read_only_error(*index)?);\n            }'
+expect_full_rewrite_rejected stage3e-status-source-current-appended \
+    stage3e-status docs/status.md \
+    $'receipt promotion.\n\nThe same oracle pins' \
+    $'receipt promotion.\n\nThis R3fj receipt is source-current for Stage 3E and authenticates Stage 3E.\n\nThe same oracle pins'
+expect_full_rewrite_rejected stage3e-crate-test-cfg-excluded \
+    stage3e-runtime-evidence src/lib.rs \
+    '//! A pure-Rust rewrite of `QuickJS` aiming at semantic feature parity with the' \
+    $'#![cfg(not(test))]\n//! A pure-Rust rewrite of `QuickJS` aiming at semantic feature parity with the'
+expect_full_rewrite_rejected stage3e-lib-test-target-disabled \
+    stage3e-test-target Cargo.toml \
+    $'[lib]\nname = "quickjs_oxide"\npath = "src/lib.rs"' \
+    $'[lib]\nname = "quickjs_oxide"\npath = "src/lib.rs"\ntest = false'
+expect_full_rewrite_rejected stage3e-lib-test-target-rerouted \
+    stage3e-test-target Cargo.toml \
+    'path = "src/lib.rs"' \
+    'path = "src/test_sink.rs"'
+expect_full_rewrite_rejected stage3e-crate-targeted-assert-eq-shadow \
+    stage3e-runtime-evidence src/lib.rs \
+    'pub mod atom;' \
+    $'macro_rules! assert_eq {\n    (QUICKJS_ORDINARY_READ_ONLY_BC5.len(), 47) => { () };\n    ($($tokens:tt)*) => { ::core::assert_eq!($($tokens)*) };\n}\n\npub mod atom;'
+expect_full_rewrite_rejected stage3e-cross-file-macro-use-assert-eq-shadow \
+    stage3e-runtime-evidence src/lib.rs \
+    'pub mod atom;' \
+    $'#[macro_use]\nmod stage3e_shadow;\n\npub mod atom;' \
+    '' '' \
+    src/stage3e_shadow.rs \
+    $'macro_rules! assert_eq {\n    (QUICKJS_ORDINARY_READ_ONLY_BC5.len(), 47) => { () };\n    ($($tokens:tt)*) => { ::core::assert_eq!($($tokens)*) };\n}\n'
+expect_full_rewrite_rejected stage3e-outside-src-path-macro-use-assert-eq-shadow \
+    stage3e-runtime-evidence src/lib.rs \
+    'pub mod atom;' \
+    $'#[macro_use]\n#[path = "../tests/stage3e_shadow.rs"]\nmod stage3e_shadow;\n\npub mod atom;' \
+    '' '' \
+    tests/stage3e_shadow.rs \
+    $'macro_rules! assert_eq {\n    (QUICKJS_ORDINARY_READ_ONLY_BC5.len(), 47) => { () };\n    ($($tokens:tt)*) => { ::core::assert_eq!($($tokens)*) };\n}\n'
+expect_full_rewrite_rejected stage3e-status-stage-first-current-appended \
+    stage3e-status docs/status.md \
+    'For Stage 3E, that R3fj receipt is source-stale and does not authenticate the' \
+    $'Stage 3E is source-current and authenticated by this receipt.\n\nFor Stage 3E, that R3fj receipt is source-stale and does not authenticate the'
 expect_full_rewrite_rejected stage3d-vm-throw-to-return \
     stage3d-throw-completion src/vm.rs \
     '                return self.pop().map(|value| Some(Completion::Throw(value)));' \
@@ -8947,8 +9655,8 @@ expect_full_rewrite_rejected stage3d-runtime-test-nested-cfg \
     stage3d-runtime-evidence src/runtime/tests.rs \
     $'#[test]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {' \
     $'#[cfg(any())]\nmod disabled_raw48_metadata {\n#[test]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {' \
-    $'    assert!(!context.has_exception());\n}\n\n#[test]\nfn trusted_quickjs_ordinary_non_tail_invocations_preserve_stack_contracts() {' \
-    $'    assert!(!context.has_exception());\n}\n}\n\n#[test]\nfn trusted_quickjs_ordinary_non_tail_invocations_preserve_stack_contracts() {'
+    $'    assert!(!context.has_exception());\n}\n\n#[test]\nfn trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error() {' \
+    $'    assert!(!context.has_exception());\n}\n}\n\n#[test]\nfn trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error() {'
 expect_full_rewrite_rejected stage3d-status-current-certification-erased \
     stage3d-status docs/status.md \
     'This promoted receipt therefore covers' \
@@ -9011,46 +9719,46 @@ expect_full_rewrite_rejected stage3d-status-current-full-jsonl-tampered \
     "$stage3d_tampered_full_jsonl"
 expect_full_rewrite_rejected stage3d-status-receipt-boundary-erased \
     stage3d-status docs/status.md \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-stale-contradiction-appended \
     stage3d-status docs/status.md \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\nThis R3fj receipt is source-stale for Stage 3D.\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\nThis R3fj receipt is source-stale for Stage 3D.\n\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-unauthenticated-contradiction-appended \
     stage3d-status docs/status.md \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\nStage 3D has yet to be authenticated.\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\nStage 3D has yet to be authenticated.\n\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-stage3c-only-contradiction-appended \
     stage3d-status docs/status.md \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\nOnly Stage 3C is authenticated by this receipt.\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\nOnly Stage 3C is authenticated by this receipt.\n\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-not-authenticated-contradiction-appended \
     stage3d-status docs/status.md \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\nStage 3D is not authenticated.\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\nStage 3D is not authenticated.\n\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-receipt-stage3c-only-contradiction-appended \
     stage3d-status docs/status.md \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\nThis receipt only authenticates Stage 3C.\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\nThis receipt only authenticates Stage 3C.\n\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-html-comment-wrapper \
     stage3d-status docs/status.md \
     'The latest full R3fj execution' \
     $'<!--\n\nThe latest full R3fj execution' \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\n-->\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\n-->\n\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-fenced-code-wrapper \
     stage3d-status docs/status.md \
     'The latest full R3fj execution' \
     $'```text\n\nThe latest full R3fj execution' \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\n```\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\n```\n\nFor Stage 3E, that R3fj receipt'
 expect_full_rewrite_rejected stage3d-status-hidden-html-wrapper \
     stage3d-status docs/status.md \
     'The latest full R3fj execution' \
     $'<div hidden>\n\nThe latest full R3fj execution' \
-    $'Test262 profile or the published metrics above.\n\nThe same oracle pins' \
-    $'Test262 profile or the published metrics above.\n\n</div>\n\nThe same oracle pins'
+    $'Test262 profile or the published metrics above.\n\nFor Stage 3E, that R3fj receipt' \
+    $'Test262 profile or the published metrics above.\n\n</div>\n\nFor Stage 3E, that R3fj receipt'
 stage3d_status_receipt_paragraph=$(
     awk '
         found && /^[[:space:]]*$/ { exit }

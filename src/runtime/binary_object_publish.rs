@@ -50,7 +50,9 @@ impl Runtime {
             .filter(|operation| {
                 matches!(
                     operation,
-                    OrdinaryLeafOp::PushBigIntI32(_) | OrdinaryLeafOp::PushEmptyString
+                    OrdinaryLeafOp::PushBigIntI32(_)
+                        | OrdinaryLeafOp::PushEmptyString
+                        | OrdinaryLeafOp::ThrowReadOnly(_)
                 )
             })
             .count();
@@ -94,6 +96,11 @@ impl Runtime {
                 )?),
                 OrdinaryLeafOp::PushEmptyString => {
                     constants.push(UnlinkedConstant::atom_string(JsString::from_static("")))
+                }
+                OrdinaryLeafOp::ThrowReadOnly(name) => {
+                    let value = JsString::try_from_utf16(name.clone().into_units().into_vec())
+                        .map_err(|error| RuntimeError::Engine(error.into()))?;
+                    constants.push(lower_primitive_constant(Value::String(value))?);
                 }
                 _ => {}
             }
@@ -393,6 +400,15 @@ fn lower_ordinary_leaf_op(
         OrdinaryLeafOp::Return => Instruction::Return,
         OrdinaryLeafOp::ReturnUndefined => Instruction::ReturnUndefined,
         OrdinaryLeafOp::Throw => Instruction::Throw,
+        OrdinaryLeafOp::ThrowReadOnly(_) => {
+            let index = *next_synthetic_index;
+            *next_synthetic_index = next_synthetic_index.checked_add(1).ok_or_else(|| {
+                RuntimeError::Engine(Error::internal(
+                    "trusted ordinary-leaf synthesized constant index overflowed",
+                ))
+            })?;
+            Instruction::ThrowReadOnly(index)
+        }
     };
     Ok(instruction)
 }

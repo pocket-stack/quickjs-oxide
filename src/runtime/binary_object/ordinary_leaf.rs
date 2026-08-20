@@ -15,9 +15,9 @@ use super::bytecode_image::{
 use super::code::{CodeError, CodeLimits};
 use super::function_envelope::{FunctionEnvelopeError, FunctionEnvelopeLimits, FunctionKind};
 use super::function_translate::{
-    FunctionApplyKind, FunctionBinaryOp, FunctionCode, FunctionOp, FunctionPredicateOp,
-    FunctionStackOp, FunctionTranslateError, FunctionUnaryOp, OperationDiagnostic,
-    TranslationTarget, translate_function,
+    AtomOperand, AtomOperandClass, FunctionApplyKind, FunctionBinaryOp, FunctionCode, FunctionOp,
+    FunctionPredicateOp, FunctionStackOp, FunctionTranslateError, FunctionUnaryOp,
+    OperationDiagnostic, TranslationTarget, translate_function,
 };
 use super::graph::decode::DecodeError;
 use super::graph::model::{
@@ -139,6 +139,19 @@ pub(in crate::runtime) enum DetachedPrimitive {
     BigIntSignedLeCanonical(Box<[u8]>),
 }
 
+/// Owned UTF-16 spelling for an admitted atom-named terminal diagnostic.
+///
+/// The archive atom ID, input-table slot, and native string width are erased
+/// before this value crosses the publication boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::runtime) struct DetachedAtomName(Box<[u16]>);
+
+impl DetachedAtomName {
+    pub(in crate::runtime) fn into_units(self) -> Box<[u16]> {
+        self.0
+    }
+}
+
 /// One sanitized instruction in an ordinary-leaf draft.
 ///
 /// Branch targets are instruction indices in this owned array, never native
@@ -177,6 +190,7 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     Return,
     ReturnUndefined,
     Throw,
+    ThrowReadOnly(DetachedAtomName),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -380,9 +394,6 @@ fn admit_image(
     image: &BytecodeImage,
     selector: RootFunctionConstantSelector,
 ) -> Result<OrdinaryLeafDraft, OrdinaryLeafReadError> {
-    if image.input_atom_slot_count() != 0 {
-        return unadmitted("ordinary-leaf image carries an input atom table");
-    }
     if !image.reference_table().is_empty() {
         return unadmitted("ordinary-leaf image carries an object-reference table");
     }
@@ -484,6 +495,7 @@ fn admit_image(
         metadata.argument_count,
         metadata.local_count,
         constants.len(),
+        image.input_atom_slot_count(),
     )?;
 
     Ok(OrdinaryLeafDraft {
@@ -553,7 +565,9 @@ fn lower_code(
     argument_count: u16,
     local_count: u16,
     constant_count: usize,
+    input_atom_slot_count: u32,
 ) -> Result<Box<[OrdinaryLeafOp]>, OrdinaryLeafReadError> {
+    let mut input_atoms = InputAtomLedger::new(input_atom_slot_count)?;
     let mut output = Vec::new();
     output
         .try_reserve_exact(code.instructions().len())
@@ -566,6 +580,9 @@ fn lower_code(
         if !instruction.supports_ordinary() {
             return Err(unsupported_operation(instruction.rejection_diagnostic()));
         }
+        if let FunctionOp::ThrowReadOnly(atom) = instruction.operation() {
+            input_atoms.observe(atom)?;
+        }
         output.push(lower_operation(
             instruction.operation(),
             argument_count,
@@ -574,7 +591,49 @@ fn lower_code(
             code.instructions().len(),
         )?);
     }
+    input_atoms.finish()?;
     Ok(output.into_boxed_slice())
+}
+
+struct InputAtomLedger {
+    declared_slots: u32,
+    used_input_slot: bool,
+}
+
+impl InputAtomLedger {
+    fn new(declared_slots: u32) -> Result<Self, OrdinaryLeafReadError> {
+        if declared_slots > 1 {
+            return unadmitted(&format!(
+                "ordinary-leaf image contains {declared_slots} input atom slots instead of at most one"
+            ));
+        }
+        Ok(Self {
+            declared_slots,
+            used_input_slot: false,
+        })
+    }
+
+    fn observe(&mut self, atom: &AtomOperand<'_>) -> Result<(), OrdinaryLeafReadError> {
+        if !atom.originates_from_input_atom_table() {
+            return Ok(());
+        }
+        if self.declared_slots == 0 {
+            return Err(OrdinaryLeafReadError::Internal(
+                "native atom provenance names an absent input atom slot".into(),
+            ));
+        }
+        self.used_input_slot = true;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), OrdinaryLeafReadError> {
+        if self.declared_slots == 1 && !self.used_input_slot {
+            return unadmitted(
+                "bytecode image's sole input atom slot is not used by an admitted read-only diagnostic",
+            );
+        }
+        Ok(())
+    }
 }
 
 fn lower_operation(
@@ -683,10 +742,34 @@ fn lower_operation(
         FunctionOp::Return => Ok(OrdinaryLeafOp::Return),
         FunctionOp::ReturnUndefined => Ok(OrdinaryLeafOp::ReturnUndefined),
         FunctionOp::Throw => Ok(OrdinaryLeafOp::Throw),
+        FunctionOp::ThrowReadOnly(atom) => {
+            copy_read_only_name(atom).map(OrdinaryLeafOp::ThrowReadOnly)
+        }
         _ => Err(OrdinaryLeafReadError::Internal(
             "ordinary-capable translated operation has no ordinary-leaf lowering".into(),
         )),
     }
+}
+
+fn copy_read_only_name(atom: &AtomOperand<'_>) -> Result<DetachedAtomName, OrdinaryLeafReadError> {
+    if atom.class() != AtomOperandClass::String {
+        return unadmitted("read-only diagnostic atom is not a String name");
+    }
+    let Some(length) = atom.string_utf16_len() else {
+        return Err(OrdinaryLeafReadError::Internal(
+            "String atom projection contained no spelling".into(),
+        ));
+    };
+    let Some(units) = atom.string_utf16_units() else {
+        return Err(OrdinaryLeafReadError::Internal(
+            "String atom projection contained no spelling".into(),
+        ));
+    };
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(length)
+        .map_err(|_| OrdinaryLeafReadError::JsInternal("out of memory".into()))?;
+    copy.extend(units);
+    Ok(DetachedAtomName(copy.into_boxed_slice()))
 }
 
 fn lower_constant(
@@ -944,6 +1027,19 @@ mod tests {
         "99c7ea07c3b49bb499c7cfb49cd3eae3c3bd01a9e804bb2a",
         "28b32806000000000000e03f060000000000001640",
     );
+    // Property-free raw49/subtype0 wire mechanically reduced from pinned
+    // QuickJS output for `(function(){'use strict';const x=0;x=1;})`.
+    const READ_ONLY_LEAF_HEX: &str = concat!(
+        "050102780c000200a801000100010000",
+        "01040100000000be00cb280c43020100",
+        "00000000000000060031f300000000",
+    );
+    const NATURAL_READ_ONLY_LEAF_HEX: &str = concat!(
+        "050102780c000200a801000100010000",
+        "01040100000000be00cb280c43020100",
+        "000100020000000d01000000b05e0000",
+        "b3c7b41131f300000000",
+    );
     const MINIMAL_FUNCTION_RECORD: [u8; 23] = [
         0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01,
         0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
@@ -1085,6 +1181,110 @@ mod tests {
                 OrdinaryLeafOp::Return,
             ]
         );
+    }
+
+    #[test]
+    fn lowers_property_free_read_only_with_owned_input_atom_spelling() {
+        let object = bytes(READ_ONLY_LEAF_HEX);
+        assert_eq!(object.len(), 47);
+        let draft = decode(&object).expect("property-free raw49 leaf must be admitted");
+        assert_eq!(draft.metadata().local_count(), 0);
+        assert_eq!(draft.metadata().max_stack(), 0);
+        assert!(draft.constants().is_empty());
+        let [OrdinaryLeafOp::ThrowReadOnly(name)] = draft.code() else {
+            panic!("raw49 did not lower to its owned read-only operation");
+        };
+        assert_eq!(name.0.as_ref(), "x".encode_utf16().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn read_only_rejects_other_subtypes_non_string_atoms_and_atom_table_drift() {
+        let original = bytes(READ_ONLY_LEAF_HEX);
+
+        for subtype in [1, 2, 3, 4, 5, u8::MAX] {
+            let mut object = original.clone();
+            object[46] = subtype;
+            let Err(OrdinaryLeafReadError::Unadmitted(message)) = decode(&object) else {
+                panic!("throw_error subtype {subtype} was admitted");
+            };
+            assert!(
+                message.contains("admitted read-only subtype 0"),
+                "{message}"
+            );
+        }
+
+        for (label, raw_atom) in [
+            ("null", 0_u32),
+            ("index", 0x8000_002a),
+            ("private", 229),
+            ("symbol", 230),
+        ] {
+            let mut object = original.clone();
+            object[42..46].copy_from_slice(&raw_atom.to_le_bytes());
+            let Err(OrdinaryLeafReadError::Unadmitted(message)) = decode(&object) else {
+                panic!("{label} read-only atom was admitted");
+            };
+            assert!(message.contains("not a String name"), "{label}: {message}");
+        }
+
+        let mut unused = original.clone();
+        unused[39] = 1;
+        unused.truncate(41);
+        unused.push(0x29); // return_undef, leaving the sole header atom unused
+        let Err(OrdinaryLeafReadError::Unadmitted(message)) = decode(&unused) else {
+            panic!("unused input atom slot was admitted");
+        };
+        assert!(message.contains("not used by an admitted read-only diagnostic"));
+
+        let mut multiple = original;
+        multiple[1] = 2;
+        multiple.splice(4..4, [0x02, b'y']);
+        let Err(OrdinaryLeafReadError::Unadmitted(message)) = decode(&multiple) else {
+            panic!("multiple input atom slots were admitted");
+        };
+        assert!(message.contains("instead of at most one"));
+    }
+
+    #[test]
+    fn read_only_accepts_only_string_names_under_zero_or_one_slot_provenance() {
+        let original = bytes(READ_ONLY_LEAF_HEX);
+
+        let mut predefined = original.clone();
+        predefined[1] = 0;
+        predefined.drain(2..4);
+        // With the header removed, raw50 is the pinned `length` String atom.
+        predefined[40..44].copy_from_slice(&50_u32.to_le_bytes());
+        let draft = decode(&predefined).expect("predefined String needs no input atom slot");
+        let [OrdinaryLeafOp::ThrowReadOnly(name)] = draft.code() else {
+            panic!("predefined read-only atom did not lower");
+        };
+        assert_eq!(name.0.as_ref(), "length".encode_utf16().collect::<Vec<_>>());
+
+        let mut manifest_alias = original.clone();
+        manifest_alias.splice(2..4, [0x0c, b'l', b'e', b'n', b'g', b't', b'h']);
+        let draft = decode(&manifest_alias)
+            .expect("the sole header slot may intern to a predefined String");
+        let [OrdinaryLeafOp::ThrowReadOnly(name)] = draft.code() else {
+            panic!("manifest-alias read-only atom did not lower");
+        };
+        assert_eq!(name.0.as_ref(), "length".encode_utf16().collect::<Vec<_>>());
+
+        let mut decimal_alias = original;
+        decimal_alias.splice(2..4, [0x04, b'4', b'2']);
+        let Err(OrdinaryLeafReadError::Unadmitted(message)) = decode(&decimal_alias) else {
+            panic!("a decimal header alias was admitted as a String name");
+        };
+        assert!(message.contains("not a String name"));
+    }
+
+    #[test]
+    fn natural_read_only_wire_remains_outside_the_nonlexical_leaf_cohort() {
+        let object = bytes(NATURAL_READ_ONLY_LEAF_HEX);
+        assert_eq!(object.len(), 58);
+        assert!(matches!(
+            decode(&object),
+            Err(OrdinaryLeafReadError::Unadmitted(_))
+        ));
     }
 
     #[test]

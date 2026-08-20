@@ -60,6 +60,7 @@ pub(super) enum Recipe {
     Return,
     ReturnUndefined,
     Throw,
+    ThrowReadOnly,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,7 +107,7 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 116 Blocked, 1 ScalarOnly, 98 OrdinaryOnly,
+/// Counts are locked by tests: 115 Blocked, 1 ScalarOnly, 99 OrdinaryOnly,
 /// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
@@ -159,7 +160,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(46, None, Blocked, ObjectConstruction),
     row!(47, None, Blocked, Completion),
     row!(48, None, OrdinaryOnly, Recipe::Throw),
-    row!(49, AtomU8, Blocked, Exception),
+    row!(49, AtomU8, OrdinaryOnly, Recipe::ThrowReadOnly),
     row!(50, NPopU16, Blocked, EvalOrModule),
     row!(51, U16, Blocked, EvalOrModule),
     row!(52, None, Blocked, ValueConstruction),
@@ -427,11 +428,11 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (116, 1, 98, 29)
+            (115, 1, 99, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 127);
-        assert_eq!(scalar_only + ordinary_only + shared, 128);
+        assert_eq!(ordinary_only + shared, 128);
+        assert_eq!(scalar_only + ordinary_only + shared, 129);
     }
 
     #[test]
@@ -530,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_explicit_throw_is_the_only_reviewed_exception_completion() {
+    fn ordinary_throw_rows_are_the_exact_reviewed_completion_set() {
         assert_eq!(
             CAPABILITY_REGISTRY[48].policy,
             CapabilityPolicy::OrdinaryOnly(Recipe::Throw)
@@ -539,10 +540,10 @@ mod tests {
             CAPABILITY_REGISTRY[47].policy,
             CapabilityPolicy::Blocked(TranslationBlocker::Completion)
         ));
-        assert!(matches!(
+        assert_eq!(
             CAPABILITY_REGISTRY[49].policy,
-            CapabilityPolicy::Blocked(TranslationBlocker::Exception)
-        ));
+            CapabilityPolicy::OrdinaryOnly(Recipe::ThrowReadOnly)
+        );
         assert!(matches!(
             CAPABILITY_REGISTRY[177].policy,
             CapabilityPolicy::Blocked(TranslationBlocker::Specialized)
@@ -551,7 +552,7 @@ mod tests {
 
     #[test]
     fn blocked_frontier_has_stable_typed_category_counts() {
-        let mut counts = [0_usize; 16];
+        let mut counts = [0_usize; 15];
         for row in CAPABILITY_REGISTRY {
             let CapabilityPolicy::Blocked(blocker) = row.policy else {
                 continue;
@@ -561,23 +562,22 @@ mod tests {
                 TranslationBlocker::ValueConstruction => 1,
                 TranslationBlocker::FunctionGraph => 2,
                 TranslationBlocker::Completion => 3,
-                TranslationBlocker::Exception => 4,
-                TranslationBlocker::EvalOrModule => 5,
-                TranslationBlocker::Binding => 6,
-                TranslationBlocker::Property => 7,
-                TranslationBlocker::ObjectConstruction => 8,
-                TranslationBlocker::LexicalEnvironment => 9,
-                TranslationBlocker::ControlFlow => 10,
-                TranslationBlocker::DynamicScope => 11,
-                TranslationBlocker::Iteration => 12,
-                TranslationBlocker::Suspension => 13,
-                TranslationBlocker::Operator => 14,
-                TranslationBlocker::Specialized => 15,
+                TranslationBlocker::EvalOrModule => 4,
+                TranslationBlocker::Binding => 5,
+                TranslationBlocker::Property => 6,
+                TranslationBlocker::ObjectConstruction => 7,
+                TranslationBlocker::LexicalEnvironment => 8,
+                TranslationBlocker::ControlFlow => 9,
+                TranslationBlocker::DynamicScope => 10,
+                TranslationBlocker::Iteration => 11,
+                TranslationBlocker::Suspension => 12,
+                TranslationBlocker::Operator => 13,
+                TranslationBlocker::Specialized => 14,
             };
             counts[index] += 1;
         }
-        assert_eq!(counts, [1, 8, 2, 1, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]);
+        assert_eq!(counts, [1, 8, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]);
         assert!(counts.into_iter().all(|count| count != 0));
-        assert_eq!(counts.into_iter().sum::<usize>(), 116);
+        assert_eq!(counts.into_iter().sum::<usize>(), 115);
     }
 }

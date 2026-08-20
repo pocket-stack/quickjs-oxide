@@ -50,8 +50,8 @@ pub(super) use scalar_script::{
 
 #[allow(unused_imports)]
 pub(super) use ordinary_leaf::{
-    DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp, OrdinaryLeafDraft,
-    OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafPredicateOp, OrdinaryLeafReadError,
-    OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector,
+    DetachedAtomName, DetachedPrimitive, OrdinaryLeafApplyKind, OrdinaryLeafBinaryOp,
+    OrdinaryLeafDraft, OrdinaryLeafMetadataDraft, OrdinaryLeafOp, OrdinaryLeafPredicateOp,
+    OrdinaryLeafReadError, OrdinaryLeafStackOp, OrdinaryLeafUnaryOp, RootFunctionConstantSelector,
     decode_trusted_ordinary_leaf,
 };

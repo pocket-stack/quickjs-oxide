@@ -56,6 +56,7 @@ enum FunctionTranslateErrorKind {
     InvalidBranchTarget,
     AtomProjectionInvariant,
     NonCanonicalApplyMagic(u16),
+    UnadmittedThrowErrorSubtype(u8),
 }
 
 /// Translation failure without structured native PCs, opcode bytes, or image IDs.
@@ -121,6 +122,12 @@ impl FunctionTranslateError {
         }
     }
 
+    fn unadmitted_throw_error_subtype(subtype: u8) -> Self {
+        Self {
+            kind: FunctionTranslateErrorKind::UnadmittedThrowErrorSubtype(subtype),
+        }
+    }
+
     #[must_use]
     pub(in crate::runtime::binary_object) const fn is_label_target_error(&self) -> bool {
         matches!(
@@ -137,6 +144,7 @@ impl FunctionTranslateError {
         matches!(
             self.kind,
             FunctionTranslateErrorKind::NonCanonicalApplyMagic(_)
+                | FunctionTranslateErrorKind::UnadmittedThrowErrorSubtype(_)
         )
     }
 }
@@ -170,6 +178,10 @@ impl fmt::Display for FunctionTranslateError {
             FunctionTranslateErrorKind::NonCanonicalApplyMagic(magic) => write!(
                 formatter,
                 "apply operand must be canonical 0 (call) or 1 (construct), found {magic}"
+            ),
+            FunctionTranslateErrorKind::UnadmittedThrowErrorSubtype(subtype) => write!(
+                formatter,
+                "throw_error subtype is outside the admitted read-only subtype 0: found {subtype}"
             ),
         }
     }
@@ -547,6 +559,12 @@ fn lower_operation<'image>(
         (Recipe::Return, NativeOperands::None) => ready(FunctionOp::Return),
         (Recipe::ReturnUndefined, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),
         (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Throw),
+        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { atom, value: 0 }) => {
+            ready(FunctionOp::ThrowReadOnly(project_atom(*atom)?))
+        }
+        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { value, .. }) => Err(
+            FunctionTranslateError::unadmitted_throw_error_subtype(*value),
+        ),
         _ => Err(FunctionTranslateError::registry_drift(
             "translated operation",
             operand_shape(operands.format()),

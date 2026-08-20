@@ -3699,7 +3699,6 @@ impl VmActivation {
             }
             Instruction::MarkSuperCall => {}
             Instruction::ThrowReadOnly(index) => {
-                self.pop()?;
                 return Err(host.read_only_error(*index)?);
             }
             Instruction::ThrowRedeclaration(index) => {
