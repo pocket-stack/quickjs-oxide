@@ -561,31 +561,32 @@ transcript SHA-256 is
 oracle-manifest SHA-256 is
 `d9f58447a7b1f36fad3edb1d7633953127f215eb81b0360077c10bb33ce8f99f`.
 
-The latest full R3fj execution, exact-source GitHub Actions run `32298418735`,
-authenticates Stage 3D source `bdbd722aa8284b7d366b8abdedd2b515b04efe20`
-with engine fingerprint
-`6376ef04e073ad87b00f809c9f9090adf4a70ad39d89649490fd00f53d0686a1`.
+The latest full R3fj execution, exact-source GitHub Actions run `32320822870`,
+job `96282508096`, authenticates Stage 3E source
+`43eb3b700b87b0bdd08e5708d20175a5a11ff7d8` with engine fingerprint
+`5af1bdb1eb7299ebc0ae8ab3f34f3632c7c85b7db13b4d0a380a6be0321908f4`.
 The run reached only the expected stale-receipt checksum failure, while its
-always-upload artifact `9382740586` (SHA-256
-`804ee9b2769d5608b241bc4bdcf0ad5a4daf7d3aeb6c6ef8561a9b77a7c3cc54`)
+always-upload artifact `9390065809` (SHA-256
+`b47e4270e57aa19054b741545dd947010d2036d621cfbad245e13634cf579cbc`)
 records the 102,050-line TSV as
-`14695f2ef5197a676a53de44f2f0b4bb7d7ac76781c4f9b937cfea5fbf72ec04`
+`b9d0e3c4bc0ae8213e4f2a63c3fc8bd9d263cfa36f567e1d1cbe8e9fec372f76`
 and the 102,039-line JSONL as
-`ac12389ab3c3fcb0197359994c64a21a7775da470630467a29f86de39b63c086`.
-After replacing the single Stage 3D fingerprint occurrence in each full
-receipt with the Stage 3C fingerprint, both files are byte-for-byte identical
-to authenticated Stage 3C run `32287492488`, artifact `9378830330`: all
-102,037 classified outcomes, 79,982 full passes, and 80,032 eligible variants
-are unchanged. The refreshed 6,844-pass focused TSV and JSONL are likewise
-byte-identical on exact-source replay. This promoted receipt therefore covers
-the Stage 3D raw-48 admission and its Rust/C evidence without changing the
-Test262 profile or the published metrics above.
-
-For Stage 3E, that R3fj receipt is source-stale and does not authenticate the
-raw-49 admission; it remains authenticated for Stage 3D. Stage 3E changes no
-focused or full Test262 metric reported above; its current evidence is the
-frozen Rust tests and pinned QuickJS C oracle, pending a separate exact-source
-receipt promotion.
+`f44f55b8273ac7f7e887561d8f0b80947c66fe7a7675fa7cd9a1b0ecb5d81908`.
+Each full receipt contains the Stage 3E fingerprint exactly once and no Stage
+3D fingerprint. Fingerprint-only normalization replaces that single occurrence
+with the authenticated Stage 3D fingerprint
+`6376ef04e073ad87b00f809c9f9090adf4a70ad39d89649490fd00f53d0686a1`
+and makes both files byte-for-byte identical to Stage 3D run `32298418735`,
+artifact `9382740586` (SHA-256
+`804ee9b2769d5608b241bc4bdcf0ad5a4daf7d3aeb6c6ef8561a9b77a7c3cc54`):
+all 102,037 classified outcomes, 79,982 full passes, and 80,032 eligible
+variants are unchanged. The refreshed 6,844-pass focused TSV and JSONL are
+byte-identical on exact-source replay at hashes
+`7a0f377fa4a66af4e0bcefe8c25fe11c11ee733fffef741be21b96ecdd60ae08`
+and `4c8537cebd5838068a5cd6d139db02f92512bbcfcfbc179763ede1f4d9de36b5`.
+This promoted receipt is source-current for Stage 3E and covers the raw-49
+admission and its Rust/C evidence without changing the Test262 profile or any
+focused or full metric reported above.
 
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
