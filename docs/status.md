@@ -599,40 +599,34 @@ transcript SHA-256 is
 oracle-manifest SHA-256 is
 `e4c460469faf0a2da8b5b3ce6124ef77105dd803c2f947896cc886fb7d8856ca`.
 
-The latest full R3fj execution, exact-source GitHub Actions run `32320822870`,
-job `96282508096`, authenticates Stage 3E source
-`43eb3b700b87b0bdd08e5708d20175a5a11ff7d8` with engine fingerprint
-`5af1bdb1eb7299ebc0ae8ab3f34f3632c7c85b7db13b4d0a380a6be0321908f4`.
+The latest full R3fj execution, exact-source GitHub Actions run `32359142720`,
+job `96394765149`, authenticates Stage 3F source
+`90afc9db833f1e4e4df9de76d9e158d434d91623` with engine fingerprint
+`cd14be7aca9f4cfbbb7f9f38b3b5ab6e020710b70adea602e372ce1fb07e6d52`.
 The run reached only the expected stale-receipt checksum failure, while its
-always-upload artifact `9390065809` (SHA-256
-`b47e4270e57aa19054b741545dd947010d2036d621cfbad245e13634cf579cbc`)
+always-upload artifact `9403369217` (SHA-256
+`bfe16b99a1ec4fe362864eb0751500cf24f345cf492c99747227115ac0f29eab`)
 records the 102,050-line TSV as
-`b9d0e3c4bc0ae8213e4f2a63c3fc8bd9d263cfa36f567e1d1cbe8e9fec372f76`
+`8ff45acd50a0bbde455f86e3ba0022f30748b3d1539b9cde1117babba6087704`
 and the 102,039-line JSONL as
-`f44f55b8273ac7f7e887561d8f0b80947c66fe7a7675fa7cd9a1b0ecb5d81908`.
-Each full receipt contains the Stage 3E fingerprint exactly once and no Stage
-3D fingerprint. Fingerprint-only normalization replaces that single occurrence
-with the authenticated Stage 3D fingerprint
-`6376ef04e073ad87b00f809c9f9090adf4a70ad39d89649490fd00f53d0686a1`
-and makes both files byte-for-byte identical to Stage 3D run `32298418735`,
-artifact `9382740586` (SHA-256
-`804ee9b2769d5608b241bc4bdcf0ad5a4daf7d3aeb6c6ef8561a9b77a7c3cc54`):
+`331f73e34ae0834931f5922546a91e957f508b94a117507a9a42aa2633455f65`.
+Each full receipt contains the Stage 3F fingerprint exactly once and no Stage
+3E fingerprint. Fingerprint-only normalization replaces that single occurrence
+with the authenticated Stage 3E fingerprint
+`5af1bdb1eb7299ebc0ae8ab3f34f3632c7c85b7db13b4d0a380a6be0321908f4`
+and makes both files byte-for-byte identical to Stage 3E run `32320822870`,
+artifact `9390065809` (SHA-256
+`b47e4270e57aa19054b741545dd947010d2036d621cfbad245e13634cf579cbc`):
 all 102,037 classified outcomes, 79,982 full passes, and 80,032 eligible
 variants are unchanged. The refreshed 6,844-pass focused TSV and JSONL are
 byte-identical on exact-source replay at hashes
-`7a0f377fa4a66af4e0bcefe8c25fe11c11ee733fffef741be21b96ecdd60ae08`
-and `4c8537cebd5838068a5cd6d139db02f92512bbcfcfbc179763ede1f4d9de36b5`.
-This promoted receipt is source-current for Stage 3E and covers the raw-49
+`8772007e53196b3c40d66a05ef31c84378a1981f6550e1cb438278cc2a214e8b`
+and `c946dc079013a09e5123d6301a206468d8ba5597dd0ba9e2c9952ab6a7ff9e04`.
+This promoted receipt is source-current for Stage 3F and covers the raw-177
 admission and its Rust/C evidence without changing the Test262 profile or any
-focused or full metric reported above.
-
-That promoted receipt remains the exact Stage-3E lifecycle boundary. The
-Stage-3F raw-177 Rust, C-oracle, gate, and documentation changes are
-source-ahead and are not authenticated by run `32320822870`; a separate
-exact-source full receipt must be reviewed and promoted before Stage 3F may be
-described as source-current. Until then, the unchanged Stage-3E metrics above
-remain the latest certified Test262 vector and Stage 3F makes no new
-conformance claim.
+focused or full metric reported above. It remains the exact Stage-3F lifecycle
+boundary, retains the Stage-3E raw-49 coverage, and makes no new conformance
+claim.
 
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
