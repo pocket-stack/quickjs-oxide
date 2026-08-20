@@ -176,10 +176,20 @@ static const uint8_t ordinary_nop_bytecode[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1,
     0x29,
 };
+static const uint8_t ordinary_object_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x0b,
+    0x28,
+};
 _Static_assert(sizeof(ordinary_nop_natural_bytecode) == 40,
                "ordinary nop natural baseline must remain 40 bytes");
 _Static_assert(sizeof(ordinary_nop_bytecode) == 41,
                "ordinary nop oracle must remain 41 bytes");
+_Static_assert(sizeof(ordinary_object_bytecode) == 41,
+               "ordinary object oracle must remain 41 bytes");
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -6461,6 +6471,296 @@ cleanup:
     return status;
 }
 
+static int expect_ordinary_object_completion(JSContext *compile_context) {
+    static const char source[] =
+        "(function(){'use strict';return {};})";
+    static const OrdinaryFunctionMetadata expected_metadata = {
+        0x0243, 1, { 0, 0, 0, 1, 0, 0, 0, 2, 0 }, 39,
+    };
+    JSValue compiled = JS_UNDEFINED;
+    JSRuntime *runtime = NULL;
+    JSContext *defining_context = NULL;
+    JSContext *caller_context = NULL;
+    JSContext *enum_context = NULL;
+    JSValue defining_global = JS_UNDEFINED;
+    JSValue defining_object = JS_UNDEFINED;
+    JSValue defining_prototype = JS_UNDEFINED;
+    JSValue caller_global = JS_UNDEFINED;
+    JSValue caller_object = JS_UNDEFINED;
+    JSValue caller_prototype = JS_UNDEFINED;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue function = JS_UNDEFINED;
+    JSValue results[4] = {
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+    };
+    JSValue prototype = JS_UNDEFINED;
+    JSPropertyEnum *properties = NULL;
+    uint32_t property_count = 0;
+    uint8_t *wire = NULL;
+    uint8_t *rewritten = NULL;
+    size_t wire_size = 0;
+    size_t rewritten_size = 0;
+    OrdinaryFunctionMetadata child = { 0 };
+    uint8_t raws[256] = { 0 };
+    uint8_t terminal = 0;
+    size_t raw_count = 0;
+    int status = -1;
+
+    compiled = JS_Eval(compile_context, source, strlen(source),
+                       "ordinary-object-natural",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context,
+                         "ordinary object natural compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    wire = JS_WriteObject(compile_context, &wire_size, compiled,
+                          JS_WRITE_OBJ_BYTECODE);
+    if (!wire) {
+        report_exception(compile_context, "ordinary object write failed");
+        goto cleanup;
+    }
+    if (wire_size != sizeof(ordinary_object_bytecode) ||
+        memcmp(wire, ordinary_object_bytecode, wire_size) != 0 ||
+        ordinary_fnv1a64(wire, wire_size) !=
+            UINT64_C(0x3c41af3fef8b3a1e) ||
+        wire[1] != 0 ||
+        ordinary_wire_child_metadata(wire, wire_size, &child) ||
+        !ordinary_metadata_equal(&child, &expected_metadata) ||
+        ordinary_collect_opcodes(wire + child.code_offset,
+                                 child.fields[ORD_CODE], raws) ||
+        ordinary_terminal_opcode(wire + child.code_offset,
+                                 child.fields[ORD_CODE], &terminal)) {
+        fputs("ordinary object wire/metadata/opcodes drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        raw_count += raws[raw] != 0;
+    if (raw_count != 2 || !raws[11] || !raws[40] || terminal != 40) {
+        fputs("ordinary object opcode set or terminal drifted\n", stderr);
+        goto cleanup;
+    }
+
+    runtime = JS_NewRuntime();
+    defining_context = runtime ? JS_NewContext(runtime) : NULL;
+    caller_context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!defining_context || !caller_context) {
+        fputs("ordinary object fresh realm allocation failed\n", stderr);
+        goto cleanup;
+    }
+    defining_global = JS_GetGlobalObject(defining_context);
+    defining_object = JS_GetPropertyStr(defining_context, defining_global,
+                                        "Object");
+    defining_prototype = JS_GetPropertyStr(defining_context, defining_object,
+                                           "prototype");
+    caller_global = JS_GetGlobalObject(caller_context);
+    caller_object = JS_GetPropertyStr(caller_context, caller_global,
+                                     "Object");
+    caller_prototype = JS_GetPropertyStr(caller_context, caller_object,
+                                        "prototype");
+    if (JS_IsException(defining_object) ||
+        JS_IsException(defining_prototype) ||
+        JS_IsException(caller_object) || JS_IsException(caller_prototype) ||
+        !JS_IsObject(defining_prototype) ||
+        !JS_IsObject(caller_prototype) ||
+        JS_StrictEq(defining_context, defining_prototype,
+                    caller_prototype) != 0) {
+        report_exception(defining_context,
+                         "ordinary object realm prototype setup failed");
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(defining_context, wire, wire_size,
+                           JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(defining_context, "ordinary object read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(defining_context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != wire_size ||
+        memcmp(rewritten, wire, wire_size) != 0) {
+        if (!rewritten)
+            report_exception(defining_context,
+                             "ordinary object rewrite failed");
+        else
+            fputs("ordinary object rewrite drifted\n", stderr);
+        goto cleanup;
+    }
+    function = JS_EvalFunction(defining_context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(function) ||
+        !JS_IsFunction(defining_context, function) ||
+        JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        report_exception(defining_context,
+                         "ordinary object root evaluation failed");
+        function = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    for (size_t index = 0; index < 4; index++) {
+        JSContext *call_context =
+            index < 2 ? defining_context : caller_context;
+        int extensible;
+
+        if (JS_HasException(defining_context) ||
+            JS_HasException(caller_context)) {
+            fputs("ordinary object had pending exception before call\n",
+                  stderr);
+            goto cleanup;
+        }
+        results[index] =
+            JS_Call(call_context, function, JS_UNDEFINED, 0, NULL);
+        if (JS_IsException(results[index]) ||
+            !JS_IsObject(results[index]) ||
+            JS_HasException(defining_context) ||
+            JS_HasException(caller_context)) {
+            report_exception(call_context, "ordinary object call failed");
+            results[index] = JS_UNDEFINED;
+            goto cleanup;
+        }
+        prototype = JS_GetPrototype(call_context, results[index]);
+        if (JS_IsException(prototype) ||
+            JS_StrictEq(call_context, prototype,
+                        defining_prototype) != 1 ||
+            JS_StrictEq(call_context, prototype, caller_prototype) != 0) {
+            report_exception(call_context,
+                             "ordinary object prototype drifted");
+            goto cleanup;
+        }
+        JS_FreeValue(call_context, prototype);
+        prototype = JS_UNDEFINED;
+        extensible = JS_IsExtensible(call_context, results[index]);
+        if (extensible != 1) {
+            if (extensible < 0)
+                report_exception(call_context,
+                                 "ordinary object extensibility failed");
+            else
+                fputs("ordinary object was not extensible\n", stderr);
+            goto cleanup;
+        }
+        enum_context = call_context;
+        if (JS_GetOwnPropertyNames(
+                call_context, &properties, &property_count, results[index],
+                JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK |
+                    JS_GPN_PRIVATE_MASK | JS_GPN_SET_ENUM) < 0) {
+            report_exception(call_context,
+                             "ordinary object own property scan failed");
+            goto cleanup;
+        }
+        if (property_count != 0) {
+            fputs("ordinary object gained own properties\n", stderr);
+            goto cleanup;
+        }
+        JS_FreePropertyEnum(call_context, properties, property_count);
+        properties = NULL;
+        property_count = 0;
+        enum_context = NULL;
+    }
+    for (size_t left = 0; left < 4; left++) {
+        for (size_t right = left + 1; right < 4; right++) {
+            if (JS_StrictEq(defining_context, results[left],
+                            results[right]) != 0) {
+                fputs("ordinary object calls reused object identity\n",
+                      stderr);
+                goto cleanup;
+            }
+        }
+    }
+    if (JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        fputs("ordinary object left a pending exception\n", stderr);
+        goto cleanup;
+    }
+
+    puts("ordinary-object-evidence="
+         "compiler-natural-write-read-write-fresh-runtime");
+    puts("ordinary-object-source-hex="
+         "2866756e6374696f6e28297b2775736520737472696374273b72657475726e207b7d3b7d29");
+    puts("ordinary-object-compile-mode="
+         "global-compile-only,strip-debug");
+    printf("ordinary-object-wire-size=%zu\n", wire_size);
+    printf("ordinary-object-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(wire, wire_size));
+    puts("ordinary-object-wire-sha256="
+         "a58ccbed5658ba6a9de99e909d5ba0b4af59ad47fccf0f5cccdff072d6494db9");
+    fputs("ordinary-object-wire-hex=", stdout);
+    for (size_t index = 0; index < wire_size; index++)
+        printf("%02x", wire[index]);
+    putchar('\n');
+    printf("ordinary-object-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           child.flags, child.js_mode, child.fields[ORD_ARGS],
+           child.fields[ORD_VARS], child.fields[ORD_DEFINED_ARGS],
+           child.fields[ORD_STACK], child.fields[ORD_VAR_REFS],
+           child.fields[ORD_CLOSURES], child.fields[ORD_CPOOL],
+           child.fields[ORD_CODE], child.fields[ORD_LOCALS],
+           child.code_offset);
+    puts("ordinary-object-child-code-hex=0b28");
+    ordinary_print_raw_set("ordinary-object-child-raw", raws);
+    puts("ordinary-object-terminal=raw40;raw11:0->1,raw40:1->0");
+    puts("ordinary-object-property-free="
+         "atoms:0,args:0,vars:0,var_refs:0,closures:0,cpool:0,locals:0,stack:1");
+    puts("ordinary-object-rewrite=identity,fresh-root:Function");
+    puts("ordinary-object-call="
+         "defining-realm-twice:distinct;caller-realm-twice:distinct;all-four:distinct");
+    puts("ordinary-object-prototype="
+         "all:defining-realm-Object.prototype;caller-realm:false");
+    puts("ordinary-object-extensible=all:true");
+    puts("ordinary-object-own-properties=all:0");
+    puts("ordinary-object-pending="
+         "none-before-or-after-repeat-cross-realm");
+    puts("ordinary-object-admitted-count=1");
+    puts("ordinary-object-admitted-raw=11");
+    puts("ordinary-object-oracle=passed");
+    status = 0;
+
+cleanup:
+    if (properties && enum_context)
+        JS_FreePropertyEnum(enum_context, properties, property_count);
+    if (rewritten && defining_context)
+        js_free(defining_context, rewritten);
+    if (defining_context) {
+        JS_FreeValue(defining_context, prototype);
+        for (size_t index = 0; index < 4; index++)
+            JS_FreeValue(defining_context, results[index]);
+        JS_FreeValue(defining_context, function);
+        JS_FreeValue(defining_context, loaded);
+        JS_FreeValue(defining_context, defining_prototype);
+        JS_FreeValue(defining_context, defining_object);
+        JS_FreeValue(defining_context, defining_global);
+    }
+    if (caller_context) {
+        JS_FreeValue(caller_context, caller_prototype);
+        JS_FreeValue(caller_context, caller_object);
+        JS_FreeValue(caller_context, caller_global);
+        if (JS_HasException(caller_context)) {
+            JSValue pending = JS_GetException(caller_context);
+            JS_FreeValue(caller_context, pending);
+        }
+        JS_FreeContext(caller_context);
+    }
+    if (defining_context) {
+        if (JS_HasException(defining_context)) {
+            JSValue pending = JS_GetException(defining_context);
+            JS_FreeValue(defining_context, pending);
+        }
+        JS_FreeContext(defining_context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    if (wire)
+        js_free(compile_context, wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
 static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
     static const char unary_binary_sequence[] =
         "-6,6,7,6,-7,false,number,18,0,216,48,0,0,"
@@ -6810,6 +7110,8 @@ int main(void) {
     if (expect_ordinary_throw_error_completion(compile_context))
         goto cleanup;
     if (expect_ordinary_nop_completion(compile_context))
+        goto cleanup;
+    if (expect_ordinary_object_completion(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",

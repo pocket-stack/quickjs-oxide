@@ -363,6 +363,7 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     Blocked(TranslationBlocker),
     OutsideTarget,
     Nop,
+    Object,
     PushI32(i32),
     PushConstant(u32),
     PushAtom(AtomOperand<'image>),

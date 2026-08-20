@@ -406,6 +406,7 @@ fn lower_operation<'image>(
     let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));
     match (recipe, operands) {
         (Recipe::Nop, NativeOperands::None) => ready(FunctionOp::Nop),
+        (Recipe::Object, NativeOperands::None) => ready(FunctionOp::Object),
         (Recipe::PushI32, NativeOperands::I32(value) | NativeOperands::NoneInt(value)) => {
             ready(FunctionOp::PushI32(*value))
         }
@@ -661,6 +662,30 @@ mod tests {
         let scalar = operation_for_target(
             InstructionAudience::OrdinaryOnly,
             Recipe::Nop,
+            TranslationTarget::Scalar,
+            &NativeOperands::None,
+        )
+        .unwrap();
+        assert!(matches!(
+            scalar.into_operations().next(),
+            Some(PendingOperation::Ready(FunctionOp::OutsideTarget))
+        ));
+    }
+
+    #[test]
+    fn operand_free_object_translation_is_one_ordinary_typed_operation() {
+        let expansion = lower_operation(Recipe::Object, &NativeOperands::None).unwrap();
+        assert_eq!(expansion.len(), 1);
+        let mut operations = expansion.into_operations();
+        assert!(matches!(
+            operations.next(),
+            Some(PendingOperation::Ready(FunctionOp::Object))
+        ));
+        assert!(operations.next().is_none());
+
+        let scalar = operation_for_target(
+            InstructionAudience::OrdinaryOnly,
+            Recipe::Object,
             TranslationTarget::Scalar,
             &NativeOperands::None,
         )

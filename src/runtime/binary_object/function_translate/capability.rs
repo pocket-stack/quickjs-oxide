@@ -27,6 +27,7 @@ pub(super) enum StackRecipe {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Recipe {
     Nop,
+    Object,
     PushI32,
     PushConstant,
     PushAtom,
@@ -108,7 +109,7 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 114 Blocked, 1 ScalarOnly, 100 OrdinaryOnly,
+/// Counts are locked by tests: 113 Blocked, 1 ScalarOnly, 101 OrdinaryOnly,
 /// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
@@ -123,7 +124,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(8, None, Blocked, ValueConstruction),
     row!(9, None, Shared, Recipe::PushFalse),
     row!(10, None, Shared, Recipe::PushTrue),
-    row!(11, None, Blocked, ValueConstruction),
+    row!(11, None, OrdinaryOnly, Recipe::Object),
     row!(12, U8, Blocked, ValueConstruction),
     row!(13, U16, Blocked, ValueConstruction),
     row!(14, None, OrdinaryOnly, Recipe::Stack(StackRecipe::Direct(FunctionStackOp::Drop))),
@@ -429,11 +430,11 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (114, 1, 100, 29)
+            (113, 1, 101, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 129);
-        assert_eq!(scalar_only + ordinary_only + shared, 130);
+        assert_eq!(ordinary_only + shared, 130);
+        assert_eq!(scalar_only + ordinary_only + shared, 131);
     }
 
     #[test]
@@ -556,6 +557,14 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_object_is_the_exact_operand_free_raw11_row() {
+        let row = CAPABILITY_REGISTRY[11];
+        assert_eq!(row.raw, 11);
+        assert_eq!(row.expected_format, OpcodeFormat::None);
+        assert_eq!(row.policy, CapabilityPolicy::OrdinaryOnly(Recipe::Object));
+    }
+
+    #[test]
     fn blocked_frontier_has_stable_typed_category_counts() {
         let mut counts = [0_usize; 15];
         for row in CAPABILITY_REGISTRY {
@@ -581,8 +590,8 @@ mod tests {
             };
             counts[index] += 1;
         }
-        assert_eq!(counts, [1, 8, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]);
+        assert_eq!(counts, [1, 7, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]);
         assert!(counts.into_iter().all(|count| count != 0));
-        assert_eq!(counts.into_iter().sum::<usize>(), 114);
+        assert_eq!(counts.into_iter().sum::<usize>(), 113);
     }
 }

@@ -119,6 +119,16 @@ const QUICKJS_ORDINARY_THROW_BC5: &[u8] = &[
     0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x01, 0x00, 0x00, 0xcf, 0x30,
 ];
 
+// QuickJS 2026-06-04 qjsc -c -s (GLOBAL | COMPILE_ONLY with JS_STRIP_DEBUG)
+// for `(function(){'use strict';return {};})`. The child is an anonymous
+// strict ordinary function with no atoms, constants, locals, or closures. Its
+// complete compiler-natural body is raw11 (`object`); raw40 (`return`).
+const QUICKJS_ORDINARY_OBJECT_BC5: &[u8] = &[
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb, 0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x0b, 0x28,
+];
+
 // Smallest property-free BC5 ordinary-function wire for raw177 (`nop`) under
 // pinned QuickJS 2026-06-04. The compiler removes authored nops, so the
 // authenticated zero-argument strict envelope carries the exact synthetic
@@ -807,6 +817,182 @@ fn trusted_quickjs_ordinary_leaf_return_undefined_is_a_zero_stack_terminal() {
         snapshot.code.as_ref(),
         [Instruction::ReturnUndefined]
     ));
+}
+
+#[test]
+fn trusted_quickjs_ordinary_object_is_natural_fresh_and_defining_realm_owned() {
+    assert_eq!(QUICKJS_ORDINARY_OBJECT_BC5.len(), 41);
+    assert_eq!(fnv1a64(QUICKJS_ORDINARY_OBJECT_BC5), 0x3c41_af3f_ef8b_3a1e);
+
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let defining_object_prototype = defining.object_prototype().unwrap();
+    let caller_object_prototype = caller.object_prototype().unwrap();
+    assert_ne!(defining_object_prototype, caller_object_prototype);
+    let baseline = runtime.heap_counts();
+
+    let function = defining
+        .read_trusted_ordinary_function(QUICKJS_ORDINARY_OBJECT_BC5, 0)
+        .unwrap();
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline.function_bytecode_nodes + 1
+    );
+    assert_eq!(
+        runtime.get_prototype_of(function.as_object()).unwrap(),
+        Some(defining.function_prototype().unwrap())
+    );
+
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("trusted raw11 function did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [Instruction::Object, Instruction::Return]
+    ));
+    assert!(snapshot.constants.is_empty());
+    assert_eq!(snapshot.metadata.argument_count, 0);
+    assert_eq!(snapshot.metadata.defined_argument_count, 0);
+    assert_eq!(snapshot.metadata.local_count, 0);
+    assert_eq!(snapshot.metadata.max_stack, 1);
+    assert!(snapshot.metadata.strict);
+    assert!(snapshot.metadata.strip_variable_debug);
+    assert_eq!(snapshot.metadata.function_kind, FunctionKind::Normal);
+    assert!(snapshot.metadata.has_prototype);
+    assert_eq!(snapshot.metadata.constructor_kind, ConstructorKind::Base);
+    assert!(!snapshot.metadata.arguments_forbidden);
+    drop(snapshot);
+
+    let Value::Object(first) = defining.call(&function, Value::Undefined, &[]).unwrap() else {
+        panic!("first raw11 call did not return an Object");
+    };
+    let Value::Object(second) = defining.call(&function, Value::Undefined, &[]).unwrap() else {
+        panic!("second raw11 call did not return an Object");
+    };
+    let Value::Object(cross_realm) = caller.call(&function, Value::Undefined, &[]).unwrap() else {
+        panic!("cross-realm raw11 call did not return an Object");
+    };
+    let Value::Object(repeated_cross_realm) =
+        caller.call(&function, Value::Undefined, &[]).unwrap()
+    else {
+        panic!("repeated cross-realm raw11 call did not return an Object");
+    };
+
+    let objects = [&first, &second, &cross_realm, &repeated_cross_realm];
+    for (index, object) in objects.iter().enumerate() {
+        assert_eq!(
+            runtime.get_prototype_of(object).unwrap(),
+            Some(defining_object_prototype.clone()),
+            "raw11 result {index} used the wrong realm prototype"
+        );
+        assert_eq!(runtime.own_property_keys(object).unwrap(), []);
+        assert!(runtime.is_extensible(object).unwrap());
+        for other in objects.iter().skip(index + 1) {
+            assert_ne!(object, other, "raw11 reused an Object allocation");
+        }
+    }
+    assert_ne!(
+        runtime.get_prototype_of(&cross_realm).unwrap(),
+        Some(caller_object_prototype)
+    );
+    assert!(!defining.has_exception());
+    assert!(!caller.has_exception());
+}
+
+#[test]
+fn trusted_quickjs_ordinary_object_verification_rolls_back_and_retries() {
+    let mut object_only = QUICKJS_ORDINARY_OBJECT_BC5.to_vec();
+    object_only[37] = 1;
+    object_only.truncate(40);
+    assert_eq!(object_only[39], 0x0b);
+
+    let mut undersized_stack = QUICKJS_ORDINARY_OBJECT_BC5.to_vec();
+    undersized_stack[33] = 0;
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    for (label, image) in [
+        ("raw11-only fallthrough", object_only),
+        ("raw11 max-stack underdeclaration", undersized_stack),
+    ] {
+        let RuntimeError::Engine(error) = context
+            .read_trusted_ordinary_function(&image, 0)
+            .unwrap_err()
+        else {
+            panic!("{label} did not return an engine error");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{label}");
+        assert!(
+            error.message().starts_with(
+                "trusted QuickJS ordinary leaf is not admitted by typed verification:"
+            ),
+            "{label}: {}",
+            error.message()
+        );
+        assert!(!context.has_exception(), "{label}");
+        assert_eq!(runtime.heap_counts(), baseline, "{label}");
+        assert_eq!(runtime.test_atom_count(), baseline_atoms, "{label}");
+    }
+
+    let function = context
+        .read_trusted_ordinary_function(QUICKJS_ORDINARY_OBJECT_BC5, 0)
+        .unwrap();
+    assert!(matches!(
+        context.call(&function, Value::Undefined, &[]).unwrap(),
+        Value::Object(_)
+    ));
+    assert!(!context.has_exception());
+}
+
+#[test]
+fn trusted_quickjs_ordinary_branch_targets_raw11_typed_index() {
+    let mut image = QUICKJS_ORDINARY_OBJECT_BC5.to_vec();
+    image[37] = 4;
+    image.truncate(39);
+    image.extend_from_slice(&[0xea, 0x01, 0x0b, 0x28]);
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let object_prototype = context.object_prototype().unwrap();
+    let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("branch-to-raw11 function did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [
+            Instruction::Goto(1),
+            Instruction::Object,
+            Instruction::Return,
+        ]
+    ));
+    drop(snapshot);
+
+    let Value::Object(first) = context.call(&function, Value::Undefined, &[]).unwrap() else {
+        panic!("branch-to-raw11 call did not return an Object");
+    };
+    let Value::Object(second) = context.call(&function, Value::Undefined, &[]).unwrap() else {
+        panic!("repeated branch-to-raw11 call did not return an Object");
+    };
+    assert_ne!(first, second);
+    assert_eq!(
+        runtime.get_prototype_of(&first).unwrap(),
+        Some(object_prototype.clone())
+    );
+    assert_eq!(
+        runtime.get_prototype_of(&second).unwrap(),
+        Some(object_prototype)
+    );
+    assert!(!context.has_exception());
 }
 
 #[test]

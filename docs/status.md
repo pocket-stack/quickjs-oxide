@@ -203,17 +203,20 @@ stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
 formats and projects only sanitized semantic DTOs to those admission bridges.
-The scalar policy remains 30 opcodes; the stage-3F ordinary policy is 129,
-and their union is 130 (114 blocked, one scalar-only, 100 ordinary-only, and 29
+The scalar policy remains 30 opcodes; the stage-3G ordinary policy is 130,
+and their union is 131 (113 blocked, one scalar-only, 101 ordinary-only, and 29
 shared registry rows). The reviewed stage-one 57-row atom-free set, stage-two
 five-row plain-call set, and stage-3A raw 33, 36, and 38 set are unchanged;
 stage 3B adds exactly raw 39 `apply`, and stage 3C adds exactly raw 35
 `tail_call` and raw 37 `tail_call_method`; stage 3D adds exactly raw 48
 `throw`; stage 3E adds exactly raw 49 `throw_error` with its `AtomU8` subtype
-fixed to zero; stage 3F adds exactly raw 177 `nop` with its `None` operand.
+fixed to zero; stage 3F adds exactly raw 177 `nop` with its `None` operand;
+stage 3G adds exactly raw 11 `object` with its `None` operand.
 Raw 47 `return_async` remains blocked. The now-empty `Invocation` and
 `Exception` blockers are removed; the
-blocked frontier retains 15 typed categories, each with at least one row.
+blocked frontier retains 15 typed categories, each with at least one row. In
+the registry's typed-category order, its exact count vector is
+`1, 7, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
@@ -460,6 +463,24 @@ does not pop, push, call the host, complete the frame, or alter pending state.
 Stage 3F changes neither production bytecode nor VM implementation; it also
 adds no public surface, source syntax, Test262 admission, or Feature Parity claim.
 
+Stage 3G admits raw 11 only as the exact one-to-one typed chain
+`Recipe::Object` to `FunctionOp::Object` to `OrdinaryLeafOp::Object` and
+finally the existing `Instruction::Object`. Its `None` operand and
+ordinary-only audience are never aliased, widened, erased, expanded, or
+remapped. The source-to-output map retains one typed instruction index, and
+publication neither drops the operation nor consumes a synthetic constant
+index. `Instruction::Object` remains a 0-to-1 stack operation; the verifier
+follows its ordinary successor, requires declared maximum stack one, and
+rejects reachable raw11-only fallthrough. The existing VM Object arm delegates
+once to the executing bytecode's realm, pushes the returned fresh ordinary
+Object, and propagates a host throw without substituting a value. That host
+allocates through the current defining realm, so cross-realm callers still
+receive distinct, empty, extensible Objects rooted at the defining realm's
+`Object.prototype` with no pending exception. Raw 47 remains blocked as
+`Completion`. Stage 3G changes neither production bytecode nor VM
+implementation. Stage 3G exposes no new source syntax, public API, Test262
+admission, or Feature Parity claim.
+
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
 vector. It pins byte-identical read/write, child offset 25 and flags `0x0243`,
@@ -538,6 +559,21 @@ calls from a second realm return `undefined` without pending exceptions. A
 mechanically truncated 40-byte raw177-only form is rejected for reachable
 fallthrough with exact heap/atom rollback before the valid wire retries, and a
 separate branch fixture proves `Goto(1)` still lands on `Instruction::Nop`.
+Stage-3G Rust evidence uses the compiler-natural exact 41-byte strict
+object-return wire (FNV-1a-64 `3c41af3fef8b3a1e`, SHA-256
+`a58ccbed5658ba6a9de99e909d5ba0b4af59ad47fccf0f5cccdff072d6494db9`).
+It has no atoms, arguments, variables, locals, variable references, closures,
+or constants; flags are `0x0243`, `js_mode` is strict, maximum stack is one,
+the child code starts at offset 39, and exact code `0b28` is raw 11 followed by
+terminal raw 40. Publication preserves `[Instruction::Object,
+Instruction::Return]`, empty constants, and the defining Function prototype.
+Four defining- and caller-realm calls return pairwise-distinct empty,
+extensible Objects, all rooted at the defining realm's `Object.prototype`,
+and neither context retains a pending exception. A 40-byte raw11-only
+fallthrough and a maximum-stack-zero declaration are both rejected as
+`Unsupported` with exact heap/atom rollback before the valid wire retries.
+A separate branch fixture publishes `[Goto(1), Object, Return]` and proves the
+typed raw11 index, fresh identity, defining prototype, and clean pending state.
 
 The pinned stage-3A C oracle compiler-naturally emits the exact target raws 33,
 36, and 38, with compiler union 17, 33, 36, 38, 40, 62, 155, 179, and
@@ -590,14 +626,22 @@ Parsed metadata pins zero atoms, constants, locals, arguments, and stack.
 Fresh-runtime read/write is byte-identical; repeated defining- and caller-realm
 calls return `undefined` with no pending exception. Raw 177 is explicitly never
 claimed compiler-natural, and the malformed raw177-only wire remains a Rust
-verifier negative that C never reads or executes. Strict C11 produced a
-byte-identical 1,453-line transcript; all 19 authenticated oracles
+verifier negative that C never reads or executes. Stage 3G additionally
+compiler-naturally emits the exact 41-byte strict
+object-return wire (FNV-1a-64 `3c41af3fef8b3a1e`, SHA-256
+`a58ccbed5658ba6a9de99e909d5ba0b4af59ad47fccf0f5cccdff072d6494db9`)
+under `GLOBAL | COMPILE_ONLY` with `JS_STRIP_DEBUG`. Its property-free metadata
+pins stack one, code offset 39, and code `0b28`; fresh-runtime read/write is
+byte-identical. Repeated defining- and caller-realm calls produce four distinct
+empty extensible Objects whose prototype is the defining realm's
+`Object.prototype`, never the caller's, with no pending exception. Strict C11
+produced a byte-identical 1,474-line transcript; all 19 authenticated oracles
 pass both direct validation and the full oracle gate. The source SHA-256 is
-`7b9aeda55ee982134b1f31543150d09c3e047ed9560ce8c36158db1c66b80b11`, the
+`dad41b3667a1a8301e67feaeaf1c0732fc1da3f4e9f29e60d093e1b6ccfb6846`, the
 transcript SHA-256 is
-`c9aa4b8415c7d0df9a05586fd24ab9c30e2f0d4f7eb5a42aa76b107f95046494`, and the
+`81a76b22c3bf897655296f37a93babe44fe167d58f48bc0d745ce8b22ea1af2b`, and the
 oracle-manifest SHA-256 is
-`e4c460469faf0a2da8b5b3ce6124ef77105dd803c2f947896cc886fb7d8856ca`.
+`ec87164ad79e8866c36953a9006beb97c579e797893fc23a06cc3432edeadc5c`.
 
 The latest full R3fj execution, exact-source GitHub Actions run `32359142720`,
 job `96394765149`, authenticates Stage 3F source
@@ -627,6 +671,12 @@ admission and its Rust/C evidence without changing the Test262 profile or any
 focused or full metric reported above. It remains the exact Stage-3F lifecycle
 boundary, retains the Stage-3E raw-49 coverage, and makes no new conformance
 claim.
+
+Stage 3G remains source-ahead and unauthenticated by an exact-source Test262
+execution. This promoted Stage-3F receipt predates the raw-11 Object admission
+and does not cover its Rust/C evidence; a separate exact-source run and receipt
+promotion are still required. No Stage-3F metric, focused receipt, full receipt,
+or conformance claim changes in the meantime.
 
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and

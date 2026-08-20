@@ -159,6 +159,7 @@ impl DetachedAtomName {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::runtime) enum OrdinaryLeafOp {
     Nop,
+    Object,
     PushI32(i32),
     PushConst(u32),
     PushUndefined,
@@ -646,6 +647,7 @@ fn lower_operation(
 ) -> Result<OrdinaryLeafOp, OrdinaryLeafReadError> {
     match operation {
         FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),
+        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),
         FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),
         FunctionOp::PushConstant(index) => lower_constant(*index, constant_count),
         FunctionOp::PushUndefined => Ok(OrdinaryLeafOp::PushUndefined),
@@ -1293,6 +1295,7 @@ mod tests {
     fn lowers_representative_sanitized_operations_without_consulting_diagnostics() {
         let cases = [
             (FunctionOp::Nop, OrdinaryLeafOp::Nop),
+            (FunctionOp::Object, OrdinaryLeafOp::Object),
             (
                 FunctionOp::PushI32(i32::MIN),
                 OrdinaryLeafOp::PushI32(i32::MIN),
