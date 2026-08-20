@@ -119,6 +119,16 @@ const QUICKJS_ORDINARY_THROW_BC5: &[u8] = &[
     0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x01, 0x00, 0x00, 0xcf, 0x30,
 ];
 
+// Smallest property-free BC5 ordinary-function wire for raw177 (`nop`) under
+// pinned QuickJS 2026-06-04. The compiler removes authored nops, so the
+// authenticated zero-argument strict envelope carries the exact synthetic
+// raw177; raw41 (`return_undef`) body needed to execute it.
+const QUICKJS_ORDINARY_NOP_BC5: &[u8] = &[
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb, 0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1, 0x29,
+];
+
 // Property-free raw49/subtype0 wire mechanically reduced from pinned QuickJS
 // output for `(function(){'use strict';const x=0;x=1;})`. The natural 58-byte
 // compiler wire retains lexical-local metadata and raw94, so it intentionally
@@ -797,6 +807,127 @@ fn trusted_quickjs_ordinary_leaf_return_undefined_is_a_zero_stack_terminal() {
         snapshot.code.as_ref(),
         [Instruction::ReturnUndefined]
     ));
+}
+
+#[test]
+fn trusted_quickjs_ordinary_nop_preserves_exact_metadata_realm_and_zero_effect() {
+    assert_eq!(QUICKJS_ORDINARY_NOP_BC5.len(), 41);
+    assert_eq!(fnv1a64(QUICKJS_ORDINARY_NOP_BC5), 0x1c52_2736_e3cb_ef92);
+
+    let runtime = Runtime::new();
+    let mut defining = runtime.new_context();
+    let mut caller = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let function = defining
+        .read_trusted_ordinary_function(QUICKJS_ORDINARY_NOP_BC5, 0)
+        .unwrap();
+    assert_eq!(
+        runtime.heap_counts().function_bytecode_nodes,
+        baseline.function_bytecode_nodes + 1
+    );
+    assert_eq!(
+        runtime.get_prototype_of(function.as_object()).unwrap(),
+        Some(defining.function_prototype().unwrap())
+    );
+
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("trusted raw177 function did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [Instruction::Nop, Instruction::ReturnUndefined]
+    ));
+    assert!(snapshot.constants.is_empty());
+    assert_eq!(snapshot.metadata.argument_count, 0);
+    assert_eq!(snapshot.metadata.defined_argument_count, 0);
+    assert_eq!(snapshot.metadata.local_count, 0);
+    assert_eq!(snapshot.metadata.max_stack, 0);
+    assert!(snapshot.metadata.strict);
+    assert!(snapshot.metadata.strip_variable_debug);
+    assert_eq!(snapshot.metadata.function_kind, FunctionKind::Normal);
+    assert!(snapshot.metadata.has_prototype);
+    assert_eq!(snapshot.metadata.constructor_kind, ConstructorKind::Base);
+    assert!(!snapshot.metadata.arguments_forbidden);
+    drop(snapshot);
+
+    for _ in 0..2 {
+        assert_eq!(
+            caller.call(&function, Value::Undefined, &[]).unwrap(),
+            Value::Undefined
+        );
+        assert!(!caller.has_exception());
+    }
+}
+
+#[test]
+fn trusted_quickjs_ordinary_nop_only_fallthrough_rolls_back_and_retries() {
+    const FALLTHROUGH: &str = "trusted QuickJS ordinary leaf is not admitted by typed verification: InternalError: bytecode ended without return";
+
+    let mut nop_only = QUICKJS_ORDINARY_NOP_BC5.to_vec();
+    nop_only[37] = 1;
+    nop_only.truncate(40);
+    assert_eq!(nop_only.len(), 40);
+    assert_eq!(nop_only[39], 0xb1);
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let baseline = runtime.heap_counts();
+    let baseline_atoms = runtime.test_atom_count();
+    let RuntimeError::Engine(error) = context
+        .read_trusted_ordinary_function(&nop_only, 0)
+        .unwrap_err()
+    else {
+        panic!("raw177-only fallthrough did not return an engine error");
+    };
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert_eq!(error.message(), FALLTHROUGH);
+    assert!(!context.has_exception());
+    assert_eq!(runtime.heap_counts(), baseline);
+    assert_eq!(runtime.test_atom_count(), baseline_atoms);
+
+    let function = context
+        .read_trusted_ordinary_function(QUICKJS_ORDINARY_NOP_BC5, 0)
+        .unwrap();
+    assert_eq!(
+        context.call(&function, Value::Undefined, &[]).unwrap(),
+        Value::Undefined
+    );
+    assert!(!context.has_exception());
+}
+
+#[test]
+fn trusted_quickjs_ordinary_branch_targets_raw177_typed_index() {
+    let mut image = QUICKJS_ORDINARY_NOP_BC5.to_vec();
+    image[37] = 4;
+    image.truncate(39);
+    image.extend_from_slice(&[0xea, 0x01, 0xb1, 0x29]);
+
+    let runtime = Runtime::new();
+    let mut context = runtime.new_context();
+    let function = context.read_trusted_ordinary_function(&image, 0).unwrap();
+    let CallableExecution::Bytecode { bytecode, .. } =
+        runtime.bytecode_for_callable(&function).unwrap()
+    else {
+        panic!("branch-to-raw177 function did not publish bytecode");
+    };
+    let snapshot = runtime.snapshot_function_bytecode(&bytecode).unwrap();
+    assert!(matches!(
+        snapshot.code.as_ref(),
+        [
+            Instruction::Goto(1),
+            Instruction::Nop,
+            Instruction::ReturnUndefined,
+        ]
+    ));
+    drop(snapshot);
+    assert_eq!(
+        context.call(&function, Value::Undefined, &[]).unwrap(),
+        Value::Undefined
+    );
+    assert!(!context.has_exception());
 }
 
 #[test]

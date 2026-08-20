@@ -26,6 +26,7 @@ pub(super) enum StackRecipe {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Recipe {
+    Nop,
     PushI32,
     PushConstant,
     PushAtom,
@@ -107,7 +108,7 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 115 Blocked, 1 ScalarOnly, 99 OrdinaryOnly,
+/// Counts are locked by tests: 114 Blocked, 1 ScalarOnly, 100 OrdinaryOnly,
 /// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
@@ -288,7 +289,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(174, None, OrdinaryOnly, Recipe::Predicate(FunctionPredicateOp::IsUndefinedOrNull)),
     row!(175, None, Blocked, Operator),
     row!(176, I32, Shared, Recipe::PushBigIntI32),
-    row!(177, None, Blocked, Specialized),
+    row!(177, None, OrdinaryOnly, Recipe::Nop),
     row!(178, NoneInt, Shared, Recipe::PushI32),
     row!(179, NoneInt, Shared, Recipe::PushI32),
     row!(180, NoneInt, Shared, Recipe::PushI32),
@@ -428,11 +429,11 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (115, 1, 99, 29)
+            (114, 1, 100, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 128);
-        assert_eq!(scalar_only + ordinary_only + shared, 129);
+        assert_eq!(ordinary_only + shared, 129);
+        assert_eq!(scalar_only + ordinary_only + shared, 130);
     }
 
     #[test]
@@ -544,10 +545,14 @@ mod tests {
             CAPABILITY_REGISTRY[49].policy,
             CapabilityPolicy::OrdinaryOnly(Recipe::ThrowReadOnly)
         );
-        assert!(matches!(
-            CAPABILITY_REGISTRY[177].policy,
-            CapabilityPolicy::Blocked(TranslationBlocker::Specialized)
-        ));
+    }
+
+    #[test]
+    fn ordinary_nop_is_the_exact_operand_free_raw177_row() {
+        let row = CAPABILITY_REGISTRY[177];
+        assert_eq!(row.raw, 177);
+        assert_eq!(row.expected_format, OpcodeFormat::None);
+        assert_eq!(row.policy, CapabilityPolicy::OrdinaryOnly(Recipe::Nop));
     }
 
     #[test]
@@ -576,8 +581,8 @@ mod tests {
             };
             counts[index] += 1;
         }
-        assert_eq!(counts, [1, 8, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 4]);
+        assert_eq!(counts, [1, 8, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]);
         assert!(counts.into_iter().all(|count| count != 0));
-        assert_eq!(counts.into_iter().sum::<usize>(), 115);
+        assert_eq!(counts.into_iter().sum::<usize>(), 114);
     }
 }

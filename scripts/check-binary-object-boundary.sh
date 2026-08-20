@@ -25,9 +25,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import html
 import re
 import sys
 import tomllib
+import unicodedata
 
 
 root = Path(sys.argv[1])
@@ -1559,7 +1561,7 @@ recipe_code, _, _ = unique_braced_item(
     "Recipe enum",
 )
 expected_recipe_variants = """
-    PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
+    Nop PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
     PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
     SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
     Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
@@ -1594,7 +1596,7 @@ dto_function_op_code, _, _ = unique_braced_item(
     "FunctionOp enum",
 )
 expected_function_op_variants = """
-    Blocked OutsideTarget PushI32 PushConstant PushAtom PushUndefined PushNull
+    Blocked OutsideTarget Nop PushI32 PushConstant PushAtom PushUndefined PushNull
     PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
     PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
     IfTrue Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply
@@ -1711,7 +1713,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (115, 1, 99, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (114, 1, 100, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1720,11 +1722,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 128, 129)
+    or derived_registry_counts != (30, 129, 130)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact final stage-three-E physical cohorts; "
+        "the centralized registry must preserve the exact final stage-three-F physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1787,6 +1789,7 @@ expect_admitted("OrdinaryOnly", "Recipe::ArrayFrom", (38,))
 expect_admitted("OrdinaryOnly", "Recipe::Apply", (39,))
 expect_admitted("OrdinaryOnly", "Recipe::Throw", (48,))
 expect_admitted("OrdinaryOnly", "Recipe::ThrowReadOnly", (49,))
+expect_admitted("OrdinaryOnly", "Recipe::Nop", (177,))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
 expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
 for raw, operation in (
@@ -1826,6 +1829,7 @@ expected_stage_boundaries = {
     41: (("return_undef", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::ReturnUndefined"),
     48: (("throw", 1, 1, 0, "None"), "OrdinaryOnly", "Recipe::Throw"),
     49: (("throw_error", 6, 0, 0, "AtomU8"), "OrdinaryOnly", "Recipe::ThrowReadOnly"),
+    177: (("nop", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::Nop"),
     236: (("call0", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     237: (("call1", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     238: (("call2", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
@@ -1949,27 +1953,39 @@ if found_stage_three_e_throw_error_rows != stage_three_e_throw_error_rows:
         f"found {found_stage_three_e_throw_error_rows}",
     )
 
-stage_three_e_deferred_rows = {
+stage_three_f_nop_rows = ((177, "None", "Recipe::Nop"),)
+found_stage_three_f_nop_rows = tuple(
+    (raw, registry_rows[raw][1], registry_rows[raw][3])
+    for raw, _, _ in stage_three_f_nop_rows
+    if registry_rows[raw][2] == "OrdinaryOnly"
+)
+if found_stage_three_f_nop_rows != stage_three_f_nop_rows:
+    fail(
+        "function-translate-stage-three-f-set",
+        "stage three F must admit exactly operand-free raw 177 nop as an OrdinaryOnly Nop recipe; "
+        f"found {found_stage_three_f_nop_rows}",
+    )
+
+stage_three_f_deferred_rows = {
     47: (("return_async", 1, 1, 0, "None"), "Blocked", "Completion"),
-    177: (("nop", 1, 0, 0, "None"), "Blocked", "Specialized"),
 }
-found_stage_three_e_deferred_rows = {
+found_stage_three_f_deferred_rows = {
     raw: (pinned_descriptors[raw], registry_rows[raw][2], registry_rows[raw][3])
-    for raw in stage_three_e_deferred_rows
+    for raw in stage_three_f_deferred_rows
     if raw < len(pinned_descriptors) and raw < len(registry_rows)
 }
-if found_stage_three_e_deferred_rows != stage_three_e_deferred_rows:
+if found_stage_three_f_deferred_rows != stage_three_f_deferred_rows:
     fail(
-        "function-translate-stage-three-e-set",
-        "raw 47 return_async and raw 177 nop must remain outside the Stage3E admission; "
-        f"found {found_stage_three_e_deferred_rows}",
+        "function-translate-stage-three-f-set",
+        "raw 47 return_async must remain outside the Stage3F admission; "
+        f"found {found_stage_three_f_deferred_rows}",
     )
 
 blocker_count_tokens = """
     InvalidSentinel 1 ValueConstruction 8 FunctionGraph 2 Completion 1
     EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
-    Operator 4 Specialized 4
+    Operator 4 Specialized 3
 """.split()
 expected_blocker_counts = dict(
     zip(blocker_count_tokens[::2], map(int, blocker_count_tokens[1::2]))
@@ -2003,7 +2019,7 @@ blocked_registry_mapping_hash = hashlib.sha256(
     blocked_registry_mapping.encode("utf-8")
 ).hexdigest()
 if blocked_registry_mapping_hash != (
-    "8563b87ec06c9ebae6f01e26e57e6ffa08cd4aa6a30b355324a0450c9257328c"
+    "29a0975a508eacc65c7da84afc5f69473c5eb481bf747fc67be4294e43b061d1"
 ):
     fail(
         "function-translate-registry-blockers",
@@ -2223,7 +2239,7 @@ require_normalized_code_sha256(
     "function-translate-semantic-dispatch",
     "lower_operation must remain one alias-free typed Recipe/operand match with its unique ready publisher",
     translate_lower_item,
-    "eaf2c8d42c8c5be1a0ebdb3110ab92f91b247c668bb8acc48bc0507b3681c3f2",
+    "080c73c0f7901535f6e4387ffa848e1df7cc5a7872fff366e226cad2b7ebf9e4",
 )
 if normalized_translate_lower.count(
     "let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));"
@@ -2247,6 +2263,7 @@ for arm in lowering_arm_matches:
         continue
     found_single_step_arms.append((recipe_text, operands_text, body.rstrip(", ")))
 single_step_rows = """
+Recipe::Nop @ NativeOperands::None @ ready(FunctionOp::Nop)
 Recipe::PushI32 @ NativeOperands::I32(value) | NativeOperands::NoneInt(value) @ { ready(FunctionOp::PushI32(*value)) }
 Recipe::PushI32 @ NativeOperands::I8(value) @ { ready(FunctionOp::PushI32(i32::from(*value))) }
 Recipe::PushI32 @ NativeOperands::I16(value) @ { ready(FunctionOp::PushI32(i32::from(*value))) }
@@ -2299,10 +2316,10 @@ Recipe::ThrowReadOnly @ NativeOperands::AtomU8 { value, .. } @ Err( FunctionTran
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 54 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 55 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain all 54 reviewed Recipe/operand arms, including terminal tail invocations, explicit throw, and subtype-0 ThrowReadOnly, with each exact normalized RHS payload expression; "
+        "lower_operation must retain all 55 reviewed Recipe/operand arms, including operand-free Nop, terminal tail invocations, explicit throw, and subtype-0 ThrowReadOnly, with each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
 apply_magic_error_contracts = (
@@ -2567,7 +2584,7 @@ ordinary_leaf_op_code, _, _ = unique_braced_item(
     "OrdinaryLeafOp enum",
 )
 expected_ordinary_leaf_op_variants = """
-    PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
+    Nop PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
     Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
     SetArgument Binary Predicate IfFalse IfTrue Goto Call TailCall Construct
     CallMethod TailCallMethod ArrayFrom Apply Return ReturnUndefined Throw ThrowReadOnly
@@ -2661,9 +2678,10 @@ require_normalized_code_sha256(
     "ordinary-leaf-translated-code",
     "ordinary lower_operation must remain one alias-free exhaustive typed handoff",
     ordinary_lower_operation,
-    "e8e5f90946126c85f1acd3531bfb7ed7646972ffabd89f320461cd9e511b844b",
+    "2961d795d375ede2e9aed043013aa9487eff56a3f24f25947412ff9fc6e3be39",
 )
 ordinary_handoff_rows = """
+FunctionOp::Nop @ Ok(OrdinaryLeafOp::Nop)
 FunctionOp::PushI32(value) @ Ok(OrdinaryLeafOp::PushI32(*value))
 FunctionOp::PushConstant(index) @ lower_constant(*index, constant_count)
 FunctionOp::PushUndefined @ Ok(OrdinaryLeafOp::PushUndefined)
@@ -2703,7 +2721,7 @@ found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionO
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 33 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 34 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
@@ -4059,7 +4077,7 @@ if consumer_exists:
         "ordinary-leaf-consumer-lowering",
         "lower_ordinary_leaf_op must remain one alias-free exhaustive typed publisher match",
         ordinary_instruction_lowering,
-        "0cfc718f9385f6509dbd8f355d0fa320c0b2853cbef818b826ee2a09d680d17f",
+        "7a62f4636f0dad6b9fa769560e4184b656e1a7f6dec281cbeb11ed03510f9240",
     )
     detached_variants = re.findall(
         r"\bDetachedPrimitive[ \t\n]*::[ \t\n]*(\w+)",
@@ -4087,7 +4105,7 @@ if consumer_exists:
         ordinary_instruction_lowering,
     )
     expected_published_variants = """
-        PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
+        Nop PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
         GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto
         Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
@@ -4120,6 +4138,7 @@ if consumer_exists:
                 f"the {family.lower()} publisher mapping drifted",
             )
     publisher_direct_rows = """
+OrdinaryLeafOp::Nop @ Instruction::Nop
 OrdinaryLeafOp::PushI32(value) @ Instruction::PushI32(value)
 OrdinaryLeafOp::PushConst(index) @ Instruction::PushConst(index)
 OrdinaryLeafOp::PushUndefined @ Instruction::Undefined
@@ -4192,7 +4211,7 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 33
+        len(found_publisher_arms) != 34
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -4220,7 +4239,7 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
     ):
         fail(
             "ordinary-leaf-consumer-lowering",
-            "ordinary operations must retain their complete typed publisher mapping and stable synthetic indices",
+            "ordinary operations must retain their complete typed publisher mapping, one-for-one Nop publication, and stable synthetic indices",
         )
 
     ordinary_consumer_seals = (
@@ -5122,6 +5141,15 @@ if not (root / ".boundary-self-test").is_file():
             "stage3e-read-only-verifier",
             "ThrowReadOnly must remain a zero-pop, zero-push terminal verifier node with no fallthrough",
         )
+    if (
+        normalized_stack_effect.count("Self::Nop | Self::CheckCtor") != 1
+        or normalized_verify_parts.count("Instruction::Nop") != 0
+        or normalized_verify_parts.count("_ => enqueue_fallthrough(") != 1
+    ):
+        fail(
+            "stage3f-nop-verifier",
+            "Instruction::Nop must remain an existing zero-pop, zero-push node that reaches the verifier's unique ordinary fallthrough path",
+        )
 
     execute_hot_item = stage3b_function(
         "src/vm.rs", "execute_hot_instruction", "stage3d-throw-completion"
@@ -5158,6 +5186,19 @@ if not (root / ".boundary-self-test").is_file():
         fail(
             "stage3e-read-only-completion",
             "VM ThrowReadOnly must call the read-only error hook directly without popping or returning",
+        )
+    nop_vm_arm = unique_braced_item(
+        execute_hot_item,
+        re.compile(
+            r"\bInstruction[ \t\n]*::[ \t\n]*Nop[ \t\n]*=>[ \t\n]*\{"
+        ),
+        "stage3f-nop-vm",
+        "VM Nop dispatch arm",
+    )[0]
+    if " ".join(nop_vm_arm.split()) != "Instruction::Nop => {}":
+        fail(
+            "stage3f-nop-vm",
+            "VM Nop must remain the existing empty no-effect dispatch arm",
         )
     require_normalized_code_sha256(
         "stage3d-throw-critical-route",
@@ -5776,9 +5817,9 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "registry_locks_the_current_physical_cohorts",
             (
-                "(blocked, scalar_only, ordinary_only, shared), (115, 1, 99, 29)",
-                "assert_eq!(ordinary_only + shared, 128);",
-                "assert_eq!(scalar_only + ordinary_only + shared, 129);",
+                "(blocked, scalar_only, ordinary_only, shared), (114, 1, 100, 29)",
+                "assert_eq!(ordinary_only + shared, 129);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 130);",
             ),
         ),
         (
@@ -5796,7 +5837,7 @@ if not (root / ".boundary-self-test").is_file():
             (
                 "let mut counts = [0_usize; 15];",
                 "assert!(counts.into_iter().all(|count| count != 0));",
-                "assert_eq!(counts.into_iter().sum::<usize>(), 115);",
+                "assert_eq!(counts.into_iter().sum::<usize>(), 114);",
             ),
         ),
         (
@@ -5901,9 +5942,9 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3c_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "33b69fe28b540584117985b1b47d9674086d59622d26d7ed2e08b6b8d61ccb60",
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "f75301e7d6b665412142376902907f4a317a3355a2e8bcfbae12dfbfde384244",
         ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_invocation_addition_is_the_exact_reviewed_six_row_set"): "0bd25bc945bde404ea911c720491e06a0d58c7257683347372b6c74843d3afc2",
-        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "b939823b58a56c4d2112a82f684ca576de662d6279603318f09af287958fc574",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "a004343c8e154a7c16f117d0136b077300c2dec969ed86c7cfaeaa6edbaaeee8",
         ("src/runtime/binary_object/function_translate/mod.rs", "tail_invocation_lowering_preserves_the_npop_operand_and_kind"): "f9a36b2d07545f80276edce3e1e7f3e1baaa56fcdfd82996a857be1958acccd2",
         ("src/runtime/binary_object/ordinary_leaf.rs", "tail_invocation_operands_reach_the_ordinary_dto_unchanged"): "fd78ceeb26a50bc988ebb4fdece4f4417b89abd31bbfe0edae6480899e8c1ecc",
         ("src/runtime/binary_object_publish.rs", "ordinary_tail_invocation_publishes_one_for_one_with_the_unchanged_operand"): "7277c89d2d824c8bfe59cecc5ed5fdbf4e68f0368b719794d3072df7782bc94e",
@@ -6096,6 +6137,25 @@ if not (root / ".boundary-self-test").is_file():
                 f"the Rust {label} fixture must retain its exact byte identity, FNV-1a-64, SHA-256, and child code",
             )
 
+    stage3f_nop_wire = stage3e_byte_array(
+        stage3e_runtime_source, "QUICKJS_ORDINARY_NOP_BC5"
+    )
+    if (
+        len(stage3f_nop_wire) != 41
+        or stage3e_fnv1a64(stage3f_nop_wire) != 0x1C522736E3CBEF92
+        or hashlib.sha256(stage3f_nop_wire).hexdigest()
+        != "26c2e58ec14861dc797a7c3a3701f258ba392b649a15554256b61d7634fccdd0"
+        or stage3f_nop_wire[1] != 0
+        or stage3f_nop_wire[25:29] != bytes.fromhex("0c430201")
+        or stage3f_nop_wire[30:37] != bytes(7)
+        or stage3f_nop_wire[37:]
+        != bytes.fromhex("0200b129")
+    ):
+        fail(
+            "stage3f-runtime-evidence",
+            "the Rust raw177 fixture must retain the exact 41-byte property-free zero-stack raw177/raw41 wire with no atoms or constants",
+        )
+
     stage3d_test_contracts = (
         (
             "src/runtime/binary_object/function_translate/capability.rs",
@@ -6105,7 +6165,6 @@ if not (root / ".boundary-self-test").is_file():
                 "CapabilityPolicy::OrdinaryOnly(Recipe::Throw)",
                 "CAPABILITY_REGISTRY[47].policy",
                 "CapabilityPolicy::OrdinaryOnly(Recipe::ThrowReadOnly)",
-                "CAPABILITY_REGISTRY[177].policy",
             ),
         ),
         (
@@ -6199,10 +6258,10 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3d_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_throw_rows_are_the_exact_reviewed_completion_set"): "060acee50f7f8b36292f04a085daa7b6a6123dece220725a439136f27fe9dcd8",
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_throw_rows_are_the_exact_reviewed_completion_set"): "46280b952611f2513c2764859dacaa8b0b2be02d86a0ffbf92a0d5791e7deb6a",
         ("src/runtime/binary_object/function_translate/mod.rs", "explicit_throw_lowering_is_typed_and_operand_free"): "5d6d1b5266a7b7682c26a39d8b54c4b9f450670feb7dc917e89427293f92b9a9",
-        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "f0b9cd78bd3502077caefd2a9fdeba82fe06a35f5ace794be883ac118d7b3b93",
-        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5be98ae103a1ab281177f2e1e4c6b2ce88a5e2a54954e7d3fae56e8b8bc63827",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "1e70c11e88ced38a13ec7d6c982ff466fc61870a616b74ef0f61f4c13a34894c",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "d361289b2330e5ccea9209a336311fc4413e4171b121f233a2b19430012ae9ee",
         ("src/bytecode.rs", "verifier_allows_terminal_completion_to_abandon_switch_values"): "7fdb137db6ab6bedd70a5ea42b6b267ab3d1eb027ea6467e25b430ebf365b4a6",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_uses_the_exact_wire_metadata_and_value_identity"): "f3df4f2957a2d447ff0f0c1af7c0cb74eb03017dda72210b1349f16d4dceccfb",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_reenters_caller_catch_backtrace_and_iterator_close"): "71ae492da72febf0aae78f64edd2980b70982f2d0799981b4e06d336a03eaa87",
@@ -6304,7 +6363,6 @@ if not (root / ".boundary-self-test").is_file():
                 "CapabilityPolicy::OrdinaryOnly(Recipe::Throw)",
                 "CAPABILITY_REGISTRY[49].policy",
                 "CapabilityPolicy::OrdinaryOnly(Recipe::ThrowReadOnly)",
-                "CAPABILITY_REGISTRY[177].policy",
             ),
         ),
         (
@@ -6414,7 +6472,7 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3e_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_throw_rows_are_the_exact_reviewed_completion_set"): "060acee50f7f8b36292f04a085daa7b6a6123dece220725a439136f27fe9dcd8",
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_throw_rows_are_the_exact_reviewed_completion_set"): "46280b952611f2513c2764859dacaa8b0b2be02d86a0ffbf92a0d5791e7deb6a",
         ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_property_free_read_only_with_owned_input_atom_spelling"): "bc88a01461e1c7a8fc3d05e716510a81eb95b464dc48165b863b86928f970172",
         ("src/runtime/binary_object/ordinary_leaf.rs", "read_only_rejects_other_subtypes_non_string_atoms_and_atom_table_drift"): "e03485e5228e1e346c83d40e2285f09283f71c94f53542af394c04a1e6b4b7aa",
         ("src/runtime/binary_object/ordinary_leaf.rs", "read_only_accepts_only_string_names_under_zero_or_one_slot_provenance"): "2c730d38b8a09aa20b2ba20add47bde755090f23a8599e8516e964352f32eff2",
@@ -6470,10 +6528,144 @@ if not (root / ".boundary-self-test").is_file():
             f"missing {missing_stage3e_tests}, drifted {drifted_stage3e_tests}",
         )
 
+    stage3f_test_contracts = (
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "ordinary_nop_is_the_exact_operand_free_raw177_row",
+            (
+                "CAPABILITY_REGISTRY[177]",
+                "OpcodeFormat::None",
+                "CapabilityPolicy::OrdinaryOnly(Recipe::Nop)",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/mod.rs",
+            "operand_free_nop_translation_is_one_typed_operation",
+            (
+                "lower_operation(Recipe::Nop, &NativeOperands::None).unwrap()",
+                "Some(PendingOperation::Ready(FunctionOp::Nop))",
+                "TranslationTarget::Scalar",
+                "Some(PendingOperation::Ready(FunctionOp::OutsideTarget))",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "lowers_representative_sanitized_operations_without_consulting_diagnostics",
+            ("(FunctionOp::Nop, OrdinaryLeafOp::Nop)",),
+        ),
+        (
+            "src/runtime/binary_object_publish.rs",
+            "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering",
+            ("lower(OrdinaryLeafOp::Nop)", "Instruction::Nop"),
+        ),
+        (
+            "src/bytecode.rs",
+            "verifier_accepts_closed_non_terminating_control_flow",
+            (
+                "code: vec![Instruction::Nop]",
+                "reachable_fallthrough.verify().unwrap_err().message()",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_nop_preserves_exact_metadata_realm_and_zero_effect",
+            (
+                "assert_eq!(QUICKJS_ORDINARY_NOP_BC5.len(), 41);",
+                "0x1c52_2736_e3cb_ef92",
+                "[Instruction::Nop, Instruction::ReturnUndefined]",
+                "snapshot.constants.is_empty()",
+                "snapshot.metadata.max_stack, 0",
+                "Some(defining.function_prototype().unwrap())",
+                "for _ in 0..2",
+                "assert!(!caller.has_exception());",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_nop_only_fallthrough_rolls_back_and_retries",
+            (
+                "nop_only[37] = 1;",
+                "nop_only.truncate(40);",
+                "nop_only[39], 0xb1",
+                "error.message(), FALLTHROUGH",
+                "assert_eq!(runtime.heap_counts(), baseline",
+                "assert_eq!(runtime.test_atom_count(), baseline_atoms",
+                "read_trusted_ordinary_function(QUICKJS_ORDINARY_NOP_BC5, 0)",
+                "assert!(!context.has_exception());",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_branch_targets_raw177_typed_index",
+            (
+                "image.extend_from_slice(&[0xea, 0x01, 0xb1, 0x29]);",
+                "Instruction::Goto(1)",
+                "Instruction::Nop",
+                "Instruction::ReturnUndefined",
+                "assert!(!context.has_exception());",
+            ),
+        ),
+    )
+    stage3f_test_body_hashes = {
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_nop_is_the_exact_operand_free_raw177_row"): "f75d3876877204f9b2a209216e5664095bab427ab1831db8ae7fdda946362b17",
+        ("src/runtime/binary_object/function_translate/mod.rs", "operand_free_nop_translation_is_one_typed_operation"): "3fdd3855d14295ac08d90c15878eeb3a17afb2e9d5a6008182a0b0193cbd6ae4",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "1e70c11e88ced38a13ec7d6c982ff466fc61870a616b74ef0f61f4c13a34894c",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "d361289b2330e5ccea9209a336311fc4413e4171b121f233a2b19430012ae9ee",
+        ("src/bytecode.rs", "verifier_accepts_closed_non_terminating_control_flow"): "7b249cca44a54c95013a2119764943705c06e0c372483c50b3d46ee41dd2d717",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_nop_preserves_exact_metadata_realm_and_zero_effect"): "bab4e09fe90b483999fbe41f9a1bbf26724ce74834fa2faba1d8a1ece16bce82",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_nop_only_fallthrough_rolls_back_and_retries"): "110183deebf1bd2e02361b7302b2e033243a57a6b7d51c33ded2919eade36c7c",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_branch_targets_raw177_typed_index"): "4e0aa47698b6fd4bfe02e0dde0461251def3229450253d01b03fda139f554345",
+    }
+    missing_stage3f_tests = []
+    drifted_stage3f_tests = []
+    for relative, name, anchors in stage3f_test_contracts:
+        code = stage3b_code(relative)
+        declarations = list(re.finditer(
+            rf"(?P<attributes>(?:#[ \t\n]*\[[^]]*\][ \t\n]*)*)"
+            rf"\bfn[ \t\n]+{re.escape(name)}[ \t\n]*\(",
+            code,
+        ))
+        if (
+            len(declarations) != 1
+            or " ".join(declarations[0].group("attributes").split()) != "#[test]"
+        ):
+            missing_stage3f_tests.append(f"{relative}::{name}")
+            continue
+        declaration_offset = declarations[0].start()
+        declaration_depth = code[:declaration_offset].count("{") - code[:declaration_offset].count("}")
+        if relative == "src/runtime/tests.rs":
+            direct_parent = declaration_depth == 0
+        else:
+            parent_bounds = stage3d_test_parent_bounds.get(relative)
+            direct_parent = (
+                parent_bounds is not None
+                and parent_bounds[0] < declaration_offset < parent_bounds[1]
+                and declaration_depth == 1
+            )
+        if not direct_parent:
+            missing_stage3f_tests.append(f"{relative}::{name} (nested)")
+            continue
+        item = stage3b_function(relative, name, "stage3f-runtime-evidence")
+        normalized_item = " ".join(item.split())
+        if (
+            any(anchor not in normalized_item for anchor in anchors)
+            or normalized_code_sha256(item)
+            != stage3f_test_body_hashes.get((relative, name))
+        ):
+            drifted_stage3f_tests.append(
+                f"{relative}::{name} ({normalized_code_sha256(item)})"
+            )
+    if missing_stage3f_tests or drifted_stage3f_tests:
+        fail(
+            "stage3f-runtime-evidence",
+            "Stage3F tests must remain unconditional direct-parent #[test] functions with the exact raw177 registry/typed chain, 41-byte runtime metadata/realm/pending evidence, 40-byte fallthrough rollback/retry, and branch-index preservation; "
+            f"missing {missing_stage3f_tests}, drifted {drifted_stage3f_tests}",
+        )
+
     stage3d_c_evidence_hashes = {
-        "tests/fixtures/function_bytecode_wire.c": "2489185bc2dbe4383a770836ce81f3fd49f4148557e74562b77c58d7b58cc30f",
-        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt": "127b07ba0f3e8503d7e6f49a3dcbe9609cae917a6aee67a7c3e7d77a43ac1418",
-        "dev-support/quickjs-c-oracles.tsv": "d9f58447a7b1f36fad3edb1d7633953127f215eb81b0360077c10bb33ce8f99f",
+        "tests/fixtures/function_bytecode_wire.c": "7b9aeda55ee982134b1f31543150d09c3e047ed9560ce8c36158db1c66b80b11",
+        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt": "c9aa4b8415c7d0df9a05586fd24ab9c30e2f0d4f7eb5a42aa76b107f95046494",
+        "dev-support/quickjs-c-oracles.tsv": "e4c460469faf0a2da8b5b3ce6124ef77105dd803c2f947896cc886fb7d8856ca",
     }
     stage3d_c_sources: dict[str, str] = {}
     for relative, expected_hash in stage3d_c_evidence_hashes.items():
@@ -6486,7 +6678,7 @@ if not (root / ".boundary-self-test").is_file():
         if found_hash != expected_hash:
             fail(
                 "stage3d-c-oracle",
-                f"{relative} drifted from its frozen Stage3E sha256; found {found_hash}",
+                f"{relative} drifted from its frozen Stage3F sha256; found {found_hash}",
             )
         stage3d_c_sources[relative] = payload.decode("utf-8")
 
@@ -6514,10 +6706,26 @@ if not (root / ".boundary-self-test").is_file():
         or stage3d_c_source.count(
             "static const uint8_t ordinary_throw_error_bytecode[]"
         ) != 1
+        or stage3d_c_source.count(
+            "static int expect_ordinary_nop_completion(JSContext *compile_context)"
+        ) != 1
+        or stage3d_c_source.count(
+            "if (expect_ordinary_nop_completion(compile_context))"
+        ) != 1
+        or stage3d_c_source.count(
+            "static const uint8_t ordinary_nop_natural_bytecode[]"
+        ) != 1
+        or stage3d_c_source.count(
+            "static const uint8_t ordinary_nop_bytecode[]"
+        ) != 1
+        or stage3d_c_source.count("memcpy(manual_wire, natural_wire, 39);") != 1
+        or stage3d_c_source.count("manual_wire[37] = 2;") != 1
+        or stage3d_c_source.count("manual_wire[39] = 177;") != 1
+        or stage3d_c_source.count("manual_wire[40] = 41;") != 1
     ):
         fail(
             "stage3d-c-oracle",
-            "the authenticated C oracle must define, call, and execute exactly one raw48 and one raw49 completion case with distinct natural/manual raw49 wires",
+            "the authenticated C oracle must define and call exactly one raw48, raw49, and raw177 case, with distinct natural/manual raw49 wires and an exact compiler-natural raw41 baseline mechanically transformed into raw177 plus raw41",
         )
     stage3d_c_transcript = stage3d_c_sources.get(
         "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt", ""
@@ -6532,7 +6740,6 @@ if not (root / ".boundary-self-test").is_file():
         "ordinary-throw-terminal=raw48,stack:1->0,no-return",
         "ordinary-throw-caller-catch=int,object,Error:original-identity;terminal-no-return",
         "ordinary-throw-iterator-close=body,return,catch-original;close-throw-does-not-replace-original",
-        "ordinary-throw-deferred-raw=177",
         "ordinary-throw-oracle=passed",
     )
     if any(
@@ -6541,7 +6748,7 @@ if not (root / ".boundary-self-test").is_file():
     ):
         fail(
             "stage3d-c-oracle",
-            "the frozen C transcript must retain the exact raw48 wire, metadata, terminal, identity, backtrace, iterator-close, and current deferred-row evidence",
+            "the frozen C transcript must retain the exact raw48 wire, metadata, terminal, identity, backtrace, and iterator-close evidence",
         )
     stage3e_c_transcript_contract = (
         "ordinary-throw-error-natural-wire-size=58",
@@ -6567,7 +6774,6 @@ if not (root / ".boundary-self-test").is_file():
         "ordinary-throw-error-subtype255=fresh-read-write-exec:InternalError:invalid-throw-var-type-255;Rust:Unadmitted",
         "ordinary-throw-error-rust-admission=raw49/subtype0-only;subtype1-255:Unadmitted",
         "ordinary-exception-admitted-raw=48,49",
-        "ordinary-exception-deferred-raw=177",
         "ordinary-throw-error-oracle=passed",
     )
     if any(
@@ -6576,7 +6782,40 @@ if not (root / ".boundary-self-test").is_file():
     ):
         fail(
             "stage3e-c-oracle",
-            "the frozen C transcript must retain both raw49 wire identities, subtype-0 terminal semantics, realm/backtrace/pending/catch evidence, subtype rejection contrast, and raw177 deferral",
+            "the frozen C transcript must retain both raw49 wire identities, subtype-0 terminal semantics, realm/backtrace/pending/catch evidence, and subtype rejection contrast",
+        )
+
+    stage3f_c_transcript_contract = (
+        "ordinary-nop-evidence=compiler-natural-raw41-baseline-plus-mechanical-raw177-insertion",
+        "ordinary-nop-natural-wire-size=40",
+        "ordinary-nop-natural-wire-fnv1a64=bb77ba50387051a2",
+        "ordinary-nop-natural-wire-sha256=a50422c2b092ab4162505321642241e7d24c43c5617e4b4ef0d076cde44b6f92",
+        "ordinary-nop-natural-child-metadata=flags:0243,js_mode:1,args:0,vars:0,defined_args:0,stack:0,var_refs:0,closures:0,cpool:0,code:1,locals:0,code_offset:39,atoms:0",
+        "ordinary-nop-natural-child-code-hex=29",
+        "ordinary-nop-natural-child-raw=41",
+        "ordinary-nop-natural-provenance=raw41-only;raw177-absent-never-compiler-natural",
+        "ordinary-nop-wire-size=41",
+        "ordinary-nop-wire-fnv1a64=1c522736e3cbef92",
+        "ordinary-nop-wire-sha256=26c2e58ec14861dc797a7c3a3701f258ba392b649a15554256b61d7634fccdd0",
+        "ordinary-nop-child-metadata=flags:0243,js_mode:1,args:0,vars:0,defined_args:0,stack:0,var_refs:0,closures:0,cpool:0,code:2,locals:0,code_offset:39,atoms:0",
+        "ordinary-nop-child-code-hex=b129",
+        "ordinary-nop-child-raw=41,177",
+        "ordinary-nop-derivation=natural40:code1->2;insert-raw177-before-natural-raw41",
+        "ordinary-nop-property-free=atoms:0,args:0,vars:0,var_refs:0,closures:0,cpool:0,locals:0,stack:0",
+        "ordinary-nop-rewrite=identity,fresh-root:Function",
+        "ordinary-nop-call=defining-realm-twice:undefined;caller-realm-twice:undefined",
+        "ordinary-nop-pending=none-before-or-after-repeat-cross-realm",
+        "ordinary-nop-only-boundary=40-byte-raw177-only:Rust-verifier-negative-only;C-never-reads-or-executes",
+        "ordinary-nop-admitted-raw=177",
+        "ordinary-nop-oracle=passed",
+    )
+    if any(
+        stage3d_c_transcript.count(f"{line}\n") != 1
+        for line in stage3f_c_transcript_contract
+    ):
+        fail(
+            "stage3f-c-oracle",
+            "the frozen C transcript must retain the exact compiler-natural raw41 baseline, mechanically derived raw177/raw41 wire, zero-property metadata, byte identity, repeated cross-realm undefined calls, empty pending state, and C-never-executes malformed boundary",
         )
 
     stage3e_status = read_source("docs/status.md")
@@ -6596,8 +6835,8 @@ if not (root / ".boundary-self-test").is_file():
         (
             "the status document must retain the authenticated raw48/raw49 C wires and Stage3E source/transcript/manifest hashes",
             "Stage 3D adds the exact compiler-natural strict 45-byte raw-48 wire",
-            "`d9f58447a7b1f36fad3edb1d7633953127f215eb81b0360077c10bb33ce8f99f`.",
-            "68033f5db42e6c57c94e12ab84d30c7c0ad8989ddf764e607715b5e412897325",
+            "`e4c460469faf0a2da8b5b3ce6124ef77105dd803c2f947896cc886fb7d8856ca`.",
+            "9e2071eaa2228333d35109361fcb43711fd14e9b42d0d2302e6914bce42ac040",
         ),
         (
             "the status document must retain the exact Stage3E typed atom/synthetic-constant path and no-new-VM boundary",
@@ -6620,6 +6859,544 @@ if not (root / ".boundary-self-test").is_file():
             end_fragment,
             expected_hash,
         )
+
+    stage3f_status_corridors = (
+        (
+            "the status document must retain the exact Stage3F raw177 one-to-one Nop chain, branch index, verifier fallthrough, and VM no-effect boundary",
+            "Stage 3F admits raw 177 only as the exact one-to-one typed chain",
+            "adds no public surface, source syntax, Test262 admission, or Feature Parity claim.",
+            "068db26e6d2a60b8336443ace78bc6bf165b37733e1bce10282abbcb6b646671",
+        ),
+        (
+            "the status document must retain the exact Stage3F 41-byte wire, metadata, realm, pending, malformed-fallthrough rollback, and branch-index evidence",
+            "Stage-3F Rust evidence uses the exact 41-byte property-free strict function wire",
+            "a separate branch fixture proves `Goto(1)` still lands on `Instruction::Nop`.",
+            "d4af12e9a2e3b169ad8f8d2061647630d71eaa473a80862690df896f3e9cb0f9",
+        ),
+        (
+            "the status document must retain the exact Stage3F compiler-natural baseline, mechanical raw177 derivation, C execution boundary, and frozen C hashes",
+            "Stage 3F authenticates the compiler-natural strict empty-function baseline",
+            "`e4c460469faf0a2da8b5b3ce6124ef77105dd803c2f947896cc886fb7d8856ca`.",
+            "ec89971b1f8c5e59412ddf96b4b6a621edc20c64bec2929f50cb5a6f3019cd27",
+        ),
+        (
+            "the status document must retain the exact Stage3E-receipt/Stage3F-source-ahead lifecycle boundary",
+            "That promoted receipt remains the exact Stage-3E lifecycle boundary.",
+            "conformance claim.",
+            "15e66a3124e898f2ed57adb86de183663f6a1836f02527d82d05c83a7ccee5b9",
+        ),
+    )
+
+    stage3f_void_html_tags = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    def stage3f_raw_html_ancestor_stack_at(
+        source: str,
+        stop: int,
+    ) -> tuple[str, ...]:
+        stack: list[str] = []
+        index = 0
+        while index < stop:
+            opening = source.find("<", index, stop)
+            if opening < 0:
+                break
+            if source.startswith("<!--", opening):
+                comment_end = source.find("-->", opening + 4)
+                if comment_end < 0 or comment_end + 3 > stop:
+                    stack.append("!--")
+                    break
+                index = comment_end + 3
+                continue
+
+            cursor = opening + 1
+            closing = cursor < stop and source[cursor] == "/"
+            if closing:
+                cursor += 1
+            while cursor < stop and source[cursor].isspace():
+                cursor += 1
+            tag_match = re.match(r"[A-Za-z][A-Za-z0-9:-]*", source[cursor:stop])
+            if tag_match is None:
+                index = opening + 1
+                continue
+            tag = tag_match.group(0).lower()
+            cursor += len(tag_match.group(0))
+            quote: str | None = None
+            tag_end = -1
+            while cursor < len(source):
+                character = source[cursor]
+                if quote is not None:
+                    if character == quote:
+                        quote = None
+                elif character in {"'", '"'}:
+                    quote = character
+                elif character == ">":
+                    tag_end = cursor
+                    break
+                cursor += 1
+            if tag_end < 0 or tag_end >= stop:
+                stack.append("!incomplete-tag")
+                break
+
+            tag_tail = source[opening + 1:tag_end]
+            if closing:
+                if stack and stack[-1] == tag:
+                    stack.pop()
+                else:
+                    stack.append(f"!mispaired:/{tag}")
+            elif (
+                tag not in stage3f_void_html_tags
+                and not tag_tail.rstrip().endswith("/")
+            ):
+                stack.append(tag)
+            index = tag_end + 1
+        return tuple(stack)
+
+    def stage3f_active_fence_at(source: str, stop: int) -> tuple[str, int] | None:
+        active: tuple[str, int] | None = None
+        for line in source[:stop].splitlines():
+            fence = re.match(
+                r"^[ ]{0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$",
+                line,
+            )
+            if fence is None:
+                continue
+            marker = fence.group("marker")
+            tail = fence.group("tail")
+            if active is None:
+                if marker[0] != "`" or "`" not in tail:
+                    active = (marker[0], len(marker))
+            elif (
+                marker[0] == active[0]
+                and len(marker) >= active[1]
+                and not tail.strip()
+            ):
+                active = None
+        return active
+
+    def require_stage3f_top_level_corridor(
+        description: str,
+        start_fragment: str,
+        end_fragment: str,
+    ) -> None:
+        normalized_characters: list[str] = []
+        normalized_offsets: list[int] = []
+        for token in re.finditer(r"\S+", stage3e_status):
+            if normalized_characters:
+                normalized_characters.append(" ")
+                normalized_offsets.append(token.start())
+            for offset in range(token.start(), token.end()):
+                normalized_characters.append(stage3e_status[offset])
+                normalized_offsets.append(offset)
+        normalized_source = "".join(normalized_characters)
+        if (
+            normalized_source.count(start_fragment) != 1
+            or normalized_source.count(end_fragment) != 1
+        ):
+            fail("stage3f-status", description)
+            return
+        normalized_start = normalized_source.find(start_fragment)
+        normalized_end = (
+            normalized_source.find(end_fragment, normalized_start)
+            + len(end_fragment)
+        )
+        start = normalized_offsets[normalized_start]
+        end = normalized_offsets[normalized_end - 1] + 1
+        line_start = stage3e_status.rfind("\n", 0, start) + 1
+        line_end = stage3e_status.find("\n", end)
+        if line_end < 0:
+            line_end = len(stage3e_status)
+        corridor_lines = stage3e_status[line_start:line_end].splitlines()
+        indented = any(
+            line and re.match(r"(?:[ ]{4,}|\t)", line)
+            for line in corridor_lines
+        )
+        if (
+            indented
+            or stage3f_active_fence_at(stage3e_status, start) is not None
+            or stage3f_active_fence_at(stage3e_status, end) is not None
+            or stage3f_raw_html_ancestor_stack_at(stage3e_status, start)
+            or stage3f_raw_html_ancestor_stack_at(stage3e_status, end)
+        ):
+            fail(
+                "stage3f-status",
+                f"{description}; the complete corridor must remain top-level rendered Markdown at both boundaries, not an indented/fenced block, comment, or raw-HTML descendant",
+            )
+
+    for description, start_fragment, end_fragment, expected_hash in stage3f_status_corridors:
+        require_normalized_corridor_sha256(
+            "stage3f-status",
+            description,
+            stage3e_status,
+            start_fragment,
+            end_fragment,
+            expected_hash,
+        )
+        require_stage3f_top_level_corridor(
+            description,
+            start_fragment,
+            end_fragment,
+        )
+
+    def stage3f_rendered_text_projection(source: str) -> str:
+        rendered: list[str] = []
+        index = 0
+        while index < len(source):
+            if source.startswith("<!--", index):
+                comment_end = source.find("-->", index + 4)
+                index = len(source) if comment_end < 0 else comment_end + 3
+                continue
+            if source[index] == "<":
+                cursor = index + 1
+                if cursor < len(source) and source[cursor] == "/":
+                    cursor += 1
+                while cursor < len(source) and source[cursor].isspace():
+                    cursor += 1
+                tag_match = re.match(
+                    r"[A-Za-z][A-Za-z0-9:-]*",
+                    source[cursor:],
+                )
+                if tag_match is not None:
+                    cursor += len(tag_match.group(0))
+                    quote: str | None = None
+                    while cursor < len(source):
+                        character = source[cursor]
+                        if quote is not None:
+                            if character == quote:
+                                quote = None
+                        elif character in {"'", '"'}:
+                            quote = character
+                        elif character == ">":
+                            index = cursor + 1
+                            break
+                        cursor += 1
+                    else:
+                        index = len(source)
+                    continue
+            rendered.append(source[index])
+            index += 1
+
+        projected = " ".join(html.unescape("".join(rendered)).split())
+        projected = re.sub(
+            r"(?<![\w\\])(?:\*{1,3}|_{1,3})(?=\S)",
+            "",
+            projected,
+        )
+        projected = re.sub(
+            r"(?<=\S)(?:\*{1,3}|_{1,3})(?!\w)",
+            "",
+            projected,
+        )
+        return " ".join(projected.split())
+
+    def stage3f_selected_status_sentences(source: str) -> tuple[str, ...]:
+        return tuple(
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])[ \t]+", source)
+            if sentence.strip()
+            and (
+                re.search(r"\bStage[- ]*3F\b", sentence, re.IGNORECASE)
+                or (
+                    re.search(r"\braw[- ]?177\b", sentence, re.IGNORECASE)
+                    and re.search(
+                        r"\b(?:receipt|run|artifact)\b",
+                        sentence,
+                        re.IGNORECASE,
+                    )
+                )
+            )
+        )
+
+    stage3f_default_ignorable_ranges = (
+        (0x034F, 0x034F),
+        (0x115F, 0x1160),
+        (0x17B4, 0x17B5),
+        (0x180B, 0x180F),
+        (0x2065, 0x2065),
+        (0x3164, 0x3164),
+        (0xFE00, 0xFE0F),
+        (0xFFA0, 0xFFA0),
+        (0xFFF0, 0xFFF8),
+        (0xE0000, 0xE0FFF),
+    )
+
+    def stage3f_is_default_ignorable(character: str) -> bool:
+        if unicodedata.category(character) == "Cf":
+            return True
+        codepoint = ord(character)
+        return any(
+            start <= codepoint <= end
+            for start, end in stage3f_default_ignorable_ranges
+        )
+
+    def stage3f_html_attributes(
+        attributes: str,
+    ) -> list[tuple[str, str | None]]:
+        parsed: list[tuple[str, str | None]] = []
+        index = 0
+        while index < len(attributes):
+            while (
+                index < len(attributes)
+                and (attributes[index].isspace() or attributes[index] == "/")
+            ):
+                index += 1
+            if index >= len(attributes):
+                break
+
+            name_start = index
+            while (
+                index < len(attributes)
+                and not attributes[index].isspace()
+                and attributes[index] not in {'"', "'", "<", ">", "/", "="}
+            ):
+                index += 1
+            if name_start == index:
+                index += 1
+                continue
+            name = attributes[name_start:index].casefold()
+
+            while index < len(attributes) and attributes[index].isspace():
+                index += 1
+            value: str | None = None
+            if index < len(attributes) and attributes[index] == "=":
+                index += 1
+                while index < len(attributes) and attributes[index].isspace():
+                    index += 1
+                if index < len(attributes) and attributes[index] in {'"', "'"}:
+                    quote = attributes[index]
+                    index += 1
+                    value_start = index
+                    while index < len(attributes) and attributes[index] != quote:
+                        index += 1
+                    value = attributes[value_start:index]
+                    if index < len(attributes):
+                        index += 1
+                else:
+                    value_start = index
+                    while (
+                        index < len(attributes)
+                        and not attributes[index].isspace()
+                        and attributes[index] != ">"
+                    ):
+                        index += 1
+                    value = attributes[value_start:index]
+            parsed.append((name, value))
+        return parsed
+
+    def stage3f_reference_label(label: str) -> str:
+        return " ".join(label.split()).casefold()
+
+    def stage3f_forensic_text_projection(source: str) -> str:
+        comment_content: list[str] = []
+        index = 0
+        while index < len(source):
+            if source.startswith("<!--", index):
+                comment_end = source.find("-->", index + 4)
+                if comment_end < 0:
+                    comment_content.append(source[index + 4:])
+                    break
+                comment_content.append(source[index + 4:comment_end])
+                index = comment_end + 3
+                continue
+            comment_content.append(source[index])
+            index += 1
+
+        without_comments = "".join(comment_content)
+        rendered: list[str] = []
+        index = 0
+        while index < len(without_comments):
+            if without_comments[index] == "<":
+                cursor = index + 1
+                closing_tag = (
+                    cursor < len(without_comments)
+                    and without_comments[cursor] == "/"
+                )
+                if closing_tag:
+                    cursor += 1
+                while (
+                    cursor < len(without_comments)
+                    and without_comments[cursor].isspace()
+                ):
+                    cursor += 1
+                tag_match = re.match(
+                    r"[A-Za-z][A-Za-z0-9:-]*",
+                    without_comments[cursor:],
+                )
+                if tag_match is not None:
+                    tag_name = tag_match.group(0).lower()
+                    cursor += len(tag_match.group(0))
+                    attributes_start = cursor
+                    quote: str | None = None
+                    while cursor < len(without_comments):
+                        character = without_comments[cursor]
+                        if quote is not None:
+                            if character == quote:
+                                quote = None
+                        elif character in {"'", '"'}:
+                            quote = character
+                        elif character == ">":
+                            if tag_name == "img" and not closing_tag:
+                                attributes = without_comments[
+                                    attributes_start:cursor
+                                ]
+                                for name, value in stage3f_html_attributes(
+                                    attributes
+                                ):
+                                    if name == "alt":
+                                        rendered.append(value or "")
+                                        break
+                            index = cursor + 1
+                            break
+                        cursor += 1
+                    else:
+                        index = len(without_comments)
+                    continue
+            rendered.append(without_comments[index])
+            index += 1
+
+        projected = unicodedata.normalize(
+            "NFKC",
+            html.unescape("".join(rendered)),
+        )
+        projected = "".join(
+            character
+            for character in projected
+            if not stage3f_is_default_ignorable(character)
+        )
+        reference_definitions = {
+            stage3f_reference_label(match.group("label"))
+            for match in re.finditer(
+                r"(?m)^[ \t]{0,3}\[(?P<label>[^\]\n]+)\]:"
+                r"[ \t]*(?:<[^>\n]+>|\S+)",
+                projected,
+            )
+        }
+        projected = " ".join(projected.split())
+
+        code_span = re.compile(
+            r"(?P<ticks>`+)(?P<content>.*?)(?P=ticks)",
+        )
+        projected = code_span.sub(
+            lambda match: match.group("content"),
+            projected,
+        )
+        projected = re.sub(
+            r"!\[([^]\n]*)\]\([^)]*\)",
+            r"\1",
+            projected,
+        )
+        projected = re.sub(
+            r"!\[([^]\n]*)\]\[[^]\n]*\]",
+            r"\1",
+            projected,
+        )
+        projected = re.sub(
+            r"!\[(?P<label>[^]\n]+)\](?![\[(])",
+            lambda match: (
+                match.group("label")
+                if stage3f_reference_label(match.group("label"))
+                in reference_definitions
+                else match.group(0)
+            ),
+            projected,
+        )
+        projected = re.sub(
+            r"\[([^]\n]+)\]\([^)]*\)",
+            r"\1",
+            projected,
+        )
+        projected = re.sub(
+            r"\[([^]\n]+)\]\[[^]\n]*\]",
+            r"\1",
+            projected,
+        )
+        projected = projected.replace("~~", "")
+        projected = re.sub(
+            r"(?<![\w\\])(?:\*{1,3}|_{1,3})(?=\S)",
+            "",
+            projected,
+        )
+        projected = re.sub(
+            r"(?<=\S)(?:\*{1,3}|_{1,3})(?!\w)",
+            "",
+            projected,
+        )
+        return " ".join(projected.split())
+
+    normalized_stage3f_status = " ".join(stage3e_status.split())
+    rendered_stage3f_status = stage3f_rendered_text_projection(stage3e_status)
+    forensic_stage3f_status = stage3f_forensic_text_projection(stage3e_status)
+    stage3f_source_ahead_negation = re.compile(
+        r"\b(?:not|never|no[ \t]+longer)\b[^.;!?]{0,32}\bsource[- ]ahead\b",
+        re.IGNORECASE,
+    )
+    stage3f_unauthenticated_double_negation = re.compile(
+        r"\b(?:not|never|no[ \t]+longer)\b[^.;!?]{0,32}\bunauthenticated\b",
+        re.IGNORECASE,
+    )
+    if stage3f_source_ahead_negation.search(forensic_stage3f_status):
+        fail(
+            "stage3f-status",
+            "Stage3F source-ahead status must not be negated before its separate exact-source receipt is reviewed and promoted",
+        )
+    if stage3f_unauthenticated_double_negation.search(forensic_stage3f_status):
+        fail(
+            "stage3f-status",
+            "Stage3F unauthenticated status must not be double-negated into an authentication claim",
+        )
+
+    stage3f_status_sentences = stage3f_selected_status_sentences(
+        normalized_stage3f_status
+    )
+    stage3f_status_sentence_hash = hashlib.sha256(
+        "\n".join(stage3f_status_sentences).encode("utf-8")
+    ).hexdigest()
+    if (
+        len(stage3f_status_sentences) != 9
+        or stage3f_status_sentence_hash
+        != "718c4b81aab33b83af93529d51d32bc6de5a86138d286de5098d95d4e191605e"
+    ):
+        fail(
+            "stage3f-status",
+            "the ordered canonical Stage3F status/provenance sentence inventory must remain exact; "
+            f"found {len(stage3f_status_sentences)} sentences with sha256 {stage3f_status_sentence_hash}",
+        )
+
+    rendered_stage3f_status_sentences = stage3f_selected_status_sentences(
+        rendered_stage3f_status
+    )
+    rendered_stage3f_status_sentence_hash = hashlib.sha256(
+        "\n".join(rendered_stage3f_status_sentences).encode("utf-8")
+    ).hexdigest()
+    if (
+        len(rendered_stage3f_status_sentences) != 9
+        or rendered_stage3f_status_sentence_hash
+        != "718c4b81aab33b83af93529d51d32bc6de5a86138d286de5098d95d4e191605e"
+    ):
+        fail(
+            "stage3f-status",
+            "the ordered rendered-text Stage3F/status-provenance sentence inventory must remain exact after stripping HTML comments/tags and Markdown emphasis, decoding entities, and normalizing Unicode whitespace; "
+            f"found {len(rendered_stage3f_status_sentences)} sentences with sha256 {rendered_stage3f_status_sentence_hash}",
+        )
+
+    forensic_stage3f_status_sentences = stage3f_selected_status_sentences(
+        forensic_stage3f_status
+    )
+    forensic_stage3f_status_sentence_hash = hashlib.sha256(
+        "\n".join(forensic_stage3f_status_sentences).encode("utf-8")
+    ).hexdigest()
+    if (
+        len(forensic_stage3f_status_sentences) != 9
+        or forensic_stage3f_status_sentence_hash
+        != "131f10b543644820baeb6cebd30d5ae39d9ab08456c2830751c1a8b002ea21c0"
+    ):
+        fail(
+            "stage3f-status",
+            "the ordered forensic Stage3F/status-provenance sentence inventory must remain exact after retaining HTML comment content, stripping tags while preserving image alt text, decoding entities, NFKC normalization, removing default-ignorable formatting, flattening Markdown code/link/image labels, and stripping emphasis/strong/strikethrough delimiters; "
+            f"found {len(forensic_stage3f_status_sentences)} sentences with sha256 {forensic_stage3f_status_sentence_hash}",
+        )
+
     stage3e_receipt_paragraphs = [
         paragraph
         for paragraph in re.split(r"\n[ \t]*\n", stage3e_status)
@@ -9625,13 +10402,13 @@ expect_full_rewrite_rejected stage3c-translate-ready-shadow \
 expect_full_rewrite_rejected stage3c-ordinary-guarded-tail-bypass \
     ordinary-leaf-translated-code \
     src/runtime/binary_object/ordinary_leaf.rs \
-    $'    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
-    $'    if matches!(operation, FunctionOp::TailCall(0)) {\n        return Ok(OrdinaryLeafOp::Call(0));\n    }\n    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
+    $'    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
+    $'    if matches!(operation, FunctionOp::TailCall(0)) {\n        return Ok(OrdinaryLeafOp::Call(0));\n    }\n    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
 expect_full_rewrite_rejected stage3c-publisher-alias-tail-bypass \
     ordinary-leaf-consumer-lowering \
     src/runtime/binary_object_publish.rs \
-    $'    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
-    $'    use OrdinaryLeafOp as O;\n    if let O::TailCall(argument_count) = &operation {\n        return Ok(Instruction::Call(*argument_count));\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
+    $'    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
+    $'    use OrdinaryLeafOp as O;\n    if let O::TailCall(argument_count) = &operation {\n        return Ok(Instruction::Call(*argument_count));\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
 expect_full_rewrite_rejected stage3c-stack-effect-guarded-bypass \
     stage3c-tail-verifier src/bytecode.rs \
     $'    pub const fn stack_effect(&self) -> (usize, usize) {\n        match self {' \
@@ -9683,7 +10460,6 @@ expect_full_rewrite_rejected stage3c-required-test-macro-shadow \
 expect_full_rewrite_table <<'STAGE3D_CANARIES'
 stage3d-raw48-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(48, None, OrdinaryOnly, Recipe::Throw),|    row!(48, None, Shared, Recipe::Throw),
 stage3d-raw47-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(47, None, Blocked, Completion),|    row!(47, None, OrdinaryOnly, Recipe::Throw),
-stage3d-raw177-alias-admission|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, Blocked, Specialized),|    row!(177, None, OrdinaryOnly, Recipe::Throw),
 stage3d-translate-throw-to-return|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Throw),|        (Recipe::Throw, NativeOperands::None) => ready(FunctionOp::Return),
 stage3d-ordinary-throw-to-return|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Throw => Ok(OrdinaryLeafOp::Throw),|        FunctionOp::Throw => Ok(OrdinaryLeafOp::Return),
 stage3d-publisher-throw-to-return|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Throw => Instruction::Throw,|        OrdinaryLeafOp::Throw => Instruction::Return,
@@ -9695,7 +10471,6 @@ STAGE3D_CANARIES
 expect_full_rewrite_table <<'STAGE3E_CANARIES'
 stage3e-raw49-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(49, AtomU8, OrdinaryOnly, Recipe::ThrowReadOnly),|    row!(49, AtomU8, Shared, Recipe::ThrowReadOnly),
 stage3e-raw49-throw-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(49, AtomU8, OrdinaryOnly, Recipe::ThrowReadOnly),|    row!(49, AtomU8, OrdinaryOnly, Recipe::Throw),
-stage3e-raw177-read-only-alias|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, Blocked, Specialized),|    row!(177, None, OrdinaryOnly, Recipe::ThrowReadOnly),
 stage3e-subtype-one-admission|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { atom, value: 0 }) => {|        (Recipe::ThrowReadOnly, NativeOperands::AtomU8 { atom, value: 1 }) => {
 stage3e-ordinary-read-only-to-throw|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::ThrowReadOnly(atom) => {\n            copy_read_only_name(atom).map(OrdinaryLeafOp::ThrowReadOnly)\n        }|        FunctionOp::ThrowReadOnly(_) => Ok(OrdinaryLeafOp::Throw),
 stage3e-two-input-atoms-admitted|stage3e-read-only-atom-ledger|src/runtime/binary_object/ordinary_leaf.rs|        if declared_slots > 1 {|        if declared_slots > 2 {
@@ -9710,6 +10485,109 @@ stage3e-runtime-realm-test-early-return|stage3e-runtime-evidence|src/runtime/tes
 stage3e-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_throw_error_completion(compile_context))|    if (0 && expect_ordinary_throw_error_completion(compile_context))
 stage3e-status-source-current-reversed|stage3e-status|docs/status.md|This promoted receipt is source-current for Stage 3E and covers the raw-49|This promoted receipt is source-stale for Stage 3E and does not cover the raw-49
 STAGE3E_CANARIES
+expect_full_rewrite_table <<'STAGE3F_CANARIES'
+stage3f-raw177-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, OrdinaryOnly, Recipe::Nop),|    row!(177, None, Shared, Recipe::Nop),
+stage3f-raw177-recipe-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, OrdinaryOnly, Recipe::Nop),|    row!(177, None, OrdinaryOnly, Recipe::ReturnUndefined),
+stage3f-translate-nop-remap|function-translate-semantic-dispatch|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::Nop, NativeOperands::None) => ready(FunctionOp::Nop),|        (Recipe::Nop, NativeOperands::None) => ready(FunctionOp::ReturnUndefined),
+stage3f-ordinary-nop-remap|ordinary-leaf-translated-code|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),|        FunctionOp::Nop => Ok(OrdinaryLeafOp::ReturnUndefined),
+stage3f-publisher-nop-drop|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Nop => Instruction::Nop,|        OrdinaryLeafOp::Nop => Instruction::Drop,
+stage3f-publisher-nop-push|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Nop => Instruction::Nop,|        OrdinaryLeafOp::Nop => Instruction::Undefined,
+stage3f-publisher-nop-synthetic-index|ordinary-leaf-consumer-lowering|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Nop => Instruction::Nop,|        OrdinaryLeafOp::Nop => { *next_synthetic_index += 1; Instruction::Nop },
+stage3f-runtime-branch-index-collapse|stage3f-runtime-evidence|src/runtime/tests.rs|            Instruction::Goto(1),\n            Instruction::Nop,|            Instruction::Goto(0),\n            Instruction::Nop,
+stage3f-vm-nop-push-effect|stage3f-nop-vm|src/vm.rs|            Instruction::Nop => {}|            Instruction::Nop => { self.stack.push(Value::Undefined); }
+stage3f-wire-code-len-one|stage3f-runtime-evidence|src/runtime/tests.rs|    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1, 0x29,|    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0xb1, 0x29,
+stage3f-wire-raw177-aliased|stage3f-runtime-evidence|src/runtime/tests.rs|    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1, 0x29,|    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x29, 0x29,
+stage3f-wire-terminal-removed|stage3f-runtime-evidence|src/runtime/tests.rs|    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1, 0x29,|    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1, 0xb1,
+stage3f-wire-stack-one|stage3f-runtime-evidence|src/runtime/tests.rs|    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1, 0x29,|    0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0xb1, 0x29,
+stage3f-runtime-wire-test-ignored|stage3f-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_nop_preserves_exact_metadata_realm_and_zero_effect() {|#[test]\n#[ignore = "gate mutation"]\nfn trusted_quickjs_ordinary_nop_preserves_exact_metadata_realm_and_zero_effect() {
+stage3f-runtime-fallthrough-test-cfg-excluded|stage3f-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_nop_only_fallthrough_rolls_back_and_retries() {|#[cfg(any())]\n#[test]\nfn trusted_quickjs_ordinary_nop_only_fallthrough_rolls_back_and_retries() {
+stage3f-runtime-branch-test-early-return|stage3f-runtime-evidence|src/runtime/tests.rs|fn trusted_quickjs_ordinary_branch_targets_raw177_typed_index() {\n    let mut image = QUICKJS_ORDINARY_NOP_BC5.to_vec();|fn trusted_quickjs_ordinary_branch_targets_raw177_typed_index() {\n    return;\n    let mut image = QUICKJS_ORDINARY_NOP_BC5.to_vec();
+stage3f-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_nop_completion(compile_context))|    if (0 && expect_ordinary_nop_completion(compile_context))
+stage3f-status-typed-chain-erased|stage3f-status|docs/status.md|`Recipe::Nop` to `FunctionOp::Nop` to `OrdinaryLeafOp::Nop` and finally the|`Recipe::Nop` directly to `Instruction::Nop`, bypassing the typed DTO chain, and finally the
+stage3f-status-premature-source-current-hidden|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|<!-- Stage 3F is source-current and authenticated. -->\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-no-longer-source-ahead|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3F is no longer source-ahead.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-not-unauthenticated|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3F is not unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-already-authenticated|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3F is already authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-source-ahead-not-unauthenticated|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3F is source-ahead but not unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-receipt-authenticates-raw177|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw177.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-artifact-certifies-raw177|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This artifact certifies raw177.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-presently-current|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3F is presently current.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-became-authenticated|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3F became authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-now-counts-covered|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3F now counts as covered.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-markdown-strong-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage **3F** is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-html-em-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage <em>3F</em> is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-comment-split-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage<!-- boundary -->3F is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-numeric-entity-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage&#32;3F is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-nbsp-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage&nbsp;3F is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-markdown-strong-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw **177**.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-html-span-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This artifact certifies raw<span>177</span>.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-comment-split-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This run covers raw<!-- boundary -->177.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-code-span-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage `3F` is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-code-span-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw`177`.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-entity-code-span-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage &#96;3F&#96; is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-inline-link-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage [3F](#x) is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-inline-link-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw[177](#x).\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-reference-link-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage [3F][x] is authenticated.\n\n[x]: #x\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-reference-link-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw[177][x].\n\n[x]: #x\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-strikethrough-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage ~~3F~~ is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-strikethrough-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw~~177~~.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-zwsp-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage\342\200\2133F is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-word-joiner-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage\342\201\2403F is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-soft-hyphen-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage\302\2553F is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-zwsp-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw\342\200\213177.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-numeric-zwsp-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage&#8203;3F is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-comment-markdown-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|<!-- Stage **3F** is authenticated. -->\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-comment-markdown-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|<!-- This receipt authenticates raw **177**. -->\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-fullwidth-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Ｓｔａｇｅ ３Ｆ is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-fullwidth-token-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage ３Ｆ is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-superscript-script-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage ³ℱ is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-math-bold-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|𝐒𝐭𝐚𝐠𝐞 𝟑𝐅 is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-circled-stage-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Ⓢⓣⓐⓖⓔ ③Ⓕ is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-fullwidth-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates ｒａｗ１７７.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-math-bold-raw177-alias|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates 𝐫𝐚𝐰𝟏𝟕𝟕.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-markdown-image-stage-alt|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage ![3F](missing.png) is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-markdown-image-raw177-alt|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw![177](missing.png).\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-nested-linked-image-stage-alt|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage [![3F](missing.png)](#x) is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-html-img-stage-alt|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage <img src="missing.png" alt="3F"> is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-html-img-raw177-alt|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt authenticates raw<img src="missing.png" alt="177">.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-shortcut-image-stage-alt|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage ![3F] is authenticated.\n\n[3F]: missing.png\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3f-status-html-img-decoy-title-real-stage-alt|stage3f-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage <img title="decoy alt='x'" src="missing.png" alt="3F"> is authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+STAGE3F_CANARIES
+expect_full_rewrite_rejected stage3f-translate-nop-erased \
+    stage3d-throw-translation-route \
+    src/runtime/binary_object/function_translate/mod.rs \
+    '                PendingOperation::Ready(operation) => operation,' \
+    $'                PendingOperation::Ready(FunctionOp::Nop) => continue,\n                PendingOperation::Ready(operation) => operation,'
+expect_full_rewrite_rejected stage3f-status-typed-hidden-div-wrapper \
+    stage3f-status docs/status.md \
+    'Stage 3F admits raw 177 only as the exact one-to-one typed chain' \
+    $'<div hidden>\nStage 3F admits raw 177 only as the exact one-to-one typed chain' \
+    'adds no public surface, source syntax, Test262 admission, or Feature Parity claim.' \
+    $'adds no public surface, source syntax, Test262 admission, or Feature Parity claim.\n</div>'
+expect_full_rewrite_rejected stage3f-status-typed-comment-wrapper \
+    stage3f-status docs/status.md \
+    'Stage 3F admits raw 177 only as the exact one-to-one typed chain' \
+    $'<!--\nStage 3F admits raw 177 only as the exact one-to-one typed chain' \
+    'adds no public surface, source syntax, Test262 admission, or Feature Parity claim.' \
+    $'adds no public surface, source syntax, Test262 admission, or Feature Parity claim.\n-->'
+expect_full_rewrite_rejected stage3f-status-lifecycle-hidden-div-wrapper \
+    stage3f-status docs/status.md \
+    'That promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'<div style="display:none">\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    'conformance claim.' \
+    $'conformance claim.\n</div>'
+expect_full_rewrite_rejected stage3f-status-not-source-ahead-appended \
+    stage3f-status docs/status.md \
+    'The same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'Stage 3F is not source-ahead.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3f-status-source-ahead-authenticated-appended \
+    stage3f-status docs/status.md \
+    'The same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'Stage 3F is source-ahead and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3f-nop-verifier-terminal-bypass \
+    stage3f-nop-verifier src/bytecode.rs \
+    $'            Instruction::ThrowReadOnly(_)\n            | Instruction::ThrowRedeclaration(_)' \
+    $'            Instruction::Nop\n            | Instruction::ThrowReadOnly(_)\n            | Instruction::ThrowRedeclaration(_)'
 expect_full_rewrite_rejected stage3e-synthetic-count-dropped \
     stage3e-read-only-publication src/runtime/binary_object_publish.rs \
     '                        | OrdinaryLeafOp::ThrowReadOnly(_)' \
@@ -9735,8 +10613,8 @@ expect_full_rewrite_rejected stage3e-vm-read-only-pop-bypass \
     $'            Instruction::ThrowReadOnly(index) => {\n                self.pop()?;\n                return Err(host.read_only_error(*index)?);\n            }'
 expect_full_rewrite_rejected stage3e-status-source-stale-appended \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-crate-test-cfg-excluded \
     stage3e-runtime-evidence src/lib.rs \
     '//! A pure-Rust rewrite of `QuickJS` aiming at semantic feature parity with the' \
@@ -9788,13 +10666,13 @@ expect_full_rewrite_rejected stage3d-translate-post-lowering-remap \
 expect_full_rewrite_rejected stage3d-ordinary-helper-bypass \
     ordinary-leaf-translated-code \
     src/runtime/binary_object/ordinary_leaf.rs \
-    $'    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
-    $'    if matches!(operation, FunctionOp::Throw) {\n        return Ok(OrdinaryLeafOp::Return);\n    }\n    match operation {\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
+    $'    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
+    $'    if matches!(operation, FunctionOp::Throw) {\n        return Ok(OrdinaryLeafOp::Return);\n    }\n    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
 expect_full_rewrite_rejected stage3d-publisher-helper-bypass \
     ordinary-leaf-consumer-lowering \
     src/runtime/binary_object_publish.rs \
-    $'    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
-    $'    if matches!(&operation, OrdinaryLeafOp::Throw) {\n        return Ok(Instruction::Return);\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
+    $'    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
+    $'    if matches!(&operation, OrdinaryLeafOp::Throw) {\n        return Ok(Instruction::Return);\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
 expect_full_rewrite_rejected stage3d-throw-stack-effect-drift \
     stage3d-throw-verifier src/bytecode.rs \
     '            | Self::Throw => (1, 0),' \
@@ -9997,50 +10875,50 @@ expect_full_rewrite_rejected stage3e-status-current-full-jsonl-tampered \
     "$stage3e_tampered_full_jsonl"
 expect_full_rewrite_rejected stage3e-status-receipt-boundary-erased \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-stale-contradiction-appended \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-unauthenticated-contradiction-appended \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\nStage 3E has yet to be authenticated.\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\nStage 3E has yet to be authenticated.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-stage3d-only-contradiction-appended \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\nOnly Stage 3D is authenticated by this receipt.\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\nOnly Stage 3D is authenticated by this receipt.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-not-authenticated-contradiction-appended \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\nStage 3E is not authenticated.\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\nStage 3E is not authenticated.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-receipt-stage3d-only-contradiction-appended \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\nThis receipt only authenticates Stage 3D.\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\nThis receipt only authenticates Stage 3D.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-pending-promotion-contradiction-appended \
     stage3e-status docs/status.md \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\nStage 3E is pending a separate exact-source receipt promotion.\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\nStage 3E is pending a separate exact-source receipt promotion.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-html-comment-wrapper \
     stage3e-status docs/status.md \
     'The latest full R3fj execution' \
     $'<!--\n\nThe latest full R3fj execution' \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\n-->\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\n-->\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-fenced-code-wrapper \
     stage3e-status docs/status.md \
     'The latest full R3fj execution' \
     $'```text\n\nThe latest full R3fj execution' \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\n```\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\n```\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 expect_full_rewrite_rejected stage3e-status-hidden-html-wrapper \
     stage3e-status docs/status.md \
     'The latest full R3fj execution' \
     $'<div hidden>\n\nThe latest full R3fj execution' \
-    $'focused or full metric reported above.\n\nThe same oracle pins' \
-    $'focused or full metric reported above.\n\n</div>\n\nThe same oracle pins'
+    $'focused or full metric reported above.\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.' \
+    $'focused or full metric reported above.\n\n</div>\n\nThat promoted receipt remains the exact Stage-3E lifecycle boundary.'
 stage3e_status_receipt_paragraph=$(
     awk '
         found && /^[[:space:]]*$/ { exit }

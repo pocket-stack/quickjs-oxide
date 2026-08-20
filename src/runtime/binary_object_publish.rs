@@ -306,6 +306,7 @@ fn lower_ordinary_leaf_op(
     next_synthetic_index: &mut u32,
 ) -> Result<Instruction, RuntimeError> {
     let instruction = match operation {
+        OrdinaryLeafOp::Nop => Instruction::Nop,
         OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),
         OrdinaryLeafOp::PushConst(index) => Instruction::PushConst(index),
         OrdinaryLeafOp::PushUndefined => Instruction::Undefined,
@@ -536,6 +537,7 @@ mod tests {
             let mut next_synthetic_index = 7;
             lower_ordinary_leaf_op(operation, &mut next_synthetic_index).unwrap()
         };
+        assert!(matches!(lower(OrdinaryLeafOp::Nop), Instruction::Nop));
         assert!(matches!(
             lower(OrdinaryLeafOp::PushI32(-7)),
             Instruction::PushI32(-7)

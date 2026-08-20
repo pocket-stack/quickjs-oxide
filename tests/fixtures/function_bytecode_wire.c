@@ -161,6 +161,25 @@ static const uint8_t ordinary_throw_error_bytecode[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06,
     0x00, 0x31, 0xf3, 0x00, 0x00, 0x00, 0x00,
 };
+static const uint8_t ordinary_nop_natural_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x29,
+};
+static const uint8_t ordinary_nop_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xb1,
+    0x29,
+};
+_Static_assert(sizeof(ordinary_nop_natural_bytecode) == 40,
+               "ordinary nop natural baseline must remain 40 bytes");
+_Static_assert(sizeof(ordinary_nop_bytecode) == 41,
+               "ordinary nop oracle must remain 41 bytes");
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -5592,9 +5611,6 @@ static int expect_ordinary_throw_completion(JSContext *compile_context) {
          "body,return,catch-original;close-throw-does-not-replace-original");
     puts("ordinary-throw-admitted-count=1");
     puts("ordinary-throw-admitted-raw=48");
-    puts("ordinary-throw-deferred-count=1");
-    puts("ordinary-throw-deferred-raw=177");
-    puts("ordinary-throw-deferred-detail=raw177:nop-specialized-blocked");
     puts("ordinary-throw-oracle=passed");
     status = 0;
 
@@ -6146,10 +6162,6 @@ static int expect_ordinary_throw_error_completion(JSContext *compile_context) {
          "raw49/subtype0-only;subtype1-255:Unadmitted");
     puts("ordinary-exception-admitted-count=2");
     puts("ordinary-exception-admitted-raw=48,49");
-    puts("ordinary-exception-deferred-count=1");
-    puts("ordinary-exception-deferred-raw=177");
-    puts("ordinary-exception-deferred-detail="
-         "raw177:nop-specialized-blocked");
     puts("ordinary-throw-error-oracle=passed");
     status = 0;
 
@@ -6177,6 +6189,266 @@ cleanup:
         JS_FreeValue(defining_context, defining_global);
         JS_FreeValue(defining_context, unicode_function);
         JS_FreeValue(defining_context, unicode_loaded);
+        JS_FreeValue(defining_context, function);
+        JS_FreeValue(defining_context, loaded);
+        JS_FreeContext(defining_context);
+    }
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    if (natural_wire)
+        js_free(compile_context, natural_wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
+static int expect_ordinary_nop_completion(JSContext *compile_context) {
+    static const char natural_source[] =
+        "(function(){'use strict';})";
+    static const OrdinaryFunctionMetadata expected_natural_metadata = {
+        0x0243, 1, { 0, 0, 0, 0, 0, 0, 0, 1, 0 }, 39,
+    };
+    static const OrdinaryFunctionMetadata expected_manual_metadata = {
+        0x0243, 1, { 0, 0, 0, 0, 0, 0, 0, 2, 0 }, 39,
+    };
+    JSValue compiled = JS_UNDEFINED;
+    JSRuntime *runtime = NULL;
+    JSContext *defining_context = NULL;
+    JSContext *caller_context = NULL;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue function = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    uint8_t *natural_wire = NULL;
+    uint8_t *rewritten = NULL;
+    size_t natural_wire_size = 0;
+    size_t rewritten_size = 0;
+    uint8_t manual_wire[sizeof(ordinary_nop_bytecode)];
+    OrdinaryFunctionMetadata natural_child = { 0 };
+    OrdinaryFunctionMetadata manual_child = { 0 };
+    uint8_t natural_raws[256] = { 0 };
+    uint8_t manual_raws[256] = { 0 };
+    uint8_t natural_terminal = 0;
+    uint8_t manual_terminal = 0;
+    size_t natural_raw_count = 0;
+    size_t manual_raw_count = 0;
+    int status = -1;
+
+    compiled = JS_Eval(compile_context, natural_source,
+                       strlen(natural_source), "ordinary-nop-natural",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context,
+                         "ordinary nop natural compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    natural_wire = JS_WriteObject(compile_context, &natural_wire_size,
+                                  compiled, JS_WRITE_OBJ_BYTECODE);
+    if (!natural_wire) {
+        report_exception(compile_context, "ordinary nop natural write failed");
+        goto cleanup;
+    }
+    if (natural_wire_size != sizeof(ordinary_nop_natural_bytecode) ||
+        memcmp(natural_wire, ordinary_nop_natural_bytecode,
+               natural_wire_size) != 0 ||
+        ordinary_fnv1a64(natural_wire, natural_wire_size) !=
+            UINT64_C(0xbb77ba50387051a2) ||
+        natural_wire[1] != 0 ||
+        ordinary_wire_child_metadata(natural_wire, natural_wire_size,
+                                     &natural_child) ||
+        !ordinary_metadata_equal(&natural_child,
+                                 &expected_natural_metadata) ||
+        ordinary_collect_opcodes(natural_wire + natural_child.code_offset,
+                                 natural_child.fields[ORD_CODE],
+                                 natural_raws) ||
+        ordinary_terminal_opcode(natural_wire + natural_child.code_offset,
+                                 natural_child.fields[ORD_CODE],
+                                 &natural_terminal)) {
+        fputs("ordinary nop natural wire/metadata/opcodes drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        natural_raw_count += natural_raws[raw] != 0;
+    if (natural_raw_count != 1 || !natural_raws[41] ||
+        natural_raws[177] || natural_terminal != 41) {
+        fputs("ordinary nop natural opcode provenance drifted\n", stderr);
+        goto cleanup;
+    }
+
+    memcpy(manual_wire, natural_wire, 39);
+    manual_wire[37] = 2;
+    manual_wire[39] = 177;
+    manual_wire[40] = 41;
+    if (memcmp(manual_wire, ordinary_nop_bytecode,
+               sizeof(manual_wire)) != 0 ||
+        ordinary_fnv1a64(manual_wire, sizeof(manual_wire)) !=
+            UINT64_C(0x1c522736e3cbef92) ||
+        manual_wire[1] != 0 ||
+        ordinary_wire_child_metadata(manual_wire, sizeof(manual_wire),
+                                     &manual_child) ||
+        !ordinary_metadata_equal(&manual_child,
+                                 &expected_manual_metadata) ||
+        ordinary_collect_opcodes(manual_wire + manual_child.code_offset,
+                                 manual_child.fields[ORD_CODE],
+                                 manual_raws) ||
+        ordinary_terminal_opcode(manual_wire + manual_child.code_offset,
+                                 manual_child.fields[ORD_CODE],
+                                 &manual_terminal)) {
+        fputs("ordinary nop manual wire/metadata/opcodes drifted\n", stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        manual_raw_count += manual_raws[raw] != 0;
+    if (manual_raw_count != 2 || !manual_raws[41] ||
+        !manual_raws[177] || manual_terminal != 41) {
+        fputs("ordinary nop manual opcode set or terminal drifted\n", stderr);
+        goto cleanup;
+    }
+
+    runtime = JS_NewRuntime();
+    defining_context = runtime ? JS_NewContext(runtime) : NULL;
+    caller_context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!defining_context || !caller_context) {
+        fputs("ordinary nop fresh realm allocation failed\n", stderr);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(defining_context, manual_wire,
+                           sizeof(manual_wire), JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(defining_context, "ordinary nop read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(defining_context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != sizeof(manual_wire) ||
+        memcmp(rewritten, manual_wire, rewritten_size) != 0) {
+        if (!rewritten)
+            report_exception(defining_context,
+                             "ordinary nop rewrite failed");
+        else
+            fputs("ordinary nop rewrite drifted\n", stderr);
+        goto cleanup;
+    }
+    function = JS_EvalFunction(defining_context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(function) ||
+        !JS_IsFunction(defining_context, function) ||
+        JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        report_exception(defining_context,
+                         "ordinary nop root evaluation failed");
+        function = JS_UNDEFINED;
+        goto cleanup;
+    }
+    for (size_t index = 0; index < 4; index++) {
+        JSContext *call_context = index < 2 ? defining_context : caller_context;
+        if (JS_HasException(call_context)) {
+            fputs("ordinary nop had pending exception before call\n", stderr);
+            goto cleanup;
+        }
+        result = JS_Call(call_context, function, JS_UNDEFINED, 0, NULL);
+        if (JS_IsException(result) || !JS_IsUndefined(result) ||
+            JS_HasException(call_context)) {
+            report_exception(call_context, "ordinary nop call failed");
+            result = JS_UNDEFINED;
+            goto cleanup;
+        }
+        JS_FreeValue(call_context, result);
+        result = JS_UNDEFINED;
+    }
+
+    puts("ordinary-nop-evidence="
+         "compiler-natural-raw41-baseline-plus-mechanical-raw177-insertion");
+    puts("ordinary-nop-natural-source-hex="
+         "2866756e6374696f6e28297b2775736520737472696374273b7d29");
+    puts("ordinary-nop-natural-compile-mode="
+         "global-compile-only,strip-debug");
+    printf("ordinary-nop-natural-wire-size=%zu\n", natural_wire_size);
+    printf("ordinary-nop-natural-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(natural_wire, natural_wire_size));
+    puts("ordinary-nop-natural-wire-sha256="
+         "a50422c2b092ab4162505321642241e7d24c43c5617e4b4ef0d076cde44b6f92");
+    fputs("ordinary-nop-natural-wire-hex=", stdout);
+    for (size_t index = 0; index < natural_wire_size; index++)
+        printf("%02x", natural_wire[index]);
+    putchar('\n');
+    printf("ordinary-nop-natural-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           natural_child.flags, natural_child.js_mode,
+           natural_child.fields[ORD_ARGS], natural_child.fields[ORD_VARS],
+           natural_child.fields[ORD_DEFINED_ARGS],
+           natural_child.fields[ORD_STACK],
+           natural_child.fields[ORD_VAR_REFS],
+           natural_child.fields[ORD_CLOSURES],
+           natural_child.fields[ORD_CPOOL],
+           natural_child.fields[ORD_CODE],
+           natural_child.fields[ORD_LOCALS], natural_child.code_offset);
+    puts("ordinary-nop-natural-child-code-hex=29");
+    ordinary_print_raw_set("ordinary-nop-natural-child-raw", natural_raws);
+    puts("ordinary-nop-natural-provenance="
+         "raw41-only;raw177-absent-never-compiler-natural");
+
+    printf("ordinary-nop-wire-size=%zu\n", sizeof(manual_wire));
+    printf("ordinary-nop-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(manual_wire, sizeof(manual_wire)));
+    puts("ordinary-nop-wire-sha256="
+         "26c2e58ec14861dc797a7c3a3701f258ba392b649a15554256b61d7634fccdd0");
+    fputs("ordinary-nop-wire-hex=", stdout);
+    for (size_t index = 0; index < sizeof(manual_wire); index++)
+        printf("%02x", manual_wire[index]);
+    putchar('\n');
+    printf("ordinary-nop-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           manual_child.flags, manual_child.js_mode,
+           manual_child.fields[ORD_ARGS], manual_child.fields[ORD_VARS],
+           manual_child.fields[ORD_DEFINED_ARGS],
+           manual_child.fields[ORD_STACK],
+           manual_child.fields[ORD_VAR_REFS],
+           manual_child.fields[ORD_CLOSURES],
+           manual_child.fields[ORD_CPOOL], manual_child.fields[ORD_CODE],
+           manual_child.fields[ORD_LOCALS], manual_child.code_offset);
+    puts("ordinary-nop-child-code-hex=b129");
+    ordinary_print_raw_set("ordinary-nop-child-raw", manual_raws);
+    puts("ordinary-nop-terminal=raw41,raw177:0->0,raw41:0->0");
+    puts("ordinary-nop-derivation="
+         "natural40:code1->2;insert-raw177-before-natural-raw41");
+    puts("ordinary-nop-property-free="
+         "atoms:0,args:0,vars:0,var_refs:0,closures:0,cpool:0,locals:0,stack:0");
+    puts("ordinary-nop-rewrite=identity,fresh-root:Function");
+    puts("ordinary-nop-call="
+         "defining-realm-twice:undefined;caller-realm-twice:undefined");
+    puts("ordinary-nop-pending=none-before-or-after-repeat-cross-realm");
+    puts("ordinary-nop-only-boundary="
+         "40-byte-raw177-only:Rust-verifier-negative-only;C-never-reads-or-executes");
+    puts("ordinary-nop-admitted-count=1");
+    puts("ordinary-nop-admitted-raw=177");
+    puts("ordinary-nop-oracle=passed");
+    status = 0;
+
+cleanup:
+    if (rewritten && defining_context)
+        js_free(defining_context, rewritten);
+    if (caller_context) {
+        if (JS_HasException(caller_context)) {
+            JSValue pending = JS_GetException(caller_context);
+            JS_FreeValue(caller_context, pending);
+        }
+        JS_FreeContext(caller_context);
+    }
+    if (defining_context) {
+        if (JS_HasException(defining_context)) {
+            JSValue pending = JS_GetException(defining_context);
+            JS_FreeValue(defining_context, pending);
+        }
+        JS_FreeValue(defining_context, result);
         JS_FreeValue(defining_context, function);
         JS_FreeValue(defining_context, loaded);
         JS_FreeContext(defining_context);
@@ -6536,6 +6808,8 @@ int main(void) {
     if (expect_ordinary_throw_completion(compile_context))
         goto cleanup;
     if (expect_ordinary_throw_error_completion(compile_context))
+        goto cleanup;
+    if (expect_ordinary_nop_completion(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",
