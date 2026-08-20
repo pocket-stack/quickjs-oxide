@@ -28,6 +28,7 @@ pub(super) enum StackRecipe {
 pub(super) enum Recipe {
     Nop,
     Object,
+    ToObject,
     PushI32,
     PushConstant,
     PushAtom,
@@ -109,7 +110,7 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 113 Blocked, 1 ScalarOnly, 101 OrdinaryOnly,
+/// Counts are locked by tests: 112 Blocked, 1 ScalarOnly, 102 OrdinaryOnly,
 /// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
@@ -224,7 +225,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(108, Label, Blocked, ControlFlow),
     row!(109, None, Blocked, ControlFlow),
     row!(110, None, Blocked, ControlFlow),
-    row!(111, None, Blocked, ValueConstruction),
+    row!(111, None, OrdinaryOnly, Recipe::ToObject),
     row!(112, None, Blocked, ValueConstruction),
     row!(113, AtomLabelU8, Blocked, DynamicScope),
     row!(114, AtomLabelU8, Blocked, DynamicScope),
@@ -430,11 +431,11 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (113, 1, 101, 29)
+            (112, 1, 102, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 130);
-        assert_eq!(scalar_only + ordinary_only + shared, 131);
+        assert_eq!(ordinary_only + shared, 131);
+        assert_eq!(scalar_only + ordinary_only + shared, 132);
     }
 
     #[test]
@@ -565,6 +566,27 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_to_object_is_the_exact_operand_free_raw111_row() {
+        let row = CAPABILITY_REGISTRY[111];
+        let opcode = PinnedOpcode::from_byte(111).unwrap();
+        assert_eq!(row.raw, 111);
+        assert_eq!(row.expected_format, OpcodeFormat::None);
+        assert_eq!(row.policy, CapabilityPolicy::OrdinaryOnly(Recipe::ToObject));
+        assert_eq!(opcode.n_pop(), 1);
+        assert_eq!(opcode.n_push(), 1);
+        for raw in [8, 112] {
+            assert_eq!(
+                CAPABILITY_REGISTRY[raw].policy,
+                CapabilityPolicy::Blocked(TranslationBlocker::ValueConstruction)
+            );
+        }
+        assert_eq!(
+            CAPABILITY_REGISTRY[47].policy,
+            CapabilityPolicy::Blocked(TranslationBlocker::Completion)
+        );
+    }
+
+    #[test]
     fn blocked_frontier_has_stable_typed_category_counts() {
         let mut counts = [0_usize; 15];
         for row in CAPABILITY_REGISTRY {
@@ -590,8 +612,8 @@ mod tests {
             };
             counts[index] += 1;
         }
-        assert_eq!(counts, [1, 7, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]);
+        assert_eq!(counts, [1, 6, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]);
         assert!(counts.into_iter().all(|count| count != 0));
-        assert_eq!(counts.into_iter().sum::<usize>(), 113);
+        assert_eq!(counts.into_iter().sum::<usize>(), 112);
     }
 }

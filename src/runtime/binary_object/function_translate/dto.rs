@@ -364,6 +364,7 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     OutsideTarget,
     Nop,
     Object,
+    ToObject,
     PushI32(i32),
     PushConstant(u32),
     PushAtom(AtomOperand<'image>),

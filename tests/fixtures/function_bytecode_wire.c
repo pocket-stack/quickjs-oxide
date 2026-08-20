@@ -184,12 +184,33 @@ static const uint8_t ordinary_object_bytecode[] = {
     0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x0b,
     0x28,
 };
+static const uint8_t ordinary_to_object_natural_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x01, 0x00,
+    0x01, 0x02, 0x00, 0x00, 0x00, 0x0d, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0xea, 0x06, 0x11, 0x6f, 0x0e,
+    0xea, 0x04, 0xcf, 0xea, 0xf9, 0x0e, 0xcf, 0x28,
+};
+static const uint8_t ordinary_to_object_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x01, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x00, 0x03, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0xcf, 0x6f, 0x28,
+};
 _Static_assert(sizeof(ordinary_nop_natural_bytecode) == 40,
                "ordinary nop natural baseline must remain 40 bytes");
 _Static_assert(sizeof(ordinary_nop_bytecode) == 41,
                "ordinary nop oracle must remain 41 bytes");
 _Static_assert(sizeof(ordinary_object_bytecode) == 41,
                "ordinary object oracle must remain 41 bytes");
+_Static_assert(sizeof(ordinary_to_object_natural_bytecode) == 56,
+               "ordinary to_object natural oracle must remain 56 bytes");
+_Static_assert(sizeof(ordinary_to_object_bytecode) == 46,
+               "ordinary to_object manual oracle must remain 46 bytes");
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -3610,7 +3631,7 @@ static size_t ordinary_opcode_size(uint8_t raw) {
         return 6;
     case 62: case 105: case 176:
         return 5;
-    case 187: case 189: case 232: case 233:
+    case 187: case 189: case 232: case 233: case 234:
         return 2;
     default:
         return raw < 244 ? 1 : 0;
@@ -6761,6 +6782,565 @@ cleanup:
     return status;
 }
 
+static int expect_ordinary_to_object_completion(JSContext *compile_context) {
+    enum {
+        TO_OBJECT_BOOLEAN,
+        TO_OBJECT_NUMBER,
+        TO_OBJECT_STRING,
+        TO_OBJECT_BIGINT,
+        TO_OBJECT_SYMBOL,
+        TO_OBJECT_TYPE_ERROR,
+        TO_OBJECT_PROTOTYPE_COUNT,
+    };
+    static const char source[] =
+        "(function(a){'use strict';({}=a);return a;})";
+    static const char semantic_source[] =
+        "(function(){"
+        "function ok(value,message){if(!value)throw Error(message);}"
+        "var calls=0,probe={};"
+        "probe.valueOf=function(){calls++;return 1;};"
+        "probe.toString=function(){calls++;return 'probe';};"
+        "probe[Symbol.toPrimitive]=function(){calls++;return 2;};"
+        "ok(__stage3hToObject(probe)===probe&&calls===0,"
+        "'object identity or coercion');"
+        "var caught=0;"
+        "try{__stage3hToObject(null);ok(false,'null returned');}"
+        "catch(error){ok(error.name==='TypeError'&&"
+        "error.message==='cannot convert to object'&&"
+        "Object.getPrototypeOf(error)===__stage3hDefiningTypeError&&"
+        "Object.getPrototypeOf(error)!==TypeError.prototype,"
+        "'null caller catch');caught++;}"
+        "try{__stage3hToObject(void 0);ok(false,'undefined returned');}"
+        "catch(error){ok(error.name==='TypeError'&&"
+        "error.message==='cannot convert to object'&&"
+        "Object.getPrototypeOf(error)===__stage3hDefiningTypeError&&"
+        "Object.getPrototypeOf(error)!==TypeError.prototype,"
+        "'undefined caller catch');caught++;}"
+        "ok(caught===2,'nullish catch count');return 42;})()";
+    static const char *const prototype_names[TO_OBJECT_PROTOTYPE_COUNT] = {
+        "Boolean", "Number", "String", "BigInt", "Symbol", "TypeError",
+    };
+    static const char *const primitive_labels[] = {
+        "Boolean", "integer-Number", "floating-Number",
+        "String", "BigInt", "Symbol",
+    };
+    static const size_t primitive_prototypes[] = {
+        TO_OBJECT_BOOLEAN, TO_OBJECT_NUMBER, TO_OBJECT_NUMBER,
+        TO_OBJECT_STRING, TO_OBJECT_BIGINT, TO_OBJECT_SYMBOL,
+    };
+    static const OrdinaryFunctionMetadata expected_natural_metadata = {
+        0x0243, 1, { 1, 0, 1, 2, 0, 0, 0, 13, 1 }, 43,
+    };
+    static const OrdinaryFunctionMetadata expected_manual_metadata = {
+        0x0243, 1, { 1, 0, 1, 1, 0, 0, 0, 3, 1 }, 43,
+    };
+    JSValue compiled = JS_UNDEFINED;
+    JSRuntime *runtime = NULL;
+    JSContext *defining_context = NULL;
+    JSContext *caller_context = NULL;
+    JSValue defining_global = JS_UNDEFINED;
+    JSValue caller_global = JS_UNDEFINED;
+    JSValue defining_constructor = JS_UNDEFINED;
+    JSValue caller_constructor = JS_UNDEFINED;
+    JSValue defining_prototypes[TO_OBJECT_PROTOTYPE_COUNT] = {
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+    };
+    JSValue caller_prototypes[TO_OBJECT_PROTOTYPE_COUNT] = {
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+    };
+    JSValue primitives[] = {
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+    };
+    JSValue loaded = JS_UNDEFINED;
+    JSValue function = JS_UNDEFINED;
+    JSValue object = JS_UNDEFINED;
+    JSValue object_result = JS_UNDEFINED;
+    JSValue first_wrapper = JS_UNDEFINED;
+    JSValue second_wrapper = JS_UNDEFINED;
+    JSValue prototype = JS_UNDEFINED;
+    JSValue value_of = JS_UNDEFINED;
+    JSValue unboxed = JS_UNDEFINED;
+    JSValue direct_result = JS_UNDEFINED;
+    JSValue direct_exception = JS_UNDEFINED;
+    JSValue direct_prototype = JS_UNDEFINED;
+    JSValue semantic_result = JS_UNDEFINED;
+    uint8_t *natural_wire = NULL;
+    uint8_t *rewritten = NULL;
+    size_t natural_wire_size = 0;
+    size_t rewritten_size = 0;
+    uint8_t manual_wire[sizeof(ordinary_to_object_bytecode)];
+    OrdinaryFunctionMetadata natural_child = { 0 };
+    OrdinaryFunctionMetadata manual_child = { 0 };
+    uint8_t natural_raws[256] = { 0 };
+    uint8_t manual_raws[256] = { 0 };
+    uint8_t natural_terminal = 0;
+    uint8_t manual_terminal = 0;
+    size_t natural_raw_count = 0;
+    size_t manual_raw_count = 0;
+    int status = -1;
+
+    compiled = JS_Eval(compile_context, source, strlen(source),
+                       "ordinary-to-object-natural",
+                       JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(compiled)) {
+        report_exception(compile_context,
+                         "ordinary to_object natural compile failed");
+        compiled = JS_UNDEFINED;
+        goto cleanup;
+    }
+    natural_wire = JS_WriteObject(compile_context, &natural_wire_size,
+                                  compiled, JS_WRITE_OBJ_BYTECODE);
+    if (!natural_wire) {
+        report_exception(compile_context,
+                         "ordinary to_object natural write failed");
+        goto cleanup;
+    }
+    if (natural_wire_size != sizeof(ordinary_to_object_natural_bytecode) ||
+        memcmp(natural_wire, ordinary_to_object_natural_bytecode,
+               natural_wire_size) != 0 ||
+        ordinary_fnv1a64(natural_wire, natural_wire_size) !=
+            UINT64_C(0x65a8b3d0d7ed115a) ||
+        natural_wire[1] != 0 ||
+        ordinary_wire_child_metadata(natural_wire, natural_wire_size,
+                                     &natural_child) ||
+        !ordinary_metadata_equal(&natural_child,
+                                 &expected_natural_metadata) ||
+        ordinary_collect_opcodes(natural_wire + natural_child.code_offset,
+                                 natural_child.fields[ORD_CODE],
+                                 natural_raws) ||
+        ordinary_terminal_opcode(natural_wire + natural_child.code_offset,
+                                 natural_child.fields[ORD_CODE],
+                                 &natural_terminal)) {
+        fputs("ordinary to_object natural wire/metadata/opcodes drifted\n",
+              stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        natural_raw_count += natural_raws[raw] != 0;
+    if (natural_raw_count != 6 || !natural_raws[14] ||
+        !natural_raws[17] || !natural_raws[40] ||
+        !natural_raws[111] || !natural_raws[207] ||
+        !natural_raws[234] || natural_terminal != 40) {
+        fputs("ordinary to_object natural opcode provenance drifted\n",
+              stderr);
+        goto cleanup;
+    }
+
+    memcpy(manual_wire, natural_wire, 43);
+    manual_wire[33] = 1;
+    manual_wire[37] = 3;
+    manual_wire[43] = 207;
+    manual_wire[44] = 111;
+    manual_wire[45] = 40;
+    if (memcmp(manual_wire, ordinary_to_object_bytecode,
+               sizeof(manual_wire)) != 0 ||
+        ordinary_fnv1a64(manual_wire, sizeof(manual_wire)) !=
+            UINT64_C(0xc84f87720cd09b16) ||
+        manual_wire[1] != 0 ||
+        ordinary_wire_child_metadata(manual_wire, sizeof(manual_wire),
+                                     &manual_child) ||
+        !ordinary_metadata_equal(&manual_child,
+                                 &expected_manual_metadata) ||
+        ordinary_collect_opcodes(manual_wire + manual_child.code_offset,
+                                 manual_child.fields[ORD_CODE],
+                                 manual_raws) ||
+        ordinary_terminal_opcode(manual_wire + manual_child.code_offset,
+                                 manual_child.fields[ORD_CODE],
+                                 &manual_terminal)) {
+        fputs("ordinary to_object manual wire/metadata/opcodes drifted\n",
+              stderr);
+        goto cleanup;
+    }
+    for (unsigned raw = 0; raw < 256; raw++)
+        manual_raw_count += manual_raws[raw] != 0;
+    if (manual_raw_count != 3 || !manual_raws[40] ||
+        !manual_raws[111] || !manual_raws[207] ||
+        manual_terminal != 40) {
+        fputs("ordinary to_object manual opcode set or terminal drifted\n",
+              stderr);
+        goto cleanup;
+    }
+
+    runtime = JS_NewRuntime();
+    defining_context = runtime ? JS_NewContext(runtime) : NULL;
+    caller_context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!defining_context || !caller_context) {
+        fputs("ordinary to_object fresh realm allocation failed\n", stderr);
+        goto cleanup;
+    }
+    loaded = JS_ReadObject(defining_context, manual_wire,
+                           sizeof(manual_wire), JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(loaded)) {
+        report_exception(defining_context,
+                         "ordinary to_object read failed");
+        loaded = JS_UNDEFINED;
+        goto cleanup;
+    }
+    rewritten = JS_WriteObject(defining_context, &rewritten_size, loaded,
+                               JS_WRITE_OBJ_BYTECODE);
+    if (!rewritten || rewritten_size != sizeof(manual_wire) ||
+        memcmp(rewritten, manual_wire, rewritten_size) != 0) {
+        if (!rewritten)
+            report_exception(defining_context,
+                             "ordinary to_object rewrite failed");
+        else
+            fputs("ordinary to_object rewrite drifted\n", stderr);
+        goto cleanup;
+    }
+    function = JS_EvalFunction(defining_context, loaded);
+    loaded = JS_UNDEFINED;
+    if (JS_IsException(function) ||
+        !JS_IsFunction(defining_context, function)) {
+        report_exception(defining_context,
+                         "ordinary to_object root evaluation failed");
+        function = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    defining_global = JS_GetGlobalObject(defining_context);
+    caller_global = JS_GetGlobalObject(caller_context);
+    if (JS_IsException(defining_global) || JS_IsException(caller_global)) {
+        report_exception(JS_HasException(defining_context)
+                             ? defining_context : caller_context,
+                         "ordinary to_object global setup failed");
+        goto cleanup;
+    }
+    for (size_t index = 0; index < TO_OBJECT_PROTOTYPE_COUNT; index++) {
+        defining_constructor = JS_GetPropertyStr(
+            defining_context, defining_global, prototype_names[index]);
+        caller_constructor = JS_GetPropertyStr(
+            caller_context, caller_global, prototype_names[index]);
+        if (JS_IsException(defining_constructor) ||
+            JS_IsException(caller_constructor)) {
+            report_exception(JS_HasException(defining_context)
+                                 ? defining_context : caller_context,
+                             "ordinary to_object constructor setup failed");
+            goto cleanup;
+        }
+        defining_prototypes[index] = JS_GetPropertyStr(
+            defining_context, defining_constructor, "prototype");
+        caller_prototypes[index] = JS_GetPropertyStr(
+            caller_context, caller_constructor, "prototype");
+        JS_FreeValue(defining_context, defining_constructor);
+        defining_constructor = JS_UNDEFINED;
+        JS_FreeValue(caller_context, caller_constructor);
+        caller_constructor = JS_UNDEFINED;
+        if (JS_IsException(defining_prototypes[index]) ||
+            JS_IsException(caller_prototypes[index]) ||
+            !JS_IsObject(defining_prototypes[index]) ||
+            !JS_IsObject(caller_prototypes[index]) ||
+            JS_StrictEq(caller_context, defining_prototypes[index],
+                        caller_prototypes[index]) != 0) {
+            report_exception(JS_HasException(defining_context)
+                                 ? defining_context : caller_context,
+                             "ordinary to_object prototype setup failed");
+            goto cleanup;
+        }
+    }
+
+    object = JS_NewObject(caller_context);
+    if (JS_IsException(object)) {
+        report_exception(caller_context,
+                         "ordinary to_object object allocation failed");
+        goto cleanup;
+    }
+    object_result = JS_Call(caller_context, function, JS_UNDEFINED,
+                            1, &object);
+    if (JS_IsException(object_result) || !JS_IsObject(object_result) ||
+        JS_StrictEq(caller_context, object_result, object) != 1 ||
+        JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        report_exception(caller_context,
+                         "ordinary to_object object identity failed");
+        goto cleanup;
+    }
+
+    primitives[0] = JS_NewBool(caller_context, 1);
+    primitives[1] = JS_NewInt32(caller_context, 7);
+    primitives[2] = JS_NewFloat64(caller_context, 1.5);
+    primitives[3] = JS_NewString(caller_context, "raw111");
+    primitives[4] = JS_NewBigInt64(caller_context, 111);
+    primitives[5] = JS_Eval(caller_context, "Symbol('raw111')",
+                            strlen("Symbol('raw111')"),
+                            "ordinary-to-object-symbol.js",
+                            JS_EVAL_TYPE_GLOBAL);
+    for (size_t index = 0;
+         index < sizeof(primitives) / sizeof(primitives[0]); index++) {
+        size_t prototype_index = primitive_prototypes[index];
+
+        if (JS_IsException(primitives[index])) {
+            report_exception(caller_context,
+                             "ordinary to_object primitive setup failed");
+            goto cleanup;
+        }
+        first_wrapper = JS_Call(caller_context, function, JS_UNDEFINED,
+                                1, &primitives[index]);
+        second_wrapper = JS_Call(caller_context, function, JS_UNDEFINED,
+                                 1, &primitives[index]);
+        if (JS_IsException(first_wrapper) ||
+            JS_IsException(second_wrapper) ||
+            !JS_IsObject(first_wrapper) ||
+            !JS_IsObject(second_wrapper) ||
+            JS_StrictEq(caller_context, first_wrapper,
+                        second_wrapper) != 0) {
+            fprintf(stderr, "ordinary to_object %s boxing failed\n",
+                    primitive_labels[index]);
+            goto cleanup;
+        }
+        prototype = JS_GetPrototype(caller_context, first_wrapper);
+        if (JS_IsException(prototype) ||
+            JS_StrictEq(caller_context, prototype,
+                        defining_prototypes[prototype_index]) != 1 ||
+            JS_StrictEq(caller_context, prototype,
+                        caller_prototypes[prototype_index]) != 0) {
+            fprintf(stderr,
+                    "ordinary to_object %s prototype drifted\n",
+                    primitive_labels[index]);
+            goto cleanup;
+        }
+        value_of = JS_GetPropertyStr(
+            caller_context, defining_prototypes[prototype_index],
+            "valueOf");
+        unboxed = JS_Call(caller_context, value_of, first_wrapper,
+                          0, NULL);
+        if (JS_IsException(value_of) || JS_IsException(unboxed) ||
+            JS_StrictEq(caller_context, unboxed, primitives[index]) != 1) {
+            fprintf(stderr,
+                    "ordinary to_object %s payload drifted\n",
+                    primitive_labels[index]);
+            goto cleanup;
+        }
+        JS_FreeValue(caller_context, unboxed);
+        unboxed = JS_UNDEFINED;
+        JS_FreeValue(caller_context, value_of);
+        value_of = JS_UNDEFINED;
+        JS_FreeValue(caller_context, prototype);
+        prototype = JS_UNDEFINED;
+        JS_FreeValue(caller_context, second_wrapper);
+        second_wrapper = JS_UNDEFINED;
+        JS_FreeValue(caller_context, first_wrapper);
+        first_wrapper = JS_UNDEFINED;
+    }
+    if (JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        fputs("ordinary to_object primitive calls left an exception\n",
+              stderr);
+        goto cleanup;
+    }
+
+    for (size_t index = 0; index < 2; index++) {
+        JSValue nullish = index == 0 ? JS_NULL : JS_UNDEFINED;
+
+        direct_result = JS_Call(caller_context, function, JS_UNDEFINED,
+                                1, &nullish);
+        if (!JS_IsException(direct_result) ||
+            !JS_HasException(caller_context)) {
+            fputs("ordinary to_object nullish call did not throw\n",
+                  stderr);
+            goto cleanup;
+        }
+        direct_exception = JS_GetException(caller_context);
+        if (JS_HasException(caller_context) ||
+            expect_exception_fields(caller_context,
+                                    index == 0 ? "to_object null"
+                                               : "to_object undefined",
+                                    direct_exception, "TypeError",
+                                    "cannot convert to object"))
+            goto cleanup;
+        direct_prototype = JS_GetPrototype(caller_context,
+                                           direct_exception);
+        if (JS_IsException(direct_prototype) ||
+            JS_StrictEq(caller_context, direct_prototype,
+                        defining_prototypes[TO_OBJECT_TYPE_ERROR]) != 1 ||
+            JS_StrictEq(caller_context, direct_prototype,
+                        caller_prototypes[TO_OBJECT_TYPE_ERROR]) != 0 ||
+            JS_HasException(caller_context)) {
+            fputs("ordinary to_object nullish error realm drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+        JS_FreeValue(caller_context, direct_prototype);
+        direct_prototype = JS_UNDEFINED;
+        JS_FreeValue(caller_context, direct_exception);
+        direct_exception = JS_UNDEFINED;
+        JS_FreeValue(caller_context, direct_result);
+        direct_result = JS_UNDEFINED;
+    }
+
+    if (JS_SetPropertyStr(caller_context, caller_global,
+                          "__stage3hToObject",
+                          JS_DupValue(caller_context, function)) < 0 ||
+        JS_SetPropertyStr(
+            caller_context, caller_global,
+            "__stage3hDefiningTypeError",
+            JS_DupValue(caller_context,
+                        defining_prototypes[TO_OBJECT_TYPE_ERROR])) < 0) {
+        report_exception(caller_context,
+                         "ordinary to_object caller publication failed");
+        goto cleanup;
+    }
+    semantic_result = JS_Eval(caller_context, semantic_source,
+                              strlen(semantic_source),
+                              "ordinary-to-object-semantic.js",
+                              JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(semantic_result) ||
+        JS_HasException(caller_context) ||
+        JS_VALUE_GET_TAG(semantic_result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(semantic_result) != 42) {
+        report_exception(caller_context,
+                         "ordinary to_object semantic oracle failed");
+        semantic_result = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    puts("ordinary-to-object-evidence="
+         "compiler-natural-provenance-plus-mechanically-derived-property-free-wire");
+    puts("ordinary-to-object-natural-source-hex="
+         "2866756e6374696f6e2861297b2775736520737472696374273b287b7d3d61293b72657475726e20613b7d29");
+    puts("ordinary-to-object-natural-compile-mode="
+         "global-compile-only,strip-debug");
+    printf("ordinary-to-object-natural-wire-size=%zu\n",
+           natural_wire_size);
+    printf("ordinary-to-object-natural-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(natural_wire, natural_wire_size));
+    puts("ordinary-to-object-natural-wire-sha256="
+         "f5bdac14901bb6b752e2ca10a01dd31d6990456c43f78d5923b1da4a0ef3706e");
+    fputs("ordinary-to-object-natural-wire-hex=", stdout);
+    for (size_t index = 0; index < natural_wire_size; index++)
+        printf("%02x", natural_wire[index]);
+    putchar('\n');
+    printf("ordinary-to-object-natural-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           natural_child.flags, natural_child.js_mode,
+           natural_child.fields[ORD_ARGS], natural_child.fields[ORD_VARS],
+           natural_child.fields[ORD_DEFINED_ARGS],
+           natural_child.fields[ORD_STACK],
+           natural_child.fields[ORD_VAR_REFS],
+           natural_child.fields[ORD_CLOSURES],
+           natural_child.fields[ORD_CPOOL],
+           natural_child.fields[ORD_CODE],
+           natural_child.fields[ORD_LOCALS], natural_child.code_offset);
+    puts("ordinary-to-object-natural-child-code-hex="
+         "ea06116f0eea04cfeaf90ecf28");
+    ordinary_print_raw_set("ordinary-to-object-natural-child-raw",
+                           natural_raws);
+    puts("ordinary-to-object-natural-terminal="
+         "raw40;raw111:1->1,raw40:1->0");
+    puts("ordinary-to-object-natural-provenance="
+         "compiler-emitted-empty-object-destructuring;returns-original-argument");
+
+    printf("ordinary-to-object-wire-size=%zu\n", sizeof(manual_wire));
+    printf("ordinary-to-object-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(manual_wire, sizeof(manual_wire)));
+    puts("ordinary-to-object-wire-sha256="
+         "13f81e66520578393a57f3290636d4778c5cae8d014591e5daaaacdd3ffd5c95");
+    fputs("ordinary-to-object-wire-hex=", stdout);
+    for (size_t index = 0; index < sizeof(manual_wire); index++)
+        printf("%02x", manual_wire[index]);
+    putchar('\n');
+    printf("ordinary-to-object-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32 ",vars:%" PRIu32
+           ",defined_args:%" PRIu32 ",stack:%" PRIu32
+           ",var_refs:%" PRIu32 ",closures:%" PRIu32
+           ",cpool:%" PRIu32 ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           manual_child.flags, manual_child.js_mode,
+           manual_child.fields[ORD_ARGS], manual_child.fields[ORD_VARS],
+           manual_child.fields[ORD_DEFINED_ARGS],
+           manual_child.fields[ORD_STACK],
+           manual_child.fields[ORD_VAR_REFS],
+           manual_child.fields[ORD_CLOSURES],
+           manual_child.fields[ORD_CPOOL],
+           manual_child.fields[ORD_CODE],
+           manual_child.fields[ORD_LOCALS], manual_child.code_offset);
+    puts("ordinary-to-object-child-code-hex=cf6f28");
+    ordinary_print_raw_set("ordinary-to-object-child-raw", manual_raws);
+    puts("ordinary-to-object-terminal="
+         "raw40;raw111:1->1,raw40:1->0");
+    puts("ordinary-to-object-derivation="
+         "natural56:stack2->1,code13->3;replace-control-flow-dup-drop-with-cf6f28");
+    puts("ordinary-to-object-property-free="
+         "atoms:0,args:1,vars:0,var_refs:0,closures:0,cpool:0,locals:1,stack:1");
+    puts("ordinary-to-object-rewrite=identity,fresh-root:Function");
+    puts("ordinary-to-object-object="
+         "caller-realm-input:original-identity;no-wrapper");
+    puts("ordinary-to-object-primitives="
+         "Boolean,integer-Number,floating-Number,String,BigInt,Symbol");
+    puts("ordinary-to-object-wrappers="
+         "each-call:fresh;payload:valueOf-original");
+    puts("ordinary-to-object-prototype="
+         "all:defining-realm-intrinsic;caller-realm:false");
+    puts("ordinary-to-object-user-coercion="
+         "valueOf,toString,Symbol.toPrimitive:0-calls");
+    puts("ordinary-to-object-nullish="
+         "null,undefined:TypeError:cannot-convert-to-object");
+    puts("ordinary-to-object-pending="
+         "direct-call-publishes;GetException-clears;caller-catch-clears");
+    puts("ordinary-to-object-caller-catch="
+         "null,undefined:defining-TypeError:true;caller-TypeError:false;result:42");
+    puts("ordinary-to-object-admitted-count=1");
+    puts("ordinary-to-object-admitted-raw=111");
+    puts("ordinary-to-object-oracle=passed");
+    status = 0;
+
+cleanup:
+    if (rewritten && defining_context)
+        js_free(defining_context, rewritten);
+    if (caller_context) {
+        if (JS_HasException(caller_context)) {
+            JSValue pending = JS_GetException(caller_context);
+            JS_FreeValue(caller_context, pending);
+        }
+        JS_FreeValue(caller_context, semantic_result);
+        JS_FreeValue(caller_context, direct_prototype);
+        JS_FreeValue(caller_context, direct_exception);
+        JS_FreeValue(caller_context, direct_result);
+        JS_FreeValue(caller_context, unboxed);
+        JS_FreeValue(caller_context, value_of);
+        JS_FreeValue(caller_context, prototype);
+        JS_FreeValue(caller_context, second_wrapper);
+        JS_FreeValue(caller_context, first_wrapper);
+        JS_FreeValue(caller_context, object_result);
+        JS_FreeValue(caller_context, object);
+        for (size_t index = 0;
+             index < sizeof(primitives) / sizeof(primitives[0]); index++)
+            JS_FreeValue(caller_context, primitives[index]);
+        JS_FreeValue(caller_context, caller_constructor);
+        for (size_t index = 0; index < TO_OBJECT_PROTOTYPE_COUNT; index++)
+            JS_FreeValue(caller_context, caller_prototypes[index]);
+        JS_FreeValue(caller_context, caller_global);
+    }
+    if (defining_context) {
+        if (JS_HasException(defining_context)) {
+            JSValue pending = JS_GetException(defining_context);
+            JS_FreeValue(defining_context, pending);
+        }
+        JS_FreeValue(defining_context, defining_constructor);
+        for (size_t index = 0; index < TO_OBJECT_PROTOTYPE_COUNT; index++)
+            JS_FreeValue(defining_context, defining_prototypes[index]);
+        JS_FreeValue(defining_context, defining_global);
+        JS_FreeValue(defining_context, function);
+        JS_FreeValue(defining_context, loaded);
+    }
+    if (caller_context)
+        JS_FreeContext(caller_context);
+    if (defining_context)
+        JS_FreeContext(defining_context);
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    if (natural_wire)
+        js_free(compile_context, natural_wire);
+    JS_FreeValue(compile_context, compiled);
+    return status;
+}
+
 static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
     static const char unary_binary_sequence[] =
         "-6,6,7,6,-7,false,number,18,0,216,48,0,0,"
@@ -7112,6 +7692,8 @@ int main(void) {
     if (expect_ordinary_nop_completion(compile_context))
         goto cleanup;
     if (expect_ordinary_object_completion(compile_context))
+        goto cleanup;
+    if (expect_ordinary_to_object_completion(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",

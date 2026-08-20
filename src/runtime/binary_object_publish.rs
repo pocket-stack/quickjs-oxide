@@ -308,6 +308,7 @@ fn lower_ordinary_leaf_op(
     let instruction = match operation {
         OrdinaryLeafOp::Nop => Instruction::Nop,
         OrdinaryLeafOp::Object => Instruction::Object,
+        OrdinaryLeafOp::ToObject => Instruction::ToObject,
         OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),
         OrdinaryLeafOp::PushConst(index) => Instruction::PushConst(index),
         OrdinaryLeafOp::PushUndefined => Instruction::Undefined,
@@ -541,6 +542,10 @@ mod tests {
         assert!(matches!(lower(OrdinaryLeafOp::Nop), Instruction::Nop));
         assert!(matches!(lower(OrdinaryLeafOp::Object), Instruction::Object));
         assert!(matches!(
+            lower(OrdinaryLeafOp::ToObject),
+            Instruction::ToObject
+        ));
+        assert!(matches!(
             lower(OrdinaryLeafOp::PushI32(-7)),
             Instruction::PushI32(-7)
         ));
@@ -616,6 +621,16 @@ mod tests {
         ));
         assert!(matches!(lower(OrdinaryLeafOp::Return), Instruction::Return));
         assert!(matches!(lower(OrdinaryLeafOp::Throw), Instruction::Throw));
+    }
+
+    #[test]
+    fn ordinary_to_object_publishes_one_for_one_without_a_synthetic_constant() {
+        let mut next_synthetic_index = 7;
+        assert!(matches!(
+            lower_ordinary_leaf_op(OrdinaryLeafOp::ToObject, &mut next_synthetic_index),
+            Ok(Instruction::ToObject)
+        ));
+        assert_eq!(next_synthetic_index, 7);
     }
 
     #[test]
