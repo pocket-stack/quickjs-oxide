@@ -18,6 +18,7 @@ on:
           - fast
           - quickjs-differential
           - test262-full
+          - test262-receipt
 
 permissions:
   contents: read
@@ -34,7 +35,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.tier == 'fast')
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 300
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -215,7 +216,8 @@ jobs:
   test262-full:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '47 18 * * *') ||
-      (github.event_name == 'workflow_dispatch' && inputs.tier == 'test262-full')
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.tier == 'test262-full' || inputs.tier == 'test262-receipt'))
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
@@ -252,12 +254,268 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-test262-${{ env.RUST_VERSION }}-
 
+      - name: Check the Test262 receipt boundary
+        run: ./scripts/check-binary-object-boundary.sh --scan-only .
+
       - name: Run the complete frozen Test262 vector
+        env:
+          TEST262_RECEIPT_CAPTURE: >-
+            ${{ github.event_name == 'workflow_dispatch' &&
+                inputs.tier == 'test262-receipt' }}
         run: |
           set -o pipefail
+          set +e
           mkdir -p target
           ./scripts/test-test262.sh --spec dev-support/test262/current.conf --full \
             2>&1 | tee target/test262-full.log
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+
+          test262_status=${pipeline_status[0]}
+          tee_status=${pipeline_status[1]}
+          if (( tee_status != 0 )); then
+            exit "$tee_status"
+          fi
+          if (( test262_status == 0 )); then
+            exit 0
+          fi
+          if [[ "$TEST262_RECEIPT_CAPTURE" != true ]] || (( test262_status != 1 )); then
+            exit "$test262_status"
+          fi
+
+          expected_error="error: full TSV receipt checksum drifted: $PWD/target/test262-full.tsv"
+          error_count=$(grep -c '^error:' target/test262-full.log || true)
+          expected_error_count=$(grep -Fxc "$expected_error" target/test262-full.log || true)
+          if [[ "$error_count" != 1 || "$expected_error_count" != 1 ]]; then
+            exit "$test262_status"
+          fi
+
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { createHash } from "node:crypto";
+          import { lstatSync, readFileSync, realpathSync } from "node:fs";
+          import { isAbsolute, relative, resolve, sep } from "node:path";
+
+          function fail(message) {
+            throw new Error(`receipt capture rejected: ${message}`);
+          }
+
+          function sha256(bytes) {
+            return createHash("sha256").update(bytes).digest("hex");
+          }
+
+          function lineCount(bytes, label) {
+            if (bytes.length === 0 || bytes.at(-1) !== 0x0a) {
+              fail(`${label} lacks a final newline`);
+            }
+            let count = 0;
+            for (const byte of bytes) if (byte === 0x0a) count += 1;
+            return count;
+          }
+
+          function utf8(bytes, label) {
+            const text = bytes.toString("utf8");
+            if (!Buffer.from(text, "utf8").equals(bytes)) {
+              fail(`${label} is not canonical UTF-8`);
+            }
+            return text;
+          }
+
+          function regular(path, label) {
+            const stat = lstatSync(path, { throwIfNoEntry: false });
+            if (
+              stat === undefined || !stat.isFile() || stat.isSymbolicLink() ||
+              stat.nlink !== 1
+            ) {
+              fail(`${label} is not a single-link regular file`);
+            }
+            if (realpathSync(path) !== path) fail(`${label} path is not canonical`);
+            return readFileSync(path);
+          }
+
+          function parseSpec(bytes) {
+            const text = utf8(bytes, "current.conf");
+            lineCount(bytes, "current.conf");
+            const values = new Map();
+            for (const line of text.slice(0, -1).split("\n")) {
+              if (line === "" || line.startsWith("#")) continue;
+              const match = /^([a-z][a-z0-9_]*)=(.*)$/.exec(line);
+              if (match === null) {
+                fail(`malformed current.conf line: ${JSON.stringify(line)}`);
+              }
+              if (values.has(match[1])) fail(`duplicate current.conf key: ${match[1]}`);
+              values.set(match[1], match[2]);
+            }
+            return values;
+          }
+
+          function required(spec, key) {
+            const value = spec.get(key);
+            if (value === undefined || value === "") {
+              fail(`missing current.conf key: ${key}`);
+            }
+            return value;
+          }
+
+          function countOccurrences(text, needle) {
+            let count = 0;
+            let offset = 0;
+            while ((offset = text.indexOf(needle, offset)) !== -1) {
+              count += 1;
+              offset += needle.length;
+            }
+            return count;
+          }
+
+          function repositoryPath(root, path, label) {
+            if (
+              path === "" || isAbsolute(path) || path.includes("\\") ||
+              path.split("/").some((part) => part === "" || part === "." || part === "..")
+            ) {
+              fail(`unsafe ${label} path`);
+            }
+            const absolute = resolve(root, ...path.split("/"));
+            const inside = relative(root, absolute);
+            if (
+              inside === "" || inside === ".." || inside.startsWith(`..${sep}`) ||
+              isAbsolute(inside)
+            ) {
+              fail(`${label} escaped repository root`);
+            }
+            return absolute;
+          }
+
+          const root = realpathSync(process.env.GITHUB_WORKSPACE);
+          const specPath = resolve(root, "dev-support/test262/current.conf");
+          const tsvPath = resolve(root, "target/test262-full.tsv");
+          const jsonPath = resolve(root, "target/test262-full.jsonl");
+          const spec = parseSpec(regular(specPath, "current.conf"));
+          const shaPattern = /^[0-9a-f]{64}$/;
+          const countPattern = /^[1-9][0-9]*$/;
+          const baseline = required(spec, "engine_semantics_sha256");
+          const expectedTsvHash = required(spec, "full_tsv_sha256");
+          const expectedJsonHash = required(spec, "full_jsonl_sha256");
+          const expectedTsvLines = required(spec, "full_tsv_lines");
+          const expectedJsonLines = required(spec, "full_jsonl_lines");
+          const expectedToolHash = required(spec, "engine_fingerprint_tool_sha256");
+          const expectedToolLines = required(spec, "engine_fingerprint_tool_lines");
+          for (const [label, value] of [
+            ["engine semantics", baseline],
+            ["full TSV", expectedTsvHash],
+            ["full JSONL", expectedJsonHash],
+            ["fingerprint tool", expectedToolHash],
+          ]) {
+            if (!shaPattern.test(value)) fail(`invalid ${label} SHA-256`);
+          }
+          for (const [label, value] of [
+            ["full TSV", expectedTsvLines],
+            ["full JSONL", expectedJsonLines],
+            ["fingerprint tool", expectedToolLines],
+          ]) {
+            if (!countPattern.test(value)) fail(`invalid ${label} line count`);
+          }
+
+          const toolPath = repositoryPath(
+            root,
+            required(spec, "engine_fingerprint_tool"),
+            "fingerprint tool",
+          );
+          const toolBytes = regular(toolPath, "fingerprint tool");
+          if (sha256(toolBytes) !== expectedToolHash) {
+            fail("fingerprint tool checksum drifted");
+          }
+          if (lineCount(toolBytes, "fingerprint tool") !== Number(expectedToolLines)) {
+            fail("fingerprint tool line count drifted");
+          }
+          const fingerprintOutput = execFileSync(process.execPath, [
+            toolPath,
+            "--root", root,
+            "--worktree",
+            "--files", required(spec, "engine_semantics_files"),
+            "--trees", required(spec, "engine_semantics_trees"),
+          ], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "inherit"],
+          });
+          if (!/^[0-9a-f]{64}\n$/.test(fingerprintOutput)) {
+            fail("fingerprint tool output drifted");
+          }
+          const current = fingerprintOutput.trim();
+          if (current === baseline) {
+            fail("receipt capture requires a source-stale baseline");
+          }
+
+          const tsvBytes = regular(tsvPath, "full TSV receipt");
+          const jsonBytes = regular(jsonPath, "full JSONL receipt");
+          if (
+            lineCount(tsvBytes, "full TSV receipt") !== Number(expectedTsvLines) ||
+            lineCount(jsonBytes, "full JSONL receipt") !== Number(expectedJsonLines)
+          ) {
+            fail("full receipt line count drifted");
+          }
+          const tsv = utf8(tsvBytes, "full TSV receipt");
+          const json = utf8(jsonBytes, "full JSONL receipt");
+          const tsvCurrent =
+            `# quickjs-oxide Test262 outcome vector v5 ` +
+            `engine_semantics_sha256=${current}\n`;
+          const tsvBaseline =
+            `# quickjs-oxide Test262 outcome vector v5 ` +
+            `engine_semantics_sha256=${baseline}\n`;
+          if (
+            !tsv.startsWith(tsvCurrent) || countOccurrences(tsv, current) !== 1 ||
+            countOccurrences(tsv, baseline) !== 0
+          ) {
+            fail("full TSV fingerprint placement drifted");
+          }
+          const normalizedTsv = Buffer.from(
+            tsvBaseline + tsv.slice(tsvCurrent.length),
+            "utf8",
+          );
+          if (
+            sha256(tsvBytes) === expectedTsvHash ||
+            sha256(normalizedTsv) !== expectedTsvHash
+          ) {
+            fail("full TSV differs by more than its engine fingerprint");
+          }
+
+          const firstNewline = json.indexOf("\n");
+          if (firstNewline === -1) fail("full JSONL metadata line is missing");
+          let metadata;
+          try {
+            metadata = JSON.parse(json.slice(0, firstNewline));
+          } catch {
+            fail("full JSONL metadata is invalid JSON");
+          }
+          if (
+            metadata.kind !== "metadata" ||
+            metadata.engine_semantics_sha256 !== current
+          ) {
+            fail("full JSONL metadata fingerprint drifted");
+          }
+          const jsonCurrent = `\"engine_semantics_sha256\":\"${current}\"`;
+          const jsonBaseline = `\"engine_semantics_sha256\":\"${baseline}\"`;
+          if (
+            !json.slice(0, firstNewline).includes(jsonCurrent) ||
+            countOccurrences(json, current) !== 1 || countOccurrences(json, baseline) !== 0
+          ) {
+            fail("full JSONL fingerprint placement drifted");
+          }
+          const normalizedJson = Buffer.from(
+            json.replace(jsonCurrent, jsonBaseline),
+            "utf8",
+          );
+          if (
+            sha256(jsonBytes) === expectedJsonHash ||
+            sha256(normalizedJson) !== expectedJsonHash
+          ) {
+            fail("full JSONL differs by more than its engine fingerprint");
+          }
+
+          console.log(
+            "Current-source Test262 receipts differ only by engine fingerprint: " +
+              `${baseline} -> ${current}`,
+          );
+          NODE
 
       - name: Upload complete Test262 receipts
         if: always()
