@@ -8220,12 +8220,6 @@ if not (root / ".boundary-self-test").is_file():
             "`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.",
             "248a04f3f3d3f4570ab061ca789709c26f87b4498815aa4f91fc2c2e421d6d08",
         ),
-        (
-            "the status document must retain the exact Stage3H source-current receipt, inherited Stage3G/Stage3F coverage, and no-new-conformance lifecycle boundary",
-            "This promoted receipt is source-current for Stage 3H",
-            "raw-177 coverage, and makes no new conformance claim.",
-            "7c66caf9046e1015243c37d0655b4b581d45af999523431ea9e00a9059aa48fa",
-        ),
     )
 
     stage3i_status_corridors = (
@@ -8254,10 +8248,10 @@ if not (root / ".boundary-self-test").is_file():
             "437860358c239012ed4ce59a2f6322650e6b77174db0089a004359f8200ad623",
         ),
         (
-            "the status document must retain the exact Stage3I source-ahead, Stage3H receipt noncoverage, separate-promotion, unchanged-metrics, and no-new-conformance lifecycle boundary",
-            "Stage 3I is source-ahead of that promoted receipt",
-            "no Test262 profile, focused or full metric, or conformance claim.",
-            "0f2ca4f6447d0208705c138480d1777d2a0676a5727b4cb887ed46da4d7cbbf2",
+            "the status document must retain the exact Stage3I source-current receipt, inherited Stage3H/Stage3G/Stage3F coverage, and no-new-conformance lifecycle boundary",
+            "This promoted receipt is source-current for Stage 3I",
+            "raw-177 coverage, and makes no new conformance claim.",
+            "83659ec1f3f12a5db78ca0595f43b2da887bef0d0200cdab16c7523998e67e6a",
         ),
     )
 
@@ -8466,7 +8460,7 @@ if not (root / ".boundary-self-test").is_file():
     stage3f_inline_stage_label_emphasis = re.compile(
         r"(?P<prefix>\bStage[- ]*3)"
         r"(?P<delimiter>\*{1,3}|_{1,3})"
-        r"(?P<label>[HI])(?P=delimiter)(?![\w*_])",
+        r"(?P<label>[HIJ])(?P=delimiter)(?![\w*_])",
         re.IGNORECASE,
     )
 
@@ -8477,17 +8471,17 @@ if not (root / ".boundary-self-test").is_file():
         )
 
     for delimiter in ("*", "**", "***", "_", "__", "___"):
-        for label in ("H", "I"):
+        for label in ("H", "I", "J"):
             emphasized = f"Stage 3{delimiter}{label}{delimiter} lifecycle"
             expected = f"Stage 3{label} lifecycle"
             if stage3f_strip_inline_stage_label_emphasis(emphasized) != expected:
                 fail(
-                    "stage3h-status" if label == "H" else "stage3i-status",
-                    "the bounded inline Stage 3H/3I emphasis normalization must strip one to three matching Markdown emphasis markers",
+                    f"stage3{label.lower()}-status",
+                    "the bounded inline Stage 3H/3I/3J emphasis normalization must strip one to three matching Markdown emphasis markers",
                 )
     for negative_control in (
         "Stage 30*H* lifecycle",
-        "Stage 3*J* lifecycle",
+        "Stage 3*K* lifecycle",
         "Stage 3****H**** lifecycle",
         r"Stage 3\*H\* lifecycle",
         "Stage 3*H*idden lifecycle",
@@ -8495,7 +8489,7 @@ if not (root / ".boundary-self-test").is_file():
         if stage3f_strip_inline_stage_label_emphasis(negative_control) != negative_control:
             fail(
                 "stage3h-status",
-                "the bounded inline Stage 3H/3I emphasis normalization must not consume non-label or escaped marker text",
+                "the bounded inline Stage 3H/3I/3J emphasis normalization must not consume non-label or escaped marker text",
             )
 
     def stage3f_rendered_text_projection(source: str) -> str:
@@ -8610,6 +8604,24 @@ if not (root / ".boundary-self-test").is_file():
             for sentence in re.split(r"(?<=[.!?])[ \t]+", source)
             if sentence.strip()
             and re.search(r"\bStage[- ]*3I\b", sentence, re.IGNORECASE)
+        )
+
+    def stage3j_selected_status_sentences(source: str) -> tuple[str, ...]:
+        return tuple(
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])[ \t]+", source)
+            if sentence.strip()
+            and (
+                re.search(r"\bStage[- ]*3J\b", sentence, re.IGNORECASE)
+                or (
+                    re.search(r"\braw[- ]?112\b", sentence, re.IGNORECASE)
+                    and re.search(
+                        r"\b(?:receipt|run|artifact|fingerprint|reports?)\b",
+                        sentence,
+                        re.IGNORECASE,
+                    )
+                )
+            )
         )
 
     stage3f_default_ignorable_ranges = (
@@ -8861,7 +8873,7 @@ if not (root / ".boundary-self-test").is_file():
     if (
         len(stage3f_status_sentences) != 7
         or stage3f_status_sentence_hash
-        != "df140471291fefbc33f27a1ff98aef86efa3dcbc20226b2a909fe0ac599396de"
+        != "a78dc4a9337047bf08987af495b9e94c5c372b1dbba0bbba077ddd779a86f941"
     ):
         fail(
             "stage3f-status",
@@ -8878,7 +8890,7 @@ if not (root / ".boundary-self-test").is_file():
     if (
         len(rendered_stage3f_status_sentences) != 7
         or rendered_stage3f_status_sentence_hash
-        != "df140471291fefbc33f27a1ff98aef86efa3dcbc20226b2a909fe0ac599396de"
+        != "a78dc4a9337047bf08987af495b9e94c5c372b1dbba0bbba077ddd779a86f941"
     ):
         fail(
             "stage3f-status",
@@ -8895,7 +8907,7 @@ if not (root / ".boundary-self-test").is_file():
     if (
         len(forensic_stage3f_status_sentences) != 7
         or forensic_stage3f_status_sentence_hash
-        != "3fa7a3d4d832a546b08f413dec3b024ef83f2d4a372ad8d52ae498b1ff7384c8"
+        != "b9ca8a2c28fdf291d794b59671f4fe25e10e6edef2c016af658e8b4741d62dff"
     ):
         fail(
             "stage3f-status",
@@ -8927,20 +8939,20 @@ if not (root / ".boundary-self-test").is_file():
         (
             "canonical",
             normalized_stage3f_status,
-            9,
-            "ce66200b70f0cef64d7235e662c886265e9da126ed505375cee9b1b7afb8b943",
+            7,
+            "e801d3e17488ad13105434f9859e65215cb598e18146db68cfb5baeb8c76a742",
         ),
         (
             "rendered-text",
             rendered_stage3f_status,
-            9,
-            "ce66200b70f0cef64d7235e662c886265e9da126ed505375cee9b1b7afb8b943",
+            7,
+            "e801d3e17488ad13105434f9859e65215cb598e18146db68cfb5baeb8c76a742",
         ),
         (
             "forensic",
             forensic_stage3f_status,
-            9,
-            "ac06c09de25c8f599103694c5712f2b691985c1b1d28eddd7f8b75b7cd0259ca",
+            7,
+            "b8c06fecd743a67dcf11acbc21fce1139b47f10beb4ed812b3b081abf4aa55f0",
         ),
     )
     for projection_name, projection, expected_count, expected_hash in stage3g_status_projections:
@@ -8959,20 +8971,20 @@ if not (root / ".boundary-self-test").is_file():
         (
             "canonical",
             normalized_stage3f_status,
-            11,
-            "b1af4b1b9ec699ef7c151d45596b5c1b3ba0357e72eb79424a3b8e37ea024a44",
+            8,
+            "60c6cd7bebb26712f9fd4adb599d37e1a24d61116c5d20fcedf6d8aeba378139",
         ),
         (
             "rendered-text",
             rendered_stage3f_status,
-            11,
-            "b1af4b1b9ec699ef7c151d45596b5c1b3ba0357e72eb79424a3b8e37ea024a44",
+            8,
+            "60c6cd7bebb26712f9fd4adb599d37e1a24d61116c5d20fcedf6d8aeba378139",
         ),
         (
             "forensic",
             forensic_stage3f_status,
-            11,
-            "a1127b77173b56a2fe9ecf592a6fa32d7aaf34b016eb38b825ab9b60646247bf",
+            8,
+            "85712d3fe7a8732f1270937122c03468284c5c602c7cab503510d594be2751c9",
         ),
         (
             "forensic-confusable-skeleton",
@@ -8990,8 +9002,8 @@ if not (root / ".boundary-self-test").is_file():
                 )
                 if unicodedata.category(character) not in {"Cc", "Cf"}
             ),
-            11,
-            "a1127b77173b56a2fe9ecf592a6fa32d7aaf34b016eb38b825ab9b60646247bf",
+            8,
+            "85712d3fe7a8732f1270937122c03468284c5c602c7cab503510d594be2751c9",
         ),
     )
     for projection_name, projection, expected_count, expected_hash in stage3h_status_projections:
@@ -9033,27 +9045,27 @@ if not (root / ".boundary-self-test").is_file():
     ):
         fail(
             "stage3h-status",
-            "the promoted Stage3H receipt must not be contradicted by a source-ahead, stale, unauthenticated, uncertified, pending, or awaiting claim",
+            "the promoted receipt's inherited Stage3H coverage must not be contradicted by a source-ahead, stale, unauthenticated, uncertified, pending, or awaiting claim",
         )
 
     stage3i_status_projections = (
         (
             "canonical",
             normalized_stage3f_status,
-            10,
-            "b0598fcd0c0824d48ef74267a2ed1a4bfd849908fd452db03e30cc8f2fcfea50",
+            11,
+            "5be8a9b239b1b6ea899d1522237a108e04ba4e13bf4e9b1e65ef160791fa9c37",
         ),
         (
             "rendered-text",
             rendered_stage3f_status,
-            10,
-            "b0598fcd0c0824d48ef74267a2ed1a4bfd849908fd452db03e30cc8f2fcfea50",
+            11,
+            "5be8a9b239b1b6ea899d1522237a108e04ba4e13bf4e9b1e65ef160791fa9c37",
         ),
         (
             "forensic",
             forensic_stage3f_status,
-            10,
-            "8cf63a101e2e5053c41ce7d7c481277872b05c12f9b937263d01799cd3fbb6c8",
+            11,
+            "d9ecb424b7fa27f3ada7eb1508c27979a5df6e22a9bef61572dc75e6cbb066af",
         ),
         (
             "forensic-confusable-skeleton",
@@ -9071,8 +9083,8 @@ if not (root / ".boundary-self-test").is_file():
                 )
                 if unicodedata.category(character) not in {"Cc", "Cf"}
             ),
-            10,
-            "8cf63a101e2e5053c41ce7d7c481277872b05c12f9b937263d01799cd3fbb6c8",
+            11,
+            "d9ecb424b7fa27f3ada7eb1508c27979a5df6e22a9bef61572dc75e6cbb066af",
         ),
     )
     for projection_name, projection, expected_count, expected_hash in stage3i_status_projections:
@@ -9083,54 +9095,110 @@ if not (root / ".boundary-self-test").is_file():
         if len(sentences) != expected_count or sentence_hash != expected_hash:
             fail(
                 "stage3i-status",
-                "the ordered Stage3I lifecycle sentence inventory must remain exact in the "
+                "the ordered Stage3I/raw8 lifecycle sentence inventory must remain exact in the "
                 f"{projection_name} projection; found {len(sentences)} sentences with sha256 {sentence_hash}",
             )
 
-    stage3i_lifecycle_paragraphs = [
-        paragraph
-        for paragraph in re.split(r"\n[ \t]*\n", stage3e_status)
-        if "Stage 3I is source-ahead of that promoted receipt" in paragraph
-    ]
-    expected_stage3i_lifecycle = (
-        "Stage 3I is source-ahead of that promoted receipt and is not covered by run "
-        "`32419997996`, job `96589735474`, artifact `9425844939`, the Stage-3H engine "
-        "fingerprint, or the focused and full reports above. The promoted receipt "
-        "remains source-current for Stage 3H, but it does not cover Stage 3I. Stage 3I "
-        "awaits a separate exact-source receipt promotion; this lifecycle state changes "
-        "no Test262 profile, focused or full metric, or conformance claim."
+    stage3i_source_current_negation = re.compile(
+        r"\b(?:not|never|no[ \t]+longer)\b[^.;!?]{0,32}\bsource[- ]current\b",
+        re.IGNORECASE,
     )
-    if (
-        len(stage3i_lifecycle_paragraphs) != 1
-        or " ".join(stage3i_lifecycle_paragraphs[0].split())
-        != expected_stage3i_lifecycle
-    ):
-        fail(
-            "stage3i-status",
-            "the status document must retain exactly one complete Stage3I source-ahead lifecycle paragraph with the exact Stage3H receipt noncoverage, separate-promotion, unchanged-metrics, and no-new-conformance boundary",
-        )
-
-    stage3i_contrary_claims = (
-        r"\bStage[- ]*3I\b[^.;!?]{0,100}\b(?:is|remains)[ \t]+source[- ]current\b",
-        r"\bStage[- ]*3I\b[^.;!?]{0,100}\b(?:is|has[ \t]+been|remains)[ \t]+(?:authenticated|certified|covered)\b",
-        r"\b(?:this[ \t]+)?(?:promoted[ \t]+)?receipt\b[^.;!?]{0,100}\b(?:authenticates|certifies|covers)\b[^.;!?]{0,80}\bStage[- ]*3I\b",
-        r"\b(?:run|job|artifact|fingerprint|reports?)\b[^.;!?]{0,100}\b(?:authenticates|certifies|covers)\b[^.;!?]{0,80}\bStage[- ]*3I\b",
-        r"\bStage[- ]*3I\b[^.;!?]{0,100}\b(?:not|never|no[ \t]+longer)[^.;!?]{0,32}\bsource[- ]ahead\b",
-        r"\b(?:not|never|no[ \t]+longer)[^.;!?]{0,32}\bsource[- ]ahead\b[^.;!?]{0,100}\bStage[- ]*3I\b",
-        r"\bStage[- ]*3I\b[^.;!?]{0,120}\b(?:adds|makes|establishes)[ \t]+(?:a[ \t]+)?new[ \t]+(?:Test262[ \t]+)?conformance\b",
+    stage3i_stale_or_pending_claim = re.compile(
+        r"\bStage[- ]*3I\b[^.;!?]{0,100}\b(?:source[- ]ahead|source[- ]stale|"
+        r"unauthenticated|uncertified|pending|awaiting)\b",
+        re.IGNORECASE,
     )
     stage3i_forensic_claim_projections = (
         forensic_stage3f_status,
         stage3i_status_projections[-1][1],
     )
     if any(
-        re.search(pattern, projection, re.IGNORECASE)
+        stage3i_source_current_negation.search(projection)
         for projection in stage3i_forensic_claim_projections
-        for pattern in stage3i_contrary_claims
     ):
         fail(
             "stage3i-status",
-            "the Stage3I source-ahead lifecycle must not be contradicted by a source-current, receipt-covered, authenticated, certified, source-ahead-negating, or new-conformance claim",
+            "the promoted Stage3I source-current status must not be negated",
+        )
+    if any(
+        stage3i_stale_or_pending_claim.search(projection)
+        for projection in stage3i_forensic_claim_projections
+    ):
+        fail(
+            "stage3i-status",
+            "the promoted Stage3I receipt must not be contradicted by a source-ahead, stale, unauthenticated, uncertified, pending, or awaiting claim",
+        )
+
+    stage3j_status_projections = (
+        (
+            "canonical",
+            normalized_stage3f_status,
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            "rendered-text",
+            rendered_stage3f_status,
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            "forensic",
+            forensic_stage3f_status,
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            "forensic-confusable-skeleton",
+            "".join(
+                character
+                for character in forensic_stage3f_status.translate(
+                    str.maketrans(
+                        {
+                            "\u0408": "J",
+                            "\u0458": "j",
+                        }
+                    )
+                )
+                if unicodedata.category(character) not in {"Cc", "Cf"}
+            ),
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+    )
+    for projection_name, projection, expected_count, expected_hash in stage3j_status_projections:
+        sentences = stage3j_selected_status_sentences(projection)
+        sentence_hash = hashlib.sha256(
+            "\n".join(sentences).encode("utf-8")
+        ).hexdigest()
+        if len(sentences) != expected_count or sentence_hash != expected_hash:
+            fail(
+                "stage3j-status",
+                "Stage3J/raw112 lifecycle claims must remain absent until the admission exists in the "
+                f"{projection_name} projection; found {len(sentences)} sentences with sha256 {sentence_hash}",
+            )
+
+    stage3j_contrary_claims = (
+        r"\bStage[- ]*3J\b[^.;!?]{0,100}\b(?:is|remains)[ \t]+source[- ]current\b",
+        r"\bStage[- ]*3J\b[^.;!?]{0,100}\b(?:is|has[ \t]+been|remains)[ \t]+(?:authenticated|certified|covered)\b",
+        r"\b(?:this[ \t]+)?(?:promoted[ \t]+)?receipt\b[^.;!?]{0,100}\b(?:authenticates|certifies|covers)\b[^.;!?]{0,80}\b(?:Stage[- ]*3J|raw[- ]?112)\b",
+        r"\b(?:run|job|artifact|fingerprint|reports?)\b[^.;!?]{0,100}\b(?:authenticates|certifies|covers)\b[^.;!?]{0,80}\b(?:Stage[- ]*3J|raw[- ]?112)\b",
+        r"\bStage[- ]*3J\b[^.;!?]{0,100}\b(?:not|never|no[ \t]+longer)[^.;!?]{0,32}\bsource[- ]ahead\b",
+        r"\b(?:not|never|no[ \t]+longer)[^.;!?]{0,32}\bsource[- ]ahead\b[^.;!?]{0,100}\bStage[- ]*3J\b",
+        r"\bStage[- ]*3J\b[^.;!?]{0,120}\b(?:adds|makes|establishes)[ \t]+(?:a[ \t]+)?new[ \t]+(?:Test262[ \t]+)?conformance\b",
+    )
+    stage3j_forensic_claim_projections = (
+        forensic_stage3f_status,
+        stage3j_status_projections[-1][1],
+    )
+    if any(
+        re.search(pattern, projection, re.IGNORECASE)
+        for projection in stage3j_forensic_claim_projections
+        for pattern in stage3j_contrary_claims
+    ):
+        fail(
+            "stage3j-status",
+            "Stage3J/raw112 source-current, receipt-covered, authenticated, certified, source-ahead-negating, or new-conformance claims are forbidden until the admission exists",
         )
 
     stage3e_receipt_paragraphs = [
@@ -9150,13 +9218,13 @@ if not (root / ".boundary-self-test").is_file():
             or not value
         ):
             fail(
-                "stage3h-status",
+                "stage3i-status",
                 f"dev-support/test262/current.conf:{line_number} is not a canonical key=value receipt field",
             )
             continue
         if key in stage3e_receipt_values:
             fail(
-                "stage3h-status",
+                "stage3i-status",
                 f"dev-support/test262/current.conf repeats receipt field {key}",
             )
             continue
@@ -9186,8 +9254,8 @@ if not (root / ".boundary-self-test").is_file():
     }
     if drifted_stage3e_receipt_metrics:
         fail(
-            "stage3h-status",
-            "the promoted Stage3H receipt must retain the exact unchanged R3fj focused/full metrics; "
+            "stage3i-status",
+            "the promoted Stage3I receipt must retain the exact unchanged R3fj focused/full metrics; "
             f"found {drifted_stage3e_receipt_metrics}",
         )
 
@@ -9208,18 +9276,18 @@ if not (root / ".boundary-self-test").is_file():
     }
     if invalid_stage3e_receipt_fields:
         fail(
-            "stage3h-status",
-            "the promoted Stage3H receipt source, fingerprint, and focused/full report hashes must be canonical current.conf fields; "
+            "stage3i-status",
+            "the promoted Stage3I receipt source, fingerprint, and focused/full report hashes must be canonical current.conf fields; "
             f"found {invalid_stage3e_receipt_fields}",
         )
 
     stage3e_promoted_receipt_values = {
-        "engine_semantics_source": "e720322b59dbca1a1dfacf57309978aea35865c3",
-        "engine_semantics_sha256": "d21943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22",
-        "focused_tsv_sha256": "952067be772401a49923326ba7dd213240c0c1bee1dfc577314d5316a85db30e",
-        "focused_jsonl_sha256": "ff1c31a4ece9100af0b9f1715e4a5963ab453b0e21d96a2d077fa63c41e24d83",
-        "full_tsv_sha256": "475dabb1aea7c5da419bc682253bff10b9c58e0caa44443901727ddefcdcc403",
-        "full_jsonl_sha256": "3b6064e1d4ede143396608bdaa879a4db77c4735c4422fa5df15a3c6387990ff",
+        "engine_semantics_source": "022e7b4860ec9b6e6d2922f835ac694790880126",
+        "engine_semantics_sha256": "f61afc7314c09e4b507468ca9bffdeb920d3e9c896068b3a9f39b4587caa0333",
+        "focused_tsv_sha256": "fec3395e614b678fefcde53e880605126dfed3aab58e2c4e69cc046d70252b98",
+        "focused_jsonl_sha256": "f8aa7b03998c11d8cc29ae84bb9a8dcad512ac6d368af8819ed6bf9f7b9144d2",
+        "full_tsv_sha256": "52a4288752e11855a5101c7a536717690bdcb2d582224defc58bbe1ebfd3da91",
+        "full_jsonl_sha256": "6886651883250c460dde168d85d1d44524f3b9f4dc5398859a0c2071604e6a3d",
     }
     drifted_stage3e_promoted_receipt_values = {
         key: stage3e_receipt_values.get(key)
@@ -9228,8 +9296,8 @@ if not (root / ".boundary-self-test").is_file():
     }
     if drifted_stage3e_promoted_receipt_values:
         fail(
-            "stage3h-receipt-pin",
-            "current.conf must retain the exact reviewed Stage3H source, fingerprint, and focused/full receipt hashes; "
+            "stage3i-receipt-pin",
+            "current.conf must retain the exact reviewed Stage3I source, fingerprint, and focused/full receipt hashes; "
             f"found {drifted_stage3e_promoted_receipt_values}",
         )
 
@@ -9250,7 +9318,7 @@ if not (root / ".boundary-self-test").is_file():
         configured_relative = stage3e_receipt_values.get(path_key)
         if configured_relative != expected_relative:
             fail(
-                "stage3h-focused-receipt",
+                "stage3i-focused-receipt",
                 f"current.conf {path_key} must resolve the exact reviewed path {expected_relative}; found {configured_relative!r}",
             )
             continue
@@ -9260,7 +9328,7 @@ if not (root / ".boundary-self-test").is_file():
             resolved_candidate = candidate.resolve(strict=True)
         except (OSError, RuntimeError) as error:
             fail(
-                "stage3h-focused-receipt",
+                "stage3i-focused-receipt",
                 f"{expected_relative} must resolve as the reviewed focused receipt: {error}",
             )
             continue
@@ -9272,7 +9340,7 @@ if not (root / ".boundary-self-test").is_file():
             or candidate.stat().st_size != expected_bytes
         ):
             fail(
-                "stage3h-focused-receipt",
+                "stage3i-focused-receipt",
                 f"{expected_relative} must be the exact {expected_bytes}-byte regular, non-symlink, single-link reviewed focused receipt",
             )
             continue
@@ -9280,14 +9348,14 @@ if not (root / ".boundary-self-test").is_file():
         configured_hash = stage3e_receipt_values.get(hash_key)
         if actual_hash != configured_hash:
             fail(
-                "stage3h-focused-receipt",
+                "stage3i-focused-receipt",
                 f"{expected_relative} bytes must match current.conf {hash_key}; found {actual_hash}",
             )
 
     if len(stage3e_receipt_paragraphs) != 1:
         fail(
-            "stage3h-status",
-            "the status document must contain exactly one promoted Stage3H R3fj receipt paragraph with a blank-line boundary",
+            "stage3i-status",
+            "the status document must contain exactly one promoted Stage3I R3fj receipt paragraph with a blank-line boundary",
         )
     elif not invalid_stage3e_receipt_fields and not drifted_stage3e_receipt_metrics:
         stage3e_receipt_offset = stage3e_status.find(stage3e_receipt_paragraphs[0])
@@ -9397,19 +9465,19 @@ if not (root / ".boundary-self-test").is_file():
             or stage3e_receipt_html_at_end
         ):
             fail(
-                "stage3h-status",
-                "the promoted Stage3H R3fj receipt paragraph must remain top-level rendered Markdown, not a comment, code block, or raw-HTML descendant at either boundary",
+                "stage3i-status",
+                "the promoted Stage3I R3fj receipt paragraph must remain top-level rendered Markdown, not a comment, code block, or raw-HTML descendant at either boundary",
             )
 
         stage3e_receipt_provenance = {
-            "run": "32419997996",
-            "job": "96589735474",
-            "artifact": "9425844939",
-            "artifact_sha256": "2c8dc920428aef4f10be440d7d18fdf72ec0902af4c7482f5be34ed4f25b1215",
-            "stage3g_fingerprint": "604438cd3a131ee7799ffcea40cc53963737d6196f14e038030517d33554e4e5",
-            "stage3g_run": "32400757601",
-            "stage3g_artifact": "9418989747",
-            "stage3g_artifact_sha256": "60082b9b4f9acf59f8feea849cc1a8965d4d232421ba3169f04631d170f4212c",
+            "run": "32497291807",
+            "job": "96818622699",
+            "artifact": "9452593259",
+            "artifact_sha256": "97ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb",
+            "stage3h_fingerprint": "d21943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22",
+            "stage3h_run": "32419997996",
+            "stage3h_artifact": "9425844939",
+            "stage3h_artifact_sha256": "2c8dc920428aef4f10be440d7d18fdf72ec0902af4c7482f5be34ed4f25b1215",
         }
         source = re.escape(stage3e_receipt_values["engine_semantics_source"])
         fingerprint = re.escape(stage3e_receipt_values["engine_semantics_sha256"])
@@ -9425,25 +9493,27 @@ if not (root / ".boundary-self-test").is_file():
         full_jsonl_lines = f'{int(stage3e_receipt_values["full_jsonl_lines"]):,}'
         receipt_pattern = re.compile(
             rf"The latest full R3fj execution, exact-source GitHub Actions run `{stage3e_receipt_provenance['run']}`, "
-            rf"job `{stage3e_receipt_provenance['job']}`, authenticates Stage 3H source `{source}` with engine fingerprint `{fingerprint}`\. "
-            rf"The run reached only the expected stale-receipt checksum failure, while its "
-            rf"always-upload artifact `{stage3e_receipt_provenance['artifact']}` \(SHA-256 "
+            rf"job `{stage3e_receipt_provenance['job']}`, authenticates Stage 3I source `{source}` with engine fingerprint `{fingerprint}`\. "
+            rf"The canonical `test262-receipt` run completed successfully after its "
+            rf"current-source gate accepted the expected one-fingerprint receipt refresh; its "
+            rf"unique exact six-file artifact `{stage3e_receipt_provenance['artifact']}` \(SHA-256 "
             rf"`{stage3e_receipt_provenance['artifact_sha256']}`\) records the "
             rf"{full_tsv_lines}-line TSV as `{full_tsv_hash}` and the {full_jsonl_lines}-line JSONL as "
-            rf"`{full_jsonl_hash}`\. Each full receipt contains the Stage 3H fingerprint exactly once and no Stage "
-            rf"3G fingerprint\. Fingerprint-only normalization replaces that single occurrence "
-            rf"with the authenticated Stage 3G fingerprint `{stage3e_receipt_provenance['stage3g_fingerprint']}` "
+            rf"`{full_jsonl_hash}`\. Each full receipt contains the Stage 3I fingerprint exactly once and no Stage "
+            rf"3H fingerprint\. Fingerprint-only normalization replaces that single occurrence "
+            rf"with the authenticated Stage 3H fingerprint `{stage3e_receipt_provenance['stage3h_fingerprint']}` "
             rf"and makes both files byte-for-byte "
-            rf"identical to Stage 3G run `{stage3e_receipt_provenance['stage3g_run']}`, "
-            rf"artifact `{stage3e_receipt_provenance['stage3g_artifact']}` \(SHA-256 "
-            rf"`{stage3e_receipt_provenance['stage3g_artifact_sha256']}`\): "
+            rf"identical to Stage 3H run `{stage3e_receipt_provenance['stage3h_run']}`, "
+            rf"artifact `{stage3e_receipt_provenance['stage3h_artifact']}` \(SHA-256 "
+            rf"`{stage3e_receipt_provenance['stage3h_artifact_sha256']}`\): "
             rf"all {full_variants} classified outcomes, {full_passes} full passes, and {full_eligible} eligible variants "
             rf"are unchanged\. The refreshed {focused_passes}-pass focused TSV and JSONL are "
             rf"byte-identical on exact-source replay at hashes `{focused_tsv_hash}` and `{focused_jsonl_hash}`\. "
-            rf"This promoted receipt is source-current for Stage 3H and covers the raw-111 "
-            rf"`ToObject` admission and its Rust/C evidence without changing the Test262 "
+            rf"This promoted receipt is source-current for Stage 3I and covers the raw-8 "
+            rf"`PushThis` admission and its Rust/C evidence without changing the Test262 "
             rf"profile or any focused or full metric reported above\. It remains the exact "
-            rf"Stage-3H lifecycle boundary, retains the Stage-3G raw-11 Object and Stage-3F "
+            rf"Stage-3I lifecycle boundary, retains the Stage-3H raw-111 `ToObject`, Stage-3G "
+            rf"raw-11 Object, and Stage-3F "
             rf"raw-177 coverage, and makes no new conformance claim\."
         )
         normalized_receipt_paragraph = " ".join(
@@ -9451,12 +9521,21 @@ if not (root / ".boundary-self-test").is_file():
         )
         if receipt_pattern.fullmatch(normalized_receipt_paragraph) is None:
             fail(
-                "stage3h-status",
-                "the complete promoted Stage3H R3fj paragraph must match current.conf source, fingerprint, focused/full report hashes, exact provenance, unchanged metrics, normalized Stage3G equality, inherited Stage3G/Stage3F coverage, and its blank-line boundary",
+                "stage3i-status",
+                "the complete promoted Stage3I R3fj paragraph must match current.conf source, fingerprint, focused/full report hashes, exact successful provenance, normalized Stage3H equality, inherited Stage3H/Stage3G/Stage3F coverage, unchanged metrics, and its blank-line boundary",
             )
 
     normalized_stage3e_status = " ".join(stage3e_status.split())
     stage3e_contrary_claims = (
+        r"\b(?:source[- ]stale|stale)[ \t]+for[ \t]+Stage[ \t]*3I\b",
+        r"\b(?:does[ \t]+not|cannot)[ \t]+(?:certify|cover|authenticate)[ \t]+(?:the[ \t]+)?(?:raw[- ]?8|Stage[ \t]*3I)\b",
+        r"\bStage[ \t]*3I\b[^.]{0,100}\b(?:is|remains)[ \t]+(?:source[- ]ahead|source[- ]stale|stale|uncertified|unauthenticated|not[ \t]+authenticated|not[ \t]+certified)\b",
+        r"\bStage[ \t]*3I\b[ \t]+(?:is|remains)[ \t]+(?:uncovered|not[ \t]+covered)\b",
+        r"\bStage[ \t]*3I\b[^.]{0,100}\bhas[ \t]+(?:not[ \t]+been|yet[ \t]+to[ \t]+be)[ \t]+(?:authenticated|certified|covered)\b",
+        r"\bStage[ \t]*3I\b[^.]{0,100}\b(?:pending|awaiting)[ \t]+(?:a[ \t]+)?(?:separate[ \t]+)?(?:exact-source[ \t]+)?receipt[ \t]+promotion\b",
+        r"\bonly[ \t]+Stage[ \t]*3H\b[^.]{0,120}\b(?:is|was|has[ \t]+been)[ \t]+(?:authenticated|certified|covered)\b[^.]{0,120}\b(?:this[ \t]+)?receipt\b",
+        r"\b(?:this[ \t]+)?receipt\b[^.]{0,100}\b(?:authenticates|certifies|covers)[ \t]+only[ \t]+Stage[ \t]*3H\b",
+        r"\b(?:this[ \t]+)?receipt\b[ \t]+only[ \t]+(?:authenticates|certifies|covers)[ \t]+Stage[ \t]*3H\b",
         r"\b(?:source[- ]stale|stale)[ \t]+for[ \t]+Stage[ \t]*3H\b",
         r"\b(?:does[ \t]+not|cannot)[ \t]+(?:certify|cover|authenticate)[ \t]+(?:the[ \t]+)?(?:raw[- ]?111|Stage[ \t]*3H)\b",
         r"\bStage[ \t]*3H\b[^.]{0,100}\b(?:is|remains)[ \t]+(?:source[- ]ahead|source[- ]stale|stale|uncertified|unauthenticated|not[ \t]+authenticated|not[ \t]+certified)\b",
@@ -9487,8 +9566,8 @@ if not (root / ".boundary-self-test").is_file():
         for pattern in stage3e_contrary_claims
     ):
         fail(
-            "stage3h-status",
-            "the promoted Stage3H receipt must not be contradicted by an appended source-ahead, stale, uncertified, uncovered, pending-promotion, Stage3G-only, or Stage3F-only claim",
+            "stage3i-status",
+            "the promoted Stage3I receipt must not be contradicted by an appended source-ahead, stale, uncertified, uncovered, pending-promotion, Stage3H-only, Stage3G-only, or Stage3F-only claim",
         )
 
 src_root = root / "src"
@@ -10927,7 +11006,7 @@ if errors:
 PY
 }
 
-run_stage3h_receipt_escape_canaries() {
+run_stage3i_receipt_escape_canaries() {
     local suite_root=$1
     local base_root=$suite_root/base
 
@@ -10949,7 +11028,7 @@ run_stage3h_receipt_escape_canaries() {
     cp -- "$repository_root/tests/test262-class-private-callables-b-global-candidate.jsonl" \
         "$base_root/tests/test262-class-private-callables-b-global-candidate.jsonl"
 
-    expect_stage3h_receipt_multi_rewrite_rejected() {
+    expect_stage3i_receipt_multi_rewrite_rejected() {
         local label=$1
         local diagnostic=$2
         local plan=$3
@@ -10978,7 +11057,7 @@ def replace_once(path: Path, before: str, after: str) -> None:
     source = path.read_text(encoding="utf-8")
     if source.count(before) != 1:
         raise SystemExit(
-            f"Stage3H receipt canary expected one occurrence of {before!r} in {path}"
+            f"Stage3I receipt canary expected one occurrence of {before!r} in {path}"
         )
     path.write_text(source.replace(before, after), encoding="utf-8")
 
@@ -10988,7 +11067,7 @@ if plan == "coherent-config-docs":
     prefix = f"{field}="
     matches = [line for line in config.splitlines() if line.startswith(prefix)]
     if len(matches) != 1:
-        raise SystemExit(f"Stage3H receipt canary requires exactly one {field} field")
+        raise SystemExit(f"Stage3I receipt canary requires exactly one {field} field")
     current = matches[0][len(prefix):]
     tampered = ("1" if current.startswith("0") else "0") + current[1:]
     replace_once(config_path, f"{field}={current}", f"{field}={tampered}")
@@ -11010,7 +11089,7 @@ elif plan == "self-consistent-four-file-forgery":
         prefix = f"{key}="
         matches = [line for line in config.splitlines() if line.startswith(prefix)]
         if len(matches) != 1:
-            raise SystemExit(f"Stage3H receipt canary requires exactly one {key} field")
+            raise SystemExit(f"Stage3I receipt canary requires exactly one {key} field")
         current = matches[0][len(prefix):]
         forged = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
         replace_once(config_path, f"{key}={current}", f"{key}={forged}")
@@ -11022,19 +11101,19 @@ elif plan == "status-html-wrapper":
     replace_once(status_path, receipt_start, f"{field}\n\n{receipt_start}")
     replace_once(status_path, receipt_end, f"{receipt_end}\n\n</div>")
 elif plan == "focused-hardlink":
-    alias_path = root / "tests/stage3h-focused-receipt-hardlink.tsv"
+    alias_path = root / "tests/stage3i-focused-receipt-hardlink.tsv"
     if alias_path.exists():
-        raise SystemExit(f"Stage3H hardlink canary alias already exists: {alias_path}")
+        raise SystemExit(f"Stage3I hardlink canary alias already exists: {alias_path}")
     os.link(tsv_path, alias_path)
 else:
-    raise SystemExit(f"unknown Stage3H receipt canary plan: {plan}")
+    raise SystemExit(f"unknown Stage3I receipt canary plan: {plan}")
 PY
         if "$script_dir/check-binary-object-boundary.sh" --scan-only "$case_root" \
             > "$output" 2>&1; then
-            die "Stage3H receipt escape canary escaped: $label"
+            die "Stage3I receipt escape canary escaped: $label"
         fi
         if [[ $(<"$output") != *"$diagnostic"* ]]; then
-            echo "error: Stage3H receipt escape canary failed for the wrong reason: $label" >&2
+            echo "error: Stage3I receipt escape canary failed for the wrong reason: $label" >&2
             cat "$output" >&2
             exit 1
         fi
@@ -11042,20 +11121,20 @@ PY
 
     local label field
     while IFS=: read -r label field; do
-        expect_stage3h_receipt_multi_rewrite_rejected \
-            "$label" stage3h-receipt-pin coherent-config-docs "$field"
-    done <<'STAGE3H_COHERENT_RECEIPT_CANARIES'
-stage3h-receipt-coherent-source:engine_semantics_source
-stage3h-receipt-coherent-fingerprint:engine_semantics_sha256
-stage3h-receipt-coherent-focused-tsv:focused_tsv_sha256
-stage3h-receipt-coherent-focused-jsonl:focused_jsonl_sha256
-stage3h-receipt-coherent-full-tsv:full_tsv_sha256
-stage3h-receipt-coherent-full-jsonl:full_jsonl_sha256
-STAGE3H_COHERENT_RECEIPT_CANARIES
-    expect_stage3h_receipt_multi_rewrite_rejected \
-        stage3h-receipt-focused-content stage3h-focused-receipt focused-content
-    expect_stage3h_receipt_multi_rewrite_rejected \
-        stage3h-receipt-self-consistent-four-file-forgery stage3h-receipt-pin \
+        expect_stage3i_receipt_multi_rewrite_rejected \
+            "$label" stage3i-receipt-pin coherent-config-docs "$field"
+    done <<'STAGE3I_COHERENT_RECEIPT_CANARIES'
+stage3i-receipt-coherent-source:engine_semantics_source
+stage3i-receipt-coherent-fingerprint:engine_semantics_sha256
+stage3i-receipt-coherent-focused-tsv:focused_tsv_sha256
+stage3i-receipt-coherent-focused-jsonl:focused_jsonl_sha256
+stage3i-receipt-coherent-full-tsv:full_tsv_sha256
+stage3i-receipt-coherent-full-jsonl:full_jsonl_sha256
+STAGE3I_COHERENT_RECEIPT_CANARIES
+    expect_stage3i_receipt_multi_rewrite_rejected \
+        stage3i-receipt-focused-content stage3i-focused-receipt focused-content
+    expect_stage3i_receipt_multi_rewrite_rejected \
+        stage3i-receipt-self-consistent-four-file-forgery stage3i-receipt-pin \
         self-consistent-four-file-forgery
     local wrapper
     for wrapper in \
@@ -11064,12 +11143,12 @@ STAGE3H_COHERENT_RECEIPT_CANARIES
         '<div style="visibility:collapse">'
     do
         label=${wrapper//[^A-Za-z0-9]/-}
-        expect_stage3h_receipt_multi_rewrite_rejected \
-            "stage3h-status-outside-wrapper-$label" stage3h-status \
+        expect_stage3i_receipt_multi_rewrite_rejected \
+            "stage3i-status-outside-wrapper-$label" stage3i-status \
             status-html-wrapper "$wrapper"
     done
-    expect_stage3h_receipt_multi_rewrite_rejected \
-        stage3h-receipt-true-hardlink stage3h-focused-receipt focused-hardlink
+    expect_stage3i_receipt_multi_rewrite_rejected \
+        stage3i-receipt-true-hardlink stage3i-focused-receipt focused-hardlink
 }
 
 case ${1:-} in
@@ -11079,18 +11158,18 @@ case ${1:-} in
         scan_root "$2"
         exit 0
         ;;
-    --stage3h-receipt-canaries)
+    --stage3i-receipt-canaries)
         [[ $# == 1 ]] \
-            || die "usage: $0 --stage3h-receipt-canaries"
+            || die "usage: $0 --stage3i-receipt-canaries"
         scan_root "$repository_root"
         receipt_canary_tmp=$(mktemp -d \
-            "${TMPDIR:-/tmp}/quickjs-oxide-stage3h-receipts.XXXXXX")
+            "${TMPDIR:-/tmp}/quickjs-oxide-stage3i-receipts.XXXXXX")
         trap 'rm -rf -- "$receipt_canary_tmp"' EXIT HUP INT TERM
-        run_stage3h_receipt_escape_canaries "$receipt_canary_tmp"
-        echo "Stage3H receipt escape canaries passed: 12/12 rejected"
+        run_stage3i_receipt_escape_canaries "$receipt_canary_tmp"
+        echo "Stage3I receipt escape canaries passed: 12/12 rejected"
         exit 0
         ;;
-    *) die "usage: $0 [--scan-only ROOT|--stage3h-receipt-canaries]" ;;
+    *) die "usage: $0 [--scan-only ROOT|--stage3i-receipt-canaries]" ;;
 esac
 
 scan_root "$repository_root"
@@ -12239,7 +12318,7 @@ stage3e-runtime-type-error-test-ignored|stage3e-runtime-evidence|src/runtime/tes
 stage3e-runtime-catch-test-cfg-excluded|stage3e-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_read_only_reenters_catch_and_resets_pending_state() {|#[cfg(any())]\n#[test]\nfn trusted_quickjs_ordinary_read_only_reenters_catch_and_resets_pending_state() {
 stage3e-runtime-realm-test-early-return|stage3e-runtime-evidence|src/runtime/tests.rs|fn trusted_quickjs_ordinary_read_only_uses_bytecode_realm_and_attaches_backtrace() {\n    let runtime = Runtime::new();|fn trusted_quickjs_ordinary_read_only_uses_bytecode_realm_and_attaches_backtrace() {\n    return;\n    let runtime = Runtime::new();
 stage3e-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_throw_error_completion(compile_context))|    if (0 && expect_ordinary_throw_error_completion(compile_context))
-stage3f-status-inherited-coverage-erased|stage3g-status|docs/status.md|retains the Stage-3G raw-11 Object and Stage-3F\nraw-177 coverage|retains the Stage-3G raw-11 Object but drops the Stage-3F\nraw-177 coverage
+stage3f-status-inherited-coverage-erased|stage3f-status|docs/status.md|retains the Stage-3H raw-111 `ToObject`, Stage-3G\nraw-11 Object, and Stage-3F raw-177 coverage|retains the Stage-3H raw-111 `ToObject` and Stage-3G\nraw-11 Object but drops the Stage-3F raw-177 coverage
 STAGE3E_CANARIES
 expect_full_rewrite_table <<'STAGE3F_CANARIES'
 stage3f-raw177-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(177, None, OrdinaryOnly, Recipe::Nop),|    row!(177, None, Shared, Recipe::Nop),
@@ -12332,7 +12411,7 @@ stage3g-runtime-freshness-erased|stage3g-runtime-evidence|src/runtime/tests.rs| 
 stage3g-runtime-wire-test-cfg-excluded|stage3g-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_object_is_natural_fresh_and_defining_realm_owned() {|#[cfg(any())]\n#[test]\nfn trusted_quickjs_ordinary_object_is_natural_fresh_and_defining_realm_owned() {
 stage3g-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_object_completion(compile_context))|    if (0 && expect_ordinary_object_completion(compile_context))
 stage3g-c-transcript-max-stack-erased|stage3g-c-oracle|tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt|ordinary-object-child-metadata=flags:0243,js_mode:1,args:0,vars:0,defined_args:0,stack:1,var_refs:0,closures:0,cpool:0,code:2,locals:0,code_offset:39,atoms:0|ordinary-object-child-metadata=flags:0243,js_mode:1,args:0,vars:0,defined_args:0,stack:0,var_refs:0,closures:0,cpool:0,code:2,locals:0,code_offset:39,atoms:0
-stage3g-status-inherited-coverage-erased|stage3g-status|docs/status.md|retains the Stage-3G raw-11 Object and Stage-3F\nraw-177 coverage|retains only the Stage-3F\nraw-177 coverage
+stage3g-status-inherited-coverage-erased|stage3g-status|docs/status.md|retains the Stage-3H raw-111 `ToObject`, Stage-3G\nraw-11 Object, and Stage-3F raw-177 coverage|retains the Stage-3H raw-111 `ToObject` and Stage-3F\nraw-177 coverage
 STAGE3G_CANARIES
 expect_full_rewrite_rejected stage3g-translate-object-erased \
     stage3g-object-translation-route \
@@ -12360,8 +12439,8 @@ expect_full_rewrite_rejected stage3g-status-typed-hidden-wrapper \
     $'Stage 3G exposes no new source syntax, public API, Test262\nadmission, or Feature Parity claim.\n</div>'
 expect_full_rewrite_rejected stage3g-status-inherited-lifecycle-comment-wrapper \
     stage3g-status docs/status.md \
-    'retains the Stage-3G raw-11 Object' \
-    $'<!--\nretains the Stage-3G raw-11 Object' \
+    $'Stage-3G\nraw-11 Object' \
+    $'<!--\nStage-3G\nraw-11 Object' \
     'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n-->'
 expect_full_rewrite_table <<'STAGE3H_CANARIES'
@@ -12391,19 +12470,23 @@ stage3h-c-mechanical-wire-remap|stage3d-c-oracle|tests/fixtures/function_bytecod
 stage3h-c-transcript-provenance-concealed|stage3h-c-oracle|tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt|ordinary-to-object-evidence=compiler-natural-provenance-plus-mechanically-derived-property-free-wire|ordinary-to-object-evidence=two-compiler-natural-wires
 stage3h-c-manifest-source-hash-drift|stage3i-c-oracle|dev-support/quickjs-c-oracles.tsv|e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c4|e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c5
 stage3h-status-c-provenance-erased|stage3h-status|docs/status.md|The oracle honestly labels this as compiler\nprovenance, then mechanically changes|The oracle labels both wires as compiler\nprovenance, then changes
-stage3h-status-current-certification-erased|stage3h-status|docs/status.md|This promoted receipt is source-current for Stage 3H and covers|This promoted receipt merely describes
-stage3h-status-raw111-coverage-erased|stage3h-status|docs/status.md|covers the raw-111\n`ToObject` admission and its Rust/C evidence|describes the raw-111\n`ToObject` admission and its Rust/C evidence
-stage3i-status-source-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3I is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
-stage3i-status-receipt-covers-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This promoted receipt covers Stage 3I.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
-stage3i-status-cyrillic-i-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3І is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
-stage3i-status-greek-iota-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3Ι is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
-stage3i-status-control-split-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3\001I is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3h-status-inherited-coverage-erased|stage3h-status|docs/status.md|retains the Stage-3H raw-111 `ToObject`, Stage-3G\nraw-11 Object, and Stage-3F raw-177 coverage|retains the Stage-3G\nraw-11 Object and Stage-3F raw-177 coverage
+stage3i-status-stale-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3I is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3i-status-not-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3I is not source-current.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-source-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3J is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-receipt-covers-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This promoted receipt covers raw112 and Stage 3J.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-cyrillic-je-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3Ј is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-fullwidth-j-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3Ｊ is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-control-split-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3\001J is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
 stage3h-status-emphasis-stale-claim|stage3h-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3*H* is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
 stage3h-status-strong-stale-claim|stage3h-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3**H** is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
 stage3h-status-strong-emphasis-stale-claim|stage3h-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3***H*** is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
-stage3i-status-emphasis-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3*I* is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
-stage3i-status-strong-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3**I** is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
-stage3i-status-strong-emphasis-current-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3***I*** is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3i-status-emphasis-stale-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3*I* is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3i-status-strong-stale-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3**I** is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3i-status-strong-emphasis-stale-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3***I*** is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-emphasis-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3*J* is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-strong-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3**J** is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-strong-emphasis-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3***J*** is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
 STAGE3H_CANARIES
 expect_full_rewrite_table <<'STAGE3I_CANARIES'
 stage3i-raw8-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(8, None, OrdinaryOnly, Recipe::PushThis),|    row!(8, None, Shared, Recipe::PushThis),
@@ -12435,6 +12518,10 @@ stage3i-status-registry-counts-stale|stage3i-status|docs/status.md|The scalar po
 stage3i-status-raw8-reblocked|stage3i-status|docs/status.md|stage 3I adds exactly raw 8 `push_this` with its `None` operand and ordinary-only\naudience. Raw 47 `return_async` and raw 112 `to_propkey` remain blocked.|Raw 8 `push_this`, raw 47 `return_async`, and raw 112 `to_propkey` remain\nblocked.
 stage3i-status-blocker-vector-stale|stage3i-status|docs/status.md|`1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.|`1, 6, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
 stage3i-status-no-parity-erased|stage3i-status|docs/status.md|Stage 3I changes neither the engine Instruction set nor\nVM implementation and adds no source syntax, public API, Test262 admission, or\nFeature Parity claim.|Stage 3I changes neither the engine Instruction set nor\nVM implementation and establishes Feature Parity.
+stage3i-status-current-certification-erased|stage3i-status|docs/status.md|This promoted receipt is source-current for Stage 3I and covers|This promoted receipt merely describes
+stage3i-status-raw8-coverage-erased|stage3i-status|docs/status.md|covers the raw-8\n`PushThis` admission and its Rust/C evidence|describes the raw-8\n`PushThis` admission and its Rust/C evidence
+stage3i-status-terminal-success-erased|stage3i-status|docs/status.md|The canonical `test262-receipt` run completed successfully|The canonical `test262-receipt` run terminated
+stage3i-status-exact-six-artifact-erased|stage3i-status|docs/status.md|unique exact six-file artifact `9452593259`|artifact `9452593259`
 STAGE3I_CANARIES
 expect_full_rewrite_rejected stage3i-validator-if-false-target-zero-erased \
     stage3i-push-this-protocol src/runtime/binary_object/ordinary_leaf.rs \
@@ -12524,18 +12611,18 @@ expect_full_rewrite_rejected stage3h-status-typed-hidden-wrapper \
     $'<div hidden>\nStage 3H admits raw 111 only as the exact one-to-one typed chain' \
     $'Stage 3H changes neither production bytecode nor VM\nimplementation and adds no source syntax, public API, Test262 admission, or\nFeature Parity claim.' \
     $'Stage 3H changes neither production bytecode nor VM\nimplementation and adds no source syntax, public API, Test262 admission, or\nFeature Parity claim.\n</div>'
-expect_full_rewrite_rejected stage3h-status-lifecycle-comment-wrapper \
+expect_full_rewrite_rejected stage3h-status-inherited-lifecycle-comment-wrapper \
     stage3h-status docs/status.md \
-    'This promoted receipt is source-current for Stage 3H' \
-    $'<!--\nThis promoted receipt is source-current for Stage 3H' \
+    'retains the Stage-3H raw-111 `ToObject`' \
+    $'<!--\nretains the Stage-3H raw-111 `ToObject`' \
     $'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n-->'
 expect_full_rewrite_rejected stage3i-status-lifecycle-comment-wrapper \
     stage3i-status docs/status.md \
-    'Stage 3I is source-ahead of that promoted receipt' \
-    $'<!--\nStage 3I is source-ahead of that promoted receipt' \
-    $'no Test262 profile, focused or full metric, or conformance claim.' \
-    $'no Test262 profile, focused or full metric, or conformance claim.\n-->'
+    'This promoted receipt is source-current for Stage 3I' \
+    $'<!--\nThis promoted receipt is source-current for Stage 3I' \
+    $'raw-177 coverage, and makes no new conformance claim.' \
+    $'raw-177 coverage, and makes no new conformance claim.\n-->'
 expect_full_rewrite_rejected stage3f-translate-nop-erased \
     stage3d-throw-translation-route \
     src/runtime/binary_object/function_translate/mod.rs \
@@ -12553,10 +12640,10 @@ expect_full_rewrite_rejected stage3f-status-typed-comment-wrapper \
     $'<!--\nStage 3F admits raw 177 only as the exact one-to-one typed chain' \
     'adds no public surface, source syntax, Test262 admission, or Feature Parity claim.' \
     $'adds no public surface, source syntax, Test262 admission, or Feature Parity claim.\n-->'
-expect_full_rewrite_rejected stage3h-status-lifecycle-hidden-div-wrapper \
-    stage3h-status docs/status.md \
-    'This promoted receipt is source-current for Stage 3H' \
-    $'<div style="display:none">\nThis promoted receipt is source-current for Stage 3H' \
+expect_full_rewrite_rejected stage3i-status-lifecycle-hidden-div-wrapper \
+    stage3i-status docs/status.md \
+    'This promoted receipt is source-current for Stage 3I' \
+    $'<div style="display:none">\nThis promoted receipt is source-current for Stage 3I' \
     $'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n</div>'
 expect_full_rewrite_rejected stage3f-status-source-stale-appended \
@@ -12595,9 +12682,9 @@ expect_full_rewrite_rejected stage3e-vm-read-only-pop-bypass \
     $'            Instruction::ThrowReadOnly(index) => {\n                return Err(host.read_only_error(*index)?);\n            }' \
     $'            Instruction::ThrowReadOnly(index) => {\n                self.pop()?;\n                return Err(host.read_only_error(*index)?);\n            }'
 expect_full_rewrite_rejected stage3e-status-source-stale-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nStage 3I is source-ahead of that promoted receipt'
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
 expect_full_rewrite_rejected stage3e-crate-test-cfg-excluded \
     stage3e-runtime-evidence src/lib.rs \
     '//! A pure-Rust rewrite of `QuickJS` aiming at semantic feature parity with the' \
@@ -12629,7 +12716,7 @@ expect_full_rewrite_rejected stage3e-outside-src-path-macro-use-assert-eq-shadow
     tests/stage3e_shadow.rs \
     $'macro_rules! assert_eq {\n    (QUICKJS_ORDINARY_READ_ONLY_BC5.len(), 47) => { () };\n    ($($tokens:tt)*) => { ::core::assert_eq!($($tokens)*) };\n}\n'
 expect_full_rewrite_rejected stage3e-status-stage-first-stale-appended \
-    stage3h-status docs/status.md \
+    stage3i-status docs/status.md \
     'The latest full R3fj execution' \
     $'Stage 3E is source-stale and unauthenticated by this receipt.\n\nThe latest full R3fj execution'
 expect_full_rewrite_rejected stage3d-vm-throw-to-return \
@@ -12754,71 +12841,79 @@ expect_full_rewrite_rejected stage3d-runtime-test-nested-cfg \
     $'#[cfg(any())]\nmod disabled_raw48_metadata {\n#[test]\nfn trusted_quickjs_ordinary_throw_rejects_nonordinary_metadata_transactionally() {' \
     $'    assert!(!context.has_exception());\n}\n\n#[test]\nfn trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error() {' \
     $'    assert!(!context.has_exception());\n}\n}\n\n#[test]\nfn trusted_quickjs_ordinary_read_only_uses_exact_zero_stack_wire_and_type_error() {'
-expect_full_rewrite_rejected stage3h-status-current-receipt-erased \
-    stage3h-status docs/status.md \
-    'This promoted receipt is source-current for Stage 3H and covers' \
+expect_full_rewrite_rejected stage3i-status-current-receipt-erased \
+    stage3i-status docs/status.md \
+    'This promoted receipt is source-current for Stage 3I and covers' \
     'This promoted receipt merely describes'
-expect_full_rewrite_rejected stage3h-status-run-tampered \
-    stage3h-status docs/status.md \
-    'exact-source GitHub Actions run `32419997996`' \
-    'exact-source GitHub Actions run `32419997997`'
-expect_full_rewrite_rejected stage3h-status-job-tampered \
-    stage3h-status docs/status.md \
-    'job `96589735474`, authenticates Stage 3H source' \
-    'job `96589735475`, authenticates Stage 3H source'
-expect_full_rewrite_rejected stage3h-status-artifact-tampered \
-    stage3h-status docs/status.md \
-    'always-upload artifact `9425844939`' \
-    'always-upload artifact `9425844940`'
-expect_full_rewrite_rejected stage3h-status-artifact-digest-tampered \
-    stage3h-status docs/status.md \
+expect_full_rewrite_rejected stage3i-status-run-tampered \
+    stage3i-status docs/status.md \
+    'exact-source GitHub Actions run `32497291807`' \
+    'exact-source GitHub Actions run `32497291808`'
+expect_full_rewrite_rejected stage3i-status-job-tampered \
+    stage3i-status docs/status.md \
+    'job `96818622699`, authenticates Stage 3I source' \
+    'job `96818622700`, authenticates Stage 3I source'
+expect_full_rewrite_rejected stage3i-status-artifact-tampered \
+    stage3i-status docs/status.md \
+    'unique exact six-file artifact `9452593259`' \
+    'unique exact six-file artifact `9452593260`'
+expect_full_rewrite_rejected stage3i-status-artifact-digest-tampered \
+    stage3i-status docs/status.md \
+    '97ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb' \
+    '07ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb'
+expect_full_rewrite_rejected stage3i-status-baseline-fingerprint-tampered \
+    stage3i-status docs/status.md \
+    'd21943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22' \
+    '021943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22'
+expect_full_rewrite_rejected stage3i-status-baseline-digest-tampered \
+    stage3i-status docs/status.md \
     '2c8dc920428aef4f10be440d7d18fdf72ec0902af4c7482f5be34ed4f25b1215' \
     '0c8dc920428aef4f10be440d7d18fdf72ec0902af4c7482f5be34ed4f25b1215'
-expect_full_rewrite_rejected stage3h-status-baseline-fingerprint-tampered \
-    stage3h-status docs/status.md \
-    '604438cd3a131ee7799ffcea40cc53963737d6196f14e038030517d33554e4e5' \
-    '004438cd3a131ee7799ffcea40cc53963737d6196f14e038030517d33554e4e5'
-expect_full_rewrite_rejected stage3h-status-baseline-digest-tampered \
-    stage3h-status docs/status.md \
-    '60082b9b4f9acf59f8feea849cc1a8965d4d232421ba3169f04631d170f4212c' \
-    '00082b9b4f9acf59f8feea849cc1a8965d4d232421ba3169f04631d170f4212c'
-stage3h_current_fingerprint=$(
+expect_full_rewrite_rejected stage3i-status-baseline-run-tampered \
+    stage3i-status docs/status.md \
+    'identical to Stage 3H run `32419997996`' \
+    'identical to Stage 3H run `32419997997`'
+expect_full_rewrite_rejected stage3i-status-baseline-artifact-tampered \
+    stage3i-status docs/status.md \
+    'artifact `9425844939` (SHA-256' \
+    'artifact `9425844940` (SHA-256'
+stage3i_current_fingerprint=$(
     sed -n 's/^engine_semantics_sha256=//p' \
         "$repository_root/dev-support/test262/current.conf"
 )
-stage3h_current_source=$(
+stage3i_current_source=$(
     sed -n 's/^engine_semantics_source=//p' \
         "$repository_root/dev-support/test262/current.conf"
 )
-stage3h_current_focused_tsv=$(
+stage3i_current_focused_tsv=$(
     sed -n 's/^focused_tsv_sha256=//p' \
         "$repository_root/dev-support/test262/current.conf"
 )
-stage3h_current_focused_jsonl=$(
+stage3i_current_focused_jsonl=$(
     sed -n 's/^focused_jsonl_sha256=//p' \
         "$repository_root/dev-support/test262/current.conf"
 )
-stage3h_current_full_tsv=$(
+stage3i_current_full_tsv=$(
     sed -n 's/^full_tsv_sha256=//p' \
         "$repository_root/dev-support/test262/current.conf"
 )
-stage3h_current_full_jsonl=$(
+stage3i_current_full_jsonl=$(
     sed -n 's/^full_jsonl_sha256=//p' \
         "$repository_root/dev-support/test262/current.conf"
 )
-[[ $stage3h_current_fingerprint =~ ^[0-9a-f]{64}$ ]] \
-    || die "Stage3H receipt canary requires one canonical current.conf fingerprint"
-[[ $stage3h_current_source =~ ^[0-9a-f]{40}$ ]] \
-    || die "Stage3H receipt canary requires one canonical current.conf source"
-[[ $stage3h_current_focused_tsv =~ ^[0-9a-f]{64}$ ]] \
-    || die "Stage3H receipt canary requires one canonical current.conf focused TSV hash"
-[[ $stage3h_current_focused_jsonl =~ ^[0-9a-f]{64}$ ]] \
-    || die "Stage3H receipt canary requires one canonical current.conf focused JSONL hash"
-[[ $stage3h_current_full_tsv =~ ^[0-9a-f]{64}$ ]] \
-    || die "Stage3H receipt canary requires one canonical current.conf full TSV hash"
-[[ $stage3h_current_full_jsonl =~ ^[0-9a-f]{64}$ ]] \
-    || die "Stage3H receipt canary requires one canonical current.conf full JSONL hash"
-tamper_stage3h_receipt_hex() {
+[[ $stage3i_current_fingerprint =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3I receipt canary requires one canonical current.conf fingerprint"
+[[ $stage3i_current_source =~ ^[0-9a-f]{40}$ ]] \
+    || die "Stage3I receipt canary requires one canonical current.conf source"
+[[ $stage3i_current_focused_tsv =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3I receipt canary requires one canonical current.conf focused TSV hash"
+[[ $stage3i_current_focused_jsonl =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3I receipt canary requires one canonical current.conf focused JSONL hash"
+[[ $stage3i_current_full_tsv =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3I receipt canary requires one canonical current.conf full TSV hash"
+[[ $stage3i_current_full_jsonl =~ ^[0-9a-f]{64}$ ]] \
+    || die "Stage3I receipt canary requires one canonical current.conf full JSONL hash"
+tamper_stage3i_receipt_hex() {
     local value=$1
     if [[ ${value:0:1} == 0 ]]; then
         printf '1%s' "${value:1}"
@@ -12826,111 +12921,115 @@ tamper_stage3h_receipt_hex() {
         printf '0%s' "${value:1}"
     fi
 }
-stage3h_tampered_source=$(tamper_stage3h_receipt_hex "$stage3h_current_source")
-stage3h_tampered_fingerprint=$(tamper_stage3h_receipt_hex "$stage3h_current_fingerprint")
-stage3h_tampered_focused_tsv=$(tamper_stage3h_receipt_hex "$stage3h_current_focused_tsv")
-stage3h_tampered_focused_jsonl=$(tamper_stage3h_receipt_hex "$stage3h_current_focused_jsonl")
-stage3h_tampered_full_tsv=$(tamper_stage3h_receipt_hex "$stage3h_current_full_tsv")
-stage3h_tampered_full_jsonl=$(tamper_stage3h_receipt_hex "$stage3h_current_full_jsonl")
-expect_full_rewrite_rejected stage3h-status-current-source-tampered \
-    stage3h-status docs/status.md \
-    "$stage3h_current_source" \
-    "$stage3h_tampered_source"
-expect_full_rewrite_rejected stage3h-status-current-fingerprint-tampered \
-    stage3h-status docs/status.md \
-    "$stage3h_current_fingerprint" \
-    "$stage3h_tampered_fingerprint"
-expect_full_rewrite_rejected stage3h-status-current-focused-tsv-tampered \
-    stage3h-status docs/status.md \
-    "$stage3h_current_focused_tsv" \
-    "$stage3h_tampered_focused_tsv"
-expect_full_rewrite_rejected stage3h-status-current-focused-jsonl-tampered \
-    stage3h-status docs/status.md \
-    "$stage3h_current_focused_jsonl" \
-    "$stage3h_tampered_focused_jsonl"
-expect_full_rewrite_rejected stage3h-status-current-full-tsv-tampered \
-    stage3h-status docs/status.md \
-    "$stage3h_current_full_tsv" \
-    "$stage3h_tampered_full_tsv"
-expect_full_rewrite_rejected stage3h-status-current-full-jsonl-tampered \
-    stage3h-status docs/status.md \
-    "$stage3h_current_full_jsonl" \
-    "$stage3h_tampered_full_jsonl"
-expect_full_rewrite_rejected stage3h-status-receipt-boundary-erased \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-stale-contradiction-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nThis R3fj receipt is source-stale for Stage 3H.\n\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-unauthenticated-contradiction-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nStage 3H has yet to be authenticated.\n\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-stage3g-only-contradiction-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nOnly Stage 3G is authenticated by this receipt.\n\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-not-authenticated-contradiction-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nStage 3H is not authenticated.\n\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-receipt-stage3g-only-contradiction-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nThis receipt only authenticates Stage 3G.\n\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-stage3f-only-contradiction-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nOnly Stage 3F is authenticated by this receipt.\n\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-pending-promotion-contradiction-appended \
-    stage3h-status docs/status.md \
-    $'claim.\n\nStage 3I is source-ahead of that promoted receipt' \
-    $'claim.\n\nStage 3H is pending a separate exact-source receipt promotion.\n\nStage 3I is source-ahead of that promoted receipt'
-expect_full_rewrite_rejected stage3h-status-html-comment-wrapper \
-    stage3h-status docs/status.md \
+stage3i_tampered_source=$(tamper_stage3i_receipt_hex "$stage3i_current_source")
+stage3i_tampered_fingerprint=$(tamper_stage3i_receipt_hex "$stage3i_current_fingerprint")
+stage3i_tampered_focused_tsv=$(tamper_stage3i_receipt_hex "$stage3i_current_focused_tsv")
+stage3i_tampered_focused_jsonl=$(tamper_stage3i_receipt_hex "$stage3i_current_focused_jsonl")
+stage3i_tampered_full_tsv=$(tamper_stage3i_receipt_hex "$stage3i_current_full_tsv")
+stage3i_tampered_full_jsonl=$(tamper_stage3i_receipt_hex "$stage3i_current_full_jsonl")
+expect_full_rewrite_rejected stage3i-status-current-source-tampered \
+    stage3i-status docs/status.md \
+    "$stage3i_current_source" \
+    "$stage3i_tampered_source"
+expect_full_rewrite_rejected stage3i-status-current-fingerprint-tampered \
+    stage3i-status docs/status.md \
+    "$stage3i_current_fingerprint" \
+    "$stage3i_tampered_fingerprint"
+expect_full_rewrite_rejected stage3i-status-current-focused-tsv-tampered \
+    stage3i-status docs/status.md \
+    "$stage3i_current_focused_tsv" \
+    "$stage3i_tampered_focused_tsv"
+expect_full_rewrite_rejected stage3i-status-current-focused-jsonl-tampered \
+    stage3i-status docs/status.md \
+    "$stage3i_current_focused_jsonl" \
+    "$stage3i_tampered_focused_jsonl"
+expect_full_rewrite_rejected stage3i-status-current-full-tsv-tampered \
+    stage3i-status docs/status.md \
+    "$stage3i_current_full_tsv" \
+    "$stage3i_tampered_full_tsv"
+expect_full_rewrite_rejected stage3i-status-current-full-jsonl-tampered \
+    stage3i-status docs/status.md \
+    "$stage3i_current_full_jsonl" \
+    "$stage3i_tampered_full_jsonl"
+expect_full_rewrite_rejected stage3i-status-receipt-boundary-erased \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-stale-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nThis R3fj receipt is source-stale for Stage 3I.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-unauthenticated-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nStage 3I has yet to be authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-stage3h-only-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nOnly Stage 3H is authenticated by this receipt.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-not-authenticated-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nStage 3I is not authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-receipt-stage3h-only-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nThis receipt only authenticates Stage 3H.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-stage3g-only-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nOnly Stage 3G is authenticated by this receipt.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-stage3f-only-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nOnly Stage 3F is authenticated by this receipt.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-pending-promotion-contradiction-appended \
+    stage3i-status docs/status.md \
+    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
+    $'claim.\n\nStage 3I is pending a separate exact-source receipt promotion.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+expect_full_rewrite_rejected stage3i-status-html-comment-wrapper \
+    stage3i-status docs/status.md \
     'The latest full R3fj execution' \
     $'<!--\n\nThe latest full R3fj execution' \
     'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n\n-->'
-expect_full_rewrite_rejected stage3h-status-fenced-code-wrapper \
-    stage3h-status docs/status.md \
+expect_full_rewrite_rejected stage3i-status-fenced-code-wrapper \
+    stage3i-status docs/status.md \
     'The latest full R3fj execution' \
     $'```text\n\nThe latest full R3fj execution' \
     'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n\n```'
-expect_full_rewrite_rejected stage3h-status-hidden-html-wrapper \
-    stage3h-status docs/status.md \
+expect_full_rewrite_rejected stage3i-status-hidden-html-wrapper \
+    stage3i-status docs/status.md \
     'The latest full R3fj execution' \
     $'<div hidden>\n\nThe latest full R3fj execution' \
     'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n\n</div>'
-stage3h_status_receipt_paragraph=$(
+stage3i_status_receipt_paragraph=$(
     awk '
         found && /^[[:space:]]*$/ { exit }
         /The latest full R3fj execution/ { found = 1 }
         found { print }
     ' "$repository_root/docs/status.md"
 )
-[[ $stage3h_status_receipt_paragraph == *'This promoted receipt is source-current for Stage 3H and covers'* ]] \
-    || die "Stage3H indented-code canary could not locate the promoted receipt"
-stage3h_status_indented_receipt=$(printf '%s\n' \
-    "$stage3h_status_receipt_paragraph" | sed 's/^/    /')
-expect_full_rewrite_rejected stage3h-status-indented-code-wrapper \
-    stage3h-status docs/status.md \
-    "$stage3h_status_receipt_paragraph" \
-    "$stage3h_status_indented_receipt"
-expect_full_rewrite_rejected stage3h-status-focused-lines-drift \
-    stage3h-status dev-support/test262/current.conf \
+[[ $stage3i_status_receipt_paragraph == *'This promoted receipt is source-current for Stage 3I and covers'* ]] \
+    || die "Stage3I indented-code canary could not locate the promoted receipt"
+stage3i_status_indented_receipt=$(printf '%s\n' \
+    "$stage3i_status_receipt_paragraph" | sed 's/^/    /')
+expect_full_rewrite_rejected stage3i-status-indented-code-wrapper \
+    stage3i-status docs/status.md \
+    "$stage3i_status_receipt_paragraph" \
+    "$stage3i_status_indented_receipt"
+expect_full_rewrite_rejected stage3i-status-focused-lines-drift \
+    stage3i-status dev-support/test262/current.conf \
     'focused_tsv_lines=6857' \
     'focused_tsv_lines=6858'
-expect_full_rewrite_rejected stage3h-status-focused-summary-drift \
-    stage3h-status dev-support/test262/current.conf \
+expect_full_rewrite_rejected stage3i-status-focused-summary-drift \
+    stage3i-status dev-support/test262/current.conf \
     'focused_summary=pass=6844' \
     'focused_summary=pass=6843 fail-runtime=1'
-run_stage3h_receipt_escape_canaries \
-    "$tmp_dir/stage3h-receipt-escape-canaries"
+run_stage3i_receipt_escape_canaries \
+    "$tmp_dir/stage3i-receipt-escape-canaries"
 expect_full_rewrite_rejected ordinary-typeof-undefined-html-dda-collapse \
     ordinary-leaf-engine-semantics src/vm.rs \
     '                let is_undefined = matches!(value, Value::Undefined) || host.is_html_dda(&value)?;' \

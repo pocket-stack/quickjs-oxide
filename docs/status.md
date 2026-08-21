@@ -762,41 +762,35 @@ transcript SHA-256 is
 oracle-manifest SHA-256 is
 `7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.
 
-The latest full R3fj execution, exact-source GitHub Actions run `32419997996`,
-job `96589735474`, authenticates Stage 3H source
-`e720322b59dbca1a1dfacf57309978aea35865c3` with engine fingerprint
-`d21943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22`.
-The run reached only the expected stale-receipt checksum failure, while its
-always-upload artifact `9425844939` (SHA-256
-`2c8dc920428aef4f10be440d7d18fdf72ec0902af4c7482f5be34ed4f25b1215`)
+The latest full R3fj execution, exact-source GitHub Actions run `32497291807`,
+job `96818622699`, authenticates Stage 3I source
+`022e7b4860ec9b6e6d2922f835ac694790880126` with engine fingerprint
+`f61afc7314c09e4b507468ca9bffdeb920d3e9c896068b3a9f39b4587caa0333`.
+The canonical `test262-receipt` run completed successfully after its
+current-source gate accepted the expected one-fingerprint receipt refresh; its
+unique exact six-file artifact `9452593259` (SHA-256
+`97ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb`)
 records the 102,050-line TSV as
-`475dabb1aea7c5da419bc682253bff10b9c58e0caa44443901727ddefcdcc403`
+`52a4288752e11855a5101c7a536717690bdcb2d582224defc58bbe1ebfd3da91`
 and the 102,039-line JSONL as
-`3b6064e1d4ede143396608bdaa879a4db77c4735c4422fa5df15a3c6387990ff`.
-Each full receipt contains the Stage 3H fingerprint exactly once and no Stage
-3G fingerprint. Fingerprint-only normalization replaces that single occurrence
-with the authenticated Stage 3G fingerprint
-`604438cd3a131ee7799ffcea40cc53963737d6196f14e038030517d33554e4e5`
-and makes both files byte-for-byte identical to Stage 3G run `32400757601`,
-artifact `9418989747` (SHA-256
-`60082b9b4f9acf59f8feea849cc1a8965d4d232421ba3169f04631d170f4212c`):
+`6886651883250c460dde168d85d1d44524f3b9f4dc5398859a0c2071604e6a3d`.
+Each full receipt contains the Stage 3I fingerprint exactly once and no Stage
+3H fingerprint. Fingerprint-only normalization replaces that single occurrence
+with the authenticated Stage 3H fingerprint
+`d21943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22`
+and makes both files byte-for-byte identical to Stage 3H run `32419997996`,
+artifact `9425844939` (SHA-256
+`2c8dc920428aef4f10be440d7d18fdf72ec0902af4c7482f5be34ed4f25b1215`):
 all 102,037 classified outcomes, 79,982 full passes, and 80,032 eligible
 variants are unchanged. The refreshed 6,844-pass focused TSV and JSONL are
 byte-identical on exact-source replay at hashes
-`952067be772401a49923326ba7dd213240c0c1bee1dfc577314d5316a85db30e`
-and `ff1c31a4ece9100af0b9f1715e4a5963ab453b0e21d96a2d077fa63c41e24d83`.
-This promoted receipt is source-current for Stage 3H and covers the raw-111
-`ToObject` admission and its Rust/C evidence without changing the Test262
+`fec3395e614b678fefcde53e880605126dfed3aab58e2c4e69cc046d70252b98`
+and `f8aa7b03998c11d8cc29ae84bb9a8dcad512ac6d368af8819ed6bf9f7b9144d2`.
+This promoted receipt is source-current for Stage 3I and covers the raw-8
+`PushThis` admission and its Rust/C evidence without changing the Test262
 profile or any focused or full metric reported above. It remains the exact
-Stage-3H lifecycle boundary, retains the Stage-3G raw-11 Object and Stage-3F
-raw-177 coverage, and makes no new conformance claim.
-
-Stage 3I is source-ahead of that promoted receipt and is not covered by run
-`32419997996`, job `96589735474`, artifact `9425844939`, the Stage-3H engine
-fingerprint, or the focused and full reports above. The promoted receipt
-remains source-current for Stage 3H, but it does not cover Stage 3I. Stage 3I
-awaits a separate exact-source receipt promotion; this lifecycle state changes
-no Test262 profile, focused or full metric, or conformance claim.
+Stage-3I lifecycle boundary, retains the Stage-3H raw-111 `ToObject`, Stage-3G
+raw-11 Object, and Stage-3F raw-177 coverage, and makes no new conformance claim.
 
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and
