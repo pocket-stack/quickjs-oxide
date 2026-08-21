@@ -309,6 +309,7 @@ fn lower_ordinary_leaf_op(
         OrdinaryLeafOp::Nop => Instruction::Nop,
         OrdinaryLeafOp::Object => Instruction::Object,
         OrdinaryLeafOp::ToObject => Instruction::ToObject,
+        OrdinaryLeafOp::PushThis => Instruction::PushThis,
         OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),
         OrdinaryLeafOp::PushConst(index) => Instruction::PushConst(index),
         OrdinaryLeafOp::PushUndefined => Instruction::Undefined,
@@ -546,6 +547,10 @@ mod tests {
             Instruction::ToObject
         ));
         assert!(matches!(
+            lower(OrdinaryLeafOp::PushThis),
+            Instruction::PushThis
+        ));
+        assert!(matches!(
             lower(OrdinaryLeafOp::PushI32(-7)),
             Instruction::PushI32(-7)
         ));
@@ -629,6 +634,16 @@ mod tests {
         assert!(matches!(
             lower_ordinary_leaf_op(OrdinaryLeafOp::ToObject, &mut next_synthetic_index),
             Ok(Instruction::ToObject)
+        ));
+        assert_eq!(next_synthetic_index, 7);
+    }
+
+    #[test]
+    fn ordinary_push_this_publishes_one_for_one_without_a_synthetic_constant() {
+        let mut next_synthetic_index = 7;
+        assert!(matches!(
+            lower_ordinary_leaf_op(OrdinaryLeafOp::PushThis, &mut next_synthetic_index),
+            Ok(Instruction::PushThis)
         ));
         assert_eq!(next_synthetic_index, 7);
     }

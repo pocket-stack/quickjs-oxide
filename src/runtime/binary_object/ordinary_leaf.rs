@@ -161,6 +161,7 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     Nop,
     Object,
     ToObject,
+    PushThis,
     PushI32(i32),
     PushConst(u32),
     PushUndefined,
@@ -570,6 +571,7 @@ fn lower_code(
     constant_count: usize,
     input_atom_slot_count: u32,
 ) -> Result<Box<[OrdinaryLeafOp]>, OrdinaryLeafReadError> {
+    validate_push_this_protocol(code)?;
     let mut input_atoms = InputAtomLedger::new(input_atom_slot_count)?;
     let mut output = Vec::new();
     output
@@ -596,6 +598,42 @@ fn lower_code(
     }
     input_atoms.finish()?;
     Ok(output.into_boxed_slice())
+}
+
+/// Pinned QuickJS emits `push_this` as the first physical and semantic
+/// instruction of an ordinary function and never exposes that prologue as an
+/// explicit branch destination. Keep that compiler contract at the archive
+/// boundary so a mechanically valid raw stream cannot manufacture an
+/// alternate entry point or a second receiver conversion.
+fn validate_push_this_protocol(code: &FunctionCode<'_>) -> Result<(), OrdinaryLeafReadError> {
+    let mut push_this_count = 0_usize;
+    let mut push_this_index = None;
+    for (index, instruction) in code.instructions().iter().enumerate() {
+        if matches!(instruction.operation(), FunctionOp::PushThis) {
+            push_this_count += 1;
+            push_this_index.get_or_insert(index);
+        }
+    }
+    if push_this_count == 0 {
+        return Ok(());
+    }
+    if push_this_count != 1 {
+        return unadmitted("push_this must occur exactly once in an ordinary-leaf body");
+    }
+    if push_this_index != Some(0) {
+        return unadmitted("push_this must be typed instruction zero in an ordinary-leaf body");
+    }
+    if code.instructions().iter().any(|instruction| {
+        matches!(
+            instruction.operation(),
+            FunctionOp::IfFalse(0) | FunctionOp::IfTrue(0) | FunctionOp::Goto(0)
+        )
+    }) {
+        return unadmitted(
+            "ordinary-leaf control flow must not explicitly target the push_this prologue",
+        );
+    }
+    Ok(())
 }
 
 struct InputAtomLedger {
@@ -650,6 +688,7 @@ fn lower_operation(
         FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),
         FunctionOp::Object => Ok(OrdinaryLeafOp::Object),
         FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),
+        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),
         FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),
         FunctionOp::PushConstant(index) => lower_constant(*index, constant_count),
         FunctionOp::PushUndefined => Ok(OrdinaryLeafOp::PushUndefined),
@@ -1050,6 +1089,22 @@ mod tests {
         0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01,
         0x00, 0x00, 0x00, 0x00, 0xbb, 0x2a, 0xcb, 0x28,
     ];
+    const NATURAL_STRICT_PUSH_THIS_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c430201000001000100000004010001000008c7c328",
+    );
+    const NATURAL_SLOPPY_PUSH_THIS_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c430200000001000100000004010001000008c7c328",
+    );
+    const MINIMAL_STRICT_PUSH_THIS_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c430201000000000100000002000828",
+    );
+    const MINIMAL_SLOPPY_PUSH_THIS_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c430200000000000100000002000828",
+    );
 
     fn bytes(hex: &str) -> Vec<u8> {
         assert_eq!(hex.len() % 2, 0);
@@ -1299,6 +1354,7 @@ mod tests {
             (FunctionOp::Nop, OrdinaryLeafOp::Nop),
             (FunctionOp::Object, OrdinaryLeafOp::Object),
             (FunctionOp::ToObject, OrdinaryLeafOp::ToObject),
+            (FunctionOp::PushThis, OrdinaryLeafOp::PushThis),
             (
                 FunctionOp::PushI32(i32::MIN),
                 OrdinaryLeafOp::PushI32(i32::MIN),
@@ -1353,6 +1409,108 @@ mod tests {
             lower_operation(&FunctionOp::Goto(8), 4, 4, 4, 8,),
             Err(OrdinaryLeafReadError::Internal(_))
         ));
+    }
+
+    #[test]
+    fn push_this_wires_preserve_strictness_source_order_and_one_to_one_lowering() {
+        for (label, hex, expected_strict, expected_code) in [
+            (
+                "natural strict",
+                NATURAL_STRICT_PUSH_THIS_HEX,
+                true,
+                vec![
+                    OrdinaryLeafOp::PushThis,
+                    OrdinaryLeafOp::PutLocal(0),
+                    OrdinaryLeafOp::GetLocal(0),
+                    OrdinaryLeafOp::Return,
+                ],
+            ),
+            (
+                "natural sloppy",
+                NATURAL_SLOPPY_PUSH_THIS_HEX,
+                false,
+                vec![
+                    OrdinaryLeafOp::PushThis,
+                    OrdinaryLeafOp::PutLocal(0),
+                    OrdinaryLeafOp::GetLocal(0),
+                    OrdinaryLeafOp::Return,
+                ],
+            ),
+            (
+                "minimal strict",
+                MINIMAL_STRICT_PUSH_THIS_HEX,
+                true,
+                vec![OrdinaryLeafOp::PushThis, OrdinaryLeafOp::Return],
+            ),
+            (
+                "minimal sloppy",
+                MINIMAL_SLOPPY_PUSH_THIS_HEX,
+                false,
+                vec![OrdinaryLeafOp::PushThis, OrdinaryLeafOp::Return],
+            ),
+        ] {
+            let wire = bytes(hex);
+            let draft = decode(&wire).unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(draft.metadata().is_strict(), expected_strict, "{label}");
+            assert_eq!(draft.metadata().max_stack(), 1, "{label}");
+            assert_eq!(draft.code(), expected_code, "{label}");
+            assert!(draft.constants().is_empty(), "{label}");
+        }
+    }
+
+    #[test]
+    fn push_this_protocol_rejects_duplicate_nonzero_and_branch_target_zero() {
+        let base = bytes(MINIMAL_STRICT_PUSH_THIS_HEX);
+
+        let mut duplicate = base.clone();
+        duplicate[37] = 3;
+        duplicate.insert(40, 8);
+
+        let mut nonzero = base.clone();
+        nonzero[37] = 3;
+        nonzero.insert(39, 177);
+
+        let mut branch_target_zero = base;
+        branch_target_zero[37] = 4;
+        branch_target_zero.truncate(39);
+        branch_target_zero.extend_from_slice(&[8, 234, (-2_i8) as u8, 40]);
+
+        for (label, wire, expected) in [
+            ("duplicate", duplicate, "push_this must occur exactly once"),
+            (
+                "nonzero",
+                nonzero,
+                "push_this must be typed instruction zero",
+            ),
+            (
+                "branch target zero",
+                branch_target_zero,
+                "must not explicitly target the push_this prologue",
+            ),
+        ] {
+            let Err(OrdinaryLeafReadError::Unadmitted(message)) = decode(&wire) else {
+                panic!("{label} push_this protocol violation was admitted");
+            };
+            assert!(message.contains(expected), "{label}: {message}");
+        }
+    }
+
+    #[test]
+    fn push_this_protocol_preserves_raw8_absent_branch_target_zero() {
+        let mut no_push_this = bytes(MINIMAL_STRICT_PUSH_THIS_HEX);
+        no_push_this[37] = 4;
+        no_push_this.truncate(39);
+        no_push_this.extend_from_slice(&[177, 234, (-2_i8) as u8, 41]);
+
+        let draft = decode(&no_push_this).unwrap();
+        assert_eq!(
+            draft.code(),
+            [
+                OrdinaryLeafOp::Nop,
+                OrdinaryLeafOp::Goto(0),
+                OrdinaryLeafOp::ReturnUndefined,
+            ]
+        );
     }
 
     #[test]

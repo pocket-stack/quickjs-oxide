@@ -408,6 +408,7 @@ fn lower_operation<'image>(
         (Recipe::Nop, NativeOperands::None) => ready(FunctionOp::Nop),
         (Recipe::Object, NativeOperands::None) => ready(FunctionOp::Object),
         (Recipe::ToObject, NativeOperands::None) => ready(FunctionOp::ToObject),
+        (Recipe::PushThis, NativeOperands::None) => ready(FunctionOp::PushThis),
         (Recipe::PushI32, NativeOperands::I32(value) | NativeOperands::NoneInt(value)) => {
             ready(FunctionOp::PushI32(*value))
         }
@@ -711,6 +712,30 @@ mod tests {
         let scalar = operation_for_target(
             InstructionAudience::OrdinaryOnly,
             Recipe::ToObject,
+            TranslationTarget::Scalar,
+            &NativeOperands::None,
+        )
+        .unwrap();
+        assert!(matches!(
+            scalar.into_operations().next(),
+            Some(PendingOperation::Ready(FunctionOp::OutsideTarget))
+        ));
+    }
+
+    #[test]
+    fn operand_free_push_this_translation_is_one_ordinary_typed_operation() {
+        let expansion = lower_operation(Recipe::PushThis, &NativeOperands::None).unwrap();
+        assert_eq!(expansion.len(), 1);
+        let mut operations = expansion.into_operations();
+        assert!(matches!(
+            operations.next(),
+            Some(PendingOperation::Ready(FunctionOp::PushThis))
+        ));
+        assert!(operations.next().is_none());
+
+        let scalar = operation_for_target(
+            InstructionAudience::OrdinaryOnly,
+            Recipe::PushThis,
             TranslationTarget::Scalar,
             &NativeOperands::None,
         )

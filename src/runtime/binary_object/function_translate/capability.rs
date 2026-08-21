@@ -29,6 +29,7 @@ pub(super) enum Recipe {
     Nop,
     Object,
     ToObject,
+    PushThis,
     PushI32,
     PushConstant,
     PushAtom,
@@ -110,7 +111,7 @@ macro_rules! row {
 
 /// One explicit policy row for each QuickJS 2026-06-04 final opcode.
 ///
-/// Counts are locked by tests: 112 Blocked, 1 ScalarOnly, 102 OrdinaryOnly,
+/// Counts are locked by tests: 111 Blocked, 1 ScalarOnly, 103 OrdinaryOnly,
 /// and 29 Shared.
 #[rustfmt::skip]
 pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
@@ -122,7 +123,7 @@ pub(super) const CAPABILITY_REGISTRY: [CapabilityRow; PINNED_OPCODE_COUNT] = [
     row!(5, Atom, Blocked, ValueConstruction),
     row!(6, None, Shared, Recipe::PushUndefined),
     row!(7, None, Shared, Recipe::PushNull),
-    row!(8, None, Blocked, ValueConstruction),
+    row!(8, None, OrdinaryOnly, Recipe::PushThis),
     row!(9, None, Shared, Recipe::PushFalse),
     row!(10, None, Shared, Recipe::PushTrue),
     row!(11, None, OrdinaryOnly, Recipe::Object),
@@ -431,11 +432,11 @@ mod tests {
         }
         assert_eq!(
             (blocked, scalar_only, ordinary_only, shared),
-            (112, 1, 102, 29)
+            (111, 1, 103, 29)
         );
         assert_eq!(scalar_only + shared, 30);
-        assert_eq!(ordinary_only + shared, 131);
-        assert_eq!(scalar_only + ordinary_only + shared, 132);
+        assert_eq!(ordinary_only + shared, 132);
+        assert_eq!(scalar_only + ordinary_only + shared, 133);
     }
 
     #[test]
@@ -574,15 +575,32 @@ mod tests {
         assert_eq!(row.policy, CapabilityPolicy::OrdinaryOnly(Recipe::ToObject));
         assert_eq!(opcode.n_pop(), 1);
         assert_eq!(opcode.n_push(), 1);
-        for raw in [8, 112] {
-            assert_eq!(
-                CAPABILITY_REGISTRY[raw].policy,
-                CapabilityPolicy::Blocked(TranslationBlocker::ValueConstruction)
-            );
-        }
+        assert_eq!(
+            CAPABILITY_REGISTRY[112].policy,
+            CapabilityPolicy::Blocked(TranslationBlocker::ValueConstruction)
+        );
         assert_eq!(
             CAPABILITY_REGISTRY[47].policy,
             CapabilityPolicy::Blocked(TranslationBlocker::Completion)
+        );
+    }
+
+    #[test]
+    fn ordinary_push_this_is_the_exact_operand_free_raw8_row() {
+        let row = CAPABILITY_REGISTRY[8];
+        let opcode = PinnedOpcode::from_byte(8).unwrap();
+        assert_eq!(row.raw, 8);
+        assert_eq!(row.expected_format, OpcodeFormat::None);
+        assert_eq!(row.policy, CapabilityPolicy::OrdinaryOnly(Recipe::PushThis));
+        assert_eq!(opcode.n_pop(), 0);
+        assert_eq!(opcode.n_push(), 1);
+        assert_eq!(
+            CAPABILITY_REGISTRY[47].policy,
+            CapabilityPolicy::Blocked(TranslationBlocker::Completion)
+        );
+        assert_eq!(
+            CAPABILITY_REGISTRY[112].policy,
+            CapabilityPolicy::Blocked(TranslationBlocker::ValueConstruction)
         );
     }
 
@@ -612,8 +630,8 @@ mod tests {
             };
             counts[index] += 1;
         }
-        assert_eq!(counts, [1, 6, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]);
+        assert_eq!(counts, [1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]);
         assert!(counts.into_iter().all(|count| count != 0));
-        assert_eq!(counts.into_iter().sum::<usize>(), 112);
+        assert_eq!(counts.into_iter().sum::<usize>(), 111);
     }
 }

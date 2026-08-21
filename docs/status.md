@@ -203,8 +203,8 @@ stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
 formats and projects only sanitized semantic DTOs to those admission bridges.
-The scalar policy remains 30 opcodes; the stage-3H ordinary policy is 131,
-and their union is 132 (112 blocked, one scalar-only, 102 ordinary-only, and 29
+The scalar policy remains 30 opcodes; the stage-3I ordinary policy is 132,
+and their union is 133 (111 blocked, one scalar-only, 103 ordinary-only, and 29
 shared registry rows). The reviewed stage-one 57-row atom-free set, stage-two
 five-row plain-call set, and stage-3A raw 33, 36, and 38 set are unchanged;
 stage 3B adds exactly raw 39 `apply`, and stage 3C adds exactly raw 35
@@ -212,13 +212,14 @@ stage 3B adds exactly raw 39 `apply`, and stage 3C adds exactly raw 35
 `throw`; stage 3E adds exactly raw 49 `throw_error` with its `AtomU8` subtype
 fixed to zero; stage 3F adds exactly raw 177 `nop` with its `None` operand;
 stage 3G adds exactly raw 11 `object` with its `None` operand; stage 3H adds
-exactly raw 111 `to_object` with its `None` operand and 1-to-1 stack effect.
-Raw 8 `push_this`, raw 47 `return_async`, and raw 112 `to_propkey` remain
-blocked. The now-empty `Invocation` and
+exactly raw 111 `to_object` with its `None` operand and 1-to-1 stack effect;
+stage 3I adds exactly raw 8 `push_this` with its `None` operand and ordinary-only
+audience. Raw 47 `return_async` and raw 112 `to_propkey` remain blocked. The
+now-empty `Invocation` and
 `Exception` blockers are removed; the
 blocked frontier retains 15 typed categories, each with at least one row. In
 the registry's typed-category order, its exact count vector is
-`1, 6, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
+`1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
@@ -497,10 +498,32 @@ rejects `null` and `undefined` with a defining-realm `TypeError`, and sends only
 Boolean, Number, String, BigInt, and Symbol primitives to the existing wrapper
 allocator. That allocator creates a fresh Object with the executing bytecode's
 defining-realm intrinsic prototype and stored primitive payload; neither path
-invokes `valueOf`, `toString`, or `Symbol.toPrimitive`. Raw 8 `push_this`, raw
-47 `return_async`, and raw 112 `to_propkey` remain blocked. Stage 3H changes
-neither production bytecode nor VM implementation and adds no source syntax,
-public API, Test262 admission, or Feature Parity claim.
+invokes `valueOf`, `toString`, or `Symbol.toPrimitive`. At that milestone raw 8
+`push_this`, raw 47 `return_async`, and raw 112 `to_propkey` remained blocked;
+Stage 3I moves only raw 8. Stage 3H changes neither production bytecode nor VM
+implementation and adds no source syntax, public API, Test262 admission, or
+Feature Parity claim.
+
+Stage 3I admits raw 8 only as the exact one-to-one typed chain
+`Recipe::PushThis` to `FunctionOp::PushThis` to
+`OrdinaryLeafOp::PushThis` and finally the existing
+`Instruction::PushThis`. Its `None` operand and ordinary-only audience are
+never aliased, widened, erased, expanded, or remapped; scalar translation
+remains `OutsideTarget`, and publication neither drops the operation nor
+consumes a synthetic constant index. Because the existing VM normalizes and
+caches the receiver once per activation, admission also preserves the pinned
+compiler entrance protocol after source branches have resolved to typed output
+indices and before ordinary draft publication: a body without raw 8 is
+unchanged, while a body containing raw 8 must contain it exactly once at typed
+instruction index zero, and no explicit `IfFalse`, `IfTrue`, or `Goto` may
+target index zero. This applies equally to 8-, 16-, and 32-bit physical label
+forms after translation. Strict calls retain the original receiver. Sloppy
+nullish calls use the defining-realm global, Object receivers retain identity,
+and sloppy primitives receive a fresh defining-realm wrapper. Raw 47 remains
+blocked as `Completion`, and raw 112 remains blocked as
+`ValueConstruction`. Stage 3I changes neither the engine Instruction set nor
+VM implementation and adds no source syntax, public API, Test262 admission, or
+Feature Parity claim.
 
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
@@ -623,6 +646,28 @@ heap/atom rollback before retry. A separate branch fixture publishes
 `[GetArg(0), Goto(2), ToObject, Return]` and proves the typed raw111 index,
 Boolean boxing prototype, and clean pending state.
 
+Stage-3I Rust evidence pins compiler-natural strict and sloppy 47-byte
+return-`this` wires whose sole mode delta is `js_mode`, whose code begins at
+offset 43, and whose exact body `08c7c328` publishes `[PushThis, PutLocal(0),
+GetLocal(0), Return]`. Their FNV-1a-64 values are `4ec7e0187375d810` and
+`4e7f8f98adff8463`; their SHA-256 values are
+`786376192d5bfe7eb07115f62788707619ee54e8721acfa66dae1d110a580e39`
+and `f0430a7c241caaf94703bd5de73289d4f90fea3ee9cfaf22a660ed80df3de0a6`.
+The mechanically derived strict and sloppy property-free 41-byte wires retain
+exact body `0828`, empty constants, maximum stack one, and FNV-1a-64 values
+`3c3e393fef883bc5` and `0e2485c97eea9cfa`. Strict undefined, null, primitive,
+and Object receivers retain exact value or identity. Sloppy nullish receivers
+become the defining global, Objects retain identity, and repeated Boolean,
+integer and floating Number, String, BigInt, and Symbol calls produce distinct
+wrappers with defining-realm prototypes and original `valueOf` payloads. The
+exact 43-byte duplicate-raw8 mismatch wire and exact 65-byte one-raw8 loop back
+to typed index zero are rejected as `Unsupported`; nonzero placement and all
+seven admitted physical branch encodings are rejected by the same protocol.
+Every failure preserves heap and atom counts and leaves no pending exception
+before the strict property-free wire retries successfully. A raw8-absent
+`Nop; Goto(0); ReturnUndefined` regression remains admitted, proving the
+protocol does not narrow older ordinary bodies.
+
 The pinned stage-3A C oracle compiler-naturally emits the exact target raws 33,
 36, and 38, with compiler union 17, 33, 36, 38, 40, 62, 155, 179, and
 207-209, then locks whole-wire identity across read/write and fresh-runtime
@@ -698,14 +743,24 @@ execution preserves object identity without user coercion, creates fresh
 Boolean, integer and floating Number, String, BigInt, and Symbol wrappers with
 their original payload and defining-realm prototypes, and reports nullish
 defining-realm `TypeError` through direct pending/GetException clearing and
-caller catch. Strict C11 produced a byte-identical 1,508-line transcript; all
-19 authenticated oracles
-pass both direct validation and the full oracle gate. The source SHA-256 is
-`f323eafb8dbdd09ac7fe6c858516eb4d535ef73c2a6f7a9f2e07ecc4f5bcca62`, the
+caller catch. Stage 3I additionally compiler-naturally emits strict and sloppy
+47-byte return-`this` wires, then mechanically removes the one local descriptor
+and `put_loc0; get_loc0` shuttle to produce the strict and sloppy 41-byte
+property-free `0828` wires. Fresh-runtime read/write is byte-identical for all
+four. Execution locks strict receiver preservation, sloppy defining-global
+substitution, Object identity, and fresh defining-realm Boolean, Number,
+String, BigInt, and Symbol wrappers with exact payloads. The authenticated
+43-byte duplicate-raw8 wire and 65-byte branch-back-to-raw8 wire both return
+`false` for sloppy primitive `this=1`, proving that pinned QuickJS reboxes on
+each raw8 execution and why the Rust entrance protocol needs both the
+exact-once and no-target-zero predicates. Strict C11 produced a byte-identical
+1,594-line transcript; all 19 authenticated oracles pass both direct validation
+and the full oracle gate. The source SHA-256 is
+`e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c4`, the
 transcript SHA-256 is
-`88ce0f6f959b47fc9b6ebdfffe88b8a5fc042922af23b1588e22bef882b0ad8d`, and the
+`5750753443089a599e2863dcad6d282c597b27cf1683b48e3ab76664091e71e6`, and the
 oracle-manifest SHA-256 is
-`8f9e5662a9a3b829deec012e15821816f01223015d8ded0b14629da36c22a4a4`.
+`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.
 
 The latest full R3fj execution, exact-source GitHub Actions run `32419997996`,
 job `96589735474`, authenticates Stage 3H source

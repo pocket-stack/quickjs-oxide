@@ -201,6 +201,57 @@ static const uint8_t ordinary_to_object_bytecode[] = {
     0x01, 0x01, 0x00, 0x00, 0x00, 0x03, 0x01, 0x00,
     0x01, 0x00, 0x00, 0xcf, 0x6f, 0x28,
 };
+static const uint8_t ordinary_push_this_strict_natural_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0x08, 0xc7, 0xc3, 0x28,
+};
+static const uint8_t ordinary_push_this_sloppy_natural_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0x08, 0xc7, 0xc3, 0x28,
+};
+static const uint8_t ordinary_push_this_strict_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x08,
+    0x28,
+};
+static const uint8_t ordinary_push_this_sloppy_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x08,
+    0x28,
+};
+static const uint8_t ordinary_push_this_sloppy_duplicate_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x08,
+    0x08, 0xa9, 0x28,
+};
+static const uint8_t ordinary_push_this_sloppy_loop_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x02, 0x00,
+    0x02, 0x02, 0x00, 0x00, 0x00, 0x12, 0x02, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x08,
+    0xcf, 0x69, 0x0c, 0x00, 0x00, 0x00, 0x0a, 0xd3,
+    0xd4, 0x6a, 0xf5, 0xff, 0xff, 0xff, 0xd0, 0xa9,
+    0x28,
+};
 _Static_assert(sizeof(ordinary_nop_natural_bytecode) == 40,
                "ordinary nop natural baseline must remain 40 bytes");
 _Static_assert(sizeof(ordinary_nop_bytecode) == 41,
@@ -211,6 +262,18 @@ _Static_assert(sizeof(ordinary_to_object_natural_bytecode) == 56,
                "ordinary to_object natural oracle must remain 56 bytes");
 _Static_assert(sizeof(ordinary_to_object_bytecode) == 46,
                "ordinary to_object manual oracle must remain 46 bytes");
+_Static_assert(sizeof(ordinary_push_this_strict_natural_bytecode) == 47,
+               "strict push_this natural oracle must remain 47 bytes");
+_Static_assert(sizeof(ordinary_push_this_sloppy_natural_bytecode) == 47,
+               "sloppy push_this natural oracle must remain 47 bytes");
+_Static_assert(sizeof(ordinary_push_this_strict_bytecode) == 41,
+               "strict push_this manual oracle must remain 41 bytes");
+_Static_assert(sizeof(ordinary_push_this_sloppy_bytecode) == 41,
+               "sloppy push_this manual oracle must remain 41 bytes");
+_Static_assert(sizeof(ordinary_push_this_sloppy_duplicate_bytecode) == 43,
+               "duplicate push_this oracle must remain 43 bytes");
+_Static_assert(sizeof(ordinary_push_this_sloppy_loop_bytecode) == 65,
+               "looped push_this oracle must remain 65 bytes");
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -3629,7 +3692,7 @@ static size_t ordinary_opcode_size(uint8_t raw) {
         return 3;
     case 49:
         return 6;
-    case 62: case 105: case 176:
+    case 62: case 105: case 106: case 176:
         return 5;
     case 187: case 189: case 232: case 233: case 234:
         return 2;
@@ -7341,6 +7404,1002 @@ cleanup:
     return status;
 }
 
+static int expect_ordinary_push_this_completion(JSContext *compile_context) {
+    enum {
+        PUSH_THIS_STRICT,
+        PUSH_THIS_SLOPPY,
+        PUSH_THIS_MODE_COUNT,
+    };
+    enum {
+        PUSH_THIS_NATURAL,
+        PUSH_THIS_MANUAL,
+        PUSH_THIS_WIRE_KIND_COUNT,
+    };
+    enum {
+        PUSH_THIS_BOOLEAN,
+        PUSH_THIS_NUMBER,
+        PUSH_THIS_STRING,
+        PUSH_THIS_BIGINT,
+        PUSH_THIS_SYMBOL,
+        PUSH_THIS_PROTOTYPE_COUNT,
+    };
+    static const char *const mode_labels[PUSH_THIS_MODE_COUNT] = {
+        "strict", "sloppy",
+    };
+    static const char *const sources[PUSH_THIS_MODE_COUNT] = {
+        "(function(){'use strict';return this;})",
+        "(function(){return this;})",
+    };
+    static const char *const source_hex[PUSH_THIS_MODE_COUNT] = {
+        "2866756e6374696f6e28297b2775736520737472696374273b72657475726e20746869733b7d29",
+        "2866756e6374696f6e28297b72657475726e20746869733b7d29",
+    };
+    static const uint8_t *const expected_natural_wires[PUSH_THIS_MODE_COUNT] = {
+        ordinary_push_this_strict_natural_bytecode,
+        ordinary_push_this_sloppy_natural_bytecode,
+    };
+    static const uint8_t *const expected_manual_wires[PUSH_THIS_MODE_COUNT] = {
+        ordinary_push_this_strict_bytecode,
+        ordinary_push_this_sloppy_bytecode,
+    };
+    static const uint64_t expected_natural_fnv[PUSH_THIS_MODE_COUNT] = {
+        UINT64_C(0x4ec7e0187375d810),
+        UINT64_C(0x4e7f8f98adff8463),
+    };
+    static const uint64_t expected_manual_fnv[PUSH_THIS_MODE_COUNT] = {
+        UINT64_C(0x3c3e393fef883bc5),
+        UINT64_C(0x0e2485c97eea9cfa),
+    };
+    static const char *const natural_sha256[PUSH_THIS_MODE_COUNT] = {
+        "786376192d5bfe7eb07115f62788707619ee54e8721acfa66dae1d110a580e39",
+        "f0430a7c241caaf94703bd5de73289d4f90fea3ee9cfaf22a660ed80df3de0a6",
+    };
+    static const char *const manual_sha256[PUSH_THIS_MODE_COUNT] = {
+        "9b14c5245a78e0a069967089cf6f89aefac3e12749d16eba36e4c15b72a3c99e",
+        "213b3b6a332d4cf69e4c726b372c1f0087e70fc9c263a6a2193ce4763fb62648",
+    };
+    static const OrdinaryFunctionMetadata expected_natural_metadata[
+        PUSH_THIS_MODE_COUNT] = {
+        { 0x0243, 1, { 0, 1, 0, 1, 0, 0, 0, 4, 1 }, 43 },
+        { 0x0243, 0, { 0, 1, 0, 1, 0, 0, 0, 4, 1 }, 43 },
+    };
+    static const OrdinaryFunctionMetadata expected_manual_metadata[
+        PUSH_THIS_MODE_COUNT] = {
+        { 0x0243, 1, { 0, 0, 0, 1, 0, 0, 0, 2, 0 }, 39 },
+        { 0x0243, 0, { 0, 0, 0, 1, 0, 0, 0, 2, 0 }, 39 },
+    };
+    static const OrdinaryFunctionMetadata expected_duplicate_metadata = {
+        0x0243, 0, { 0, 0, 0, 2, 0, 0, 0, 4, 0 }, 39,
+    };
+    static const OrdinaryFunctionMetadata expected_loop_metadata = {
+        0x0243, 0, { 2, 0, 2, 2, 0, 0, 0, 18, 2 }, 47,
+    };
+    static const char *const prototype_names[PUSH_THIS_PROTOTYPE_COUNT] = {
+        "Boolean", "Number", "String", "BigInt", "Symbol",
+    };
+    static const char *const primitive_labels[] = {
+        "Boolean", "integer-Number", "floating-Number",
+        "String", "BigInt", "Symbol",
+    };
+    static const size_t primitive_prototypes[] = {
+        PUSH_THIS_BOOLEAN, PUSH_THIS_NUMBER, PUSH_THIS_NUMBER,
+        PUSH_THIS_STRING, PUSH_THIS_BIGINT, PUSH_THIS_SYMBOL,
+    };
+    JSValue compiled[PUSH_THIS_MODE_COUNT] = {
+        JS_UNDEFINED, JS_UNDEFINED,
+    };
+    uint8_t *natural_wires[PUSH_THIS_MODE_COUNT] = { NULL, NULL };
+    size_t natural_wire_sizes[PUSH_THIS_MODE_COUNT] = { 0, 0 };
+    uint8_t manual_wires[PUSH_THIS_MODE_COUNT]
+                        [sizeof(ordinary_push_this_strict_bytecode)];
+    OrdinaryFunctionMetadata natural_children[PUSH_THIS_MODE_COUNT] = {
+        { 0 }, { 0 },
+    };
+    OrdinaryFunctionMetadata manual_children[PUSH_THIS_MODE_COUNT] = {
+        { 0 }, { 0 },
+    };
+    uint8_t natural_raws[PUSH_THIS_MODE_COUNT][256] = { { 0 }, { 0 } };
+    uint8_t manual_raws[PUSH_THIS_MODE_COUNT][256] = { { 0 }, { 0 } };
+    uint8_t natural_terminals[PUSH_THIS_MODE_COUNT] = { 0, 0 };
+    uint8_t manual_terminals[PUSH_THIS_MODE_COUNT] = { 0, 0 };
+    OrdinaryFunctionMetadata duplicate_child = { 0 };
+    OrdinaryFunctionMetadata loop_child = { 0 };
+    uint8_t duplicate_raws[256] = { 0 };
+    uint8_t loop_raws[256] = { 0 };
+    uint8_t duplicate_terminal = 0;
+    uint8_t loop_terminal = 0;
+    JSRuntime *runtime = NULL;
+    JSContext *defining_context = NULL;
+    JSContext *caller_context = NULL;
+    JSValue functions[PUSH_THIS_WIRE_KIND_COUNT][PUSH_THIS_MODE_COUNT];
+    JSValue duplicate_function = JS_UNDEFINED;
+    JSValue loop_function = JS_UNDEFINED;
+    JSValue defining_global = JS_UNDEFINED;
+    JSValue caller_global = JS_UNDEFINED;
+    JSValue defining_constructor = JS_UNDEFINED;
+    JSValue caller_constructor = JS_UNDEFINED;
+    JSValue defining_prototypes[PUSH_THIS_PROTOTYPE_COUNT];
+    JSValue caller_prototypes[PUSH_THIS_PROTOTYPE_COUNT];
+    JSValue primitives[] = {
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+    };
+    JSValue object = JS_UNDEFINED;
+    JSValue primitive_one = JS_UNDEFINED;
+    JSValue loaded = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED;
+    JSValue first_wrapper = JS_UNDEFINED;
+    JSValue second_wrapper = JS_UNDEFINED;
+    JSValue prototype = JS_UNDEFINED;
+    JSValue value_of = JS_UNDEFINED;
+    JSValue unboxed = JS_UNDEFINED;
+    uint8_t *rewritten = NULL;
+    size_t rewritten_size = 0;
+    int status = -1;
+
+    for (size_t kind = 0; kind < PUSH_THIS_WIRE_KIND_COUNT; kind++) {
+        for (size_t mode = 0; mode < PUSH_THIS_MODE_COUNT; mode++)
+            functions[kind][mode] = JS_UNDEFINED;
+    }
+    for (size_t index = 0; index < PUSH_THIS_PROTOTYPE_COUNT; index++) {
+        defining_prototypes[index] = JS_UNDEFINED;
+        caller_prototypes[index] = JS_UNDEFINED;
+    }
+
+    for (size_t mode = 0; mode < PUSH_THIS_MODE_COUNT; mode++) {
+        size_t raw_count = 0;
+
+        compiled[mode] = JS_Eval(
+            compile_context, sources[mode], strlen(sources[mode]),
+            mode == PUSH_THIS_STRICT ? "ordinary-push-this-strict-natural"
+                                     : "ordinary-push-this-sloppy-natural",
+            JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (JS_IsException(compiled[mode])) {
+            report_exception(compile_context,
+                             "ordinary push_this natural compile failed");
+            compiled[mode] = JS_UNDEFINED;
+            goto cleanup;
+        }
+        natural_wires[mode] = JS_WriteObject(
+            compile_context, &natural_wire_sizes[mode], compiled[mode],
+            JS_WRITE_OBJ_BYTECODE);
+        if (!natural_wires[mode]) {
+            report_exception(compile_context,
+                             "ordinary push_this natural write failed");
+            goto cleanup;
+        }
+        if (natural_wire_sizes[mode] !=
+                sizeof(ordinary_push_this_strict_natural_bytecode) ||
+            memcmp(natural_wires[mode], expected_natural_wires[mode],
+                   natural_wire_sizes[mode]) != 0 ||
+            ordinary_fnv1a64(natural_wires[mode],
+                             natural_wire_sizes[mode]) !=
+                expected_natural_fnv[mode] ||
+            natural_wires[mode][1] != 0 ||
+            ordinary_wire_child_metadata(
+                natural_wires[mode], natural_wire_sizes[mode],
+                &natural_children[mode]) ||
+            !ordinary_metadata_equal(&natural_children[mode],
+                                     &expected_natural_metadata[mode]) ||
+            ordinary_collect_opcodes(
+                natural_wires[mode] + natural_children[mode].code_offset,
+                natural_children[mode].fields[ORD_CODE],
+                natural_raws[mode]) ||
+            ordinary_terminal_opcode(
+                natural_wires[mode] + natural_children[mode].code_offset,
+                natural_children[mode].fields[ORD_CODE],
+                &natural_terminals[mode])) {
+            fprintf(stderr,
+                    "ordinary push_this %s natural wire/metadata drifted\n",
+                    mode_labels[mode]);
+            goto cleanup;
+        }
+        for (unsigned raw = 0; raw < 256; raw++)
+            raw_count += natural_raws[mode][raw] != 0;
+        if (raw_count != 4 || !natural_raws[mode][8] ||
+            !natural_raws[mode][40] || !natural_raws[mode][195] ||
+            !natural_raws[mode][199] || natural_terminals[mode] != 40) {
+            fprintf(stderr,
+                    "ordinary push_this %s natural opcode set drifted\n",
+                    mode_labels[mode]);
+            goto cleanup;
+        }
+
+        memcpy(manual_wires[mode], natural_wires[mode], 39);
+        manual_wires[mode][31] = 0;
+        manual_wires[mode][37] = 2;
+        manual_wires[mode][38] = 0;
+        manual_wires[mode][39] = 8;
+        manual_wires[mode][40] = 40;
+        raw_count = 0;
+        if (memcmp(manual_wires[mode], expected_manual_wires[mode],
+                   sizeof(manual_wires[mode])) != 0 ||
+            ordinary_fnv1a64(manual_wires[mode],
+                             sizeof(manual_wires[mode])) !=
+                expected_manual_fnv[mode] ||
+            manual_wires[mode][1] != 0 ||
+            ordinary_wire_child_metadata(
+                manual_wires[mode], sizeof(manual_wires[mode]),
+                &manual_children[mode]) ||
+            !ordinary_metadata_equal(&manual_children[mode],
+                                     &expected_manual_metadata[mode]) ||
+            ordinary_collect_opcodes(
+                manual_wires[mode] + manual_children[mode].code_offset,
+                manual_children[mode].fields[ORD_CODE], manual_raws[mode]) ||
+            ordinary_terminal_opcode(
+                manual_wires[mode] + manual_children[mode].code_offset,
+                manual_children[mode].fields[ORD_CODE],
+                &manual_terminals[mode])) {
+            fprintf(stderr,
+                    "ordinary push_this %s manual wire/metadata drifted\n",
+                    mode_labels[mode]);
+            goto cleanup;
+        }
+        for (unsigned raw = 0; raw < 256; raw++)
+            raw_count += manual_raws[mode][raw] != 0;
+        if (raw_count != 2 || !manual_raws[mode][8] ||
+            !manual_raws[mode][40] || manual_terminals[mode] != 40) {
+            fprintf(stderr,
+                    "ordinary push_this %s manual opcode set drifted\n",
+                    mode_labels[mode]);
+            goto cleanup;
+        }
+    }
+    {
+        size_t natural_differences = 0;
+        size_t manual_differences = 0;
+        for (size_t index = 0;
+             index < sizeof(ordinary_push_this_strict_natural_bytecode);
+             index++) {
+            if (natural_wires[PUSH_THIS_STRICT][index] !=
+                natural_wires[PUSH_THIS_SLOPPY][index]) {
+                natural_differences++;
+                if (index != 28)
+                    goto cleanup;
+            }
+        }
+        for (size_t index = 0;
+             index < sizeof(ordinary_push_this_strict_bytecode); index++) {
+            if (manual_wires[PUSH_THIS_STRICT][index] !=
+                manual_wires[PUSH_THIS_SLOPPY][index]) {
+                manual_differences++;
+                if (index != 28)
+                    goto cleanup;
+            }
+        }
+        if (natural_differences != 1 || manual_differences != 1 ||
+            natural_wires[PUSH_THIS_STRICT][28] != 1 ||
+            natural_wires[PUSH_THIS_SLOPPY][28] != 0 ||
+            manual_wires[PUSH_THIS_STRICT][28] != 1 ||
+            manual_wires[PUSH_THIS_SLOPPY][28] != 0) {
+            fputs("ordinary push_this strict/sloppy mode delta drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+    }
+    {
+        const uint8_t *duplicate_code;
+        const uint8_t *loop_code;
+        size_t duplicate_raw_count = 0;
+        size_t loop_raw_count = 0;
+        size_t duplicate_raw8_count = 0;
+        size_t loop_raw8_count = 0;
+        size_t offset = 0;
+
+        if (ordinary_fnv1a64(
+                ordinary_push_this_sloppy_duplicate_bytecode,
+                sizeof(ordinary_push_this_sloppy_duplicate_bytecode)) !=
+                UINT64_C(0x920de09aaf63833e) ||
+            ordinary_push_this_sloppy_duplicate_bytecode[1] != 0 ||
+            ordinary_wire_child_metadata(
+                ordinary_push_this_sloppy_duplicate_bytecode,
+                sizeof(ordinary_push_this_sloppy_duplicate_bytecode),
+                &duplicate_child) ||
+            !ordinary_metadata_equal(&duplicate_child,
+                                     &expected_duplicate_metadata) ||
+            ordinary_collect_opcodes(
+                ordinary_push_this_sloppy_duplicate_bytecode +
+                    duplicate_child.code_offset,
+                duplicate_child.fields[ORD_CODE], duplicate_raws) ||
+            ordinary_terminal_opcode(
+                ordinary_push_this_sloppy_duplicate_bytecode +
+                    duplicate_child.code_offset,
+                duplicate_child.fields[ORD_CODE], &duplicate_terminal)) {
+            fputs("ordinary push_this duplicate wire/metadata drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+        duplicate_code = ordinary_push_this_sloppy_duplicate_bytecode +
+                         duplicate_child.code_offset;
+        while (offset < duplicate_child.fields[ORD_CODE]) {
+            size_t size = ordinary_opcode_size(duplicate_code[offset]);
+            if (size == 0 ||
+                size > duplicate_child.fields[ORD_CODE] - offset) {
+                fputs("ordinary push_this duplicate code malformed\n",
+                      stderr);
+                goto cleanup;
+            }
+            duplicate_raw8_count += duplicate_code[offset] == 8;
+            offset += size;
+        }
+        for (unsigned raw = 0; raw < 256; raw++)
+            duplicate_raw_count += duplicate_raws[raw] != 0;
+        if (duplicate_raw_count != 3 || duplicate_raw8_count != 2 ||
+            !duplicate_raws[8] || !duplicate_raws[40] ||
+            !duplicate_raws[169] || duplicate_terminal != 40 ||
+            memcmp(duplicate_code, "\x08\x08\xa9\x28", 4) != 0) {
+            fputs("ordinary push_this duplicate opcode evidence drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+
+        if (ordinary_fnv1a64(
+                ordinary_push_this_sloppy_loop_bytecode,
+                sizeof(ordinary_push_this_sloppy_loop_bytecode)) !=
+                UINT64_C(0xfa100ff2b0854673) ||
+            ordinary_push_this_sloppy_loop_bytecode[1] != 0 ||
+            ordinary_wire_child_metadata(
+                ordinary_push_this_sloppy_loop_bytecode,
+                sizeof(ordinary_push_this_sloppy_loop_bytecode),
+                &loop_child) ||
+            !ordinary_metadata_equal(&loop_child, &expected_loop_metadata) ||
+            ordinary_collect_opcodes(
+                ordinary_push_this_sloppy_loop_bytecode +
+                    loop_child.code_offset,
+                loop_child.fields[ORD_CODE], loop_raws) ||
+            ordinary_terminal_opcode(
+                ordinary_push_this_sloppy_loop_bytecode +
+                    loop_child.code_offset,
+                loop_child.fields[ORD_CODE], &loop_terminal)) {
+            fputs("ordinary push_this loop wire/metadata drifted\n", stderr);
+            goto cleanup;
+        }
+        loop_code = ordinary_push_this_sloppy_loop_bytecode +
+                    loop_child.code_offset;
+        offset = 0;
+        while (offset < loop_child.fields[ORD_CODE]) {
+            size_t size = ordinary_opcode_size(loop_code[offset]);
+            if (size == 0 || size > loop_child.fields[ORD_CODE] - offset) {
+                fputs("ordinary push_this loop code malformed\n", stderr);
+                goto cleanup;
+            }
+            loop_raw8_count += loop_code[offset] == 8;
+            offset += size;
+        }
+        for (unsigned raw = 0; raw < 256; raw++)
+            loop_raw_count += loop_raws[raw] != 0;
+        if (loop_raw_count != 10 || loop_raw8_count != 1 ||
+            !loop_raws[8] || !loop_raws[10] || !loop_raws[40] ||
+            !loop_raws[105] || !loop_raws[106] || !loop_raws[169] ||
+            !loop_raws[207] || !loop_raws[208] || !loop_raws[211] ||
+            !loop_raws[212] || loop_terminal != 40 ||
+            loop_code[0] != 8 || loop_code[2] != 105 ||
+            loop_code[3] != 12 || loop_code[4] != 0 ||
+            loop_code[5] != 0 || loop_code[6] != 0 ||
+            loop_code[10] != 106 || loop_code[11] != 0xf5 ||
+            loop_code[12] != 0xff || loop_code[13] != 0xff ||
+            loop_code[14] != 0xff || 3 + 12 != 15 || 11 - 11 != 0) {
+            fputs("ordinary push_this loop branch evidence drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+    }
+
+    runtime = JS_NewRuntime();
+    defining_context = runtime ? JS_NewContext(runtime) : NULL;
+    caller_context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!defining_context || !caller_context) {
+        fputs("ordinary push_this fresh realm allocation failed\n", stderr);
+        goto cleanup;
+    }
+    for (size_t kind = 0; kind < PUSH_THIS_WIRE_KIND_COUNT; kind++) {
+        for (size_t mode = 0; mode < PUSH_THIS_MODE_COUNT; mode++) {
+            const uint8_t *wire = kind == PUSH_THIS_NATURAL ?
+                                      natural_wires[mode] :
+                                      manual_wires[mode];
+            size_t wire_size = kind == PUSH_THIS_NATURAL ?
+                                   natural_wire_sizes[mode] :
+                                   sizeof(manual_wires[mode]);
+
+            loaded = JS_ReadObject(defining_context, wire, wire_size,
+                                   JS_READ_OBJ_BYTECODE);
+            if (JS_IsException(loaded)) {
+                report_exception(defining_context,
+                                 "ordinary push_this read failed");
+                loaded = JS_UNDEFINED;
+                goto cleanup;
+            }
+            rewritten = JS_WriteObject(defining_context, &rewritten_size,
+                                       loaded, JS_WRITE_OBJ_BYTECODE);
+            if (!rewritten || rewritten_size != wire_size ||
+                memcmp(rewritten, wire, wire_size) != 0) {
+                if (!rewritten)
+                    report_exception(defining_context,
+                                     "ordinary push_this rewrite failed");
+                else
+                    fputs("ordinary push_this rewrite drifted\n", stderr);
+                goto cleanup;
+            }
+            js_free(defining_context, rewritten);
+            rewritten = NULL;
+            rewritten_size = 0;
+            functions[kind][mode] =
+                JS_EvalFunction(defining_context, loaded);
+            loaded = JS_UNDEFINED;
+            if (JS_IsException(functions[kind][mode]) ||
+                !JS_IsFunction(defining_context, functions[kind][mode])) {
+                report_exception(defining_context,
+                                 "ordinary push_this root evaluation failed");
+                functions[kind][mode] = JS_UNDEFINED;
+                goto cleanup;
+            }
+        }
+    }
+    {
+        const uint8_t *const adversarial_wires[] = {
+            ordinary_push_this_sloppy_duplicate_bytecode,
+            ordinary_push_this_sloppy_loop_bytecode,
+        };
+        const size_t adversarial_sizes[] = {
+            sizeof(ordinary_push_this_sloppy_duplicate_bytecode),
+            sizeof(ordinary_push_this_sloppy_loop_bytecode),
+        };
+        JSValue *const adversarial_functions[] = {
+            &duplicate_function, &loop_function,
+        };
+
+        for (size_t index = 0;
+             index < sizeof(adversarial_wires) /
+                         sizeof(adversarial_wires[0]); index++) {
+            loaded = JS_ReadObject(defining_context,
+                                   adversarial_wires[index],
+                                   adversarial_sizes[index],
+                                   JS_READ_OBJ_BYTECODE);
+            if (JS_IsException(loaded)) {
+                report_exception(defining_context,
+                                 "ordinary push_this adversarial read failed");
+                loaded = JS_UNDEFINED;
+                goto cleanup;
+            }
+            rewritten = JS_WriteObject(defining_context, &rewritten_size,
+                                       loaded, JS_WRITE_OBJ_BYTECODE);
+            if (!rewritten || rewritten_size != adversarial_sizes[index] ||
+                memcmp(rewritten, adversarial_wires[index],
+                       adversarial_sizes[index]) != 0) {
+                if (!rewritten)
+                    report_exception(
+                        defining_context,
+                        "ordinary push_this adversarial rewrite failed");
+                else
+                    fputs("ordinary push_this adversarial rewrite drifted\n",
+                          stderr);
+                goto cleanup;
+            }
+            js_free(defining_context, rewritten);
+            rewritten = NULL;
+            rewritten_size = 0;
+            *adversarial_functions[index] =
+                JS_EvalFunction(defining_context, loaded);
+            loaded = JS_UNDEFINED;
+            if (JS_IsException(*adversarial_functions[index]) ||
+                !JS_IsFunction(defining_context,
+                               *adversarial_functions[index])) {
+                report_exception(
+                    defining_context,
+                    "ordinary push_this adversarial root evaluation failed");
+                *adversarial_functions[index] = JS_UNDEFINED;
+                goto cleanup;
+            }
+        }
+    }
+
+    defining_global = JS_GetGlobalObject(defining_context);
+    caller_global = JS_GetGlobalObject(caller_context);
+    if (JS_IsException(defining_global) || JS_IsException(caller_global) ||
+        JS_StrictEq(caller_context, defining_global, caller_global) != 0) {
+        report_exception(JS_HasException(defining_context) ?
+                             defining_context : caller_context,
+                         "ordinary push_this global setup failed");
+        goto cleanup;
+    }
+    for (size_t index = 0; index < PUSH_THIS_PROTOTYPE_COUNT; index++) {
+        defining_constructor = JS_GetPropertyStr(
+            defining_context, defining_global, prototype_names[index]);
+        caller_constructor = JS_GetPropertyStr(
+            caller_context, caller_global, prototype_names[index]);
+        if (JS_IsException(defining_constructor) ||
+            JS_IsException(caller_constructor)) {
+            report_exception(JS_HasException(defining_context) ?
+                                 defining_context : caller_context,
+                             "ordinary push_this constructor setup failed");
+            goto cleanup;
+        }
+        defining_prototypes[index] = JS_GetPropertyStr(
+            defining_context, defining_constructor, "prototype");
+        caller_prototypes[index] = JS_GetPropertyStr(
+            caller_context, caller_constructor, "prototype");
+        JS_FreeValue(defining_context, defining_constructor);
+        defining_constructor = JS_UNDEFINED;
+        JS_FreeValue(caller_context, caller_constructor);
+        caller_constructor = JS_UNDEFINED;
+        if (JS_IsException(defining_prototypes[index]) ||
+            JS_IsException(caller_prototypes[index]) ||
+            !JS_IsObject(defining_prototypes[index]) ||
+            !JS_IsObject(caller_prototypes[index]) ||
+            JS_StrictEq(caller_context, defining_prototypes[index],
+                        caller_prototypes[index]) != 0) {
+            report_exception(JS_HasException(defining_context) ?
+                                 defining_context : caller_context,
+                             "ordinary push_this prototype setup failed");
+            goto cleanup;
+        }
+    }
+
+    object = JS_NewObject(caller_context);
+    primitives[0] = JS_NewBool(caller_context, 1);
+    primitives[1] = JS_NewInt32(caller_context, 8);
+    primitives[2] = JS_NewFloat64(caller_context, 1.5);
+    primitives[3] = JS_NewString(caller_context, "raw8");
+    primitives[4] = JS_NewBigInt64(caller_context, 8);
+    primitives[5] = JS_Eval(caller_context, "Symbol('raw8')",
+                            strlen("Symbol('raw8')"),
+                            "ordinary-push-this-symbol.js",
+                            JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(object)) {
+        report_exception(caller_context,
+                         "ordinary push_this object setup failed");
+        goto cleanup;
+    }
+    for (size_t index = 0;
+         index < sizeof(primitives) / sizeof(primitives[0]); index++) {
+        if (JS_IsException(primitives[index])) {
+            report_exception(caller_context,
+                             "ordinary push_this primitive setup failed");
+            goto cleanup;
+        }
+    }
+    primitive_one = JS_NewInt32(caller_context, 1);
+    result = JS_Call(caller_context, duplicate_function, primitive_one,
+                     0, NULL);
+    if (JS_IsException(result) ||
+        JS_VALUE_GET_TAG(result) != JS_TAG_BOOL ||
+        JS_VALUE_GET_BOOL(result) != 0 ||
+        JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        report_exception(caller_context,
+                         "ordinary push_this duplicate execution failed");
+        goto cleanup;
+    }
+    JS_FreeValue(caller_context, result);
+    result = JS_UNDEFINED;
+    {
+        JSValueConst loop_arguments[] = { JS_FALSE, JS_UNDEFINED };
+        result = JS_Call(caller_context, loop_function, primitive_one,
+                         2, loop_arguments);
+    }
+    if (JS_IsException(result) ||
+        JS_VALUE_GET_TAG(result) != JS_TAG_BOOL ||
+        JS_VALUE_GET_BOOL(result) != 0 ||
+        JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        report_exception(caller_context,
+                         "ordinary push_this loop execution failed");
+        goto cleanup;
+    }
+    JS_FreeValue(caller_context, result);
+    result = JS_UNDEFINED;
+
+    for (size_t kind = 0; kind < PUSH_THIS_WIRE_KIND_COUNT; kind++) {
+        for (size_t index = 0; index < 2; index++) {
+            JSValue nullish = index == 0 ? JS_UNDEFINED : JS_NULL;
+
+            if (JS_HasException(defining_context) ||
+                JS_HasException(caller_context)) {
+                fputs("ordinary push_this had a pending pre-call exception\n",
+                      stderr);
+                goto cleanup;
+            }
+            result = JS_Call(caller_context,
+                             functions[kind][PUSH_THIS_STRICT],
+                             nullish, 0, NULL);
+            if (JS_IsException(result) ||
+                (index == 0 ? !JS_IsUndefined(result) : !JS_IsNull(result)) ||
+                JS_HasException(defining_context) ||
+                JS_HasException(caller_context)) {
+                report_exception(caller_context,
+                                 "ordinary push_this strict nullish failed");
+                goto cleanup;
+            }
+            JS_FreeValue(caller_context, result);
+            result = JS_UNDEFINED;
+
+            result = JS_Call(caller_context,
+                             functions[kind][PUSH_THIS_SLOPPY],
+                             nullish, 0, NULL);
+            if (JS_IsException(result) || !JS_IsObject(result) ||
+                JS_StrictEq(caller_context, result, defining_global) != 1 ||
+                JS_StrictEq(caller_context, result, caller_global) != 0 ||
+                JS_HasException(defining_context) ||
+                JS_HasException(caller_context)) {
+                report_exception(caller_context,
+                                 "ordinary push_this sloppy nullish failed");
+                goto cleanup;
+            }
+            JS_FreeValue(caller_context, result);
+            result = JS_UNDEFINED;
+        }
+
+        for (size_t mode = 0; mode < PUSH_THIS_MODE_COUNT; mode++) {
+            result = JS_Call(caller_context, functions[kind][mode], object,
+                             0, NULL);
+            if (JS_IsException(result) ||
+                JS_StrictEq(caller_context, result, object) != 1 ||
+                JS_HasException(defining_context) ||
+                JS_HasException(caller_context)) {
+                report_exception(caller_context,
+                                 "ordinary push_this object identity failed");
+                goto cleanup;
+            }
+            JS_FreeValue(caller_context, result);
+            result = JS_UNDEFINED;
+        }
+
+        for (size_t index = 0;
+             index < sizeof(primitives) / sizeof(primitives[0]); index++) {
+            size_t prototype_index = primitive_prototypes[index];
+            JSValueConst wrappers[2];
+
+            result = JS_Call(caller_context,
+                             functions[kind][PUSH_THIS_STRICT],
+                             primitives[index], 0, NULL);
+            if (JS_IsException(result) || JS_IsObject(result) ||
+                JS_StrictEq(caller_context, result, primitives[index]) != 1 ||
+                JS_HasException(defining_context) ||
+                JS_HasException(caller_context)) {
+                fprintf(stderr,
+                        "ordinary push_this strict %s identity failed\n",
+                        primitive_labels[index]);
+                goto cleanup;
+            }
+            JS_FreeValue(caller_context, result);
+            result = JS_UNDEFINED;
+
+            first_wrapper = JS_Call(
+                caller_context, functions[kind][PUSH_THIS_SLOPPY],
+                primitives[index], 0, NULL);
+            second_wrapper = JS_Call(
+                caller_context, functions[kind][PUSH_THIS_SLOPPY],
+                primitives[index], 0, NULL);
+            if (JS_IsException(first_wrapper) ||
+                JS_IsException(second_wrapper) ||
+                !JS_IsObject(first_wrapper) ||
+                !JS_IsObject(second_wrapper) ||
+                JS_StrictEq(caller_context, first_wrapper,
+                            second_wrapper) != 0) {
+                fprintf(stderr,
+                        "ordinary push_this sloppy %s reboxing failed\n",
+                        primitive_labels[index]);
+                goto cleanup;
+            }
+            wrappers[0] = first_wrapper;
+            wrappers[1] = second_wrapper;
+            for (size_t repeat = 0; repeat < 2; repeat++) {
+                prototype = JS_GetPrototype(caller_context,
+                                            wrappers[repeat]);
+                if (JS_IsException(prototype) ||
+                    JS_StrictEq(caller_context, prototype,
+                                defining_prototypes[prototype_index]) != 1 ||
+                    JS_StrictEq(caller_context, prototype,
+                                caller_prototypes[prototype_index]) != 0) {
+                    fprintf(stderr,
+                            "ordinary push_this sloppy %s prototype drifted\n",
+                            primitive_labels[index]);
+                    goto cleanup;
+                }
+                value_of = JS_GetPropertyStr(
+                    caller_context, defining_prototypes[prototype_index],
+                    "valueOf");
+                unboxed = JS_Call(caller_context, value_of,
+                                  wrappers[repeat], 0, NULL);
+                if (JS_IsException(value_of) || JS_IsException(unboxed) ||
+                    JS_StrictEq(caller_context, unboxed,
+                                primitives[index]) != 1) {
+                    fprintf(stderr,
+                            "ordinary push_this sloppy %s payload drifted\n",
+                            primitive_labels[index]);
+                    goto cleanup;
+                }
+                JS_FreeValue(caller_context, unboxed);
+                unboxed = JS_UNDEFINED;
+                JS_FreeValue(caller_context, value_of);
+                value_of = JS_UNDEFINED;
+                JS_FreeValue(caller_context, prototype);
+                prototype = JS_UNDEFINED;
+            }
+            JS_FreeValue(caller_context, second_wrapper);
+            second_wrapper = JS_UNDEFINED;
+            JS_FreeValue(caller_context, first_wrapper);
+            first_wrapper = JS_UNDEFINED;
+        }
+    }
+    if (JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        fputs("ordinary push_this left a pending exception\n", stderr);
+        goto cleanup;
+    }
+
+    puts("ordinary-push-this-evidence="
+         "compiler-natural-strict-and-sloppy-plus-mechanically-derived-property-free-wires");
+    for (size_t mode = 0; mode < PUSH_THIS_MODE_COUNT; mode++) {
+        char raw_label[96];
+
+        printf("ordinary-push-this-%s-natural-source-hex=%s\n",
+               mode_labels[mode], source_hex[mode]);
+        printf("ordinary-push-this-%s-natural-compile-mode="
+               "global-compile-only,strip-debug\n", mode_labels[mode]);
+        printf("ordinary-push-this-%s-natural-wire-size=%zu\n",
+               mode_labels[mode], natural_wire_sizes[mode]);
+        printf("ordinary-push-this-%s-natural-wire-fnv1a64=%016" PRIx64
+               "\n", mode_labels[mode],
+               ordinary_fnv1a64(natural_wires[mode],
+                                natural_wire_sizes[mode]));
+        printf("ordinary-push-this-%s-natural-wire-sha256=%s\n",
+               mode_labels[mode], natural_sha256[mode]);
+        printf("ordinary-push-this-%s-natural-wire-hex=",
+               mode_labels[mode]);
+        for (size_t index = 0; index < natural_wire_sizes[mode]; index++)
+            printf("%02x", natural_wires[mode][index]);
+        putchar('\n');
+        printf("ordinary-push-this-%s-natural-child-metadata="
+               "flags:%04x,js_mode:%u,args:%" PRIu32
+               ",vars:%" PRIu32 ",defined_args:%" PRIu32
+               ",stack:%" PRIu32 ",var_refs:%" PRIu32
+               ",closures:%" PRIu32 ",cpool:%" PRIu32
+               ",code:%" PRIu32 ",locals:%" PRIu32
+               ",code_offset:%zu,atoms:0\n",
+               mode_labels[mode], natural_children[mode].flags,
+               natural_children[mode].js_mode,
+               natural_children[mode].fields[ORD_ARGS],
+               natural_children[mode].fields[ORD_VARS],
+               natural_children[mode].fields[ORD_DEFINED_ARGS],
+               natural_children[mode].fields[ORD_STACK],
+               natural_children[mode].fields[ORD_VAR_REFS],
+               natural_children[mode].fields[ORD_CLOSURES],
+               natural_children[mode].fields[ORD_CPOOL],
+               natural_children[mode].fields[ORD_CODE],
+               natural_children[mode].fields[ORD_LOCALS],
+               natural_children[mode].code_offset);
+        printf("ordinary-push-this-%s-natural-child-code-hex=08c7c328\n",
+               mode_labels[mode]);
+        snprintf(raw_label, sizeof(raw_label),
+                 "ordinary-push-this-%s-natural-child-raw",
+                 mode_labels[mode]);
+        ordinary_print_raw_set(raw_label, natural_raws[mode]);
+        printf("ordinary-push-this-%s-natural-terminal="
+               "raw40;raw8:0->1,raw40:1->0\n", mode_labels[mode]);
+        printf("ordinary-push-this-%s-natural-provenance="
+               "compiler-emitted-return-this;js_mode:%s;raw8-exact-one\n",
+               mode_labels[mode], mode_labels[mode]);
+        printf("ordinary-push-this-%s-natural-rewrite="
+               "identity,fresh-root:Function\n", mode_labels[mode]);
+
+        printf("ordinary-push-this-%s-wire-size=%zu\n",
+               mode_labels[mode], sizeof(manual_wires[mode]));
+        printf("ordinary-push-this-%s-wire-fnv1a64=%016" PRIx64 "\n",
+               mode_labels[mode],
+               ordinary_fnv1a64(manual_wires[mode],
+                                sizeof(manual_wires[mode])));
+        printf("ordinary-push-this-%s-wire-sha256=%s\n",
+               mode_labels[mode], manual_sha256[mode]);
+        printf("ordinary-push-this-%s-wire-hex=", mode_labels[mode]);
+        for (size_t index = 0; index < sizeof(manual_wires[mode]); index++)
+            printf("%02x", manual_wires[mode][index]);
+        putchar('\n');
+        printf("ordinary-push-this-%s-child-metadata="
+               "flags:%04x,js_mode:%u,args:%" PRIu32
+               ",vars:%" PRIu32 ",defined_args:%" PRIu32
+               ",stack:%" PRIu32 ",var_refs:%" PRIu32
+               ",closures:%" PRIu32 ",cpool:%" PRIu32
+               ",code:%" PRIu32 ",locals:%" PRIu32
+               ",code_offset:%zu,atoms:0\n",
+               mode_labels[mode], manual_children[mode].flags,
+               manual_children[mode].js_mode,
+               manual_children[mode].fields[ORD_ARGS],
+               manual_children[mode].fields[ORD_VARS],
+               manual_children[mode].fields[ORD_DEFINED_ARGS],
+               manual_children[mode].fields[ORD_STACK],
+               manual_children[mode].fields[ORD_VAR_REFS],
+               manual_children[mode].fields[ORD_CLOSURES],
+               manual_children[mode].fields[ORD_CPOOL],
+               manual_children[mode].fields[ORD_CODE],
+               manual_children[mode].fields[ORD_LOCALS],
+               manual_children[mode].code_offset);
+        printf("ordinary-push-this-%s-child-code-hex=0828\n",
+               mode_labels[mode]);
+        snprintf(raw_label, sizeof(raw_label),
+                 "ordinary-push-this-%s-child-raw", mode_labels[mode]);
+        ordinary_print_raw_set(raw_label, manual_raws[mode]);
+        printf("ordinary-push-this-%s-terminal="
+               "raw40;raw8:0->1,raw40:1->0\n", mode_labels[mode]);
+        printf("ordinary-push-this-%s-derivation="
+               "natural47:vars1->0,locals1->0,code4->2;"
+               "remove-local-record:00010000;"
+               "remove-local-shuttle:c7c3;retain-raw8-return:0828\n",
+               mode_labels[mode]);
+        printf("ordinary-push-this-%s-property-free="
+               "atoms:0,args:0,vars:0,var_refs:0,closures:0,"
+               "cpool:0,locals:0,stack:1\n", mode_labels[mode]);
+        printf("ordinary-push-this-%s-rewrite="
+               "identity,fresh-root:Function\n", mode_labels[mode]);
+    }
+    printf("ordinary-push-this-duplicate-wire-size=%zu\n",
+           sizeof(ordinary_push_this_sloppy_duplicate_bytecode));
+    printf("ordinary-push-this-duplicate-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(
+               ordinary_push_this_sloppy_duplicate_bytecode,
+               sizeof(ordinary_push_this_sloppy_duplicate_bytecode)));
+    puts("ordinary-push-this-duplicate-wire-sha256="
+         "9f0541bfd8a599e5f2575936d24df9a2487a1e8952fca1648afeef5c9f798a30");
+    fputs("ordinary-push-this-duplicate-wire-hex=", stdout);
+    for (size_t index = 0;
+         index < sizeof(ordinary_push_this_sloppy_duplicate_bytecode);
+         index++)
+        printf("%02x", ordinary_push_this_sloppy_duplicate_bytecode[index]);
+    putchar('\n');
+    printf("ordinary-push-this-duplicate-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32
+           ",vars:%" PRIu32 ",defined_args:%" PRIu32
+           ",stack:%" PRIu32 ",var_refs:%" PRIu32
+           ",closures:%" PRIu32 ",cpool:%" PRIu32
+           ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           duplicate_child.flags, duplicate_child.js_mode,
+           duplicate_child.fields[ORD_ARGS],
+           duplicate_child.fields[ORD_VARS],
+           duplicate_child.fields[ORD_DEFINED_ARGS],
+           duplicate_child.fields[ORD_STACK],
+           duplicate_child.fields[ORD_VAR_REFS],
+           duplicate_child.fields[ORD_CLOSURES],
+           duplicate_child.fields[ORD_CPOOL],
+           duplicate_child.fields[ORD_CODE],
+           duplicate_child.fields[ORD_LOCALS], duplicate_child.code_offset);
+    puts("ordinary-push-this-duplicate-child-code-hex=0808a928");
+    ordinary_print_raw_set("ordinary-push-this-duplicate-child-raw",
+                           duplicate_raws);
+    puts("ordinary-push-this-duplicate-raw8-occurrences=2");
+    puts("ordinary-push-this-duplicate-terminal="
+         "raw40;raw8:0->1,raw8:0->1,raw169:2->1,raw40:1->0");
+    puts("ordinary-push-this-duplicate-rewrite="
+         "identity,fresh-root:Function");
+    puts("ordinary-push-this-duplicate-execution="
+         "sloppy-primitive-this:1;two-raw8-wrappers-strict-eq:false");
+
+    printf("ordinary-push-this-loop-wire-size=%zu\n",
+           sizeof(ordinary_push_this_sloppy_loop_bytecode));
+    printf("ordinary-push-this-loop-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(
+               ordinary_push_this_sloppy_loop_bytecode,
+               sizeof(ordinary_push_this_sloppy_loop_bytecode)));
+    puts("ordinary-push-this-loop-wire-sha256="
+         "32b4c9e45f5191d21aa44d3437c54b00cfa1ff4b2530d1e4cdf942a87e8f3fb4");
+    fputs("ordinary-push-this-loop-wire-hex=", stdout);
+    for (size_t index = 0;
+         index < sizeof(ordinary_push_this_sloppy_loop_bytecode); index++)
+        printf("%02x", ordinary_push_this_sloppy_loop_bytecode[index]);
+    putchar('\n');
+    printf("ordinary-push-this-loop-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32
+           ",vars:%" PRIu32 ",defined_args:%" PRIu32
+           ",stack:%" PRIu32 ",var_refs:%" PRIu32
+           ",closures:%" PRIu32 ",cpool:%" PRIu32
+           ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           loop_child.flags, loop_child.js_mode,
+           loop_child.fields[ORD_ARGS], loop_child.fields[ORD_VARS],
+           loop_child.fields[ORD_DEFINED_ARGS],
+           loop_child.fields[ORD_STACK], loop_child.fields[ORD_VAR_REFS],
+           loop_child.fields[ORD_CLOSURES], loop_child.fields[ORD_CPOOL],
+           loop_child.fields[ORD_CODE], loop_child.fields[ORD_LOCALS],
+           loop_child.code_offset);
+    puts("ordinary-push-this-loop-child-code-hex="
+         "08cf690c0000000ad3d46af5ffffffd0a928");
+    ordinary_print_raw_set("ordinary-push-this-loop-child-raw", loop_raws);
+    puts("ordinary-push-this-loop-raw8-occurrences=1");
+    puts("ordinary-push-this-loop-branch-map="
+         "raw105-operand@3:+12->15;raw106-operand@11:-11->0");
+    puts("ordinary-push-this-loop-terminal="
+         "raw40;entry-raw8:0->1;backedge-target:raw8-index0");
+    puts("ordinary-push-this-loop-rewrite=identity,fresh-root:Function");
+    puts("ordinary-push-this-loop-execution="
+         "sloppy-primitive-this:1;single-raw8-executed-twice;wrappers-strict-eq:false");
+    puts("ordinary-push-this-adversarial-read-write="
+         "duplicate43,loop65:identity");
+    puts("ordinary-push-this-mode-delta="
+         "strict-vs-sloppy:js_mode-byte28-only;natural-and-manual");
+    puts("ordinary-push-this-read-write="
+         "strict-natural,sloppy-natural,strict-manual,sloppy-manual:identity");
+    puts("ordinary-push-this-strict="
+         "undefined:undefined;null:null;primitives:exact-no-boxing;object:identity");
+    puts("ordinary-push-this-sloppy-nullish="
+         "undefined,null:defining-global;caller-global:false");
+    puts("ordinary-push-this-object="
+         "strict-and-sloppy:natural-and-manual:caller-object-identity");
+    puts("ordinary-push-this-sloppy-primitives="
+         "Boolean,integer-Number,floating-Number,String,BigInt,Symbol");
+    puts("ordinary-push-this-sloppy-wrappers="
+         "natural-and-manual:each-call-fresh;two-calls-per-primitive:distinct");
+    puts("ordinary-push-this-sloppy-prototype="
+         "all-repeat-wrappers:defining-realm-intrinsic;caller-realm:false");
+    puts("ordinary-push-this-sloppy-payload="
+         "all-repeat-wrappers:valueOf-original");
+    puts("ordinary-push-this-reboxing="
+         "cross-call:12-primitive-pairs:fresh-distinct;"
+         "same-invocation:duplicate-and-loop:false");
+    puts("ordinary-push-this-admission-boundary="
+         "require-exact-one-raw8-and-no-branch-target0;"
+         "duplicate-and-loop-prove-each-raw8-execution-reboxes");
+    puts("ordinary-push-this-pending="
+         "none-before-or-after-strict-sloppy-repeat-cross-realm-or-adversarial");
+    puts("ordinary-push-this-admitted-count=1");
+    puts("ordinary-push-this-admitted-raw=8");
+    puts("ordinary-push-this-oracle=passed");
+    status = 0;
+
+cleanup:
+    if (rewritten && defining_context)
+        js_free(defining_context, rewritten);
+    if (caller_context) {
+        if (JS_HasException(caller_context)) {
+            JSValue pending = JS_GetException(caller_context);
+            JS_FreeValue(caller_context, pending);
+        }
+        JS_FreeValue(caller_context, unboxed);
+        JS_FreeValue(caller_context, value_of);
+        JS_FreeValue(caller_context, prototype);
+        JS_FreeValue(caller_context, second_wrapper);
+        JS_FreeValue(caller_context, first_wrapper);
+        JS_FreeValue(caller_context, result);
+        JS_FreeValue(caller_context, object);
+        JS_FreeValue(caller_context, primitive_one);
+        for (size_t index = 0;
+             index < sizeof(primitives) / sizeof(primitives[0]); index++)
+            JS_FreeValue(caller_context, primitives[index]);
+        JS_FreeValue(caller_context, caller_constructor);
+        for (size_t index = 0; index < PUSH_THIS_PROTOTYPE_COUNT; index++)
+            JS_FreeValue(caller_context, caller_prototypes[index]);
+        JS_FreeValue(caller_context, caller_global);
+    }
+    if (defining_context) {
+        if (JS_HasException(defining_context)) {
+            JSValue pending = JS_GetException(defining_context);
+            JS_FreeValue(defining_context, pending);
+        }
+        JS_FreeValue(defining_context, loaded);
+        JS_FreeValue(defining_context, defining_constructor);
+        for (size_t index = 0; index < PUSH_THIS_PROTOTYPE_COUNT; index++)
+            JS_FreeValue(defining_context, defining_prototypes[index]);
+        JS_FreeValue(defining_context, defining_global);
+        JS_FreeValue(defining_context, loop_function);
+        JS_FreeValue(defining_context, duplicate_function);
+        for (size_t kind = 0; kind < PUSH_THIS_WIRE_KIND_COUNT; kind++) {
+            for (size_t mode = 0; mode < PUSH_THIS_MODE_COUNT; mode++)
+                JS_FreeValue(defining_context, functions[kind][mode]);
+        }
+    }
+    if (caller_context)
+        JS_FreeContext(caller_context);
+    if (defining_context)
+        JS_FreeContext(defining_context);
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    for (size_t mode = 0; mode < PUSH_THIS_MODE_COUNT; mode++) {
+        if (natural_wires[mode])
+            js_free(compile_context, natural_wires[mode]);
+        JS_FreeValue(compile_context, compiled[mode]);
+    }
+    return status;
+}
+
 static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
     static const char unary_binary_sequence[] =
         "-6,6,7,6,-7,false,number,18,0,216,48,0,0,"
@@ -7694,6 +8753,8 @@ int main(void) {
     if (expect_ordinary_object_completion(compile_context))
         goto cleanup;
     if (expect_ordinary_to_object_completion(compile_context))
+        goto cleanup;
+    if (expect_ordinary_push_this_completion(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",
