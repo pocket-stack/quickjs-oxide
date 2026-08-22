@@ -252,6 +252,76 @@ static const uint8_t ordinary_push_this_sloppy_loop_bytecode[] = {
     0xd4, 0x6a, 0xf5, 0xff, 0xff, 0xff, 0xd0, 0xa9,
     0x28,
 };
+static const uint8_t ordinary_to_propkey_strict_natural_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x01, 0x00,
+    0x01, 0x03, 0x00, 0x00, 0x00, 0x07, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0x0b, 0xcf, 0x70, 0xb4, 0x4e,
+    0x0e, 0x28,
+};
+static const uint8_t ordinary_to_propkey_sloppy_natural_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x01, 0x00,
+    0x01, 0x03, 0x00, 0x00, 0x00, 0x07, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0x0b, 0xcf, 0x70, 0xb4, 0x4e,
+    0x0e, 0x28,
+};
+static const uint8_t ordinary_to_propkey_loop_base_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x02, 0x00,
+    0x02, 0x03, 0x00, 0x00, 0x00, 0x07, 0x02, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0b,
+    0xcf, 0x70, 0xd0, 0x4e, 0x0e, 0x28,
+};
+static const uint8_t ordinary_to_propkey_strict_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x01, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x00, 0x03, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0xcf, 0x70, 0x28,
+};
+static const uint8_t ordinary_to_propkey_sloppy_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x00, 0x00, 0x01, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x00, 0x03, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0xcf, 0x70, 0x28,
+};
+static const uint8_t ordinary_to_propkey_duplicate_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x01, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0xcf, 0x70, 0x70, 0x28,
+};
+static const uint8_t ordinary_to_propkey_loop_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x02, 0x00,
+    0x02, 0x02, 0x00, 0x00, 0x00, 0x12, 0x02, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xcf,
+    0x70, 0xd0, 0x68, 0x0d, 0x00, 0x00, 0x00, 0x0e,
+    0x09, 0xd4, 0xcf, 0x6a, 0xf4, 0xff, 0xff, 0xff,
+    0x28,
+};
+static const uint8_t ordinary_to_propkey_underflow_bytecode[] = {
+    0x05, 0x00, 0x0c, 0x00, 0x02, 0x00, 0xa8, 0x01,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x04,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x00, 0xcb,
+    0x28, 0x0c, 0x43, 0x02, 0x01, 0x00, 0x01, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0x70, 0x28,
+};
 _Static_assert(sizeof(ordinary_nop_natural_bytecode) == 40,
                "ordinary nop natural baseline must remain 40 bytes");
 _Static_assert(sizeof(ordinary_nop_bytecode) == 41,
@@ -274,6 +344,22 @@ _Static_assert(sizeof(ordinary_push_this_sloppy_duplicate_bytecode) == 43,
                "duplicate push_this oracle must remain 43 bytes");
 _Static_assert(sizeof(ordinary_push_this_sloppy_loop_bytecode) == 65,
                "looped push_this oracle must remain 65 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_strict_natural_bytecode) == 50,
+               "strict to_propkey natural oracle must remain 50 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_sloppy_natural_bytecode) == 50,
+               "sloppy to_propkey natural oracle must remain 50 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_loop_base_bytecode) == 54,
+               "to_propkey loop base oracle must remain 54 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_strict_bytecode) == 46,
+               "strict to_propkey manual oracle must remain 46 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_sloppy_bytecode) == 46,
+               "sloppy to_propkey manual oracle must remain 46 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_duplicate_bytecode) == 47,
+               "duplicate to_propkey oracle must remain 47 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_loop_bytecode) == 65,
+               "looped to_propkey oracle must remain 65 bytes");
+_Static_assert(sizeof(ordinary_to_propkey_underflow_bytecode) == 45,
+               "underflow to_propkey oracle must remain 45 bytes");
 static const uint8_t ordinary_expansion_atom_free_raws[] = {
     6, 7, 9, 10, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     25, 26, 27, 28, 29, 30, 31, 32, 41, 105, 138, 139, 140, 141,
@@ -3692,7 +3778,7 @@ static size_t ordinary_opcode_size(uint8_t raw) {
         return 3;
     case 49:
         return 6;
-    case 62: case 105: case 106: case 176:
+    case 62: case 104: case 105: case 106: case 176:
         return 5;
     case 187: case 189: case 232: case 233: case 234:
         return 2;
@@ -8400,6 +8486,946 @@ cleanup:
     return status;
 }
 
+static int expect_ordinary_to_propkey_completion(
+    JSContext *compile_context) {
+    enum {
+        TO_PROPKEY_STRICT,
+        TO_PROPKEY_SLOPPY,
+        TO_PROPKEY_MODE_COUNT,
+    };
+    enum {
+        TO_PROPKEY_NATURAL_STRICT,
+        TO_PROPKEY_NATURAL_SLOPPY,
+        TO_PROPKEY_MANUAL_STRICT,
+        TO_PROPKEY_MANUAL_SLOPPY,
+        TO_PROPKEY_DUPLICATE,
+        TO_PROPKEY_LOOP,
+        TO_PROPKEY_EXECUTABLE_COUNT,
+    };
+    enum {
+        TO_PROPKEY_NATURAL_MODE_COUNT = 2,
+        TO_PROPKEY_COMPILED_COUNT = 3,
+    };
+    static const char *const mode_labels[TO_PROPKEY_MODE_COUNT] = {
+        "strict", "sloppy",
+    };
+    static const char *const sources[TO_PROPKEY_COMPILED_COUNT] = {
+        "(function(a){'use strict';return {[a]:1};})",
+        "(function(a){return {[a]:1};})",
+        "(function(a,b){'use strict';return {[a]:b};})",
+    };
+    static const char *const source_hex[TO_PROPKEY_COMPILED_COUNT] = {
+        "2866756e6374696f6e2861297b2775736520737472696374273b72657475726e207b5b615d3a317d3b7d29",
+        "2866756e6374696f6e2861297b72657475726e207b5b615d3a317d3b7d29",
+        "2866756e6374696f6e28612c62297b2775736520737472696374273b72657475726e207b5b615d3a627d3b7d29",
+    };
+    static const uint8_t *const expected_compiled_wires[
+        TO_PROPKEY_COMPILED_COUNT] = {
+        ordinary_to_propkey_strict_natural_bytecode,
+        ordinary_to_propkey_sloppy_natural_bytecode,
+        ordinary_to_propkey_loop_base_bytecode,
+    };
+    static const size_t expected_compiled_sizes[
+        TO_PROPKEY_COMPILED_COUNT] = {
+        sizeof(ordinary_to_propkey_strict_natural_bytecode),
+        sizeof(ordinary_to_propkey_sloppy_natural_bytecode),
+        sizeof(ordinary_to_propkey_loop_base_bytecode),
+    };
+    static const uint64_t expected_compiled_fnv[
+        TO_PROPKEY_COMPILED_COUNT] = {
+        UINT64_C(0x83c33a69f73e737c),
+        UINT64_C(0x6a1706c9ae126361),
+        UINT64_C(0x80f51991b85f4056),
+    };
+    static const char *const compiled_sha256[TO_PROPKEY_COMPILED_COUNT] = {
+        "7bfb0fefdbd3ff894bdcc0996707fda98153aaaeccbe50f6ade1ffaab7f818f0",
+        "c5f7a85af861402d57a8267f9af1be2d310b143a6972e5fe5d2068384b9f8fe0",
+        "5398cc2a2c547469d5e374332540ab3b50654119d0012431996a6ab796f80778",
+    };
+    static const OrdinaryFunctionMetadata expected_compiled_metadata[
+        TO_PROPKEY_COMPILED_COUNT] = {
+        { 0x0243, 1, { 1, 0, 1, 3, 0, 0, 0, 7, 1 }, 43 },
+        { 0x0243, 0, { 1, 0, 1, 3, 0, 0, 0, 7, 1 }, 43 },
+        { 0x0243, 1, { 2, 0, 2, 3, 0, 0, 0, 7, 2 }, 47 },
+    };
+    static const OrdinaryFunctionMetadata expected_manual_metadata[
+        TO_PROPKEY_MODE_COUNT] = {
+        { 0x0243, 1, { 1, 0, 1, 1, 0, 0, 0, 3, 1 }, 43 },
+        { 0x0243, 0, { 1, 0, 1, 1, 0, 0, 0, 3, 1 }, 43 },
+    };
+    static const OrdinaryFunctionMetadata expected_duplicate_metadata = {
+        0x0243, 1, { 1, 0, 1, 1, 0, 0, 0, 4, 1 }, 43,
+    };
+    static const OrdinaryFunctionMetadata expected_loop_metadata = {
+        0x0243, 1, { 2, 0, 2, 2, 0, 0, 0, 18, 2 }, 47,
+    };
+    static const OrdinaryFunctionMetadata expected_underflow_metadata = {
+        0x0243, 1, { 1, 0, 1, 1, 0, 0, 0, 2, 1 }, 43,
+    };
+    static const uint64_t expected_manual_fnv[TO_PROPKEY_MODE_COUNT] = {
+        UINT64_C(0xc7ed09720c7cfaa1),
+        UINT64_C(0xdd8bbd333d595b1c),
+    };
+    static const char *const manual_sha256[TO_PROPKEY_MODE_COUNT] = {
+        "7be331650765c34157ea3731e6f86d082451e0d60e7aeb7ecd09abfe0d524cb4",
+        "629fa63ab5c4bd4258a44e02e4171a82c7cb23ca3bce1ce11d4228e4ee10d822",
+    };
+    static const uint8_t loop_code[] = {
+        0xcf, 0x70, 0xd0, 0x68, 0x0d, 0x00, 0x00, 0x00, 0x0e,
+        0x09, 0xd4, 0xcf, 0x6a, 0xf4, 0xff, 0xff, 0xff, 0x28,
+    };
+    static const char semantic_source[] =
+        "(function(){"
+        "function ok(value,message){if(!value)throw Error(message);}"
+        "var strict=__stage3jStrict,sloppy=__stage3jSloppy;"
+        "var naturalStrict=__stage3jNaturalStrict;"
+        "var naturalSloppy=__stage3jNaturalSloppy;"
+        "var duplicate=__stage3jDuplicate,loop=__stage3jLoop;"
+        "var scalars=[[void 0,'undefined'],[null,'null'],"
+        "[false,'false'],[true,'true'],[112,112],"
+        "[1.5,'1.5'],[112n,'112']];"
+        "for(var i=0;i<scalars.length;i++){"
+        "ok(strict(scalars[i][0])===scalars[i][1],"
+        "'strict scalar '+i);"
+        "ok(sloppy(scalars[i][0])===scalars[i][1],"
+        "'sloppy scalar '+i);"
+        "ok(strict(scalars[i][0])===sloppy(scalars[i][0]),"
+        "'mode scalar parity '+i);}"
+        "var symbol=Symbol('raw112');"
+        "ok(strict(symbol)===symbol&&sloppy(symbol)===symbol,"
+        "'symbol identity');"
+        "function natural(fn,value,key,label){"
+        "var object=fn(value),keys=Reflect.ownKeys(object);"
+        "ok(keys.length===1&&keys[0]===key&&object[key]===1,label);}"
+        "natural(naturalStrict,7,'7','natural strict integer');"
+        "natural(naturalSloppy,7,'7','natural sloppy integer');"
+        "natural(naturalStrict,symbol,symbol,'natural strict symbol');"
+        "natural(naturalSloppy,symbol,symbol,'natural sloppy symbol');"
+        "var calls=0,hints=[];var probe={};"
+        "probe[Symbol.toPrimitive]=function(hint){"
+        "calls++;hints.push(hint);return 'property';};"
+        "ok(strict(probe)==='property'&&calls===1&&"
+        "hints.join(',')==='string','strict exotic conversion');"
+        "calls=0;hints=[];"
+        "ok(sloppy(probe)==='property'&&calls===1&&"
+        "hints.join(',')==='string','sloppy exotic conversion');"
+        "var order=[];var fallback={"
+        "toString:function(){order.push('toString');return 'fallback';},"
+        "valueOf:function(){order.push('valueOf');return 9;}};"
+        "ok(strict(fallback)==='fallback'&&"
+        "order.join(',')==='toString','ordinary first fallback');"
+        "order=[];fallback={"
+        "toString:function(){order.push('toString');return {};},"
+        "valueOf:function(){order.push('valueOf');return 17;}};"
+        "ok(strict(fallback)==='17'&&"
+        "order.join(',')==='toString,valueOf','ordinary second fallback');"
+        "var thrown={stage:112},caught='missing',throwing={};"
+        "throwing[Symbol.toPrimitive]=function(){throw thrown;};"
+        "try{strict(throwing);}catch(error){caught=error;}"
+        "ok(caught===thrown,'thrown object identity');"
+        "caught='missing';var invalid={};"
+        "invalid[Symbol.toPrimitive]=function(){return {};};"
+        "try{strict(invalid);}catch(error){caught=error;}"
+        "ok(caught.name==='TypeError'&&caught.message==='toPrimitive'&&"
+        "Object.getPrototypeOf(caught)===__stage3jDefiningTypeError&&"
+        "Object.getPrototypeOf(caught)!==TypeError.prototype,"
+        "'defining realm TypeError');"
+        "order=[];var outer={};"
+        "outer[Symbol.toPrimitive]=function(hint){"
+        "order.push('outer:'+hint);"
+        "order.push('inner:'+strict(23));return 'outer-key';};"
+        "ok(strict(outer)==='outer-key'&&"
+        "order.join(',')==='outer:string,inner:23','nested reentry');"
+        "calls=0;hints=[];var duplicateProbe={};"
+        "duplicateProbe[Symbol.toPrimitive]=function(hint){"
+        "calls++;hints.push(hint);return 'duplicate-key';};"
+        "ok(duplicate(duplicateProbe)==='duplicate-key'&&calls===1&&"
+        "hints.join(',')==='string','duplicate canonical input');"
+        "calls=0;hints=[];var loopProbe={};"
+        "loopProbe[Symbol.toPrimitive]=function(hint){"
+        "calls++;hints.push(hint);return 'k'+calls;};"
+        "ok(loop(loopProbe,true)==='k2'&&calls===2&&"
+        "hints.join(',')==='string,string','finite loop conversion');"
+        "return 42;})()";
+    JSValue compiled[TO_PROPKEY_COMPILED_COUNT] = {
+        JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED,
+    };
+    uint8_t *compiled_wires[TO_PROPKEY_COMPILED_COUNT] = {
+        NULL, NULL, NULL,
+    };
+    size_t compiled_wire_sizes[TO_PROPKEY_COMPILED_COUNT] = { 0, 0, 0 };
+    OrdinaryFunctionMetadata compiled_children[
+        TO_PROPKEY_COMPILED_COUNT] = { { 0 }, { 0 }, { 0 } };
+    uint8_t compiled_raws[TO_PROPKEY_COMPILED_COUNT][256] = {
+        { 0 }, { 0 }, { 0 },
+    };
+    uint8_t compiled_terminals[TO_PROPKEY_COMPILED_COUNT] = { 0, 0, 0 };
+    uint8_t manual_wires[TO_PROPKEY_MODE_COUNT]
+                        [sizeof(ordinary_to_propkey_strict_bytecode)];
+    OrdinaryFunctionMetadata manual_children[TO_PROPKEY_MODE_COUNT] = {
+        { 0 }, { 0 },
+    };
+    uint8_t manual_raws[TO_PROPKEY_MODE_COUNT][256] = { { 0 }, { 0 } };
+    uint8_t manual_terminals[TO_PROPKEY_MODE_COUNT] = { 0, 0 };
+    uint8_t duplicate_wire[sizeof(ordinary_to_propkey_duplicate_bytecode)];
+    uint8_t loop_wire[sizeof(ordinary_to_propkey_loop_bytecode)];
+    uint8_t underflow_wire[sizeof(ordinary_to_propkey_underflow_bytecode)];
+    OrdinaryFunctionMetadata duplicate_child = { 0 };
+    OrdinaryFunctionMetadata loop_child = { 0 };
+    OrdinaryFunctionMetadata underflow_child = { 0 };
+    uint8_t duplicate_raws[256] = { 0 };
+    uint8_t loop_raws[256] = { 0 };
+    uint8_t underflow_raws[256] = { 0 };
+    uint8_t duplicate_terminal = 0;
+    uint8_t loop_terminal = 0;
+    uint8_t underflow_terminal = 0;
+    size_t duplicate_raw112_count = 0;
+    size_t loop_raw112_count = 0;
+    JSRuntime *runtime = NULL;
+    JSContext *defining_context = NULL;
+    JSContext *caller_context = NULL;
+    JSValue functions[TO_PROPKEY_EXECUTABLE_COUNT];
+    JSValue loaded = JS_UNDEFINED;
+    JSValue defining_global = JS_UNDEFINED;
+    JSValue caller_global = JS_UNDEFINED;
+    JSValue defining_constructor = JS_UNDEFINED;
+    JSValue caller_constructor = JS_UNDEFINED;
+    JSValue defining_type_error = JS_UNDEFINED;
+    JSValue caller_type_error = JS_UNDEFINED;
+    JSValue integer_input = JS_UNDEFINED;
+    JSValue string_input = JS_UNDEFINED;
+    JSValue symbol_input = JS_UNDEFINED;
+    JSValue strict_result = JS_UNDEFINED;
+    JSValue sloppy_result = JS_UNDEFINED;
+    JSValue semantic_result = JS_UNDEFINED;
+    uint8_t *rewritten = NULL;
+    size_t rewritten_size = 0;
+    const char *text = NULL;
+    int status = -1;
+
+    for (size_t index = 0; index < TO_PROPKEY_EXECUTABLE_COUNT; index++)
+        functions[index] = JS_UNDEFINED;
+
+    for (size_t index = 0; index < TO_PROPKEY_COMPILED_COUNT; index++) {
+        size_t raw_count = 0;
+
+        compiled[index] = JS_Eval(
+            compile_context, sources[index], strlen(sources[index]),
+            "ordinary-to-propkey-natural",
+            JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (JS_IsException(compiled[index])) {
+            report_exception(compile_context,
+                             "ordinary to_propkey natural compile failed");
+            compiled[index] = JS_UNDEFINED;
+            goto cleanup;
+        }
+        compiled_wires[index] = JS_WriteObject(
+            compile_context, &compiled_wire_sizes[index], compiled[index],
+            JS_WRITE_OBJ_BYTECODE);
+        if (!compiled_wires[index]) {
+            report_exception(compile_context,
+                             "ordinary to_propkey natural write failed");
+            goto cleanup;
+        }
+        if (compiled_wire_sizes[index] != expected_compiled_sizes[index] ||
+            memcmp(compiled_wires[index], expected_compiled_wires[index],
+                   compiled_wire_sizes[index]) != 0 ||
+            ordinary_fnv1a64(compiled_wires[index],
+                             compiled_wire_sizes[index]) !=
+                expected_compiled_fnv[index] ||
+            compiled_wires[index][1] != 0 ||
+            ordinary_wire_child_metadata(compiled_wires[index],
+                                         compiled_wire_sizes[index],
+                                         &compiled_children[index]) ||
+            !ordinary_metadata_equal(&compiled_children[index],
+                                     &expected_compiled_metadata[index]) ||
+            ordinary_collect_opcodes(
+                compiled_wires[index] + compiled_children[index].code_offset,
+                compiled_children[index].fields[ORD_CODE],
+                compiled_raws[index]) ||
+            ordinary_terminal_opcode(
+                compiled_wires[index] + compiled_children[index].code_offset,
+                compiled_children[index].fields[ORD_CODE],
+                &compiled_terminals[index])) {
+            fputs("ordinary to_propkey natural wire/metadata drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+        for (unsigned raw = 0; raw < 256; raw++)
+            raw_count += compiled_raws[index][raw] != 0;
+        if (raw_count != 7 || !compiled_raws[index][11] ||
+            !compiled_raws[index][14] || !compiled_raws[index][40] ||
+            !compiled_raws[index][78] || !compiled_raws[index][112] ||
+            !compiled_raws[index][207] ||
+            (index < TO_PROPKEY_NATURAL_MODE_COUNT
+                 ? !compiled_raws[index][180]
+                 : !compiled_raws[index][208]) ||
+            compiled_terminals[index] != 40) {
+            fputs("ordinary to_propkey natural opcode provenance drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+    }
+
+    for (size_t mode = 0; mode < TO_PROPKEY_MODE_COUNT; mode++) {
+        memcpy(manual_wires[mode], compiled_wires[mode], 43);
+        manual_wires[mode][33] = 1;
+        manual_wires[mode][37] = 3;
+        manual_wires[mode][43] = 207;
+        manual_wires[mode][44] = 112;
+        manual_wires[mode][45] = 40;
+        if (memcmp(manual_wires[mode],
+                   mode == TO_PROPKEY_STRICT
+                       ? ordinary_to_propkey_strict_bytecode
+                       : ordinary_to_propkey_sloppy_bytecode,
+                   sizeof(manual_wires[mode])) != 0 ||
+            ordinary_fnv1a64(manual_wires[mode],
+                             sizeof(manual_wires[mode])) !=
+                expected_manual_fnv[mode] ||
+            ordinary_wire_child_metadata(manual_wires[mode],
+                                         sizeof(manual_wires[mode]),
+                                         &manual_children[mode]) ||
+            !ordinary_metadata_equal(&manual_children[mode],
+                                     &expected_manual_metadata[mode]) ||
+            ordinary_collect_opcodes(
+                manual_wires[mode] + manual_children[mode].code_offset,
+                manual_children[mode].fields[ORD_CODE], manual_raws[mode]) ||
+            ordinary_terminal_opcode(
+                manual_wires[mode] + manual_children[mode].code_offset,
+                manual_children[mode].fields[ORD_CODE],
+                &manual_terminals[mode]) ||
+            !manual_raws[mode][40] || !manual_raws[mode][112] ||
+            !manual_raws[mode][207] || manual_terminals[mode] != 40) {
+            fputs("ordinary to_propkey manual wire/metadata drifted\n",
+                  stderr);
+            goto cleanup;
+        }
+    }
+
+    memcpy(duplicate_wire, compiled_wires[TO_PROPKEY_STRICT], 43);
+    duplicate_wire[33] = 1;
+    duplicate_wire[37] = 4;
+    duplicate_wire[43] = 207;
+    duplicate_wire[44] = 112;
+    duplicate_wire[45] = 112;
+    duplicate_wire[46] = 40;
+    memcpy(loop_wire, compiled_wires[2], 47);
+    loop_wire[33] = 2;
+    loop_wire[37] = sizeof(loop_code);
+    memcpy(loop_wire + 47, loop_code, sizeof(loop_code));
+    memcpy(underflow_wire, compiled_wires[TO_PROPKEY_STRICT], 43);
+    underflow_wire[33] = 1;
+    underflow_wire[37] = 2;
+    underflow_wire[43] = 112;
+    underflow_wire[44] = 40;
+    if (memcmp(duplicate_wire, ordinary_to_propkey_duplicate_bytecode,
+               sizeof(duplicate_wire)) != 0 ||
+        ordinary_fnv1a64(duplicate_wire, sizeof(duplicate_wire)) !=
+            UINT64_C(0xc3d5f4815e807dfc) ||
+        ordinary_wire_child_metadata(duplicate_wire, sizeof(duplicate_wire),
+                                     &duplicate_child) ||
+        !ordinary_metadata_equal(&duplicate_child,
+                                 &expected_duplicate_metadata) ||
+        ordinary_collect_opcodes(duplicate_wire + duplicate_child.code_offset,
+                                 duplicate_child.fields[ORD_CODE],
+                                 duplicate_raws) ||
+        ordinary_terminal_opcode(duplicate_wire + duplicate_child.code_offset,
+                                 duplicate_child.fields[ORD_CODE],
+                                 &duplicate_terminal) ||
+        duplicate_terminal != 40) {
+        fputs("ordinary to_propkey duplicate wire/metadata drifted\n",
+              stderr);
+        goto cleanup;
+    }
+    if (memcmp(loop_wire, ordinary_to_propkey_loop_bytecode,
+               sizeof(loop_wire)) != 0 ||
+        ordinary_fnv1a64(loop_wire, sizeof(loop_wire)) !=
+            UINT64_C(0xedcc1b5d91f5e46d) ||
+        ordinary_wire_child_metadata(loop_wire, sizeof(loop_wire),
+                                     &loop_child) ||
+        !ordinary_metadata_equal(&loop_child, &expected_loop_metadata) ||
+        ordinary_collect_opcodes(loop_wire + loop_child.code_offset,
+                                 loop_child.fields[ORD_CODE], loop_raws) ||
+        ordinary_terminal_opcode(loop_wire + loop_child.code_offset,
+                                 loop_child.fields[ORD_CODE],
+                                 &loop_terminal) ||
+        loop_terminal != 40 || !loop_raws[9] || !loop_raws[14] ||
+        !loop_raws[40] || !loop_raws[104] || !loop_raws[106] ||
+        !loop_raws[112] || !loop_raws[207] || !loop_raws[208] ||
+        !loop_raws[212]) {
+        fputs("ordinary to_propkey loop wire/metadata drifted\n", stderr);
+        goto cleanup;
+    }
+    if (memcmp(underflow_wire, ordinary_to_propkey_underflow_bytecode,
+               sizeof(underflow_wire)) != 0 ||
+        ordinary_fnv1a64(underflow_wire, sizeof(underflow_wire)) !=
+            UINT64_C(0x72e49b7e05feb73d) ||
+        ordinary_wire_child_metadata(underflow_wire,
+                                     sizeof(underflow_wire),
+                                     &underflow_child) ||
+        !ordinary_metadata_equal(&underflow_child,
+                                 &expected_underflow_metadata) ||
+        ordinary_collect_opcodes(underflow_wire + underflow_child.code_offset,
+                                 underflow_child.fields[ORD_CODE],
+                                 underflow_raws) ||
+        ordinary_terminal_opcode(underflow_wire +
+                                     underflow_child.code_offset,
+                                 underflow_child.fields[ORD_CODE],
+                                 &underflow_terminal) ||
+        underflow_wire[underflow_child.code_offset] != 112 ||
+        underflow_terminal != 40 || !underflow_raws[112] ||
+        !underflow_raws[40]) {
+        fputs("ordinary to_propkey underflow evidence drifted\n", stderr);
+        goto cleanup;
+    }
+    for (size_t offset = 0;
+         offset < duplicate_child.fields[ORD_CODE];) {
+        uint8_t raw = duplicate_wire[duplicate_child.code_offset + offset];
+        duplicate_raw112_count += raw == 112;
+        offset += ordinary_opcode_size(raw);
+    }
+    for (size_t offset = 0; offset < loop_child.fields[ORD_CODE];) {
+        uint8_t raw = loop_wire[loop_child.code_offset + offset];
+        loop_raw112_count += raw == 112;
+        offset += ordinary_opcode_size(raw);
+    }
+    if (duplicate_raw112_count != 2 || loop_raw112_count != 1) {
+        fputs("ordinary to_propkey repeated raw112 evidence drifted\n",
+              stderr);
+        goto cleanup;
+    }
+
+    runtime = JS_NewRuntime();
+    defining_context = runtime ? JS_NewContext(runtime) : NULL;
+    caller_context = runtime ? JS_NewContext(runtime) : NULL;
+    if (!defining_context || !caller_context) {
+        fputs("ordinary to_propkey fresh realm allocation failed\n", stderr);
+        goto cleanup;
+    }
+    {
+        const uint8_t *const execution_wires[
+            TO_PROPKEY_EXECUTABLE_COUNT] = {
+            compiled_wires[TO_PROPKEY_STRICT],
+            compiled_wires[TO_PROPKEY_SLOPPY],
+            manual_wires[TO_PROPKEY_STRICT],
+            manual_wires[TO_PROPKEY_SLOPPY],
+            duplicate_wire,
+            loop_wire,
+        };
+        const size_t execution_sizes[TO_PROPKEY_EXECUTABLE_COUNT] = {
+            compiled_wire_sizes[TO_PROPKEY_STRICT],
+            compiled_wire_sizes[TO_PROPKEY_SLOPPY],
+            sizeof(manual_wires[TO_PROPKEY_STRICT]),
+            sizeof(manual_wires[TO_PROPKEY_SLOPPY]),
+            sizeof(duplicate_wire),
+            sizeof(loop_wire),
+        };
+
+        for (size_t index = 0; index < TO_PROPKEY_EXECUTABLE_COUNT;
+             index++) {
+            loaded = JS_ReadObject(defining_context, execution_wires[index],
+                                   execution_sizes[index],
+                                   JS_READ_OBJ_BYTECODE);
+            if (JS_IsException(loaded)) {
+                report_exception(defining_context,
+                                 "ordinary to_propkey read failed");
+                loaded = JS_UNDEFINED;
+                goto cleanup;
+            }
+            rewritten = JS_WriteObject(defining_context, &rewritten_size,
+                                       loaded, JS_WRITE_OBJ_BYTECODE);
+            if (!rewritten || rewritten_size != execution_sizes[index] ||
+                memcmp(rewritten, execution_wires[index],
+                       rewritten_size) != 0) {
+                if (!rewritten)
+                    report_exception(defining_context,
+                                     "ordinary to_propkey rewrite failed");
+                else
+                    fputs("ordinary to_propkey rewrite drifted\n", stderr);
+                goto cleanup;
+            }
+            js_free(defining_context, rewritten);
+            rewritten = NULL;
+            rewritten_size = 0;
+            functions[index] = JS_EvalFunction(defining_context, loaded);
+            loaded = JS_UNDEFINED;
+            if (JS_IsException(functions[index]) ||
+                !JS_IsFunction(defining_context, functions[index])) {
+                report_exception(defining_context,
+                                 "ordinary to_propkey root evaluation failed");
+                functions[index] = JS_UNDEFINED;
+                goto cleanup;
+            }
+        }
+    }
+
+    defining_global = JS_GetGlobalObject(defining_context);
+    caller_global = JS_GetGlobalObject(caller_context);
+    defining_constructor = JS_GetPropertyStr(
+        defining_context, defining_global, "TypeError");
+    caller_constructor = JS_GetPropertyStr(caller_context, caller_global,
+                                            "TypeError");
+    if (JS_IsException(defining_global) || JS_IsException(caller_global) ||
+        JS_IsException(defining_constructor) ||
+        JS_IsException(caller_constructor)) {
+        report_exception(JS_HasException(defining_context)
+                             ? defining_context : caller_context,
+                         "ordinary to_propkey realm setup failed");
+        goto cleanup;
+    }
+    defining_type_error = JS_GetPropertyStr(defining_context,
+                                            defining_constructor,
+                                            "prototype");
+    caller_type_error = JS_GetPropertyStr(caller_context,
+                                          caller_constructor,
+                                          "prototype");
+    if (JS_IsException(defining_type_error) ||
+        JS_IsException(caller_type_error) ||
+        JS_StrictEq(caller_context, defining_type_error,
+                    caller_type_error) != 0) {
+        report_exception(JS_HasException(defining_context)
+                             ? defining_context : caller_context,
+                         "ordinary to_propkey TypeError realm setup failed");
+        goto cleanup;
+    }
+
+    integer_input = JS_NewInt32(caller_context, 112);
+    strict_result = JS_Call(
+        caller_context, functions[TO_PROPKEY_MANUAL_STRICT], JS_UNDEFINED,
+        1, &integer_input);
+    sloppy_result = JS_Call(
+        caller_context, functions[TO_PROPKEY_MANUAL_SLOPPY], JS_UNDEFINED,
+        1, &integer_input);
+    if (JS_IsException(strict_result) || JS_IsException(sloppy_result) ||
+        JS_VALUE_GET_TAG(strict_result) != JS_TAG_INT ||
+        JS_VALUE_GET_TAG(sloppy_result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(strict_result) != 112 ||
+        JS_VALUE_GET_INT(sloppy_result) != 112 ||
+        JS_StrictEq(caller_context, strict_result, sloppy_result) != 1) {
+        report_exception(caller_context,
+                         "ordinary to_propkey integer conversion failed");
+        goto cleanup;
+    }
+    JS_FreeValue(caller_context, strict_result);
+    strict_result = JS_UNDEFINED;
+    JS_FreeValue(caller_context, sloppy_result);
+    sloppy_result = JS_UNDEFINED;
+
+    string_input = JS_NewString(caller_context, "raw112");
+    strict_result = JS_Call(
+        caller_context, functions[TO_PROPKEY_MANUAL_STRICT], JS_UNDEFINED,
+        1, &string_input);
+    sloppy_result = JS_Call(
+        caller_context, functions[TO_PROPKEY_MANUAL_SLOPPY], JS_UNDEFINED,
+        1, &string_input);
+    if (JS_IsException(string_input) || JS_IsException(strict_result) ||
+        JS_IsException(sloppy_result) || !JS_IsString(strict_result) ||
+        !JS_IsString(sloppy_result) ||
+        JS_VALUE_GET_PTR(strict_result) != JS_VALUE_GET_PTR(string_input) ||
+        JS_VALUE_GET_PTR(sloppy_result) != JS_VALUE_GET_PTR(string_input)) {
+        report_exception(caller_context,
+                         "ordinary to_propkey string identity failed");
+        goto cleanup;
+    }
+    JS_FreeValue(caller_context, strict_result);
+    strict_result = JS_UNDEFINED;
+    JS_FreeValue(caller_context, sloppy_result);
+    sloppy_result = JS_UNDEFINED;
+
+    symbol_input = JS_Eval(caller_context, "Symbol('raw112')",
+                           strlen("Symbol('raw112')"),
+                           "ordinary-to-propkey-symbol.js",
+                           JS_EVAL_TYPE_GLOBAL);
+    strict_result = JS_Call(
+        caller_context, functions[TO_PROPKEY_MANUAL_STRICT], JS_UNDEFINED,
+        1, &symbol_input);
+    sloppy_result = JS_Call(
+        caller_context, functions[TO_PROPKEY_MANUAL_SLOPPY], JS_UNDEFINED,
+        1, &symbol_input);
+    if (JS_IsException(symbol_input) || JS_IsException(strict_result) ||
+        JS_IsException(sloppy_result) || !JS_IsSymbol(strict_result) ||
+        !JS_IsSymbol(sloppy_result) ||
+        JS_StrictEq(caller_context, strict_result, symbol_input) != 1 ||
+        JS_StrictEq(caller_context, sloppy_result, symbol_input) != 1) {
+        report_exception(caller_context,
+                         "ordinary to_propkey symbol identity failed");
+        goto cleanup;
+    }
+    JS_FreeValue(caller_context, strict_result);
+    strict_result = JS_UNDEFINED;
+    JS_FreeValue(caller_context, sloppy_result);
+    sloppy_result = JS_UNDEFINED;
+
+    if (JS_SetPropertyStr(
+            caller_context, caller_global, "__stage3jNaturalStrict",
+            JS_DupValue(caller_context,
+                        functions[TO_PROPKEY_NATURAL_STRICT])) < 0 ||
+        JS_SetPropertyStr(
+            caller_context, caller_global, "__stage3jNaturalSloppy",
+            JS_DupValue(caller_context,
+                        functions[TO_PROPKEY_NATURAL_SLOPPY])) < 0 ||
+        JS_SetPropertyStr(
+            caller_context, caller_global, "__stage3jStrict",
+            JS_DupValue(caller_context,
+                        functions[TO_PROPKEY_MANUAL_STRICT])) < 0 ||
+        JS_SetPropertyStr(
+            caller_context, caller_global, "__stage3jSloppy",
+            JS_DupValue(caller_context,
+                        functions[TO_PROPKEY_MANUAL_SLOPPY])) < 0 ||
+        JS_SetPropertyStr(
+            caller_context, caller_global, "__stage3jDuplicate",
+            JS_DupValue(caller_context, functions[TO_PROPKEY_DUPLICATE])) <
+            0 ||
+        JS_SetPropertyStr(
+            caller_context, caller_global, "__stage3jLoop",
+            JS_DupValue(caller_context, functions[TO_PROPKEY_LOOP])) < 0 ||
+        JS_SetPropertyStr(caller_context, caller_global,
+                          "__stage3jDefiningTypeError",
+                          JS_DupValue(caller_context,
+                                      defining_type_error)) < 0) {
+        report_exception(caller_context,
+                         "ordinary to_propkey publication failed");
+        goto cleanup;
+    }
+    semantic_result = JS_Eval(caller_context, semantic_source,
+                              strlen(semantic_source),
+                              "ordinary-to-propkey-semantic.js",
+                              JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(semantic_result) ||
+        JS_VALUE_GET_TAG(semantic_result) != JS_TAG_INT ||
+        JS_VALUE_GET_INT(semantic_result) != 42 ||
+        JS_HasException(defining_context) ||
+        JS_HasException(caller_context)) {
+        report_exception(JS_HasException(defining_context)
+                             ? defining_context : caller_context,
+                         "ordinary to_propkey semantic oracle failed");
+        semantic_result = JS_UNDEFINED;
+        goto cleanup;
+    }
+
+    puts("ordinary-to-propkey-evidence="
+         "compiler-natural-strict-and-sloppy-plus-mechanically-derived-property-free-wires");
+    for (size_t mode = 0; mode < TO_PROPKEY_MODE_COUNT; mode++) {
+        char raw_label[96];
+
+        printf("ordinary-to-propkey-%s-natural-source-hex=%s\n",
+               mode_labels[mode], source_hex[mode]);
+        printf("ordinary-to-propkey-%s-natural-compile-mode="
+               "global-compile-only,strip-debug\n", mode_labels[mode]);
+        printf("ordinary-to-propkey-%s-natural-wire-size=%zu\n",
+               mode_labels[mode], compiled_wire_sizes[mode]);
+        printf("ordinary-to-propkey-%s-natural-wire-fnv1a64=%016" PRIx64
+               "\n", mode_labels[mode],
+               ordinary_fnv1a64(compiled_wires[mode],
+                                compiled_wire_sizes[mode]));
+        printf("ordinary-to-propkey-%s-natural-wire-sha256=%s\n",
+               mode_labels[mode], compiled_sha256[mode]);
+        printf("ordinary-to-propkey-%s-natural-wire-hex=",
+               mode_labels[mode]);
+        for (size_t index = 0; index < compiled_wire_sizes[mode]; index++)
+            printf("%02x", compiled_wires[mode][index]);
+        putchar('\n');
+        printf("ordinary-to-propkey-%s-natural-child-metadata="
+               "flags:%04x,js_mode:%u,args:%" PRIu32
+               ",vars:%" PRIu32 ",defined_args:%" PRIu32
+               ",stack:%" PRIu32 ",var_refs:%" PRIu32
+               ",closures:%" PRIu32 ",cpool:%" PRIu32
+               ",code:%" PRIu32 ",locals:%" PRIu32
+               ",code_offset:%zu,atoms:0\n",
+               mode_labels[mode], compiled_children[mode].flags,
+               compiled_children[mode].js_mode,
+               compiled_children[mode].fields[ORD_ARGS],
+               compiled_children[mode].fields[ORD_VARS],
+               compiled_children[mode].fields[ORD_DEFINED_ARGS],
+               compiled_children[mode].fields[ORD_STACK],
+               compiled_children[mode].fields[ORD_VAR_REFS],
+               compiled_children[mode].fields[ORD_CLOSURES],
+               compiled_children[mode].fields[ORD_CPOOL],
+               compiled_children[mode].fields[ORD_CODE],
+               compiled_children[mode].fields[ORD_LOCALS],
+               compiled_children[mode].code_offset);
+        printf("ordinary-to-propkey-%s-natural-child-code-hex="
+               "0bcf70b44e0e28\n", mode_labels[mode]);
+        snprintf(raw_label, sizeof(raw_label),
+                 "ordinary-to-propkey-%s-natural-child-raw",
+                 mode_labels[mode]);
+        ordinary_print_raw_set(raw_label, compiled_raws[mode]);
+        printf("ordinary-to-propkey-%s-natural-terminal="
+               "raw40;raw112:1->1,raw40:1->0\n", mode_labels[mode]);
+        printf("ordinary-to-propkey-%s-natural-provenance="
+               "compiler-emitted-computed-property-definition;"
+               "js_mode:%s\n", mode_labels[mode], mode_labels[mode]);
+        printf("ordinary-to-propkey-%s-natural-rewrite="
+               "identity,fresh-root:Function\n", mode_labels[mode]);
+
+        printf("ordinary-to-propkey-%s-wire-size=%zu\n",
+               mode_labels[mode], sizeof(manual_wires[mode]));
+        printf("ordinary-to-propkey-%s-wire-fnv1a64=%016" PRIx64 "\n",
+               mode_labels[mode],
+               ordinary_fnv1a64(manual_wires[mode],
+                                sizeof(manual_wires[mode])));
+        printf("ordinary-to-propkey-%s-wire-sha256=%s\n",
+               mode_labels[mode], manual_sha256[mode]);
+        printf("ordinary-to-propkey-%s-wire-hex=", mode_labels[mode]);
+        for (size_t index = 0; index < sizeof(manual_wires[mode]); index++)
+            printf("%02x", manual_wires[mode][index]);
+        putchar('\n');
+        printf("ordinary-to-propkey-%s-child-metadata="
+               "flags:%04x,js_mode:%u,args:%" PRIu32
+               ",vars:%" PRIu32 ",defined_args:%" PRIu32
+               ",stack:%" PRIu32 ",var_refs:%" PRIu32
+               ",closures:%" PRIu32 ",cpool:%" PRIu32
+               ",code:%" PRIu32 ",locals:%" PRIu32
+               ",code_offset:%zu,atoms:0\n",
+               mode_labels[mode], manual_children[mode].flags,
+               manual_children[mode].js_mode,
+               manual_children[mode].fields[ORD_ARGS],
+               manual_children[mode].fields[ORD_VARS],
+               manual_children[mode].fields[ORD_DEFINED_ARGS],
+               manual_children[mode].fields[ORD_STACK],
+               manual_children[mode].fields[ORD_VAR_REFS],
+               manual_children[mode].fields[ORD_CLOSURES],
+               manual_children[mode].fields[ORD_CPOOL],
+               manual_children[mode].fields[ORD_CODE],
+               manual_children[mode].fields[ORD_LOCALS],
+               manual_children[mode].code_offset);
+        printf("ordinary-to-propkey-%s-child-code-hex=cf7028\n",
+               mode_labels[mode]);
+        snprintf(raw_label, sizeof(raw_label),
+                 "ordinary-to-propkey-%s-child-raw", mode_labels[mode]);
+        ordinary_print_raw_set(raw_label, manual_raws[mode]);
+        printf("ordinary-to-propkey-%s-terminal="
+               "raw40;raw112:1->1,raw40:1->0\n", mode_labels[mode]);
+        printf("ordinary-to-propkey-%s-derivation="
+               "natural50:stack3->1,code7->3;"
+               "remove-push_object,push_1,define_array_el,drop;"
+               "retain-get_arg0,to_propkey,return\n", mode_labels[mode]);
+        printf("ordinary-to-propkey-%s-property-free="
+               "atoms:0,args:1,vars:0,var_refs:0,closures:0,"
+               "cpool:0,locals:1,stack:1\n", mode_labels[mode]);
+        printf("ordinary-to-propkey-%s-rewrite="
+               "identity,fresh-root:Function\n", mode_labels[mode]);
+    }
+
+    printf("ordinary-to-propkey-loop-base-source-hex=%s\n",
+           source_hex[2]);
+    puts("ordinary-to-propkey-loop-base-compile-mode="
+         "global-compile-only,strip-debug");
+    printf("ordinary-to-propkey-loop-base-wire-size=%zu\n",
+           compiled_wire_sizes[2]);
+    printf("ordinary-to-propkey-loop-base-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(compiled_wires[2], compiled_wire_sizes[2]));
+    printf("ordinary-to-propkey-loop-base-wire-sha256=%s\n",
+           compiled_sha256[2]);
+    fputs("ordinary-to-propkey-loop-base-wire-hex=", stdout);
+    for (size_t index = 0; index < compiled_wire_sizes[2]; index++)
+        printf("%02x", compiled_wires[2][index]);
+    putchar('\n');
+    printf("ordinary-to-propkey-loop-base-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32
+           ",vars:%" PRIu32 ",defined_args:%" PRIu32
+           ",stack:%" PRIu32 ",var_refs:%" PRIu32
+           ",closures:%" PRIu32 ",cpool:%" PRIu32
+           ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           compiled_children[2].flags, compiled_children[2].js_mode,
+           compiled_children[2].fields[ORD_ARGS],
+           compiled_children[2].fields[ORD_VARS],
+           compiled_children[2].fields[ORD_DEFINED_ARGS],
+           compiled_children[2].fields[ORD_STACK],
+           compiled_children[2].fields[ORD_VAR_REFS],
+           compiled_children[2].fields[ORD_CLOSURES],
+           compiled_children[2].fields[ORD_CPOOL],
+           compiled_children[2].fields[ORD_CODE],
+           compiled_children[2].fields[ORD_LOCALS],
+           compiled_children[2].code_offset);
+    puts("ordinary-to-propkey-loop-base-child-code-hex=0bcf70d04e0e28");
+    ordinary_print_raw_set("ordinary-to-propkey-loop-base-child-raw",
+                           compiled_raws[2]);
+    puts("ordinary-to-propkey-loop-base-provenance="
+         "compiler-emitted-two-argument-computed-property-definition");
+
+    printf("ordinary-to-propkey-duplicate-wire-size=%zu\n",
+           sizeof(duplicate_wire));
+    printf("ordinary-to-propkey-duplicate-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(duplicate_wire, sizeof(duplicate_wire)));
+    puts("ordinary-to-propkey-duplicate-wire-sha256="
+         "b64eab0222e609fc0f5c70a2183c7558b2eecc9852d5bb795c8933e90a351ff5");
+    fputs("ordinary-to-propkey-duplicate-wire-hex=", stdout);
+    for (size_t index = 0; index < sizeof(duplicate_wire); index++)
+        printf("%02x", duplicate_wire[index]);
+    putchar('\n');
+    printf("ordinary-to-propkey-duplicate-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32
+           ",vars:%" PRIu32 ",defined_args:%" PRIu32
+           ",stack:%" PRIu32 ",var_refs:%" PRIu32
+           ",closures:%" PRIu32 ",cpool:%" PRIu32
+           ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           duplicate_child.flags, duplicate_child.js_mode,
+           duplicate_child.fields[ORD_ARGS], duplicate_child.fields[ORD_VARS],
+           duplicate_child.fields[ORD_DEFINED_ARGS],
+           duplicate_child.fields[ORD_STACK],
+           duplicate_child.fields[ORD_VAR_REFS],
+           duplicate_child.fields[ORD_CLOSURES],
+           duplicate_child.fields[ORD_CPOOL],
+           duplicate_child.fields[ORD_CODE],
+           duplicate_child.fields[ORD_LOCALS], duplicate_child.code_offset);
+    puts("ordinary-to-propkey-duplicate-child-code-hex=cf707028");
+    ordinary_print_raw_set("ordinary-to-propkey-duplicate-child-raw",
+                           duplicate_raws);
+    puts("ordinary-to-propkey-duplicate-raw112-occurrences=2");
+    puts("ordinary-to-propkey-duplicate-derivation="
+         "strict-property-free46:code3->4;insert-second-raw112-before-return");
+    puts("ordinary-to-propkey-duplicate-execution="
+         "object-toPrimitive-calls:1;second-raw112-input:canonical-string");
+    puts("ordinary-to-propkey-duplicate-rewrite=identity,fresh-root:Function");
+
+    printf("ordinary-to-propkey-loop-wire-size=%zu\n", sizeof(loop_wire));
+    printf("ordinary-to-propkey-loop-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(loop_wire, sizeof(loop_wire)));
+    puts("ordinary-to-propkey-loop-wire-sha256="
+         "85274c3f09639ee7538bdfafd43f8bb35fc8819f9f2d4c8051e5fb140bccb638");
+    fputs("ordinary-to-propkey-loop-wire-hex=", stdout);
+    for (size_t index = 0; index < sizeof(loop_wire); index++)
+        printf("%02x", loop_wire[index]);
+    putchar('\n');
+    printf("ordinary-to-propkey-loop-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32
+           ",vars:%" PRIu32 ",defined_args:%" PRIu32
+           ",stack:%" PRIu32 ",var_refs:%" PRIu32
+           ",closures:%" PRIu32 ",cpool:%" PRIu32
+           ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           loop_child.flags, loop_child.js_mode,
+           loop_child.fields[ORD_ARGS], loop_child.fields[ORD_VARS],
+           loop_child.fields[ORD_DEFINED_ARGS],
+           loop_child.fields[ORD_STACK], loop_child.fields[ORD_VAR_REFS],
+           loop_child.fields[ORD_CLOSURES], loop_child.fields[ORD_CPOOL],
+           loop_child.fields[ORD_CODE], loop_child.fields[ORD_LOCALS],
+           loop_child.code_offset);
+    puts("ordinary-to-propkey-loop-child-code-hex="
+         "cf70d0680d0000000e09d4cf6af4ffffff28");
+    ordinary_print_raw_set("ordinary-to-propkey-loop-child-raw", loop_raws);
+    puts("ordinary-to-propkey-loop-raw112-occurrences=1");
+    puts("ordinary-to-propkey-loop-branch-map="
+         "raw104-operand@4:+13->17;raw106-operand@13:-12->1");
+    puts("ordinary-to-propkey-loop-derivation="
+         "compiler-authenticated-two-argument54-envelope;"
+         "stack3->2,code7->18;mechanically-replace-child-code");
+    puts("ordinary-to-propkey-loop-execution="
+         "object,true;toPrimitive-calls:2;raw112-executions:2;"
+         "backedge-input:original-object;result:k2");
+    puts("ordinary-to-propkey-loop-rewrite=identity,fresh-root:Function");
+
+    printf("ordinary-to-propkey-underflow-wire-size=%zu\n",
+           sizeof(underflow_wire));
+    printf("ordinary-to-propkey-underflow-wire-fnv1a64=%016" PRIx64 "\n",
+           ordinary_fnv1a64(underflow_wire, sizeof(underflow_wire)));
+    puts("ordinary-to-propkey-underflow-wire-sha256="
+         "b96daff364d2ca615035e2910533e5e77b3284c52309c0d30e333275682bc841");
+    fputs("ordinary-to-propkey-underflow-wire-hex=", stdout);
+    for (size_t index = 0; index < sizeof(underflow_wire); index++)
+        printf("%02x", underflow_wire[index]);
+    putchar('\n');
+    printf("ordinary-to-propkey-underflow-child-metadata="
+           "flags:%04x,js_mode:%u,args:%" PRIu32
+           ",vars:%" PRIu32 ",defined_args:%" PRIu32
+           ",stack:%" PRIu32 ",var_refs:%" PRIu32
+           ",closures:%" PRIu32 ",cpool:%" PRIu32
+           ",code:%" PRIu32 ",locals:%" PRIu32
+           ",code_offset:%zu,atoms:0\n",
+           underflow_child.flags, underflow_child.js_mode,
+           underflow_child.fields[ORD_ARGS],
+           underflow_child.fields[ORD_VARS],
+           underflow_child.fields[ORD_DEFINED_ARGS],
+           underflow_child.fields[ORD_STACK],
+           underflow_child.fields[ORD_VAR_REFS],
+           underflow_child.fields[ORD_CLOSURES],
+           underflow_child.fields[ORD_CPOOL],
+           underflow_child.fields[ORD_CODE],
+           underflow_child.fields[ORD_LOCALS], underflow_child.code_offset);
+    puts("ordinary-to-propkey-underflow-child-code-hex=7028");
+    ordinary_print_raw_set("ordinary-to-propkey-underflow-child-raw",
+                           underflow_raws);
+    puts("ordinary-to-propkey-underflow-derivation="
+         "strict-property-free46:code3->2;remove-get_arg0-producer");
+    puts("ordinary-to-propkey-underflow-status="
+         "authenticated-verifier-negative;never-read-or-executed-by-C");
+
+    puts("ordinary-to-propkey-read-write="
+         "strict-natural,sloppy-natural,strict-manual,sloppy-manual,"
+         "duplicate47,loop65:identity");
+    puts("ordinary-to-propkey-primitives="
+         "Int:canonical-int-identity;String:physical-identity;"
+         "Symbol:identity;Undefined,Null,Boolean,Float64,BigInt:canonical-string");
+    puts("ordinary-to-propkey-hint="
+         "Symbol.toPrimitive:string-hint-exactly-once-per-object-conversion");
+    puts("ordinary-to-propkey-ordinary-fallback="
+         "toString-before-valueOf;valueOf-only-after-nonprimitive-toString");
+    puts("ordinary-to-propkey-throw="
+         "arbitrary-object-identity-preserved-through-caller-catch");
+    puts("ordinary-to-propkey-type-error="
+         "nonprimitive-result:TypeError:toPrimitive;"
+         "defining-realm:true;caller-realm:false");
+    puts("ordinary-to-propkey-nested-reentry="
+         "outer-toPrimitive-calls-same-function-for-int23;result:outer-key");
+    puts("ordinary-to-propkey-mode-parity="
+         "strict-and-sloppy:scalar,symbol,object-coercion-equivalent");
+    puts("ordinary-to-propkey-pending="
+         "none-after-handled-throw,type-error,nested,duplicate,or-loop-paths");
+    puts("ordinary-to-propkey-admitted-count=1");
+    puts("ordinary-to-propkey-admitted-raw=112");
+    puts("ordinary-to-propkey-oracle=passed");
+    status = 0;
+
+cleanup:
+    if (text && caller_context)
+        JS_FreeCString(caller_context, text);
+    if (rewritten && defining_context)
+        js_free(defining_context, rewritten);
+    if (caller_context) {
+        if (JS_HasException(caller_context)) {
+            JSValue pending = JS_GetException(caller_context);
+            JS_FreeValue(caller_context, pending);
+        }
+        JS_FreeValue(caller_context, semantic_result);
+        JS_FreeValue(caller_context, sloppy_result);
+        JS_FreeValue(caller_context, strict_result);
+        JS_FreeValue(caller_context, symbol_input);
+        JS_FreeValue(caller_context, string_input);
+        JS_FreeValue(caller_context, integer_input);
+        JS_FreeValue(caller_context, caller_type_error);
+        JS_FreeValue(caller_context, caller_constructor);
+        JS_FreeValue(caller_context, caller_global);
+    }
+    if (defining_context) {
+        if (JS_HasException(defining_context)) {
+            JSValue pending = JS_GetException(defining_context);
+            JS_FreeValue(defining_context, pending);
+        }
+        JS_FreeValue(defining_context, defining_type_error);
+        JS_FreeValue(defining_context, defining_constructor);
+        JS_FreeValue(defining_context, defining_global);
+        JS_FreeValue(defining_context, loaded);
+        for (size_t index = 0; index < TO_PROPKEY_EXECUTABLE_COUNT;
+             index++)
+            JS_FreeValue(defining_context, functions[index]);
+    }
+    if (caller_context)
+        JS_FreeContext(caller_context);
+    if (defining_context)
+        JS_FreeContext(defining_context);
+    if (runtime)
+        JS_FreeRuntime(runtime);
+    for (size_t index = 0; index < TO_PROPKEY_COMPILED_COUNT; index++) {
+        if (compiled_wires[index])
+            js_free(compile_context, compiled_wires[index]);
+        JS_FreeValue(compile_context, compiled[index]);
+    }
+    return status;
+}
+
 static int expect_ordinary_expansion_cohort(JSContext *compile_context) {
     static const char unary_binary_sequence[] =
         "-6,6,7,6,-7,false,number,18,0,216,48,0,0,"
@@ -8755,6 +9781,8 @@ int main(void) {
     if (expect_ordinary_to_object_completion(compile_context))
         goto cleanup;
     if (expect_ordinary_push_this_completion(compile_context))
+        goto cleanup;
+    if (expect_ordinary_to_propkey_completion(compile_context))
         goto cleanup;
 
     printf("canonical-scalar-integer-count=%zu\n",

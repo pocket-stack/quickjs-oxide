@@ -203,8 +203,8 @@ stage imports no engine `Instruction`, heap/VM type, or runtime
 `JsString`/`Value`. A private, raw-indexed `function_translate` registry is now
 the plan's sole production consumer. It checks all 244 pinned descriptor
 formats and projects only sanitized semantic DTOs to those admission bridges.
-The scalar policy remains 30 opcodes; the stage-3I ordinary policy is 132,
-and their union is 133 (111 blocked, one scalar-only, 103 ordinary-only, and 29
+The scalar policy remains 30 opcodes; the stage-3J ordinary policy is 133,
+and their union is 134 (110 blocked, one scalar-only, 104 ordinary-only, and 29
 shared registry rows). The reviewed stage-one 57-row atom-free set, stage-two
 five-row plain-call set, and stage-3A raw 33, 36, and 38 set are unchanged;
 stage 3B adds exactly raw 39 `apply`, and stage 3C adds exactly raw 35
@@ -214,12 +214,14 @@ fixed to zero; stage 3F adds exactly raw 177 `nop` with its `None` operand;
 stage 3G adds exactly raw 11 `object` with its `None` operand; stage 3H adds
 exactly raw 111 `to_object` with its `None` operand and 1-to-1 stack effect;
 stage 3I adds exactly raw 8 `push_this` with its `None` operand and ordinary-only
-audience. Raw 47 `return_async` and raw 112 `to_propkey` remain blocked. The
+audience; stage 3J adds exactly raw 112 `to_propkey` with its `None` operand,
+1-to-1 stack effect, and ordinary-only audience. Raw 47 `return_async` remains
+blocked. The
 now-empty `Invocation` and
 `Exception` blockers are removed; the
 blocked frontier retains 15 typed categories, each with at least one row. In
 the registry's typed-category order, its exact count vector is
-`1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
+`1, 4, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
 The scalar and ordinary paths no longer own duplicate opcode-name lowering
 tables. The plan and translation remain runtime-independent archive stages;
 only the separate publication bridge creates executable instructions. This
@@ -525,6 +527,27 @@ blocked as `Completion`, and raw 112 remains blocked as
 VM implementation and adds no source syntax, public API, Test262 admission, or
 Feature Parity claim.
 
+Stage 3J admits raw 112 only as the exact one-to-one typed chain
+`Recipe::ToPropKey` to `FunctionOp::ToPropKey` to
+`OrdinaryLeafOp::ToPropKey` and finally the existing
+`Instruction::ToPropKey`. Its `None` operand and ordinary-only audience are
+never aliased, widened, erased, expanded, or remapped; scalar translation
+remains `OutsideTarget`. Publication neither consumes a synthetic constant nor
+rewrites function metadata or stack accounting. The existing ordinary verifier
+continues to model the operation as 1-to-1 and follows the ordinary CFG. Raw
+112 deliberately does not inherit raw 8's exact-one, typed-index-zero, or
+no-target-zero entrance protocol: duplicate raw112 and a finite backedge to
+raw112 are legal and retain their ordinary stack/CFG checks. The existing VM
+canonicalizes primitives to property keys, preserves Symbol identity, requests
+the `string` hint from `@@toPrimitive` exactly once per Object conversion, and
+uses `toString` before `valueOf` for ordinary fallback. It preserves an
+arbitrary thrown value, materializes a nonprimitive-result `TypeError` in the
+defining realm, permits nested re-entry, and leaves pending exception state
+clean after handled strict or sloppy calls. Raw 47 remains blocked as
+`Completion`. Stage 3J changes neither the engine Instruction set nor VM
+implementation and adds no source syntax, public API, Test262 admission,
+metric, or Feature Parity claim.
+
 The pinned QuickJS C oracle compiles a two-argument loop/branch function with
 `GLOBAL | COMPILE_ONLY` and `JS_STRIP_DEBUG` into an exact 119-byte root/child
 vector. It pins byte-identical read/write, child offset 25 and flags `0x0243`,
@@ -753,23 +776,50 @@ String, BigInt, and Symbol wrappers with exact payloads. The authenticated
 43-byte duplicate-raw8 wire and 65-byte branch-back-to-raw8 wire both return
 `false` for sloppy primitive `this=1`, proving that pinned QuickJS reboxes on
 each raw8 execution and why the Rust entrance protocol needs both the
-exact-once and no-target-zero predicates. Strict C11 produced a byte-identical
-1,594-line transcript; all 19 authenticated oracles pass both direct validation
-and the full oracle gate. The source SHA-256 is
-`e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c4`, the
+exact-once and no-target-zero predicates. Stage 3J compiler-naturally emits
+strict and sloppy 50-byte computed-property witnesses with FNV-1a-64
+`83c33a69f73e737c` and `6a1706c9ae126361`, and SHA-256
+`7bfb0fefdbd3ff894bdcc0996707fda98153aaaeccbe50f6ade1ffaab7f818f0`
+and `c5f7a85af861402d57a8267f9af1be2d310b143a6972e5fe5d2068384b9f8fe0`.
+Those natural wires authenticate raw112 in source order but retain raw78
+`define_array_el`, so the ordinary cohort continues to reject the whole
+function for raw78 rather than raw112. Mechanical property-free reductions
+produce strict and sloppy 46-byte `cf7028` wires with FNV-1a-64
+`c7ed09720c7cfaa1` and `dd8bbd333d595b1c`, and SHA-256
+`7be331650765c34157ea3731e6f86d082451e0d60e7aeb7ecd09abfe0d524cb4`
+and `629fa63ab5c4bd4258a44e02e4171a82c7cb23ca3bce1ce11d4228e4ee10d822`.
+The accepted 47-byte duplicate wire (FNV-1a-64 `c3d5f4815e807dfc`, SHA-256
+`b64eab0222e609fc0f5c70a2183c7558b2eecc9852d5bb795c8933e90a351ff5`)
+invokes Object conversion once because its second raw112 receives the already
+canonical String. The accepted 65-byte finite-loop wire (FNV-1a-64
+`edcc1b5d91f5e46d`, SHA-256
+`85274c3f09639ee7538bdfafd43f8bb35fc8819f9f2d4c8051e5fb140bccb638`)
+backedges to raw112 and invokes conversion twice. The 45-byte underflow wire
+(FNV-1a-64 `72e49b7e05feb73d`, SHA-256
+`b96daff364d2ca615035e2910533e5e77b3284c52309c0d30e333275682bc841`)
+is authenticated but never read or executed by C; Rust's existing verifier
+rejects it transactionally and then accepts a valid retry. Rust and fresh
+QuickJS execution agree on primitive canonicalization, Symbol identity, the
+single `string` hint, `toString`-before-`valueOf` fallback, thrown Object
+identity, defining-realm `TypeError`, nested re-entry, strict/sloppy parity,
+and clean pending state. Strict C11 produced a byte-identical 1,695-line
+transcript; all 19 authenticated oracles pass both direct validation and the
+full oracle gate. The source SHA-256 is
+`815baf3fbf14de146b53d103401279cd9d5eacd006e60b468f8d141b34e2bd92`, the
 transcript SHA-256 is
-`5750753443089a599e2863dcad6d282c597b27cf1683b48e3ab76664091e71e6`, and the
+`58d8327f176950aeb8ab682dcf8fc11577421c46c5eb146f078adb073fbf03ec`, and the
 oracle-manifest SHA-256 is
-`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.
+`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.
 
-The latest full R3fj execution, exact-source GitHub Actions run `32497291807`,
-job `96818622699`, authenticates Stage 3I source
-`022e7b4860ec9b6e6d2922f835ac694790880126` with engine fingerprint
+The latest promoted Stage 3I lifecycle receipt is exact-source GitHub Actions
+run `32517600968`, job `96882617930`, on receipt-promotion commit
+`a8a746f50dfc71ed560df32af9da2fb5488f7cba`. It authenticates the Stage 3I
+engine-semantics source `022e7b4860ec9b6e6d2922f835ac694790880126` with
+engine fingerprint
 `f61afc7314c09e4b507468ca9bffdeb920d3e9c896068b3a9f39b4587caa0333`.
-The canonical `test262-receipt` run completed successfully after its
-current-source gate accepted the expected one-fingerprint receipt refresh; its
-unique exact six-file artifact `9452593259` (SHA-256
-`97ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb`)
+The canonical `test262-receipt` run completed successfully; its unique exact
+six-file artifact `9460012228` (SHA-256
+`06a95f6510ad335bd090be5bb34168e8bf683e36336441b67ebb4a831f56fd9f`)
 records the 102,050-line TSV as
 `52a4288752e11855a5101c7a536717690bdcb2d582224defc58bbe1ebfd3da91`
 and the 102,039-line JSONL as
@@ -791,6 +841,12 @@ This promoted receipt is source-current for Stage 3I and covers the raw-8
 profile or any focused or full metric reported above. It remains the exact
 Stage-3I lifecycle boundary, retains the Stage-3H raw-111 `ToObject`, Stage-3G
 raw-11 Object, and Stage-3F raw-177 coverage, and makes no new conformance claim.
+
+The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is
+source-ahead of that promoted Stage 3I receipt. The Stage 3I receipt does not
+cover or authenticate Stage 3J, and no Stage 3J receipt has been promoted.
+Accordingly, Stage 3J adds no Test262 admission, changes no focused or full
+metric, and makes no new conformance or Feature Parity claim.
 
 The same oracle pins compatible 32-bit `scope_next` wrapping, exact
 `SyntaxError` diagnostics for wrong-version, truncated, malformed-ULEB, and

@@ -17,10 +17,11 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
 scan_root() {
     local candidate_root=$1
+    local self_test_token=${2-${QUICKJS_OXIDE_BOUNDARY_SELF_TEST_TOKEN-}}
     local root
 
     root=$(CDPATH='' cd -- "$candidate_root" && pwd)
-    python3 - "$root" <<'PY'
+    python3 - "$root" "$self_test_token" <<'PY'
 from __future__ import annotations
 
 from pathlib import Path
@@ -33,6 +34,7 @@ import unicodedata
 
 
 root = Path(sys.argv[1])
+self_test_token = sys.argv[2]
 errors: list[str] = []
 
 
@@ -237,7 +239,27 @@ def rustfmt_match_arms(item: str, prefix: str) -> list[tuple[str, str]]:
     ]
 
 
-if not (root / ".boundary-self-test").is_file():
+self_test_marker = root / ".boundary-self-test"
+self_test_marker_exists = self_test_marker.exists() or self_test_marker.is_symlink()
+self_test_marker_authorized = (
+    bool(self_test_token)
+    and self_test_marker.is_file()
+    and not self_test_marker.is_symlink()
+    and self_test_marker.stat().st_nlink == 1
+    and self_test_marker.read_text(encoding="utf-8") == f"{self_test_token}\n"
+)
+if self_test_marker_exists and not self_test_marker_authorized:
+    fail(
+        "boundary-self-test-marker",
+        ".boundary-self-test is reserved for the gate's out-of-band authorized reduced fixture and is forbidden in a real scan root",
+    )
+if self_test_token and not self_test_marker_authorized:
+    fail(
+        "boundary-self-test-marker",
+        "the out-of-band reduced-fixture token must match one regular, single-link .boundary-self-test marker",
+    )
+
+if not self_test_marker_authorized:
     cargo_source = read_source("Cargo.toml")
     try:
         cargo_manifest = tomllib.loads(cargo_source)
@@ -255,7 +277,7 @@ if not (root / ".boundary-self-test").is_file():
 
 lib_source = read_source("src/lib.rs")
 lib_code = rust_code_only(lib_source)
-if not (root / ".boundary-self-test").is_file():
+if not self_test_marker_authorized:
     require_normalized_code_sha256(
         "stage3e-runtime-evidence",
         "src/lib.rs must retain its exact crate/test routing without macro-use, path, include, or glob-import indirection",
@@ -1561,7 +1583,7 @@ recipe_code, _, _ = unique_braced_item(
     "Recipe enum",
 )
 expected_recipe_variants = """
-    Nop Object ToObject PushThis PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
+    Nop Object ToObject ToPropKey PushThis PushI32 PushConstant PushAtom PushUndefined PushNull PushFalse PushTrue
     PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal
     SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue
     Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
@@ -1571,7 +1593,7 @@ counted_invocation_variant_names = (
     "Call", "TailCall", "Construct", "CallMethod", "TailCallMethod", "ArrayFrom"
 )
 invocation_variant_names = (*counted_invocation_variant_names, "Apply")
-unit_recipe_variant_names = ("Nop", "Object", "ToObject", "PushThis")
+unit_recipe_variant_names = ("Nop", "Object", "ToObject", "ToPropKey", "PushThis")
 unit_recipe_shapes = {
     name: (
         len(re.findall(rf"\b{name}[ \t\n]*,", recipe_code)),
@@ -1596,7 +1618,7 @@ if (
 ):
     fail(
         "function-translate-recipe-shape",
-        "Recipe must retain the exact reviewed inventory with unit Nop/Object/ToObject/PushThis recipes and explicit terminal completions; "
+        "Recipe must retain the exact reviewed inventory with unit Nop/Object/ToObject/ToPropKey/PushThis recipes and explicit terminal completions; "
         f"found {enum_variant_names(recipe_code)} with unit shapes {unit_recipe_shapes} "
         f"and invocation shapes {recipe_invocation_shapes}",
     )
@@ -1610,7 +1632,7 @@ dto_function_op_code, _, _ = unique_braced_item(
     "FunctionOp enum",
 )
 expected_function_op_variants = """
-    Blocked OutsideTarget Nop Object ToObject PushThis PushI32 PushConstant PushAtom PushUndefined PushNull
+    Blocked OutsideTarget Nop Object ToObject ToPropKey PushThis PushI32 PushConstant PushAtom PushUndefined PushNull
     PushBool PushBigIntI32 PushEmptyString Stack Unary PostDec PostInc GetLocal
     PutLocal SetLocal GetArgument PutArgument SetArgument Binary Predicate IfFalse
     IfTrue Goto Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply
@@ -1633,7 +1655,7 @@ if (
 ):
     fail(
         "function-translate-dto-shape",
-        "FunctionOp must retain the exact reviewed inventory with operand-free Nop/Object/ToObject/PushThis, distinct counted u16 invocation payloads, a typed Apply kind, and an operand-free Throw completion; "
+        "FunctionOp must retain the exact reviewed inventory with operand-free Nop/Object/ToObject/ToPropKey/PushThis, distinct counted u16 invocation payloads, a typed Apply kind, and an operand-free Throw completion; "
         f"found {enum_variant_names(dto_function_op_code)} with invocation payloads {function_invocation_payloads}",
     )
 function_throw_read_only_payloads = [
@@ -1727,7 +1749,7 @@ registry_audience_counts = {
     for audience in ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared")
 }
 expected_registry_audience_counts = dict(zip(
-    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (111, 1, 103, 29)
+    ("Blocked", "ScalarOnly", "OrdinaryOnly", "Shared"), (110, 1, 104, 29)
 ))
 derived_registry_counts = (
     registry_audience_counts["ScalarOnly"] + registry_audience_counts["Shared"],
@@ -1736,11 +1758,11 @@ derived_registry_counts = (
 )
 if (
     registry_audience_counts != expected_registry_audience_counts
-    or derived_registry_counts != (30, 132, 133)
+    or derived_registry_counts != (30, 133, 134)
 ):
     fail(
         "function-translate-registry-audience",
-        "the centralized registry must preserve the exact final stage-three-I physical cohorts; "
+        "the centralized registry must preserve the exact final stage-three-J physical cohorts; "
         f"found {registry_audience_counts} with scalar/ordinary/union {derived_registry_counts}",
     )
 
@@ -1806,6 +1828,7 @@ expect_admitted("OrdinaryOnly", "Recipe::ThrowReadOnly", (49,))
 expect_admitted("OrdinaryOnly", "Recipe::Nop", (177,))
 expect_admitted("OrdinaryOnly", "Recipe::Object", (11,))
 expect_admitted("OrdinaryOnly", "Recipe::ToObject", (111,))
+expect_admitted("OrdinaryOnly", "Recipe::ToPropKey", (112,))
 expect_admitted("OrdinaryOnly", "Recipe::PushThis", (8,))
 expect_admitted("OrdinaryOnly", "Recipe::PostDec", (142,))
 expect_admitted("OrdinaryOnly", "Recipe::PostInc", (143,))
@@ -1849,6 +1872,7 @@ expected_stage_boundaries = {
     48: (("throw", 1, 1, 0, "None"), "OrdinaryOnly", "Recipe::Throw"),
     49: (("throw_error", 6, 0, 0, "AtomU8"), "OrdinaryOnly", "Recipe::ThrowReadOnly"),
     111: (("to_object", 1, 1, 1, "None"), "OrdinaryOnly", "Recipe::ToObject"),
+    112: (("to_propkey", 1, 1, 1, "None"), "OrdinaryOnly", "Recipe::ToPropKey"),
     177: (("nop", 1, 0, 0, "None"), "OrdinaryOnly", "Recipe::Nop"),
     236: (("call0", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
     237: (("call1", 1, 1, 1, "NPopX"), "OrdinaryOnly", "Recipe::Call"),
@@ -2025,24 +2049,36 @@ if found_stage_three_i_push_this_rows != stage_three_i_push_this_rows:
         f"found {found_stage_three_i_push_this_rows}",
     )
 
-stage_three_i_deferred_rows = {
+stage_three_j_to_propkey_rows = ((112, "None", "Recipe::ToPropKey"),)
+found_stage_three_j_to_propkey_rows = tuple(
+    (raw, registry_rows[raw][1], registry_rows[raw][3])
+    for raw, _, _ in stage_three_j_to_propkey_rows
+    if registry_rows[raw][2] == "OrdinaryOnly"
+)
+if found_stage_three_j_to_propkey_rows != stage_three_j_to_propkey_rows:
+    fail(
+        "function-translate-stage-three-j-set",
+        "stage three J must admit exactly operand-free raw 112 to_propkey as an OrdinaryOnly ToPropKey recipe; "
+        f"found {found_stage_three_j_to_propkey_rows}",
+    )
+
+stage_three_j_deferred_rows = {
     47: (("return_async", 1, 1, 0, "None"), "Blocked", "Completion"),
-    112: (("to_propkey", 1, 1, 1, "None"), "Blocked", "ValueConstruction"),
 }
-found_stage_three_i_deferred_rows = {
+found_stage_three_j_deferred_rows = {
     raw: (pinned_descriptors[raw], registry_rows[raw][2], registry_rows[raw][3])
-    for raw in stage_three_i_deferred_rows
+    for raw in stage_three_j_deferred_rows
     if raw < len(pinned_descriptors) and raw < len(registry_rows)
 }
-if found_stage_three_i_deferred_rows != stage_three_i_deferred_rows:
+if found_stage_three_j_deferred_rows != stage_three_j_deferred_rows:
     fail(
-        "function-translate-stage-three-i-set",
-        "raw 47 return_async and raw 112 to_propkey must remain outside the Stage3I admission; "
-        f"found {found_stage_three_i_deferred_rows}",
+        "function-translate-stage-three-j-set",
+        "raw 47 return_async must remain blocked as Completion outside the Stage3J admission; "
+        f"found {found_stage_three_j_deferred_rows}",
     )
 
 blocker_count_tokens = """
-    InvalidSentinel 1 ValueConstruction 5 FunctionGraph 2 Completion 1
+    InvalidSentinel 1 ValueConstruction 4 FunctionGraph 2 Completion 1
     EvalOrModule 3 Binding 7 Property 16 ObjectConstruction 15
     LexicalEnvironment 25 ControlFlow 4 DynamicScope 9 Iteration 11 Suspension 5
     Operator 4 Specialized 3
@@ -2079,7 +2115,7 @@ blocked_registry_mapping_hash = hashlib.sha256(
     blocked_registry_mapping.encode("utf-8")
 ).hexdigest()
 if blocked_registry_mapping_hash != (
-    "2de312c2cdde1ff16d3ccf8bce0a3e1feb7857ed6ab4b603f1d991f1d315b9dd"
+    "66222091ea38b5c6c11cb800df576d3f048379fe79b282f2ea5c4b42e90a9fa2"
 ):
     fail(
         "function-translate-registry-blockers",
@@ -2299,7 +2335,7 @@ require_normalized_code_sha256(
     "function-translate-semantic-dispatch",
     "lower_operation must remain one alias-free typed Recipe/operand match with its unique ready publisher",
     translate_lower_item,
-    "25b42c25b4e7b6a14304a4b37456420725fa45dd7f6f145be02b096e2718d2c2",
+    "80936a383d38195b24c64242e118ef35944e4a22286da867eeddffe438327ba8",
 )
 if normalized_translate_lower.count(
     "let ready = |operation| Ok(PendingExpansion::one(PendingOperation::Ready(operation)));"
@@ -2326,6 +2362,7 @@ single_step_rows = """
 Recipe::Nop @ NativeOperands::None @ ready(FunctionOp::Nop)
 Recipe::Object @ NativeOperands::None @ ready(FunctionOp::Object)
 Recipe::ToObject @ NativeOperands::None @ ready(FunctionOp::ToObject)
+Recipe::ToPropKey @ NativeOperands::None @ ready(FunctionOp::ToPropKey)
 Recipe::PushThis @ NativeOperands::None @ ready(FunctionOp::PushThis)
 Recipe::PushI32 @ NativeOperands::I32(value) | NativeOperands::NoneInt(value) @ { ready(FunctionOp::PushI32(*value)) }
 Recipe::PushI32 @ NativeOperands::I8(value) @ { ready(FunctionOp::PushI32(i32::from(*value))) }
@@ -2379,10 +2416,10 @@ Recipe::ThrowReadOnly @ NativeOperands::AtomU8 { value, .. } @ Err( FunctionTran
 expected_single_step_arms = [
     tuple(row.split(" @ ", 2)) for row in single_step_rows
 ]
-if len(lowering_arm_matches) != 58 or found_single_step_arms != expected_single_step_arms:
+if len(lowering_arm_matches) != 59 or found_single_step_arms != expected_single_step_arms:
     fail(
         "function-translate-semantic-dispatch",
-        "lower_operation must retain all 58 reviewed Recipe/operand arms, including operand-free Nop, Object, ToObject, and PushThis, terminal tail invocations, explicit throw, and subtype-0 ThrowReadOnly, with each exact normalized RHS payload expression; "
+        "lower_operation must retain all 59 reviewed Recipe/operand arms, including operand-free Nop, Object, ToObject, ToPropKey, and PushThis, terminal tail invocations, explicit throw, and subtype-0 ThrowReadOnly, with each exact normalized RHS payload expression; "
         f"found {found_single_step_arms}",
     )
 apply_magic_error_contracts = (
@@ -2647,7 +2684,7 @@ ordinary_leaf_op_code, _, _ = unique_braced_item(
     "OrdinaryLeafOp enum",
 )
 expected_ordinary_leaf_op_variants = """
-    Nop Object ToObject PushThis PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
+    Nop Object ToObject ToPropKey PushThis PushI32 PushConst PushUndefined PushNull PushBool PushBigIntI32 PushEmptyString
     Stack Unary PostDec PostInc GetLocal PutLocal SetLocal GetArgument PutArgument
     SetArgument Binary Predicate IfFalse IfTrue Goto Call TailCall Construct
     CallMethod TailCallMethod ArrayFrom Apply Return ReturnUndefined Throw ThrowReadOnly
@@ -2669,7 +2706,7 @@ if (
 ):
     fail(
         "ordinary-leaf-operation-shape",
-        "OrdinaryLeafOp must retain the exact reviewed inventory with operand-free Nop/Object/ToObject/PushThis, distinct counted u16 invocation payloads, a typed Apply kind, and operand-free Throw; "
+        "OrdinaryLeafOp must retain the exact reviewed inventory with operand-free Nop/Object/ToObject/ToPropKey/PushThis, distinct counted u16 invocation payloads, a typed Apply kind, and operand-free Throw; "
         f"found {enum_variant_names(ordinary_leaf_op_code)} with invocation payloads {ordinary_invocation_payloads}",
     )
 ordinary_throw_read_only_payloads = [
@@ -2741,12 +2778,13 @@ require_normalized_code_sha256(
     "ordinary-leaf-translated-code",
     "ordinary lower_operation must remain one alias-free exhaustive typed handoff",
     ordinary_lower_operation,
-    "77d12d77999176f90897eb647ef49229847c4504475525cdc237b87ba2b33da2",
+    "32c17de1021480b9ac7eaf63113a9575098b4329c6f4261eec12a65b6498816a",
 )
 ordinary_handoff_rows = """
 FunctionOp::Nop @ Ok(OrdinaryLeafOp::Nop)
 FunctionOp::Object @ Ok(OrdinaryLeafOp::Object)
 FunctionOp::ToObject @ Ok(OrdinaryLeafOp::ToObject)
+FunctionOp::ToPropKey @ Ok(OrdinaryLeafOp::ToPropKey)
 FunctionOp::PushThis @ Ok(OrdinaryLeafOp::PushThis)
 FunctionOp::PushI32(value) @ Ok(OrdinaryLeafOp::PushI32(*value))
 FunctionOp::PushConstant(index) @ lower_constant(*index, constant_count)
@@ -2787,7 +2825,7 @@ found_ordinary_handoff = rustfmt_match_arms(ordinary_lower_operation, "FunctionO
 if found_ordinary_handoff != expected_ordinary_handoff:
     fail(
         "ordinary-leaf-translated-code",
-        "all 37 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
+        "all 38 sanitized operations must retain their exact ordinary-leaf payload and typed-family mapping; "
         f"found {found_ordinary_handoff}",
     )
 if (
@@ -4143,7 +4181,7 @@ if consumer_exists:
         "ordinary-leaf-consumer-lowering",
         "lower_ordinary_leaf_op must remain one alias-free exhaustive typed publisher match",
         ordinary_instruction_lowering,
-        "97744dba5220743068ed1afe133603daaf32baf362b361dbb4d9d4efdda4f6c8",
+        "0fe1f20d09e3441228acc24c6f93c88693c858afe5f7b8d61662eaa99bc14aaa",
     )
     detached_variants = re.findall(
         r"\bDetachedPrimitive[ \t\n]*::[ \t\n]*(\w+)",
@@ -4171,7 +4209,7 @@ if consumer_exists:
         ordinary_instruction_lowering,
     )
     expected_published_variants = """
-        Nop Object ToObject PushThis PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
+        Nop Object ToObject ToPropKey PushThis PushI32 PushConst PushUndefined PushNull PushBool PushBool PushBigIntI32
         PushEmptyString Stack Unary PostDec PostInc GetLocal PutLocal SetLocal
         GetArgument PutArgument SetArgument Binary Predicate IfFalse IfTrue Goto
         Call TailCall Construct CallMethod TailCallMethod ArrayFrom Apply Return
@@ -4207,6 +4245,7 @@ if consumer_exists:
 OrdinaryLeafOp::Nop @ Instruction::Nop
 OrdinaryLeafOp::Object @ Instruction::Object
 OrdinaryLeafOp::ToObject @ Instruction::ToObject
+OrdinaryLeafOp::ToPropKey @ Instruction::ToPropKey
 OrdinaryLeafOp::PushThis @ Instruction::PushThis
 OrdinaryLeafOp::PushI32(value) @ Instruction::PushI32(value)
 OrdinaryLeafOp::PushConst(index) @ Instruction::PushConst(index)
@@ -4280,7 +4319,7 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
         normalized_synthetic_index.find(fragment) for fragment in synthetic_index_fragments
     ]
     if (
-        len(found_publisher_arms) != 37
+        len(found_publisher_arms) != 38
         or found_publisher_direct != expected_publisher_direct
         or published_variants != expected_published_variants
         or any(
@@ -4308,7 +4347,7 @@ OrdinaryLeafOp::Throw @ Instruction::Throw
     ):
         fail(
             "ordinary-leaf-consumer-lowering",
-            "ordinary operations must retain their complete typed publisher mapping, one-for-one Nop/Object/ToObject/PushThis publication, and stable synthetic indices",
+            "ordinary operations must retain their complete typed publisher mapping, one-for-one Nop/Object/ToObject/ToPropKey/PushThis publication, and stable synthetic indices",
         )
 
     ordinary_consumer_seals = (
@@ -4689,7 +4728,7 @@ if " ".join(return_undefined_arm.split()).count(
 # The self-test fixture exercises codec isolation with deliberately tiny engine
 # stubs. Full-source mutation canaries and the real tree carry no marker and
 # therefore must satisfy every Stage3B runtime invariant below.
-if not (root / ".boundary-self-test").is_file():
+if not self_test_marker_authorized:
     stage3b_sources = {
         "src/runtime.rs": runtime_code,
         "src/vm.rs": vm_code,
@@ -4713,6 +4752,19 @@ if not (root / ".boundary-self-test").is_file():
                 f"{relative}::{name}",
             )[0]
         return stage3b_items[key]
+
+    def stage3j_source_function(relative: str, name: str, diagnostic: str) -> str:
+        source = read_source(relative)
+        code = rust_code_only(source)
+        _, start, end = unique_braced_item(
+            code,
+            re.compile(rf"\bfn[ \t\n]+{re.escape(name)}\b[^{{}};]*\{{"),
+            diagnostic,
+            f"{relative}::{name}",
+        )
+        if start < 0 or end < 0:
+            return ""
+        return source[start:end]
 
     if len(re.findall(
         r"\bstruct[ \t\n]+ConstructorRef[ \t\n]*\([ \t\n]*ObjectRef[ \t\n]*\)[ \t\n]*;",
@@ -5973,9 +6025,9 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "registry_locks_the_current_physical_cohorts",
             (
-                "(111, 1, 103, 29)",
-                "assert_eq!(ordinary_only + shared, 132);",
-                "assert_eq!(scalar_only + ordinary_only + shared, 133);",
+                "(110, 1, 104, 29)",
+                "assert_eq!(ordinary_only + shared, 133);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 134);",
             ),
         ),
         (
@@ -5993,7 +6045,7 @@ if not (root / ".boundary-self-test").is_file():
             (
                 "let mut counts = [0_usize; 15];",
                 "assert!(counts.into_iter().all(|count| count != 0));",
-                "assert_eq!(counts.into_iter().sum::<usize>(), 111);",
+                "assert_eq!(counts.into_iter().sum::<usize>(), 110);",
             ),
         ),
         (
@@ -6098,9 +6150,9 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3c_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "3ff8521f17f3acd991542c7de3e769507ba061eb19d605a413e4febe65f77cc9",
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "1c74d3733c3b55d08359e7c3b9a9f76babb0f59f841c4306311a054dba0f1b00",
         ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_invocation_addition_is_the_exact_reviewed_six_row_set"): "0bd25bc945bde404ea911c720491e06a0d58c7257683347372b6c74843d3afc2",
-        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "601aa4392300e4a3f965cef80787945d4aea706fdc729325318a016e17bb41c8",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "f2d596485d43e0c5ca2a0c77e5f332b893c54dfa6cfdbfc2367a476bd2071ec2",
         ("src/runtime/binary_object/function_translate/mod.rs", "tail_invocation_lowering_preserves_the_npop_operand_and_kind"): "f9a36b2d07545f80276edce3e1e7f3e1baaa56fcdfd82996a857be1958acccd2",
         ("src/runtime/binary_object/ordinary_leaf.rs", "tail_invocation_operands_reach_the_ordinary_dto_unchanged"): "fd78ceeb26a50bc988ebb4fdece4f4417b89abd31bbfe0edae6480899e8c1ecc",
         ("src/runtime/binary_object_publish.rs", "ordinary_tail_invocation_publishes_one_for_one_with_the_unchanged_operand"): "7277c89d2d824c8bfe59cecc5ed5fdbf4e68f0368b719794d3072df7782bc94e",
@@ -6445,6 +6497,100 @@ if not (root / ".boundary-self-test").is_file():
                 f"the Rust {label} fixture must retain its exact byte identity, FNV-1a-64, SHA-256, flags/frame metadata, code offset, and child body",
             )
 
+    stage3j_to_propkey_wire_contracts = (
+        (
+            "compiler-natural strict raw112",
+            stage3e_byte_array(stage3e_runtime_source, "QUICKJS_NATURAL_STRICT_TO_PROPKEY_BC5", "stage3j-runtime-evidence"),
+            50,
+            0x83C33A69F73E737C,
+            "7bfb0fefdbd3ff894bdcc0996707fda98153aaaeccbe50f6ade1ffaab7f818f0",
+            bytes.fromhex("0c4302010001000103000000070100010000"),
+            bytes.fromhex("0bcf70b44e0e28"),
+        ),
+        (
+            "compiler-natural sloppy raw112",
+            stage3e_byte_array(stage3e_runtime_source, "QUICKJS_NATURAL_SLOPPY_TO_PROPKEY_BC5", "stage3j-runtime-evidence"),
+            50,
+            0x6A1706C9AE126361,
+            "c5f7a85af861402d57a8267f9af1be2d310b143a6972e5fe5d2068384b9f8fe0",
+            bytes.fromhex("0c4302000001000103000000070100010000"),
+            bytes.fromhex("0bcf70b44e0e28"),
+        ),
+        (
+            "property-free strict raw112",
+            stage3e_byte_array(stage3e_runtime_source, "QUICKJS_ORDINARY_STRICT_TO_PROPKEY_BC5", "stage3j-runtime-evidence"),
+            46,
+            0xC7ED09720C7CFAA1,
+            "7be331650765c34157ea3731e6f86d082451e0d60e7aeb7ecd09abfe0d524cb4",
+            bytes.fromhex("0c4302010001000101000000030100010000"),
+            bytes.fromhex("cf7028"),
+        ),
+        (
+            "property-free sloppy raw112",
+            stage3e_byte_array(stage3e_runtime_source, "QUICKJS_ORDINARY_SLOPPY_TO_PROPKEY_BC5", "stage3j-runtime-evidence"),
+            46,
+            0xDD8BBD333D595B1C,
+            "629fa63ab5c4bd4258a44e02e4171a82c7cb23ca3bce1ce11d4228e4ee10d822",
+            bytes.fromhex("0c4302000001000101000000030100010000"),
+            bytes.fromhex("cf7028"),
+        ),
+        (
+            "duplicate raw112",
+            stage3e_byte_array(stage3e_runtime_source, "QUICKJS_DUPLICATE_TO_PROPKEY_BC5", "stage3j-runtime-evidence"),
+            47,
+            0xC3D5F4815E807DFC,
+            "b64eab0222e609fc0f5c70a2183c7558b2eecc9852d5bb795c8933e90a351ff5",
+            bytes.fromhex("0c4302010001000101000000040100010000"),
+            bytes.fromhex("cf707028"),
+        ),
+        (
+            "finite-loop raw112 re-entry",
+            stage3e_byte_array(stage3e_runtime_source, "QUICKJS_REENTER_TO_PROPKEY_BC5", "stage3j-runtime-evidence"),
+            65,
+            0xEDCC1B5D91F5E46D,
+            "85274c3f09639ee7538bdfafd43f8bb35fc8819f9f2d4c8051e5fb140bccb638",
+            bytes.fromhex("0c430201000200020200000012020001000000010000"),
+            bytes.fromhex("cf70d0680d0000000e09d4cf6af4ffffff28"),
+        ),
+        (
+            "raw112 underflow negative",
+            stage3e_byte_array(stage3e_runtime_source, "QUICKJS_UNDERFLOW_TO_PROPKEY_BC5", "stage3j-runtime-evidence"),
+            45,
+            0x72E49B7E05FEB73D,
+            "b96daff364d2ca615035e2910533e5e77b3284c52309c0d30e333275682bc841",
+            bytes.fromhex("0c4302010001000101000000020100010000"),
+            bytes.fromhex("7028"),
+        ),
+    )
+    for label, wire, size, fnv, sha256, metadata, child_code in stage3j_to_propkey_wire_contracts:
+        if (
+            len(wire) != size
+            or stage3e_fnv1a64(wire) != fnv
+            or hashlib.sha256(wire).hexdigest() != sha256
+            or wire[25:25 + len(metadata)] != metadata
+            or not wire.endswith(child_code)
+        ):
+            fail(
+                "stage3j-runtime-evidence",
+                f"the Rust {label} fixture must retain its exact byte identity, FNV-1a-64, SHA-256, flags/frame metadata, code offset, and child body",
+            )
+    if (
+        stage3j_to_propkey_wire_contracts[0][1][28] != 1
+        or stage3j_to_propkey_wire_contracts[1][1][28] != 0
+        or stage3j_to_propkey_wire_contracts[0][1][:28]
+        != stage3j_to_propkey_wire_contracts[1][1][:28]
+        or stage3j_to_propkey_wire_contracts[0][1][29:]
+        != stage3j_to_propkey_wire_contracts[1][1][29:]
+        or stage3j_to_propkey_wire_contracts[2][1][:28]
+        != stage3j_to_propkey_wire_contracts[3][1][:28]
+        or stage3j_to_propkey_wire_contracts[2][1][29:]
+        != stage3j_to_propkey_wire_contracts[3][1][29:]
+    ):
+        fail(
+            "stage3j-runtime-evidence",
+            "the strict/sloppy natural and property-free raw112 pairs must differ only in the exact js_mode byte",
+        )
+
     stage3d_test_contracts = (
         (
             "src/runtime/binary_object/function_translate/capability.rs",
@@ -6549,8 +6695,8 @@ if not (root / ".boundary-self-test").is_file():
     stage3d_test_body_hashes = {
         ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_throw_rows_are_the_exact_reviewed_completion_set"): "46280b952611f2513c2764859dacaa8b0b2be02d86a0ffbf92a0d5791e7deb6a",
         ("src/runtime/binary_object/function_translate/mod.rs", "explicit_throw_lowering_is_typed_and_operand_free"): "5d6d1b5266a7b7682c26a39d8b54c4b9f450670feb7dc917e89427293f92b9a9",
-        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "0da974adaa4d87c8aa9949f1ab1ab764b6408aafcf426d3f3218d426965a697d",
-        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "d00312170558a488c86b0eb21eeea031f155e0ddb9087e5f3219619282f8706d",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "fc152214094cc8dfa8f6e068f8f67a7a05ec3b88aa50dda9290a5970af0ad92a",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5d1aba35fd5745d682ef784539053160d709ebc61224ae304559d8ce1097f772",
         ("src/bytecode.rs", "verifier_allows_terminal_completion_to_abandon_switch_values"): "7fdb137db6ab6bedd70a5ea42b6b267ab3d1eb027ea6467e25b430ebf365b4a6",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_uses_the_exact_wire_metadata_and_value_identity"): "f3df4f2957a2d447ff0f0c1af7c0cb74eb03017dda72210b1349f16d4dceccfb",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_throw_reenters_caller_catch_backtrace_and_iterator_close"): "71ae492da72febf0aae78f64edd2980b70982f2d0799981b4e06d336a03eaa87",
@@ -6898,8 +7044,8 @@ if not (root / ".boundary-self-test").is_file():
     stage3f_test_body_hashes = {
         ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_nop_is_the_exact_operand_free_raw177_row"): "f75d3876877204f9b2a209216e5664095bab427ab1831db8ae7fdda946362b17",
         ("src/runtime/binary_object/function_translate/mod.rs", "operand_free_nop_translation_is_one_typed_operation"): "3fdd3855d14295ac08d90c15878eeb3a17afb2e9d5a6008182a0b0193cbd6ae4",
-        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "0da974adaa4d87c8aa9949f1ab1ab764b6408aafcf426d3f3218d426965a697d",
-        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "d00312170558a488c86b0eb21eeea031f155e0ddb9087e5f3219619282f8706d",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "fc152214094cc8dfa8f6e068f8f67a7a05ec3b88aa50dda9290a5970af0ad92a",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5d1aba35fd5745d682ef784539053160d709ebc61224ae304559d8ce1097f772",
         ("src/bytecode.rs", "verifier_accepts_closed_non_terminating_control_flow"): "7b249cca44a54c95013a2119764943705c06e0c372483c50b3d46ee41dd2d717",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_nop_preserves_exact_metadata_realm_and_zero_effect"): "bab4e09fe90b483999fbe41f9a1bbf26724ce74834fa2faba1d8a1ece16bce82",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_nop_only_fallthrough_rolls_back_and_retries"): "110183deebf1bd2e02361b7302b2e033243a57a6b7d51c33ded2919eade36c7c",
@@ -6951,27 +7097,27 @@ if not (root / ".boundary-self-test").is_file():
             f"missing {missing_stage3f_tests}, drifted {drifted_stage3f_tests}",
         )
 
-    stage3i_rust_diff_sha256 = (
-        "b45f8479d516fe4c94f0e373258be9ef05c2c07269d36350a24f33c17fb9793b"
+    stage3j_rust_diff_sha256 = (
+        "ac1919d895e07cbbdf4134e14c8c3a5318734a9578216ac65c949464508d33b5"
     )
-    stage3i_rust_file_hashes = {
-        "src/runtime/binary_object/function_translate/capability.rs": "d66de6d4f82a70ec689e54124352ed2d9495403a715c4e22fd6914604d8ed7be",
-        "src/runtime/binary_object/function_translate/dto.rs": "1f48c15bf4dbc70dc2829f3343bec8cf46aa0330e9b6a8f0cadd2984fd904b0f",
-        "src/runtime/binary_object/function_translate/mod.rs": "804236a8dd557718e1c8842aa01cfa3b5187510dcf7bab5b01330b8f59367f36",
-        "src/runtime/binary_object/ordinary_leaf.rs": "e73e550e29e57d52918db2ac16e9be3d9da7381947ebab5135c36b102d0bbf53",
-        "src/runtime/binary_object_publish.rs": "2774b1bbfd9ffb4d3fc41ea24ffc7abb67605042d5fcd1d6069a6fc105ec08f9",
-        "src/runtime/tests.rs": "984f00fde7cd90d1d336b81ba43cda4a7105b99f3b6fdde684d4579fffa9b3bd",
+    stage3j_rust_file_hashes = {
+        "src/runtime/binary_object/function_translate/capability.rs": "32dade7c55d5a151c53047eb58b0371bd1a9ea74b9aa10877816ccd906e7122d",
+        "src/runtime/binary_object/function_translate/dto.rs": "c1a61dbf9eb3354d90f1f63c29ac58b6704c767218743193135e09c3a9e1118c",
+        "src/runtime/binary_object/function_translate/mod.rs": "ebebcae0b13ffbf5eed7f748611fdb6a5af7148c3dd0e0b13f972e270a577c55",
+        "src/runtime/binary_object/ordinary_leaf.rs": "9769c38040576adb92af2b3c92d812c1d3f6961b4b386ca5da19c814ce4ca420",
+        "src/runtime/binary_object_publish.rs": "269399252cc30ed9574df9c693b7172efd06b60dbdcbd7c1c3da5a8a573501e2",
+        "src/runtime/tests.rs": "471ab9471007b657ed6e1e321341e5eac0df46a3b1096a623f5c0e9f2f1cad36",
     }
-    for relative, expected_hash in stage3i_rust_file_hashes.items():
+    for relative, expected_hash in stage3j_rust_file_hashes.items():
         path = root / relative
         if path.is_symlink() or not path.is_file():
-            fail("stage3i-rust-freeze", f"{relative} must remain a regular frozen Stage3I Rust file")
+            fail("stage3j-rust-freeze", f"{relative} must remain a regular frozen Stage3J Rust file")
             continue
         found_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         if found_hash != expected_hash:
             fail(
-                "stage3i-rust-freeze",
-                f"{relative} drifted from frozen Rust6 diff {stage3i_rust_diff_sha256}; found {found_hash}",
+                "stage3j-rust-freeze",
+                f"{relative} drifted from frozen Rust6 diff {stage3j_rust_diff_sha256}; found {found_hash}",
             )
 
     require_normalized_code_sha256(
@@ -6982,7 +7128,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_operation",
             "stage3g-object-translation-route",
         ),
-        "25b42c25b4e7b6a14304a4b37456420725fa45dd7f6f145be02b096e2718d2c2",
+        "80936a383d38195b24c64242e118ef35944e4a22286da867eeddffe438327ba8",
     )
     require_normalized_code_sha256(
         "stage3g-object-translation-route",
@@ -7007,7 +7153,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_operation",
             "stage3g-object-ordinary-route",
         ),
-        "77d12d77999176f90897eb647ef49229847c4504475525cdc237b87ba2b33da2",
+        "32c17de1021480b9ac7eaf63113a9575098b4329c6f4261eec12a65b6498816a",
     )
     require_normalized_code_sha256(
         "stage3g-object-publication",
@@ -7017,7 +7163,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_ordinary_leaf_op",
             "stage3g-object-publication",
         ),
-        "97744dba5220743068ed1afe133603daaf32baf362b361dbb4d9d4efdda4f6c8",
+        "0fe1f20d09e3441228acc24c6f93c88693c858afe5f7b8d61662eaa99bc14aaa",
     )
 
     require_normalized_code_sha256(
@@ -7028,7 +7174,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_operation",
             "stage3h-to-object-translation-route",
         ),
-        "25b42c25b4e7b6a14304a4b37456420725fa45dd7f6f145be02b096e2718d2c2",
+        "80936a383d38195b24c64242e118ef35944e4a22286da867eeddffe438327ba8",
     )
     require_normalized_code_sha256(
         "stage3h-to-object-translation-route",
@@ -7053,7 +7199,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_operation",
             "stage3h-to-object-ordinary-route",
         ),
-        "77d12d77999176f90897eb647ef49229847c4504475525cdc237b87ba2b33da2",
+        "32c17de1021480b9ac7eaf63113a9575098b4329c6f4261eec12a65b6498816a",
     )
     require_normalized_code_sha256(
         "stage3h-to-object-publication",
@@ -7063,7 +7209,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_ordinary_leaf_op",
             "stage3h-to-object-publication",
         ),
-        "97744dba5220743068ed1afe133603daaf32baf362b361dbb4d9d4efdda4f6c8",
+        "0fe1f20d09e3441228acc24c6f93c88693c858afe5f7b8d61662eaa99bc14aaa",
     )
 
     require_normalized_code_sha256(
@@ -7074,7 +7220,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_operation",
             "stage3i-push-this-translation-route",
         ),
-        "25b42c25b4e7b6a14304a4b37456420725fa45dd7f6f145be02b096e2718d2c2",
+        "80936a383d38195b24c64242e118ef35944e4a22286da867eeddffe438327ba8",
     )
     require_normalized_code_sha256(
         "stage3i-push-this-translation-route",
@@ -7148,7 +7294,7 @@ if not (root / ".boundary-self-test").is_file():
             "lower_operation",
             "stage3i-push-this-ordinary-route",
         ),
-        "77d12d77999176f90897eb647ef49229847c4504475525cdc237b87ba2b33da2",
+        "32c17de1021480b9ac7eaf63113a9575098b4329c6f4261eec12a65b6498816a",
     )
     require_normalized_code_sha256(
         "stage3i-push-this-publication",
@@ -7158,18 +7304,225 @@ if not (root / ".boundary-self-test").is_file():
             "lower_ordinary_leaf_op",
             "stage3i-push-this-publication",
         ),
-        "97744dba5220743068ed1afe133603daaf32baf362b361dbb4d9d4efdda4f6c8",
+        "0fe1f20d09e3441228acc24c6f93c88693c858afe5f7b8d61662eaa99bc14aaa",
     )
+
+    stage3j_translate_lower = stage3b_function(
+        "src/runtime/binary_object/function_translate/mod.rs",
+        "lower_operation",
+        "stage3j-to-propkey-translation-route",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-translation-route",
+        "raw112 ToPropKey lowering must remain an operand-free one-operation translation with no recipe or DTO alias",
+        stage3j_translate_lower,
+        "80936a383d38195b24c64242e118ef35944e4a22286da867eeddffe438327ba8",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-translation-route",
+        "translate_native_plan must retain its exact alias-free source-to-output map so raw112 cannot be intercepted, erased, expanded, remapped, or index-collapsed",
+        translate_native_item,
+        "fe149677e125ffef44ebac61b8b9799eff3166eafd7efa93e086b84571eb9867",
+    )
+    if re.search(
+        r"\b(?:Recipe|FunctionOp|OrdinaryLeafOp|Instruction)"
+        r"[ \t\n]*::[ \t\n]*ToPropKey\b",
+        translate_native_item,
+    ):
+        fail(
+            "stage3j-to-propkey-translation-route",
+            "raw112 ToPropKey must not acquire a pre-match, second-pass dispatch, erase, remap, expansion, or source/output index-collapse path outside the typed lower_operation handoff",
+        )
+    stage3j_ordinary_lower = stage3b_function(
+        "src/runtime/binary_object/ordinary_leaf.rs",
+        "lower_operation",
+        "stage3j-to-propkey-ordinary-route",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-ordinary-route",
+        "FunctionOp::ToPropKey must reach exactly one OrdinaryLeafOp::ToPropKey without erasure, remap, metadata mutation, or stack rewriting",
+        stage3j_ordinary_lower,
+        "32c17de1021480b9ac7eaf63113a9575098b4329c6f4261eec12a65b6498816a",
+    )
+    stage3j_publisher = stage3b_function(
+        "src/runtime/binary_object_publish.rs",
+        "lower_ordinary_leaf_op",
+        "stage3j-to-propkey-publication",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-publication",
+        "OrdinaryLeafOp::ToPropKey must publish exactly Instruction::ToPropKey without synthetic constants, metadata mutation, or stack rewriting",
+        stage3j_publisher,
+        "0fe1f20d09e3441228acc24c6f93c88693c858afe5f7b8d61662eaa99bc14aaa",
+    )
+    normalized_stage3j_translate = " ".join(stage3j_translate_lower.split())
+    normalized_stage3j_ordinary = " ".join(stage3j_ordinary_lower.split())
+    normalized_stage3j_publisher = " ".join(stage3j_publisher.split())
+    if (
+        normalized_stage3j_translate.count(
+            "(Recipe::ToPropKey, NativeOperands::None) => ready(FunctionOp::ToPropKey),"
+        ) != 1
+        or normalized_stage3j_ordinary.count(
+            "FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToPropKey),"
+        ) != 1
+        or normalized_stage3j_publisher.count(
+            "OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,"
+        ) != 1
+    ):
+        fail(
+            "stage3j-to-propkey-typed-chain",
+            "raw112 must retain the unique exact Recipe::ToPropKey to FunctionOp::ToPropKey to OrdinaryLeafOp::ToPropKey to Instruction::ToPropKey chain",
+        )
+    if (
+        "ToPropKey" in stage3i_lower_code
+        or "ToPropKey" in stage3i_validator
+        or re.search(r"ToPropKey.{0,160}next_synthetic_index", normalized_stage3j_publisher)
+        or re.search(r"next_synthetic_index.{0,160}ToPropKey", normalized_stage3j_publisher)
+    ):
+        fail(
+            "stage3j-to-propkey-protocol",
+            "raw112 must use the existing ordinary 1-to-1 stack/CFG verifier and must not acquire raw8 exact-one/index-zero/no-target narrowing or synthetic-constant accounting",
+        )
+
+    stage3j_host_to_propkey = stage3b_function(
+        "src/runtime/vm_host.rs",
+        "convert_property_key",
+        "stage3j-to-propkey-host-semantics",
+    )
+    stage3j_host_to_propkey_source = stage3j_source_function(
+        "src/runtime/vm_host.rs",
+        "convert_property_key",
+        "stage3j-to-propkey-host-semantics",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-host-semantics",
+        "RuntimeVmHost::convert_property_key must retain its exact primitive and Symbol identity fast paths, string-hint Object conversion, thrown-value propagation, and canonical String fallback",
+        stage3j_host_to_propkey,
+        "b3f51a60bdc4fb1816ecc18a05cdb58679616bb3ebeee787d8767bc0156f3d39",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-host-semantics",
+        "the bounded raw RuntimeVmHost::convert_property_key source, including semantic literals, must remain exact",
+        stage3j_host_to_propkey_source,
+        "8a2c3c601d0a2243e99a8116603133c3f355527c0010b0023e4addff17f0618d",
+    )
+    normalized_stage3j_host_to_propkey = " ".join(
+        stage3j_host_to_propkey_source.split()
+    )
+    stage3j_host_to_propkey_fragments = (
+        ("key @ (Value::Int(_) | Value::String(_)) => return Ok(Completion::Return(key)),", 1),
+        ("if !symbol.belongs_to(&self.runtime)", 2),
+        ("return Ok(Completion::Return(Value::Symbol(symbol)));", 1),
+        ("to_primitive(self.current_realm, key, ToPrimitiveHint::String)", 1),
+        ("Completion::Throw(value) => return Ok(Completion::Throw(value)),", 1),
+        ("Value::String(string) => Ok(Completion::Return(Value::String(string))),", 1),
+        ("to_js_string()", 1),
+        ("map(Value::String)", 1),
+        ("map(Completion::Return)", 1),
+    )
+    if any(
+        normalized_stage3j_host_to_propkey.count(fragment) != expected_count
+        for fragment, expected_count in stage3j_host_to_propkey_fragments
+    ):
+        fail(
+            "stage3j-to-propkey-host-semantics",
+            "ToPropKey host conversion must preserve Int/String and Symbol identity, runtime ownership, the defining-realm string hint, arbitrary Throw identity, and canonical primitive-to-String fallback",
+        )
+
+    stage3j_to_primitive = stage3b_function(
+        "src/runtime.rs",
+        "to_primitive",
+        "stage3j-to-propkey-primitive-semantics",
+    )
+    stage3j_to_primitive_source = stage3j_source_function(
+        "src/runtime.rs",
+        "to_primitive",
+        "stage3j-to-propkey-primitive-semantics",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-primitive-semantics",
+        "Runtime::to_primitive must retain primitive identity, @@toPrimitive lookup/call/Throw behavior, defining-realm TypeErrors, and ordinary fallback",
+        stage3j_to_primitive,
+        "abcd2b0699c336532fa0b0f19ba13a36a912b9801ebaacbff6b497ac2becb727",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-primitive-semantics",
+        "the bounded raw Runtime::to_primitive source, including the exact hint and error literals, must remain exact",
+        stage3j_to_primitive_source,
+        "fe6d2c76335f23517797e73f3341a176328dcde4aca78a2cbbc9be22f36d5592",
+    )
+    normalized_stage3j_to_primitive = " ".join(stage3j_to_primitive_source.split())
+    stage3j_to_primitive_fragments = (
+        ("let Value::Object(object) = value else { return Ok(Completion::Return(value)); };", 1),
+        ("well_known_symbol(WellKnownSymbol::ToPrimitive)", 1),
+        ("get_property_in_realm(realm, &object, &to_primitive)?", 1),
+        ("ToPrimitiveHint::String => \"string\"", 1),
+        ("Completion::Return(Value::Object(_)) => Ok(Completion::Throw(", 1),
+        ("new_native_error(realm, NativeErrorKind::Type, \"toPrimitive\")", 1),
+        ("self.ordinary_to_primitive(realm, &object, hint)", 1),
+    )
+    if any(
+        normalized_stage3j_to_primitive.count(fragment) != expected_count
+        for fragment, expected_count in stage3j_to_primitive_fragments
+    ):
+        fail(
+            "stage3j-to-propkey-primitive-semantics",
+            "@@toPrimitive must receive the exact string hint once, preserve primitive and Throw identity, reject Object results with a defining-realm TypeError, and fall back ordinarily",
+        )
+
+    stage3j_ordinary_to_primitive = stage3b_function(
+        "src/runtime/intrinsics/object.rs",
+        "ordinary_to_primitive",
+        "stage3j-to-propkey-ordinary-fallback",
+    )
+    stage3j_ordinary_to_primitive_source = stage3j_source_function(
+        "src/runtime/intrinsics/object.rs",
+        "ordinary_to_primitive",
+        "stage3j-to-propkey-ordinary-fallback",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-ordinary-fallback",
+        "Runtime::ordinary_to_primitive must retain callable lookup, completion propagation, Object-result retry, and defining-realm failure",
+        stage3j_ordinary_to_primitive,
+        "f19aa3f0ecca0598753bc7c8daa96fb546d98b518e17b10c64d1c6f7ea403c7b",
+    )
+    require_normalized_code_sha256(
+        "stage3j-to-propkey-ordinary-fallback",
+        "the bounded raw ordinary ToPrimitive fallback, including exact method ordering, must remain exact",
+        stage3j_ordinary_to_primitive_source,
+        "85e0451154b83269f31f8c9a85ae64e3c6d39ab31777894bb3b96a57dc1c5aef",
+    )
+    normalized_stage3j_ordinary_to_primitive = " ".join(
+        stage3j_ordinary_to_primitive_source.split()
+    )
+    stage3j_ordinary_to_primitive_fragments = (
+        ("ToPrimitiveHint::String => [\"toString\", \"valueOf\"],", 1),
+        ("ToPrimitiveHint::Number | ToPrimitiveHint::Default => [\"valueOf\", \"toString\"],", 1),
+        ("get_property_in_realm(realm, object, &key)?", 1),
+        ("Completion::Throw(value) => return Ok(Completion::Throw(value)),", 1),
+        ("call_internal(realm, &method, Value::Object(object.clone()), &[])?", 1),
+        ("Completion::Return(Value::Object(_)) => {}", 1),
+        ("completion => return Ok(completion),", 1),
+        ("new_native_error( realm, NativeErrorKind::Type, \"toPrimitive\", )", 1),
+    )
+    if any(
+        normalized_stage3j_ordinary_to_primitive.count(fragment) != expected_count
+        for fragment, expected_count in stage3j_ordinary_to_primitive_fragments
+    ):
+        fail(
+            "stage3j-to-propkey-ordinary-fallback",
+            "ordinary string-hint conversion must call toString before valueOf, preserve getter/call completions, retry only Object results, and materialize the defining-realm TypeError after exhaustion",
+        )
 
     stage3g_test_contracts = (
         (
             "src/runtime/binary_object/function_translate/capability.rs",
             "registry_locks_the_current_physical_cohorts",
             (
-                "(111, 1, 103, 29)",
+                "(110, 1, 104, 29)",
                 "assert_eq!(scalar_only + shared, 30);",
-                "assert_eq!(ordinary_only + shared, 132);",
-                "assert_eq!(scalar_only + ordinary_only + shared, 133);",
+                "assert_eq!(ordinary_only + shared, 133);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 134);",
             ),
         ),
         (
@@ -7185,8 +7538,8 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "blocked_frontier_has_stable_typed_category_counts",
             (
-                "[1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]",
-                "counts.into_iter().sum::<usize>(), 111",
+                "[1, 4, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]",
+                "counts.into_iter().sum::<usize>(), 110",
             ),
         ),
         (
@@ -7251,12 +7604,12 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3g_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "3ff8521f17f3acd991542c7de3e769507ba061eb19d605a413e4febe65f77cc9",
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "1c74d3733c3b55d08359e7c3b9a9f76babb0f59f841c4306311a054dba0f1b00",
         ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_object_is_the_exact_operand_free_raw11_row"): "7f4c0d8c2f74ecd1294d184dd2897046a3f68b19f37d74d88e80cb90d14f2960",
-        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "601aa4392300e4a3f965cef80787945d4aea706fdc729325318a016e17bb41c8",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "f2d596485d43e0c5ca2a0c77e5f332b893c54dfa6cfdbfc2367a476bd2071ec2",
         ("src/runtime/binary_object/function_translate/mod.rs", "operand_free_object_translation_is_one_ordinary_typed_operation"): "723c1ada6b0fd572d80fef51ebe969b0a0b4921d12905fd41a27599b10f805bd",
-        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "0da974adaa4d87c8aa9949f1ab1ab764b6408aafcf426d3f3218d426965a697d",
-        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "d00312170558a488c86b0eb21eeea031f155e0ddb9087e5f3219619282f8706d",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "fc152214094cc8dfa8f6e068f8f67a7a05ec3b88aa50dda9290a5970af0ad92a",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5d1aba35fd5745d682ef784539053160d709ebc61224ae304559d8ce1097f772",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_object_is_natural_fresh_and_defining_realm_owned"): "e95d3b4621ba76bef9b61ec1e888ced91fd8da56b6140769577537e887049734",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_object_verification_rolls_back_and_retries"): "d7926f01d7c36d50c331ce42b462e658156eb1f2cae0f3ada3c87fcd92ffd5da",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_branch_targets_raw11_typed_index"): "a787e966b4682fc3753b44657acd7b69c76d6684e7731347a031ca4dcc917635",
@@ -7310,10 +7663,10 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "registry_locks_the_current_physical_cohorts",
             (
-                "(111, 1, 103, 29)",
+                "(110, 1, 104, 29)",
                 "assert_eq!(scalar_only + shared, 30);",
-                "assert_eq!(ordinary_only + shared, 132);",
-                "assert_eq!(scalar_only + ordinary_only + shared, 133);",
+                "assert_eq!(ordinary_only + shared, 133);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 134);",
             ),
         ),
         (
@@ -7325,8 +7678,6 @@ if not (root / ".boundary-self-test").is_file():
                 "CapabilityPolicy::OrdinaryOnly(Recipe::ToObject)",
                 "opcode.n_pop(), 1",
                 "opcode.n_push(), 1",
-                "CAPABILITY_REGISTRY[112].policy",
-                "CapabilityPolicy::Blocked(TranslationBlocker::ValueConstruction)",
                 "CAPABILITY_REGISTRY[47].policy",
                 "CapabilityPolicy::Blocked(TranslationBlocker::Completion)",
             ),
@@ -7335,8 +7686,8 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "blocked_frontier_has_stable_typed_category_counts",
             (
-                "[1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]",
-                "counts.into_iter().sum::<usize>(), 111",
+                "[1, 4, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]",
+                "counts.into_iter().sum::<usize>(), 110",
             ),
         ),
         (
@@ -7437,12 +7788,12 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3h_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "3ff8521f17f3acd991542c7de3e769507ba061eb19d605a413e4febe65f77cc9",
-        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_to_object_is_the_exact_operand_free_raw111_row"): "6e473fb62907879029b7701d1e06ccef7e8f37f27f7bd40651595492c11c3dbe",
-        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "601aa4392300e4a3f965cef80787945d4aea706fdc729325318a016e17bb41c8",
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "1c74d3733c3b55d08359e7c3b9a9f76babb0f59f841c4306311a054dba0f1b00",
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_to_object_is_the_exact_operand_free_raw111_row"): "c74ec5582c39cb8a2bdbd07683bf5b309d44e7ab27b48e4698fa8040953ecac5",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "f2d596485d43e0c5ca2a0c77e5f332b893c54dfa6cfdbfc2367a476bd2071ec2",
         ("src/runtime/binary_object/function_translate/mod.rs", "operand_free_to_object_translation_is_one_ordinary_typed_operation"): "0df04adbb5e0bc9b405351a7d410694b5ef135f40454dddce67c7534c3da73d3",
-        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "0da974adaa4d87c8aa9949f1ab1ab764b6408aafcf426d3f3218d426965a697d",
-        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "d00312170558a488c86b0eb21eeea031f155e0ddb9087e5f3219619282f8706d",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "fc152214094cc8dfa8f6e068f8f67a7a05ec3b88aa50dda9290a5970af0ad92a",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5d1aba35fd5745d682ef784539053160d709ebc61224ae304559d8ce1097f772",
         ("src/runtime/binary_object_publish.rs", "ordinary_to_object_publishes_one_for_one_without_a_synthetic_constant"): "f012eb117af444150acf39aae787468928be0b3f34a830ec4817c88323fed383",
         ("src/vm.rs", "to_object_boxes_primitives_and_rejects_nullish_values"): "826673e97da25929d9d4a5ee839db26f9aeffd2c7fe08c986f96e6bd27ae0787",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_to_object_is_natural_exact_and_realm_correct"): "45b573dae2ca21be506fc91ba34bc9252aaa71f7b6c0d450b04c1a05a65cd269",
@@ -7542,10 +7893,10 @@ if not (root / ".boundary-self-test").is_file():
             "src/runtime/binary_object/function_translate/capability.rs",
             "registry_locks_the_current_physical_cohorts",
             (
-                "(111, 1, 103, 29)",
+                "(110, 1, 104, 29)",
                 "assert_eq!(scalar_only + shared, 30);",
-                "assert_eq!(ordinary_only + shared, 132);",
-                "assert_eq!(scalar_only + ordinary_only + shared, 133);",
+                "assert_eq!(ordinary_only + shared, 133);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 134);",
             ),
         ),
         (
@@ -7559,16 +7910,14 @@ if not (root / ".boundary-self-test").is_file():
                 "opcode.n_push(), 1",
                 "CAPABILITY_REGISTRY[47].policy",
                 "CapabilityPolicy::Blocked(TranslationBlocker::Completion)",
-                "CAPABILITY_REGISTRY[112].policy",
-                "CapabilityPolicy::Blocked(TranslationBlocker::ValueConstruction)",
             ),
         ),
         (
             "src/runtime/binary_object/function_translate/capability.rs",
             "blocked_frontier_has_stable_typed_category_counts",
             (
-                "[1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]",
-                "counts.into_iter().sum::<usize>(), 111",
+                "[1, 4, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]",
+                "counts.into_iter().sum::<usize>(), 110",
             ),
         ),
         (
@@ -7679,15 +8028,15 @@ if not (root / ".boundary-self-test").is_file():
         ),
     )
     stage3i_test_body_hashes = {
-        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "3ff8521f17f3acd991542c7de3e769507ba061eb19d605a413e4febe65f77cc9",
-        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_push_this_is_the_exact_operand_free_raw8_row"): "3064e195a551749f3e10ede4d064b138798f8f378ea3ffc6b539ff961c4fbde2",
-        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "601aa4392300e4a3f965cef80787945d4aea706fdc729325318a016e17bb41c8",
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "1c74d3733c3b55d08359e7c3b9a9f76babb0f59f841c4306311a054dba0f1b00",
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_push_this_is_the_exact_operand_free_raw8_row"): "83d03ad2f2025266a8a049ea220619d321caed27393fc81cd4f22c07c2a91599",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "f2d596485d43e0c5ca2a0c77e5f332b893c54dfa6cfdbfc2367a476bd2071ec2",
         ("src/runtime/binary_object/function_translate/mod.rs", "operand_free_push_this_translation_is_one_ordinary_typed_operation"): "47ce4ec9602857ae10e21b026cb06c07d3bda12253959a8201f31be71e0319ab",
-        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "0da974adaa4d87c8aa9949f1ab1ab764b6408aafcf426d3f3218d426965a697d",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "fc152214094cc8dfa8f6e068f8f67a7a05ec3b88aa50dda9290a5970af0ad92a",
         ("src/runtime/binary_object/ordinary_leaf.rs", "push_this_wires_preserve_strictness_source_order_and_one_to_one_lowering"): "b3f94bf497c8c4683396cd5df28b6ca2a3d77a126fe81759c38d976eeaff1952",
         ("src/runtime/binary_object/ordinary_leaf.rs", "push_this_protocol_rejects_duplicate_nonzero_and_branch_target_zero"): "0953065a02ef76dde92b29aa1b687ae3b535376bbb098ddcd45903b59fc64fdc",
         ("src/runtime/binary_object/ordinary_leaf.rs", "push_this_protocol_preserves_raw8_absent_branch_target_zero"): "15384f1727b7b95c64e3f2cfb5163795baae4a1089455073718d4aa518373919",
-        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "d00312170558a488c86b0eb21eeea031f155e0ddb9087e5f3219619282f8706d",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5d1aba35fd5745d682ef784539053160d709ebc61224ae304559d8ce1097f772",
         ("src/runtime/binary_object_publish.rs", "ordinary_push_this_publishes_one_for_one_without_a_synthetic_constant"): "87adcb251ea56538be8045fc59dd788b9f8ae3649a3a77aba7bfd052d3636497",
         ("src/runtime/tests.rs", "push_this_applies_strict_and_sloppy_callee_realm_rules"): "b546bfdc3c65105cdab2dbbc62cb44ecf827934b79903deeb4b3fbfc6da86113",
         ("src/runtime/tests.rs", "trusted_quickjs_ordinary_push_this_is_exact_typed_and_realm_correct"): "793e23d69dc7a6d2602ed19e41b1eef5c90a0179b5674a6c2d8a8e31211e28d1",
@@ -7751,23 +8100,247 @@ if not (root / ".boundary-self-test").is_file():
             f"missing {missing_stage3i_tests}, drifted {drifted_stage3i_tests}",
         )
 
-    stage3i_c_evidence_hashes = {
-        "tests/fixtures/function_bytecode_wire.c": "e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c4",
-        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt": "5750753443089a599e2863dcad6d282c597b27cf1683b48e3ab76664091e71e6",
-        "dev-support/quickjs-c-oracles.tsv": "7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355",
+    stage3j_test_contracts = (
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "registry_locks_the_current_physical_cohorts",
+            (
+                "(110, 1, 104, 29)",
+                "assert_eq!(scalar_only + shared, 30);",
+                "assert_eq!(ordinary_only + shared, 133);",
+                "assert_eq!(scalar_only + ordinary_only + shared, 134);",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "ordinary_to_propkey_is_the_exact_operand_free_raw112_row",
+            (
+                "CAPABILITY_REGISTRY[112]",
+                "OpcodeFormat::None",
+                "CapabilityPolicy::OrdinaryOnly(Recipe::ToPropKey)",
+                "opcode.n_pop(), 1",
+                "opcode.n_push(), 1",
+                "CAPABILITY_REGISTRY[47].policy",
+                "CapabilityPolicy::Blocked(TranslationBlocker::Completion)",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/capability.rs",
+            "blocked_frontier_has_stable_typed_category_counts",
+            (
+                "[1, 4, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3]",
+                "counts.into_iter().sum::<usize>(), 110",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/function_translate/mod.rs",
+            "operand_free_to_propkey_translation_is_one_ordinary_typed_operation",
+            (
+                "lower_operation(Recipe::ToPropKey, &NativeOperands::None).unwrap()",
+                "Some(PendingOperation::Ready(FunctionOp::ToPropKey))",
+                "assert!(operations.next().is_none());",
+                "TranslationTarget::Scalar",
+                "Some(PendingOperation::Ready(FunctionOp::OutsideTarget))",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "lowers_representative_sanitized_operations_without_consulting_diagnostics",
+            (("FunctionOp::ToPropKey, OrdinaryLeafOp::ToPropKey"),),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "to_propkey_wires_preserve_strictness_and_one_to_one_lowering",
+            (
+                "MINIMAL_STRICT_TO_PROPKEY_HEX",
+                "MINIMAL_SLOPPY_TO_PROPKEY_HEX",
+                "draft.metadata().max_stack(), 1",
+                "OrdinaryLeafOp::GetArgument(0), OrdinaryLeafOp::ToPropKey, OrdinaryLeafOp::Return",
+                "draft.constants().is_empty()",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "to_propkey_duplicate_and_finite_loop_reentry_are_ordinary_verified",
+            (
+                "decode(&bytes(DUPLICATE_TO_PROPKEY_HEX)).unwrap()",
+                "OrdinaryLeafOp::ToPropKey, OrdinaryLeafOp::ToPropKey",
+                "decode(&bytes(REENTER_TO_PROPKEY_HEX)).unwrap()",
+                "OrdinaryLeafOp::IfFalse(9)",
+                "OrdinaryLeafOp::Goto(1)",
+                "reentry.metadata().max_stack(), 2",
+            ),
+        ),
+        (
+            "src/runtime/binary_object/ordinary_leaf.rs",
+            "to_propkey_underflow_reaches_the_existing_ordinary_verifier_unchanged",
+            (
+                "decode(&bytes(UNDERFLOW_TO_PROPKEY_HEX)).unwrap()",
+                "[OrdinaryLeafOp::ToPropKey, OrdinaryLeafOp::Return]",
+                "draft.constants().is_empty()",
+            ),
+        ),
+        (
+            "src/runtime/binary_object_publish.rs",
+            "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering",
+            ("lower(OrdinaryLeafOp::ToPropKey)", "Instruction::ToPropKey"),
+        ),
+        (
+            "src/runtime/binary_object_publish.rs",
+            "ordinary_to_propkey_publishes_one_for_one_without_a_synthetic_constant",
+            (
+                "let mut next_synthetic_index = 7;",
+                "lower_ordinary_leaf_op(OrdinaryLeafOp::ToPropKey, &mut next_synthetic_index)",
+                "Ok(Instruction::ToPropKey)",
+                "assert_eq!(next_synthetic_index, 7);",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_to_propkey_is_exact_typed_and_canonical",
+            (
+                "QUICKJS_NATURAL_STRICT_TO_PROPKEY_BC5",
+                "0x83c3_3a69_f73e_737c",
+                "QUICKJS_NATURAL_SLOPPY_TO_PROPKEY_BC5",
+                "0x6a17_06c9_ae12_6361",
+                "QUICKJS_ORDINARY_STRICT_TO_PROPKEY_BC5",
+                "0xc7ed_0972_0c7c_faa1",
+                "QUICKJS_ORDINARY_SLOPPY_TO_PROPKEY_BC5",
+                "0xdd8b_bd33_3d59_5b1c",
+                "Instruction::GetArg(0), Instruction::ToPropKey, Instruction::Return",
+                "snapshot.constants.is_empty()",
+                "snapshot.metadata.strict, expected_strict",
+                "converted.same_value(&Value::Symbol(symbol.clone()))",
+                "assert!(!caller.has_exception())",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_to_propkey_observability_and_reentry_match_quickjs",
+            (
+                "0xc3d5_f481_5e80_7dfc",
+                "0xedcc_1b5d_91f5_e46d",
+                "Instruction::ToPropKey, Instruction::ToPropKey",
+                "Instruction::IfFalse(9)",
+                "Instruction::Goto(1)",
+                "assert_eq!(thrown, sentinel);",
+                "Some(defining_type_error_prototype)",
+                "Value::Object(nested_probe)",
+                "Value::Object(duplicate_probe)",
+                "Value::Object(reentry_probe), Value::Bool(true)",
+                "assert!(!defining.has_exception());",
+                "assert!(!caller.has_exception());",
+            ),
+        ),
+        (
+            "src/runtime/tests.rs",
+            "trusted_quickjs_ordinary_to_propkey_verification_rolls_back_and_retries",
+            (
+                "QUICKJS_UNDERFLOW_TO_PROPKEY_BC5.len(), 45",
+                "0x72e4_9b7e_05fe_b73d",
+                "undersized_stack[33] = 0;",
+                "error.kind(), ErrorKind::Unsupported",
+                "assert_eq!(runtime.heap_counts(), baseline",
+                "assert_eq!(runtime.test_atom_count(), baseline_atoms",
+                "read_trusted_ordinary_function(QUICKJS_ORDINARY_STRICT_TO_PROPKEY_BC5, 0)",
+                ".call(&retry, Value::Undefined, &[Value::Bool(false)])",
+                "assert!(!context.has_exception());",
+            ),
+        ),
+    )
+    stage3j_test_body_hashes = {
+        ("src/runtime/binary_object/function_translate/capability.rs", "registry_locks_the_current_physical_cohorts"): "1c74d3733c3b55d08359e7c3b9a9f76babb0f59f841c4306311a054dba0f1b00",
+        ("src/runtime/binary_object/function_translate/capability.rs", "ordinary_to_propkey_is_the_exact_operand_free_raw112_row"): "8e9462f7a06facadc5244b87bfadb2515b5f38a356f320eaeb3decb0e83b2b25",
+        ("src/runtime/binary_object/function_translate/capability.rs", "blocked_frontier_has_stable_typed_category_counts"): "f2d596485d43e0c5ca2a0c77e5f332b893c54dfa6cfdbfc2367a476bd2071ec2",
+        ("src/runtime/binary_object/function_translate/mod.rs", "operand_free_to_propkey_translation_is_one_ordinary_typed_operation"): "c2eb5e7cdcd0bef0e789a588c95f7fa852ffaa3fe3de5c134b8a8913ee21736f",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "lowers_representative_sanitized_operations_without_consulting_diagnostics"): "fc152214094cc8dfa8f6e068f8f67a7a05ec3b88aa50dda9290a5970af0ad92a",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "to_propkey_wires_preserve_strictness_and_one_to_one_lowering"): "6f790f0e222ced7af0553e5489675d56f34f00f9940d6a8f6365bb785211924c",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "to_propkey_duplicate_and_finite_loop_reentry_are_ordinary_verified"): "44a4f544cf44fa0eefbea7f2d45e991fa2ea23c013e6aa029bc6b0d092b89007",
+        ("src/runtime/binary_object/ordinary_leaf.rs", "to_propkey_underflow_reaches_the_existing_ordinary_verifier_unchanged"): "86c62529e2a5eb2a6483bd3ac75b4015db148861d05f76f11bb741090f80fdb1",
+        ("src/runtime/binary_object_publish.rs", "ordinary_leaf_draft_ops_lower_one_for_one_without_reordering"): "5d1aba35fd5745d682ef784539053160d709ebc61224ae304559d8ce1097f772",
+        ("src/runtime/binary_object_publish.rs", "ordinary_to_propkey_publishes_one_for_one_without_a_synthetic_constant"): "3388a9bb584e09305f5327be0947b9ab8e09c3aa30bfc59a01896fa243e31354",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_to_propkey_is_exact_typed_and_canonical"): "cb69c52485c7b466df8d72b30fd2b416e1438dfea6c442faee25e13509a798eb",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_to_propkey_observability_and_reentry_match_quickjs"): "a58a3718cd3fefd50b56588b9475551f450d94c0fae465bbf19ce1261e4d83b3",
+        ("src/runtime/tests.rs", "trusted_quickjs_ordinary_to_propkey_verification_rolls_back_and_retries"): "5fb83711e831dc7d7c17d9d2588e788fc034cc8888b593e705fa9097a2139d78",
+    }
+    stage3j_test_parent_bounds = dict(stage3d_test_parent_bounds)
+    stage3j_test_sources = {relative for relative, _, _ in stage3j_test_contracts}
+    for relative in stage3j_test_sources:
+        code = stage3b_code(relative)
+        if assertion_shadow.search(code):
+            fail(
+                "stage3j-runtime-evidence",
+                f"{relative} must not shadow or import the assertion macros used by Stage3J evidence",
+            )
+        if re.search(r"(?m)^[ \t]*#![ \t]*\[[ \t]*(?:cfg|cfg_attr)\b", code):
+            fail(
+                "stage3j-runtime-evidence",
+                f"{relative} must not conditionally exclude its Stage3J test evidence",
+            )
+    missing_stage3j_tests = []
+    drifted_stage3j_tests = []
+    for relative, name, anchors in stage3j_test_contracts:
+        code = stage3b_code(relative)
+        declarations = list(re.finditer(
+            rf"(?P<attributes>(?:#[ \t\n]*\[[^]]*\][ \t\n]*)*)"
+            rf"\bfn[ \t\n]+{re.escape(name)}[ \t\n]*\(",
+            code,
+        ))
+        if (
+            len(declarations) != 1
+            or " ".join(declarations[0].group("attributes").split()) != "#[test]"
+        ):
+            missing_stage3j_tests.append(f"{relative}::{name}")
+            continue
+        declaration_offset = declarations[0].start()
+        declaration_depth = code[:declaration_offset].count("{") - code[:declaration_offset].count("}")
+        if relative == "src/runtime/tests.rs":
+            direct_parent = declaration_depth == 0
+        else:
+            parent_bounds = stage3j_test_parent_bounds.get(relative)
+            direct_parent = (
+                parent_bounds is not None
+                and parent_bounds[0] < declaration_offset < parent_bounds[1]
+                and declaration_depth == 1
+            )
+        if not direct_parent:
+            missing_stage3j_tests.append(f"{relative}::{name} (nested)")
+            continue
+        item = stage3b_function(relative, name, "stage3j-runtime-evidence")
+        normalized_item = " ".join(item.split())
+        item_hash = normalized_code_sha256(item)
+        if (
+            any(anchor not in normalized_item for anchor in anchors)
+            or item_hash != stage3j_test_body_hashes.get((relative, name))
+        ):
+            drifted_stage3j_tests.append(f"{relative}::{name} ({item_hash})")
+    if missing_stage3j_tests or drifted_stage3j_tests:
+        fail(
+            "stage3j-runtime-evidence",
+            "Stage3J tests must remain unconditional direct-parent #[test] functions with exact counts/blockers, raw112 typed chain, natural/manual/duplicate/finite-loop/underflow wires, ordinary verifier acceptance/rejection, no synthetic constants, primitive and Symbol identity, string-hint coercion order, thrown identity, defining-realm TypeError, nested re-entry, strict/sloppy parity, clean pending state, rollback, and retry evidence; "
+            f"missing {missing_stage3j_tests}, drifted {drifted_stage3j_tests}",
+        )
+
+    stage3j_c_diff_sha256 = (
+        "707554c4d52518c67226d827e6ce0f2b2b01023b055b8dcc78db4fd9e3e76e72"
+    )
+    stage3j_c_evidence_hashes = {
+        "tests/fixtures/function_bytecode_wire.c": "815baf3fbf14de146b53d103401279cd9d5eacd006e60b468f8d141b34e2bd92",
+        "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt": "58d8327f176950aeb8ab682dcf8fc11577421c46c5eb146f078adb073fbf03ec",
+        "dev-support/quickjs-c-oracles.tsv": "e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7",
     }
     stage3d_c_sources: dict[str, str] = {}
-    for relative, expected_hash in stage3i_c_evidence_hashes.items():
+    for relative, expected_hash in stage3j_c_evidence_hashes.items():
         path = root / relative
         if path.is_symlink() or not path.is_file():
-            fail("stage3i-c-oracle", f"{relative} must remain a regular authenticated file")
+            fail("stage3j-c-oracle", f"{relative} must remain a regular authenticated file")
             continue
         payload = path.read_bytes()
         found_hash = hashlib.sha256(payload).hexdigest()
         if found_hash != expected_hash:
             fail(
-                "stage3i-c-oracle",
-                f"{relative} drifted from frozen C3 diff 70f9b90d8e11484bdde52e68bae70bf0937f36a0b036442bbe412dad60cf1fdd; found {found_hash}",
+                "stage3j-c-oracle",
+                f"{relative} drifted from frozen C3 diff {stage3j_c_diff_sha256}; found {found_hash}",
             )
         stage3d_c_sources[relative] = payload.decode("utf-8")
 
@@ -7850,8 +8423,7 @@ if not (root / ".boundary-self-test").is_file():
             "the authenticated C oracle must define and call exactly one raw48, raw49, raw177, compiler-natural raw11 Object, and raw111 ToObject case, with distinct honest natural/manual wires and exact mechanical derivations",
         )
     if (
-        len(stage3d_c_source.splitlines()) != 8953
-        or stage3d_c_source.count(
+        stage3d_c_source.count(
             "static int expect_ordinary_push_this_completion(JSContext *compile_context)"
         ) != 1
         or stage3d_c_source.count(
@@ -7874,7 +8446,61 @@ if not (root / ".boundary-self-test").is_file():
     ):
         fail(
             "stage3i-c-oracle",
-            "the exact 8,953-line C oracle must define and call one Stage3I raw8 matrix, retain all six exact natural/manual/adversarial wires, and prove duplicate and branch-to-index-zero re-execution",
+            "the authenticated C oracle must define and call one Stage3I raw8 matrix, retain all six exact natural/manual/adversarial wires, and prove duplicate and branch-to-index-zero re-execution",
+        )
+    if (
+        len(stage3d_c_source.splitlines()) != 9981
+        or stage3d_c_source.count(
+            "static int expect_ordinary_to_propkey_completion("
+        ) != 1
+        or stage3d_c_source.count(
+            "if (expect_ordinary_to_propkey_completion(compile_context))"
+        ) != 1
+        or any(
+            stage3d_c_source.count(f"static const uint8_t {name}[]") != 1
+            for name in (
+                "ordinary_to_propkey_strict_natural_bytecode",
+                "ordinary_to_propkey_sloppy_natural_bytecode",
+                "ordinary_to_propkey_loop_base_bytecode",
+                "ordinary_to_propkey_strict_bytecode",
+                "ordinary_to_propkey_sloppy_bytecode",
+                "ordinary_to_propkey_duplicate_bytecode",
+                "ordinary_to_propkey_loop_bytecode",
+                "ordinary_to_propkey_underflow_bytecode",
+            )
+        )
+        or any(
+            stage3d_c_source.count(fragment) != 1
+            for fragment in (
+                "sizeof(ordinary_to_propkey_strict_natural_bytecode) == 50",
+                "sizeof(ordinary_to_propkey_sloppy_natural_bytecode) == 50",
+                "sizeof(ordinary_to_propkey_loop_base_bytecode) == 54",
+                "sizeof(ordinary_to_propkey_strict_bytecode) == 46",
+                "sizeof(ordinary_to_propkey_sloppy_bytecode) == 46",
+                "sizeof(ordinary_to_propkey_duplicate_bytecode) == 47",
+                "sizeof(ordinary_to_propkey_loop_bytecode) == 65",
+                "sizeof(ordinary_to_propkey_underflow_bytecode) == 45",
+                "duplicate_raw112_count != 2 || loop_raw112_count != 1",
+                "ordinary-to-propkey-underflow-status=",
+                "ordinary-to-propkey-oracle=passed",
+            )
+        )
+        or any(
+            stage3d_c_source.count(fragment) != 2
+            for fragment in (
+                "__stage3jNaturalStrict",
+                "__stage3jNaturalSloppy",
+                "__stage3jStrict",
+                "__stage3jSloppy",
+                "__stage3jDuplicate",
+                "__stage3jLoop",
+                "__stage3jDefiningTypeError",
+            )
+        )
+    ):
+        fail(
+            "stage3j-c-oracle",
+            "the exact 9,981-line C oracle must define and call one Stage3J raw112 matrix with all eight natural/manual/duplicate/finite-loop/underflow wires, defining-realm semantics, repeated execution, and clean pending state",
         )
     stage3d_c_transcript = stage3d_c_sources.get(
         "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt", ""
@@ -8088,15 +8714,78 @@ if not (root / ".boundary-self-test").is_file():
         "ordinary-push-this-oracle=passed",
     )
     if (
-        stage3d_c_transcript.count("\n") != 1594
-        or any(
+        any(
             stage3d_c_transcript.count(f"{line}\n") != 1
             for line in stage3i_c_transcript_contract
         )
     ):
         fail(
             "stage3i-c-oracle",
-            "the exact 1,594-line C transcript must retain all strict/sloppy natural/manual raw8 wire identities, metadata and provenance, fresh defining-realm boxing, exact payloads, duplicate and target-zero mismatch probes, pending state, and sole-raw8 admission evidence",
+            "the authenticated C transcript must retain all strict/sloppy natural/manual raw8 wire identities, metadata and provenance, fresh defining-realm boxing, exact payloads, duplicate and target-zero mismatch probes, pending state, and sole-raw8 admission evidence",
+        )
+
+    stage3j_c_transcript_contract = (
+        "ordinary-to-propkey-evidence=compiler-natural-strict-and-sloppy-plus-mechanically-derived-property-free-wires",
+        "ordinary-to-propkey-strict-natural-source-hex=2866756e6374696f6e2861297b2775736520737472696374273b72657475726e207b5b615d3a317d3b7d29",
+        "ordinary-to-propkey-strict-natural-wire-size=50",
+        "ordinary-to-propkey-strict-natural-wire-fnv1a64=83c33a69f73e737c",
+        "ordinary-to-propkey-strict-natural-wire-sha256=7bfb0fefdbd3ff894bdcc0996707fda98153aaaeccbe50f6ade1ffaab7f818f0",
+        "ordinary-to-propkey-strict-natural-wire-hex=05000c000200a80100010001000001040100000000be00cb280c43020100010001030000000701000100000bcf70b44e0e28",
+        "ordinary-to-propkey-strict-natural-child-raw=11,14,40,78,112,180,207",
+        "ordinary-to-propkey-strict-wire-size=46",
+        "ordinary-to-propkey-strict-wire-fnv1a64=c7ed09720c7cfaa1",
+        "ordinary-to-propkey-strict-wire-sha256=7be331650765c34157ea3731e6f86d082451e0d60e7aeb7ecd09abfe0d524cb4",
+        "ordinary-to-propkey-strict-wire-hex=05000c000200a80100010001000001040100000000be00cb280c4302010001000101000000030100010000cf7028",
+        "ordinary-to-propkey-strict-child-code-hex=cf7028",
+        "ordinary-to-propkey-sloppy-natural-source-hex=2866756e6374696f6e2861297b72657475726e207b5b615d3a317d3b7d29",
+        "ordinary-to-propkey-sloppy-natural-wire-size=50",
+        "ordinary-to-propkey-sloppy-natural-wire-fnv1a64=6a1706c9ae126361",
+        "ordinary-to-propkey-sloppy-natural-wire-sha256=c5f7a85af861402d57a8267f9af1be2d310b143a6972e5fe5d2068384b9f8fe0",
+        "ordinary-to-propkey-sloppy-natural-wire-hex=05000c000200a80100010001000001040100000000be00cb280c43020000010001030000000701000100000bcf70b44e0e28",
+        "ordinary-to-propkey-sloppy-wire-size=46",
+        "ordinary-to-propkey-sloppy-wire-fnv1a64=dd8bbd333d595b1c",
+        "ordinary-to-propkey-sloppy-wire-sha256=629fa63ab5c4bd4258a44e02e4171a82c7cb23ca3bce1ce11d4228e4ee10d822",
+        "ordinary-to-propkey-sloppy-wire-hex=05000c000200a80100010001000001040100000000be00cb280c4302000001000101000000030100010000cf7028",
+        "ordinary-to-propkey-duplicate-wire-size=47",
+        "ordinary-to-propkey-duplicate-wire-fnv1a64=c3d5f4815e807dfc",
+        "ordinary-to-propkey-duplicate-wire-sha256=b64eab0222e609fc0f5c70a2183c7558b2eecc9852d5bb795c8933e90a351ff5",
+        "ordinary-to-propkey-duplicate-wire-hex=05000c000200a80100010001000001040100000000be00cb280c4302010001000101000000040100010000cf707028",
+        "ordinary-to-propkey-duplicate-raw112-occurrences=2",
+        "ordinary-to-propkey-duplicate-execution=object-toPrimitive-calls:1;second-raw112-input:canonical-string",
+        "ordinary-to-propkey-loop-wire-size=65",
+        "ordinary-to-propkey-loop-wire-fnv1a64=edcc1b5d91f5e46d",
+        "ordinary-to-propkey-loop-wire-sha256=85274c3f09639ee7538bdfafd43f8bb35fc8819f9f2d4c8051e5fb140bccb638",
+        "ordinary-to-propkey-loop-wire-hex=05000c000200a80100010001000001040100000000be00cb280c430201000200020200000012020001000000010000cf70d0680d0000000e09d4cf6af4ffffff28",
+        "ordinary-to-propkey-loop-raw112-occurrences=1",
+        "ordinary-to-propkey-loop-branch-map=raw104-operand@4:+13->17;raw106-operand@13:-12->1",
+        "ordinary-to-propkey-loop-execution=object,true;toPrimitive-calls:2;raw112-executions:2;backedge-input:original-object;result:k2",
+        "ordinary-to-propkey-underflow-wire-size=45",
+        "ordinary-to-propkey-underflow-wire-fnv1a64=72e49b7e05feb73d",
+        "ordinary-to-propkey-underflow-wire-sha256=b96daff364d2ca615035e2910533e5e77b3284c52309c0d30e333275682bc841",
+        "ordinary-to-propkey-underflow-wire-hex=05000c000200a80100010001000001040100000000be00cb280c43020100010001010000000201000100007028",
+        "ordinary-to-propkey-underflow-status=authenticated-verifier-negative;never-read-or-executed-by-C",
+        "ordinary-to-propkey-primitives=Int:canonical-int-identity;String:physical-identity;Symbol:identity;Undefined,Null,Boolean,Float64,BigInt:canonical-string",
+        "ordinary-to-propkey-hint=Symbol.toPrimitive:string-hint-exactly-once-per-object-conversion",
+        "ordinary-to-propkey-ordinary-fallback=toString-before-valueOf;valueOf-only-after-nonprimitive-toString",
+        "ordinary-to-propkey-throw=arbitrary-object-identity-preserved-through-caller-catch",
+        "ordinary-to-propkey-type-error=nonprimitive-result:TypeError:toPrimitive;defining-realm:true;caller-realm:false",
+        "ordinary-to-propkey-nested-reentry=outer-toPrimitive-calls-same-function-for-int23;result:outer-key",
+        "ordinary-to-propkey-mode-parity=strict-and-sloppy:scalar,symbol,object-coercion-equivalent",
+        "ordinary-to-propkey-pending=none-after-handled-throw,type-error,nested,duplicate,or-loop-paths",
+        "ordinary-to-propkey-admitted-count=1",
+        "ordinary-to-propkey-admitted-raw=112",
+        "ordinary-to-propkey-oracle=passed",
+    )
+    if (
+        stage3d_c_transcript.count("\n") != 1695
+        or any(
+            stage3d_c_transcript.count(f"{line}\n") != 1
+            for line in stage3j_c_transcript_contract
+        )
+    ):
+        fail(
+            "stage3j-c-oracle",
+            "the exact 1,695-line C transcript must retain all strict/sloppy natural/manual raw112 wire identities, duplicate and finite-loop re-entry, underflow non-execution, primitive/Symbol identity, string-hint coercion order, throw/realm/nested semantics, parity, pending cleanup, and sole-raw112 admission evidence",
         )
 
     stage3i_c_manifest = stage3d_c_sources.get(
@@ -8110,20 +8799,37 @@ if not (root / ".boundary-self-test").is_file():
             line.startswith(
                 "function-bytecode-wire\tfunction-bytecode\t"
                 "tests/fixtures/function_bytecode_wire.c\t"
-                "e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c4\t"
+                "815baf3fbf14de146b53d103401279cd9d5eacd006e60b468f8d141b34e2bd92\t"
                 "tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt\t"
-                "5750753443089a599e2863dcad6d282c597b27cf1683b48e3ab76664091e71e6\t"
+                "58d8327f176950aeb8ab682dcf8fc11577421c46c5eb146f078adb073fbf03ec\t"
             )
             for line in stage3i_manifest_lines
         )
         != 1
     ):
         fail(
-            "stage3i-c-oracle",
-            "the exact 20-line authenticated manifest must retain 19 fixtures and one function-bytecode-wire row pinning the frozen Stage3I C source and transcript hashes",
+            "stage3j-c-oracle",
+            "the exact 20-line authenticated manifest must retain 19 fixtures and one function-bytecode-wire row pinning the frozen Stage3J C source and transcript hashes",
         )
 
     stage3e_status = read_source("docs/status.md")
+    stage3j_non_ascii_status = tuple(
+        (offset, character)
+        for offset, character in enumerate(stage3e_status)
+        if not character.isascii()
+    )
+    if stage3j_non_ascii_status:
+        first_offset, first_character = stage3j_non_ascii_status[0]
+        fail(
+            "stage3j-status",
+            "docs/status.md must remain ASCII so Stage3J/raw112 lifecycle, receipt, metric, and conformance claims cannot be hidden behind Unicode controls or confusables; found "
+            + location(
+                "docs/status.md",
+                stage3e_status,
+                first_offset,
+            )
+            + f" with U+{ord(first_character):04X}",
+        )
     for description, start_fragment, end_fragment, expected_hash in (
         (
             "the status document must retain the exact explicit-throw typed path and no-VM-change boundary",
@@ -8138,10 +8844,10 @@ if not (root / ".boundary-self-test").is_file():
             "8342c0f2e2b880cc8f0c668680db1521ca400a8cae2d837a261ed785fe6d3c09",
         ),
         (
-            "the status document must retain the authenticated raw48 through raw8 C wires and current Stage3I source/transcript/manifest hashes",
+            "the status document must retain the authenticated raw48 through raw112 C wires and current Stage3J source/transcript/manifest hashes",
             "Stage 3D adds the exact compiler-natural strict 45-byte raw-48 wire",
-            "`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.",
-            "97e94a3cae6358e553b2f3bebc596554c210eff69e1d034ad914c493db155e7a",
+            "`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.",
+            "7380c2f042c229c070f5b90151bb4c26c04bcaff02010eddebaeb5ca6599b895",
         ),
         (
             "the status document must retain the exact Stage3E typed atom/synthetic-constant path and no-new-VM boundary",
@@ -8179,10 +8885,10 @@ if not (root / ".boundary-self-test").is_file():
             "d4af12e9a2e3b169ad8f8d2061647630d71eaa473a80862690df896f3e9cb0f9",
         ),
         (
-            "the status document must retain the exact Stage3F compiler-natural baseline, mechanical raw177 derivation, Stage3G Object, Stage3H ToObject, and Stage3I PushThis evidence, C execution boundary, and frozen C hashes",
+            "the status document must retain the exact Stage3F compiler-natural baseline, mechanical raw177 derivation, Stage3G Object, Stage3H ToObject, Stage3I PushThis, and Stage3J ToPropKey evidence, C execution boundary, and frozen C hashes",
             "Stage 3F authenticates the compiler-natural strict empty-function baseline",
-            "`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.",
-            "694e00e860bcdfeddc23807604b871dc35acadb97c42dc6f25e907d9fd096b62",
+            "`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.",
+            "291a4ca6a4a5b9dd43f728e1a9d54223719e8313b5d3f9900095c7fb5891e5eb",
         ),
     )
 
@@ -8215,20 +8921,14 @@ if not (root / ".boundary-self-test").is_file():
             "04ff9df60b6dab1e8bbab1ffb4b5e1463a71e5963ccf3392a3d27528c1c0ebe6",
         ),
         (
-            "the status document must retain honest compiler-natural versus mechanical C provenance, exact raw111 and raw8 execution evidence, and current frozen C hashes",
+            "the status document must retain honest compiler-natural versus mechanical C provenance, exact raw111/raw8/raw112 execution evidence, and current frozen C hashes",
             "Stage 3H then compiler-naturally emits the exact 56-byte strict source",
-            "`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.",
-            "248a04f3f3d3f4570ab061ca789709c26f87b4498815aa4f91fc2c2e421d6d08",
+            "`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.",
+            "c19562aa539c039a82394d2ee4443e4ce5479ab4870d793e9a74ab3d153faecc",
         ),
     )
 
     stage3i_status_corridors = (
-        (
-            "the status document must retain the exact Stage3I scalar/ordinary/union cohorts, admitted milestones, blocked raw47/raw112 frontier, and blocker vector",
-            "The scalar policy remains 30 opcodes; the stage-3I ordinary policy is 132,",
-            "`1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.",
-            "6c3d9eea430b23d069502fb866ced30a41d52a2203d38137b2ee7adca2977ff5",
-        ),
         (
             "the status document must retain the exact Stage3I raw8 PushThis typed chain, archive protocol, VM receiver semantics, blocked neighbors, and no-new-surface boundary",
             "Stage 3I admits raw 8 only as the exact one-to-one typed chain",
@@ -8242,16 +8942,43 @@ if not (root / ".boundary-self-test").is_file():
             "b2dc822ee1a0cdb05fb9dd87d06773d5d5a6f5326468a0d64c370fdab8822dc5",
         ),
         (
-            "the status document must retain honest Stage3I compiler-natural versus mechanical C provenance, adversarial raw8 execution evidence, and current frozen C hashes",
+            "the status document must retain honest Stage3I compiler-natural versus mechanical C provenance and adversarial raw8 execution evidence",
             "Stage 3I additionally compiler-naturally emits strict and sloppy",
-            "`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.",
-            "437860358c239012ed4ce59a2f6322650e6b77174db0089a004359f8200ad623",
+            "exact-once and no-target-zero predicates.",
+            "5160023e5cd0d27b649b139ec314fb9d4f8310dfa32ed69721b74e834cff7a18",
         ),
         (
             "the status document must retain the exact Stage3I source-current receipt, inherited Stage3H/Stage3G/Stage3F coverage, and no-new-conformance lifecycle boundary",
             "This promoted receipt is source-current for Stage 3I",
             "raw-177 coverage, and makes no new conformance claim.",
             "83659ec1f3f12a5db78ca0595f43b2da887bef0d0200cdab16c7523998e67e6a",
+        ),
+    )
+
+    stage3j_status_corridors = (
+        (
+            "the status document must retain the exact Stage3J scalar/ordinary/union cohorts, admitted milestones, blocked raw47 frontier, and blocker vector",
+            "The scalar policy remains 30 opcodes; the stage-3J ordinary policy is 133,",
+            "`1, 4, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.",
+            "6a7e96b15406438584c36926017a41e99b3d0b794d860d872dfc190701b6c033",
+        ),
+        (
+            "the status document must retain the exact Stage3J raw112 ToPropKey typed chain, existing verifier/VM semantics, duplicate/backedge acceptance, raw47 boundary, and no-new-surface claim",
+            "Stage 3J admits raw 112 only as the exact one-to-one typed chain",
+            "metric, or Feature Parity claim.",
+            "aa442f78f09ea16861e3063d970a1c438277f5e101614e4783bb987df1b39919",
+        ),
+        (
+            "the status document must retain honest Stage3J compiler-natural versus mechanical C provenance, all pinned raw112 wires and semantics, and current frozen C hashes",
+            "Stage 3J compiler-naturally emits",
+            "`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.",
+            "9d8622f4c3cd6de4a7811d0e491a72826edabb965935f49688d52ba461357bf5",
+        ),
+        (
+            "the status document must retain the exact Stage3J source-ahead, not-covered, not-authenticated, no-receipt, and no-new-conformance lifecycle boundary",
+            "The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is",
+            "and makes no new conformance or Feature Parity claim.",
+            "7a37ebfb6e4e97c9d426c188a6f7349fcde8c349515f50ba2828e393f37c87c5",
         ),
     )
 
@@ -8452,6 +9179,22 @@ if not (root / ".boundary-self-test").is_file():
         )
         require_stage3f_top_level_corridor(
             "stage3i-status",
+            description,
+            start_fragment,
+            end_fragment,
+        )
+
+    for description, start_fragment, end_fragment, expected_hash in stage3j_status_corridors:
+        require_normalized_corridor_sha256(
+            "stage3j-status",
+            description,
+            stage3e_status,
+            start_fragment,
+            end_fragment,
+            expected_hash,
+        )
+        require_stage3f_top_level_corridor(
+            "stage3j-status",
             description,
             start_fragment,
             end_fragment,
@@ -8873,7 +9616,7 @@ if not (root / ".boundary-self-test").is_file():
     if (
         len(stage3f_status_sentences) != 7
         or stage3f_status_sentence_hash
-        != "a78dc4a9337047bf08987af495b9e94c5c372b1dbba0bbba077ddd779a86f941"
+        != "941d8c5cace97d5c9b19f37bd1c55577c7debf6c7a864f56b5809c40bb3d88c0"
     ):
         fail(
             "stage3f-status",
@@ -8890,7 +9633,7 @@ if not (root / ".boundary-self-test").is_file():
     if (
         len(rendered_stage3f_status_sentences) != 7
         or rendered_stage3f_status_sentence_hash
-        != "a78dc4a9337047bf08987af495b9e94c5c372b1dbba0bbba077ddd779a86f941"
+        != "941d8c5cace97d5c9b19f37bd1c55577c7debf6c7a864f56b5809c40bb3d88c0"
     ):
         fail(
             "stage3f-status",
@@ -8907,7 +9650,7 @@ if not (root / ".boundary-self-test").is_file():
     if (
         len(forensic_stage3f_status_sentences) != 7
         or forensic_stage3f_status_sentence_hash
-        != "b9ca8a2c28fdf291d794b59671f4fe25e10e6edef2c016af658e8b4741d62dff"
+        != "26d86780d083b9713d3f50c871943471ec704d2e6a6652c3e3281c0eda7c3a22"
     ):
         fail(
             "stage3f-status",
@@ -8940,19 +9683,19 @@ if not (root / ".boundary-self-test").is_file():
             "canonical",
             normalized_stage3f_status,
             7,
-            "e801d3e17488ad13105434f9859e65215cb598e18146db68cfb5baeb8c76a742",
+            "613ef31592fa44fb2d94e9bfe4ed39bdc4ed23fcaccd0bb43756532319d7fb84",
         ),
         (
             "rendered-text",
             rendered_stage3f_status,
             7,
-            "e801d3e17488ad13105434f9859e65215cb598e18146db68cfb5baeb8c76a742",
+            "613ef31592fa44fb2d94e9bfe4ed39bdc4ed23fcaccd0bb43756532319d7fb84",
         ),
         (
             "forensic",
             forensic_stage3f_status,
             7,
-            "b8c06fecd743a67dcf11acbc21fce1139b47f10beb4ed812b3b081abf4aa55f0",
+            "2343cc10be9246638a622b589c9882ba963d9ce595d47ea82253c68003a89002",
         ),
     )
     for projection_name, projection, expected_count, expected_hash in stage3g_status_projections:
@@ -8972,19 +9715,19 @@ if not (root / ".boundary-self-test").is_file():
             "canonical",
             normalized_stage3f_status,
             8,
-            "60c6cd7bebb26712f9fd4adb599d37e1a24d61116c5d20fcedf6d8aeba378139",
+            "c254cbe69a1d821919a6ab13b45e529cdf906bafe050968531f78d9ac551f78b",
         ),
         (
             "rendered-text",
             rendered_stage3f_status,
             8,
-            "60c6cd7bebb26712f9fd4adb599d37e1a24d61116c5d20fcedf6d8aeba378139",
+            "c254cbe69a1d821919a6ab13b45e529cdf906bafe050968531f78d9ac551f78b",
         ),
         (
             "forensic",
             forensic_stage3f_status,
             8,
-            "85712d3fe7a8732f1270937122c03468284c5c602c7cab503510d594be2751c9",
+            "6d3be83d309930bd072902bc93e395bdaa3c59bb711838481368b7090963fbd6",
         ),
         (
             "forensic-confusable-skeleton",
@@ -9003,7 +9746,7 @@ if not (root / ".boundary-self-test").is_file():
                 if unicodedata.category(character) not in {"Cc", "Cf"}
             ),
             8,
-            "85712d3fe7a8732f1270937122c03468284c5c602c7cab503510d594be2751c9",
+            "6d3be83d309930bd072902bc93e395bdaa3c59bb711838481368b7090963fbd6",
         ),
     )
     for projection_name, projection, expected_count, expected_hash in stage3h_status_projections:
@@ -9052,20 +9795,20 @@ if not (root / ".boundary-self-test").is_file():
         (
             "canonical",
             normalized_stage3f_status,
-            11,
-            "5be8a9b239b1b6ea899d1522237a108e04ba4e13bf4e9b1e65ef160791fa9c37",
+            13,
+            "16e0314decaad0477464a99f4221009b8e14742d859708073fd8cccfdbad16fe",
         ),
         (
             "rendered-text",
             rendered_stage3f_status,
-            11,
-            "5be8a9b239b1b6ea899d1522237a108e04ba4e13bf4e9b1e65ef160791fa9c37",
+            13,
+            "16e0314decaad0477464a99f4221009b8e14742d859708073fd8cccfdbad16fe",
         ),
         (
             "forensic",
             forensic_stage3f_status,
-            11,
-            "d9ecb424b7fa27f3ada7eb1508c27979a5df6e22a9bef61572dc75e6cbb066af",
+            13,
+            "9389a273e4982a760f662d39247142f6ea5a2aa206954faaf3f88be818944a55",
         ),
         (
             "forensic-confusable-skeleton",
@@ -9083,8 +9826,8 @@ if not (root / ".boundary-self-test").is_file():
                 )
                 if unicodedata.category(character) not in {"Cc", "Cf"}
             ),
-            11,
-            "d9ecb424b7fa27f3ada7eb1508c27979a5df6e22a9bef61572dc75e6cbb066af",
+            13,
+            "9389a273e4982a760f662d39247142f6ea5a2aa206954faaf3f88be818944a55",
         ),
     )
     for projection_name, projection, expected_count, expected_hash in stage3i_status_projections:
@@ -9133,20 +9876,20 @@ if not (root / ".boundary-self-test").is_file():
         (
             "canonical",
             normalized_stage3f_status,
-            0,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            8,
+            "d3121a9039e786b4277bd2e83ad9d1961ba05b37caa48918491bae3582f11f15",
         ),
         (
             "rendered-text",
             rendered_stage3f_status,
-            0,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            8,
+            "d3121a9039e786b4277bd2e83ad9d1961ba05b37caa48918491bae3582f11f15",
         ),
         (
             "forensic",
             forensic_stage3f_status,
-            0,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            8,
+            "cdaf528ca58a4112185202ca1b0aa4adfe104ca5efe0e6f0c4364622a1ec72fc",
         ),
         (
             "forensic-confusable-skeleton",
@@ -9162,8 +9905,8 @@ if not (root / ".boundary-self-test").is_file():
                 )
                 if unicodedata.category(character) not in {"Cc", "Cf"}
             ),
-            0,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            8,
+            "cdaf528ca58a4112185202ca1b0aa4adfe104ca5efe0e6f0c4364622a1ec72fc",
         ),
     )
     for projection_name, projection, expected_count, expected_hash in stage3j_status_projections:
@@ -9174,7 +9917,7 @@ if not (root / ".boundary-self-test").is_file():
         if len(sentences) != expected_count or sentence_hash != expected_hash:
             fail(
                 "stage3j-status",
-                "Stage3J/raw112 lifecycle claims must remain absent until the admission exists in the "
+                "the ordered Stage3J/raw112 source-ahead lifecycle sentence inventory must remain exact in the "
                 f"{projection_name} projection; found {len(sentences)} sentences with sha256 {sentence_hash}",
             )
 
@@ -9191,6 +9934,22 @@ if not (root / ".boundary-self-test").is_file():
         forensic_stage3f_status,
         stage3j_status_projections[-1][1],
     )
+    stage3j_required_claims = (
+        r"\bStage[- ]*3J\b[^.;!?]{0,100}\bis[ \t]+source[- ]ahead\b[^.;!?]{0,100}\bStage[- ]*3I[ \t]+receipt\b",
+        r"\bStage[- ]*3I[ \t]+receipt\b[^.;!?]{0,80}\bdoes[ \t]+not[ \t]+cover[ \t]+or[ \t]+authenticate[ \t]+Stage[- ]*3J\b",
+        r"\bno[ \t]+Stage[- ]*3J[ \t]+receipt[ \t]+has[ \t]+been[ \t]+promoted\b",
+        r"\bStage[- ]*3J\b[^.;!?]{0,100}\badds[ \t]+no[ \t]+Test262[ \t]+admission\b[^.;!?]{0,100}\bchanges[ \t]+no[ \t]+focused[ \t]+or[ \t]+full[ \t]+metric\b",
+        r"\bmakes[ \t]+no[ \t]+new[ \t]+conformance[ \t]+or[ \t]+Feature[ \t]+Parity[ \t]+claim\b",
+    )
+    if any(
+        not re.search(pattern, projection, re.IGNORECASE)
+        for projection in stage3j_forensic_claim_projections
+        for pattern in stage3j_required_claims
+    ):
+        fail(
+            "stage3j-status",
+            "Stage3J/raw112 must remain explicitly source-ahead of the promoted Stage3I receipt, not covered or authenticated by it, without a promoted Stage3J receipt, metric change, or new conformance claim",
+        )
     if any(
         re.search(pattern, projection, re.IGNORECASE)
         for projection in stage3j_forensic_claim_projections
@@ -9198,13 +9957,13 @@ if not (root / ".boundary-self-test").is_file():
     ):
         fail(
             "stage3j-status",
-            "Stage3J/raw112 source-current, receipt-covered, authenticated, certified, source-ahead-negating, or new-conformance claims are forbidden until the admission exists",
+            "Stage3J/raw112 source-current, receipt-covered, authenticated, certified, source-ahead-negating, or new-conformance claims are forbidden while Stage3J remains source-ahead of the promoted Stage3I receipt",
         )
 
     stage3e_receipt_paragraphs = [
         paragraph
         for paragraph in re.split(r"\n[ \t]*\n", stage3e_status)
-        if "The latest full R3fj execution" in paragraph
+        if "The latest promoted Stage 3I lifecycle receipt" in paragraph
     ]
     stage3e_receipt_config = read_source("dev-support/test262/current.conf")
     stage3e_receipt_values: dict[str, str] = {}
@@ -9470,10 +10229,11 @@ if not (root / ".boundary-self-test").is_file():
             )
 
         stage3e_receipt_provenance = {
-            "run": "32497291807",
-            "job": "96818622699",
-            "artifact": "9452593259",
-            "artifact_sha256": "97ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb",
+            "promotion_commit": "a8a746f50dfc71ed560df32af9da2fb5488f7cba",
+            "run": "32517600968",
+            "job": "96882617930",
+            "artifact": "9460012228",
+            "artifact_sha256": "06a95f6510ad335bd090be5bb34168e8bf683e36336441b67ebb4a831f56fd9f",
             "stage3h_fingerprint": "d21943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22",
             "stage3h_run": "32419997996",
             "stage3h_artifact": "9425844939",
@@ -9492,10 +10252,11 @@ if not (root / ".boundary-self-test").is_file():
         full_tsv_lines = f'{int(stage3e_receipt_values["full_tsv_lines"]):,}'
         full_jsonl_lines = f'{int(stage3e_receipt_values["full_jsonl_lines"]):,}'
         receipt_pattern = re.compile(
-            rf"The latest full R3fj execution, exact-source GitHub Actions run `{stage3e_receipt_provenance['run']}`, "
-            rf"job `{stage3e_receipt_provenance['job']}`, authenticates Stage 3I source `{source}` with engine fingerprint `{fingerprint}`\. "
-            rf"The canonical `test262-receipt` run completed successfully after its "
-            rf"current-source gate accepted the expected one-fingerprint receipt refresh; its "
+            rf"The latest promoted Stage 3I lifecycle receipt is exact-source GitHub Actions "
+            rf"run `{stage3e_receipt_provenance['run']}`, job `{stage3e_receipt_provenance['job']}`, "
+            rf"on receipt-promotion commit `{stage3e_receipt_provenance['promotion_commit']}`\. "
+            rf"It authenticates the Stage 3I engine-semantics source `{source}` with engine fingerprint `{fingerprint}`\. "
+            rf"The canonical `test262-receipt` run completed successfully; its "
             rf"unique exact six-file artifact `{stage3e_receipt_provenance['artifact']}` \(SHA-256 "
             rf"`{stage3e_receipt_provenance['artifact_sha256']}`\) records the "
             rf"{full_tsv_lines}-line TSV as `{full_tsv_hash}` and the {full_jsonl_lines}-line JSONL as "
@@ -11096,8 +11857,8 @@ elif plan == "self-consistent-four-file-forgery":
         replace_once(status_path, current, forged)
         config = config_path.read_text(encoding="utf-8")
 elif plan == "status-html-wrapper":
-    receipt_start = "The latest full R3fj execution"
-    receipt_end = "focused or full metric reported above."
+    receipt_start = "The latest promoted Stage 3I lifecycle receipt"
+    receipt_end = "raw-177 coverage, and makes no new conformance claim."
     replace_once(status_path, receipt_start, f"{field}\n\n{receipt_start}")
     replace_once(status_path, receipt_end, f"{receipt_end}\n\n</div>")
 elif plan == "focused-hardlink":
@@ -11203,10 +11964,11 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/quickjs-oxide-binary-boundary.XXXXXX")
 trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 
 fixture=$tmp_dir/fixture
+boundary_self_test_token="generated-boundary-self-test-$PPID-$RANDOM-$RANDOM"
 mkdir -p "$fixture/src/runtime/binary_object/bytecode_image/decode" \
     "$fixture/src/runtime/binary_object/function_translate" \
     "$fixture/src/runtime/binary_object/graph"
-printf '%s\n' 'generated boundary self-test fixture' > "$fixture/.boundary-self-test"
+printf '%s\n' "$boundary_self_test_token" > "$fixture/.boundary-self-test"
 printf '%s\n' 'pub mod runtime;' > "$fixture/src/lib.rs"
 printf '%s\n' 'mod binary_object;' > "$fixture/src/runtime.rs"
 cp -- "$repository_root/src/bytecode.rs" "$fixture/src/bytecode.rs"
@@ -11558,14 +12320,14 @@ printf '%s\n' \
     '}' \
     > "$fixture/src/runtime/binary_object/graph/sab_transport.rs"
 
-scan_root "$fixture" \
+scan_root "$fixture" "$boundary_self_test_token" \
     || die "binary-object boundary rejected its clean no-consumer self-test fixture"
 
 printf '%s\n' 'mod binary_object_publish;' >> "$fixture/src/runtime.rs"
 cp -- "$repository_root/src/runtime/binary_object_publish.rs" \
     "$fixture/src/runtime/binary_object_publish.rs"
 
-scan_root "$fixture" \
+scan_root "$fixture" "$boundary_self_test_token" \
     || die "binary-object boundary rejected its clean sole-consumer self-test fixture"
 
 expect_rejected() {
@@ -11579,7 +12341,8 @@ expect_rejected() {
     mkdir -p "$case_root"
     cp -R "$fixture/." "$case_root"
     printf '\n%s\n' "$canary" >> "$case_root/$relative"
-    if "$script_dir/check-binary-object-boundary.sh" --scan-only "$case_root" \
+    if QUICKJS_OXIDE_BOUNDARY_SELF_TEST_TOKEN=$boundary_self_test_token \
+        "$script_dir/check-binary-object-boundary.sh" --scan-only "$case_root" \
         > "$output" 2>&1; then
         die "binary-object boundary canary escaped: $label"
     fi
@@ -11613,7 +12376,8 @@ if source.count(before) != 1:
     raise SystemExit(f"rewrite canary expected one occurrence of {before!r}")
 path.write_text(source.replace(before, after), encoding="utf-8")
 PY
-    if "$script_dir/check-binary-object-boundary.sh" --scan-only "$case_root" \
+    if QUICKJS_OXIDE_BOUNDARY_SELF_TEST_TOKEN=$boundary_self_test_token \
+        "$script_dir/check-binary-object-boundary.sh" --scan-only "$case_root" \
         > "$output" 2>&1; then
         die "binary-object boundary rewrite canary escaped: $label"
     fi
@@ -12237,13 +13001,13 @@ expect_full_rewrite_rejected stage3c-translate-ready-shadow \
 expect_full_rewrite_rejected stage3c-ordinary-guarded-tail-bypass \
     ordinary-leaf-translated-code \
     src/runtime/binary_object/ordinary_leaf.rs \
-    $'    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
-    $'    if matches!(operation, FunctionOp::TailCall(0)) {\n        return Ok(OrdinaryLeafOp::Call(0));\n    }\n    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
+    $'    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToPropKey),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
+    $'    if matches!(operation, FunctionOp::TailCall(0)) {\n        return Ok(OrdinaryLeafOp::Call(0));\n    }\n    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToPropKey),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
 expect_full_rewrite_rejected stage3c-publisher-alias-tail-bypass \
     ordinary-leaf-consumer-lowering \
     src/runtime/binary_object_publish.rs \
-    $'    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
-    $'    use OrdinaryLeafOp as O;\n    if let O::TailCall(argument_count) = &operation {\n        return Ok(Instruction::Call(*argument_count));\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
+    $'    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
+    $'    use OrdinaryLeafOp as O;\n    if let O::TailCall(argument_count) = &operation {\n        return Ok(Instruction::Call(*argument_count));\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
 expect_full_rewrite_rejected stage3c-stack-effect-guarded-bypass \
     stage3c-tail-verifier src/bytecode.rs \
     $'    pub const fn stack_effect(&self) -> (usize, usize) {\n        match self {' \
@@ -12392,8 +13156,8 @@ expect_full_rewrite_table <<'STAGE3G_CANARIES'
 stage3g-raw11-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(11, None, OrdinaryOnly, Recipe::Object),|    row!(11, None, Shared, Recipe::Object),
 stage3g-raw11-recipe-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(11, None, OrdinaryOnly, Recipe::Object),|    row!(11, None, OrdinaryOnly, Recipe::Nop),
 stage3g-raw47-object-alias|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(47, None, Blocked, Completion),|    row!(47, None, OrdinaryOnly, Recipe::Object),
-stage3g-recipe-object-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Nop,\n    Object,\n    ToObject,\n    PushThis,\n    PushI32,|    Nop,\n    Object(u8),\n    ToObject,\n    PushThis,\n    PushI32,
-stage3g-function-object-erased|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    OutsideTarget,\n    Nop,\n    Object,\n    ToObject,\n    PushThis,\n    PushI32(i32),|    OutsideTarget,\n    Nop,\n    ToObject,\n    PushThis,\n    PushI32(i32),
+stage3g-recipe-object-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Nop,\n    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32,|    Nop,\n    Object(u8),\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32,
+stage3g-function-object-erased|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    OutsideTarget,\n    Nop,\n    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),|    OutsideTarget,\n    Nop,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),
 stage3g-translate-object-remap|stage3g-object-translation-route|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::Object, NativeOperands::None) => ready(FunctionOp::Object),|        (Recipe::Object, NativeOperands::None) => ready(FunctionOp::Nop),
 stage3g-ordinary-object-remap|stage3g-object-ordinary-route|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),|        FunctionOp::Object => Ok(OrdinaryLeafOp::Nop),
 stage3g-publisher-object-wrong|stage3g-object-publication|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::Object => Instruction::Object,|        OrdinaryLeafOp::Object => Instruction::Undefined,
@@ -12447,10 +13211,10 @@ expect_full_rewrite_table <<'STAGE3H_CANARIES'
 stage3h-raw111-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(111, None, OrdinaryOnly, Recipe::ToObject),|    row!(111, None, Shared, Recipe::ToObject),
 stage3h-raw111-recipe-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(111, None, OrdinaryOnly, Recipe::ToObject),|    row!(111, None, OrdinaryOnly, Recipe::Object),
 stage3h-raw47-to-object-alias|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(47, None, Blocked, Completion),|    row!(47, None, OrdinaryOnly, Recipe::ToObject),
-stage3h-raw112-to-object-alias|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(112, None, Blocked, ValueConstruction),|    row!(112, None, OrdinaryOnly, Recipe::ToObject),
-stage3h-recipe-to-object-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Object,\n    ToObject,\n    PushThis,\n    PushI32,|    Object,\n    ToObject(u8),\n    PushThis,\n    PushI32,
-stage3h-function-to-object-erased|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Object,\n    ToObject,\n    PushThis,\n    PushI32(i32),|    Object,\n    PushThis,\n    PushI32(i32),
-stage3h-ordinary-to-object-erased|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Object,\n    ToObject,\n    PushThis,\n    PushI32(i32),|    Object,\n    PushThis,\n    PushI32(i32),
+stage3h-raw112-to-object-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(112, None, OrdinaryOnly, Recipe::ToPropKey),|    row!(112, None, OrdinaryOnly, Recipe::ToObject),
+stage3h-recipe-to-object-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32,|    Object,\n    ToObject(u8),\n    ToPropKey,\n    PushThis,\n    PushI32,
+stage3h-function-to-object-erased|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),
+stage3h-ordinary-to-object-erased|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),
 stage3h-translate-to-object-remap|stage3h-to-object-translation-route|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::ToObject, NativeOperands::None) => ready(FunctionOp::ToObject),|        (Recipe::ToObject, NativeOperands::None) => ready(FunctionOp::Object),
 stage3h-ordinary-to-object-remap|stage3h-to-object-ordinary-route|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),|        FunctionOp::ToObject => Ok(OrdinaryLeafOp::Object),
 stage3h-publisher-to-object-wrong|stage3h-to-object-publication|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ToObject => Instruction::ToObject,|        OrdinaryLeafOp::ToObject => Instruction::Object,
@@ -12468,7 +13232,7 @@ stage3h-runtime-nullish-test-cfg-excluded|stage3h-runtime-evidence|src/runtime/t
 stage3h-c-oracle-disabled|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_to_object_completion(compile_context))|    if (0 && expect_ordinary_to_object_completion(compile_context))
 stage3h-c-mechanical-wire-remap|stage3d-c-oracle|tests/fixtures/function_bytecode_wire.c|    manual_wire[44] = 111;|    manual_wire[44] = 112;
 stage3h-c-transcript-provenance-concealed|stage3h-c-oracle|tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt|ordinary-to-object-evidence=compiler-natural-provenance-plus-mechanically-derived-property-free-wire|ordinary-to-object-evidence=two-compiler-natural-wires
-stage3h-c-manifest-source-hash-drift|stage3i-c-oracle|dev-support/quickjs-c-oracles.tsv|e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c4|e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c5
+stage3h-c-manifest-source-hash-drift|stage3j-c-oracle|dev-support/quickjs-c-oracles.tsv|815baf3fbf14de146b53d103401279cd9d5eacd006e60b468f8d141b34e2bd92|815baf3fbf14de146b53d103401279cd9d5eacd006e60b468f8d141b34e2bd93
 stage3h-status-c-provenance-erased|stage3h-status|docs/status.md|The oracle honestly labels this as compiler\nprovenance, then mechanically changes|The oracle labels both wires as compiler\nprovenance, then changes
 stage3h-status-inherited-coverage-erased|stage3h-status|docs/status.md|retains the Stage-3H raw-111 `ToObject`, Stage-3G\nraw-11 Object, and Stage-3F raw-177 coverage|retains the Stage-3G\nraw-11 Object and Stage-3F raw-177 coverage
 stage3i-status-stale-claim|stage3i-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|Stage 3I is source-stale and unauthenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
@@ -12492,10 +13256,10 @@ expect_full_rewrite_table <<'STAGE3I_CANARIES'
 stage3i-raw8-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(8, None, OrdinaryOnly, Recipe::PushThis),|    row!(8, None, Shared, Recipe::PushThis),
 stage3i-raw8-recipe-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(8, None, OrdinaryOnly, Recipe::PushThis),|    row!(8, None, OrdinaryOnly, Recipe::ToObject),
 stage3i-raw47-admitted|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(47, None, Blocked, Completion),|    row!(47, None, OrdinaryOnly, Recipe::PushThis),
-stage3i-raw112-admitted|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(112, None, Blocked, ValueConstruction),|    row!(112, None, OrdinaryOnly, Recipe::PushThis),
-stage3i-recipe-push-this-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Object,\n    ToObject,\n    PushThis,\n    PushI32,|    Object,\n    ToObject,\n    PushThis(u8),\n    PushI32,
-stage3i-function-push-this-erased|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Object,\n    ToObject,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToObject,\n    PushI32(i32),
-stage3i-ordinary-push-this-erased|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Object,\n    ToObject,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToObject,\n    PushI32(i32),
+stage3i-raw112-push-this-alias|function-translate-registry-policy|src/runtime/binary_object/function_translate/capability.rs|    row!(112, None, OrdinaryOnly, Recipe::ToPropKey),|    row!(112, None, OrdinaryOnly, Recipe::PushThis),
+stage3i-recipe-push-this-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32,|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis(u8),\n    PushI32,
+stage3i-function-push-this-erased|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToObject,\n    ToPropKey,\n    PushI32(i32),
+stage3i-ordinary-push-this-erased|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToObject,\n    ToPropKey,\n    PushI32(i32),
 stage3i-translate-push-this-remap|stage3i-push-this-translation-route|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::PushThis, NativeOperands::None) => ready(FunctionOp::PushThis),|        (Recipe::PushThis, NativeOperands::None) => ready(FunctionOp::ToObject),
 stage3i-ordinary-push-this-remap|stage3i-push-this-ordinary-route|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),|        FunctionOp::PushThis => Ok(OrdinaryLeafOp::ToObject),
 stage3i-publisher-push-this-remap|stage3i-push-this-publication|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::PushThis => Instruction::PushThis,|        OrdinaryLeafOp::PushThis => Instruction::Nop,
@@ -12513,16 +13277,78 @@ stage3i-wire-fnv-drift|stage3i-runtime-evidence|src/runtime/tests.rs|           
 stage3i-runtime-test-ignored|stage3i-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_push_this_is_exact_typed_and_realm_correct() {|#[test]\n#[ignore]\nfn trusted_quickjs_ordinary_push_this_is_exact_typed_and_realm_correct() {
 stage3i-c-oracle-disabled|stage3i-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_push_this_completion(compile_context))|    if (0 && expect_ordinary_push_this_completion(compile_context))
 stage3i-c-transcript-verdict-drift|stage3i-c-oracle|tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt|ordinary-push-this-oracle=passed|ordinary-push-this-oracle=failed
-stage3i-c-manifest-source-hash-drift|stage3i-c-oracle|dev-support/quickjs-c-oracles.tsv|e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c4|e6d93033db5e00b403ab203e598bc66f77d079329680e970d779d63a388ff0c5
-stage3i-status-registry-counts-stale|stage3i-status|docs/status.md|The scalar policy remains 30 opcodes; the stage-3I ordinary policy is 132,\nand their union is 133 (111 blocked, one scalar-only, 103 ordinary-only, and 29\nshared registry rows).|The scalar policy remains 30 opcodes; the stage-3H ordinary policy is 131,\nand their union is 132 (112 blocked, one scalar-only, 102 ordinary-only, and 29\nshared registry rows).
-stage3i-status-raw8-reblocked|stage3i-status|docs/status.md|stage 3I adds exactly raw 8 `push_this` with its `None` operand and ordinary-only\naudience. Raw 47 `return_async` and raw 112 `to_propkey` remain blocked.|Raw 8 `push_this`, raw 47 `return_async`, and raw 112 `to_propkey` remain\nblocked.
-stage3i-status-blocker-vector-stale|stage3i-status|docs/status.md|`1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.|`1, 6, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
+stage3i-c-manifest-source-hash-drift|stage3j-c-oracle|dev-support/quickjs-c-oracles.tsv|815baf3fbf14de146b53d103401279cd9d5eacd006e60b468f8d141b34e2bd92|815baf3fbf14de146b53d103401279cd9d5eacd006e60b468f8d141b34e2bd93
+stage3j-status-registry-counts-stale|stage3j-status|docs/status.md|The scalar policy remains 30 opcodes; the stage-3J ordinary policy is 133,\nand their union is 134 (110 blocked, one scalar-only, 104 ordinary-only, and 29\nshared registry rows).|The scalar policy remains 30 opcodes; the stage-3I ordinary policy is 132,\nand their union is 133 (111 blocked, one scalar-only, 103 ordinary-only, and 29\nshared registry rows).
+stage3j-status-raw112-reblocked|stage3j-status|docs/status.md|audience; stage 3J adds exactly raw 112 `to_propkey` with its `None` operand,\n1-to-1 stack effect, and ordinary-only audience. Raw 47 `return_async` remains\nblocked.|audience. Raw 47 `return_async` and raw 112 `to_propkey` remain blocked.
+stage3j-status-blocker-vector-stale|stage3j-status|docs/status.md|`1, 4, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.|`1, 5, 2, 1, 3, 7, 16, 15, 25, 4, 9, 11, 5, 4, 3`.
 stage3i-status-no-parity-erased|stage3i-status|docs/status.md|Stage 3I changes neither the engine Instruction set nor\nVM implementation and adds no source syntax, public API, Test262 admission, or\nFeature Parity claim.|Stage 3I changes neither the engine Instruction set nor\nVM implementation and establishes Feature Parity.
 stage3i-status-current-certification-erased|stage3i-status|docs/status.md|This promoted receipt is source-current for Stage 3I and covers|This promoted receipt merely describes
 stage3i-status-raw8-coverage-erased|stage3i-status|docs/status.md|covers the raw-8\n`PushThis` admission and its Rust/C evidence|describes the raw-8\n`PushThis` admission and its Rust/C evidence
 stage3i-status-terminal-success-erased|stage3i-status|docs/status.md|The canonical `test262-receipt` run completed successfully|The canonical `test262-receipt` run terminated
-stage3i-status-exact-six-artifact-erased|stage3i-status|docs/status.md|unique exact six-file artifact `9452593259`|artifact `9452593259`
+stage3i-status-exact-six-artifact-erased|stage3i-status|docs/status.md|unique exact\nsix-file artifact `9460012228`|artifact `9460012228`
 STAGE3I_CANARIES
+expect_full_rewrite_table <<'STAGE3J_CANARIES'
+stage3j-raw112-reblocked|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(112, None, OrdinaryOnly, Recipe::ToPropKey),|    row!(112, None, Blocked, ValueConstruction),
+stage3j-raw112-shared|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(112, None, OrdinaryOnly, Recipe::ToPropKey),|    row!(112, None, Shared, Recipe::ToPropKey),
+stage3j-raw47-admitted|function-translate-registry-audience|src/runtime/binary_object/function_translate/capability.rs|    row!(47, None, Blocked, Completion),|    row!(47, None, OrdinaryOnly, Recipe::ToPropKey),
+stage3j-recipe-to-propkey-payload|function-translate-recipe-shape|src/runtime/binary_object/function_translate/capability.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32,|    Object,\n    ToObject,\n    ToPropKey(u8),\n    PushThis,\n    PushI32,
+stage3j-function-to-propkey-erased|function-translate-dto-shape|src/runtime/binary_object/function_translate/dto.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToObject,\n    PushThis,\n    PushI32(i32),
+stage3j-ordinary-to-propkey-erased|ordinary-leaf-operation-shape|src/runtime/binary_object/ordinary_leaf.rs|    Object,\n    ToObject,\n    ToPropKey,\n    PushThis,\n    PushI32(i32),|    Object,\n    ToObject,\n    PushThis,\n    PushI32(i32),
+stage3j-translate-to-propkey-remap|stage3j-to-propkey-translation-route|src/runtime/binary_object/function_translate/mod.rs|        (Recipe::ToPropKey, NativeOperands::None) => ready(FunctionOp::ToPropKey),|        (Recipe::ToPropKey, NativeOperands::None) => ready(FunctionOp::ToObject),
+stage3j-ordinary-to-propkey-remap|stage3j-to-propkey-ordinary-route|src/runtime/binary_object/ordinary_leaf.rs|        FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToPropKey),|        FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToObject),
+stage3j-publisher-to-propkey-remap|stage3j-to-propkey-publication|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,|        OrdinaryLeafOp::ToPropKey => Instruction::ToObject,
+stage3j-publisher-to-propkey-synthetic|stage3j-to-propkey-publication|src/runtime/binary_object_publish.rs|        OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,|        OrdinaryLeafOp::ToPropKey => { *next_synthetic_index += 1; Instruction::ToPropKey },
+stage3j-natural-wire-fnv-drift|stage3j-runtime-evidence|src/runtime/tests.rs|            0x83c3_3a69_f73e_737c,|            0x83c3_3a69_f73e_737d,
+stage3j-duplicate-loop-test-ignored|stage3j-runtime-evidence|src/runtime/binary_object/ordinary_leaf.rs|    #[test]\n    fn to_propkey_duplicate_and_finite_loop_reentry_are_ordinary_verified() {|    #[test]\n    #[ignore = "gate mutation"]\n    fn to_propkey_duplicate_and_finite_loop_reentry_are_ordinary_verified() {
+stage3j-runtime-observability-test-ignored|stage3j-runtime-evidence|src/runtime/tests.rs|#[test]\nfn trusted_quickjs_ordinary_to_propkey_observability_and_reentry_match_quickjs() {|#[test]\n#[ignore = "gate mutation"]\nfn trusted_quickjs_ordinary_to_propkey_observability_and_reentry_match_quickjs() {
+stage3j-c-oracle-disabled|stage3j-c-oracle|tests/fixtures/function_bytecode_wire.c|    if (expect_ordinary_to_propkey_completion(compile_context))|    if (0 && expect_ordinary_to_propkey_completion(compile_context))
+stage3j-c-transcript-verdict-drift|stage3j-c-oracle|tests/fixtures/function_bytecode_wire.quickjs-2026-06-04.txt|ordinary-to-propkey-oracle=passed|ordinary-to-propkey-oracle=failed
+stage3j-c-manifest-transcript-hash-drift|stage3j-c-oracle|dev-support/quickjs-c-oracles.tsv|58d8327f176950aeb8ab682dcf8fc11577421c46c5eb146f078adb073fbf03ec|58d8327f176950aeb8ab682dcf8fc11577421c46c5eb146f078adb073fbf03ed
+stage3j-status-typed-chain-erased|stage3j-status|docs/status.md|Stage 3J admits raw 112 only as the exact one-to-one typed chain|Stage 3J describes raw 112 as a typed chain
+stage3j-status-duplicate-rejected|stage3j-status|docs/status.md|duplicate raw112 and a finite backedge to\nraw112 are legal and retain their ordinary stack/CFG checks.|duplicate raw112 and a finite backedge to\nraw112 are rejected by a special entrance protocol.
+stage3j-status-source-ahead-erased|stage3j-status|docs/status.md|The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is\nsource-ahead of that promoted Stage 3I receipt.|The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is\nsource-current under that promoted Stage 3I receipt.
+stage3j-status-not-covered-erased|stage3j-status|docs/status.md|The Stage 3I receipt does not\ncover or authenticate Stage 3J, and no Stage 3J receipt has been promoted.|The Stage 3I receipt does\ncover and authenticate Stage 3J, and a Stage 3J receipt has been promoted.
+stage3j-status-cyrillic-dze-current-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|\320\205tage 3J is source-current and authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+stage3j-status-cyrillic-a-covered-claim|stage3j-status|docs/status.md|The same oracle pins compatible 32-bit `scope_next` wrapping|This receipt covers r\320\260w112.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping
+STAGE3J_CANARIES
+expect_full_rewrite_rejected stage3j-self-test-marker-bypass \
+    boundary-self-test-marker docs/status.md \
+    'The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    'The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    '' '' .boundary-self-test 'forged reduced-fixture marker'
+expect_full_rewrite_rejected stage3j-raw8-validator-narrowing \
+    stage3j-to-propkey-protocol \
+    src/runtime/binary_object/ordinary_leaf.rs \
+    '        if matches!(instruction.operation(), FunctionOp::PushThis) {' \
+    '        if matches!(instruction.operation(), FunctionOp::PushThis | FunctionOp::ToPropKey) {'
+expect_full_rewrite_rejected stage3j-host-primitive-fast-path-narrowed \
+    stage3j-to-propkey-host-semantics src/runtime/vm_host.rs \
+    '            key @ (Value::Int(_) | Value::String(_)) => return Ok(Completion::Return(key)),' \
+    '            key @ Value::String(_) => return Ok(Completion::Return(key)),'
+expect_full_rewrite_rejected stage3j-host-symbol-identity-erased \
+    stage3j-to-propkey-host-semantics src/runtime/vm_host.rs \
+    '                return Ok(Completion::Return(Value::Symbol(symbol)));' \
+    '                return Ok(Completion::Return(Value::Undefined));'
+expect_full_rewrite_rejected stage3j-host-string-hint-drift \
+    stage3j-to-propkey-host-semantics src/runtime/vm_host.rs \
+    '                .to_primitive(self.current_realm, key, ToPrimitiveHint::String)' \
+    '                .to_primitive(self.current_realm, key, ToPrimitiveHint::Default)'
+expect_full_rewrite_rejected stage3j-host-throw-identity-erased \
+    stage3j-to-propkey-host-semantics src/runtime/vm_host.rs \
+    $'                Completion::Return(key) => key,\n                Completion::Throw(value) => return Ok(Completion::Throw(value)),' \
+    $'                Completion::Return(key) => key,\n                Completion::Throw(_value) => return Ok(Completion::Return(Value::Undefined)),'
+expect_full_rewrite_rejected stage3j-to-primitive-string-literal-drift \
+    stage3j-to-propkey-primitive-semantics src/runtime.rs \
+    '                    ToPrimitiveHint::String => "string",' \
+    '                    ToPrimitiveHint::String => "default",'
+expect_full_rewrite_rejected stage3j-to-primitive-type-error-realm-drift \
+    stage3j-to-propkey-primitive-semantics src/runtime.rs \
+    $'                Completion::Return(Value::Object(_)) => Ok(Completion::Throw(\n                    self.new_native_error(realm, NativeErrorKind::Type, "toPrimitive")?,\n                )),' \
+    $'                Completion::Return(Value::Object(_)) => Ok(Completion::Throw(\n                    self.new_native_error(ContextId::ROOT, NativeErrorKind::Type, "toPrimitive")?,\n                )),'
+expect_full_rewrite_rejected stage3j-ordinary-fallback-order-drift \
+    stage3j-to-propkey-ordinary-fallback src/runtime/intrinsics/object.rs \
+    '            ToPrimitiveHint::String => ["toString", "valueOf"],' \
+    '            ToPrimitiveHint::String => ["valueOf", "toString"],'
 expect_full_rewrite_rejected stage3i-validator-if-false-target-zero-erased \
     stage3i-push-this-protocol src/runtime/binary_object/ordinary_leaf.rs \
     '            FunctionOp::IfFalse(0) | FunctionOp::IfTrue(0) | FunctionOp::Goto(0)' \
@@ -12561,8 +13387,30 @@ expect_full_rewrite_rejected stage3i-status-c-evidence-hidden-wrapper \
     stage3i-status docs/status.md \
     'Stage 3I additionally compiler-naturally emits strict and sloppy' \
     $'<div style="display:none">\nStage 3I additionally compiler-naturally emits strict and sloppy' \
-    '`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.' \
-    $'`7e90cdbc0c7570050eb983e7ddfdea32914ff9e753dd986a654ac9c56d7ea355`.\n</div>'
+    '`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.' \
+    $'`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.\n</div>'
+expect_full_rewrite_rejected stage3j-status-typed-hidden-wrapper \
+    stage3j-status docs/status.md \
+    'Stage 3J admits raw 112 only as the exact one-to-one typed chain' \
+    $'<div hidden>\nStage 3J admits raw 112 only as the exact one-to-one typed chain' \
+    $'metric, or Feature Parity claim.' \
+    $'metric, or Feature Parity claim.\n</div>'
+expect_full_rewrite_rejected stage3j-status-c-evidence-comment-wrapper \
+    stage3j-status docs/status.md \
+    'Stage 3J compiler-naturally emits' \
+    $'<!--\nStage 3J compiler-naturally emits' \
+    '`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.' \
+    $'`e9f74aaa094cc4fb30b4a159d239d7e311622e55cd4c78f75723057a03569ee7`.\n-->'
+expect_full_rewrite_rejected stage3j-status-lifecycle-fenced-wrapper \
+    stage3j-status docs/status.md \
+    'The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'```text\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    'metric, and makes no new conformance or Feature Parity claim.' \
+    $'metric, and makes no new conformance or Feature Parity claim.\n```'
+expect_full_rewrite_rejected stage3j-status-source-ahead-zwsp-erased \
+    stage3j-status docs/status.md \
+    'The Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'The Stage 3\342\200\213J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3h-to-object-stack-effect-drift \
     stage3h-to-object-verifier src/bytecode.rs \
     '            Self::SetName(_) | Self::ToObject | Self::IteratorCheckObject => (1, 1),' \
@@ -12683,8 +13531,8 @@ expect_full_rewrite_rejected stage3e-vm-read-only-pop-bypass \
     $'            Instruction::ThrowReadOnly(index) => {\n                self.pop()?;\n                return Err(host.read_only_error(*index)?);\n            }'
 expect_full_rewrite_rejected stage3e-status-source-stale-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThis R3fj receipt is source-stale for Stage 3E.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3e-crate-test-cfg-excluded \
     stage3e-runtime-evidence src/lib.rs \
     '//! A pure-Rust rewrite of `QuickJS` aiming at semantic feature parity with the' \
@@ -12717,8 +13565,8 @@ expect_full_rewrite_rejected stage3e-outside-src-path-macro-use-assert-eq-shadow
     $'macro_rules! assert_eq {\n    (QUICKJS_ORDINARY_READ_ONLY_BC5.len(), 47) => { () };\n    ($($tokens:tt)*) => { ::core::assert_eq!($($tokens)*) };\n}\n'
 expect_full_rewrite_rejected stage3e-status-stage-first-stale-appended \
     stage3i-status docs/status.md \
-    'The latest full R3fj execution' \
-    $'Stage 3E is source-stale and unauthenticated by this receipt.\n\nThe latest full R3fj execution'
+    'The latest promoted Stage 3I lifecycle receipt' \
+    $'Stage 3E is source-stale and unauthenticated by this receipt.\n\nThe latest promoted Stage 3I lifecycle receipt'
 expect_full_rewrite_rejected stage3d-vm-throw-to-return \
     stage3d-throw-completion src/vm.rs \
     '                return self.pop().map(|value| Some(Completion::Throw(value)));' \
@@ -12736,13 +13584,13 @@ expect_full_rewrite_rejected stage3d-translate-post-lowering-remap \
 expect_full_rewrite_rejected stage3d-ordinary-helper-bypass \
     ordinary-leaf-translated-code \
     src/runtime/binary_object/ordinary_leaf.rs \
-    $'    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
-    $'    if matches!(operation, FunctionOp::Throw) {\n        return Ok(OrdinaryLeafOp::Return);\n    }\n    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
+    $'    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToPropKey),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),' \
+    $'    if matches!(operation, FunctionOp::Throw) {\n        return Ok(OrdinaryLeafOp::Return);\n    }\n    match operation {\n        FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),\n        FunctionOp::Object => Ok(OrdinaryLeafOp::Object),\n        FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),\n        FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToPropKey),\n        FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),\n        FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),'
 expect_full_rewrite_rejected stage3d-publisher-helper-bypass \
     ordinary-leaf-consumer-lowering \
     src/runtime/binary_object_publish.rs \
-    $'    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
-    $'    if matches!(&operation, OrdinaryLeafOp::Throw) {\n        return Ok(Instruction::Return);\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
+    $'    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),' \
+    $'    if matches!(&operation, OrdinaryLeafOp::Throw) {\n        return Ok(Instruction::Return);\n    }\n    let instruction = match operation {\n        OrdinaryLeafOp::Nop => Instruction::Nop,\n        OrdinaryLeafOp::Object => Instruction::Object,\n        OrdinaryLeafOp::ToObject => Instruction::ToObject,\n        OrdinaryLeafOp::ToPropKey => Instruction::ToPropKey,\n        OrdinaryLeafOp::PushThis => Instruction::PushThis,\n        OrdinaryLeafOp::PushI32(value) => Instruction::PushI32(value),'
 expect_full_rewrite_rejected stage3d-throw-stack-effect-drift \
     stage3d-throw-verifier src/bytecode.rs \
     '            | Self::Throw => (1, 0),' \
@@ -12847,20 +13695,24 @@ expect_full_rewrite_rejected stage3i-status-current-receipt-erased \
     'This promoted receipt merely describes'
 expect_full_rewrite_rejected stage3i-status-run-tampered \
     stage3i-status docs/status.md \
-    'exact-source GitHub Actions run `32497291807`' \
-    'exact-source GitHub Actions run `32497291808`'
+    $'exact-source GitHub Actions\nrun `32517600968`' \
+    $'exact-source GitHub Actions\nrun `32517600969`'
 expect_full_rewrite_rejected stage3i-status-job-tampered \
     stage3i-status docs/status.md \
-    'job `96818622699`, authenticates Stage 3I source' \
-    'job `96818622700`, authenticates Stage 3I source'
+    'job `96882617930`, on receipt-promotion commit' \
+    'job `96882617931`, on receipt-promotion commit'
+expect_full_rewrite_rejected stage3i-status-promotion-commit-tampered \
+    stage3i-status docs/status.md \
+    '`a8a746f50dfc71ed560df32af9da2fb5488f7cba`' \
+    '`b8a746f50dfc71ed560df32af9da2fb5488f7cba`'
 expect_full_rewrite_rejected stage3i-status-artifact-tampered \
     stage3i-status docs/status.md \
-    'unique exact six-file artifact `9452593259`' \
-    'unique exact six-file artifact `9452593260`'
+    $'unique exact\nsix-file artifact `9460012228`' \
+    $'unique exact\nsix-file artifact `9460012229`'
 expect_full_rewrite_rejected stage3i-status-artifact-digest-tampered \
     stage3i-status docs/status.md \
-    '97ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb' \
-    '07ff9d79784ed27ec2a323544597b28aa2c5b5227b0028e5d3560bbaa22b1bfb'
+    '06a95f6510ad335bd090be5bb34168e8bf683e36336441b67ebb4a831f56fd9f' \
+    '16a95f6510ad335bd090be5bb34168e8bf683e36336441b67ebb4a831f56fd9f'
 expect_full_rewrite_rejected stage3i-status-baseline-fingerprint-tampered \
     stage3i-status docs/status.md \
     'd21943622773d2b0b978cd2ace5261d5ec41a9400ab36864768470aae71b1d22' \
@@ -12953,62 +13805,62 @@ expect_full_rewrite_rejected stage3i-status-current-full-jsonl-tampered \
     "$stage3i_tampered_full_jsonl"
 expect_full_rewrite_rejected stage3i-status-receipt-boundary-erased \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-stale-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nThis R3fj receipt is source-stale for Stage 3I.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThis R3fj receipt is source-stale for Stage 3I.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-unauthenticated-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nStage 3I has yet to be authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nStage 3I has yet to be authenticated.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-stage3h-only-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nOnly Stage 3H is authenticated by this receipt.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nOnly Stage 3H is authenticated by this receipt.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-not-authenticated-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nStage 3I is not authenticated.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nStage 3I is not authenticated.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-receipt-stage3h-only-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nThis receipt only authenticates Stage 3H.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThis receipt only authenticates Stage 3H.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-stage3g-only-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nOnly Stage 3G is authenticated by this receipt.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nOnly Stage 3G is authenticated by this receipt.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-stage3f-only-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nOnly Stage 3F is authenticated by this receipt.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nOnly Stage 3F is authenticated by this receipt.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-pending-promotion-contradiction-appended \
     stage3i-status docs/status.md \
-    $'claim.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping' \
-    $'claim.\n\nStage 3I is pending a separate exact-source receipt promotion.\n\nThe same oracle pins compatible 32-bit `scope_next` wrapping'
+    $'raw-177 coverage, and makes no new conformance claim.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is' \
+    $'raw-177 coverage, and makes no new conformance claim.\n\nStage 3I is pending a separate exact-source receipt promotion.\n\nThe Stage 3J raw112 `ToPropKey` Rust6/C3 working tree described above is'
 expect_full_rewrite_rejected stage3i-status-html-comment-wrapper \
     stage3i-status docs/status.md \
-    'The latest full R3fj execution' \
-    $'<!--\n\nThe latest full R3fj execution' \
+    'The latest promoted Stage 3I lifecycle receipt' \
+    $'<!--\n\nThe latest promoted Stage 3I lifecycle receipt' \
     'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n\n-->'
 expect_full_rewrite_rejected stage3i-status-fenced-code-wrapper \
     stage3i-status docs/status.md \
-    'The latest full R3fj execution' \
-    $'```text\n\nThe latest full R3fj execution' \
+    'The latest promoted Stage 3I lifecycle receipt' \
+    $'```text\n\nThe latest promoted Stage 3I lifecycle receipt' \
     'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n\n```'
 expect_full_rewrite_rejected stage3i-status-hidden-html-wrapper \
     stage3i-status docs/status.md \
-    'The latest full R3fj execution' \
-    $'<div hidden>\n\nThe latest full R3fj execution' \
+    'The latest promoted Stage 3I lifecycle receipt' \
+    $'<div hidden>\n\nThe latest promoted Stage 3I lifecycle receipt' \
     'raw-177 coverage, and makes no new conformance claim.' \
     $'raw-177 coverage, and makes no new conformance claim.\n\n</div>'
 stage3i_status_receipt_paragraph=$(
     awk '
         found && /^[[:space:]]*$/ { exit }
-        /The latest full R3fj execution/ { found = 1 }
+        /The latest promoted Stage 3I lifecycle receipt/ { found = 1 }
         found { print }
     ' "$repository_root/docs/status.md"
 )

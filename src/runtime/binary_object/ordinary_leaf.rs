@@ -161,6 +161,7 @@ pub(in crate::runtime) enum OrdinaryLeafOp {
     Nop,
     Object,
     ToObject,
+    ToPropKey,
     PushThis,
     PushI32(i32),
     PushConst(u32),
@@ -688,6 +689,7 @@ fn lower_operation(
         FunctionOp::Nop => Ok(OrdinaryLeafOp::Nop),
         FunctionOp::Object => Ok(OrdinaryLeafOp::Object),
         FunctionOp::ToObject => Ok(OrdinaryLeafOp::ToObject),
+        FunctionOp::ToPropKey => Ok(OrdinaryLeafOp::ToPropKey),
         FunctionOp::PushThis => Ok(OrdinaryLeafOp::PushThis),
         FunctionOp::PushI32(value) => Ok(OrdinaryLeafOp::PushI32(*value)),
         FunctionOp::PushConstant(index) => lower_constant(*index, constant_count),
@@ -1105,6 +1107,27 @@ mod tests {
         "05000c000200a80100010001000001040100000000be00cb28",
         "0c430200000000000100000002000828",
     );
+    const MINIMAL_STRICT_TO_PROPKEY_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c4302010001000101000000030100010000cf7028",
+    );
+    const MINIMAL_SLOPPY_TO_PROPKEY_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c4302000001000101000000030100010000cf7028",
+    );
+    const DUPLICATE_TO_PROPKEY_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c4302010001000101000000040100010000cf707028",
+    );
+    const REENTER_TO_PROPKEY_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c430201000200020200000012020001000000010000",
+        "cf70d0680d0000000e09d4cf6af4ffffff28",
+    );
+    const UNDERFLOW_TO_PROPKEY_HEX: &str = concat!(
+        "05000c000200a80100010001000001040100000000be00cb28",
+        "0c43020100010001010000000201000100007028",
+    );
 
     fn bytes(hex: &str) -> Vec<u8> {
         assert_eq!(hex.len() % 2, 0);
@@ -1354,6 +1377,7 @@ mod tests {
             (FunctionOp::Nop, OrdinaryLeafOp::Nop),
             (FunctionOp::Object, OrdinaryLeafOp::Object),
             (FunctionOp::ToObject, OrdinaryLeafOp::ToObject),
+            (FunctionOp::ToPropKey, OrdinaryLeafOp::ToPropKey),
             (FunctionOp::PushThis, OrdinaryLeafOp::PushThis),
             (
                 FunctionOp::PushI32(i32::MIN),
@@ -1511,6 +1535,75 @@ mod tests {
                 OrdinaryLeafOp::ReturnUndefined,
             ]
         );
+    }
+
+    #[test]
+    fn to_propkey_wires_preserve_strictness_and_one_to_one_lowering() {
+        for (label, hex, expected_strict) in [
+            ("minimal strict", MINIMAL_STRICT_TO_PROPKEY_HEX, true),
+            ("minimal sloppy", MINIMAL_SLOPPY_TO_PROPKEY_HEX, false),
+        ] {
+            let wire = bytes(hex);
+            assert_eq!(wire.len(), 46, "{label}");
+            let draft = decode(&wire).unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(draft.metadata().is_strict(), expected_strict, "{label}");
+            assert_eq!(draft.metadata().max_stack(), 1, "{label}");
+            assert_eq!(
+                draft.code(),
+                [
+                    OrdinaryLeafOp::GetArgument(0),
+                    OrdinaryLeafOp::ToPropKey,
+                    OrdinaryLeafOp::Return,
+                ],
+                "{label}"
+            );
+            assert!(draft.constants().is_empty(), "{label}");
+        }
+    }
+
+    #[test]
+    fn to_propkey_duplicate_and_finite_loop_reentry_are_ordinary_verified() {
+        let duplicate = decode(&bytes(DUPLICATE_TO_PROPKEY_HEX)).unwrap();
+        assert_eq!(
+            duplicate.code(),
+            [
+                OrdinaryLeafOp::GetArgument(0),
+                OrdinaryLeafOp::ToPropKey,
+                OrdinaryLeafOp::ToPropKey,
+                OrdinaryLeafOp::Return,
+            ]
+        );
+        assert_eq!(duplicate.metadata().max_stack(), 1);
+        assert!(duplicate.constants().is_empty());
+
+        let reentry = decode(&bytes(REENTER_TO_PROPKEY_HEX)).unwrap();
+        assert_eq!(
+            reentry.code(),
+            [
+                OrdinaryLeafOp::GetArgument(0),
+                OrdinaryLeafOp::ToPropKey,
+                OrdinaryLeafOp::GetArgument(1),
+                OrdinaryLeafOp::IfFalse(9),
+                OrdinaryLeafOp::Stack(OrdinaryLeafStackOp::Drop),
+                OrdinaryLeafOp::PushBool(false),
+                OrdinaryLeafOp::PutArgument(1),
+                OrdinaryLeafOp::GetArgument(0),
+                OrdinaryLeafOp::Goto(1),
+                OrdinaryLeafOp::Return,
+            ]
+        );
+        assert_eq!(reentry.metadata().max_stack(), 2);
+        assert!(reentry.constants().is_empty());
+    }
+
+    #[test]
+    fn to_propkey_underflow_reaches_the_existing_ordinary_verifier_unchanged() {
+        let draft = decode(&bytes(UNDERFLOW_TO_PROPKEY_HEX)).unwrap();
+        assert_eq!(
+            draft.code(),
+            [OrdinaryLeafOp::ToPropKey, OrdinaryLeafOp::Return]
+        );
+        assert!(draft.constants().is_empty());
     }
 
     #[test]

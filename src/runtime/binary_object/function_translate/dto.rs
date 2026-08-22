@@ -365,6 +365,7 @@ pub(in crate::runtime::binary_object) enum FunctionOp<'image> {
     Nop,
     Object,
     ToObject,
+    ToPropKey,
     PushThis,
     PushI32(i32),
     PushConstant(u32),
