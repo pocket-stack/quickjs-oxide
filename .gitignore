@@ -2,3 +2,4 @@
 /node_modules/
 *.profraw
 *.profdata
+__pycache__/

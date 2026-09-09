@@ -79,11 +79,45 @@ version = "0.0.1"
 dependencies = [
  "num-bigint",
  "num-traits",
+ "quickjs-oxide-host",
+]
+
+[[package]]
+name = "quickjs-oxide-cli"
+version = "0.0.1"
+dependencies = [
+ "quickjs-oxide",
+ "quickjs-oxide-host",
+]
+
+[[package]]
+name = "quickjs-oxide-host"
+version = "0.0.1"
+dependencies = [
+ "quickjs-oxide",
  "tz-rs",
 ]
 
 [[package]]
+name = "quickjs-oxide-test262"
+version = "0.0.1"
+dependencies = [
+ "quickjs-oxide",
+ "quickjs-oxide-host",
+]
+
+[[package]]
 name = "quickjs-oxide-web"
+version = "0.0.1"
+dependencies = [
+ "js-sys",
+ "quickjs-oxide",
+ "quickjs-oxide-web-host",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "quickjs-oxide-web-host"
 version = "0.0.1"
 dependencies = [
  "js-sys",

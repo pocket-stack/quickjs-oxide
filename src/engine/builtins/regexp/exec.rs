@@ -1,0 +1,260 @@
+//! Builtin and abstract RegExp execution.
+
+use crate::engine::api::error::NativeErrorKind;
+use crate::engine::api::runtime::Runtime;
+use crate::engine::api::runtime_error::RuntimeError;
+use crate::engine::builtins::native::RegExpNativeKind;
+use crate::engine::heap::ContextId;
+
+use crate::engine::object::{CompleteOrdinaryPropertyDescriptor, ObjectRef};
+use crate::engine::value::Value;
+use crate::engine::value::conversion::NativeConversion;
+use crate::engine::vm::Completion;
+
+use crate::engine::vm::call::{NativeArguments, NativeInvocation};
+use crate::regexp::{ExecError, RegExpFlags, execute_with_interrupt};
+
+impl Runtime {
+    pub(crate) fn call_regexp_exec_native(
+        &self,
+        realm: ContextId,
+        kind: RegExpNativeKind,
+        invocation: NativeInvocation,
+        arguments: &NativeArguments,
+    ) -> Result<Completion, RuntimeError> {
+        let NativeInvocation::Call { this_value } = invocation else {
+            return Err(RuntimeError::Invariant(
+                "RegExp exec/test did not receive a generic invocation",
+            ));
+        };
+        let input = arguments.readable.first().ok_or(RuntimeError::Invariant(
+            "RegExp exec/test input argv was not padded",
+        ))?;
+        match kind {
+            RegExpNativeKind::Exec => self.builtin_regexp_exec(realm, &this_value, input),
+            RegExpNativeKind::Test => {
+                match self.regexp_exec_abstract(realm, this_value, input.clone())? {
+                    Completion::Return(value) => Ok(Completion::Return(Value::Bool(!matches!(
+                        value,
+                        Value::Null
+                    )))),
+                    Completion::Throw(value) => Ok(Completion::Throw(value)),
+                }
+            }
+            RegExpNativeKind::Constructor
+            | RegExpNativeKind::Escape
+            | RegExpNativeKind::Species
+            | RegExpNativeKind::Compile
+            | RegExpNativeKind::Source
+            | RegExpNativeKind::Flags
+            | RegExpNativeKind::Flag(_)
+            | RegExpNativeKind::ToString
+            | RegExpNativeKind::Replace
+            | RegExpNativeKind::Match
+            | RegExpNativeKind::MatchAll
+            | RegExpNativeKind::Search
+            | RegExpNativeKind::Split => Err(RuntimeError::Invariant(
+                "non-exec RegExp selector reached exec dispatch",
+            )),
+        }
+    }
+
+    pub(crate) fn regexp_exec_abstract(
+        &self,
+        realm: ContextId,
+        regexp: Value,
+        input: Value,
+    ) -> Result<Completion, RuntimeError> {
+        let exec_key = self.intern_property_key("exec")?;
+        // JS_RegExpExec starts with the ordinary Get(R, "exec") for every
+        // receiver. In particular, nullish receivers expose the pinned
+        // property-read diagnostic rather than a generic object check.
+        let method = match regexp {
+            Value::Null | Value::Undefined => {
+                let base = if matches!(regexp, Value::Null) {
+                    "null"
+                } else {
+                    "undefined"
+                };
+                return Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    &format!("cannot read property 'exec' of {base}"),
+                )?));
+            }
+            _ => self.get_value_property_in_realm(realm, regexp.clone(), &exec_key)?,
+        };
+        let method = match method {
+            Completion::Return(value) => value,
+            Completion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+        if self.regexp_value_is_callable(&method)? {
+            let callable = self.callable_from_value(method)?;
+            let result = self.call_internal(realm, &callable, regexp, &[input])?;
+            return match result {
+                Completion::Return(value @ (Value::Object(_) | Value::Null)) => {
+                    Ok(Completion::Return(value))
+                }
+                Completion::Return(_) => Ok(Completion::Throw(self.new_native_error(
+                    realm,
+                    NativeErrorKind::Type,
+                    "RegExp exec method must return an object or null",
+                )?)),
+                Completion::Throw(value) => Ok(Completion::Throw(value)),
+            };
+        }
+        self.builtin_regexp_exec(realm, &regexp, &input)
+    }
+
+    fn builtin_regexp_exec(
+        &self,
+        realm: ContextId,
+        this_value: &Value,
+        input_value: &Value,
+    ) -> Result<Completion, RuntimeError> {
+        // Brand validation precedes input conversion.
+        let Value::Object(object) = this_value else {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "RegExp object expected",
+            )?));
+        };
+        if self.genuine_regexp(this_value)?.is_none() {
+            return Ok(Completion::Throw(self.new_native_error(
+                realm,
+                NativeErrorKind::Type,
+                "RegExp object expected",
+            )?));
+        };
+        let input = match self.native_to_js_string(realm, input_value)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        // Even a non-global RegExp observes ToLength(lastIndex); only after
+        // that conversion does QuickJS force its local starting position to 0.
+        let last_index = match self.regexp_last_index(realm, object)? {
+            NativeConversion::Value(value) => value,
+            NativeConversion::Throw(value) => return Ok(Completion::Throw(value)),
+        };
+
+        // QuickJS keeps the branded RegExp identity across both coercions, but
+        // reads `re->bytecode` only afterwards. Either conversion may call the
+        // legacy `compile()` method, so snapshot the current program and flags
+        // only after those observable calls have completed.
+        let current = self
+            .genuine_regexp(this_value)?
+            .ok_or(RuntimeError::Invariant(
+                "branded RegExp lost its compiled payload during exec coercion",
+            ))?;
+        let program = current.program;
+        let flags = program.flags();
+        let updates_last_index =
+            flags.contains(RegExpFlags::GLOBAL) || flags.contains(RegExpFlags::STICKY);
+        let start = if updates_last_index { last_index } else { 0 };
+        let input_units = input.utf16_units().collect::<Vec<_>>();
+
+        let matched = if start > input_units.len() as u64 {
+            None
+        } else {
+            match execute_with_interrupt(
+                program.as_ref(),
+                &input_units,
+                usize::try_from(start).expect("RegExp start was bounded by String length"),
+                // The runtime interrupt callback is not exposed at this layer
+                // yet.  Keep the executor boundary interrupt-aware now so a
+                // later host hook is a closure substitution rather than a
+                // semantic rewrite of builtin exec.
+                || false,
+            ) {
+                Ok(value) => value,
+                Err(ExecError::OutOfMemory) => {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Internal,
+                        "out of memory in regexp execution",
+                    )?));
+                }
+                Err(ExecError::Interrupted) => {
+                    return Ok(Completion::Throw(self.new_native_error(
+                        realm,
+                        NativeErrorKind::Internal,
+                        "interrupted",
+                    )?));
+                }
+                Err(ExecError::InvalidProgram(_)) => {
+                    return Err(RuntimeError::Invariant(
+                        "compiled RegExp program failed executor validation",
+                    ));
+                }
+                Err(ExecError::StartOutOfBounds { .. }) => {
+                    return Err(RuntimeError::Invariant(
+                        "bounded RegExp start was rejected by executor",
+                    ));
+                }
+            }
+        };
+
+        let Some(matched) = matched else {
+            if updates_last_index
+                && let Some(exception) = self.set_regexp_last_index(realm, object, 0)?
+            {
+                return Ok(Completion::Throw(exception));
+            }
+            return Ok(Completion::Return(Value::Null));
+        };
+
+        let complete = matched.capture(0).ok_or(RuntimeError::Invariant(
+            "successful RegExp execution omitted capture zero",
+        ))?;
+        if updates_last_index {
+            let end = i32::try_from(complete.end).map_err(|_| {
+                RuntimeError::Invariant("RegExp match end exceeded signed String range")
+            })?;
+            // This write happens before any result/indices allocation.
+            if let Some(exception) = self.set_regexp_last_index(realm, object, end)? {
+                return Ok(Completion::Throw(exception));
+            }
+        }
+
+        self.build_regexp_result(realm, input, program, matched)
+            .map(Completion::Return)
+    }
+
+    fn regexp_last_index(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+    ) -> Result<NativeConversion<u64>, RuntimeError> {
+        let key = self.intern_property_key("lastIndex")?;
+        let descriptor = self
+            .get_own_property(object, &key)?
+            .ok_or(RuntimeError::Invariant(
+                "genuine RegExp object had no lastIndex property",
+            ))?;
+        let CompleteOrdinaryPropertyDescriptor::Data { value, .. } = descriptor else {
+            return Err(RuntimeError::Invariant(
+                "RegExp lastIndex became an accessor",
+            ));
+        };
+        self.native_to_length(realm, &value)
+    }
+
+    pub(crate) fn set_regexp_last_index(
+        &self,
+        realm: ContextId,
+        object: &ObjectRef,
+        value: i32,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let key = self.intern_property_key("lastIndex")?;
+        self.set_property_or_throw(realm, object, &key, Value::Int(value))
+    }
+
+    fn regexp_value_is_callable(&self, value: &Value) -> Result<bool, RuntimeError> {
+        let Value::Object(object) = value else {
+            return Ok(false);
+        };
+        Ok(self.as_callable(object)?.is_some())
+    }
+}

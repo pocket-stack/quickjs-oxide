@@ -1,64 +1,51 @@
 [package]
 name = "quickjs-oxide"
-version = "0.0.1"
-edition = "2024"
-rust-version = "1.88"
-description = "A memory-safe Rust rewrite aiming for QuickJS feature parity"
-license = "MIT"
-repository = "https://github.com/pocket-stack/quickjs-oxide"
-autotests = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
-[workspace]
-members = ["web/wasm"]
-default-members = ["."]
-resolver = "3"
+[lints]
+workspace = true
 
 [dependencies]
-num-bigint = "=0.5.1"
-num-traits = "=0.2.19"
-tz-rs = "=0.7.3"
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
 
 [features]
 default = []
 test262-host = []
+test-support = []
+profiling = []
+[dev-dependencies]
+quickjs-oxide-host = { workspace = true, features = ["engine-test-support"] }
 
-[lib]
-name = "quickjs_oxide"
-path = "src/lib.rs"
+[workspace]
+members = ["adapters/native", "adapters/web", ".", "apps/cli", "apps/web", "conformance/test262"]
+default-members = [".", "apps/cli"]
+resolver = "3"
 
-[[bin]]
-name = "qjs"
-path = "src/main.rs"
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/pocket-stack/quickjs-oxide"
 
-[[bin]]
-name = "run-test262"
-path = "src/bin/run_test262.rs"
-required-features = ["test262-host"]
+[workspace.dependencies]
+quickjs-oxide-web-host = { path = "adapters/web" }
+quickjs-oxide-host = { path = "adapters/native" }
+quickjs-oxide = { path = ".", default-features = false }
+num-bigint = "=0.5.1"
+num-traits = "=0.2.19"
+tz-rs = "=0.7.3"
+js-sys = { version = "=0.3.103", default-features = false }
+wasm-bindgen = "=0.2.126"
 
-[[test]]
-name = "checked_string_construction"
-path = "tests/checked_string_construction.rs"
-
-[[test]]
-name = "cli"
-path = "tests/cli.rs"
-
-[[test]]
-name = "oracle"
-path = "tests/oracle.rs"
-
-[[test]]
-name = "rust_only"
-path = "tests/rust_only.rs"
-
-[[test]]
-name = "unsupported_diagnostics"
-path = "tests/unsupported_diagnostics.rs"
-
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
-
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
 [profile.web]

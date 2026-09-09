@@ -58,7 +58,9 @@ Neither is a general untrusted-bytecode loader or Feature Parity claim.
 
 ## Status
 
+- [Engine module responsibilities](docs/architecture.md)
 - [Current implementation status](docs/status.md)
+- [Profiling and external benchmarks](docs/profiling.md)
 - [Pinned Test262 baseline and metric definitions](docs/test262.md)
 - [Parity acceptance contract](docs/parity.md)
 - [Playground build and trust boundary](docs/playground.md)
@@ -69,13 +71,35 @@ Neither is a general untrusted-bytecode loader or Feature Parity claim.
 
 ```sh
 cargo test --locked --workspace --all-targets
-./scripts/test-test262.sh --check
-./scripts/test-test262.sh --focused
-TEST262_WORKERS=2 ./scripts/test-test262.sh --full
-./scripts/test-web-playground.sh
+./scripts/test262/test-test262.sh --check
+./scripts/test262/test-test262.sh --focused
+TEST262_WORKERS=2 ./scripts/test262/test-test262.sh --full
+./scripts/web/test-web-playground.sh
 npm ci && npx playwright install chromium && npm run test:browser
 ```
 
 ## License
 
 [MIT](LICENSE). Third-party notices: [NOTICE](NOTICE), [LICENSES](LICENSES/).
+
+## Workspace layout
+
+The root quickjs-oxide package has three source modules: `source/` for authored
+text and Unicode support, `regexp/` for regex programs and matching, and
+`engine/` for the interpreter's responsibility modules. `src/lib.rs` is the
+only top-level Rust source file. Each source directory documents its ownership
+in a README.
+
+Native and browser providers live in `adapters/`, applications in `apps/`,
+and the Test262 runner in `conformance/test262`. See
+[architecture](docs/architecture.md) and [source guide](src/README.md).
+
+```sh
+cargo run -p quickjs-oxide-cli -- -e 'print(6 * 7)'
+cargo run -p quickjs-oxide --example eval -- '6 * 7'
+cargo check --workspace --all-targets
+cargo test -p quickjs-oxide --lib
+```
+
+Generated Unicode tables are checked in under `src/source/unicode/generated`;
+normal product builds do not run their generators.

@@ -1,0 +1,5013 @@
+{
+  "schema": "oxide-profiler-baseline-v1",
+  "date": "2026-09-09",
+  "profile": {
+    "schema": "oxide-profile-experiment-v1",
+    "machine": {
+      "platform": "Linux-6.18.44-1-lts-x86_64-with-glibc2.44",
+      "machine": "x86_64",
+      "cpu": "AMD Ryzen 7 7840HS with Radeon 780M Graphics",
+      "logical_cpus": 16,
+      "python": "3.14.7",
+      "runner_sha256": "5d4cb49562bd70b6e429c26f93c468239461cc4b17f1309c65b3dae249850ced",
+      "repository": {
+        "commit": {
+          "command": [
+            "git",
+            "rev-parse",
+            "HEAD"
+          ],
+          "exit_code": 0,
+          "stdout": "5723fa435c62b4f649cf42185293c225276d39c0",
+          "stderr": ""
+        },
+        "status": {
+          "command": [
+            "git",
+            "status",
+            "--porcelain"
+          ],
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      }
+    },
+    "engines": {
+      "plain": {
+        "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+        "sha256": "644b35c3714d8b898f262a551bdaf4762994302fcec0ce91c61c816e7a83b82f",
+        "version": {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "--version"
+          ],
+          "exit_code": 0,
+          "stdout": "quickjs-oxide 0.0.1 (QuickJS 2026-06-04 compatibility target)",
+          "stderr": ""
+        },
+        "build": {
+          "schema": "oxide-build-v1",
+          "mode": "plain",
+          "commit": "5723fa435c62b4f649cf42185293c225276d39c0",
+          "binary_sha256": "644b35c3714d8b898f262a551bdaf4762994302fcec0ce91c61c816e7a83b82f",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--release",
+            "-p",
+            "quickjs-oxide-cli",
+            "--no-default-features",
+            "--target-dir",
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target",
+            "--jobs",
+            "2"
+          ],
+          "rustc": {
+            "command": [
+              "rustc",
+              "-vV"
+            ],
+            "exit_code": 0,
+            "stdout": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.1\nLLVM version: 21.1.8",
+            "stderr": ""
+          },
+          "cargo": {
+            "command": [
+              "cargo",
+              "-V"
+            ],
+            "exit_code": 0,
+            "stdout": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+            "stderr": ""
+          },
+          "cargo_toml_sha256": "c810d5ac761b60afba53e4d77f7221014a55189be733c1ce96ce3fc787268901",
+          "cargo_lock_sha256": "c26c9f1999da579c0d1176c62981afa716ea998949a8dd15b1365f85b66944e3",
+          "environment": {
+            "RUSTFLAGS": null,
+            "CARGO_ENCODED_RUSTFLAGS": null,
+            "CARGO_BUILD_TARGET": null
+          },
+          "commit_environment": "5723fa435c62b4f649cf42185293c225276d39c0"
+        }
+      },
+      "profile": {
+        "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+        "sha256": "93e86468463123bd99e953eccec1438ba7466deca1d5958add37374a2da524e1",
+        "version": {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+            "--version"
+          ],
+          "exit_code": 0,
+          "stdout": "quickjs-oxide 0.0.1 (QuickJS 2026-06-04 compatibility target)",
+          "stderr": ""
+        },
+        "build": {
+          "schema": "oxide-build-v1",
+          "mode": "profiling",
+          "commit": "5723fa435c62b4f649cf42185293c225276d39c0",
+          "binary_sha256": "93e86468463123bd99e953eccec1438ba7466deca1d5958add37374a2da524e1",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--release",
+            "-p",
+            "quickjs-oxide-cli",
+            "--no-default-features",
+            "--target-dir",
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature",
+            "--jobs",
+            "2",
+            "--features",
+            "profiling"
+          ],
+          "rustc": {
+            "command": [
+              "rustc",
+              "-vV"
+            ],
+            "exit_code": 0,
+            "stdout": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.1\nLLVM version: 21.1.8",
+            "stderr": ""
+          },
+          "cargo": {
+            "command": [
+              "cargo",
+              "-V"
+            ],
+            "exit_code": 0,
+            "stdout": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+            "stderr": ""
+          },
+          "cargo_toml_sha256": "c810d5ac761b60afba53e4d77f7221014a55189be733c1ce96ce3fc787268901",
+          "cargo_lock_sha256": "c26c9f1999da579c0d1176c62981afa716ea998949a8dd15b1365f85b66944e3",
+          "environment": {
+            "RUSTFLAGS": null,
+            "CARGO_ENCODED_RUSTFLAGS": null,
+            "CARGO_BUILD_TARGET": null
+          },
+          "commit_environment": "5723fa435c62b4f649cf42185293c225276d39c0"
+        }
+      },
+      "reference": {
+        "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+        "sha256": "40ab2a7a9471b197843a5c489d1d53c7c075d4cef0a4d42cce4d22dc07a20007",
+        "version": {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "--version"
+          ],
+          "exit_code": 1,
+          "stdout": "QuickJS version 2026-06-04\nusage: qjs [options] [file [args]]\n-h  --help         list options\n-e  --eval EXPR    evaluate EXPR\n-i  --interactive  go to interactive mode\n-m  --module       load as ES6 module (default=autodetect)\n    --script       load as ES6 script (default=autodetect)\n    --strict       force strict mode\n-I  --include file include an additional file\n    --std          make 'std' and 'os' available to the loaded script\n-T  --trace        trace memory allocation\n-d  --dump         dump the memory usage stats\n    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n    --no-unhandled-rejection  ignore unhandled promise rejections\n-s                    strip all the debug info\n    --strip-source    strip the source code\n-q  --quit         just instantiate the interpreter and quit",
+          "stderr": "qjs: unknown option '--version'"
+        },
+        "build": null
+      }
+    },
+    "workload_sha256": "4ebc871a13b3218e6ee4f9ba16909224fabfd6140fe9317a351559bd08c0d76a",
+    "workload": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js",
+    "timer": "Python perf_counter_ns monotonic wall; full process including report formatting/I/O",
+    "order": "serial; mode order rotated each repetition",
+    "samples": [
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 16121180,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-0.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-0.stderr",
+        "mode": "plain",
+        "repetition": 0
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14878645,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-0.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-0.stderr",
+        "mode": "compiled-off",
+        "repetition": 0
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 16697542,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-0.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-0.stderr",
+        "mode": "dump",
+        "repetition": 0
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14346402,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-0.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-0.stderr",
+        "mode": "trace",
+        "repetition": 0
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14529774,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-1.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-1.stderr",
+        "mode": "compiled-off",
+        "repetition": 1
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15506954,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-1.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-1.stderr",
+        "mode": "dump",
+        "repetition": 1
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 13823660,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-1.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-1.stderr",
+        "mode": "trace",
+        "repetition": 1
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14011990,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-1.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-1.stderr",
+        "mode": "plain",
+        "repetition": 1
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15231151,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-2.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-2.stderr",
+        "mode": "dump",
+        "repetition": 2
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14510619,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-2.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-2.stderr",
+        "mode": "trace",
+        "repetition": 2
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14926854,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-2.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-2.stderr",
+        "mode": "plain",
+        "repetition": 2
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15187009,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-2.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-2.stderr",
+        "mode": "compiled-off",
+        "repetition": 2
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15275565,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-3.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-3.stderr",
+        "mode": "trace",
+        "repetition": 3
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14580349,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-3.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-3.stderr",
+        "mode": "plain",
+        "repetition": 3
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14572854,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-3.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-3.stderr",
+        "mode": "compiled-off",
+        "repetition": 3
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15800682,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-3.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-3.stderr",
+        "mode": "dump",
+        "repetition": 3
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14429147,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-4.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-4.stderr",
+        "mode": "plain",
+        "repetition": 4
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15343360,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-4.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-4.stderr",
+        "mode": "compiled-off",
+        "repetition": 4
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 16196710,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-4.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-4.stderr",
+        "mode": "dump",
+        "repetition": 4
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14480081,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-4.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-4.stderr",
+        "mode": "trace",
+        "repetition": 4
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14379405,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-5.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-5.stderr",
+        "mode": "compiled-off",
+        "repetition": 5
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15687721,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-5.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-5.stderr",
+        "mode": "dump",
+        "repetition": 5
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14338067,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-5.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-5.stderr",
+        "mode": "trace",
+        "repetition": 5
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14246487,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-5.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-5.stderr",
+        "mode": "plain",
+        "repetition": 5
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15183533,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-6.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-6.stderr",
+        "mode": "dump",
+        "repetition": 6
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14613270,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-6.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-6.stderr",
+        "mode": "trace",
+        "repetition": 6
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14309915,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-6.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-6.stderr",
+        "mode": "plain",
+        "repetition": 6
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 13381986,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-6.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-6.stderr",
+        "mode": "compiled-off",
+        "repetition": 6
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15418340,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-7.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-7.stderr",
+        "mode": "trace",
+        "repetition": 7
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15604557,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-7.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-7.stderr",
+        "mode": "plain",
+        "repetition": 7
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 13935928,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-7.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-7.stderr",
+        "mode": "compiled-off",
+        "repetition": 7
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 17678730,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-7.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-7.stderr",
+        "mode": "dump",
+        "repetition": 7
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 16959771,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-8.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-8.stderr",
+        "mode": "plain",
+        "repetition": 8
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14354858,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-8.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-8.stderr",
+        "mode": "compiled-off",
+        "repetition": 8
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14949176,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-8.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-8.stderr",
+        "mode": "dump",
+        "repetition": 8
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15088917,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-8.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-8.stderr",
+        "mode": "trace",
+        "repetition": 8
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15130403,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-9.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-9.stderr",
+        "mode": "compiled-off",
+        "repetition": 9
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15336316,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-9.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-9.stderr",
+        "mode": "dump",
+        "repetition": 9
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14740267,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-9.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-9.stderr",
+        "mode": "trace",
+        "repetition": 9
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14046565,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-9.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-9.stderr",
+        "mode": "plain",
+        "repetition": 9
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-d",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 16276477,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-10.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/dump-10.stderr",
+        "mode": "dump",
+        "repetition": 10
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "-T",
+          "--profile-json",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 14603783,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-10.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/trace-10.stderr",
+        "mode": "trace",
+        "repetition": 10
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15563320,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-10.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/plain-10.stderr",
+        "mode": "plain",
+        "repetition": 10
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-feature/release/qjs",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 15078125,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-10.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/compiled-off-10.stderr",
+        "mode": "compiled-off",
+        "repetition": 10
+      }
+    ],
+    "overhead": {
+      "plain": {
+        "raw_process_wall_ns": [
+          16121180,
+          14011990,
+          14926854,
+          14580349,
+          14429147,
+          14246487,
+          14309915,
+          15604557,
+          16959771,
+          14046565,
+          15563320
+        ],
+        "median_ns": 14580349,
+        "minimum_ns": 14011990,
+        "maximum_ns": 16959771,
+        "median_ratio_to_plain": 1.0
+      },
+      "compiled-off": {
+        "raw_process_wall_ns": [
+          14878645,
+          14529774,
+          15187009,
+          14572854,
+          15343360,
+          14379405,
+          13381986,
+          13935928,
+          14354858,
+          15130403,
+          15078125
+        ],
+        "median_ns": 14572854,
+        "minimum_ns": 13381986,
+        "maximum_ns": 15343360,
+        "median_ratio_to_plain": 0.9994859519480638
+      },
+      "dump": {
+        "raw_process_wall_ns": [
+          16697542,
+          15506954,
+          15231151,
+          15800682,
+          16196710,
+          15687721,
+          15183533,
+          17678730,
+          14949176,
+          15336316,
+          16276477
+        ],
+        "median_ns": 15687721,
+        "minimum_ns": 14949176,
+        "maximum_ns": 17678730,
+        "median_ratio_to_plain": 1.0759496223307137
+      },
+      "trace": {
+        "raw_process_wall_ns": [
+          14346402,
+          13823660,
+          14510619,
+          15275565,
+          14480081,
+          14338067,
+          14613270,
+          15418340,
+          15088917,
+          14740267,
+          14603783
+        ],
+        "median_ns": 14603783,
+        "minimum_ns": 13823660,
+        "maximum_ns": 15418340,
+        "median_ratio_to_plain": 1.0016072317610505
+      }
+    },
+    "lifecycle": {
+      "schema": "oxide-lifecycle-v1",
+      "metadata": {
+        "engine": "quickjs-oxide",
+        "version": "0.0.1",
+        "quickjs_compat": "2026-06-04",
+        "commit": "5723fa435c62b4f649cf42185293c225276d39c0",
+        "os": "linux",
+        "architecture": "x86_64",
+        "pointer_bits": 64,
+        "debug_assertions": false,
+        "profiling_feature": true
+      },
+      "timer": "monotonic-wall",
+      "unit": "ns",
+      "instrumentation": "off",
+      "iterations": 100,
+      "phases": [
+        "runtime_create",
+        "context_create",
+        "context_drop",
+        "runtime_drop"
+      ],
+      "samples": [
+        [
+          8135,
+          2547776,
+          110,
+          185035
+        ],
+        [
+          5761,
+          2376627,
+          80,
+          183151
+        ],
+        [
+          5721,
+          2369102,
+          71,
+          182980
+        ],
+        [
+          5430,
+          2488775,
+          151,
+          186888
+        ],
+        [
+          5961,
+          2404539,
+          180,
+          190285
+        ],
+        [
+          5951,
+          2399970,
+          50,
+          184264
+        ],
+        [
+          5881,
+          2376356,
+          50,
+          193841
+        ],
+        [
+          5501,
+          2397105,
+          50,
+          184533
+        ],
+        [
+          5750,
+          2400492,
+          50,
+          182139
+        ],
+        [
+          5590,
+          2428414,
+          60,
+          184584
+        ],
+        [
+          5660,
+          2388459,
+          80,
+          183803
+        ],
+        [
+          5841,
+          2374793,
+          70,
+          182450
+        ],
+        [
+          5591,
+          2395211,
+          70,
+          183723
+        ],
+        [
+          5660,
+          2383140,
+          70,
+          184624
+        ],
+        [
+          5881,
+          2389211,
+          60,
+          183963
+        ],
+        [
+          5821,
+          2394851,
+          50,
+          194202
+        ],
+        [
+          5981,
+          2378620,
+          70,
+          181919
+        ],
+        [
+          5751,
+          2402295,
+          60,
+          182209
+        ],
+        [
+          5721,
+          2407765,
+          60,
+          184804
+        ],
+        [
+          5711,
+          2388609,
+          70,
+          183703
+        ],
+        [
+          5810,
+          2388319,
+          70,
+          185235
+        ],
+        [
+          5511,
+          2396143,
+          60,
+          182410
+        ],
+        [
+          5640,
+          2394140,
+          70,
+          183642
+        ],
+        [
+          5541,
+          2382868,
+          70,
+          187690
+        ],
+        [
+          5550,
+          2384762,
+          70,
+          188251
+        ],
+        [
+          5500,
+          2388149,
+          70,
+          183732
+        ],
+        [
+          5681,
+          2391975,
+          70,
+          184584
+        ],
+        [
+          5571,
+          2389480,
+          60,
+          183462
+        ],
+        [
+          5701,
+          2390242,
+          70,
+          184995
+        ],
+        [
+          5811,
+          2390392,
+          60,
+          182170
+        ],
+        [
+          5530,
+          2398037,
+          70,
+          189052
+        ],
+        [
+          5541,
+          2387096,
+          70,
+          183973
+        ],
+        [
+          5510,
+          2387567,
+          71,
+          184002
+        ],
+        [
+          5721,
+          2387197,
+          70,
+          183021
+        ],
+        [
+          5560,
+          2384011,
+          60,
+          183832
+        ],
+        [
+          5801,
+          2401153,
+          90,
+          182911
+        ],
+        [
+          5600,
+          2392306,
+          80,
+          182099
+        ],
+        [
+          5640,
+          2388840,
+          70,
+          192909
+        ],
+        [
+          6052,
+          2382648,
+          60,
+          183331
+        ],
+        [
+          5731,
+          2388289,
+          80,
+          182900
+        ],
+        [
+          5740,
+          2397276,
+          40,
+          184213
+        ],
+        [
+          5891,
+          2394350,
+          70,
+          183442
+        ],
+        [
+          5690,
+          2372079,
+          60,
+          185475
+        ],
+        [
+          5611,
+          2396995,
+          50,
+          186728
+        ],
+        [
+          5470,
+          2380404,
+          60,
+          183251
+        ],
+        [
+          5991,
+          2387407,
+          71,
+          185695
+        ],
+        [
+          5770,
+          2384031,
+          60,
+          197698
+        ],
+        [
+          5551,
+          2398247,
+          60,
+          184083
+        ],
+        [
+          5520,
+          2397226,
+          70,
+          183753
+        ],
+        [
+          5691,
+          2396464,
+          60,
+          189533
+        ],
+        [
+          6031,
+          2398478,
+          60,
+          184384
+        ],
+        [
+          5760,
+          2393038,
+          50,
+          182700
+        ],
+        [
+          5531,
+          2390502,
+          61,
+          183291
+        ],
+        [
+          5821,
+          2399449,
+          60,
+          184654
+        ],
+        [
+          5931,
+          2387087,
+          70,
+          189433
+        ],
+        [
+          5711,
+          2375815,
+          70,
+          189593
+        ],
+        [
+          5691,
+          2394079,
+          60,
+          187580
+        ],
+        [
+          5720,
+          2411312,
+          90,
+          185746
+        ],
+        [
+          5791,
+          2381165,
+          80,
+          183572
+        ],
+        [
+          5710,
+          2399269,
+          70,
+          186898
+        ],
+        [
+          6101,
+          2384982,
+          50,
+          184274
+        ],
+        [
+          5720,
+          2393549,
+          70,
+          183532
+        ],
+        [
+          5921,
+          2406753,
+          60,
+          185886
+        ],
+        [
+          5551,
+          2399910,
+          70,
+          186157
+        ],
+        [
+          5580,
+          2382097,
+          51,
+          185004
+        ],
+        [
+          6192,
+          2412003,
+          60,
+          189232
+        ],
+        [
+          5561,
+          2384722,
+          60,
+          183532
+        ],
+        [
+          5780,
+          2404128,
+          71,
+          184664
+        ],
+        [
+          5730,
+          2409428,
+          50,
+          185566
+        ],
+        [
+          5651,
+          2404118,
+          50,
+          185355
+        ],
+        [
+          5771,
+          2381717,
+          60,
+          183913
+        ],
+        [
+          5781,
+          2398278,
+          50,
+          185175
+        ],
+        [
+          5791,
+          2398778,
+          60,
+          185896
+        ],
+        [
+          5681,
+          2401713,
+          60,
+          186137
+        ],
+        [
+          5601,
+          2404148,
+          80,
+          186287
+        ],
+        [
+          5801,
+          2384101,
+          60,
+          184373
+        ],
+        [
+          5811,
+          2387808,
+          60,
+          188822
+        ],
+        [
+          5620,
+          2395472,
+          70,
+          190796
+        ],
+        [
+          5891,
+          2380814,
+          61,
+          184002
+        ],
+        [
+          5501,
+          2383529,
+          71,
+          184643
+        ],
+        [
+          5560,
+          2399089,
+          70,
+          185605
+        ],
+        [
+          5800,
+          2402265,
+          70,
+          199071
+        ],
+        [
+          5641,
+          2420528,
+          60,
+          182560
+        ],
+        [
+          5751,
+          2397816,
+          40,
+          185706
+        ],
+        [
+          6172,
+          2403867,
+          60,
+          185516
+        ],
+        [
+          5671,
+          2400381,
+          70,
+          184083
+        ],
+        [
+          5821,
+          2392446,
+          60,
+          193901
+        ],
+        [
+          7033,
+          2399911,
+          70,
+          185296
+        ],
+        [
+          5650,
+          2406213,
+          60,
+          184583
+        ],
+        [
+          5620,
+          2401844,
+          60,
+          184724
+        ],
+        [
+          5701,
+          2386966,
+          60,
+          185666
+        ],
+        [
+          5711,
+          2388579,
+          60,
+          184834
+        ],
+        [
+          5511,
+          2392376,
+          70,
+          185395
+        ],
+        [
+          5601,
+          2397586,
+          40,
+          185946
+        ],
+        [
+          5971,
+          2379402,
+          51,
+          184032
+        ],
+        [
+          5651,
+          2397295,
+          80,
+          192539
+        ],
+        [
+          5741,
+          2378600,
+          71,
+          184002
+        ],
+        [
+          5600,
+          2401303,
+          70,
+          185205
+        ],
+        [
+          5761,
+          2393438,
+          60,
+          189804
+        ],
+        [
+          5650,
+          2400071,
+          70,
+          182961
+        ]
+      ],
+      "minimum_per_phase_ns": [
+        5430,
+        2369102,
+        40,
+        181919
+      ],
+      "sum_of_phase_minima_ns": 2556491,
+      "aggregation": "independent-phase-minima; sum need not be one iteration"
+    },
+    "reference": [
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+          "-d",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 1741374,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/quickjs-dump.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/quickjs-dump.stderr"
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+          "-T",
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/workload.js"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 1808268,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/quickjs-trace.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/quickjs-trace.stderr"
+      },
+      {
+        "command": [
+          "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+          "-q",
+          "-d"
+        ],
+        "exit_code": 0,
+        "timed_out": false,
+        "process_wall_ns": 6719888,
+        "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/quickjs-lifecycle.stdout",
+        "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-experiment-final/quickjs-lifecycle.stderr"
+      }
+    ]
+  },
+  "memory": {
+    "schema": "oxide-memory-v1",
+    "metadata": {
+      "engine": "quickjs-oxide",
+      "version": "0.0.1",
+      "quickjs_compat": "2026-06-04",
+      "commit": "5723fa435c62b4f649cf42185293c225276d39c0",
+      "os": "linux",
+      "architecture": "x86_64",
+      "pointer_bits": 64,
+      "debug_assertions": false,
+      "profiling_feature": true
+    },
+    "runtime_id": 1,
+    "phase": "after-jobs-before-context-drop",
+    "coverage": "partial",
+    "pending_jobs": 0,
+    "categories": {
+      "objects": {
+        "count": 1171,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "logical-node-count; not total bytes"
+      },
+      "shapes": {
+        "count": 65,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "logical-node-count; not total bytes"
+      },
+      "var_refs": {
+        "count": 56,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "logical-node-count; not total bytes"
+      },
+      "contexts": {
+        "count": 1,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "logical-node-count; not total bytes"
+      },
+      "functions": {
+        "count": 0,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "logical-node-count; not total bytes"
+      },
+      "arena_slots": {
+        "count": 1296,
+        "used_bytes": 1171584,
+        "capacity_bytes": 1851392,
+        "basis": "owned-inline-storage; excludes nested allocations and allocator overhead"
+      },
+      "arena_free_indices": {
+        "count": 3,
+        "used_bytes": 12,
+        "capacity_bytes": 16,
+        "basis": "owned-inline-storage; excludes nested allocations and allocator overhead"
+      },
+      "arena_zero_queue": {
+        "count": 0,
+        "used_bytes": 0,
+        "capacity_bytes": 48,
+        "basis": "owned-inline-storage; excludes nested allocations and allocator overhead"
+      },
+      "property_slots": {
+        "count": 2891,
+        "used_bytes": 92512,
+        "capacity_bytes": 176160,
+        "basis": "owned-inline-storage; excludes nested allocations and allocator overhead"
+      },
+      "arrays": {
+        "count": 3,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "logical-node-count; not total bytes"
+      },
+      "dense_array_elements": {
+        "count": 1001,
+        "used_bytes": 24024,
+        "capacity_bytes": 24672,
+        "basis": "owned-inline-storage; excludes nested allocations and allocator overhead"
+      },
+      "array_buffer_bytes": {
+        "count": 65536,
+        "used_bytes": 65536,
+        "capacity_bytes": 65536,
+        "basis": "owned-inline-storage; excludes nested allocations and allocator overhead"
+      },
+      "shared_array_buffer_wrappers": {
+        "count": 0,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "wrapper-count-only; shared backing bytes unavailable"
+      },
+      "bytecode_instructions": {
+        "count": 0,
+        "used_bytes": 0,
+        "capacity_bytes": 0,
+        "basis": "deduplicated-Rc-slice-inline-bytes; excludes Rc headers and nested operands"
+      },
+      "atoms": {
+        "count": 383,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "live-table-entries-excluding-immediate-integers; shared-string-bytes-unavailable"
+      },
+      "strings": {
+        "count": null,
+        "used_bytes": null,
+        "capacity_bytes": null,
+        "basis": "unavailable: strings may be shared with atoms, bytecode and embedder values"
+      }
+    },
+    "heap_states": {
+      "initializing": 0,
+      "live": 1293,
+      "zero_queued": 0,
+      "finalizing": 0,
+      "zombies": 0,
+      "vacant": 3,
+      "retired": 0
+    },
+    "allocator": {
+      "requested_live_bytes": null,
+      "usable_live_bytes": null
+    },
+    "unavailable": [
+      "total-memory-bytes",
+      "allocator-live-bytes",
+      "peak-bytes",
+      "rss-bytes",
+      "all-string-storage",
+      "shared-backing-bytes"
+    ]
+  },
+  "trace": {
+    "schema": "oxide-allocation-trace-v1",
+    "metadata": {
+      "engine": "quickjs-oxide",
+      "version": "0.0.1",
+      "quickjs_compat": "2026-06-04",
+      "commit": "5723fa435c62b4f649cf42185293c225276d39c0",
+      "os": "linux",
+      "architecture": "x86_64",
+      "pointer_bits": 64,
+      "debug_assertions": false,
+      "profiling_feature": true
+    },
+    "runtime_id": 1,
+    "coverage": "partial",
+    "scope": "arena-slots-backing-storage",
+    "basis": "safe-Vec-capacity-transitions; R does not imply libc realloc",
+    "event_limit": 65536,
+    "requested_event_limit": 65536,
+    "buffer_allocation_failed": false,
+    "dropped_events": 0,
+    "finished": true,
+    "complete_within_scope": true,
+    "unavailable": [
+      "allocator-requested-bytes",
+      "allocator-usable-bytes",
+      "allocation-failures",
+      "nested-payload-allocations",
+      "timestamps",
+      "call-stacks"
+    ],
+    "events": [
+      {
+        "sequence": 1,
+        "allocation_id": 1,
+        "kind": "A",
+        "old_capacity_bytes": 0,
+        "capacity_bytes": 3616,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 2,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 3616,
+        "capacity_bytes": 7232,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 3,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 7232,
+        "capacity_bytes": 14464,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 4,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 14464,
+        "capacity_bytes": 28928,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 5,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 28928,
+        "capacity_bytes": 57856,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 6,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 57856,
+        "capacity_bytes": 115712,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 7,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 115712,
+        "capacity_bytes": 231424,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 8,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 231424,
+        "capacity_bytes": 462848,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 9,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 462848,
+        "capacity_bytes": 925696,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 10,
+        "allocation_id": 1,
+        "kind": "R",
+        "old_capacity_bytes": 925696,
+        "capacity_bytes": 1851392,
+        "requested_bytes": null,
+        "usable_bytes": null
+      },
+      {
+        "sequence": 11,
+        "allocation_id": 1,
+        "kind": "F",
+        "old_capacity_bytes": 1851392,
+        "capacity_bytes": 0,
+        "requested_bytes": null,
+        "usable_bytes": null
+      }
+    ]
+  },
+  "microbench": {
+    "metadata": {
+      "schema": "oxide-benchmark-v1",
+      "created_utc": "2026-09-09T04:35:18Z",
+      "suite": "microbench",
+      "machine": {
+        "platform": "Linux-6.18.44-1-lts-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "cpu": "AMD Ryzen 7 7840HS with Radeon 780M Graphics",
+        "logical_cpus": 16,
+        "python": "3.14.7",
+        "runner_sha256": "5d4cb49562bd70b6e429c26f93c468239461cc4b17f1309c65b3dae249850ced",
+        "repository": {
+          "commit": {
+            "command": [
+              "git",
+              "rev-parse",
+              "HEAD"
+            ],
+            "exit_code": 0,
+            "stdout": "5723fa435c62b4f649cf42185293c225276d39c0",
+            "stderr": ""
+          },
+          "status": {
+            "command": [
+              "git",
+              "status",
+              "--porcelain"
+            ],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        }
+      },
+      "source": {
+        "source": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/tests/microbench.js",
+        "sha256": "4abf0c34fd83cef925fd2f36009a1043f5009e98fdf6efe55e183a31dddd75f3",
+        "prepared_source": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+        "prepared_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+        "adaptation": "identical prefix disables optional performance/os clocks on both engines; original body bytes unchanged",
+        "adaptation_prefix": "// Identical host clock adaptation; benchmark bodies below are unchanged.\nvar performance = undefined; var os = undefined;\nconsole.log(\"__oxide_clock__:\" + (typeof performance !== \"undefined\" ? \"performance.now\" : typeof os !== \"undefined\" ? \"os.now\" : \"Date.now\"));\n",
+        "adaptation_sha256": "3f49fc00aef60aafc183174d9389ab8b9f68de68f50e6e9711e3c5700e758759",
+        "timer": "verified Date.now fallback on every run (millisecond clock, rounded to next tick)",
+        "metric": "upstream minimum ns/op; lower is better; not a distribution of individual operations"
+      },
+      "workloads": [
+        {
+          "case": "empty_loop",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "empty_loop"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "empty_loop"
+          ]
+        },
+        {
+          "case": "prop_read",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "prop_read"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "prop_read"
+          ]
+        },
+        {
+          "case": "array_read",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "array_read"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "array_read"
+          ]
+        },
+        {
+          "case": "func_call",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "func_call"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "func_call"
+          ]
+        },
+        {
+          "case": "int_arith",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "int_arith"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "int_arith"
+          ]
+        }
+      ],
+      "repeat": 3,
+      "timeout_seconds": 90.0,
+      "order": "serial, alternating per repetition",
+      "instrumentation": "off (no -d/-T)",
+      "engines": {
+        "oxide": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "sha256": "644b35c3714d8b898f262a551bdaf4762994302fcec0ce91c61c816e7a83b82f",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+              "--version"
+            ],
+            "exit_code": 0,
+            "stdout": "quickjs-oxide 0.0.1 (QuickJS 2026-06-04 compatibility target)",
+            "stderr": ""
+          },
+          "build": {
+            "schema": "oxide-build-v1",
+            "mode": "plain",
+            "commit": "5723fa435c62b4f649cf42185293c225276d39c0",
+            "binary_sha256": "644b35c3714d8b898f262a551bdaf4762994302fcec0ce91c61c816e7a83b82f",
+            "command": [
+              "cargo",
+              "build",
+              "--locked",
+              "--release",
+              "-p",
+              "quickjs-oxide-cli",
+              "--no-default-features",
+              "--target-dir",
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target",
+              "--jobs",
+              "2"
+            ],
+            "rustc": {
+              "command": [
+                "rustc",
+                "-vV"
+              ],
+              "exit_code": 0,
+              "stdout": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.1\nLLVM version: 21.1.8",
+              "stderr": ""
+            },
+            "cargo": {
+              "command": [
+                "cargo",
+                "-V"
+              ],
+              "exit_code": 0,
+              "stdout": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+              "stderr": ""
+            },
+            "cargo_toml_sha256": "c810d5ac761b60afba53e4d77f7221014a55189be733c1ce96ce3fc787268901",
+            "cargo_lock_sha256": "c26c9f1999da579c0d1176c62981afa716ea998949a8dd15b1365f85b66944e3",
+            "environment": {
+              "RUSTFLAGS": null,
+              "CARGO_ENCODED_RUSTFLAGS": null,
+              "CARGO_BUILD_TARGET": null
+            },
+            "commit_environment": "5723fa435c62b4f649cf42185293c225276d39c0"
+          }
+        },
+        "quickjs": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+          "sha256": "40ab2a7a9471b197843a5c489d1d53c7c075d4cef0a4d42cce4d22dc07a20007",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+              "--version"
+            ],
+            "exit_code": 1,
+            "stdout": "QuickJS version 2026-06-04\nusage: qjs [options] [file [args]]\n-h  --help         list options\n-e  --eval EXPR    evaluate EXPR\n-i  --interactive  go to interactive mode\n-m  --module       load as ES6 module (default=autodetect)\n    --script       load as ES6 script (default=autodetect)\n    --strict       force strict mode\n-I  --include file include an additional file\n    --std          make 'std' and 'os' available to the loaded script\n-T  --trace        trace memory allocation\n-d  --dump         dump the memory usage stats\n    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n    --no-unhandled-rejection  ignore unhandled promise rejections\n-s                    strip all the debug info\n    --strip-source    strip the source code\n-q  --quit         just instantiate the interpreter and quit",
+            "stderr": "qjs: unknown option '--version'"
+          },
+          "build": null
+        }
+      }
+    },
+    "results": {
+      "schema": "oxide-benchmark-v1",
+      "created_utc": "2026-09-09T04:35:18Z",
+      "suite": "microbench",
+      "machine": {
+        "platform": "Linux-6.18.44-1-lts-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "cpu": "AMD Ryzen 7 7840HS with Radeon 780M Graphics",
+        "logical_cpus": 16,
+        "python": "3.14.7",
+        "runner_sha256": "5d4cb49562bd70b6e429c26f93c468239461cc4b17f1309c65b3dae249850ced",
+        "repository": {
+          "commit": {
+            "command": [
+              "git",
+              "rev-parse",
+              "HEAD"
+            ],
+            "exit_code": 0,
+            "stdout": "5723fa435c62b4f649cf42185293c225276d39c0",
+            "stderr": ""
+          },
+          "status": {
+            "command": [
+              "git",
+              "status",
+              "--porcelain"
+            ],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        }
+      },
+      "source": {
+        "source": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/tests/microbench.js",
+        "sha256": "4abf0c34fd83cef925fd2f36009a1043f5009e98fdf6efe55e183a31dddd75f3",
+        "prepared_source": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+        "prepared_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+        "adaptation": "identical prefix disables optional performance/os clocks on both engines; original body bytes unchanged",
+        "adaptation_prefix": "// Identical host clock adaptation; benchmark bodies below are unchanged.\nvar performance = undefined; var os = undefined;\nconsole.log(\"__oxide_clock__:\" + (typeof performance !== \"undefined\" ? \"performance.now\" : typeof os !== \"undefined\" ? \"os.now\" : \"Date.now\"));\n",
+        "adaptation_sha256": "3f49fc00aef60aafc183174d9389ab8b9f68de68f50e6e9711e3c5700e758759",
+        "timer": "verified Date.now fallback on every run (millisecond clock, rounded to next tick)",
+        "metric": "upstream minimum ns/op; lower is better; not a distribution of individual operations"
+      },
+      "workloads": [
+        {
+          "case": "empty_loop",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "empty_loop"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "empty_loop"
+          ]
+        },
+        {
+          "case": "prop_read",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "prop_read"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "prop_read"
+          ]
+        },
+        {
+          "case": "array_read",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "array_read"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "array_read"
+          ]
+        },
+        {
+          "case": "func_call",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "func_call"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "func_call"
+          ]
+        },
+        {
+          "case": "int_arith",
+          "path": "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+          "args": [
+            "int_arith"
+          ],
+          "sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "expected": [
+            "int_arith"
+          ]
+        }
+      ],
+      "repeat": 3,
+      "timeout_seconds": 90.0,
+      "order": "serial, alternating per repetition",
+      "instrumentation": "off (no -d/-T)",
+      "engines": {
+        "oxide": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "sha256": "644b35c3714d8b898f262a551bdaf4762994302fcec0ce91c61c816e7a83b82f",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+              "--version"
+            ],
+            "exit_code": 0,
+            "stdout": "quickjs-oxide 0.0.1 (QuickJS 2026-06-04 compatibility target)",
+            "stderr": ""
+          },
+          "build": {
+            "schema": "oxide-build-v1",
+            "mode": "plain",
+            "commit": "5723fa435c62b4f649cf42185293c225276d39c0",
+            "binary_sha256": "644b35c3714d8b898f262a551bdaf4762994302fcec0ce91c61c816e7a83b82f",
+            "command": [
+              "cargo",
+              "build",
+              "--locked",
+              "--release",
+              "-p",
+              "quickjs-oxide-cli",
+              "--no-default-features",
+              "--target-dir",
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target",
+              "--jobs",
+              "2"
+            ],
+            "rustc": {
+              "command": [
+                "rustc",
+                "-vV"
+              ],
+              "exit_code": 0,
+              "stdout": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.1\nLLVM version: 21.1.8",
+              "stderr": ""
+            },
+            "cargo": {
+              "command": [
+                "cargo",
+                "-V"
+              ],
+              "exit_code": 0,
+              "stdout": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+              "stderr": ""
+            },
+            "cargo_toml_sha256": "c810d5ac761b60afba53e4d77f7221014a55189be733c1ce96ce3fc787268901",
+            "cargo_lock_sha256": "c26c9f1999da579c0d1176c62981afa716ea998949a8dd15b1365f85b66944e3",
+            "environment": {
+              "RUSTFLAGS": null,
+              "CARGO_ENCODED_RUSTFLAGS": null,
+              "CARGO_BUILD_TARGET": null
+            },
+            "commit_environment": "5723fa435c62b4f649cf42185293c225276d39c0"
+          }
+        },
+        "quickjs": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+          "sha256": "40ab2a7a9471b197843a5c489d1d53c7c075d4cef0a4d42cce4d22dc07a20007",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+              "--version"
+            ],
+            "exit_code": 1,
+            "stdout": "QuickJS version 2026-06-04\nusage: qjs [options] [file [args]]\n-h  --help         list options\n-e  --eval EXPR    evaluate EXPR\n-i  --interactive  go to interactive mode\n-m  --module       load as ES6 module (default=autodetect)\n    --script       load as ES6 script (default=autodetect)\n    --strict       force strict mode\n-I  --include file include an additional file\n    --std          make 'std' and 'os' available to the loaded script\n-T  --trace        trace memory allocation\n-d  --dump         dump the memory usage stats\n    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n    --no-unhandled-rejection  ignore unhandled promise rejections\n-s                    strip all the debug info\n    --strip-source    strip the source code\n-q  --quit         just instantiate the interpreter and quit",
+            "stderr": "qjs: unknown option '--version'"
+          },
+          "build": null
+        }
+      },
+      "samples": [
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "empty_loop"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2742061259,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-oxide-0.stderr",
+          "case": "empty_loop",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "empty_loop": {
+              "ns_per_op": 200.0,
+              "n_argument": 10000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "empty_loop"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3508907189,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-quickjs-0.stderr",
+          "case": "empty_loop",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "empty_loop": {
+              "ns_per_op": 10.0,
+              "n_argument": 200000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "empty_loop"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3505571609,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-quickjs-1.stderr",
+          "case": "empty_loop",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "empty_loop": {
+              "ns_per_op": 10.0,
+              "n_argument": 200000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "empty_loop"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2739618181,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-oxide-1.stderr",
+          "case": "empty_loop",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "empty_loop": {
+              "ns_per_op": 200.0,
+              "n_argument": 10000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "empty_loop"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2741453082,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-oxide-2.stderr",
+          "case": "empty_loop",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "empty_loop": {
+              "ns_per_op": 200.0,
+              "n_argument": 10000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "empty_loop"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3503478664,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/empty_loop-quickjs-2.stderr",
+          "case": "empty_loop",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "empty_loop": {
+              "ns_per_op": 10.0,
+              "n_argument": 200000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "prop_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1941317075,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-oxide-0.stderr",
+          "case": "prop_read",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "prop_read": {
+              "ns_per_op": 1000.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "prop_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3104448954,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-quickjs-0.stderr",
+          "case": "prop_read",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "prop_read": {
+              "ns_per_op": 10.0,
+              "n_argument": 50000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "prop_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3105463804,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-quickjs-1.stderr",
+          "case": "prop_read",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "prop_read": {
+              "ns_per_op": 10.0,
+              "n_argument": 50000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "prop_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1939337472,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-oxide-1.stderr",
+          "case": "prop_read",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "prop_read": {
+              "ns_per_op": 1000.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "prop_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1943422343,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-oxide-2.stderr",
+          "case": "prop_read",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "prop_read": {
+              "ns_per_op": 1000.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "prop_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3104542883,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/prop_read-quickjs-2.stderr",
+          "case": "prop_read",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "prop_read": {
+              "ns_per_op": 10.0,
+              "n_argument": 50000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "array_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2042394073,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-oxide-0.stderr",
+          "case": "array_read",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "array_read": {
+              "ns_per_op": 500.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "array_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2905371911,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-quickjs-0.stderr",
+          "case": "array_read",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "array_read": {
+              "ns_per_op": 10.0,
+              "n_argument": 20000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "array_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2905300261,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-quickjs-1.stderr",
+          "case": "array_read",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "array_read": {
+              "ns_per_op": 10.0,
+              "n_argument": 20000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "array_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2044316948,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-oxide-1.stderr",
+          "case": "array_read",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "array_read": {
+              "ns_per_op": 500.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "array_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2040460157,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-oxide-2.stderr",
+          "case": "array_read",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "array_read": {
+              "ns_per_op": 500.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "array_read"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2903461471,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/array_read-quickjs-2.stderr",
+          "case": "array_read",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "array_read": {
+              "ns_per_op": 10.0,
+              "n_argument": 20000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "func_call"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1941232308,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-oxide-0.stderr",
+          "case": "func_call",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "func_call": {
+              "ns_per_op": 1000.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "func_call"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2903517382,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-quickjs-0.stderr",
+          "case": "func_call",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "func_call": {
+              "ns_per_op": 25.0,
+              "n_argument": 20000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "func_call"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2904466550,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-quickjs-1.stderr",
+          "case": "func_call",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "func_call": {
+              "ns_per_op": 25.0,
+              "n_argument": 20000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "func_call"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1941305695,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-oxide-1.stderr",
+          "case": "func_call",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "func_call": {
+              "ns_per_op": 1000.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "func_call"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1939535633,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-oxide-2.stderr",
+          "case": "func_call",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "func_call": {
+              "ns_per_op": 1000.0,
+              "n_argument": 500
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "func_call"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2905386771,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/func_call-quickjs-2.stderr",
+          "case": "func_call",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "func_call": {
+              "ns_per_op": 25.0,
+              "n_argument": 20000
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "int_arith"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 774266704,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-oxide-0.stderr",
+          "case": "int_arith",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "int_arith": {
+              "ns_per_op": 400.0,
+              "n_argument": 5
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "int_arith"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1840441559,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-quickjs-0.stderr",
+          "case": "int_arith",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "int_arith": {
+              "ns_per_op": 10.0,
+              "n_argument": 200
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "int_arith"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1856325393,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-quickjs-1.stderr",
+          "case": "int_arith",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "int_arith": {
+              "ns_per_op": 10.0,
+              "n_argument": 200
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "int_arith"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 755270142,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-oxide-1.stderr",
+          "case": "int_arith",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "int_arith": {
+              "ns_per_op": 400.0,
+              "n_argument": 5
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "int_arith"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 740421916,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-oxide-2.stderr",
+          "case": "int_arith",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "int_arith": {
+              "ns_per_op": 400.0,
+              "n_argument": 5
+            }
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/tmp/quickjs-oxide-microbench-hokdvswe/microbench.js",
+            "int_arith"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 1805416382,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-microbench-matched/raw/int_arith-quickjs-2.stderr",
+          "case": "int_arith",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "69a9e66743e1b8a382e38cc076de9e89b82392d5f98f9ba330de66e554117683",
+          "status": "ok",
+          "measurements": {
+            "int_arith": {
+              "ns_per_op": 10.0,
+              "n_argument": 200
+            }
+          }
+        }
+      ],
+      "summary": [
+        {
+          "case": "empty_loop",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "empty_loop": {
+              "raw": [
+                200.0,
+                200.0,
+                200.0
+              ],
+              "minimum": 200.0,
+              "median": 200.0,
+              "maximum": 200.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "empty_loop",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "empty_loop": {
+              "raw": [
+                10.0,
+                10.0,
+                10.0
+              ],
+              "minimum": 10.0,
+              "median": 10.0,
+              "maximum": 10.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "prop_read",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "prop_read": {
+              "raw": [
+                1000.0,
+                1000.0,
+                1000.0
+              ],
+              "minimum": 1000.0,
+              "median": 1000.0,
+              "maximum": 1000.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "prop_read",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "prop_read": {
+              "raw": [
+                10.0,
+                10.0,
+                10.0
+              ],
+              "minimum": 10.0,
+              "median": 10.0,
+              "maximum": 10.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "array_read",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "array_read": {
+              "raw": [
+                500.0,
+                500.0,
+                500.0
+              ],
+              "minimum": 500.0,
+              "median": 500.0,
+              "maximum": 500.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "array_read",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "array_read": {
+              "raw": [
+                10.0,
+                10.0,
+                10.0
+              ],
+              "minimum": 10.0,
+              "median": 10.0,
+              "maximum": 10.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "func_call",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "func_call": {
+              "raw": [
+                1000.0,
+                1000.0,
+                1000.0
+              ],
+              "minimum": 1000.0,
+              "median": 1000.0,
+              "maximum": 1000.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "func_call",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "func_call": {
+              "raw": [
+                25.0,
+                25.0,
+                25.0
+              ],
+              "minimum": 25.0,
+              "median": 25.0,
+              "maximum": 25.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "int_arith",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "int_arith": {
+              "raw": [
+                400.0,
+                400.0,
+                400.0
+              ],
+              "minimum": 400.0,
+              "median": 400.0,
+              "maximum": 400.0,
+              "stdev": 0.0
+            }
+          }
+        },
+        {
+          "case": "int_arith",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "int_arith": {
+              "raw": [
+                10.0,
+                10.0,
+                10.0
+              ],
+              "minimum": 10.0,
+              "median": 10.0,
+              "maximum": 10.0,
+              "stdev": 0.0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "v8_v7": {
+    "metadata": {
+      "schema": "oxide-benchmark-v1",
+      "created_utc": "2026-09-09T04:01:05Z",
+      "suite": "v8-v7",
+      "machine": {
+        "platform": "Linux-6.18.44-1-lts-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "cpu": "AMD Ryzen 7 7840HS with Radeon 780M Graphics",
+        "logical_cpus": 16,
+        "python": "3.14.7",
+        "runner_sha256": "6bf44caaec196578fb0006a96c12027bb8038ef8bfb4e2c060bb1326e0eb4e31",
+        "repository": {
+          "commit": {
+            "command": [
+              "git",
+              "rev-parse",
+              "HEAD"
+            ],
+            "exit_code": 0,
+            "stdout": "e0b3ef3bc8381ba5971adbf99650f3ae1ff85c6b",
+            "stderr": ""
+          },
+          "status": {
+            "command": [
+              "git",
+              "status",
+              "--porcelain"
+            ],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        }
+      },
+      "source": {
+        "repository": {
+          "commit": {
+            "command": [
+              "git",
+              "rev-parse",
+              "HEAD"
+            ],
+            "exit_code": 0,
+            "stdout": "2034d98fc8c5f8044e186267593f5d5ea5232caf",
+            "stderr": ""
+          },
+          "status": {
+            "command": [
+              "git",
+              "status",
+              "--porcelain"
+            ],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        "source": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark",
+        "files": {
+          "base.js": "ac383759c3cbf5f3a499ade526a4e296f7925733d8c3889b6d5840ce6867ff51",
+          "richards.js": "d86eac4108343a54ba6e10621a77b46f82f554c3b0a46e8fb4032d5cf65a2a11",
+          "deltablue.js": "74b5a95f4877701073c6efef08e4ae306562747067e292925b69cbd629a511b9",
+          "crypto.js": "5321d2ada9b61e01d5f281609513467cbaa7c0effb12c577ed08088d812453af",
+          "raytrace.js": "d52183ca324cdb88d9ee3e78326433fe2ca28d6436f0a6c3ec013ab67cb798eb",
+          "earley-boyer.js": "dbf3aeb6b3d056e8ea35b5f19aa8c8a4fb1053e41d07f096c22483b2c1c6ee01",
+          "regexp.js": "5268b0d15931fda4e331de35fc58e5beded9a250b60764e1cc7cfc898ab53602",
+          "splay.js": "1f875cec579d03af40d256ceaeb6823f3ef16c883652650ca51d183472a8185d",
+          "navier-stokes.js": "ce241465ffeee77b5c4f7119f522aa971fe1fe92c3aed76f7514ea43e07fec84"
+        },
+        "run_js_sha256": "f13e44c0c4c70a9eb7bdab79956cab9faf59be8b9bec97f98f21548e01d9f938",
+        "adaptation": "only upstream scripts/build.ts load inlining and standalone concatenation; no benchmark-body or timing changes",
+        "timer": "external harness Date millisecond clock",
+        "metric": "suite score; higher is better"
+      },
+      "workloads": [
+        {
+          "case": "richards",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js",
+          "args": [],
+          "sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "expected": [
+            "Richards"
+          ]
+        },
+        {
+          "case": "deltablue",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js",
+          "args": [],
+          "sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "expected": [
+            "DeltaBlue"
+          ]
+        },
+        {
+          "case": "crypto",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js",
+          "args": [],
+          "sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "expected": [
+            "Crypto"
+          ]
+        },
+        {
+          "case": "raytrace",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js",
+          "args": [],
+          "sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "expected": [
+            "RayTrace"
+          ]
+        },
+        {
+          "case": "earley-boyer",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js",
+          "args": [],
+          "sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "expected": [
+            "EarleyBoyer"
+          ]
+        },
+        {
+          "case": "regexp",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js",
+          "args": [],
+          "sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "expected": [
+            "RegExp"
+          ]
+        },
+        {
+          "case": "splay",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js",
+          "args": [],
+          "sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "expected": [
+            "Splay"
+          ]
+        },
+        {
+          "case": "navier-stokes",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js",
+          "args": [],
+          "sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "expected": [
+            "NavierStokes"
+          ]
+        }
+      ],
+      "repeat": 3,
+      "timeout_seconds": 90.0,
+      "order": "serial, alternating per repetition",
+      "instrumentation": "off (no -d/-T)",
+      "engines": {
+        "oxide": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "sha256": "1995b7a7b74e625885fa3e51b7c446ded54508846faf4c6bb4c080c8c1f52f60",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+              "--version"
+            ],
+            "exit_code": 0,
+            "stdout": "quickjs-oxide 0.0.1 (QuickJS 2026-06-04 compatibility target)",
+            "stderr": ""
+          },
+          "build": {
+            "schema": "oxide-build-v1",
+            "mode": "plain",
+            "commit": "e0b3ef3bc8381ba5971adbf99650f3ae1ff85c6b",
+            "binary_sha256": "1995b7a7b74e625885fa3e51b7c446ded54508846faf4c6bb4c080c8c1f52f60",
+            "command": [
+              "cargo",
+              "build",
+              "--locked",
+              "--release",
+              "-p",
+              "quickjs-oxide-cli",
+              "--no-default-features",
+              "--target-dir",
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target",
+              "--jobs",
+              "2"
+            ],
+            "rustc": {
+              "command": [
+                "rustc",
+                "-vV"
+              ],
+              "exit_code": 0,
+              "stdout": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.1\nLLVM version: 21.1.8",
+              "stderr": ""
+            },
+            "cargo": {
+              "command": [
+                "cargo",
+                "-V"
+              ],
+              "exit_code": 0,
+              "stdout": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+              "stderr": ""
+            },
+            "cargo_toml_sha256": "c810d5ac761b60afba53e4d77f7221014a55189be733c1ce96ce3fc787268901",
+            "cargo_lock_sha256": "c26c9f1999da579c0d1176c62981afa716ea998949a8dd15b1365f85b66944e3",
+            "environment": {
+              "RUSTFLAGS": null,
+              "CARGO_ENCODED_RUSTFLAGS": null,
+              "CARGO_BUILD_TARGET": null
+            },
+            "commit_environment": "e0b3ef3bc8381ba5971adbf99650f3ae1ff85c6b"
+          }
+        },
+        "quickjs": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+          "sha256": "40ab2a7a9471b197843a5c489d1d53c7c075d4cef0a4d42cce4d22dc07a20007",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+              "--version"
+            ],
+            "exit_code": 1,
+            "stdout": "QuickJS version 2026-06-04\nusage: qjs [options] [file [args]]\n-h  --help         list options\n-e  --eval EXPR    evaluate EXPR\n-i  --interactive  go to interactive mode\n-m  --module       load as ES6 module (default=autodetect)\n    --script       load as ES6 script (default=autodetect)\n    --strict       force strict mode\n-I  --include file include an additional file\n    --std          make 'std' and 'os' available to the loaded script\n-T  --trace        trace memory allocation\n-d  --dump         dump the memory usage stats\n    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n    --no-unhandled-rejection  ignore unhandled promise rejections\n-s                    strip all the debug info\n    --strip-source    strip the source code\n-q  --quit         just instantiate the interpreter and quit",
+            "stderr": "qjs: unknown option '--version'"
+          },
+          "build": null
+        }
+      }
+    },
+    "results": {
+      "schema": "oxide-benchmark-v1",
+      "created_utc": "2026-09-09T04:01:05Z",
+      "suite": "v8-v7",
+      "machine": {
+        "platform": "Linux-6.18.44-1-lts-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "cpu": "AMD Ryzen 7 7840HS with Radeon 780M Graphics",
+        "logical_cpus": 16,
+        "python": "3.14.7",
+        "runner_sha256": "6bf44caaec196578fb0006a96c12027bb8038ef8bfb4e2c060bb1326e0eb4e31",
+        "repository": {
+          "commit": {
+            "command": [
+              "git",
+              "rev-parse",
+              "HEAD"
+            ],
+            "exit_code": 0,
+            "stdout": "e0b3ef3bc8381ba5971adbf99650f3ae1ff85c6b",
+            "stderr": ""
+          },
+          "status": {
+            "command": [
+              "git",
+              "status",
+              "--porcelain"
+            ],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        }
+      },
+      "source": {
+        "repository": {
+          "commit": {
+            "command": [
+              "git",
+              "rev-parse",
+              "HEAD"
+            ],
+            "exit_code": 0,
+            "stdout": "2034d98fc8c5f8044e186267593f5d5ea5232caf",
+            "stderr": ""
+          },
+          "status": {
+            "command": [
+              "git",
+              "status",
+              "--porcelain"
+            ],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        "source": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark",
+        "files": {
+          "base.js": "ac383759c3cbf5f3a499ade526a4e296f7925733d8c3889b6d5840ce6867ff51",
+          "richards.js": "d86eac4108343a54ba6e10621a77b46f82f554c3b0a46e8fb4032d5cf65a2a11",
+          "deltablue.js": "74b5a95f4877701073c6efef08e4ae306562747067e292925b69cbd629a511b9",
+          "crypto.js": "5321d2ada9b61e01d5f281609513467cbaa7c0effb12c577ed08088d812453af",
+          "raytrace.js": "d52183ca324cdb88d9ee3e78326433fe2ca28d6436f0a6c3ec013ab67cb798eb",
+          "earley-boyer.js": "dbf3aeb6b3d056e8ea35b5f19aa8c8a4fb1053e41d07f096c22483b2c1c6ee01",
+          "regexp.js": "5268b0d15931fda4e331de35fc58e5beded9a250b60764e1cc7cfc898ab53602",
+          "splay.js": "1f875cec579d03af40d256ceaeb6823f3ef16c883652650ca51d183472a8185d",
+          "navier-stokes.js": "ce241465ffeee77b5c4f7119f522aa971fe1fe92c3aed76f7514ea43e07fec84"
+        },
+        "run_js_sha256": "f13e44c0c4c70a9eb7bdab79956cab9faf59be8b9bec97f98f21548e01d9f938",
+        "adaptation": "only upstream scripts/build.ts load inlining and standalone concatenation; no benchmark-body or timing changes",
+        "timer": "external harness Date millisecond clock",
+        "metric": "suite score; higher is better"
+      },
+      "workloads": [
+        {
+          "case": "richards",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js",
+          "args": [],
+          "sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "expected": [
+            "Richards"
+          ]
+        },
+        {
+          "case": "deltablue",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js",
+          "args": [],
+          "sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "expected": [
+            "DeltaBlue"
+          ]
+        },
+        {
+          "case": "crypto",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js",
+          "args": [],
+          "sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "expected": [
+            "Crypto"
+          ]
+        },
+        {
+          "case": "raytrace",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js",
+          "args": [],
+          "sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "expected": [
+            "RayTrace"
+          ]
+        },
+        {
+          "case": "earley-boyer",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js",
+          "args": [],
+          "sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "expected": [
+            "EarleyBoyer"
+          ]
+        },
+        {
+          "case": "regexp",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js",
+          "args": [],
+          "sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "expected": [
+            "RegExp"
+          ]
+        },
+        {
+          "case": "splay",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js",
+          "args": [],
+          "sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "expected": [
+            "Splay"
+          ]
+        },
+        {
+          "case": "navier-stokes",
+          "path": "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js",
+          "args": [],
+          "sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "expected": [
+            "NavierStokes"
+          ]
+        }
+      ],
+      "repeat": 3,
+      "timeout_seconds": 90.0,
+      "order": "serial, alternating per repetition",
+      "instrumentation": "off (no -d/-T)",
+      "engines": {
+        "oxide": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+          "sha256": "1995b7a7b74e625885fa3e51b7c446ded54508846faf4c6bb4c080c8c1f52f60",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+              "--version"
+            ],
+            "exit_code": 0,
+            "stdout": "quickjs-oxide 0.0.1 (QuickJS 2026-06-04 compatibility target)",
+            "stderr": ""
+          },
+          "build": {
+            "schema": "oxide-build-v1",
+            "mode": "plain",
+            "commit": "e0b3ef3bc8381ba5971adbf99650f3ae1ff85c6b",
+            "binary_sha256": "1995b7a7b74e625885fa3e51b7c446ded54508846faf4c6bb4c080c8c1f52f60",
+            "command": [
+              "cargo",
+              "build",
+              "--locked",
+              "--release",
+              "-p",
+              "quickjs-oxide-cli",
+              "--no-default-features",
+              "--target-dir",
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target",
+              "--jobs",
+              "2"
+            ],
+            "rustc": {
+              "command": [
+                "rustc",
+                "-vV"
+              ],
+              "exit_code": 0,
+              "stdout": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.1\nLLVM version: 21.1.8",
+              "stderr": ""
+            },
+            "cargo": {
+              "command": [
+                "cargo",
+                "-V"
+              ],
+              "exit_code": 0,
+              "stdout": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+              "stderr": ""
+            },
+            "cargo_toml_sha256": "c810d5ac761b60afba53e4d77f7221014a55189be733c1ce96ce3fc787268901",
+            "cargo_lock_sha256": "c26c9f1999da579c0d1176c62981afa716ea998949a8dd15b1365f85b66944e3",
+            "environment": {
+              "RUSTFLAGS": null,
+              "CARGO_ENCODED_RUSTFLAGS": null,
+              "CARGO_BUILD_TARGET": null
+            },
+            "commit_environment": "e0b3ef3bc8381ba5971adbf99650f3ae1ff85c6b"
+          }
+        },
+        "quickjs": {
+          "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+          "sha256": "40ab2a7a9471b197843a5c489d1d53c7c075d4cef0a4d42cce4d22dc07a20007",
+          "version": {
+            "command": [
+              "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+              "--version"
+            ],
+            "exit_code": 1,
+            "stdout": "QuickJS version 2026-06-04\nusage: qjs [options] [file [args]]\n-h  --help         list options\n-e  --eval EXPR    evaluate EXPR\n-i  --interactive  go to interactive mode\n-m  --module       load as ES6 module (default=autodetect)\n    --script       load as ES6 script (default=autodetect)\n    --strict       force strict mode\n-I  --include file include an additional file\n    --std          make 'std' and 'os' available to the loaded script\n-T  --trace        trace memory allocation\n-d  --dump         dump the memory usage stats\n    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n    --no-unhandled-rejection  ignore unhandled promise rejections\n-s                    strip all the debug info\n    --strip-source    strip the source code\n-q  --quit         just instantiate the interpreter and quit",
+            "stderr": "qjs: unknown option '--version'"
+          },
+          "build": null
+        }
+      },
+      "samples": [
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 9566892142,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-oxide-0.stderr",
+          "case": "richards",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "status": "ok",
+          "measurements": {
+            "Richards": 14.8,
+            "Score": 14.8
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2004715506,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-quickjs-0.stderr",
+          "case": "richards",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "status": "ok",
+          "measurements": {
+            "Richards": 1352.0,
+            "Score": 1352.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2005483486,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-quickjs-1.stderr",
+          "case": "richards",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "status": "ok",
+          "measurements": {
+            "Richards": 1351.0,
+            "Score": 1351.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 9409224181,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-oxide-1.stderr",
+          "case": "richards",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "status": "ok",
+          "measurements": {
+            "Richards": 15.0,
+            "Score": 15.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 9412343361,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-oxide-2.stderr",
+          "case": "richards",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "status": "ok",
+          "measurements": {
+            "Richards": 15.0,
+            "Score": 15.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/richards.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2002551802,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/richards-quickjs-2.stderr",
+          "case": "richards",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "3a6a75ed44921a21ccb5d651c4fa40e1168cc398497f5783f70f520b5880f816",
+          "status": "ok",
+          "measurements": {
+            "Richards": 1370.0,
+            "Score": 1370.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 11536183602,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-oxide-0.stderr",
+          "case": "deltablue",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "status": "ok",
+          "measurements": {
+            "DeltaBlue": 20.7,
+            "Score": 20.7
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2010099054,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-quickjs-0.stderr",
+          "case": "deltablue",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "status": "ok",
+          "measurements": {
+            "DeltaBlue": 1245.0,
+            "Score": 1245.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2006052278,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-quickjs-1.stderr",
+          "case": "deltablue",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "status": "ok",
+          "measurements": {
+            "DeltaBlue": 1221.0,
+            "Score": 1221.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 11458655253,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-oxide-1.stderr",
+          "case": "deltablue",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "status": "ok",
+          "measurements": {
+            "DeltaBlue": 20.9,
+            "Score": 20.9
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 11468470724,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-oxide-2.stderr",
+          "case": "deltablue",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "status": "ok",
+          "measurements": {
+            "DeltaBlue": 20.9,
+            "Score": 20.9
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/deltablue.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2005087713,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/deltablue-quickjs-2.stderr",
+          "case": "deltablue",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "0d09178b33846768ca0c46893b9f615ce820ce4eb1aca0537ca21d3bf9647807",
+          "status": "ok",
+          "measurements": {
+            "DeltaBlue": 1236.0,
+            "Score": 1236.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001511670,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-oxide-0.stderr",
+          "case": "crypto",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6117819226,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-quickjs-0.stderr",
+          "case": "crypto",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "status": "ok",
+          "measurements": {
+            "Crypto": 1580.0,
+            "Score": 1580.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6058249675,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-quickjs-1.stderr",
+          "case": "crypto",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "status": "ok",
+          "measurements": {
+            "Crypto": 1479.0,
+            "Score": 1479.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001167943,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-oxide-1.stderr",
+          "case": "crypto",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001138396,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-oxide-2.stderr",
+          "case": "crypto",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/crypto.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6152626133,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/crypto-quickjs-2.stderr",
+          "case": "crypto",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "8be5c62888023de8a555264fbb3a7474435382686c9af887d8db981a4975fd63",
+          "status": "ok",
+          "measurements": {
+            "Crypto": 1549.0,
+            "Score": 1549.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 70156414630,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-oxide-0.stderr",
+          "case": "raytrace",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "status": "ok",
+          "measurements": {
+            "RayTrace": 34.8,
+            "Score": 34.8
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2039975770,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-quickjs-0.stderr",
+          "case": "raytrace",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "status": "ok",
+          "measurements": {
+            "RayTrace": 2757.0,
+            "Score": 2757.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2023622644,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-quickjs-1.stderr",
+          "case": "raytrace",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "status": "ok",
+          "measurements": {
+            "RayTrace": 2829.0,
+            "Score": 2829.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 70196256083,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-oxide-1.stderr",
+          "case": "raytrace",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "status": "ok",
+          "measurements": {
+            "RayTrace": 34.8,
+            "Score": 34.8
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 69278191915,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-oxide-2.stderr",
+          "case": "raytrace",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "status": "ok",
+          "measurements": {
+            "RayTrace": 35.3,
+            "Score": 35.3
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/raytrace.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2040765801,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/raytrace-quickjs-2.stderr",
+          "case": "raytrace",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "6a2859cbe7aeb2c18ae8e256135f1ca20ef0265a5889636791dbabc11608be41",
+          "status": "ok",
+          "measurements": {
+            "RayTrace": 2838.0,
+            "Score": 2838.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90052888104,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-oxide-0.stderr",
+          "case": "earley-boyer",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6215143966,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-quickjs-0.stderr",
+          "case": "earley-boyer",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "status": "ok",
+          "measurements": {
+            "EarleyBoyer": 3439.0,
+            "Score": 3439.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6269253242,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-quickjs-1.stderr",
+          "case": "earley-boyer",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "status": "ok",
+          "measurements": {
+            "EarleyBoyer": 3389.0,
+            "Score": 3389.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90052109695,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-oxide-1.stderr",
+          "case": "earley-boyer",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90050986096,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-oxide-2.stderr",
+          "case": "earley-boyer",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/earley-boyer.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6190847731,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/earley-boyer-quickjs-2.stderr",
+          "case": "earley-boyer",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "d027baa0505e868e7e1273a4d64804f2806ebfad724bc20d44298e7789e6b102",
+          "status": "ok",
+          "measurements": {
+            "EarleyBoyer": 3452.0,
+            "Score": 3452.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001696034,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-oxide-0.stderr",
+          "case": "regexp",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6269414539,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-quickjs-0.stderr",
+          "case": "regexp",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "status": "ok",
+          "measurements": {
+            "RegExp": 627.0,
+            "Score": 627.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6551545201,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-quickjs-1.stderr",
+          "case": "regexp",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "status": "ok",
+          "measurements": {
+            "RegExp": 597.0,
+            "Score": 597.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001622517,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-oxide-1.stderr",
+          "case": "regexp",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001629294,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-oxide-2.stderr",
+          "case": "regexp",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/regexp.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 6362094688,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/regexp-quickjs-2.stderr",
+          "case": "regexp",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "90098a6d8c417a629558396814e23bb64a881c1d0d9d1c7e376c35c4c5642883",
+          "status": "ok",
+          "measurements": {
+            "RegExp": 630.0,
+            "Score": 630.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 8733268693,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-oxide-0.stderr",
+          "case": "splay",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "status": "ok",
+          "measurements": {
+            "Splay": 126.0,
+            "Score": 126.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2413190549,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-quickjs-0.stderr",
+          "case": "splay",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "status": "ok",
+          "measurements": {
+            "Splay": 4971.0,
+            "Score": 4971.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2400265217,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-quickjs-1.stderr",
+          "case": "splay",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "status": "ok",
+          "measurements": {
+            "Splay": 4958.0,
+            "Score": 4958.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 8707627869,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-oxide-1.stderr",
+          "case": "splay",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "status": "ok",
+          "measurements": {
+            "Splay": 126.0,
+            "Score": 126.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 8769800420,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-oxide-2.stderr",
+          "case": "splay",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "status": "ok",
+          "measurements": {
+            "Splay": 125.0,
+            "Score": 125.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/splay.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 2408252914,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/splay-quickjs-2.stderr",
+          "case": "splay",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "ecb56713721fcdc54a040d237fd4155cee4524c1ecbe7be47d1d0efac1dae8fa",
+          "status": "ok",
+          "measurements": {
+            "Splay": 4906.0,
+            "Score": 4906.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001590266,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-oxide-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-oxide-0.stderr",
+          "case": "navier-stokes",
+          "engine": "oxide",
+          "repetition": 0,
+          "workload_sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3064163049,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-quickjs-0.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-quickjs-0.stderr",
+          "case": "navier-stokes",
+          "engine": "quickjs",
+          "repetition": 0,
+          "workload_sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "status": "ok",
+          "measurements": {
+            "NavierStokes": 3108.0,
+            "Score": 3108.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3119182409,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-quickjs-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-quickjs-1.stderr",
+          "case": "navier-stokes",
+          "engine": "quickjs",
+          "repetition": 1,
+          "workload_sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "status": "ok",
+          "measurements": {
+            "NavierStokes": 2931.0,
+            "Score": 2931.0
+          }
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001509982,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-oxide-1.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-oxide-1.stderr",
+          "case": "navier-stokes",
+          "engine": "oxide",
+          "repetition": 1,
+          "workload_sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/release/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js"
+          ],
+          "exit_code": -9,
+          "timed_out": true,
+          "process_wall_ns": 90001454285,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-oxide-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-oxide-2.stderr",
+          "case": "navier-stokes",
+          "engine": "oxide",
+          "repetition": 2,
+          "workload_sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "status": "timeout"
+        },
+        {
+          "command": [
+            "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/oracle/quickjs-2026-06-04/qjs",
+            "/home/eric/Documents/Sources/PocketLab/js-engine-benchmark/dist/quickjs-oxide/navier-stokes.js"
+          ],
+          "exit_code": 0,
+          "timed_out": false,
+          "process_wall_ns": 3066768030,
+          "stdout": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-quickjs-2.stdout",
+          "stderr": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/benchmark-v8-v7/raw/navier-stokes-quickjs-2.stderr",
+          "case": "navier-stokes",
+          "engine": "quickjs",
+          "repetition": 2,
+          "workload_sha256": "02f0aa6d195bae84d9c19da850cb98a883b6e535f2e9a38d11000e7aa5170c79",
+          "status": "ok",
+          "measurements": {
+            "NavierStokes": 3164.0,
+            "Score": 3164.0
+          }
+        }
+      ],
+      "summary": [
+        {
+          "case": "richards",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "Richards": {
+              "raw": [
+                14.8,
+                15.0,
+                15.0
+              ],
+              "minimum": 14.8,
+              "median": 15.0,
+              "maximum": 15.0,
+              "stdev": 0.11547005383792475
+            },
+            "Score": {
+              "raw": [
+                14.8,
+                15.0,
+                15.0
+              ],
+              "minimum": 14.8,
+              "median": 15.0,
+              "maximum": 15.0,
+              "stdev": 0.11547005383792475
+            }
+          }
+        },
+        {
+          "case": "richards",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "Richards": {
+              "raw": [
+                1352.0,
+                1351.0,
+                1370.0
+              ],
+              "minimum": 1351.0,
+              "median": 1352.0,
+              "maximum": 1370.0,
+              "stdev": 10.692676621563626
+            },
+            "Score": {
+              "raw": [
+                1352.0,
+                1351.0,
+                1370.0
+              ],
+              "minimum": 1351.0,
+              "median": 1352.0,
+              "maximum": 1370.0,
+              "stdev": 10.692676621563626
+            }
+          }
+        },
+        {
+          "case": "deltablue",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "DeltaBlue": {
+              "raw": [
+                20.7,
+                20.9,
+                20.9
+              ],
+              "minimum": 20.7,
+              "median": 20.9,
+              "maximum": 20.9,
+              "stdev": 0.11547005383792475
+            },
+            "Score": {
+              "raw": [
+                20.7,
+                20.9,
+                20.9
+              ],
+              "minimum": 20.7,
+              "median": 20.9,
+              "maximum": 20.9,
+              "stdev": 0.11547005383792475
+            }
+          }
+        },
+        {
+          "case": "deltablue",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "DeltaBlue": {
+              "raw": [
+                1245.0,
+                1221.0,
+                1236.0
+              ],
+              "minimum": 1221.0,
+              "median": 1236.0,
+              "maximum": 1245.0,
+              "stdev": 12.12435565298214
+            },
+            "Score": {
+              "raw": [
+                1245.0,
+                1221.0,
+                1236.0
+              ],
+              "minimum": 1221.0,
+              "median": 1236.0,
+              "maximum": 1245.0,
+              "stdev": 12.12435565298214
+            }
+          }
+        },
+        {
+          "case": "crypto",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 0,
+          "failures": [
+            "timeout",
+            "timeout",
+            "timeout"
+          ],
+          "eligible_for_comparison": false,
+          "metrics": {}
+        },
+        {
+          "case": "crypto",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "Crypto": {
+              "raw": [
+                1580.0,
+                1479.0,
+                1549.0
+              ],
+              "minimum": 1479.0,
+              "median": 1549.0,
+              "maximum": 1580.0,
+              "stdev": 51.73973328110612
+            },
+            "Score": {
+              "raw": [
+                1580.0,
+                1479.0,
+                1549.0
+              ],
+              "minimum": 1479.0,
+              "median": 1549.0,
+              "maximum": 1580.0,
+              "stdev": 51.73973328110612
+            }
+          }
+        },
+        {
+          "case": "raytrace",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "RayTrace": {
+              "raw": [
+                34.8,
+                34.8,
+                35.3
+              ],
+              "minimum": 34.8,
+              "median": 34.8,
+              "maximum": 35.3,
+              "stdev": 0.28867513459481287
+            },
+            "Score": {
+              "raw": [
+                34.8,
+                34.8,
+                35.3
+              ],
+              "minimum": 34.8,
+              "median": 34.8,
+              "maximum": 35.3,
+              "stdev": 0.28867513459481287
+            }
+          }
+        },
+        {
+          "case": "raytrace",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "RayTrace": {
+              "raw": [
+                2757.0,
+                2829.0,
+                2838.0
+              ],
+              "minimum": 2757.0,
+              "median": 2829.0,
+              "maximum": 2838.0,
+              "stdev": 44.395945760846224
+            },
+            "Score": {
+              "raw": [
+                2757.0,
+                2829.0,
+                2838.0
+              ],
+              "minimum": 2757.0,
+              "median": 2829.0,
+              "maximum": 2838.0,
+              "stdev": 44.395945760846224
+            }
+          }
+        },
+        {
+          "case": "earley-boyer",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 0,
+          "failures": [
+            "timeout",
+            "timeout",
+            "timeout"
+          ],
+          "eligible_for_comparison": false,
+          "metrics": {}
+        },
+        {
+          "case": "earley-boyer",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "EarleyBoyer": {
+              "raw": [
+                3439.0,
+                3389.0,
+                3452.0
+              ],
+              "minimum": 3389.0,
+              "median": 3439.0,
+              "maximum": 3452.0,
+              "stdev": 33.26158945891392
+            },
+            "Score": {
+              "raw": [
+                3439.0,
+                3389.0,
+                3452.0
+              ],
+              "minimum": 3389.0,
+              "median": 3439.0,
+              "maximum": 3452.0,
+              "stdev": 33.26158945891392
+            }
+          }
+        },
+        {
+          "case": "regexp",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 0,
+          "failures": [
+            "timeout",
+            "timeout",
+            "timeout"
+          ],
+          "eligible_for_comparison": false,
+          "metrics": {}
+        },
+        {
+          "case": "regexp",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "RegExp": {
+              "raw": [
+                627.0,
+                597.0,
+                630.0
+              ],
+              "minimum": 597.0,
+              "median": 627.0,
+              "maximum": 630.0,
+              "stdev": 18.24828759089466
+            },
+            "Score": {
+              "raw": [
+                627.0,
+                597.0,
+                630.0
+              ],
+              "minimum": 597.0,
+              "median": 627.0,
+              "maximum": 630.0,
+              "stdev": 18.24828759089466
+            }
+          }
+        },
+        {
+          "case": "splay",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "Splay": {
+              "raw": [
+                126.0,
+                126.0,
+                125.0
+              ],
+              "minimum": 125.0,
+              "median": 126.0,
+              "maximum": 126.0,
+              "stdev": 0.5773502691896257
+            },
+            "Score": {
+              "raw": [
+                126.0,
+                126.0,
+                125.0
+              ],
+              "minimum": 125.0,
+              "median": 126.0,
+              "maximum": 126.0,
+              "stdev": 0.5773502691896257
+            }
+          }
+        },
+        {
+          "case": "splay",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "Splay": {
+              "raw": [
+                4971.0,
+                4958.0,
+                4906.0
+              ],
+              "minimum": 4906.0,
+              "median": 4958.0,
+              "maximum": 4971.0,
+              "stdev": 34.39476704383968
+            },
+            "Score": {
+              "raw": [
+                4971.0,
+                4958.0,
+                4906.0
+              ],
+              "minimum": 4906.0,
+              "median": 4958.0,
+              "maximum": 4971.0,
+              "stdev": 34.39476704383968
+            }
+          }
+        },
+        {
+          "case": "navier-stokes",
+          "engine": "oxide",
+          "samples": 3,
+          "successful": 0,
+          "failures": [
+            "timeout",
+            "timeout",
+            "timeout"
+          ],
+          "eligible_for_comparison": false,
+          "metrics": {}
+        },
+        {
+          "case": "navier-stokes",
+          "engine": "quickjs",
+          "samples": 3,
+          "successful": 3,
+          "failures": [],
+          "eligible_for_comparison": true,
+          "metrics": {
+            "NavierStokes": {
+              "raw": [
+                3108.0,
+                2931.0,
+                3164.0
+              ],
+              "minimum": 2931.0,
+              "median": 3108.0,
+              "maximum": 3164.0,
+              "stdev": 121.62373671834513
+            },
+            "Score": {
+              "raw": [
+                3108.0,
+                2931.0,
+                3164.0
+              ],
+              "minimum": 2931.0,
+              "median": 3108.0,
+              "maximum": 3164.0,
+              "stdev": 121.62373671834513
+            }
+          }
+        }
+      ]
+    }
+  },
+  "test262": {
+    "schema": "oxide-test262-comparison-v1",
+    "base_commit": "9fa0e9d4698959c59453e7b1577dbcb1d54df19c",
+    "computed_base_fingerprint": "ba396483677864d3d9a684bce964b3188949d5998ef04fb3a52012fe36c4e000",
+    "prior_receipt_fingerprint": "ba396483677864d3d9a684bce964b3188949d5998ef04fb3a52012fe36c4e000",
+    "base_provenance_matches": true,
+    "variant_count": 102037,
+    "changed_rows": 0,
+    "new_failures": 0,
+    "first_differences": [],
+    "headers_before": [
+      "# quickjs-oxide Test262 outcome vector v5 engine_semantics_sha256=ba396483677864d3d9a684bce964b3188949d5998ef04fb3a52012fe36c4e000",
+      "# quickjs=2026-06-04",
+      "# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790",
+      "# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3",
+      "# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b",
+      "# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a",
+      "# oxide_profile_sha256=aa9fa3581c86cf1f1ef786a54c2023107f3a99002129b726024ddd8ea0838d67",
+      "# negative_diagnostics_sha256=0f20554444b18fe2a714732b392a72785d88e8b315620bd619b473c93b7f01bf",
+      "# negative_diagnostic_exemptions_sha256=608dab98c8ffc394123c1737cf5706bcb449712ef7f7aae51cad143d2b4ede46",
+      "# profile=test262-canonical-classified-v2",
+      "# mode=both",
+      "# summary fail-parse=7 fail-runtime=43 pass=79982 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=847 unsupported-module=121 unsupported-negative-provenance=2562"
+    ],
+    "headers_after": [
+      "# quickjs-oxide Test262 outcome vector v5 engine_semantics_sha256=56db25c97e0d37e66659713a030253f203bcbaffb25e4f01979d8d4cb657b924",
+      "# quickjs=2026-06-04",
+      "# test262=5c8206929d81b2d3d727ca6aac56c18358c8d790",
+      "# test262_patch_sha256=f4b23b04641d438df0826fb17d7a5db276af2bdb085b42cc09aa8d50e0da9ba3",
+      "# test262_config_sha256=79c64748ff1182baf5433d0a8378e3666738a785d02faf71f0d459ed42ae897b",
+      "# test262_metadata_sha256=a37219960819e56a5c5c1723d31d6a33095c778bf5347385187fde96f927a06a",
+      "# oxide_profile_sha256=aa9fa3581c86cf1f1ef786a54c2023107f3a99002129b726024ddd8ea0838d67",
+      "# negative_diagnostics_sha256=0f20554444b18fe2a714732b392a72785d88e8b315620bd619b473c93b7f01bf",
+      "# negative_diagnostic_exemptions_sha256=608dab98c8ffc394123c1737cf5706bcb449712ef7f7aae51cad143d2b4ede46",
+      "# profile=test262-canonical-classified-v2",
+      "# mode=both",
+      "# summary fail-parse=7 fail-runtime=43 pass=79982 skipped-config-exclude=6700 skipped-feature=11775 unsupported-feature=847 unsupported-module=121 unsupported-negative-provenance=2562"
+    ],
+    "before": {
+      "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/profile-validation/pr2-test262-full.tsv",
+      "sha256": "c99eb320bdb2b55b1db8a6211d68088befcd98723700f998cce275aad422a544",
+      "row_sha256": "fa99d3349bb4b61f30ba57d7c7f275df64f19691edefc50b96b53887339fa8c3",
+      "outcomes": {
+        "pass": 79982,
+        "skipped-feature": 11775,
+        "fail-parse": 7,
+        "unsupported-negative-provenance": 2562,
+        "unsupported-module": 121,
+        "skipped-config-exclude": 6700,
+        "fail-runtime": 43,
+        "unsupported-feature": 847
+      }
+    },
+    "after": {
+      "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/test262-full.tsv",
+      "sha256": "abc54b8b6423df6849812c3fc845566a08c4541ed7176d3a18468a3d8eb3ef95",
+      "row_sha256": "fa99d3349bb4b61f30ba57d7c7f275df64f19691edefc50b96b53887339fa8c3",
+      "outcomes": {
+        "pass": 79982,
+        "skipped-feature": 11775,
+        "fail-parse": 7,
+        "unsupported-negative-provenance": 2562,
+        "unsupported-module": 121,
+        "skipped-config-exclude": 6700,
+        "fail-runtime": 43,
+        "unsupported-feature": 847
+      }
+    },
+    "frozen_gate_exit": 1,
+    "frozen_gate_reason": "full TSV receipt checksum drifted; source fingerprint changes the receipt"
+  },
+  "reference_build": {
+    "schema": "quickjs-reference-build-evidence-v1",
+    "version": "2026-06-04",
+    "source_url": "https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz",
+    "source_sha256": "b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a",
+    "binary_sha256": "40ab2a7a9471b197843a5c489d1d53c7c075d4cef0a4d42cce4d22dc07a20007",
+    "compiler_commands": [
+      "gcc -g -Wall -MMD -MF .obj/qjs.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/qjs.o qjs.c",
+      "gcc -g -Wall -MMD -MF .obj/qjsc.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -DCONFIG_CC=\\\"gcc\\\" -DCONFIG_PREFIX=\\\"/usr/local\\\" -O2 -c -o .obj/qjsc.o qjsc.c",
+      "gcc -g -Wall -MMD -MF .obj/quickjs.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/quickjs.o quickjs.c",
+      "gcc -g -Wall -MMD -MF .obj/dtoa.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/dtoa.o dtoa.c",
+      "gcc -g -Wall -MMD -MF .obj/libregexp.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/libregexp.o libregexp.c",
+      "gcc -g -Wall -MMD -MF .obj/libunicode.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/libunicode.o libunicode.c",
+      "gcc -g -Wall -MMD -MF .obj/cutils.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/cutils.o cutils.c",
+      "gcc -g -Wall -MMD -MF .obj/quickjs-libc.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/quickjs-libc.o quickjs-libc.c",
+      "gcc -g -o qjsc .obj/qjsc.o .obj/quickjs.o .obj/dtoa.o .obj/libregexp.o .obj/libunicode.o .obj/cutils.o .obj/quickjs-libc.o -lm -lpthread -ldl ",
+      "gcc -g -Wall -MMD -MF .obj/repl.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/repl.o repl.c",
+      "gcc -g -rdynamic -o qjs .obj/qjs.o .obj/repl.o .obj/quickjs.o .obj/dtoa.o .obj/libregexp.o .obj/libunicode.o .obj/cutils.o .obj/quickjs-libc.o -lm -lpthread -ldl ",
+      "gcc -g -Wall -MMD -MF .obj/run-test262.o.d -Wno-array-bounds -Wno-format-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_VERSION=\\\"2026-06-04\\\" -O2 -c -o .obj/run-test262.o run-test262.c",
+      "gcc -g -o run-test262 .obj/run-test262.o .obj/quickjs.o .obj/dtoa.o .obj/libregexp.o .obj/libunicode.o .obj/cutils.o .obj/quickjs-libc.o -lm -lpthread -ldl "
+    ],
+    "gcc_version": "gcc (GCC) 16.2.1 20260810\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+    "binary_compiler_comment": "\nString dump of section '.comment':\n  [     0]  GCC: (GNU) 16.2.1 20260810\n\n"
+  },
+  "raw_archive": {
+    "path": "/home/eric/Documents/Sources/PocketLab/quickjs-oxide/target/quickjs-oxide-profiler-pocketlab-2026-09-09.tar.gz",
+    "sha256": "19120bc1f848dc1f7c17347de4efab5aba7c3d56e0246c864a48a4a302444e06",
+    "bytes": 4226215
+  },
+  "validation_status_history": [
+    "clippy exit=101",
+    "clippy-advisory exit=0",
+    "rust-all exit=0",
+    "cli-plain-final exit=0",
+    "tools exit=0",
+    "test262 exit=1",
+    "provenance-build exit=0",
+    "profile-experiment exit=0",
+    "microbench exit=0",
+    "v8-v7 exit=1",
+    "clippy-msrv exit=1",
+    "clippy-msrv exit=101",
+    "clippy-msrv exit=0",
+    "cli-msrv exit=0",
+    "source-layout exit=0",
+    "rust-only exit=0",
+    "test262-comparison exit=0",
+    "tools-final exit=0",
+    "provenance-build-final exit=0",
+    "profile-experiment-final exit=0",
+    "microbench-matched exit=0"
+  ],
+  "excluded_experiment": "Initial microbench used different clocks; preserved in raw archive under microbench-invalid-clock and excluded from every comparison here."
+}

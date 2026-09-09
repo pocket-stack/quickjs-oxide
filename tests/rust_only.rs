@@ -94,7 +94,7 @@ pub extern "C" fn rust_owned_js_runtime() -> u32 { 42 }
 "#,
     );
     fixture.write(
-        "tests/oracle.rs",
+        "tests/oracle/main.rs",
         r#"#[test]
 fn external_qjs_is_only_an_oracle() {
     let _ = std::process::Command::new("qjs").arg("--version");
@@ -102,7 +102,7 @@ fn external_qjs_is_only_an_oracle() {
 "#,
     );
     fixture.write(
-        "tests/fixtures/quickjs.c",
+        "tests/fixtures/inputs/quickjs.c",
         "/* A native fixture is test-only and is not a product engine. */\n",
     );
 
@@ -212,6 +212,7 @@ fn assert_rejected(configure: impl FnOnce(&Fixture), expected: &str) {
 fn gate_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
+        .join("checks")
         .join("check-rust-only.sh")
 }
 

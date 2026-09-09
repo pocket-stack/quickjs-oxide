@@ -5,55 +5,22 @@
 //! source is compiled to stack bytecode, bytecode executes inside a context,
 //! and contexts share a runtime-owned heap and atom table.
 
-pub mod atom;
-pub mod bigint;
-pub(crate) mod bytecode;
-pub(crate) mod compiler;
-pub mod debug;
-pub mod error;
-pub mod function;
-pub mod heap;
-pub mod lexer;
-pub(crate) mod module;
-pub mod number;
-pub mod number_parse;
-pub mod object;
-pub mod property;
+/// Interpreter implementation; embedders use [`engine::api`].
+///
+/// Old root API aliases are deliberately unavailable:
+/// ```compile_fail
+/// use quickjs_oxide::Runtime;
+/// ```
+/// Internal engine modules are not embedding interfaces:
+/// ```compile_fail
+/// use quickjs_oxide::engine::heap::Heap;
+/// ```
+/// ```compile_fail
+/// use quickjs_oxide::engine::vm::Vm;
+/// ```
+pub mod engine;
 pub mod regexp;
-pub mod runtime;
-pub mod shape;
-pub mod shared_memory;
-pub(crate) mod source_text;
-mod unicode;
-mod unicode_case;
-mod unicode_normalize;
-mod unicode_property;
-mod uri;
-pub mod value;
-pub(crate) mod vm;
-
-pub use bigint::{BigIntError, JsBigInt};
-pub use compiler::CompileOptions;
-pub use debug::{
-    DebugInfoMode, LineColumn, Pc2LineEntry, Pc2LineTable, QuickJsSourceLocator, SourceOffset,
-};
-pub use error::{Error, ErrorKind, SourceLocation, SourceSpan};
-pub use function::FunctionBytecodeRef;
-pub use heap::ContextId;
-pub use heap::PromiseState;
-pub use object::{
-    AccessorValue, CallableRef, CompleteOrdinaryPropertyDescriptor, DescriptorField, ObjectRef,
-    OrdinaryPropertyDescriptor, PropertyKey, SymbolRef, WellKnownSymbol,
-};
-pub use runtime::{
-    Context, EvalOptions, HostServices, ModuleBytecodeRef, ModuleImportAttribute,
-    ModuleImportAttributes, ModuleImportMetaProperty, ModuleLoadResult, ModuleLoader,
-    ModuleLoaderError, ModuleLoaderRegistration, PendingJobError, PendingJobOutcome,
-    PromiseRejectionEvent, PromiseSnapshot, Runtime, RuntimeError,
-};
-#[cfg(feature = "test262-host")]
-pub use runtime::{Test262AgentError, Test262AgentSession};
-pub use value::{JsString, JsStringError, Value};
+pub mod source;
 
 /// The version of this quickjs-oxide engine crate.
 pub const QUICKJS_OXIDE_VERSION: &str = env!("CARGO_PKG_VERSION");

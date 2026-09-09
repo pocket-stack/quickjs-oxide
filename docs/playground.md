@@ -48,12 +48,12 @@ cargo install wasm-bindgen-cli --version 0.2.126 --locked
 Then build the deployable tree and run the Node/WebAssembly smoke:
 
 ```bash
-./scripts/test-web-playground.sh
+./scripts/web/test-web-playground.sh
 python3 -m http.server 4173 --directory target/pages
 ```
 
 Open <http://localhost:4173/>. The build script writes only generated files
-under `target/pages`; `web/site` remains the reviewable static source.
+under `target/pages`; `apps/web/site` remains the reviewable static source.
 If a local shared Cargo target is busy, set `CARGO_TARGET_DIR` to a separate
 build cache; the deployable tree still lands in `target/pages`.
 
@@ -114,7 +114,7 @@ example data use the same scheme. This prevents a Pages CDN edge from combining
 new HTML or JavaScript with a stale fixed-path WASM response while a deployment
 is propagating.
 
-After deployment, a separate read-only job runs `scripts/test-live-pages.mjs`
+After deployment, a separate read-only job runs `scripts/web/test-live-pages.mjs`
 without Pages-write or OIDC permissions, and it passes no token to the
 verifier. It polls the cache-busted public index with bounded backoff. Only
 after the index matches the build job's SHA-256 does it follow the

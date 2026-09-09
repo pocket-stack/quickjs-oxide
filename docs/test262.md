@@ -30,10 +30,10 @@ fail-parse=7 fail-runtime=43 pass=79982 skipped-config-exclude=6700 skipped-feat
 One script consumes one inert data spec:
 
 ```sh
-./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
-./scripts/test-test262.sh --spec dev-support/test262/current.conf --runner-provenance
-./scripts/test-test262.sh --spec dev-support/test262/current.conf --focused
-TEST262_WORKERS=2 ./scripts/test-test262.sh \
+./scripts/test262/test-test262.sh --spec dev-support/test262/current.conf --check
+./scripts/test262/test-test262.sh --spec dev-support/test262/current.conf --runner-provenance
+./scripts/test262/test-test262.sh --spec dev-support/test262/current.conf --focused
+TEST262_WORKERS=2 ./scripts/test262/test-test262.sh \
   --spec dev-support/test262/current.conf --full
 ```
 

@@ -1,0 +1,761 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1400" height="550" onload="init(evt)" viewBox="0 0 1400 550">
+
+
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0">
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames &gt; *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x &amp;&amp; params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el &amp;&amp; el.attributes &amp;&amp; el.attributes.y &amp;&amp; el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey &amp;&amp; e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey &amp;&amp; e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&amp;');
+		for (var i = 0; i &lt; paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&amp;';
+		}
+		if (uri.slice(-1) == "&amp;")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = e.getAttribute("data-label") || find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w &lt; 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl &lt; w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x &gt; 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) &lt;= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i &lt; c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i &lt; c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i &lt; c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i &lt; el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) &gt; ymin;
+			} else {
+				upstack = parseFloat(a.y.value) &lt; ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex &lt;= xmin &amp;&amp; (ex+ew+fudge) &gt;= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex &lt; xmin || ex + fudge &gt;= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i &lt; el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i &lt; el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i &lt; el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w &gt; maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w &gt; matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x &gt;= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+
+</script>
+<rect x="0.0" y="0" width="1400.0" height="550.0" fill="url(#background)" />
+<text id="title" x="700.00" y="24">empty_fixed | CPU cycles, 3 runs</text>
+<text id="details" x="10.00" y="533"> </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1290.00" y="24">Search</text>
+<text id="ignorecase" x="1374.00" y="24">ic</text>
+<text id="matched" x="1290.00" y="533"> </text>
+<g id="frames">
+<g data-label="VmActivation::pop_pair">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::pop_pair (23,402,969 cycles, 0.08%)</title><rect x="1388.0" y="85" width="1.1" height="15.0" fill="rgb(240,141,39)" rx="2" ry="2" />
+<text x="1390.97" y="95.5" />
+</g>
+<g data-label="VmActivation::pop">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::pop (258,178,680 cycles, 0.93%)</title><rect x="712.5" y="69" width="12.8" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="715.51" y="79.5" />
+</g>
+<g data-label="Context::eval_bytes_with_options">
+<title>quickjs_oxide::engine::api::context::script::&lt;impl quickjs_oxide::engine::api::context::Context&gt;::eval_bytes_with_options (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="325" width="1376.8" height="15.0" fill="rgb(244,141,43)" rx="2" ry="2" />
+<text x="15.34" y="335.5">Context::eval_bytes_with_options</text>
+</g>
+<g data-label="all">
+<title>all (27,762,715,898 cycles, 100%)</title><rect x="10.0" y="501" width="1380.0" height="15.0" fill="rgb(255,230,55)" rx="2" ry="2" />
+<text x="13.00" y="511.5">all</text>
+</g>
+<g data-label="VmActivation::execute_numeric_instruction">
+<title>quickjs_oxide::engine::vm::dispatch::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute_numeric_instruction (13,237,048,944 cycles, 47.68%)</title><rect x="726.5" y="85" width="658.0" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="729.50" y="95.5">VmActivation::execute_numeric_instruction</text>
+</g>
+<g data-label="Vm::execute_published">
+<title>quickjs_oxide::engine::vm::protocol::Vm::execute_published (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="133" width="1376.8" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="15.34" y="143.5">Vm::execute_published</text>
+</g>
+<g data-label="Heap::finish_node">
+<title>quickjs_oxide::engine::heap::gc::&lt;impl quickjs_oxide::engine::heap::Heap&gt;::finish_node (23,267,591 cycles, 0.08%)</title><rect x="11.2" y="277" width="1.1" height="15.0" fill="rgb(250,141,49)" rx="2" ry="2" />
+<text x="14.19" y="287.5" />
+</g>
+<g data-label="qjs::main">
+<title>qjs::main (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="373" width="1380.0" height="15.0" fill="rgb(247,148,46)" rx="2" ry="2" />
+<text x="13.04" y="383.5">qjs::main</text>
+</g>
+<g data-label="RuntimeVmHost::call">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::call (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="197" width="1376.8" height="15.0" fill="rgb(230,185,28)" rx="2" ry="2" />
+<text x="15.34" y="207.5">RuntimeVmHost::call</text>
+</g>
+<g data-label="Runtime::define_native_builtin_auto_init_with_key">
+<title>quickjs_oxide::engine::object::function_initialization::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::define_native_builtin_auto_init_with_key (8,741,604 cycles, 0.03%)</title><rect x="1389.1" y="309" width="0.5" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="1392.15" y="319.5" />
+</g>
+<g data-label="rt::lang_start_internal">
+<title>std::rt::lang_start_internal (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="421" width="1380.0" height="15.0" fill="rgb(229,146,27)" rx="2" ry="2" />
+<text x="13.04" y="431.5">rt::lang_start_internal</text>
+</g>
+<g data-label="host_bridge::write_frame_binding">
+<title>quickjs_oxide::engine::vm::host_bridge::write_frame_binding (233,469,981 cycles, 0.84%)</title><rect x="610.7" y="53" width="11.6" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="613.72" y="63.5" />
+</g>
+<g data-label="main">
+<title>main (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="437" width="1380.0" height="15.0" fill="rgb(247,83,46)" rx="2" ry="2" />
+<text x="13.04" y="447.5">main</text>
+</g>
+<g data-label="Runtime::intern_property_key_js_string">
+<title>quickjs_oxide::engine::atom::runtime::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::intern_property_key_js_string (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="229" width="0.4" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="1392.59" y="239.5" />
+</g>
+<g data-label="RuntimeVmHost::put_local">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::put_local (376,973,611 cycles, 1.36%)</title><rect x="603.6" y="69" width="18.7" height="15.0" fill="rgb(229,185,26)" rx="2" ry="2" />
+<text x="606.59" y="79.5" />
+</g>
+<g data-label="Value::to_number">
+<title>quickjs_oxide::engine::value::Value::to_number (23,392,090 cycles, 0.08%)</title><rect x="1152.4" y="69" width="1.2" height="15.0" fill="rgb(244,141,43)" rx="2" ry="2" />
+<text x="1155.44" y="79.5" />
+</g>
+<g data-label="Runtime::define_native_builtin_auto_init">
+<title>quickjs_oxide::engine::object::function_initialization::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::define_native_builtin_auto_init (8,741,604 cycles, 0.03%)</title><rect x="1389.1" y="325" width="0.5" height="15.0" fill="rgb(236,141,34)" rx="2" ry="2" />
+<text x="1392.15" y="335.5" />
+</g>
+<g data-label="vec::Vec&lt;T,A&gt;::push_mut">
+<title>alloc::vec::Vec&lt;T,A&gt;::push_mut (2,123,180,762 cycles, 7.65%)</title><rect x="1046.9" y="69" width="105.5" height="15.0" fill="rgb(236,128,34)" rx="2" ry="2" />
+<text x="1049.88" y="79.5">vec::Vec&lt;T,A..</text>
+</g>
+<g data-label="qjs::evaluate">
+<title>qjs::evaluate (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="357" width="1380.0" height="15.0" fill="rgb(245,148,45)" rx="2" ry="2" />
+<text x="13.04" y="367.5">qjs::evaluate</text>
+</g>
+<g data-label="Utf16Units::next">
+<title>&lt;quickjs_oxide::engine::value::primitive::Utf16Units as core::iter::traits::iterator::Iterator&gt;::next (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="181" width="0.4" height="15.0" fill="rgb(230,185,27)" rx="2" ry="2" />
+<text x="1392.59" y="191.5" />
+</g>
+<g data-label="vec::Vec&lt;T,A&gt;::push_mut">
+<title>alloc::vec::Vec&lt;T,A&gt;::push_mut (837,385,681 cycles, 3.02%)</title><rect x="623.5" y="69" width="41.6" height="15.0" fill="rgb(236,128,34)" rx="2" ry="2" />
+<text x="626.49" y="79.5">vec..</text>
+</g>
+<g data-label="VmActivation::execute_call_instruction">
+<title>quickjs_oxide::engine::vm::dispatch::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute_call_instruction (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="213" width="1376.8" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="15.34" y="223.5">VmActivation::execute_call_instruction</text>
+</g>
+<g data-label="Heap::finalize_cycle_anchor">
+<title>quickjs_oxide::engine::heap::gc::&lt;impl quickjs_oxide::engine::heap::Heap&gt;::finalize_cycle_anchor (23,267,591 cycles, 0.08%)</title><rect x="11.2" y="293" width="1.1" height="15.0" fill="rgb(241,141,39)" rx="2" ry="2" />
+<text x="14.19" y="303.5" />
+</g>
+<g data-label="RuntimeVmHost::get_argument">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::get_argument (1,535,257,531 cycles, 5.53%)</title><rect x="347.8" y="69" width="76.3" height="15.0" fill="rgb(241,185,39)" rx="2" ry="2" />
+<text x="350.80" y="79.5">RuntimeV..</text>
+</g>
+<g data-label="Heap::drain_zero_queue">
+<title>quickjs_oxide::engine::heap::gc::&lt;impl quickjs_oxide::engine::heap::Heap&gt;::drain_zero_queue (23,143,873 cycles, 0.08%)</title><rect x="10.0" y="293" width="1.2" height="15.0" fill="rgb(242,141,40)" rx="2" ry="2" />
+<text x="13.04" y="303.5" />
+</g>
+<g data-label="host_bridge::read_frame_binding">
+<title>quickjs_oxide::engine::vm::host_bridge::read_frame_binding (3,422,784,968 cycles, 12.33%)</title><rect x="433.4" y="53" width="170.2" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="436.45" y="63.5">host_bridge::read_fra..</text>
+</g>
+<g data-label="drop&lt;Value&gt;">
+<title>core::ptr::drop_in_place&lt;quickjs_oxide::engine::value::Value&gt; (23,522,843 cycles, 0.08%)</title><rect x="621.2" y="37" width="1.1" height="15.0" fill="rgb(243,133,41)" rx="2" ry="2" />
+<text x="624.15" y="47.5" />
+</g>
+<g data-label="VmActivation::execute_hot_instruction">
+<title>quickjs_oxide::engine::vm::dispatch::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute_hot_instruction (10,977,757,623 cycles, 39.54%)</title><rect x="180.8" y="85" width="545.7" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="183.83" y="95.5">VmActivation::execute_hot_instruction</text>
+</g>
+<g data-label="RuntimeInner::drop">
+<title>&lt;quickjs_oxide::engine::heap::runtime::RuntimeInner as core::ops::drop::Drop&gt;::drop (46,411,464 cycles, 0.17%)</title><rect x="10.0" y="325" width="2.3" height="15.0" fill="rgb(246,185,45)" rx="2" ry="2" />
+<text x="13.04" y="335.5" />
+</g>
+<g data-label="RuntimeVmHost::get_local">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::get_local (200,085,981 cycles, 0.72%)</title><rect x="166.2" y="85" width="10.0" height="15.0" fill="rgb(229,185,26)" rx="2" ry="2" />
+<text x="169.23" y="95.5" />
+</g>
+<g data-label="Heap::run_gc_for_runtime_teardown">
+<title>quickjs_oxide::engine::heap::gc::&lt;impl quickjs_oxide::engine::heap::Heap&gt;::run_gc_for_runtime_teardown (46,411,464 cycles, 0.17%)</title><rect x="10.0" y="309" width="2.3" height="15.0" fill="rgb(243,141,41)" rx="2" ry="2" />
+<text x="13.04" y="319.5" />
+</g>
+<g data-label="VmActivation::update_numeric">
+<title>quickjs_oxide::engine::vm::numeric_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::update_numeric (4,528,228,456 cycles, 16.31%)</title><rect x="1159.4" y="69" width="225.1" height="15.0" fill="rgb(228,141,25)" rx="2" ry="2" />
+<text x="1162.39" y="79.5">VmActivation::update_numeric</text>
+</g>
+<g data-label="RuntimeVmHost::get_argument">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::get_argument (93,525,488 cycles, 0.34%)</title><rect x="161.6" y="85" width="4.6" height="15.0" fill="rgb(241,185,39)" rx="2" ry="2" />
+<text x="164.58" y="95.5" />
+</g>
+<g data-label="Runtime::new_native_builtin">
+<title>quickjs_oxide::engine::object::allocation::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::new_native_builtin (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="309" width="0.4" height="15.0" fill="rgb(242,141,41)" rx="2" ry="2" />
+<text x="1392.59" y="319.5" />
+</g>
+<g data-label="gc::object_edges">
+<title>quickjs_oxide::engine::heap::gc::object_edges (23,267,591 cycles, 0.08%)</title><rect x="11.2" y="261" width="1.1" height="15.0" fill="rgb(239,141,37)" rx="2" ry="2" />
+<text x="14.19" y="271.5" />
+</g>
+<g data-label="RuntimeState::replace_layout">
+<title>quickjs_oxide::engine::heap::runtime::RuntimeState::replace_layout (8,741,604 cycles, 0.03%)</title><rect x="1389.1" y="293" width="0.5" height="15.0" fill="rgb(234,141,32)" rx="2" ry="2" />
+<text x="1392.15" y="303.5" />
+</g>
+<g data-label="gc::property_slot_edges">
+<title>quickjs_oxide::engine::heap::gc::property_slot_edges (23,267,591 cycles, 0.08%)</title><rect x="11.2" y="245" width="1.1" height="15.0" fill="rgb(239,141,37)" rx="2" ry="2" />
+<text x="14.19" y="255.5" />
+</g>
+<g data-label="__libc_start_main@@GLIBC_2.34">
+<title>__libc_start_main@@GLIBC_2.34 (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="469" width="1380.0" height="15.0" fill="rgb(236,154,35)" rx="2" ry="2" />
+<text x="13.04" y="479.5">__libc_start_main@@GLIBC_2.34</text>
+</g>
+<g data-label="RuntimeVmHost::to_boolean">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::to_boolean (23,403,196 cycles, 0.08%)</title><rect x="622.3" y="69" width="1.2" height="15.0" fill="rgb(241,185,40)" rx="2" ry="2" />
+<text x="625.32" y="79.5" />
+</g>
+<g data-label="Runtime::execute_bytecode_callable">
+<title>quickjs_oxide::engine::vm::host_bridge::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::execute_bytecode_callable (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="149" width="1376.8" height="15.0" fill="rgb(241,141,40)" rx="2" ry="2" />
+<text x="15.34" y="159.5">Runtime::execute_bytecode_callable</text>
+</g>
+<g data-label="RuntimeVmHost::to_primitive">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::to_primitive (3,076,264,500 cycles, 11.08%)</title><rect x="894.0" y="69" width="152.9" height="15.0" fill="rgb(238,185,36)" rx="2" ry="2" />
+<text x="896.97" y="79.5">RuntimeVmHost::to_p..</text>
+</g>
+<g data-label="lang_start::{{closure}}">
+<title>std::rt::lang_start::{{closure}} (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="405" width="1380.0" height="15.0" fill="rgb(238,146,36)" rx="2" ry="2" />
+<text x="13.04" y="415.5">lang_start::{{closure}}</text>
+</g>
+<g data-label="Runtime::execute_bytecode_callable">
+<title>quickjs_oxide::engine::vm::host_bridge::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::execute_bytecode_callable (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="277" width="1376.8" height="15.0" fill="rgb(241,141,40)" rx="2" ry="2" />
+<text x="15.34" y="287.5">Runtime::execute_bytecode_callable</text>
+</g>
+<g data-label="Runtime::call_value_internal">
+<title>quickjs_oxide::engine::object::internal_methods::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::call_value_internal (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="181" width="1376.8" height="15.0" fill="rgb(229,141,27)" rx="2" ry="2" />
+<text x="15.34" y="191.5">Runtime::call_value_internal</text>
+</g>
+<g data-label="backtrace::__rust_begin_short_backtrace">
+<title>std::sys::backtrace::__rust_begin_short_backtrace (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="389" width="1380.0" height="15.0" fill="rgb(252,146,52)" rx="2" ry="2" />
+<text x="13.04" y="399.5">backtrace::__rust_begin_short_backtrace</text>
+</g>
+<g data-label="Runtime::define_own_property_in_realm">
+<title>quickjs_oxide::engine::object::properties::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::define_own_property_in_realm (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="277" width="0.4" height="15.0" fill="rgb(228,141,26)" rx="2" ry="2" />
+<text x="1392.59" y="287.5" />
+</g>
+<g data-label="JsString::eq">
+<title>&lt;quickjs_oxide::engine::value::primitive::JsString as core::cmp::PartialEq&gt;::eq (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="197" width="0.4" height="15.0" fill="rgb(240,185,39)" rx="2" ry="2" />
+<text x="1392.59" y="207.5" />
+</g>
+<g data-label="_start">
+<title>_start (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="485" width="1380.0" height="15.0" fill="rgb(239,139,37)" rx="2" ry="2" />
+<text x="13.04" y="495.5">_start</text>
+</g>
+<g data-label="VmActivation::pop_pair">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::pop_pair (93,155,226 cycles, 0.34%)</title><rect x="1154.8" y="69" width="4.6" height="15.0" fill="rgb(240,141,39)" rx="2" ry="2" />
+<text x="1157.76" y="79.5" />
+</g>
+<g data-label="Heap::release_raw_no_drain">
+<title>quickjs_oxide::engine::heap::gc::&lt;impl quickjs_oxide::engine::heap::Heap&gt;::release_raw_no_drain (23,143,873 cycles, 0.08%)</title><rect x="10.0" y="261" width="1.2" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="13.04" y="271.5" />
+</g>
+<g data-label="Runtime::value_to_boolean">
+<title>quickjs_oxide::engine::object::storage::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::value_to_boolean (139,466,577 cycles, 0.50%)</title><rect x="693.0" y="69" width="6.9" height="15.0" fill="rgb(241,141,40)" rx="2" ry="2" />
+<text x="695.98" y="79.5" />
+</g>
+<g data-label="host_bridge::read_frame_binding">
+<title>quickjs_oxide::engine::vm::host_bridge::read_frame_binding (1,489,653,577 cycles, 5.37%)</title><rect x="350.1" y="53" width="74.0" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="353.07" y="63.5">host_bri..</text>
+</g>
+<g data-label="drop&lt;Value&gt;">
+<title>core::ptr::drop_in_place&lt;quickjs_oxide::engine::value::Value&gt; (560,667,964 cycles, 2.02%)</title><rect x="665.1" y="69" width="27.9" height="15.0" fill="rgb(243,133,41)" rx="2" ry="2" />
+<text x="668.11" y="79.5">d..</text>
+</g>
+<g data-label="Runtime::to_primitive">
+<title>quickjs_oxide::engine::value::conversion::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::to_primitive (23,401,944 cycles, 0.08%)</title><rect x="1153.6" y="69" width="1.2" height="15.0" fill="rgb(238,141,36)" rx="2" ry="2" />
+<text x="1156.60" y="79.5" />
+</g>
+<g data-label="Runtime::define_function_data_property">
+<title>quickjs_oxide::engine::object::function_initialization::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::define_function_data_property (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="293" width="0.4" height="15.0" fill="rgb(242,141,41)" rx="2" ry="2" />
+<text x="1392.59" y="303.5" />
+</g>
+<g data-label="VmActivation::execute_inner">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute_inner (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="229" width="1376.8" height="15.0" fill="rgb(244,141,43)" rx="2" ry="2" />
+<text x="15.34" y="239.5">VmActivation::execute_inner</text>
+</g>
+<g data-label="Runtime::array_own_key">
+<title>quickjs_oxide::engine::object::properties::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::array_own_key (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="261" width="0.4" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="1392.59" y="271.5" />
+</g>
+<g data-label="VmActivation::execute">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="245" width="1376.8" height="15.0" fill="rgb(240,141,38)" rx="2" ry="2" />
+<text x="15.34" y="255.5">VmActivation::execute</text>
+</g>
+<g data-label="VmActivation::execute_inner">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute_inner (27,323,835,809 cycles, 98.42%)</title><rect x="30.9" y="101" width="1358.2" height="15.0" fill="rgb(244,141,43)" rx="2" ry="2" />
+<text x="33.95" y="111.5">VmActivation::execute_inner</text>
+</g>
+<g data-label="Vm::execute_published">
+<title>quickjs_oxide::engine::vm::protocol::Vm::execute_published (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="261" width="1376.8" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="15.34" y="271.5">Vm::execute_published</text>
+</g>
+<g data-label="Runtime::intern_property_key">
+<title>quickjs_oxide::engine::atom::runtime::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::intern_property_key (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="245" width="0.4" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="1392.59" y="255.5" />
+</g>
+<g data-label="activation::checked_target">
+<title>quickjs_oxide::engine::vm::activation::checked_target (253,372,801 cycles, 0.91%)</title><rect x="699.9" y="69" width="12.6" height="15.0" fill="rgb(237,141,35)" rx="2" ry="2" />
+<text x="702.91" y="79.5" />
+</g>
+<g data-label="Runtime::new_context">
+<title>quickjs_oxide::engine::realm::construction::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::new_context (17,457,833 cycles, 0.06%)</title><rect x="1389.1" y="341" width="0.9" height="15.0" fill="rgb(230,141,27)" rx="2" ry="2" />
+<text x="1392.13" y="351.5" />
+</g>
+<g data-label="Runtime::to_primitive">
+<title>quickjs_oxide::engine::value::conversion::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::to_primitive (46,813,738 cycles, 0.17%)</title><rect x="1382.1" y="53" width="2.4" height="15.0" fill="rgb(238,141,36)" rx="2" ry="2" />
+<text x="1385.15" y="63.5" />
+</g>
+<g data-label="VmActivation::pop">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::pop (70,258,971 cycles, 0.25%)</title><rect x="1384.5" y="85" width="3.5" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="1387.48" y="95.5" />
+</g>
+<g data-label="vec::Vec&lt;T,A&gt;::push_mut">
+<title>alloc::vec::Vec&lt;T,A&gt;::push_mut (70,341,761 cycles, 0.25%)</title><rect x="177.3" y="85" width="3.5" height="15.0" fill="rgb(236,128,34)" rx="2" ry="2" />
+<text x="180.34" y="95.5" />
+</g>
+<g data-label="Runtime::define_native_builtin_getter_on">
+<title>quickjs_oxide::engine::realm::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::define_native_builtin_getter_on (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="325" width="0.4" height="15.0" fill="rgb(246,141,45)" rx="2" ry="2" />
+<text x="1392.59" y="335.5" />
+</g>
+<g data-label="RuntimeVmHost::get_local">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::get_local (3,610,546,868 cycles, 13.01%)</title><rect x="424.1" y="69" width="179.5" height="15.0" fill="rgb(229,185,26)" rx="2" ry="2" />
+<text x="427.12" y="79.5">RuntimeVmHost::get_local</text>
+</g>
+<g data-label="__libc_start_call_main">
+<title>__libc_start_call_main (27,761,966,540 cycles, 100.00%)</title><rect x="10.0" y="453" width="1380.0" height="15.0" fill="rgb(247,154,46)" rx="2" ry="2" />
+<text x="13.04" y="463.5">__libc_start_call_main</text>
+</g>
+<g data-label="Runtime::call_internal">
+<title>quickjs_oxide::engine::builtins::dispatch::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::call_internal (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="165" width="1376.8" height="15.0" fill="rgb(229,141,27)" rx="2" ry="2" />
+<text x="15.34" y="175.5">Runtime::call_internal</text>
+</g>
+<g data-label="VmActivation::execute_hot_instruction">
+<title>quickjs_oxide::engine::vm::dispatch::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute_hot_instruction (374,261,434 cycles, 1.35%)</title><rect x="12.3" y="101" width="18.6" height="15.0" fill="rgb(247,141,46)" rx="2" ry="2" />
+<text x="15.34" y="111.5" />
+</g>
+<g data-label="RuntimeVmHost::to_primitive">
+<title>&lt;quickjs_oxide::engine::vm::host_bridge::RuntimeVmHost as quickjs_oxide::engine::vm::protocol::VmHost&gt;::to_primitive (23,286,002 cycles, 0.08%)</title><rect x="176.2" y="85" width="1.1" height="15.0" fill="rgb(238,185,36)" rx="2" ry="2" />
+<text x="179.18" y="95.5" />
+</g>
+<g data-label="Context::eval_bytes_with_filename">
+<title>quickjs_oxide::engine::api::context::script::&lt;impl quickjs_oxide::engine::api::context::Context&gt;::eval_bytes_with_filename (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="341" width="1376.8" height="15.0" fill="rgb(241,141,40)" rx="2" ry="2" />
+<text x="15.34" y="351.5">Context::eval_bytes_with_filename</text>
+</g>
+<g data-label="rc::Rc&lt;T,A&gt;::drop_slow">
+<title>alloc::rc::Rc&lt;T,A&gt;::drop_slow (46,411,464 cycles, 0.17%)</title><rect x="10.0" y="341" width="2.3" height="15.0" fill="rgb(238,128,36)" rx="2" ry="2" />
+<text x="13.04" y="351.5" />
+</g>
+<g data-label="Heap::finish_node">
+<title>quickjs_oxide::engine::heap::gc::&lt;impl quickjs_oxide::engine::heap::Heap&gt;::finish_node (23,143,873 cycles, 0.08%)</title><rect x="10.0" y="277" width="1.2" height="15.0" fill="rgb(250,141,49)" rx="2" ry="2" />
+<text x="13.04" y="287.5" />
+</g>
+<g data-label="Runtime::call_internal">
+<title>quickjs_oxide::engine::builtins::dispatch::&lt;impl quickjs_oxide::engine::api::runtime::Runtime&gt;::call_internal (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="293" width="1376.8" height="15.0" fill="rgb(229,141,27)" rx="2" ry="2" />
+<text x="15.34" y="303.5">Runtime::call_internal</text>
+</g>
+<g data-label="RuntimeState::unlink_finalized_shapes">
+<title>quickjs_oxide::engine::heap::runtime::RuntimeState::unlink_finalized_shapes (7,185,533 cycles, 0.03%)</title><rect x="1389.2" y="277" width="0.4" height="15.0" fill="rgb(241,141,39)" rx="2" ry="2" />
+<text x="1392.22" y="287.5" />
+</g>
+<g data-label="Context::execute">
+<title>quickjs_oxide::engine::api::context::calls::&lt;impl quickjs_oxide::engine::api::context::Context&gt;::execute (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="309" width="1376.8" height="15.0" fill="rgb(240,141,38)" rx="2" ry="2" />
+<text x="15.34" y="319.5">Context::execute</text>
+</g>
+<g data-label="AtomTable::intern_property_key_js_string">
+<title>quickjs_oxide::engine::atom::AtomTable::intern_property_key_js_string (8,229,961 cycles, 0.03%)</title><rect x="1389.6" y="213" width="0.4" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="1392.59" y="223.5" />
+</g>
+<g data-label="hashbrown::raw::RawTable&lt;T,A&gt;::remove_entry">
+<title>hashbrown::raw::RawTable&lt;T,A&gt;::remove_entry (7,182,859 cycles, 0.03%)</title><rect x="1389.2" y="261" width="0.4" height="15.0" fill="rgb(243,130,42)" rx="2" ry="2" />
+<text x="1392.22" y="271.5" />
+</g>
+<g data-label="host_bridge::write_frame_binding">
+<title>quickjs_oxide::engine::vm::host_bridge::write_frame_binding (23,400,926 cycles, 0.08%)</title><rect x="725.3" y="69" width="1.2" height="15.0" fill="rgb(243,141,42)" rx="2" ry="2" />
+<text x="728.34" y="79.5" />
+</g>
+<g data-label="VmActivation::execute">
+<title>quickjs_oxide::engine::vm::frame_execution::&lt;impl quickjs_oxide::engine::vm::activation::VmActivation&gt;::execute (27,698,097,243 cycles, 99.77%)</title><rect x="12.3" y="117" width="1376.8" height="15.0" fill="rgb(240,141,38)" rx="2" ry="2" />
+<text x="15.34" y="127.5">VmActivation::execute</text>
+</g>
+</g>
+</svg>

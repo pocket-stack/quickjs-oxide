@@ -66,52 +66,58 @@ jobs:
       - name: Check formatting and architecture gates
         run: |
           cargo fmt --all -- --check
-          ./scripts/check-binary-object-boundary.sh
-          ./scripts/check-no-test262-special-casing.sh
-          node scripts/check-test262-artifact-inventory.mjs
-          node scripts/check-bc5-pinned-atoms.mjs --self-test
-          node scripts/check-bc5-pinned-opcodes.mjs --self-test
-          node --check scripts/audit-negative-diagnostics.mjs
-          node --check scripts/test-negative-diagnostic-generator.mjs
-          node --check scripts/generate-test262-dynamic-import-a.mjs
-          node --check scripts/generate-test262-tla-core-a.mjs
-          node --check scripts/generate-test262-tla-b.mjs
-          node --check scripts/test-generate-test262-tla-b.mjs
-          node --check scripts/generate-test262-module-var-lexical-shadow-a.mjs
-          node --check scripts/generate-test262-module-local-binding-a.mjs
-          node --check scripts/generate-test262-module-import-attributes-a.mjs
-          node --check scripts/test-generate-test262-module-import-attributes-a.mjs
-          node --check scripts/generate-test262-module-json-a.mjs
-          node --check scripts/test-generate-test262-module-json-a.mjs
-          ./scripts/check-oracle-registry.sh
-          ./scripts/test-quickjs-fixtures.sh --validate
-          ./scripts/test-quickjs-c-oracles.sh --validate
-          ./scripts/test-quickjs-dynamic-import-trace.sh --validate
-          ./scripts/check-test262-host-boundary.sh
-          ./scripts/test-test262.sh --spec dev-support/test262/current.conf --check
-          ./scripts/test-test262.sh --spec dev-support/test262/current.conf --runner-provenance
-          node scripts/current-test262-metrics.mjs --check-docs
-          ./scripts/check-rust-only.sh
+          ./scripts/checks/check-binary-object-boundary.sh
+          PYTHONPATH=scripts/checks python3 -m unittest discover -s scripts/checks/binary_object/tests
+          python3 -m unittest discover -s scripts/benchmark -p 'test_*.py'
+          ./scripts/checks/check-no-test262-special-casing.sh
+          node scripts/checks/check-test262-artifact-inventory.mjs
+          node scripts/checks/check-bc5-pinned-atoms.mjs --self-test
+          node scripts/checks/check-bc5-pinned-opcodes.mjs --self-test
+          node --check scripts/test262/audit-negative-diagnostics.mjs
+          node --check scripts/test262/test-negative-diagnostic-generator.mjs
+          node --check scripts/test262/generate-test262-dynamic-import-a.mjs
+          node --check scripts/test262/generate-test262-tla-core-a.mjs
+          node --check scripts/test262/generate-test262-tla-b.mjs
+          node --check scripts/test262/test-generate-test262-tla-b.mjs
+          node --check scripts/test262/generate-test262-module-var-lexical-shadow-a.mjs
+          node --check scripts/test262/generate-test262-module-local-binding-a.mjs
+          node --check scripts/test262/generate-test262-module-import-attributes-a.mjs
+          node --check scripts/test262/test-generate-test262-module-import-attributes-a.mjs
+          node --check scripts/test262/generate-test262-module-json-a.mjs
+          node --check scripts/test262/test-generate-test262-module-json-a.mjs
+          ./scripts/checks/check-oracle-registry.sh
+          python3 scripts/checks/test-oracle-registry.py
+          ./scripts/quickjs/test-quickjs-fixtures.sh --validate
+          ./scripts/quickjs/test-quickjs-c-oracles.sh --validate
+          ./scripts/quickjs/test-quickjs-dynamic-import-trace.sh --validate
+          ./scripts/checks/check-test262-host-boundary.sh
+          ./scripts/test262/test-test262.sh --spec dev-support/test262/current.conf --check
+          ./scripts/test262/test-test262.sh --spec dev-support/test262/current.conf --runner-provenance
+          node scripts/test262/current-test262-metrics.mjs --check-docs
+          python3 scripts/checks/check-source-layout.py
+          ./scripts/checks/check-rust-only.sh
 
       - name: Run fast engine tests
         run: |
-          cargo test --locked --workspace --lib --bins
-          cargo test --locked -p quickjs-oxide --features test262-host --lib --bins
-          cargo test --locked --test cli
-          cargo test --locked --test oracle
+          cargo test --locked --workspace --all-targets
+          cargo test --locked -p quickjs-oxide-cli --features profiling --test profiling --bin qjs
+          cargo test --locked -p quickjs-oxide --features profiling --lib profiling_
+          cargo test --locked --workspace --doc
+          cargo test --locked --workspace --features test262-host --lib --bins
           cargo test --locked --features test262-host \
             --test unsupported_diagnostics
           cargo test --locked --features test262-host \
             --test oracle test262_
-          ./scripts/check-oracle-registry.sh --compiled
+          ./scripts/checks/check-oracle-registry.sh --compiled
 
       - name: Lint production targets
         run: |
           cargo clippy --locked --workspace --lib --bins -- -D warnings
+          cargo clippy --locked -p quickjs-oxide-cli --features profiling --bin qjs -- -D warnings
           cargo clippy --locked --test oracle -- -D warnings
-          cargo clippy --locked -p quickjs-oxide --features test262-host \
+          cargo clippy --locked --workspace --features test262-host \
             --lib --bins -- -D warnings
-          cargo clippy --locked -p quickjs-oxide --features test262-host \
+          cargo clippy --locked --workspace --features test262-host \
             --test unsupported_diagnostics --test oracle \
             -- -D warnings
 
@@ -149,67 +155,67 @@ jobs:
           key: >-
             ${{ runner.os }}-differential-${{ env.RUST_VERSION }}-${{
             hashFiles('Cargo.lock', 'compat/upstream.toml',
-            'scripts/build-quickjs-oracle.sh', 'scripts/prepare-test262.sh') }}
+            'scripts/quickjs/build-quickjs-oracle.sh', 'scripts/test262/prepare-test262.sh') }}
           restore-keys: |
             ${{ runner.os }}-differential-${{ env.RUST_VERSION }}-
 
       - name: Run the pinned QuickJS differential corpus
         run: |
-          oracle_source=$(./scripts/build-quickjs-oracle.sh --test262-oracles)
+          oracle_source=$(./scripts/quickjs/build-quickjs-oracle.sh --test262-oracles)
           oracle="$oracle_source/qjs"
-          node scripts/check-bc5-pinned-atoms.mjs \
+          node scripts/checks/check-bc5-pinned-atoms.mjs \
             --source "$oracle_source/quickjs-atom.h"
-          node scripts/check-bc5-pinned-opcodes.mjs \
+          node scripts/checks/check-bc5-pinned-opcodes.mjs \
             --source "$oracle_source/quickjs-opcode.h"
           QJS_ORACLE_ARCHIVE_FIXTURE="$QJS_ORACLE_CACHE/quickjs-2026-06-04.tar.xz" \
-            ./scripts/test-build-quickjs-oracle-cache.sh
+            ./scripts/quickjs/test-build-quickjs-oracle-cache.sh
           QJS_ORACLE_ARCHIVE="$QJS_ORACLE_CACHE/quickjs-2026-06-04.tar.xz" \
-            ./scripts/test-quickjs-dynamic-import-trace.sh
-          suite=$(./scripts/prepare-test262.sh)
-          node scripts/generate-test262-dynamic-import-a.mjs \
+            ./scripts/quickjs/test-quickjs-dynamic-import-trace.sh
+          suite=$(./scripts/test262/prepare-test262.sh)
+          node scripts/test262/generate-test262-dynamic-import-a.mjs \
             --suite "$suite" --check-current
-          node scripts/generate-test262-tla-core-a.mjs \
+          node scripts/test262/generate-test262-tla-core-a.mjs \
             --suite "$suite" --check-current
-          node scripts/test-generate-test262-tla-b.mjs --suite "$suite"
-          node scripts/generate-test262-tla-b.mjs \
+          node scripts/test262/test-generate-test262-tla-b.mjs --suite "$suite"
+          node scripts/test262/generate-test262-tla-b.mjs \
             --suite "$suite" --check-current
-          node scripts/generate-test262-module-var-lexical-shadow-a.mjs \
+          node scripts/test262/generate-test262-module-var-lexical-shadow-a.mjs \
             --suite "$suite" \
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf" \
             --check-current
-          node scripts/generate-test262-module-local-binding-a.mjs \
+          node scripts/test262/generate-test262-module-local-binding-a.mjs \
             --suite "$suite" \
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf" \
             --check-current
-          node scripts/audit-negative-diagnostics.mjs \
+          node scripts/test262/audit-negative-diagnostics.mjs \
             --contracts dev-support/test262/negative-diagnostics.tsv \
             --rules dev-support/test262/negative-diagnostic-rules.tsv \
             --suite "$suite" --qjs "$oracle"
-          node scripts/test-generate-test262-module-import-attributes-a.mjs \
+          node scripts/test262/test-generate-test262-module-import-attributes-a.mjs \
             --suite "$suite" \
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf"
-          node scripts/generate-test262-module-import-attributes-a.mjs \
+          node scripts/test262/generate-test262-module-import-attributes-a.mjs \
             --suite "$suite" \
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf" \
             --check-current
-          node scripts/test-generate-test262-module-json-a.mjs \
+          node scripts/test262/test-generate-test262-module-json-a.mjs \
             --suite "$suite" \
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf"
-          node scripts/generate-test262-module-json-a.mjs \
+          node scripts/test262/generate-test262-module-json-a.mjs \
             --suite "$suite" \
             --quickjs-runner "$oracle_source/run-test262" \
             --quickjs-config "$oracle_source/test262.conf" \
             --check-current
           cargo build --locked --bin qjs
-          node scripts/test-negative-diagnostic-generator.mjs \
+          node scripts/test262/test-negative-diagnostic-generator.mjs \
             --suite "$suite" --qjs "$oracle" --oxide ./target/debug/qjs
-          ./scripts/test-quickjs-fixtures.sh --all --oxide ./target/debug/qjs
-          ./scripts/test-quickjs-c-oracles.sh --check
+          ./scripts/quickjs/test-quickjs-fixtures.sh --all --oxide ./target/debug/qjs
+          ./scripts/quickjs/test-quickjs-c-oracles.sh --check
           QJS_ORACLE="$oracle" cargo test --locked --workspace --all-targets \
             --features test262-host
 
@@ -250,12 +256,12 @@ jobs:
           key: >-
             ${{ runner.os }}-test262-${{ env.RUST_VERSION }}-${{
             hashFiles('Cargo.lock', 'compat/upstream.toml',
-            'scripts/build-quickjs-oracle.sh', 'scripts/prepare-test262.sh') }}
+            'scripts/quickjs/build-quickjs-oracle.sh', 'scripts/test262/prepare-test262.sh') }}
           restore-keys: |
             ${{ runner.os }}-test262-${{ env.RUST_VERSION }}-
 
       - name: Check the Test262 receipt boundary
-        run: ./scripts/check-binary-object-boundary.sh --scan-only .
+        run: ./scripts/checks/check-binary-object-boundary.sh --scan-only .
 
       - name: Run the complete frozen Test262 vector
         env:
@@ -266,7 +272,7 @@ jobs:
           set -o pipefail
           set +e
           mkdir -p target
-          ./scripts/test-test262.sh --spec dev-support/test262/current.conf --full \
+          ./scripts/test262/test-test262.sh --spec dev-support/test262/current.conf --full \
             2>&1 | tee target/test262-full.log
           pipeline_status=("${PIPESTATUS[@]}")
           set -e
@@ -432,7 +438,7 @@ jobs:
             "--root", root,
             "--worktree",
             "--files", required(spec, "engine_semantics_files"),
-            "--trees", required(spec, "engine_semantics_trees"),
+            "--trees", "adapters,apps,conformance,examples,src,tests",
           ], {
             encoding: "utf8",
             stdio: ["ignore", "pipe", "inherit"],

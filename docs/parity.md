@@ -11,7 +11,7 @@
 - `VERSION` 为 `2026-06-04`；
 - 字节码版本是 `quickjs.c` 中的 `BC_VERSION = 5`；
 - Unicode 数据版本是 `libunicode.h` 中的 `17.0.0`；
-- Test262 固定为 `Makefile` 中的提交 `5c8206929d81b2d3d727ca6aac56c18358c8d790`，并应用 `tests/test262.patch`；
+- Test262 固定为 `Makefile` 中的提交 `5c8206929d81b2d3d727ca6aac56c18358c8d790`，并应用 `crates/quickjs-oxide/tests/test262.patch`；
 - Test262 的启用/跳过范围以该发布包的 `test262.conf`、`test262o.conf` 为准，已知结果以 `test262_errors.txt`、`test262o_errors.txt` 为准。发布包当前分别记录 58 行和 0 行已知错误；这个行数只能做完整性校验，不能替代逐测试结果比对。
 
 在 CI 接受任何 parity 结果前，仓库必须记录官方源码包的来源、SHA-256 和解包后文件清单。测试报告也必须带上基线 SHA-256、目标三元组、编译选项和 Test262 提交，避免同名版本漂移。
@@ -93,7 +93,7 @@
 
 ## 7. Test262 门禁
 
-Test262 必须由仓库脚本一键从固定提交准备，应用上游 `tests/test262.patch`，并分别运行现代套件和旧 ES5.1 套件。门禁至少等价于上游的 `make test2-check`、`make test2` 和 `make test2o` 路径。
+Test262 必须由仓库脚本一键从固定提交准备，应用上游 `crates/quickjs-oxide/tests/test262.patch`，并分别运行现代套件和旧 ES5.1 套件。门禁至少等价于上游的 `make test2-check`、`make test2` 和 `make test2o` 路径。
 
 结果判定采用逐测试 outcome vector，而不是总通过率：
 
@@ -144,7 +144,7 @@ Rust-first API 可以更符合 Rust 习惯，但它不能代替 QuickJS 的嵌�
 - atoms/strings/UTF-8-CESU-8 转换、numeric/BigInt coercion、objects/arrays/property descriptors/prototypes/enumeration；
 - `JS_Call*`、`JS_Eval*`、JSON、ArrayBuffer/TypedArray/SAB、Promise/job、interrupt、memory allocator/limit、class/exotic/finalizer/gc_mark；
 - module loader/C module、`JS_WriteObject*`/`JS_ReadObject`、print/memory usage，以及 `quickjs-libc.h` 的 helpers/event loop；
-- upstream `examples/fib.c`、`examples/point.c`、`tests/bjson.c` 及额外 ownership/error fixture 在不改业务逻辑的情况下，针对 Rust header/library 编译、链接并通过；
+- upstream `examples/fib.c`、`examples/point.c`、`crates/quickjs-oxide/tests/bjson.c` 及额外 ownership/error fixture 在不改业务逻辑的情况下，针对 Rust header/library 编译、链接并通过；
 - C ABI sanitizer/valgrind 类测试和 Rust Miri/并发模型能覆盖跨边界 use-after-free、double-free、panic unwind、callback re-entry 与 allocator failure。
 
 若某个平台的 C ABI 尚未验证，只能声明该平台的 Rust API 可用，不能声明完整 QuickJS API parity。
@@ -160,7 +160,7 @@ QuickJS 自己声明字节码与具体版本绑定且不应加载不可信输入
 - `JS_WRITE/READ_OBJ_BYTECODE`、`BSWAP`、`SAB`、`REFERENCE`、ROM-data 读取、循环/共享对象图均有正反向 fixture；
 - source/debug stripping、filename/line table、stack trace、atom table、closure var refs、module imports/attributes 和 JSON module 数据跨引擎保持；
 - malformed/truncated/wrong-version 输入与 oracle 产生相同类别的失败，且 Rust 不 panic 或越界；这不改变“仅信任字节码”的产品警告；
-- `tests/test_bjson.js` 覆盖的 Date、boxed primitives、TypedArray/ArrayBuffer、共享引用和 cycle 必须交叉读取验证，而不只是 Rust 自己 round-trip。
+- `crates/quickjs-oxide/tests/test_bjson.js` 覆盖的 Date、boxed primitives、TypedArray/ArrayBuffer、共享引用和 cycle 必须交叉读取验证，而不只是 Rust 自己 round-trip。
 
 只做到“本引擎能读取自己生成的私有格式”，或让 `qjsc` 退化成打包源码，都不算 bytecode parity。
 
@@ -174,7 +174,7 @@ QuickJS 自己声明字节码与具体版本绑定且不应加载不可信输入
 - `js_module_loader` 的相对路径、system module、JSON import attribute、native `.so` module 行为一致；
 - `js_std_loop` 同时驱动 Promise jobs、fd handlers、timers、worker ports，并保持 queue ordering 和退出条件；
 - `js_std_await`、unhandled rejection tracking、异常打印和 async 错误出口一致；
-- `tests/test_std.js`、`test_rw_handler.js`、进程/信号/文件/定时器的隔离 integration tests 在每个支持平台通过，无权限的 CI 能力必须有明确的平台 runner，而不是 skip 后仍宣布 parity。
+- `crates/quickjs-oxide/tests/test_std.js`、`test_rw_handler.js`、进程/信号/文件/定时器的隔离 integration tests 在每个支持平台通过，无权限的 CI 能力必须有明确的平台 runner，而不是 skip 后仍宣布 parity。
 
 只实现 `print` 和文件读取，或把 `std`/`os` 永久定义为“宿主自行提供”，不符合 QuickJS CLI feature parity。
 
@@ -222,7 +222,7 @@ BigInt 门禁对照 `js_bigint_*` 的任意精度二补数语义和 short-BigInt
 - `BigInt.asIntN/asUintN`、BigInt typed arrays、DataView、Atomics；
 - C API `JS_NewBigInt64`/`JS_NewBigUint64`/`JS_ToBigInt64` 及 bytecode/BJSON round-trip。
 
-除 upstream tests/Test262 外，使用独立任意精度模型生成可复现随机向量，并对 oracle、Rust 和模型三方比较。固定 64/128 位整数实现不可能满足此门禁。
+除 upstream crates/quickjs-oxide/tests/Test262 外，使用独立任意精度模型生成可复现随机向量，并对 oracle、Rust 和模型三方比较。固定 64/128 位整数实现不可能满足此门禁。
 
 ## 17. Module 门禁
 
@@ -249,7 +249,7 @@ module parser/linker/evaluator 必须覆盖 static import/export、live bindings
 - primitives、BigInt、ArrayBuffer/TypedArray、循环/共享引用图、SAB+Atomics 的跨线程行为；
 - worker 异常/unhandled rejection、父子提前退出、队列 drain、资源释放和大量并发消息；
 - 上游明确禁止 worker 内再创建 worker 的行为及错误；
-- `tests/test_worker.js`/`test_worker_module.js` 不修改通过，并有 stress/GC/teardown/TSAN 类测试证明无丢消息、死锁和 use-after-free。
+- `crates/quickjs-oxide/tests/test_worker.js`/`test_worker_module.js` 不修改通过，并有 stress/GC/teardown/TSAN 类测试证明无丢消息、死锁和 use-after-free。
 
 用同线程 task 模拟而改变隔离/阻塞语义，或只支持 JSON message，不是 Worker parity。
 

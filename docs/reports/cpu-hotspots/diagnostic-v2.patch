@@ -1,0 +1,638 @@
+--- a/src/engine/realm/construction.rs
++++ b/src/engine/realm/construction.rs
+@@ -13,6 +13,8 @@
+ impl Runtime {
+     #[must_use]
+     pub fn new_context(&self) -> Context {
++        crate::diagnostic_probe::add(0, 1);
++        let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(1);
+         let _operation = self.operation();
+         let id = self.0.next_context_id.get();
+         self.0.next_context_id.set(
+@@ -166,12 +168,23 @@
+             .heap
+             .attach_native_function_realm(function_prototype.object_id(), realm)
+             .expect("Function.prototype defining-realm attachment must succeed");
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(2);
+         self.initialize_function_restricted_properties(realm, &function_prototype)
+             .expect("Function restricted-property initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(3);
+         self.initialize_object_prototype_intrinsics(realm, &object_prototype)
+             .expect("Object.prototype intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(4);
+         self.initialize_function_prototype_methods(realm, &function_prototype)
+             .expect("Function.prototype method initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(5);
+         self.initialize_error_intrinsics(
+             realm,
+             &function_prototype,
+@@ -180,6 +193,9 @@
+             &global_object,
+         )
+         .expect("Error intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(6);
+         self.initialize_array_intrinsics(
+             realm,
+             &function_prototype,
+@@ -188,6 +204,9 @@
+             &global_object,
+         )
+         .expect("Array intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(7);
+         self.initialize_object_intrinsic(
+             realm,
+             &function_prototype,
+@@ -195,10 +214,16 @@
+             &global_object,
+         )
+         .expect("Object intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(8);
+         self.initialize_function_constructor(realm, &function_prototype, &global_object)
+             .expect("Function constructor initialization must succeed");
++        }
+         // QuickJS installs `%Iterator%` after Function and before the global
+         // function-list prefix. This is observable in global own-key order.
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(9);
+         self.initialize_iterator_intrinsic(
+             realm,
+             &function_prototype,
+@@ -206,17 +231,32 @@
+             &global_object,
+         )
+         .expect("Iterator intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(10);
+         self.initialize_global_functions_prefix(realm, &function_prototype, &global_object)
+             .expect("global function-list prefix initialization must succeed");
++        }
+         // QuickJS's `js_global_funcs` table places these constants immediately
+         // before @@toStringTag; the complete table precedes Number and Boolean.
+         // Preserve the implemented entries' relative bootstrap order here.
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(11);
+         self.initialize_global_primitive_constants(&global_object)
+             .expect("global primitive constant initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(12);
+         self.initialize_global_to_string_tag(&global_object)
+             .expect("global toStringTag initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(13);
+         self.initialize_eval_intrinsic(realm, &function_prototype, &global_object)
+             .expect("eval intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(14);
+         self.initialize_number_intrinsic(
+             realm,
+             &function_prototype,
+@@ -224,6 +264,9 @@
+             &global_object,
+         )
+         .expect("Number intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(15);
+         self.initialize_boolean_intrinsic(
+             realm,
+             &function_prototype,
+@@ -231,20 +274,38 @@
+             &global_object,
+         )
+         .expect("Boolean intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(16);
+         self.initialize_string_prototype_methods(realm, &string_prototype)
+             .expect("String prototype method initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(17);
+         self.initialize_string_conversion_core(realm, &string_prototype)
+             .expect("String conversion-core initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(18);
+         self.initialize_string_case_methods(realm, &string_prototype)
+             .expect("String case-method initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(19);
+         self.initialize_string_iterator_intrinsics(
+             realm,
+             &string_prototype,
+             &string_iterator_prototype,
+         )
+         .expect("String iterator intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(20);
+         self.initialize_string_annex_b_html_methods(realm, &string_prototype)
+             .expect("String Annex-B HTML method initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(21);
+         self.initialize_string_constructor_intrinsic(
+             realm,
+             &function_prototype,
+@@ -252,12 +313,24 @@
+             &global_object,
+         )
+         .expect("String constructor intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(22);
+         self.initialize_string_normalize_intrinsic(realm, &string_prototype)
+             .expect("String Unicode intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(23);
+         self.initialize_math_intrinsic(realm, &global_object)
+             .expect("Math intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(24);
+         self.initialize_reflect_intrinsic(realm, &global_object)
+             .expect("Reflect intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(25);
+         self.initialize_symbol_intrinsic(
+             realm,
+             &function_prototype,
+@@ -265,17 +338,29 @@
+             &global_object,
+         )
+         .expect("Symbol intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(26);
+         self.initialize_generator_intrinsic(realm, &function_prototype, &iterator_prototype)
+             .expect("Generator intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(27);
+         self.initialize_async_function_intrinsic(realm, &function_prototype)
+             .expect("AsyncFunction intrinsic initialization must succeed");
++        }
+         // Upstream installs `globalThis` after String/Math/Reflect/Symbol and
+         // generator setup, then installs BigInt. The remaining intervening
+         // intrinsics are absent here, but this boundary preserves the
+         // implemented `Boolean, String, Math, Reflect, Symbol, globalThis,
+         // BigInt, Date, RegExp, JSON` relative order.
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(28);
+         self.initialize_global_this(&global_object)
+             .expect("globalThis initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(29);
+         self.initialize_bigint_intrinsic(
+             realm,
+             &function_prototype,
+@@ -283,8 +368,14 @@
+             &global_object,
+         )
+         .expect("BigInt intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(30);
+         self.initialize_date_intrinsic(realm, &function_prototype, &date_prototype, &global_object)
+             .expect("Date intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(31);
+         self.initialize_regexp_intrinsic(
+             realm,
+             &function_prototype,
+@@ -293,12 +384,21 @@
+             &global_object,
+         )
+         .expect("RegExp intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(32);
+         self.initialize_json_intrinsic(realm, &global_object)
+             .expect("JSON intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(33);
+         self.initialize_proxy_intrinsic(realm, &function_prototype, &global_object)
+             .expect("Proxy intrinsic initialization must succeed");
++        }
+         // Pinned QuickJS installs strong/weak collection intrinsics after
+         // Proxy.
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(34);
+         self.initialize_map_intrinsic(
+             realm,
+             &function_prototype,
+@@ -307,6 +407,9 @@
+             &global_object,
+         )
+         .expect("Map intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(35);
+         self.initialize_set_intrinsic(
+             realm,
+             &function_prototype,
+@@ -315,6 +418,9 @@
+             &global_object,
+         )
+         .expect("Set intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(36);
+         self.initialize_weak_collection_intrinsics(
+             realm,
+             &function_prototype,
+@@ -322,6 +428,9 @@
+             &global_object,
+         )
+         .expect("WeakMap/WeakSet intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(37);
+         self.initialize_array_buffer_intrinsic(
+             realm,
+             &function_prototype,
+@@ -329,6 +438,9 @@
+             &global_object,
+         )
+         .expect("ArrayBuffer intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(38);
+         self.initialize_shared_array_buffer_intrinsic(
+             realm,
+             &function_prototype,
+@@ -336,6 +448,9 @@
+             &global_object,
+         )
+         .expect("SharedArrayBuffer intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(39);
+         self.initialize_typed_array_intrinsics(
+             realm,
+             &function_prototype,
+@@ -343,6 +458,9 @@
+             &global_object,
+         )
+         .expect("TypedArray intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(40);
+         self.initialize_data_view_intrinsic(
+             realm,
+             &function_prototype,
+@@ -350,8 +468,14 @@
+             &global_object,
+         )
+         .expect("DataView intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(41);
+         self.initialize_atomics_intrinsic(realm, &global_object)
+             .expect("Atomics intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(42);
+         self.initialize_promise_intrinsic(
+             realm,
+             &function_prototype,
+@@ -359,8 +483,14 @@
+             &global_object,
+         )
+         .expect("Promise intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(43);
+         self.initialize_async_generator_intrinsic(realm, &function_prototype, &object_prototype)
+             .expect("AsyncGenerator intrinsic initialization must succeed");
++        }
++        {
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(44);
+         self.initialize_weak_ref_intrinsics(
+             realm,
+             &function_prototype,
+@@ -368,6 +498,7 @@
+             &global_object,
+         )
+         .expect("WeakRef intrinsic initialization must succeed");
++        }
+         drop(global_var_object);
+         drop(global_object);
+         drop(uninitialized_vars);
+--- a/src/engine/heap/runtime/mod.rs
++++ b/src/engine/heap/runtime/mod.rs
+@@ -245,12 +245,16 @@
+         prototype: Option<ObjectId>,
+         entries: &[ShapeEntry],
+     ) -> Result<ShapeId, RuntimeError> {
++        crate::diagnostic_probe::add(49, 1);
++        crate::diagnostic_probe::add(50, entries.len() as u64);
++        let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(51);
+         let fingerprint = ShapeFingerprint {
+             prototype,
+             entries: entries.into(),
+         };
+         if let Some(&shape) = self.shape_cache.get(&fingerprint) {
+             if self.heap.shape(shape).is_ok() {
++                crate::diagnostic_probe::add(52, 1);
+                 self.heap.retain_shape(shape)?;
+                 return Ok(shape);
+             }
+@@ -341,6 +345,10 @@
+         entries: &[ShapeEntry],
+         slots: Vec<PropertySlot>,
+     ) -> Result<(), RuntimeError> {
++        crate::diagnostic_probe::add(45, 1);
++        crate::diagnostic_probe::add(46, entries.len() as u64);
++        crate::diagnostic_probe::add(47, slots.len() as u64);
++        let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(48);
+         let shape = self.get_or_create_shape(prototype, entries)?;
+         let retained_atoms = match self.retain_slot_atoms(&slots) {
+             Ok(atoms) => atoms,
+--- a/src/engine/heap/gc.rs
++++ b/src/engine/heap/gc.rs
+@@ -976,6 +976,10 @@
+         &mut self,
+         edges: &[RawId],
+     ) -> Result<(), HeapError> {
++        crate::diagnostic_probe::add(53, 1);
++        crate::diagnostic_probe::add(54, edges.len() as u64);
++        let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(55);
++        crate::diagnostic_probe::add(match edges.len() { 0 => 56, 1 => 57, 2 => 58, _ => 59 }, 1);
+         let mut counts = HashMap::<RawId, u32>::new();
+         for &edge in edges {
+             let count = counts.entry(edge).or_default();
+@@ -1074,8 +1078,11 @@
+     }
+ 
+     pub(super) fn drain_zero_queue(&mut self) -> Result<HeapCleanup, HeapError> {
++        crate::diagnostic_probe::add(60, 1);
++        if self.zero_queue.is_empty() { crate::diagnostic_probe::add(61, 1); }
+         let mut cleanup = HeapCleanup::default();
+         while let Some(id) = self.zero_queue.pop_front() {
++            crate::diagnostic_probe::add(62, 1);
+             let index = self.validate_slot_identity(id)?;
+             let node = {
+                 let slot = &mut self.slots[index];
+--- a/src/engine/heap/ownership.rs
++++ b/src/engine/heap/ownership.rs
+@@ -13,9 +13,11 @@
+     }
+ 
+     pub(crate) fn drain_deferred_references(&self) -> Result<(), RuntimeError> {
++        crate::diagnostic_probe::add(63, 1);
+         loop {
+             let operation = self.0.deferred_references.borrow_mut().pop_front();
+             let Some(operation) = operation else {
++                crate::diagnostic_probe::add(64, 1);
+                 return Ok(());
+             };
+             let Ok(mut state) = self.0.state.try_borrow_mut() else {
+@@ -25,6 +27,7 @@
+                     .push_front(operation);
+                 return Ok(());
+             };
++            crate::diagnostic_probe::add(65, 1);
+             match operation {
+                 DeferredRefOp::Object(object) => {
+                     let cleanup = state.heap.release_object(object)?;
+@@ -73,6 +76,7 @@
+     }
+ 
+     pub(crate) fn retain_object_handle(&self, id: ObjectId) -> Result<(), HeapError> {
++        crate::diagnostic_probe::add(67, 1);
+         let mut state = self.0.state.try_borrow_mut().map_err(|_| {
+             HeapError::Invariant("object root retained during a runtime state borrow")
+         })?;
+@@ -80,6 +84,7 @@
+     }
+ 
+     pub(crate) fn release_object_handle(&self, id: ObjectId) {
++        crate::diagnostic_probe::add(66, 1);
+         let result = if let Ok(mut state) = self.0.state.try_borrow_mut() {
+             let result = state.heap.release_object(id).map_err(RuntimeError::Heap);
+             result.and_then(|cleanup| state.apply_cleanup(cleanup))
+--- a/src/engine/object/properties.rs
++++ b/src/engine/object/properties.rs
+@@ -190,6 +190,7 @@
+         object: &ObjectRef,
+         key: &PropertyKey,
+     ) -> Result<Option<CompleteOrdinaryPropertyDescriptor>, RuntimeError> {
++        crate::diagnostic_probe::add(68, 1);
+         let _operation = self.operation();
+         self.validate_object_and_key(object, key)?;
+         if self.typed_array_is_object(object)?
+@@ -831,10 +832,12 @@
+         object: &ObjectRef,
+         key: &PropertyKey,
+     ) -> Result<ArrayOwnKey, RuntimeError> {
++        crate::diagnostic_probe::add(81, 1);
+         let length = self.intern_property_key("length")?;
+         let state = self.0.state.borrow();
+         let object_data = state.heap.object(object.object_id())?;
+         if !matches!(object_data.payload, ObjectPayload::Array { .. }) {
++            crate::diagnostic_probe::add(82, 1);
+             return Ok(ArrayOwnKey::Other);
+         }
+         if key == &length {
+--- a/src/engine/vm/host_bridge.rs
++++ b/src/engine/vm/host_bridge.rs
+@@ -133,6 +133,8 @@
+ }
+ 
+ fn read_frame_binding(runtime: &Runtime, binding: &FrameBinding) -> Result<Value, Error> {
++        crate::diagnostic_probe::add(85, 1);
++        if matches!(binding, FrameBinding::Direct(_)) { crate::diagnostic_probe::add(86, 1); }
+     match binding {
+         FrameBinding::Direct(value) => Ok(value.clone()),
+         FrameBinding::Private(_) | FrameBinding::PrivateCallable(_) => Err(Error::internal(
+@@ -1545,6 +1547,8 @@
+     }
+ 
+     fn constant_property_key(&self, index: u32) -> Result<PropertyKey, Error> {
++        crate::diagnostic_probe::add(69, 1);
++        let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(70);
+         let name = match usize::try_from(index)
+             .ok()
+             .and_then(|index| self.constants.get(index))
+@@ -2750,6 +2754,8 @@
+     }
+ 
+     fn to_primitive(&mut self, value: Value, hint: ToPrimitiveHint) -> Result<Completion, Error> {
++        crate::diagnostic_probe::add(83, 1);
++        if matches!(value, Value::Int(_) | Value::Float(_)) { crate::diagnostic_probe::add(84, 1); }
+         self.runtime
+             .to_primitive(self.current_realm, value, hint)
+             .map_err(runtime_error_to_vm_error)
+@@ -3760,6 +3766,7 @@
+     }
+ 
+     fn get_field(&mut self, base: Value, key_index: u32) -> Result<Completion, Error> {
++        crate::diagnostic_probe::add(71, 1);
+         let key = self.constant_property_key(key_index)?;
+         self.get_property_with_key(base, &key, true)
+     }
+--- a/src/engine/atom/mod.rs
++++ b/src/engine/atom/mod.rs
+@@ -473,6 +473,7 @@
+     ///
+     /// Returns the same errors as [`Self::intern_js_string`].
+     pub fn intern_property_key_js_string(&mut self, text: &JsString) -> Result<Atom, AtomError> {
++        crate::diagnostic_probe::add(72, 1);
+         self.intern_js_string(text)
+     }
+ 
+--- a/src/engine/value/primitive.rs
++++ b/src/engine/value/primitive.rs
+@@ -649,6 +649,9 @@
+ 
+ impl Utf16Units {
+     fn new(string: &JsString) -> Self {
++        crate::diagnostic_probe::add(73, 1);
++        crate::diagnostic_probe::add(74, string.len() as u64);
++        if matches!(string.0.as_ref(), StringRepr::Rope(_)) { crate::diagnostic_probe::add(75, 1); } else { crate::diagnostic_probe::add(76, 1); }
+         let mut iterator = Self {
+             stack: std::array::from_fn(|_| None),
+             stack_len: 0,
+@@ -1880,6 +1883,8 @@
+ 
+ impl PartialEq for JsString {
+     fn eq(&self, other: &Self) -> bool {
++        crate::diagnostic_probe::add(77, 1);
++        if !Rc::ptr_eq(&self.0, &other.0) && self.len() == other.len() { crate::diagnostic_probe::add(78, 1); }
+         Rc::ptr_eq(&self.0, &other.0)
+             || (self.len() == other.len() && self.utf16_units().eq(other.utf16_units()))
+     }
+--- a/src/engine/api/context/script.rs
++++ b/src/engine/api/context/script.rs
+@@ -173,7 +173,11 @@
+             .runtime
+             .install_backtrace_barrier(options.backtrace_barrier)?;
+         let result = (|| {
+-            let function = compile(self, &CompileOptions::new(&options.filename))?;
++            let function = {
++                let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(79);
++                compile(self, &CompileOptions::new(&options.filename))?
++            };
++            let _cpu_probe_timer = crate::diagnostic_probe::Timer::new(80);
+             self.execute(&function)
+         })();
+         barrier.finish()?;
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -18,6 +18,8 @@
+ /// ```compile_fail
+ /// use quickjs_oxide::engine::vm::Vm;
+ /// ```
++#[doc(hidden)]
++pub mod diagnostic_probe;
+ pub mod engine;
+ pub mod regexp;
+ pub mod source;
+--- a/apps/cli/src/main.rs
++++ b/apps/cli/src/main.rs
+@@ -117,6 +117,7 @@
+ }
+ 
+ fn main() -> ExitCode {
++    let _cpu_probe_report = quickjs_oxide::diagnostic_probe::ReportGuard::new();
+     let args = std::env::args().skip(1).collect::<Vec<_>>();
+     let mut profile = profiling::Options::default();
+     let mut debug_info = DebugInfoMode::Full;
+--- a/src/engine/vm/numeric_execution.rs
++++ b/src/engine/vm/numeric_execution.rs
+@@ -50,6 +50,7 @@
+         increment: bool,
+         postfix: bool,
+     ) -> Result<OperationOutcome<()>, Error> {
++        crate::diagnostic_probe::add(87, 1);
+         let operand = match host.to_primitive(self.pop()?, ToPrimitiveHint::Number)? {
+             Completion::Return(value) => value,
+             Completion::Throw(value) => return Ok(OperationOutcome::Throw(value)),
+--- /dev/null
++++ b/src/diagnostic_probe.rs
+@@ -0,0 +1,61 @@
++//! Temporary investigation instrumentation; not a product API.
++use std::cell::Cell;
++use std::time::Instant;
++const N: usize = 88;
++const NAMES: [&str; N] = ["context_calls", "context_total", "context_stage_initialize_function_restricted_properties", "context_stage_initialize_object_prototype_intrinsics", "context_stage_initialize_function_prototype_methods", "context_stage_initialize_error_intrinsics", "context_stage_initialize_array_intrinsics", "context_stage_initialize_object_intrinsic", "context_stage_initialize_function_constructor", "context_stage_initialize_iterator_intrinsic", "context_stage_initialize_global_functions_prefix", "context_stage_initialize_global_primitive_constants", "context_stage_initialize_global_to_string_tag", "context_stage_initialize_eval_intrinsic", "context_stage_initialize_number_intrinsic", "context_stage_initialize_boolean_intrinsic", "context_stage_initialize_string_prototype_methods", "context_stage_initialize_string_conversion_core", "context_stage_initialize_string_case_methods", "context_stage_initialize_string_iterator_intrinsics", "context_stage_initialize_string_annex_b_html_methods", "context_stage_initialize_string_constructor_intrinsic", "context_stage_initialize_string_normalize_intrinsic", "context_stage_initialize_math_intrinsic", "context_stage_initialize_reflect_intrinsic", "context_stage_initialize_symbol_intrinsic", "context_stage_initialize_generator_intrinsic", "context_stage_initialize_async_function_intrinsic", "context_stage_initialize_global_this", "context_stage_initialize_bigint_intrinsic", "context_stage_initialize_date_intrinsic", "context_stage_initialize_regexp_intrinsic", "context_stage_initialize_json_intrinsic", "context_stage_initialize_proxy_intrinsic", "context_stage_initialize_map_intrinsic", "context_stage_initialize_set_intrinsic", "context_stage_initialize_weak_collection_intrinsics", "context_stage_initialize_array_buffer_intrinsic", "context_stage_initialize_shared_array_buffer_intrinsic", "context_stage_initialize_typed_array_intrinsics", "context_stage_initialize_data_view_intrinsic", "context_stage_initialize_atomics_intrinsic", "context_stage_initialize_promise_intrinsic", "context_stage_initialize_async_generator_intrinsic", "context_stage_initialize_weak_ref_intrinsics", "replace_layout_calls", "replace_layout_entry_visits", "replace_layout_slot_visits", "replace_layout_time", "shape_lookup_calls", "shape_fingerprint_entries", "shape_lookup_time", "shape_cache_hits", "retain_edges_calls", "retain_edges_total", "retain_edges_time", "retain_edges_len_0", "retain_edges_len_1", "retain_edges_len_2", "retain_edges_len_many", "zero_queue_drain_calls", "zero_queue_empty_calls", "zero_queue_processed_nodes", "deferred_drain_calls", "deferred_drain_empty_returns", "deferred_operations_processed", "release_object_handle_calls", "retain_object_handle_calls", "get_own_property_calls", "constant_property_key_calls", "constant_property_key_time", "get_field_calls", "atom_intern_property_key_calls", "utf16_iterator_calls", "utf16_iterator_input_units", "utf16_iterator_rope_calls", "utf16_iterator_flat_calls", "jsstring_eq_calls", "jsstring_eq_content_calls", "script_compile", "script_execute", "array_own_key_calls", "array_own_key_non_array_calls", "host_to_primitive_calls", "host_to_primitive_number_calls", "read_frame_binding_calls", "read_frame_binding_direct_calls", "update_numeric_calls"];
++thread_local! {
++    static MODE: Cell<u8> = const { Cell::new(0) };
++    static COUNTERS: [Cell<u64>; N] = const { [const { Cell::new(0) }; N] };
++    static TIMES: [Cell<u64>; N] = const { [const { Cell::new(0) }; N] };
++    static TIMER_CALLS: [Cell<u64>; N] = const { [const { Cell::new(0) }; N] };
++}
++#[inline]
++pub fn add(index: usize, value: u64) {
++    if MODE.with(|m| matches!(m.get(), 1 | 2)) {
++        COUNTERS.with(|c| c[index].set(c[index].get().saturating_add(value)));
++    }
++}
++pub struct Timer { index: usize, start: Option<Instant> }
++impl Timer {
++    #[inline]
++    pub fn new(index: usize) -> Self {
++        let enabled = MODE.with(|m| m.get() == 2 || (m.get() == 3 && matches!(index, 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 79 | 80)));
++        Self { index, start: enabled.then(Instant::now) }
++    }
++}
++impl Drop for Timer {
++    #[inline]
++    fn drop(&mut self) {
++        if let Some(start) = self.start {
++            let ns = start.elapsed().as_nanos() as u64;
++            TIMES.with(|c| c[self.index].set(c[self.index].get().saturating_add(ns)));
++            TIMER_CALLS.with(|c| c[self.index].set(c[self.index].get().saturating_add(1)));
++        }
++    }
++}
++pub struct ReportGuard;
++impl ReportGuard {
++    pub fn new() -> Self {
++        let mode = std::env::var("OXIDE_CPU_PROBE").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
++        assert!(mode <= 3);
++        MODE.with(|m| m.set(mode));
++        Self
++    }
++}
++impl Drop for ReportGuard {
++    fn drop(&mut self) {
++        let mode = MODE.with(|m| m.replace(0));
++        eprint!("{{\"schema\":\"oxide-cpu-probe-v1\",\"mode\":{},\"counters\":{{", mode);
++        for (i, name) in NAMES.iter().enumerate() {
++            if i != 0 { eprint!(","); }
++            eprint!("\"{}\":{}", name, COUNTERS.with(|c| c[i].get()));
++        }
++        eprint!("}},\"timers\":{{");
++        for (i, name) in NAMES.iter().enumerate() {
++            if i != 0 { eprint!(","); }
++            eprint!("\"{}\":{{\"calls\":{},\"inclusive_ns\":{}}}", name,
++                TIMER_CALLS.with(|c| c[i].get()), TIMES.with(|c| c[i].get()));
++        }
++        eprintln!("}}}}");
++    }
++}

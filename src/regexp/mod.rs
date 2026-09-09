@@ -15,8 +15,8 @@ pub use executor::{ExecError, ProgramError, RegExpMatch, execute, execute_with_i
 pub use flags::RegExpFlags;
 pub use opcode::{CharacterRange, Instruction};
 
-use crate::error::ErrorKind;
-use crate::value::JsString;
+use crate::engine::api::error::ErrorKind;
+use crate::engine::value::JsString;
 
 /// Compile exact UTF-16 pattern and flag strings without consulting runtime
 /// objects or host regular-expression facilities.
@@ -30,7 +30,7 @@ pub fn compile(pattern: &JsString, flags: &JsString) -> Result<CompiledRegExp, C
 /// Classify a pure-Rust compiler failure at the JavaScript compilation
 /// boundary.
 #[must_use]
-pub(crate) const fn javascript_compile_error_kind(error: &CompileError) -> ErrorKind {
+pub const fn javascript_compile_error_kind(error: &CompileError) -> ErrorKind {
     match error.kind() {
         CompileErrorKind::Syntax
         | CompileErrorKind::TooManyCaptures
@@ -44,7 +44,7 @@ pub(crate) const fn javascript_compile_error_kind(error: &CompileError) -> Error
 /// `Display` form; JavaScript compilation deliberately exposes only this
 /// QuickJS-compatible message.
 #[must_use]
-pub(crate) fn javascript_compile_error_message(error: &CompileError) -> &str {
+pub fn javascript_compile_error_message(error: &CompileError) -> &str {
     if error.source() == CompileErrorSource::Flags {
         return "invalid regular expression flags";
     }

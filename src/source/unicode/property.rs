@@ -1,0 +1,185 @@
+//! Checksum-pinned Unicode 17 property sets used by RegExp property escapes.
+//!
+//! The generated half-open ranges and code-point sequences are materialized
+//! from the pinned QuickJS `libunicode.c` implementation. Product builds
+//! consume only these Rust arrays; the C helper under `apps/cli/tests/fixtures/` is a
+//! regeneration oracle.
+
+mod tables {
+    include!("generated/unicode/unicode_property_tables.rs");
+}
+
+fn lookup<'a>(aliases: &[(&str, u16)], ranges: &'a [&'a [u32]], name: &str) -> Option<&'a [u32]> {
+    let index = aliases
+        .iter()
+        .find_map(|(alias, index)| (*alias == name).then_some(usize::from(*index)))?;
+    ranges.get(index).copied()
+}
+
+pub fn general_category(name: &str) -> Option<&'static [u32]> {
+    lookup(
+        tables::GENERAL_CATEGORY_ALIASES,
+        tables::GENERAL_CATEGORY_RANGES,
+        name,
+    )
+}
+
+pub fn script(name: &str, extensions: bool) -> Option<&'static [u32]> {
+    lookup(
+        tables::SCRIPT_ALIASES,
+        if extensions {
+            tables::SCRIPT_EXTENSIONS_RANGES
+        } else {
+            tables::SCRIPT_RANGES
+        },
+        name,
+    )
+}
+
+pub fn binary_property(name: &str) -> Option<&'static [u32]> {
+    lookup(
+        tables::BINARY_PROPERTY_ALIASES,
+        tables::BINARY_PROPERTY_RANGES,
+        name,
+    )
+}
+
+pub fn sequence_property(name: &str) -> Option<&'static [&'static [u32]]> {
+    let index = tables::SEQUENCE_PROPERTY_ALIASES
+        .iter()
+        .find_map(|(alias, index)| (*alias == name).then_some(usize::from(*index)))?;
+    tables::SEQUENCE_PROPERTY_SEQUENCES.get(index).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{binary_property, general_category, script, sequence_property, tables};
+
+    fn assert_valid_half_open_tables(ranges: &[&[u32]]) {
+        for range_set in ranges {
+            assert_eq!(range_set.len() % 2, 0);
+            let mut previous_end = 0;
+            for pair in range_set.chunks_exact(2) {
+                assert!(pair[0] < pair[1]);
+                assert!(pair[1] <= 0x11_0000);
+                assert!(pair[0] >= previous_end);
+                previous_end = pair[1];
+            }
+        }
+    }
+
+    #[test]
+    fn generated_property_catalog_matches_pinned_quickjs_shape() {
+        assert_eq!(tables::GENERAL_CATEGORY_RANGES.len(), 38);
+        assert_eq!(tables::SCRIPT_RANGES.len(), 176);
+        assert_eq!(tables::SCRIPT_EXTENSIONS_RANGES.len(), 176);
+        assert_eq!(tables::BINARY_PROPERTY_RANGES.len(), 55);
+        assert_eq!(tables::GENERAL_CATEGORY_ALIASES.len(), 80);
+        assert_eq!(tables::SCRIPT_ALIASES.len(), 354);
+        assert_eq!(tables::BINARY_PROPERTY_ALIASES.len(), 102);
+        assert_eq!(tables::SEQUENCE_PROPERTY_SEQUENCES.len(), 7);
+        assert_eq!(tables::SEQUENCE_PROPERTY_ALIASES.len(), 7);
+
+        for (aliases, range_count) in [
+            (
+                tables::GENERAL_CATEGORY_ALIASES,
+                tables::GENERAL_CATEGORY_RANGES.len(),
+            ),
+            (tables::SCRIPT_ALIASES, tables::SCRIPT_RANGES.len()),
+            (
+                tables::BINARY_PROPERTY_ALIASES,
+                tables::BINARY_PROPERTY_RANGES.len(),
+            ),
+        ] {
+            assert!(
+                aliases
+                    .iter()
+                    .all(|(_, index)| usize::from(*index) < range_count)
+            );
+        }
+
+        assert_valid_half_open_tables(tables::GENERAL_CATEGORY_RANGES);
+        assert_valid_half_open_tables(tables::SCRIPT_RANGES);
+        assert_valid_half_open_tables(tables::SCRIPT_EXTENSIONS_RANGES);
+        assert_valid_half_open_tables(tables::BINARY_PROPERTY_RANGES);
+    }
+
+    #[test]
+    fn generated_sequence_property_catalog_matches_pinned_quickjs_shape() {
+        let names = tables::SEQUENCE_PROPERTY_ALIASES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "Basic_Emoji",
+                "Emoji_Keycap_Sequence",
+                "RGI_Emoji_Modifier_Sequence",
+                "RGI_Emoji_Flag_Sequence",
+                "RGI_Emoji_Tag_Sequence",
+                "RGI_Emoji_ZWJ_Sequence",
+                "RGI_Emoji",
+            ]
+        );
+
+        assert!(
+            tables::SEQUENCE_PROPERTY_ALIASES
+                .iter()
+                .enumerate()
+                .all(|(index, (_, property_index))| index == usize::from(*property_index))
+        );
+        for (alias, property_index) in tables::SEQUENCE_PROPERTY_ALIASES {
+            assert_eq!(
+                sequence_property(alias),
+                Some(tables::SEQUENCE_PROPERTY_SEQUENCES[usize::from(*property_index)])
+            );
+        }
+
+        let counts = tables::SEQUENCE_PROPERTY_SEQUENCES
+            .iter()
+            .map(|sequences| sequences.len())
+            .collect::<Vec<_>>();
+        assert_eq!(counts, [1400, 12, 670, 259, 3, 1614, 3958]);
+
+        for (property_index, sequences) in tables::SEQUENCE_PROPERTY_SEQUENCES.iter().enumerate() {
+            let mut unique = HashSet::with_capacity(sequences.len());
+            for sequence in *sequences {
+                assert!(!sequence.is_empty());
+                assert!(sequence.iter().all(|code_point| *code_point < 0x11_0000));
+                assert!(
+                    unique.insert(*sequence),
+                    "duplicate sequence in property {}",
+                    names[property_index]
+                );
+            }
+        }
+
+        assert_eq!(
+            sequence_property("Basic_Emoji"),
+            Some(tables::SEQUENCE_PROPERTY_SEQUENCES[0])
+        );
+        assert!(sequence_property("basic_emoji").is_none());
+    }
+
+    #[test]
+    fn aliases_are_exact_and_share_the_expected_range_indices() {
+        assert_eq!(general_category("Letter"), general_category("L"));
+        assert_eq!(general_category("Uppercase_Letter"), general_category("Lu"));
+        assert!(general_category("letter").is_none());
+
+        assert_eq!(script("Latin", false), script("Latn", false));
+        assert_eq!(script("Hiragana", true), script("Hira", true));
+        assert_ne!(script("Hiragana", false), script("Hiragana", true));
+
+        assert_eq!(binary_property("ASCII_Hex_Digit"), binary_property("AHex"));
+        assert_eq!(
+            binary_property("Emoji_Presentation"),
+            binary_property("EPres")
+        );
+        assert!(binary_property("RGI_Emoji").is_none());
+        assert!(binary_property("ID_Compat_Math_Start").is_none());
+    }
+}
