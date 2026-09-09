@@ -54,7 +54,7 @@ jobs:
           generator_delegation_reaches_the_portable_floor_and_recovers_after_overflow
 
       - name: Build and test the real quickjs-oxide WebAssembly playground
-        run: ./scripts/test-web-playground.sh
+        run: ./scripts/web/test-web-playground.sh
 
       - name: Install browser acceptance dependencies
         run: npm ci --ignore-scripts
@@ -66,7 +66,7 @@ jobs:
         run: npm run test:browser
 
       - name: Test the non-cancelling Pages deploy client
-        run: node scripts/test-deploy-pages.mjs
+        run: node scripts/web/test-deploy-pages.mjs
 
       - name: Configure GitHub Pages
         id: pages
@@ -112,7 +112,7 @@ jobs:
           QUICKJS_OXIDE_PAGES_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
           QUICKJS_OXIDE_PAGES_POLL_INTERVAL_MS: "5000"
           QUICKJS_OXIDE_PAGES_POLL_TIMEOUT_MS: "1500000"
-        run: node scripts/deploy-pages.mjs
+        run: node scripts/web/deploy-pages.mjs
 
   verify:
     needs: [build, deploy]
@@ -137,4 +137,4 @@ jobs:
           QUICKJS_OXIDE_LIVE_TIMEOUT_MS: "10000"
           QUICKJS_OXIDE_PAGES_URL: ${{ needs.build.outputs.page_url }}
           QUICKJS_OXIDE_WASM_SHA256: ${{ needs.build.outputs.wasm_sha256 }}
-        run: node scripts/test-live-pages.mjs
+        run: node scripts/web/test-live-pages.mjs

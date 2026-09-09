@@ -5,7 +5,7 @@
     "node": ">=20.11"
   },
   "scripts": {
-    "test:browser": "node scripts/test-web-playground-browser.mjs"
+    "test:browser": "node scripts/web/test-web-playground-browser.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

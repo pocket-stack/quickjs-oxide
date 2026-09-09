@@ -4,10 +4,8 @@
 //! cargo run --quiet --example eval -- '(function (a) { return a + 1; })(41)'
 //! ```
 
+use quickjs_oxide::engine::api::{Runtime, RuntimeError, Value, number_to_string};
 use std::process::ExitCode;
-
-use quickjs_oxide::value::number_to_string;
-use quickjs_oxide::{Runtime, RuntimeError, Value};
 
 fn main() -> ExitCode {
     let mut arguments = std::env::args();
@@ -21,7 +19,8 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let runtime = Runtime::new();
+    let runtime =
+        Runtime::new_with_host_services(quickjs_oxide_host::SystemHostServices::default());
     let mut context = runtime.new_context();
     match context.eval(&source) {
         Ok(value) => {

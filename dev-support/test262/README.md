@@ -83,11 +83,11 @@ cannot replace workers during a long run. `TEST262_RUNNER` is retired; use
 Use the one parameterized entry point:
 
 ```sh
-./scripts/test-test262.sh --check
-./scripts/test-test262.sh --runner-provenance
-./scripts/test-test262.sh --focused
-TEST262_WORKERS=2 ./scripts/test-test262.sh --full
-node scripts/audit-negative-diagnostics.mjs --suite /path/to/test262 \
+./scripts/test262/test-test262.sh --check
+./scripts/test262/test-test262.sh --runner-provenance
+./scripts/test262/test-test262.sh --focused
+TEST262_WORKERS=2 ./scripts/test262/test-test262.sh --full
+node scripts/test262/audit-negative-diagnostics.mjs --suite /path/to/test262 \
   --qjs /path/to/pinned/qjs
 ```
 
@@ -95,7 +95,7 @@ For new Script-goal admissions, prepare a bytewise-sorted candidate TSV with
 the header `path\tvariant\trule`, then generate source-authenticated rows with:
 
 ```sh
-node scripts/audit-negative-diagnostics.mjs \
+node scripts/test262/audit-negative-diagnostics.mjs \
   --generate /path/to/candidates.tsv --output /path/to/contracts.tsv \
   --suite /path/to/test262 --qjs /path/to/pinned/qjs \
   --oxide target/debug/qjs
@@ -122,7 +122,7 @@ mixed-source baseline.
 
 The repository keeps only the current profile and focused receipt plus the
 small semantic ledgers used by runner unit tests. A fast inventory gate requires
-every tracked `tests/test262-*` artifact to be referenced by the current spec,
+every tracked `dev-support/test262/generated/test262-*` artifact to be referenced by the current spec,
 runner, or a generator. Earlier milestone profiles, 168 cohort-specific gates,
 result vectors, baselines, 313 superseded manifests, and former long-form status
 ledgers are preserved in the public `test262-history-*` release assets. Their
@@ -137,3 +137,7 @@ Official progress reports lead with full pass and eligible coverage. Runnable
 pass rate is secondary. A new admission must be expressed in profile data and
 must validate the correct negative phase/type and QuickJS diagnostic rule; the
 central gate must not acquire cohort names or fixture-specific branches.
+
+Active generated manifests and ledgers live in [`generated/`](generated/README.md).
+Handwritten test inputs and frozen QuickJS observations are separated under
+`tests/fixtures/inputs/` and `tests/fixtures/expected/`.

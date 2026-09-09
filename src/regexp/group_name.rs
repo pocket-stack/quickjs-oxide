@@ -4,7 +4,7 @@
 //! JavaScript identifier lexer: group names always use Unicode identifier
 //! semantics, accept only `\u` escapes, and are normalized before comparison.
 
-use crate::value::JsString;
+use crate::engine::value::JsString;
 
 const GROUP_NAME_BUFFER_SIZE: usize = 128;
 const UTF8_CHAR_LEN_MAX: usize = 6;
@@ -250,7 +250,7 @@ fn is_identifier_start(code_point: u32) -> bool {
     if code_point < 0x80 {
         matches!(code_point, 0x24 | 0x41..=0x5a | 0x5f | 0x61..=0x7a)
     } else {
-        crate::unicode::is_id_start(code_point)
+        crate::source::unicode::is_id_start(code_point)
     }
 }
 
@@ -258,7 +258,7 @@ fn is_identifier_continue(code_point: u32) -> bool {
     if code_point < 0x80 {
         is_identifier_start(code_point) || (0x30..=0x39).contains(&code_point)
     } else {
-        matches!(code_point, 0x200c | 0x200d) || crate::unicode::is_id_continue(code_point)
+        matches!(code_point, 0x200c | 0x200d) || crate::source::unicode::is_id_continue(code_point)
     }
 }
 

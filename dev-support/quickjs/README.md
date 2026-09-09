@@ -4,7 +4,7 @@
 for the authenticated QuickJS 2026-06-04 archive. It is not product code and
 must never be applied to `target/oracle/quickjs-2026-06-04`.
 
-`scripts/build-quickjs-dynamic-import-trace.sh` verifies the archive, patch,
+`scripts/quickjs/build-quickjs-dynamic-import-trace.sh` verifies the archive, patch,
 and patched-source fingerprints, extracts into a fresh temporary directory,
 applies the patch with zero fuzz, builds `run-test262`, and prints the temporary
 trace source directory. The same isolated extraction also produces
@@ -20,7 +20,7 @@ opening config or test inputs, requires an explicit `-T 1`, refuses
 make the deliberately simple multi-write encoder deterministic:
 
 ```sh
-build=$(scripts/build-quickjs-dynamic-import-trace.sh)
+build=$(scripts/quickjs/build-quickjs-dynamic-import-trace.sh)
 QJS_OXIDE_DYNAMIC_IMPORT_TRACE=1 \
   "$build/run-test262" -T 1 -N --module test.js 3>trace.tsv
 ```
@@ -35,7 +35,7 @@ event-specific fields. Record types are:
   `errno`
 - `T`: root, compiled module name, parser-derived `has_tla` bit
 
-`scripts/parse-quickjs-dynamic-import-trace.mjs` is the strict parser. The
+`scripts/quickjs/parse-quickjs-dynamic-import-trace.mjs` is the strict parser. The
 regression test covers computed and bare requests, missing-file `errno`, and
 top-level await in blocks/templates versus await inside a nested function. It
 also compares the stock and instrumented runners' exit status, stdout, and

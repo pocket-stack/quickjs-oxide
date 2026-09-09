@@ -1,0 +1,801 @@
+//! Runtime-wide FIFO job queue.
+//!
+//! QuickJS keeps jobs on `JSRuntime`, not on a realm, and asks the host to
+//! execute one job at a time.  Evaluation therefore never drains this queue
+//! implicitly: CLI and Test262 hosts opt in at their own boundary.
+
+use crate::engine::api::runtime::Runtime;
+use crate::engine::api::runtime_error::RuntimeError;
+use crate::engine::builtins::promise::RootedPromiseCapability;
+use crate::engine::heap::runtime::RuntimeState;
+
+use crate::engine::code::module::ModuleImportAttributes;
+use crate::engine::heap::{
+    ContextId, FinalizationJobSink, ObjectId, PreparedFinalizationJob, PromiseReaction,
+    PromiseReactionKind, RawValue,
+};
+#[cfg(test)]
+use crate::engine::modules::ModuleLoader;
+use crate::engine::object::ObjectRef;
+
+use crate::engine::value::{JsString, Value};
+use crate::engine::vm::Completion;
+use std::collections::VecDeque;
+
+#[derive(Clone, Debug)]
+pub(crate) enum PendingJob {
+    PromiseReaction {
+        realm: ContextId,
+        reaction: PromiseReaction,
+        argument: RawValue,
+    },
+    PromiseResolveThenable {
+        realm: ContextId,
+        promise: ObjectId,
+        thenable: ObjectId,
+        then: ObjectId,
+    },
+    FinalizationRegistryCleanup {
+        realm: ContextId,
+        callback: ObjectId,
+        held_value: RawValue,
+    },
+    DynamicImportLoad {
+        realm: ContextId,
+        resolve: ObjectId,
+        reject: ObjectId,
+        base_name: Option<JsString>,
+        specifier: JsString,
+        attributes: ModuleImportAttributes,
+    },
+}
+
+/// Direct adapter from the heap's ordered weak-object pass into the runtime
+/// FIFO. A successful reserve makes `publish_preowned` infallible; the job's
+/// roots were already retained/transferred by the heap and must not pass
+/// through the ordinary retaining enqueue path again.
+pub(crate) struct RuntimeFinalizationJobSink<'a> {
+    queue: &'a mut VecDeque<PendingJob>,
+}
+
+impl<'a> RuntimeFinalizationJobSink<'a> {
+    pub(crate) const fn new(queue: &'a mut VecDeque<PendingJob>) -> Self {
+        Self { queue }
+    }
+}
+
+impl FinalizationJobSink for RuntimeFinalizationJobSink<'_> {
+    fn try_reserve_one(&mut self) -> bool {
+        self.queue.try_reserve(1).is_ok()
+    }
+
+    fn publish_preowned(&mut self, job: PreparedFinalizationJob) {
+        self.queue
+            .push_back(PendingJob::FinalizationRegistryCleanup {
+                realm: job.realm,
+                callback: job.callback,
+                held_value: job.held_value,
+            });
+    }
+}
+
+/// Result of attempting to execute one runtime-wide pending job.
+///
+/// `Executed { context: None }` is distinct from `NoJob`: pinned QuickJS can
+/// execute a job successfully after its realm's last non-job reference has
+/// disappeared, in which case `JS_ExecutePendingJob` returns `1` while storing
+/// `NULL` in its obsolete `pctx` out-parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingJobOutcome {
+    NoJob,
+    Executed { context: Option<ContextId> },
+}
+
+impl PendingJobOutcome {
+    #[must_use]
+    pub const fn executed(self) -> bool {
+        matches!(self, Self::Executed { .. })
+    }
+
+    /// Realm still alive after the queue's owned roots were released.
+    #[must_use]
+    pub const fn context(self) -> Option<ContextId> {
+        match self {
+            Self::NoJob => None,
+            Self::Executed { context } => context,
+        }
+    }
+}
+
+/// A pending job failure paired with the realm which originated that job.
+///
+/// QuickJS exposes the same association through the `pctx` out-parameter of
+/// `JS_ExecutePendingJob`, including when JavaScript execution throws. The
+/// association is absent when releasing the job's roots destroys its realm.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingJobError {
+    context: Option<ContextId>,
+    error: RuntimeError,
+}
+
+impl PendingJobError {
+    #[must_use]
+    pub const fn context(&self) -> Option<ContextId> {
+        self.context
+    }
+
+    #[must_use]
+    pub const fn error(&self) -> &RuntimeError {
+        &self.error
+    }
+
+    #[must_use]
+    pub fn into_error(self) -> RuntimeError {
+        self.error
+    }
+}
+
+impl std::fmt::Display for PendingJobError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, formatter)
+    }
+}
+
+impl std::error::Error for PendingJobError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+const MAX_PENDING_JOB_ROOTS: usize = 6;
+
+#[derive(Clone, Copy, Debug)]
+enum PendingJobRoot<'a> {
+    Context(ContextId),
+    Object(ObjectId),
+    Value(&'a RawValue),
+}
+
+impl PendingJob {
+    const fn realm(&self) -> ContextId {
+        match self {
+            Self::PromiseReaction { realm, .. }
+            | Self::PromiseResolveThenable { realm, .. }
+            | Self::FinalizationRegistryCleanup { realm, .. }
+            | Self::DynamicImportLoad { realm, .. } => *realm,
+        }
+    }
+
+    fn roots(&self) -> [Option<PendingJobRoot<'_>>; MAX_PENDING_JOB_ROOTS] {
+        let mut roots = [None; MAX_PENDING_JOB_ROOTS];
+        let mut root_count = 0usize;
+        let mut push = |root| {
+            debug_assert!(root_count < roots.len());
+            roots[root_count] = Some(root);
+            root_count += 1;
+        };
+        match self {
+            Self::PromiseReaction {
+                realm,
+                reaction,
+                argument,
+            } => {
+                push(PendingJobRoot::Context(*realm));
+                if let Some(handler) = reaction.handler {
+                    push(PendingJobRoot::Object(handler));
+                }
+                if let Some(capability) = reaction.capability {
+                    push(PendingJobRoot::Object(capability.resolve));
+                    push(PendingJobRoot::Object(capability.reject));
+                }
+                push(PendingJobRoot::Value(argument));
+            }
+            Self::PromiseResolveThenable {
+                realm,
+                promise,
+                thenable,
+                then,
+            } => {
+                push(PendingJobRoot::Context(*realm));
+                push(PendingJobRoot::Object(*promise));
+                push(PendingJobRoot::Object(*thenable));
+                push(PendingJobRoot::Object(*then));
+            }
+            Self::FinalizationRegistryCleanup {
+                realm,
+                callback,
+                held_value,
+            } => {
+                push(PendingJobRoot::Context(*realm));
+                push(PendingJobRoot::Object(*callback));
+                push(PendingJobRoot::Value(held_value));
+            }
+            Self::DynamicImportLoad {
+                realm,
+                resolve,
+                reject,
+                ..
+            } => {
+                push(PendingJobRoot::Context(*realm));
+                push(PendingJobRoot::Object(*resolve));
+                push(PendingJobRoot::Object(*reject));
+            }
+        }
+        roots
+    }
+}
+
+/// Own the queue's manual roots after one job has been removed from the FIFO.
+/// Normal completion releases them explicitly; a host panic releases them
+/// during unwind without converting the panic into a JavaScript rejection.
+#[must_use = "the guard owns a dequeued pending job's roots"]
+struct PendingJobRootGuard<'a> {
+    runtime: &'a Runtime,
+    job: Option<PendingJob>,
+}
+
+impl<'a> PendingJobRootGuard<'a> {
+    const fn new(runtime: &'a Runtime, job: PendingJob) -> Self {
+        Self {
+            runtime,
+            job: Some(job),
+        }
+    }
+
+    fn record(&self) -> &PendingJob {
+        self.job
+            .as_ref()
+            .expect("an armed pending-job root guard must own its record")
+    }
+
+    fn finish(mut self) -> Result<Option<ContextId>, RuntimeError> {
+        let job = self
+            .job
+            .take()
+            .ok_or(RuntimeError::Invariant("pending-job roots released twice"))?;
+        self.runtime
+            .0
+            .state
+            .borrow_mut()
+            .release_pending_job_roots_with_context(&job)
+    }
+}
+
+impl Drop for PendingJobRootGuard<'_> {
+    fn drop(&mut self) {
+        let Some(job) = self.job.take() else {
+            return;
+        };
+        let Ok(mut state) = self.runtime.0.state.try_borrow_mut() else {
+            return;
+        };
+        let _ = state.release_pending_job_roots_with_context(&job);
+    }
+}
+
+impl RuntimeState {
+    fn retain_pending_job_root(&mut self, root: PendingJobRoot<'_>) -> Result<(), RuntimeError> {
+        match root {
+            PendingJobRoot::Context(context) => self.heap.retain_context(context)?,
+            PendingJobRoot::Object(object) => self.heap.retain_object(object)?,
+            PendingJobRoot::Value(value) => self.retain_raw_root(value)?,
+        }
+        Ok(())
+    }
+
+    fn release_pending_job_root(&mut self, root: PendingJobRoot<'_>) -> Result<(), RuntimeError> {
+        match root {
+            PendingJobRoot::Context(context) => {
+                let cleanup = self.heap.release_context(context)?;
+                self.apply_cleanup(cleanup)?;
+            }
+            PendingJobRoot::Object(object) => {
+                let cleanup = self.heap.release_object(object)?;
+                self.apply_cleanup(cleanup)?;
+            }
+            PendingJobRoot::Value(value) => match value {
+                RawValue::Object(object) => {
+                    let cleanup = self.heap.release_object(*object)?;
+                    self.apply_cleanup(cleanup)?;
+                }
+                RawValue::Symbol(atom) => {
+                    self.atoms.release(*atom)?;
+                }
+                RawValue::Private(_) => {
+                    return Err(RuntimeError::Invariant(
+                        "private-name identity occupied a pending job root",
+                    ));
+                }
+                RawValue::Undefined
+                | RawValue::Null
+                | RawValue::Bool(_)
+                | RawValue::Int(_)
+                | RawValue::Float(_)
+                | RawValue::BigInt(_)
+                | RawValue::String(_) => {}
+                RawValue::Uninitialized | RawValue::Exception => {
+                    return Err(RuntimeError::Invariant(
+                        "internal value sentinel occupied a pending job root",
+                    ));
+                }
+            },
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain_pending_job_roots(
+        &mut self,
+        job: &PendingJob,
+    ) -> Result<(), RuntimeError> {
+        let roots = job.roots();
+        for (retained, root) in roots.iter().flatten().copied().enumerate() {
+            if let Err(error) = self.retain_pending_job_root(root) {
+                for retained_root in roots[..retained].iter().rev().flatten().copied() {
+                    self.release_pending_job_root(retained_root)?;
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn release_pending_job_roots(
+        &mut self,
+        job: &PendingJob,
+    ) -> Result<(), RuntimeError> {
+        self.release_pending_job_roots_with_context(job).map(drop)
+    }
+
+    /// Release roots in the reverse of their retain order and report whether
+    /// the explicit realm root had another owner immediately before it was
+    /// released. This is pinned QuickJS's `js_rc(ctx)->ref_count > 1` check.
+    fn release_pending_job_roots_with_context(
+        &mut self,
+        job: &PendingJob,
+    ) -> Result<Option<ContextId>, RuntimeError> {
+        let roots = job.roots();
+        let mut context_after_release = None;
+        let mut found_context = false;
+        let mut first_error = None;
+        for root in roots.iter().rev().flatten().copied() {
+            if let PendingJobRoot::Context(context) = root {
+                found_context = true;
+                let survives = match self.heap.context_strong_count(context) {
+                    Ok(count) => Some(count > 1),
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(RuntimeError::Heap(error));
+                        }
+                        None
+                    }
+                };
+                match self.release_pending_job_root(root) {
+                    Ok(()) => {
+                        if let Some(survives) = survives {
+                            context_after_release = Some(survives.then_some(context));
+                        }
+                    }
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+                continue;
+            }
+            if let Err(error) = self.release_pending_job_root(root)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        if !found_context {
+            return Err(RuntimeError::Invariant(
+                "pending job had no explicit realm root",
+            ));
+        }
+        context_after_release.ok_or(RuntimeError::Invariant(
+            "pending job context survival was not recorded",
+        ))
+    }
+}
+
+impl Runtime {
+    pub(crate) fn enqueue_pending_job(&self, job: PendingJob) -> Result<(), RuntimeError> {
+        let _operation = self.operation();
+        let mut state = self.0.state.borrow_mut();
+        state.retain_pending_job_roots(&job)?;
+        state.pending_jobs.push_back(job);
+        Ok(())
+    }
+
+    /// Return whether QuickJS's runtime-wide FIFO contains a pending job.
+    #[must_use]
+    pub fn is_job_pending(&self) -> bool {
+        let _operation = self.operation();
+        !self.0.state.borrow().pending_jobs.is_empty()
+    }
+
+    /// Execute at most one FIFO job and report its surviving originating realm.
+    ///
+    /// Later and newly-enqueued jobs remain at the FIFO tail. A JavaScript
+    /// abrupt completion becomes the runtime's pending exception and is
+    /// returned with the same optional originating realm, matching both the
+    /// integer result and obsolete `pctx` out-parameter of
+    /// `JS_ExecutePendingJob`.
+    pub fn execute_pending_job(&self) -> Result<PendingJobOutcome, PendingJobError> {
+        let _operation = self.operation();
+        let Some(job) = self.0.state.borrow_mut().pending_jobs.pop_front() else {
+            return Ok(PendingJobOutcome::NoJob);
+        };
+        let job = PendingJobRootGuard::new(self, job);
+        let context = job.record().realm();
+
+        // QuickJS frees a successful result, or leaves a thrown value in the
+        // runtime exception slot, before testing whether the job realm has any
+        // owner besides the queue. Do the same before releasing the argv-like
+        // roots so a discarded return value cannot keep `pctx` spuriously live.
+        let execution = self
+            .execute_pending_job_record(job.record())
+            .and_then(|completion| match completion {
+                Completion::Return(value) => {
+                    drop(value);
+                    Ok(false)
+                }
+                Completion::Throw(value) => {
+                    self.set_pending_exception(value)?;
+                    Ok(true)
+                }
+            });
+        let release = job.finish();
+        let (threw, context) = match (execution, release) {
+            (Err(error), Ok(context)) => return Err(PendingJobError { context, error }),
+            (Err(error), Err(_)) => {
+                return Err(PendingJobError {
+                    context: Some(context),
+                    error,
+                });
+            }
+            (Ok(_), Err(error)) => {
+                return Err(PendingJobError {
+                    context: Some(context),
+                    error,
+                });
+            }
+            (Ok(threw), Ok(context)) => (threw, context),
+        };
+        if threw {
+            Err(PendingJobError {
+                context,
+                error: RuntimeError::Exception,
+            })
+        } else {
+            Ok(PendingJobOutcome::Executed { context })
+        }
+    }
+
+    fn execute_pending_job_record(&self, job: &PendingJob) -> Result<Completion, RuntimeError> {
+        match job {
+            PendingJob::PromiseReaction {
+                realm,
+                reaction,
+                argument,
+            } => self.execute_promise_reaction_job(*realm, reaction, argument),
+            PendingJob::PromiseResolveThenable {
+                realm,
+                promise,
+                thenable,
+                then,
+            } => self.execute_promise_resolve_thenable_job(*realm, *promise, *thenable, *then),
+            PendingJob::FinalizationRegistryCleanup {
+                realm,
+                callback,
+                held_value,
+            } => self.execute_finalization_registry_cleanup_job(*realm, *callback, held_value),
+            PendingJob::DynamicImportLoad {
+                realm,
+                resolve,
+                reject,
+                base_name,
+                specifier,
+                attributes,
+            } => self.execute_dynamic_import_load_job(
+                *realm,
+                *resolve,
+                *reject,
+                base_name.as_ref(),
+                specifier,
+                attributes,
+            ),
+        }
+    }
+
+    fn execute_finalization_registry_cleanup_job(
+        &self,
+        realm: ContextId,
+        callback: ObjectId,
+        held_value: &RawValue,
+    ) -> Result<Completion, RuntimeError> {
+        let callback = ObjectRef::from_borrowed_handle(self.clone(), callback)?;
+        let callback = self.as_callable(&callback)?.ok_or(RuntimeError::Invariant(
+            "FinalizationRegistry job callback lost its callable brand",
+        ))?;
+        let held_value = self.root_raw_value(held_value)?;
+        self.call_internal(
+            realm,
+            &callback,
+            Value::Undefined,
+            std::slice::from_ref(&held_value),
+        )
+    }
+
+    pub(crate) fn enqueue_promise_reaction_job(
+        &self,
+        realm: ContextId,
+        reaction: PromiseReaction,
+        argument: RawValue,
+    ) -> Result<(), RuntimeError> {
+        let job = self.prepare_promise_reaction_job(realm, reaction, argument)?;
+        self.publish_prepared_jobs([job]);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_promise_reaction_job(
+        &self,
+        realm: ContextId,
+        reaction: PromiseReaction,
+        argument: RawValue,
+    ) -> Result<PendingJob, RuntimeError> {
+        debug_assert!(matches!(
+            reaction.kind,
+            PromiseReactionKind::Fulfill | PromiseReactionKind::Reject
+        ));
+        let job = PendingJob::PromiseReaction {
+            realm,
+            reaction,
+            argument,
+        };
+        let _operation = self.operation();
+        self.0.state.borrow_mut().retain_pending_job_roots(&job)?;
+        Ok(job)
+    }
+
+    pub(crate) fn publish_prepared_jobs(&self, jobs: impl IntoIterator<Item = PendingJob>) {
+        let _operation = self.operation();
+        self.0.state.borrow_mut().pending_jobs.extend(jobs);
+    }
+
+    pub(crate) fn discard_prepared_jobs(
+        &self,
+        jobs: impl IntoIterator<Item = PendingJob>,
+    ) -> Result<(), RuntimeError> {
+        let _operation = self.operation();
+        let mut state = self.0.state.borrow_mut();
+        for job in jobs {
+            state.release_pending_job_roots(&job)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn enqueue_promise_resolve_thenable_job(
+        &self,
+        realm: ContextId,
+        promise: ObjectId,
+        thenable: ObjectId,
+        then: ObjectId,
+    ) -> Result<(), RuntimeError> {
+        self.enqueue_pending_job(PendingJob::PromiseResolveThenable {
+            realm,
+            promise,
+            thenable,
+            then,
+        })
+    }
+
+    pub(crate) fn enqueue_dynamic_import_load_job(
+        &self,
+        realm: ContextId,
+        capability: &RootedPromiseCapability,
+        base_name: Option<JsString>,
+        specifier: JsString,
+        attributes: ModuleImportAttributes,
+    ) -> Result<(), RuntimeError> {
+        self.enqueue_pending_job(PendingJob::DynamicImportLoad {
+            realm,
+            resolve: capability.resolve.as_object().object_id(),
+            reject: capability.reject.as_object().object_id(),
+            base_name,
+            specifier,
+            attributes,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::api::Context;
+    use crate::engine::heap::{ContextData, HeapError};
+    use crate::engine::modules::ModuleLoaderError;
+    use crate::engine::object::CallableRef;
+
+    use super::*;
+    use crate::engine::api::PromiseState;
+
+    #[derive(Debug)]
+    struct PanickingDynamicModuleLoader;
+
+    impl ModuleLoader for PanickingDynamicModuleLoader {
+        fn load(
+            &self,
+            _context: &mut crate::engine::api::Context,
+            _normalized_name: &JsString,
+            _attributes: &crate::engine::api::ModuleImportAttributes,
+        ) -> Result<crate::engine::api::ModuleLoadResult, ModuleLoaderError> {
+            panic!("intentional dynamic module loader panic")
+        }
+    }
+
+    fn allocate_job_only_realm(runtime: &Runtime, source: ContextId) -> ContextId {
+        let roots = {
+            let state = runtime.0.state.borrow();
+            let source = state.heap.context(source).unwrap();
+            (
+                source.object_prototype,
+                source.function_prototype,
+                source.array_prototype,
+                source.iterator_prototype,
+                source.array_iterator_prototype,
+                source.string_iterator_prototype,
+                source.global_object,
+                source.global_var_object,
+            )
+        };
+        runtime
+            .0
+            .state
+            .borrow_mut()
+            .heap
+            .allocate_context(ContextData::new(
+                roots.0, roots.1, roots.2, roots.3, roots.4, roots.5, roots.6, roots.7,
+            ))
+            .unwrap()
+    }
+
+    fn enqueue_cleanup_with_job_only_realm(
+        runtime: &Runtime,
+        realm: ContextId,
+        callback: &CallableRef,
+    ) {
+        runtime
+            .enqueue_pending_job(PendingJob::FinalizationRegistryCleanup {
+                realm,
+                callback: callback.as_object().object_id(),
+                held_value: RawValue::Undefined,
+            })
+            .unwrap();
+        let mut state = runtime.0.state.borrow_mut();
+        assert_eq!(state.heap.context_strong_count(realm), Ok(2));
+        let cleanup = state.heap.release_context(realm).unwrap();
+        state.apply_cleanup(cleanup).unwrap();
+        assert_eq!(state.heap.context_strong_count(realm), Ok(1));
+    }
+
+    fn eval_callable(context: &mut Context, source: &str) -> CallableRef {
+        let Value::Object(callback) = context.eval(source).unwrap() else {
+            panic!("callback source was not an object");
+        };
+        context
+            .runtime()
+            .as_callable(&callback)
+            .unwrap()
+            .expect("callback source was not callable")
+    }
+
+    #[test]
+    fn pending_job_reports_null_context_after_its_last_realm_root_on_success_and_throw() {
+        let runtime = Runtime::new();
+        let mut context = runtime.new_context();
+
+        let success = eval_callable(&mut context, "(function () { return 42; })");
+        let success_realm = allocate_job_only_realm(&runtime, context.realm_id());
+        enqueue_cleanup_with_job_only_realm(&runtime, success_realm, &success);
+        assert_eq!(
+            runtime.execute_pending_job().unwrap(),
+            PendingJobOutcome::Executed { context: None }
+        );
+        assert!(matches!(
+            runtime.0.state.borrow().heap.context(success_realm),
+            Err(HeapError::Stale { .. })
+        ));
+
+        let throwing = eval_callable(&mut context, "(function () { throw 17; })");
+        let throwing_realm = allocate_job_only_realm(&runtime, context.realm_id());
+        enqueue_cleanup_with_job_only_realm(&runtime, throwing_realm, &throwing);
+        let error = runtime.execute_pending_job().unwrap_err();
+        assert_eq!(error.context(), None);
+        assert_eq!(error.error(), &RuntimeError::Exception);
+        assert_eq!(context.take_exception().unwrap(), Some(Value::Int(17)));
+        assert!(matches!(
+            runtime.0.state.borrow().heap.context(throwing_realm),
+            Err(HeapError::Stale { .. })
+        ));
+        assert_eq!(
+            runtime.execute_pending_job().unwrap(),
+            PendingJobOutcome::NoJob
+        );
+    }
+
+    #[test]
+    fn dynamic_loader_panic_releases_dequeued_job_roots_without_settling_promise() {
+        let runtime = Runtime::new();
+        let _registration = runtime.set_module_loader(PanickingDynamicModuleLoader);
+        let mut context = runtime.new_context();
+        let Value::Object(promise) = context
+            .eval_with_filename("import('./panic.js')", "pkg/entry.js")
+            .unwrap()
+        else {
+            panic!("dynamic import did not return a Promise");
+        };
+
+        let (realm, resolve, reject) = {
+            let state = runtime.0.state.borrow();
+            assert_eq!(state.pending_jobs.len(), 1);
+            let PendingJob::DynamicImportLoad {
+                realm,
+                resolve,
+                reject,
+                ..
+            } = state.pending_jobs.front().unwrap()
+            else {
+                panic!("dynamic import scheduled the wrong job kind");
+            };
+            (*realm, *resolve, *reject)
+        };
+        let resolve_root = ObjectRef::from_borrowed_handle(runtime.clone(), resolve).unwrap();
+        let reject_root = ObjectRef::from_borrowed_handle(runtime.clone(), reject).unwrap();
+        let counts_before = {
+            let state = runtime.0.state.borrow();
+            (
+                state.heap.context_strong_count(realm).unwrap(),
+                state.heap.object_strong_count(resolve).unwrap(),
+                state.heap.object_strong_count(reject).unwrap(),
+            )
+        };
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = runtime.execute_pending_job();
+        }))
+        .expect_err("dynamic loader panic was unexpectedly swallowed");
+        let panic_message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(
+            panic_message,
+            Some("intentional dynamic module loader panic")
+        );
+
+        let counts_after = {
+            let state = runtime.0.state.borrow();
+            assert!(state.pending_jobs.is_empty());
+            (
+                state.heap.context_strong_count(realm).unwrap(),
+                state.heap.object_strong_count(resolve).unwrap(),
+                state.heap.object_strong_count(reject).unwrap(),
+            )
+        };
+        assert_eq!(counts_after.0 + 1, counts_before.0);
+        assert_eq!(counts_after.1 + 1, counts_before.1);
+        assert_eq!(counts_after.2 + 1, counts_before.2);
+        assert_eq!(
+            runtime.promise_snapshot(&promise).unwrap().unwrap().state(),
+            PromiseState::Pending
+        );
+        assert!(!context.has_exception());
+        assert_eq!(context.eval("40 + 2").unwrap(), Value::Int(42));
+        drop((resolve_root, reject_root));
+    }
+}

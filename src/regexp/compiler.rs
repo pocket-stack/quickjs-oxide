@@ -10,7 +10,7 @@ use super::RegExpFlags;
 use super::flags::{FlagParseErrorKind, parse_flags};
 use super::group_name::{self, CaptureSummary};
 use super::opcode::{CharacterRange, Instruction};
-use crate::value::JsString;
+use crate::engine::value::JsString;
 use std::collections::BTreeSet;
 
 const INFINITE_REPETITION: u32 = i32::MAX as u32;
@@ -847,20 +847,20 @@ impl<'a> Parser<'a> {
 
         let endpoints = match name.as_str() {
             "Script" | "sc" => Some(
-                crate::unicode_property::script(&value, false)
+                crate::source::unicode::property::script(&value, false)
                     .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
             ),
             "Script_Extensions" | "scx" => Some(
-                crate::unicode_property::script(&value, true)
+                crate::source::unicode::property::script(&value, true)
                     .ok_or_else(|| CompileError::syntax(position, "unknown unicode script"))?,
             ),
             "General_Category" | "gc" => Some(
-                crate::unicode_property::general_category(&value).ok_or_else(|| {
+                crate::source::unicode::property::general_category(&value).ok_or_else(|| {
                     CompileError::syntax(position, "unknown unicode general category")
                 })?,
             ),
-            _ if value.is_empty() => crate::unicode_property::general_category(&name)
-                .or_else(|| crate::unicode_property::binary_property(&name)),
+            _ if value.is_empty() => crate::source::unicode::property::general_category(&name)
+                .or_else(|| crate::source::unicode::property::binary_property(&name)),
             _ => None,
         };
 
@@ -873,7 +873,7 @@ impl<'a> Parser<'a> {
                 strings: BTreeSet::new(),
             }
         } else if value.is_empty() && !inverted && self.flags.contains(RegExpFlags::UNICODE_SETS) {
-            let sequences = crate::unicode_property::sequence_property(&name)
+            let sequences = crate::source::unicode::property::sequence_property(&name)
                 .ok_or_else(|| CompileError::syntax(position, "unknown unicode property name"))?;
             let mut set = UnicodeSet::default();
             for sequence in sequences {
@@ -1556,7 +1556,8 @@ impl<'a> Parser<'a> {
             }
             if self.modifiers.ignore_case {
                 for character in &mut sequence {
-                    *character = crate::unicode_case::regexp_canonicalize(*character, true);
+                    *character =
+                        crate::source::unicode::case::regexp_canonicalize(*character, true);
                 }
             }
             add_unicode_set_sequence(&mut set, &sequence);
@@ -1817,7 +1818,7 @@ impl CodeBuilder {
         match atom {
             Atom::Literal(value) => {
                 let value = if self.ignore_case {
-                    crate::unicode_case::regexp_canonicalize(*value, self.unicode)
+                    crate::source::unicode::case::regexp_canonicalize(*value, self.unicode)
                 } else {
                     *value
                 };
@@ -2353,7 +2354,7 @@ fn unicode_set_from_class_atom(atom: ClassAtom, ignore_case: bool, unicode: bool
         }
         ClassAtom::Single(mut value) => {
             if ignore_case {
-                value = crate::unicode_case::regexp_canonicalize(value, unicode);
+                value = crate::source::unicode::case::regexp_canonicalize(value, unicode);
             }
             UnicodeSet {
                 ranges: vec![CharacterRange::new(value, value)],
@@ -2394,7 +2395,7 @@ fn canonicalize_unicode_set(set: &mut UnicodeSet, unicode: bool) {
     let strings = std::mem::take(&mut set.strings);
     for mut string in strings {
         for character in &mut string {
-            *character = crate::unicode_case::regexp_canonicalize(*character, unicode);
+            *character = crate::source::unicode::case::regexp_canonicalize(*character, unicode);
         }
         add_unicode_set_sequence(set, &string);
     }
@@ -2472,7 +2473,7 @@ fn subtract_ranges(left: &[CharacterRange], right: &[CharacterRange]) -> Vec<Cha
 }
 
 fn canonicalize_ranges(ranges: &[CharacterRange], unicode: bool) -> Vec<CharacterRange> {
-    crate::unicode_case::regexp_canonicalize_range_pairs(
+    crate::source::unicode::case::regexp_canonicalize_range_pairs(
         &ranges
             .iter()
             .map(|range| (range.start, range.end))

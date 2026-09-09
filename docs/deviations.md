@@ -137,7 +137,7 @@ The fix records QuickJS's irreversible fast/slow Array state in the heap
 payload. A count-only fast iterator refreshes the source's current own names
 when prototype enumeration becomes necessary; a slow iterator retains its
 initial snapshot. Both paths are pinned in
-`tests/oracle/control_flow/oracle_for_in.rs`.
+`apps/cli/tests/oracle/control_flow/oracle_for_in.rs`.
 
 ## Open implementation frontiers
 

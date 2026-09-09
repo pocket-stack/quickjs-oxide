@@ -1,0 +1,339 @@
+use super::{
+    IdentifierAccess, IdentifierContext, IrConstant, Parser, parse_number, source_offset,
+    source_span, validate_identifier,
+};
+use crate::engine::api::error::Error;
+use crate::engine::code::bytecode::{DefineMethodKind, Instruction};
+use crate::engine::compiler::lexer::{
+    NumberKind, Punctuator, TokenKind, quickjs_simple_lookahead_has_line_terminator,
+};
+use crate::engine::value::{JsString, PrimitiveValue as Value};
+
+enum ObjectMethodPropertyKey {
+    Fixed(JsString),
+    Computed,
+}
+
+impl<'source> Parser<'source> {
+    /// Lower the data-property portion of QuickJS
+    /// `js_parse_object_literal`. The fresh Object stays below every property
+    /// operation. Fixed names reuse `DefineField`; computed names are
+    /// canonicalized before their RHS and use `DefineArrayEl` followed by the
+    /// same key drop as upstream. Concise methods use dedicated define-method
+    /// operations so runtime naming, HomeObject, and non-constructor metadata
+    /// remain distinct from ordinary data-property NamedEvaluation.
+    pub(super) fn parse_object_literal(&mut self) -> Result<(), Error> {
+        if !self.is_punctuator(Punctuator::LeftBrace) {
+            return Err(self.syntax_here("expecting '{'"));
+        }
+        self.advance()?;
+        self.emit_instruction(Instruction::Object)?;
+        let mut has_proto = false;
+
+        while !self.is_punctuator(Punctuator::RightBrace) {
+            if self.is_punctuator(Punctuator::Ellipsis) {
+                let spread_span = self.current().span;
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction_at(
+                    Instruction::CopyDataProperties,
+                    source_offset(spread_span)?,
+                )?;
+                self.anonymous_function_definition = None;
+            } else if self.is_punctuator(Punctuator::Multiply) {
+                let function_span = self.current().span;
+                self.advance()?;
+                let property_key = self.parse_object_method_property_name()?;
+                self.parse_generator_method_definition(function_span)?;
+                match property_key {
+                    ObjectMethodPropertyKey::Fixed(key) => {
+                        let key = self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                        self.emit_instruction(Instruction::DefineMethod {
+                            key,
+                            kind: DefineMethodKind::Method,
+                            enumerable: true,
+                        })?;
+                    }
+                    ObjectMethodPropertyKey::Computed => {
+                        self.emit_instruction(Instruction::DefineMethodComputed {
+                            kind: DefineMethodKind::Method,
+                            enumerable: true,
+                        })?;
+                    }
+                }
+                self.anonymous_function_definition = None;
+            } else if self.is_punctuator(Punctuator::LeftBracket) {
+                let property_span = self.current().span;
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                // QuickJS performs ToPropertyKey before evaluating the value.
+                self.emit_instruction(Instruction::ToPropKey)?;
+                self.expect_punctuator(Punctuator::RightBracket)?;
+                if self.is_punctuator(Punctuator::LeftParen) {
+                    self.parse_object_method_definition(property_span, DefineMethodKind::Method)?;
+                    self.emit_instruction(Instruction::DefineMethodComputed {
+                        kind: DefineMethodKind::Method,
+                        enumerable: true,
+                    })?;
+                    self.anonymous_function_definition = None;
+                } else {
+                    if !self.is_punctuator(Punctuator::Colon) {
+                        return Err(self.syntax_here("expecting ':'"));
+                    }
+                    self.advance_expression_start()?;
+                    self.parse_assignment_allow_in()?;
+                    if let Some(definition) = self.take_anonymous_function_definition() {
+                        self.emit_anonymous_set_name(definition, Instruction::SetNameComputed)?;
+                    }
+                    self.emit_instruction(Instruction::DefineArrayEl)?;
+                    self.emit_instruction(Instruction::Drop)?;
+                }
+            } else {
+                let token = self.current().clone();
+                let mut shorthand = None;
+                let mut method_prefix = None;
+                let key = match token.kind {
+                    TokenKind::Identifier(identifier) => {
+                        let name = identifier.value.clone();
+                        // IdentifierName accepts escaped reserved words as a
+                        // property key, but QuickJS does not reinterpret that
+                        // key as an IdentifierReference shorthand.
+                        if !identifier.escaped_reserved_word {
+                            shorthand = Some(identifier.clone());
+                        }
+                        if !identifier.has_escape
+                            && matches!(name.as_str(), "get" | "set" | "async")
+                        {
+                            method_prefix = Some(name.clone());
+                        }
+                        self.advance()?;
+                        JsString::try_from_utf8(&name)?
+                    }
+                    TokenKind::Keyword(keyword) => {
+                        self.advance()?;
+                        JsString::from_static(keyword.as_str())
+                    }
+                    TokenKind::String(string) => {
+                        if self.current_ir().strict && string.has_legacy_octal_escape {
+                            return Err(Error::syntax(
+                                "legacy octal escapes are forbidden in strict mode",
+                                source_span(token.span),
+                            ));
+                        }
+                        self.advance()?;
+                        JsString::try_from_utf16(string.value.utf16)?
+                    }
+                    TokenKind::Number(number) => {
+                        if self.current_ir().strict
+                            && matches!(
+                                number.kind,
+                                NumberKind::LegacyOctal | NumberKind::LegacyDecimal
+                            )
+                        {
+                            return Err(Error::syntax(
+                                "legacy leading-zero numeric literals are forbidden in strict mode",
+                                source_span(token.span),
+                            ));
+                        }
+                        self.advance()?;
+                        parse_number(&number)
+                            .map_err(|message| Error::syntax(message, source_span(token.span)))?
+                            .to_js_string()?
+                    }
+                    TokenKind::PrivateIdentifier(_) => {
+                        return Err(self.syntax_here("invalid property name"));
+                    }
+                    _ => return Err(self.syntax_here("invalid property name")),
+                };
+
+                let next_starts_property_name = matches!(
+                    self.current().kind,
+                    TokenKind::Identifier(_)
+                        | TokenKind::Keyword(_)
+                        | TokenKind::String(_)
+                        | TokenKind::Number(_)
+                        | TokenKind::PrivateIdentifier(_)
+                        | TokenKind::Punctuator(Punctuator::LeftBracket)
+                );
+                let async_prefix_has_line_terminator = method_prefix.as_deref() == Some("async")
+                    && quickjs_simple_lookahead_has_line_terminator(
+                        &self.lexer.source()[token.span.end.byte_offset..],
+                    );
+                let is_method_prefix = method_prefix.as_deref().is_some_and(|prefix| {
+                    (next_starts_property_name
+                        || (prefix == "async" && self.is_punctuator(Punctuator::Multiply)))
+                        && (prefix != "async" || !async_prefix_has_line_terminator)
+                });
+                if self.is_punctuator(Punctuator::LeftParen) {
+                    self.parse_object_method_definition(token.span, DefineMethodKind::Method)?;
+                    let key_constant =
+                        self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                    self.emit_instruction(Instruction::DefineMethod {
+                        key: key_constant,
+                        kind: DefineMethodKind::Method,
+                        enumerable: true,
+                    })?;
+                    self.anonymous_function_definition = None;
+                } else if is_method_prefix {
+                    let method_prefix = method_prefix
+                        .as_deref()
+                        .ok_or_else(|| Error::internal("object method prefix disappeared"))?;
+                    let async_generator = method_prefix == "async"
+                        && self.consume_punctuator(Punctuator::Multiply)?;
+                    let property_key = self.parse_object_method_property_name()?;
+                    let method_kind = match (method_prefix, async_generator) {
+                        ("async", true) => {
+                            self.parse_async_generator_method_definition(token.span)?;
+                            DefineMethodKind::Method
+                        }
+                        ("async", false) => {
+                            self.parse_async_method_definition(token.span)?;
+                            DefineMethodKind::Method
+                        }
+                        ("get", false) => {
+                            self.parse_object_method_definition(
+                                token.span,
+                                DefineMethodKind::Getter,
+                            )?;
+                            DefineMethodKind::Getter
+                        }
+                        ("set", false) => {
+                            self.parse_object_method_definition(
+                                token.span,
+                                DefineMethodKind::Setter,
+                            )?;
+                            DefineMethodKind::Setter
+                        }
+                        _ => {
+                            return Err(Error::internal("invalid object method prefix"));
+                        }
+                    };
+                    match property_key {
+                        ObjectMethodPropertyKey::Fixed(key) => {
+                            let key_constant =
+                                self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                            self.emit_instruction(Instruction::DefineMethod {
+                                key: key_constant,
+                                kind: method_kind,
+                                enumerable: true,
+                            })?;
+                        }
+                        ObjectMethodPropertyKey::Computed => {
+                            self.emit_instruction(Instruction::DefineMethodComputed {
+                                kind: method_kind,
+                                enumerable: true,
+                            })?;
+                        }
+                    }
+                    self.anonymous_function_definition = None;
+                } else if self.is_punctuator(Punctuator::Colon) {
+                    self.advance_expression_start()?;
+                    self.parse_assignment_allow_in()?;
+                    if key == JsString::from_static("__proto__") {
+                        if has_proto {
+                            return Err(Error::syntax(
+                                "duplicate __proto__ property name",
+                                source_span(token.span),
+                            ));
+                        }
+                        has_proto = true;
+                        self.anonymous_function_definition = None;
+                        self.emit_instruction(Instruction::SetProto)?;
+                    } else {
+                        let key_constant =
+                            self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                        if let Some(definition) = self.take_anonymous_function_definition() {
+                            self.emit_anonymous_set_name(
+                                definition,
+                                Instruction::SetName(key_constant),
+                            )?;
+                        }
+                        self.emit_instruction(Instruction::DefineField(key_constant))?;
+                    }
+                } else if let Some(identifier) = shorthand {
+                    // Pinned QuickJS's class-initializer `arguments` check
+                    // misses object shorthand and can capture an enclosing
+                    // binding. Static-block `await` arrives as a keyword and
+                    // therefore takes the grammar's `expecting ':'` branch.
+                    validate_identifier(
+                        &identifier,
+                        token.span,
+                        self.current_ir().strict,
+                        IdentifierContext::Reference,
+                    )?;
+                    self.emit_identifier(identifier.value, token.span, IdentifierAccess::Get)?;
+                    let key_constant =
+                        self.add_constant(IrConstant::Primitive(Value::String(key)))?;
+                    self.emit_instruction(Instruction::DefineField(key_constant))?;
+                    self.anonymous_function_definition = None;
+                } else {
+                    return Err(self.syntax_here("expecting ':'"));
+                }
+            }
+
+            if !self.is_punctuator(Punctuator::Comma) {
+                break;
+            }
+            self.advance()?;
+        }
+        self.expect_punctuator(Punctuator::RightBrace)?;
+        self.anonymous_function_definition = None;
+        Ok(())
+    }
+
+    /// Parse the property name following contextual `get` or `set`. QuickJS
+    /// evaluates and canonicalizes a computed key before creating the accessor
+    /// closure, so the typed stack retains that key until DefineMethodComputed.
+    fn parse_object_method_property_name(&mut self) -> Result<ObjectMethodPropertyKey, Error> {
+        let token = self.current().clone();
+        let key = match token.kind {
+            TokenKind::Identifier(identifier) => {
+                self.advance()?;
+                JsString::try_from_utf8(&identifier.value)?
+            }
+            TokenKind::Keyword(keyword) => {
+                self.advance()?;
+                JsString::from_static(keyword.as_str())
+            }
+            TokenKind::String(string) => {
+                if self.current_ir().strict && string.has_legacy_octal_escape {
+                    return Err(Error::syntax(
+                        "legacy octal escapes are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                JsString::try_from_utf16(string.value.utf16)?
+            }
+            TokenKind::Number(number) => {
+                if self.current_ir().strict
+                    && matches!(
+                        number.kind,
+                        NumberKind::LegacyOctal | NumberKind::LegacyDecimal
+                    )
+                {
+                    return Err(Error::syntax(
+                        "legacy leading-zero numeric literals are forbidden in strict mode",
+                        source_span(token.span),
+                    ));
+                }
+                self.advance()?;
+                parse_number(&number)
+                    .map_err(|message| Error::syntax(message, source_span(token.span)))?
+                    .to_js_string()?
+            }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => {
+                self.advance_expression_start()?;
+                self.parse_assignment_allow_in()?;
+                self.emit_instruction(Instruction::ToPropKey)?;
+                self.expect_punctuator(Punctuator::RightBracket)?;
+                return Ok(ObjectMethodPropertyKey::Computed);
+            }
+            TokenKind::PrivateIdentifier(_) => {
+                return Err(self.syntax_here("invalid property name"));
+            }
+            _ => return Err(self.syntax_here("invalid property name")),
+        };
+        Ok(ObjectMethodPropertyKey::Fixed(key))
+    }
+}

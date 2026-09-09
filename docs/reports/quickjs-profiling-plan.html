@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="以 QuickJS 2026-06-04 为基准，规划 quickjs-oxide 的内存快照、分配跟踪、初始化计时和微基准；含运行、关闭、数据口径与验收方法。">
+<title>QuickJS 性能观测复现方案 · quickjs-oxide</title>
+<style>
+:root{--paper:#f6f5ef;--white:#fffef9;--ink:#202b28;--muted:#586760;--line:#d9dfd5;--green:#214f43;--pale:#e9f0e8;--amber:#86431e;--sand:#fbefdf;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:28px}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.8 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif}a{color:var(--green);text-underline-offset:4px}a:hover{color:#9b4a20}button,select{font:inherit}button{cursor:pointer}a:focus-visible,button:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #b46831;outline-offset:4px}code{font-family:var(--mono);font-size:.88em;overflow-wrap:anywhere}p{margin:0 0 15px}ul,ol{padding-left:22px;margin:12px 0}li{margin:6px 0}h1,h2,h3{line-height:1.3;letter-spacing:-.025em}h1{font-size:clamp(36px,4.2vw,62px);margin:25px 0 22px;font-weight:750}h2{font-size:30px;margin:0 0 20px}h3{font-size:20px;margin:0 0 12px}small,.small{font-size:13px;line-height:1.7;color:var(--muted)}.layout{max-width:1480px;margin:auto;display:grid;grid-template-columns:240px minmax(0,1fr)}aside{padding:40px 25px;position:sticky;top:0;height:100vh;border-right:1px solid var(--line);overflow:auto}.brand{font:700 13px/1.4 var(--mono);letter-spacing:.06em}.brand span{display:block;color:var(--muted);font-weight:400;margin-top:7px}.rail-title{margin:44px 0 14px;font-size:11px;letter-spacing:.16em;color:var(--muted)}nav a{display:flex;gap:12px;text-decoration:none;color:var(--muted);font-size:14px;padding:7px 0}nav a i{font:12px/2 var(--mono);font-style:normal;color:#68766f}nav a.active{color:var(--green);font-weight:700}.rail-note{margin-top:35px;padding-top:18px;border-top:1px solid var(--line)}main{min-width:0;padding:46px 60px 70px}.topline{display:flex;align-items:center;justify-content:space-between;gap:15px}.eyebrow{font:12px/1.5 var(--mono);letter-spacing:.14em;color:var(--green)}.print{border:1px solid var(--line);background:transparent;color:var(--green);padding:6px 12px;border-radius:4px;font-size:13px}.lede{font-size:19px;max-width:760px;color:var(--muted)}.meta{display:flex;flex-wrap:wrap;gap:9px;margin:24px 0}.tag{display:inline-block;font-size:12px;font-weight:650;padding:3px 9px;background:var(--pale);color:var(--green);border:1px solid #c9d7cc;border-radius:3px}.tag.proposed{background:var(--sand);color:var(--amber);border-color:#e6cfb5}.tag.neutral{background:#eceee8;color:#4a5750;border-color:var(--line)}.hero-note{border-left:4px solid var(--green);background:var(--pale);padding:20px 24px;margin:30px 0}.hero-note p:last-child{margin:0}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-block:1px solid var(--line);margin:32px 0 12px}.stat{padding:21px 18px 21px 0}.stat+.stat{border-left:1px solid var(--line);padding-left:24px}.stat b{display:block;font:700 29px/1.3 var(--mono);color:var(--green)}.stat span{font-size:13px;color:var(--muted)}section{padding:48px 0;border-bottom:1px solid var(--line);scroll-margin-top:20px}.section-head{display:flex;align-items:baseline;gap:15px}.section-head .num{font:13px var(--mono);color:var(--green)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:17px}.card{border:1px solid var(--line);background:var(--white);padding:23px;border-radius:5px}.card p:last-child{margin-bottom:0}.card .kicker{font-size:12px;color:var(--green);font-weight:700;letter-spacing:.08em;display:block;margin-bottom:9px}.note{padding:16px 19px;background:var(--pale);border-left:3px solid var(--green);margin:20px 0;font-size:14px}.note.warn{background:var(--sand);border-left-color:var(--amber)}.table-scroll{overflow-x:auto;margin:20px 0;border:1px solid var(--line);border-radius:4px}table{border-collapse:collapse;width:100%;font-size:14px;text-align:left;background:var(--white)}th{font-weight:650;color:var(--green);background:var(--pale)}th,td{padding:13px 15px;vertical-align:top;border-bottom:1px solid var(--line)}tbody tr:last-child td{border-bottom:0}table.wide{min-width:670px}.code-block{position:relative;margin:16px 0;background:#21312b;color:#e9f0e8;border-radius:5px;overflow:hidden}.code-label{display:flex;justify-content:space-between;align-items:center;padding:8px 15px;background:#2a3c33;font-size:12px;color:#d0ddcf;gap:15px}.copy{border:1px solid #617468;color:#f3f6ee;background:transparent;border-radius:3px;font-size:12px;padding:2px 8px}.code-block pre{margin:0;padding:17px 19px;white-space:pre-wrap;word-break:break-word;line-height:1.65;font:13px/1.65 var(--mono);tab-size:2}.code-block code{font-size:inherit}.steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:25px 0}.step{border-top:3px solid var(--green);padding:15px 12px;background:var(--white);border-bottom:1px solid var(--line)}.step b{font-size:15px;display:block;margin-bottom:8px}.step span{font-size:13px;color:var(--muted)}.step em{display:block;font:12px var(--mono);color:var(--green);margin-bottom:12px;font-style:normal}.demo{background:var(--white);border:1px solid #b7c9bc;padding:26px;border-radius:5px}.controls{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:20px 0}.controls label{display:block;font-size:13px;font-weight:650;margin-bottom:7px}.controls select{width:100%;padding:9px 11px;border:1px solid #b8c5ba;background:white;border-radius:3px;color:var(--ink);font-size:14px}.demo-status{min-height:52px;font-size:14px;color:var(--muted)}.metric{font:700 18px var(--mono);color:var(--green)}details{border:1px solid var(--line);background:var(--white);margin-top:12px;border-radius:4px}summary{cursor:pointer;padding:14px 18px;font-weight:600;font-size:14px}details .inside{padding:0 18px 17px}details p{font-size:14px}.refs li{padding-bottom:11px;font-size:14px}.refs .small{display:block;margin-top:3px}.checks{list-style:none;padding:0}.checks li{position:relative;padding:8px 0 8px 25px;border-bottom:1px solid var(--line);font-size:14px}.checks li:before{content:'□';position:absolute;left:0;color:var(--green)}.footer{display:flex;gap:20px;justify-content:space-between;padding-top:30px;font-size:13px;color:var(--muted)}.source{font-size:12px;color:var(--muted);margin-top:16px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}noscript{display:block;background:var(--sand);padding:12px;font-size:14px}
+@media(min-width:1500px){main{padding-inline:76px}}@media(max-width:1100px){.layout{grid-template-columns:200px minmax(0,1fr)}aside{padding:30px 18px}main{padding:34px 32px}.steps{grid-template-columns:repeat(2,1fr)}}@media(max-width:760px){.layout{display:block}aside{height:auto;position:static;border-right:0;border-bottom:1px solid var(--line);padding:20px}.brand span{display:inline;margin-left:10px}.rail-title,.rail-note{display:none}nav{display:flex;gap:17px;overflow:auto;margin-top:14px}nav a{white-space:nowrap;font-size:12px;gap:6px}main{padding:28px 20px 45px}h2{font-size:25px}.grid,.controls{grid-template-columns:1fr}.lede{font-size:17px}.stats{grid-template-columns:repeat(3,1fr)}.stat b{font-size:21px}.stat+.stat{padding-left:13px}.stat span{font-size:11px}section{padding:35px 0}.hero-note{padding:16px}.card,.demo{padding:18px}.footer{display:block}.steps{gap:10px}.topline{align-items:flex-start}.eyebrow{font-size:10px}.code-block pre{font-size:12px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{@page{size:A4;margin:16mm}body{font-size:10pt;background:white;color:#111}.layout{display:block}aside,.print,.copy,.demo,nav{display:none!important}main{padding:0;max-width:none}h1{font-size:30pt}h2{font-size:18pt}h3{font-size:13pt}.lede{font-size:12pt}section{padding:22px 0}.code-block,.code-label{background:#f0f2ee;color:#111;border:1px solid #ccc}.code-block pre{font-size:8pt}.card,.note,.step,.stats{break-inside:avoid}.grid{gap:12px}.table-scroll{overflow:visible}table.wide{min-width:0}th,td{padding:7px;font-size:9pt}thead{display:table-header-group}tr{break-inside:avoid}h2,h3{break-after:avoid}a{color:#153d2c}details{display:block}details .inside{display:block}summary{list-style:none}.footer{font-size:9pt}}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside aria-label="报告目录">
+<div class="brand">quickjs-oxide<span>Engineering notes / 02</span></div>
+<div class="rail-title">CONTENTS</div>
+<nav>
+<a href="#scope"><i>01</i>复现范围</a><a href="#upstream"><i>02</i>上游机制</a><a href="#run"><i>03</i>现在如何使用</a><a href="#contract"><i>04</i>跨实现的数据口径</a><a href="#integration"><i>05</i>接入现有项目</a><a href="#switches"><i>06</i>启用与关闭</a><a href="#benchmark"><i>07</i>微基准复现</a><a href="#acceptance"><i>08</i>实施与验收</a><a href="#evidence"><i>09</i>本次验证</a><a href="#sources"><i>10</i>来源与定位</a>
+</nav>
+<div class="rail-note small">固定上游：2026-06-04<br>报告日期：2026-09-09<br>范围：设计与使用说明<br><br>本报告未实现新的<br>Rust 性能观测功能。</div>
+</aside>
+<main id="main">
+<header>
+<div class="topline"><span class="eyebrow">PERFORMANCE OBSERVABILITY / DESIGN REPORT</span><button class="print" id="print-button" type="button">打印 / 保存 PDF</button></div>
+<h1>复现 QuickJS 的<br>性能观测方式</h1>
+<p class="lede">先确定如何测量、如何解释数据、如何关闭观测。具体的 Value 表示、分配器与 VM 实现，可以继续演进。</p>
+<div class="meta"><span class="tag">QuickJS 2026-06-04</span><span class="tag">上游命令已验证</span><span class="tag proposed">Oxide 接口待实现</span><span class="tag neutral">独立 HTML · 离线可读</span></div>
+<div class="hero-note"><p><strong>准确定位：</strong>这里的 “QuickJS profiler” 指它自带的<strong>内存快照、分配事件跟踪、初始化计时和微基准</strong>。该版本没有 LuaJIT 风格的集成 CPU / 调用栈采样器，<code>-T</code> 也不是函数执行 trace。</p><p class="small">方案复现观测目的与操作习惯，不复制 C 内存布局，也不把 QuickJS 链入产品。上游可执行程序继续作为独立测试 oracle。</p></div>
+<div class="stats"><div class="stat"><b>04</b><span>明确的上游观测能力</span></div><div class="stat"><b>OFF</b><span>拟议功能默认关闭</span></div><div class="stat"><b>01</b><span>版本固定、结果可追溯</span></div></div>
+</header>
+<section id="scope">
+<div class="section-head"><span class="num">01 /</span><h2>我们究竟复现什么</h2></div>
+<div class="table-scroll"><table class="wide"><thead><tr><th>上游入口</th><th>回答的问题</th><th>当前 Oxide 状态</th></tr></thead><tbody>
+<tr><td><code>-d / --dump</code></td><td>结束执行时，runtime 管理的数据占多少内存，分布在哪些类别？</td><td><span class="tag proposed">待实现 CLI</span><br>已有 <code>HeapCounts</code> 和 GC 节点统计，不等同于字节统计。</td></tr>
+<tr><td><code>-T / --trace</code></td><td>哪些分配、重分配和释放通过了 runtime 的 allocator？</td><td><span class="tag proposed">待实现</span><br>现有逻辑对象计数不能替代 allocator 事件。</td></tr>
+<tr><td><code>-q -d</code></td><td>创建 / 释放 Runtime 与 Context 的基础成本是多少？</td><td><span class="tag neutral">部分基础已有</span><br><code>-q / --quit</code> 已创建 Runtime / Context 后退出；没有四阶段计时。</td></tr>
+<tr><td><code>tests/microbench.js</code></td><td>属性、数组、调用、数值等单项操作的吞吐表现如何？</td><td><span class="tag proposed">接入待验证</span><br>脚本在 oracle 缓存中；Oxide 尚无对应 runner 和结果基线。</td></tr>
+</tbody></table></div>
+<p>本轮不引入 JS 栈采样、JIT trace、逐指令计时或火焰图内核。若未来需要知道“CPU 时间花在哪个 Rust / JS 函数”，应另设采样分析任务。这四项能力能够建立资源与操作成本基线，但不能单独定位所有 CPU 热点。</p>
+<p class="source">依据：<a href="#s-qjs">qjs.c</a>、<a href="#s-memory">quickjs.h / quickjs.c</a>、<a href="#s-micro">microbench.js</a>。上游事实与下文的拟议接口分别标注。</p>
+</section>
+<section id="upstream">
+<div class="section-head"><span class="num">02 /</span><h2>上游机制与容易误读的细节</h2></div>
+<div class="grid">
+<article class="card"><span class="kicker">MEMORY SNAPSHOT</span><h3><code>-d</code>：执行后取一次快照</h3><p><code>JS_ComputeMemoryUsage</code> 收集 runtime 分配统计及对象图分类，随后 <code>JS_DumpMemoryUsage</code> 格式化输出。</p><p class="small">正常执行路径在 <code>js_std_loop</code> 返回后、释放 Context / Runtime 之前打印。命令行求值进入 <code>fail:</code> 的路径不会经过这次 dump；不能假设每种失败退出都有报告。</p></article>
+<article class="card"><span class="kicker">ALLOCATION TRACE</span><h3><code>-T</code>：替换 allocator 回调</h3><p>CLI 通过 <code>JS_NewRuntime2(&amp;trace_mf, ...)</code> 注入 malloc / realloc / free 包装函数，打印 <code>A / R / F</code> 事件。</p><p class="small">覆盖经过该 runtime allocator 的调用，不是所有 libc 分配或进程 RSS。没有函数调用栈或事件时间戳；指针显示为相对基址偏移及可用大小。</p></article>
+<article class="card"><span class="kicker">INSTANTIATION COST</span><h3><code>-q -d</code>：四个阶段分别取最好值</h3><p>在常规初始化、dump 和释放之后，额外重复 100 次 <code>JS_NewRuntime → JS_NewContext → JS_FreeContext → JS_FreeRuntime</code>，用 C <code>clock()</code> 计时。</p><p class="small">最终总数是四段各自最小值之和，不一定来自同一次迭代。它测的是基础 API 生命周期，不包含进程启动，也不同于装载全部 CLI 宿主功能。</p></article>
+<article class="card"><span class="kicker">OPERATION BENCHMARK</span><h3>微基准：逐步扩大工作量</h3><p>按计时阈值扩展循环次数，重复采样并取较短的单位操作时间，输出 <code>ns/op</code>。支持参考结果比较与全套结果保存。</p><p class="small">本版本每档至多 100 次测量，最多 30 档；时钟依次选择 <code>performance.now</code>、<code>os.now</code>、<code>Date.now</code>。这些是基准驱动行为，不是 CPU profiler。</p></article>
+</div>
+<div class="note warn"><strong>组合开关会改变观测：</strong><code>-T -d</code> 时，dump 格式化中的对象大小探测也可能产生 A/F 事件；初始化与销毁也被跟踪。<code>-T -q -d</code> 后面的 100 次计时使用普通 <code>JS_NewRuntime</code>，不会继承 trace allocator。不要把 trace 日志当成纯业务分配，也不要带 trace 测正常执行速度。</div>
+<p>上游 <code>-d</code> 不额外显式调用一次 <code>JS_RunGC</code>。我们也不应为了“看起来内存更少”在快照前偷偷强制 GC。需要 GC 后快照时，应作为独立实验明确标注。</p>
+</section>
+<section id="run">
+<div class="section-head"><span class="num">03 /</span><h2>现在就能运行的上游命令</h2></div>
+<p>以下命令从仓库根目录执行，使用现有脚本校验并构建固定版本。构建可能下载源码，产物位于 oracle 缓存；不会替换 Oxide 的 <code>qjs</code>。</p>
+<div class="code-block"><div class="code-label"><span>现有工具 · Bash · 初始化一次</span><button class="copy" type="button">复制</button></div><pre><code>qjs_path="$(./scripts/quickjs/build-quickjs-oracle.sh)"
+qjs_src="$(dirname "$qjs_path")"
+mkdir -p target/profile
+
+# 一个没有业务输出、保留少量对象的观测样本
+cat &gt; target/profile/workload.js &lt;&lt;'JS'
+globalThis.items = Array.from({ length: 1000 }, (_, i) =&gt; ({ value: i }));
+JS</code></pre></div>
+<div class="grid">
+<div><h3>查看内存快照</h3><div class="code-block"><div class="code-label"><span>上游 · 可运行</span><button class="copy" type="button">复制</button></div><pre><code>"$qjs_path" -d target/profile/workload.js \
+  &gt; target/profile/memory.txt \
+  2&gt; target/profile/memory.stderr</code></pre></div><p class="small">查看分类 count / size 和分配统计。它是退出前快照，不是峰值，也不是累计分配量。</p></div>
+<div><h3>跟踪分配事件</h3><div class="code-block"><div class="code-label"><span>上游 · 可运行</span><button class="copy" type="button">复制</button></div><pre><code>"$qjs_path" -T target/profile/workload.js \
+  &gt; target/profile/alloc.trace \
+  2&gt; target/profile/alloc.stderr</code></pre></div><p class="small">A 为分配，R 为重分配，F 为释放。地址不是稳定身份，跨进程不要逐行比较地址和分配顺序。</p></div>
+<div><h3>测基础生命周期</h3><div class="code-block"><div class="code-label"><span>上游 · 可运行</span><button class="copy" type="button">复制</button></div><pre><code>"$qjs_path" -q -d \
+  &gt; target/profile/startup.txt</code></pre></div><p class="small">单独 <code>-q</code> 只初始化并退出；单独 <code>-d</code> 只 dump。二者组合才附加初始化计时。</p></div>
+<div><h3>关闭观测</h3><div class="code-block"><div class="code-label"><span>上游 · 正常执行</span><button class="copy" type="button">复制</button></div><pre><code>"$qjs_path" target/profile/workload.js
+
+# 只创建 / 释放，不执行工作负载或附加计时
+"$qjs_path" -q</code></pre></div><p class="small">移除 <code>-d</code> 和 <code>-T</code>，并结束原进程后重新运行。这个 CLI 没有 profiler pause / stop 命令或常驻采样服务。</p></div>
+</div>
+<div class="note"><strong>输出位置：</strong>上游 dump 与 trace 写到 <strong>stdout</strong>，会与脚本的 <code>print</code> 混合。<code>2&gt;profile.log</code> 不能单独收集这些数据。观测用例应避免 stdout 业务输出，或完整保存混合日志；不要给任意脚本输出套一个宽泛正则就当作可靠事件流。</div>
+<div class="demo" aria-labelledby="command-title"><h3 id="command-title">命令速查</h3><p class="small">本控件只展示命令，不执行代码。上游命令可运行；Oxide 观测命令为设计草案。</p><div class="controls"><div><label for="engine-choice">执行对象</label><select id="engine-choice"><option value="quickjs">上游 QuickJS · 已验证</option><option value="oxide">quickjs-oxide · 拟议功能</option></select></div><div><label for="mode-choice">观测模式</label><select id="mode-choice"><option value="off">关闭 / 正常执行</option><option value="dump">内存快照</option><option value="trace">分配跟踪</option><option value="startup">初始化计时</option><option value="bench">微基准</option></select></div></div><div class="demo-status" id="command-status" role="status" aria-live="polite"></div><div class="code-block"><div class="code-label"><span id="command-label">上游 · 可运行</span><button class="copy" type="button">复制</button></div><pre><code id="command-preview">"$qjs_path" target/profile/workload.js</code></pre></div></div>
+<noscript>交互命令速查需要 JavaScript；所有运行和关闭命令都已在正文列出，离线阅读与打印不受影响。</noscript>
+</section>
+<section id="contract">
+<div class="section-head"><span class="num">04 /</span><h2>固定观测口径，不固定内部实现</h2></div>
+<p>Rust 可以使用不同的对象表示、arena、共享字符串或分配策略。复现的契约应是<strong>同一阶段、同一资源范围、清楚的计量单位</strong>，不要求复现 QuickJS 的结构体尺寸或内存地址。</p>
+<div class="table-scroll"><table class="wide"><thead><tr><th>指标</th><th>上游含义</th><th>Oxide 的报告要求</th></tr></thead><tbody>
+<tr><td><code>malloc_count / malloc_size</code></td><td>runtime allocator 的当前存量；size 受 usable-size 与平台开销定义影响。</td><td>只在覆盖完整时报告对应分配量；区分 requested / capacity / usable。无法获取的值报告 unavailable，不填 0。</td></tr>
+<tr><td><code>memory_used_size</code></td><td>遍历 runtime 数据得到的分类统计口径。</td><td>独立于 allocator 总量，说明估算规则和共享资源去重规则；不能用 <code>节点数 × size_of</code> 冒充完整占用。</td></tr>
+<tr><td>对象、shape、atom、字符串、函数代码等</td><td>逻辑资源类别的 count / size。</td><td>先复用已有节点计数；字节统计由资源拥有者提供。String buffer、Vec capacity、共享 backing store 必须有唯一归属。</td></tr>
+<tr><td>A / R / F</td><td>一次 runtime allocator 调用及其结果。</td><td>建议使用不暴露地址的 allocation ID；记录请求大小、结果和失败。不要把创建 JSObject 等同于一次 malloc。</td></tr>
+<tr><td>基础生命周期耗时</td><td>CPU time；四段分别取最小值。</td><td>若用 Rust <code>Instant</code>，明确标注 wall time；不得给两种时钟的结果直接计算加速比。</td></tr>
+<tr><td>峰值 / RSS / 累计分配量</td><td>不是 <code>-d</code> 中“当前使用量”的同义词。</td><td>可以将来扩展为独立字段，注明来源；本轮不借用上游名称混报。</td></tr>
+</tbody></table></div>
+<div class="note warn"><strong>精确分配跟踪有前提：</strong>当前工程禁止 unsafe code。完整拦截 Rust allocator 可能涉及 allocator 层改造，不能仅靠给 heap 节点增减计数实现。先确认可行的分配接入范围；如果只能覆盖部分资源，报告必须带 <code>coverage=partial</code>。<strong>本报告不要求改变 unsafe 策略，也不宣称 -T 能无条件完整复刻。</strong></div>
+<p>建议输出携带 schema、引擎版本、提交、构建配置、平台 / 指针宽度、runtime 标识、快照阶段、资源覆盖范围及计量依据。字段可以稳定，采集实现可以替换。上游原始文本和 Oxide 结构化数据各自保存，不伪造逐字一致。</p>
+<div class="code-block"><div class="code-label"><span>拟议数据契约 · 示例值不是测量结果</span></div><pre><code>{
+  "schema": "oxide-memory-v1",
+  "phase": "after-jobs-before-context-drop",
+  "coverage": "partial",
+  "categories": {
+    "objects": { "count": 1000, "bytes": null, "basis": "node-count-only" }
+  },
+  "allocator": { "requested_live_bytes": null, "usable_live_bytes": null },
+  "unavailable": ["object-bytes", "allocator-live-bytes"]
+}</code></pre></div>
+</section>
+<section id="integration">
+<div class="section-head"><span class="num">05 /</span><h2>接入现有职责边界</h2></div>
+<p>采用“CLI 选择 → Runtime 观测入口 → 资源拥有者采集 → 格式化输出”的边界。无需把计时器或格式化器塞进每条字节码的执行路径，也无需现在确定未来的 Value 布局。</p>
+<div class="steps" aria-label="拟议数据流"><div class="step"><em>01 / SELECT</em><b>apps/cli</b><span>解析开关；决定输出目的地、生命周期和报告时机。</span></div><div class="step"><em>02 / COLLECT</em><b>engine/api</b><span>提供只读快照及构建时选择的观测配置入口。</span></div><div class="step"><em>03 / ACCOUNT</em><b>资源拥有者</b><span>heap、atom、value、code 各自提供明确归属的统计。</span></div><div class="step"><em>04 / REPORT</em><b>CLI / 基准工具</b><span>格式化、保存原始结果、比较同口径的指标。</span></div></div>
+<div class="table-scroll"><table class="wide"><thead><tr><th>位置</th><th>拟议职责</th><th>边界约束</th></tr></thead><tbody>
+<tr><td><code>apps/cli/src/main.rs</code></td><td>扩展 -d、-T 和 -q -d；统一处理报告退出路径。</td><td>默认 stdout 行为不变。建议观测写 stderr / 独立文件，明确区别于上游的 stdout；若需要原样 stdout，另设显式选项。</td></tr>
+<tr><td><code>src/engine/api/</code></td><td>暴露快照结果和 Runtime 创建时的观测选项。</td><td>对外返回稳定数据，不暴露 Heap、ShapeId 或 allocator 实现。命名以实现时审查为准。</td></tr>
+<tr><td><code>heap / atom / value / code</code></td><td>统计各自拥有的节点、buffer、字节码和共享存储。</td><td>以物理持有者或可去重的资源身份计数，防止多条引用重复计算同一存储。</td></tr>
+<tr><td>分配接入层，位置待定</td><td>在能力允许时生成 A/R/F 对应事件。</td><td>不要借用 <code>host</code> 存放内部观测，也不为 profiling 重写整个 allocator。</td></tr>
+<tr><td><code>scripts/benchmark/</code>（拟新增）</td><td>固定用例、准备两个引擎、保存元数据和结果。</td><td>属于开发工具，不能成为引擎运行时依赖；不复用 Test262 正确性通过率作速度分数。</td></tr>
+</tbody></table></div>
+<p>当前 <code>heap_counts()</code> 可复用来形成第一版逻辑快照；<code>run_gc()</code> 返回的 <code>GcStats</code> 是一次收集的节点统计，不是通用内存 profiler。新增诊断文件仍放在已有职责目录下，目录说明同步更新。</p>
+<details><summary>快照和跟踪不能改变什么</summary><div class="inside"><p>快照不执行 JS getter / Proxy trap，不人为推进 jobs，不增加持久 roots，也不为了计数改变对象的可达性。格式化和 I/O 留在引擎状态借用范围之外。跟踪输出避免递归进入被跟踪分配器；若有丢弃或写入失败，应标记报告不完整，不把它当作 JavaScript 异常。</p><p>上游 A/R/F 包装存在特殊路径：<code>realloc(NULL,n)</code> 可以表现为分配，<code>realloc(p,0)</code> 表现为释放语义；realloc 失败时原分配仍活着。不能假设所有失败请求都会打印一条事件。</p></div></details>
+</section>
+<section id="switches">
+<div class="section-head"><span class="num">06 /</span><h2>如何启用，如何真正关闭</h2></div>
+<p><span class="tag proposed">以下全部为 Oxide 设计草案</span> 上游运行命令见第 03 节。当前仓库没有 <code>profiling</code> feature，也没有 <code>-d / -T</code> 支持；下列命令不能被当作已经实现。</p>
+<div class="table-scroll"><table class="wide"><thead><tr><th>状态</th><th>预期行为</th><th>关闭保证</th></tr></thead><tbody>
+<tr><td>编译不含 profiling</td><td>正常执行；遇到 -d / -T 明确返回“此构建未启用观测”。</td><td>移除事件缓冲、观测回调和增量计数逻辑；不悄悄忽略开关。</td></tr>
+<tr><td>编译含 profiling，运行无开关</td><td>不采集、不写报告、不创建日志。</td><td>可能仍有代码体积或分支成本；需测量，不能直接承诺零开销。</td></tr>
+<tr><td>仅 -d</td><td>在约定退出阶段请求快照。</td><td>下一次运行去掉 -d；无需卸载工具。</td></tr>
+<tr><td>仅 -T</td><td>从 Runtime 创建前启用，到该 Runtime 完全释放后结束。</td><td>不支持运行中“只关事件”的首版方案；重新运行时去掉 -T，保留完整分配生命周期。</td></tr>
+<tr><td>-q -d</td><td>基础生命周期基准 + 初始快照，时钟口径写入报告。</td><td>移除 -d 后只初始化退出；正常业务运行还需移除 -q。</td></tr>
+</tbody></table></div>
+<div class="grid"><div><h3>拟议：构建并按需开启</h3><div class="code-block"><div class="code-label"><span>尚不可运行 · CLI feature 需向引擎转发</span><button class="copy" type="button">复制</button></div><pre><code>cargo build --release -p quickjs-oxide-cli \
+  --features profiling
+
+./target/release/qjs -d target/profile/workload.js \
+  2&gt; target/profile/oxide-memory.txt
+
+./target/release/qjs -T target/profile/workload.js \
+  2&gt; target/profile/oxide-alloc.trace
+
+./target/release/qjs -q -d \
+  2&gt; target/profile/oxide-startup.txt</code></pre></div></div>
+<div><h3>拟议：关闭与纯净构建</h3><div class="code-block"><div class="code-label"><span>运行时移除开关；独立目标目录隔离构建</span><button class="copy" type="button">复制</button></div><pre><code># 不请求任何观测
+./target/release/qjs target/profile/workload.js
+
+# 编译时完全不包含拟议 profiling feature
+cargo build --release -p quickjs-oxide-cli \
+  --no-default-features --target-dir target/plain
+./target/plain/release/qjs target/profile/workload.js</code></pre></div><p class="small">独立目录避免误运行先前的观测二进制。Cargo feature 会合并：需保证 CLI 和引擎依赖都没有显式启用 profiling；<code>--no-default-features</code> 不会撤销依赖显式启用的 feature。</p></div></div>
+<div class="note"><strong>验收“关闭”而不是口头承诺：</strong>关闭时无观测输出、无观测文件、无事件缓冲增长；不含 feature 的构建不编译观测模块。分别比较纯净构建、含功能但关闭、dump、trace 四种模式的耗时和分配，给出测量环境与误差。</div>
+<p class="small">Rust 嵌入 API 首版建议将跟踪配置固定在 Runtime 构造阶段；快照可以是显式方法调用。在线暂停 / 恢复会引入“暂停前分配、暂停后释放”的状态问题，不作为首版契约。</p>
+</section>
+<section id="benchmark">
+<div class="section-head"><span class="num">07 /</span><h2>微基准复现：尽量保持测试主体一致</h2></div>
+<p>固定使用 2026-06-04 发行包中的 <code>tests/microbench.js</code>。只适配时钟、参数、输出和结果文件能力；不要为了跑分改写属性访问、循环或调用主体。</p>
+<div class="code-block"><div class="code-label"><span>上游 · 延续第 03 节的 shell 变量</span><button class="copy" type="button">复制</button></div><pre><code># 选定项目：适合快速定位，不会保存全套参考 JSON
+"$qjs_path" --std "$qjs_src/tests/microbench.js" \
+  empty_loop prop_read \
+  &gt; target/profile/quickjs-selected.txt
+
+# 全套运行才保存参考结果
+"$qjs_path" --std "$qjs_src/tests/microbench.js" \
+  -s target/profile/quickjs-reference.json
+
+# 再运行全套并比较；同样保留新结果
+"$qjs_path" --std "$qjs_src/tests/microbench.js" \
+  -r target/profile/quickjs-reference.json \
+  -s target/profile/quickjs-current.json</code></pre></div>
+<p><code>-s</code> 与 <code>-r</code> 在上例中放在脚本路径之后，是 microbench 的参数；脚本之前的 <code>qjs -s</code> 是删除调试信息，含义不同。选定项目采用名字前缀匹配；该版本只在全套运行时保存参考文件。</p>
+<div class="grid"><div class="card"><h3>第一步：最薄的宿主适配</h3><p>为同一脚本提供 <code>console.log / scriptArgs / 单调高精度时钟</code>，检查结果文件读写能力。当前 Oxide CLI 没有上游的 <code>--std</code> 模式，不能直接照搬整条命令。</p><p class="small">如果只补最小 harness，不承诺实现完整 std/os 模块。更改时钟或采样策略时，两端必须使用同一个修改后的 harness，保留补丁与哈希。</p></div><div class="card"><h3>第二步：把结果变得可解释</h3><p>保留上游最短时间指标以便对照；额外多次独立运行，保存原始结果与波动范围。冷启动、编译和 steady-state 执行分开测。</p><p class="small">性能运行关闭 -T / -d，检查样本确实执行成功。无法执行的项目列为 unsupported，不算 0 ns，也不纳入汇总分数。</p></div></div>
+<p>在 PocketLab 等固定机器上串行运行两个引擎，控制其他任务和编译配置，交替运行顺序。结果记录 CPU / OS、Rust / C 编译器、优化参数、计时器、引擎提交、用例哈希及开启的观测功能。当前没有测得 Oxide 与 QuickJS 的性能差距，本报告不提供预测倍数。</p>
+</section>
+<section id="acceptance">
+<div class="section-head"><span class="num">08 /</span><h2>分阶段实施与验收</h2></div>
+<div class="table-scroll"><table class="wide"><thead><tr><th>阶段</th><th>最小交付</th><th>完成条件</th></tr></thead><tbody>
+<tr><td>① 固定参照</td><td>复用现有 oracle 构建，保存上游四类输出与版本。</td><td>命令、产物和来源可复现；可运行与拟议状态清楚区分。本报告已做基本冒烟。</td></tr>
+<tr><td>② 快照 + 生命周期</td><td>feature 开关、-d、-q -d、资源统计契约。</td><td>先提供可靠 count 和显式 unavailable；不虚报字节；四阶段时钟口径明确。</td></tr>
+<tr><td>③ 分配覆盖评估</td><td>列出哪些内存路径可被安全观测，再实现 -T。</td><td>若覆盖不完整则明确 partial；realloc、失败和释放边界正确；关闭没有事件输出。</td></tr>
+<tr><td>④ 可比较的微基准</td><td>同用例双引擎 runner、原始结果与逐项对比。</td><td>结果校验通过、样本时长足够、重复性可接受；不预设性能门槛。</td></tr>
+</tbody></table></div>
+<ul class="checks"><li><strong>默认行为：</strong>同一脚本输出与异常结果一致；关闭观测后没有额外文件和打印。</li><li><strong>生命周期：</strong>覆盖跨 Context、共享字符串 / backing store、弱引用、cycle GC 和 pending jobs；共享资源不重复计数。</li><li><strong>失败路径：</strong>分配失败、realloc 失败、日志写入失败不会改变 JavaScript 的错误种类或吞掉原始异常。</li><li><strong>执行边界：</strong>快照在约定的 jobs 状态下执行；不额外推进微任务，不偷偷强制 GC；异常退出的报告策略写进规范。</li><li><strong>数据声明：</strong>allocated、used、capacity、RSS 和 peak 明确分列；不支持的指标可见，不以 0 冒充。</li><li><strong>语义验证：</strong>相关 Rust / QuickJS 对照测试及全量 Test262 无新增结果差异；正确性门禁与性能结果独立保存。</li><li><strong>发布检查：</strong>生产构建未启用 profiling；含功能但关闭的构建单独测开销，保持恢复为普通构建的明确命令。</li></ul>
+<p class="small">本报告不实现 feature、CLI 参数或 allocator 插桩，也不修改 Test262 基线。实现阶段应以独立提交交付并分别验收。</p>
+</section>
+<section id="evidence">
+<div class="section-head"><span class="num">09 /</span><h2>本次实际验证了什么</h2></div>
+<p>在本地 Linux x86_64 上，使用项目现有 oracle 脚本获取的 QuickJS 2026-06-04 执行了以下冒烟验证。源码基点为 <code>69b987b</code>；结果只证明操作入口和输出符合说明，<strong>不构成稳定性能基线</strong>。</p>
+<div class="table-scroll"><table><thead><tr><th>检查</th><th>实际结果</th></tr></thead><tbody><tr><td>无 -d / -T</td><td>退出码 0；stdout 仅一行 <code>profile-probe</code>，stderr 为空。</td></tr><tr><td>-d</td><td>退出码 0；出现分类内存表和分配统计。</td></tr><tr><td>-T</td><td>退出码 0；出现分配事件；脚本输出与 trace 同在 stdout。</td></tr><tr><td>-q -d</td><td>退出码 0；出现 <code>Instantiation times (ms)</code> 四段结果。</td></tr><tr><td>empty_loop / prop_read</td><td>退出码 0；出现两个项目的 ns/op。未运行完整 microbench 套件，也未测 Oxide。</td></tr></tbody></table></div>
+<details><summary>实际输出节选：分配 trace</summary><div class="inside"><div class="code-block"><div class="code-label"><span>上游实测 · 地址与大小仅代表本次构建</span></div><pre><code>A 1440 -&gt; H+00800.1448
+A 2056 -&gt; H+06368.2056
+A 4072 -&gt; H+08432.4072
+A 5696 -&gt; H+12512.5704
+A 4096 -&gt; H+18224.4104
+A 4080 -&gt; H+22336.4088</code></pre></div></div></details>
+<details><summary>实际输出节选：内存分类表</summary><div class="inside"><div class="code-block"><div class="code-label"><span>上游实测 · 非 Oxide 内存布局</span></div><pre><code>QuickJS memory usage -- 2026-06-04 version, 64-bit, malloc limit: -1
+
+  1440 + 0   JSRuntime
+  472 + 0   JSContext
+   64 + 0   JSObject
+   12 + 4   JSString
+  128 + 8   JSFunctionBytecode
+
+JSObject classes
+     89   1 Object
+      3   2 Array
+      1   4 Number
+      1   5 String
+      1   6 Boolean
+    108  12 Function
+      1  15 Function
+      1  49 Object
+
+NAME                    COUNT     SIZE
+memory allocated           53   169344  (3195.2 per block)
+memory used              1160    78740  (8 overhead, 78.1 average slack)
+atoms                     618    21196  (34.3 per atom)
+objects                   205    13120  (64.0 per object)
+  properties              929    17152  (4.5 per object)
+  shapes                  118    18752  (158.9 per shape)
+C functions               108
+arrays                      3
+  fast arrays               3
+  elements                 32      512  (10.7 per fast array)</code></pre></div></div></details>
+<p class="small" style="margin-top:20px">完整本地记录：<a href="../../target/quickjs-profile-report/verification.json">verification.json</a>、<a href="../../target/quickjs-profile-report/dump.stdout">dump.stdout</a>、<a href="../../target/quickjs-profile-report/trace.stdout">trace.stdout</a>、<a href="../../target/quickjs-profile-report/startup.stdout">startup.stdout</a>、<a href="../../target/quickjs-profile-report/microbench.stdout">microbench.stdout</a>。这些 target 产物未纳入 Git，分享单个 HTML 时仍可读正文与内嵌节选，外链产物需另行附带。</p>
+</section>
+<section id="sources">
+<div class="section-head"><span class="num">10 /</span><h2>来源与代码定位</h2></div>
+<p>行为以本项目固定的发行包源码为准；官方网页用于补充入口说明。GitHub master 会变化，不作为本报告的版本锁。</p>
+<ol class="refs">
+<li id="s-pin"><a href="https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz">QuickJS 2026-06-04 官方发行包</a><span class="small">固定依据：<a href="../../compat/upstream.toml">compat/upstream.toml</a>。SHA-256：<code>b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a</code>。</span></li>
+<li id="s-qjs"><a href="../../target/oracle/quickjs-2026-06-04/qjs.c">固定发行包 qjs.c（本地缓存）</a><span class="small">L155–276：trace allocator / A-R-F 格式；L292–312：命令帮助；L400–407：开关解析；L453–458：JS_NewRuntime2；L529–569：dump 时机与 100 次初始化计时。源码中包含完整的失败路径与平台分配差异。</span></li>
+<li id="s-memory"><a href="../../target/oracle/quickjs-2026-06-04/quickjs.h">固定发行包 quickjs.h</a> / <a href="../../target/oracle/quickjs-2026-06-04/quickjs.c">quickjs.c</a><span class="small">quickjs.h L353–367：allocator 契约；L431–448：JSMemoryUsage 与计算 / 输出 API。quickjs.c L6928：JS_ComputeMemoryUsage；L7224：JS_DumpMemoryUsage，含打印时的大小探测。</span></li>
+<li id="s-micro"><a href="../../target/oracle/quickjs-2026-06-04/tests/microbench.js">固定发行包 tests/microbench.js</a><span class="small">L83–164：时钟、采样、ns/op；L1435：用例列表；L1536–1576：参考文件、选择项目与仅全套保存规则。<a href="https://github.com/bellard/quickjs/blob/master/tests/microbench.js">官方仓库浏览入口</a>仅供便捷查阅。</span></li>
+<li><a href="https://bellard.org/quickjs/quickjs.html#Command-line-options">QuickJS 官方手册：命令行选项</a><span class="small">手册说明 -d / -q；-T 及 -q -d 的精确行为以本报告引用的固定 qjs.c 为准。</span></li>
+<li><a href="../../scripts/quickjs/build-quickjs-oracle.sh">项目 oracle 构建脚本</a><span class="small">负责版本 / 归档校验和测试工具构建。C oracle 与 Rust 产品保持独立。</span></li>
+<li><a href="../../apps/cli/src/main.rs">Oxide CLI</a> / <a href="../../src/engine/heap/runtime_gc.rs">Runtime 统计入口</a> / <a href="../../src/engine/heap/mod.rs">HeapCounts</a> / <a href="../../src/engine/heap/gc.rs">GcStats</a><span class="small">当前可复用能力、-q 行为和待补齐边界。<a href="../../Cargo.toml">Cargo.toml</a> 记录当前 feature 与 forbid unsafe 策略。</span></li>
+</ol>
+</section>
+<footer class="footer"><span>quickjs-oxide · QuickJS 性能观测复现方案<br>设计与上游命令核验，2026-09-09</span><a href="#main">返回顶部 ↑</a></footer>
+</main></div>
+<script>
+(()=>{
+const engine=document.getElementById('engine-choice'),mode=document.getElementById('mode-choice'),preview=document.getElementById('command-preview'),status=document.getElementById('command-status'),label=document.getElementById('command-label');
+const upstream={off:'"$qjs_path" target/profile/workload.js',dump:'"$qjs_path" -d target/profile/workload.js > target/profile/memory.txt',trace:'"$qjs_path" -T target/profile/workload.js > target/profile/alloc.trace',startup:'"$qjs_path" -q -d > target/profile/startup.txt',bench:'"$qjs_path" --std "$qjs_src/tests/microbench.js" empty_loop prop_read'};
+const oxide={off:'./target/plain/release/qjs target/profile/workload.js',dump:'./target/release/qjs -d target/profile/workload.js 2> target/profile/oxide-memory.txt',trace:'./target/release/qjs -T target/profile/workload.js 2> target/profile/oxide-alloc.trace',startup:'./target/release/qjs -q -d 2> target/profile/oxide-startup.txt',bench:'# 拟议：先实现最小 microbench harness，\n# 再以同一脚本、同一计时器运行双引擎对照。\n# 当前没有可运行的 Oxide microbench 命令。'};
+function render(){const isQ=engine.value==='quickjs',m=mode.value;preview.textContent=(isQ?upstream:oxide)[m];label.textContent=isQ?'上游 · 可运行':m==='off'?'Oxide · 普通构建运行':'Oxide · 拟议 / 尚未实现';status.textContent=isQ?'需先执行正文中的 oracle 构建与样本准备。去掉 -d / -T 即关闭观测；-q 会跳过脚本执行。':m==='off'?'普通构建与运行现已支持；target/plain 路径需要按第 06 节的独立目录命令构建。':'这些开关和 profiling feature 尚未实现。此处展示拟议使用方式，不会执行或修改项目。';}
+engine.addEventListener('change',render);mode.addEventListener('change',render);render();
+document.querySelectorAll('.copy').forEach(button=>button.addEventListener('click',async()=>{const code=button.closest('.code-block').querySelector('code');try{await navigator.clipboard.writeText(code.textContent);button.textContent='已复制';setTimeout(()=>button.textContent='复制',1600);}catch{const range=document.createRange();range.selectNodeContents(code);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);button.textContent='已选中，请复制';setTimeout(()=>button.textContent='复制',2500);}}));
+document.getElementById('print-button').addEventListener('click',()=>window.print());
+const links=[...document.querySelectorAll('nav a')];if('IntersectionObserver' in window){const observer=new IntersectionObserver(entries=>{for(const entry of entries){if(entry.isIntersecting){links.forEach(a=>{const current=a.hash==='#'+entry.target.id;a.classList.toggle('active',current);if(current)a.setAttribute('aria-current','location');else a.removeAttribute('aria-current');});}}},{rootMargin:'-8% 0px -72% 0px'});document.querySelectorAll('main section').forEach(s=>observer.observe(s));}
+let previouslyOpen=[];window.addEventListener('beforeprint',()=>{previouslyOpen=[...document.querySelectorAll('details[open]')];document.querySelectorAll('details').forEach(d=>d.open=true);});window.addEventListener('afterprint',()=>document.querySelectorAll('details').forEach(d=>d.open=previouslyOpen.includes(d)));
+})();
+</script>
+</body>
+</html>

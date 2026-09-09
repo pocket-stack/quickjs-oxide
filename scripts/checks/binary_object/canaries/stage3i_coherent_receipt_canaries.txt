@@ -1,0 +1,6 @@
+stage3i-receipt-coherent-source:engine_semantics_source
+stage3i-receipt-coherent-fingerprint:engine_semantics_sha256
+stage3i-receipt-coherent-focused-tsv:focused_tsv_sha256
+stage3i-receipt-coherent-focused-jsonl:focused_jsonl_sha256
+stage3i-receipt-coherent-full-tsv:full_tsv_sha256
+stage3i-receipt-coherent-full-jsonl:full_jsonl_sha256
